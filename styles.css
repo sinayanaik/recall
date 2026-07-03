@@ -7621,15 +7621,22 @@ kbd {
 .notes-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 8px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 8px;
 }
 
-.notes-head .edit-toolbar {
+.notes-head .edit-toolbar,
+#makeCardFromNotesBtn {
   margin-left: auto;
+}
+
+/* Once the toolbar claims the auto margin (editing), the make-card button
+   just needs its normal gap from the toolbar, not another shove right. */
+.notes-head .edit-toolbar:not([hidden]) ~ #makeCardFromNotesBtn {
+  margin-left: 0;
 }
 
 .notes-rendered {
@@ -7655,7 +7662,10 @@ kbd {
 
 .notes-make-card-btn {
   position: fixed;
-  z-index: 620;
+  /* Below every panel/modal (100-240) so an open confirm/help/category dialog
+     isn't left with this floating pill still visible and clickable on top of
+     it — was 620, higher than any modal in the app. */
+  z-index: 90;
   display: inline-flex;
   align-items: center;
   gap: 6px;

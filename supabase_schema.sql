@@ -15,7 +15,10 @@ CREATE TABLE decks (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE
+  -- app.js never sets user_id explicitly on insert/upsert — it relies on this
+  -- default, without which every insert would leave user_id NULL and get
+  -- rejected by the "Users manage own decks" WITH CHECK below.
+  user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE
 );
 
 CREATE INDEX decks_category_last_accessed_at_idx
@@ -36,9 +39,13 @@ CREATE TABLE cards (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Create Style Settings Table (one row per user, id = user UUID)
+-- Create Style Settings Table (one shared row, id = 'global'). This matches
+-- supabase_style_settings.sql and the app's syncStyleToWeb/loadStyleFromWeb,
+-- which always read/write id: "global" — it is intentionally NOT scoped per
+-- user_id (single shared Aa style document across whoever uses this
+-- deployment; see supabase_style_settings.sql's header for the rationale).
 CREATE TABLE app_style_settings (
-  id TEXT PRIMARY KEY,
+  id TEXT PRIMARY KEY DEFAULT 'global',
   settings JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -71,11 +78,12 @@ CREATE POLICY "Users manage own cards" ON cards
     )
   );
 
--- Style settings: each row is keyed by the user's UUID string
-CREATE POLICY "Users manage own settings" ON app_style_settings
+-- Style settings: one shared 'global' row, readable/writable by any signed-in
+-- user of this deployment (matches supabase_style_settings.sql's policies).
+CREATE POLICY "Signed-in users manage app style settings" ON app_style_settings
   FOR ALL TO authenticated
-  USING (id = auth.uid()::text)
-  WITH CHECK (id = auth.uid()::text);
+  USING (true)
+  WITH CHECK (true);
 
 
 -- ============================================================

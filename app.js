@@ -542,15 +542,6 @@ function categorySortValue(value) {
   return category === defaultDeckCategory ? "" : category.toLowerCase();
 }
 
-function categoryForSync(existingDeck = null) {
-  const localCategory = normalizeDeckCategory(state.deckCategory);
-  const existingCategory = normalizeDeckCategory(existingDeck?.category);
-  if (localCategory === defaultDeckCategory && existingCategory !== defaultDeckCategory) {
-    return existingCategory;
-  }
-  return localCategory;
-}
-
 function categoriesFromDecks(decks = [], extraCategories = []) {
   return Array.from(new Set([
     defaultDeckCategory,
@@ -899,30 +890,35 @@ async function fetchWebDecks({ toast = false } = {}) {
 async function updateWebDeckTitle(deckId, title) {
   if (!deckId || !supabaseClient) return false;
 
+  const now = new Date().toISOString();
   const { error } = await supabaseClient
     .from("decks")
     .update({
       title,
-      updated_at: new Date().toISOString()
+      updated_at: now
     })
     .eq("id", deckId);
 
   if (error) throw error;
+  syncLocalLibraryMetaForDeck(deckId, { title, now });
   return true;
 }
 
 async function updateWebDeckCategory(deckId, category) {
   if (!deckId || !supabaseClient) return false;
 
+  const normalized = normalizeDeckCategory(category);
+  const now = new Date().toISOString();
   const { error } = await supabaseClient
     .from("decks")
     .update({
-      category: normalizeDeckCategory(category),
-      updated_at: new Date().toISOString()
+      category: normalized,
+      updated_at: now
     })
     .eq("id", deckId);
 
   if (error) throw error;
+  syncLocalLibraryMetaForDeck(deckId, { category: normalized, now });
   return true;
 }
 
@@ -1279,7 +1275,11 @@ function buildDeckSql(payloads, title = "Recall SQL Export") {
   payloads.forEach((payload) => {
     const deck = payload.deck;
     lines.push("");
-    lines.push(`-- Deck: ${deck.title}`);
+    // Strip newlines before interpolating into a line comment — unlike the
+    // INSERT below (escaped via sqlValue), a title containing a literal
+    // newline here would break out of the "--" comment and let the rest of
+    // the title be interpreted as SQL.
+    lines.push(`-- Deck: ${String(deck.title || "").replace(/\r?\n/g, " ")}`);
     lines.push(
       "INSERT INTO decks (id, title, category, notes, current_card_index, created_at, updated_at, last_accessed_at) VALUES " +
       `(${sqlValue(deck.id)}, ${sqlValue(deck.title)}, ${sqlValue(deck.category)}, ${sqlValue(deck.notes || "")}, ${Number(deck.current_card_index) || 0}, ${sqlTimestamp(deck.created_at)}, ${sqlTimestamp(deck.updated_at)}, ${sqlTimestamp(deck.last_accessed_at)}) ` +
@@ -1557,72 +1557,6 @@ function sameSyncContent(localCard, webCard) {
     && !syncTextChanged(localCard.answer, webCard.answer);
 }
 
-function normalizeDeckTitleForSync(value) {
-  return normalizeSyncText(value).toLowerCase();
-}
-
-async function findExistingWebDeckForLocalSync(deckTitle, preferredDeckId = "") {
-  if (!supabaseClient) return null;
-
-  const normalizedTitle = normalizeDeckTitleForSync(deckTitle);
-  const normalizedPreferredId = String(preferredDeckId || "").trim();
-
-  if (normalizedPreferredId) {
-    const { data, error } = await supabaseClient
-      .from("decks")
-      .select("*")
-      .eq("id", normalizedPreferredId)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (data) return data;
-  }
-
-  if (!normalizedTitle) return null;
-
-  const { data, error } = await supabaseClient
-    .from("decks")
-    .select("*")
-    .order("last_accessed_at", { ascending: false, nullsFirst: false })
-    .order("updated_at", { ascending: false });
-
-  if (error) throw error;
-
-  return (data || []).find((deck) => normalizeDeckTitleForSync(deck.title) === normalizedTitle) || null;
-}
-
-async function resolveSyncTargetDeck(deckTitle) {
-  const preferredDeckId = state.deckId || slugifyFileName(deckTitle);
-
-  if (state.deckId) {
-    const existingDeck = supabaseClient
-      ? await findExistingWebDeckForLocalSync(deckTitle, state.deckId)
-      : null;
-
-    return {
-      deckId: preferredDeckId,
-      existingDeck: existingDeck,
-      overwriteExisting: false
-    };
-  }
-
-  if (!supabaseClient) {
-    return {
-      deckId: preferredDeckId,
-      existingDeck: null,
-      overwriteExisting: false
-    };
-  }
-
-  const existingDeck = await findExistingWebDeckForLocalSync(deckTitle, preferredDeckId);
-
-  return {
-    deckId: existingDeck?.id || preferredDeckId || ("deck-" + Date.now()),
-    existingDeck,
-    overwriteExisting: Boolean(existingDeck)
-  };
-}
-
 function uniqueMatchingWebCard(webCards, predicate) {
   const matches = webCards.filter(predicate);
   return matches.length === 1 ? matches[0] : null;
@@ -1693,109 +1627,6 @@ function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true
 
   changes.deleted = unmatchedWeb.size;
   return changes;
-}
-
-async function showSyncModal() {
-  const modal = el.syncModal;
-  const content = el.syncDetailsContent;
-  const confirmBtn = document.getElementById("confirmSyncBtn");
-
-  if (!state.masterCards.length && !state.notes.trim()) {
-    setStatus("No deck to sync.", "error");
-    return;
-  }
-  if (!navigator.onLine) {
-    setStatus("Offline — can't sync to cloud. Use “Save to Device” to keep this deck locally.", "error");
-    showToast("Offline — saved to device instead", "info");
-    saveDeckToLibrary({ silent: true });
-    return;
-  }
-
-  const deckTitle = state.deckTitle || state.sourceTitle || "Untitled Deck";
-  const cardsCount = state.masterCards.length;
-  const knownCount = state.results.known.length;
-  const reviewCount = state.results.review.length;
-
-  let syncTarget = {
-    deckId: state.deckId || slugifyFileName(deckTitle) || ("deck-" + Date.now()),
-    existingDeck: state.deckId ? { id: state.deckId, title: deckTitle } : null,
-    overwriteExisting: false
-  };
-  try {
-    syncTarget = await resolveSyncTargetDeck(deckTitle);
-  } catch (error) {
-    console.error("Failed to resolve sync target", error);
-  }
-
-  const isUpdate = Boolean(syncTarget.existingDeck);
-  const actionText = syncTarget.overwriteExisting
-    ? "Overwrite existing web deck"
-    : isUpdate
-      ? "Update existing web deck"
-      : "Create new web deck";
-  const deckCategory = categoryForSync(syncTarget.existingDeck);
-  
-  modal.hidden = false;
-  if (confirmBtn) confirmBtn.disabled = true;
-  
-  content.innerHTML = `
-    <p><strong>Action:</strong> ${actionText}</p>
-    <p><strong>Title:</strong> ${escapeHtml(deckTitle)}</p>
-    <p><strong>Category:</strong> ${escapeHtml(deckCategory)}</p>
-    <p><strong>Cards:</strong> ${cardsCount} total (${knownCount} known, ${reviewCount} review)</p>
-    <p><strong>Current Position:</strong> Card ${state.current + 1}</p>
-    <br>
-    <p style="color: var(--text-secondary);">Calculating differences...</p>
-  `;
-  
-  let diffHtml = "";
-
-  if (!isUpdate || !supabaseClient) {
-    diffHtml = `<p style="color: var(--text-secondary);">This will create a new deck on the web with your ${cardsCount} cards.</p>`;
-  } else {
-    try {
-      const { data: webCards, error } = await supabaseClient
-        .from("cards")
-        .select("id, question, answer, status, position")
-        .eq("deck_id", syncTarget.deckId);
-
-      if (error) throw error;
-
-      const { added, deleted, edited, moved, statusChanges } = calculateSyncDiff(state.masterCards, webCards || [], state.statusById);
-      // Notes live on the deck row, not on cards, so they are compared
-      // separately from the card diff.
-      const notesChanged = syncTextChanged(state.notes, syncTarget.existingDeck?.notes || "");
-
-      if (added === 0 && deleted === 0 && edited === 0 && moved === 0 && statusChanges === 0 && !notesChanged) {
-        diffHtml = `<p style="color: var(--text-secondary);">No changes detected. The web deck is up to date.</p>`;
-      } else {
-        diffHtml = `<p style="color: var(--text-secondary); margin-bottom: 0.5rem;"><strong>${syncTarget.overwriteExisting ? "Local import will overwrite web deck:" : "Changes to sync:"}</strong></p>
-        <ul style="color: var(--text-secondary); margin-left: 1.5rem; list-style-type: disc;">`;
-        if (added > 0) diffHtml += `<li>${added} card${added > 1 ? 's' : ''} added</li>`;
-        if (deleted > 0) diffHtml += `<li>${deleted} card${deleted > 1 ? 's' : ''} deleted</li>`;
-        if (edited > 0) diffHtml += `<li>${edited} card${edited > 1 ? 's' : ''} modified</li>`;
-        if (moved > 0) diffHtml += `<li>${moved} card position${moved > 1 ? 's' : ''} updated</li>`;
-        if (statusChanges > 0) diffHtml += `<li>${statusChanges} status update${statusChanges > 1 ? 's' : ''}</li>`;
-        if (notesChanged) diffHtml += `<li>Study notes updated</li>`;
-        diffHtml += `</ul>`;
-      }
-    } catch (err) {
-      console.error("Failed to calculate sync differences", err);
-      diffHtml = `<p style="color: #ff4a4a;">Could not calculate differences. Proceeding will overwrite web data.</p>`;
-    }
-  }
-
-  content.innerHTML = `
-    <p><strong>Action:</strong> ${actionText}</p>
-    <p><strong>Title:</strong> ${escapeHtml(deckTitle)}</p>
-    <p><strong>Category:</strong> ${escapeHtml(deckCategory)}</p>
-    <p><strong>Cards:</strong> ${cardsCount} total (${knownCount} known, ${reviewCount} review)</p>
-    <p><strong>Current Position:</strong> Card ${state.current + 1}</p>
-    <br>
-    ${diffHtml}
-  `;
-  
-  if (confirmBtn) confirmBtn.disabled = false;
 }
 
 // Shared HTML for a sync report — every deck reconcileAllDecks() touched,
@@ -1942,74 +1773,6 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   };
 }
 
-// Pushes the currently-loaded deck. Returns the ISO timestamp written to the
-// cloud on success (so callers can align the local library copy), or false.
-async function syncDeckToWeb({ silent = false } = {}) {
-  if (!supabaseClient) return false;
-  el.syncModal.hidden = true;
-
-  if (!state.masterCards.length && !state.notes.trim()) {
-    if (!silent) setStatus("No deck to sync.", "error");
-    return false;
-  }
-
-  const say = (msg, kind) => { if (!silent) setStatus(msg, kind); };
-  const syncBtn = document.getElementById("syncBtn");
-  if (syncBtn) setButtonLoading(syncBtn, true, "Syncing…");
-
-  try {
-    const deckTitle = state.deckTitle || state.sourceTitle || "Untitled Deck";
-    const syncTarget = await resolveSyncTargetDeck(deckTitle);
-    state.deckId = syncTarget.deckId;
-    state.deckCategory = categoryForSync(syncTarget.existingDeck);
-
-    say(`Syncing... (1/3) Saving deck info "${deckTitle}"`);
-    const now = new Date().toISOString();
-
-    await pushDeckRowsToCloud({
-      deckId: state.deckId,
-      title: deckTitle,
-      category: state.deckCategory,
-      notes: state.notes,
-      currentIndex: state.current,
-      cards: state.masterCards.map((c) => ({
-        id: c.id, question: c.question, answer: c.answer, status: normalizeCardStatus(state.statusById[c.id])
-      })),
-      isNewDeck: !syncTarget.existingDeck,
-      overwrite: syncTarget.overwriteExisting,
-      now, say, silent
-    });
-
-    // Align the local library copy's timestamps with the cloud so the next
-    // reconcileAllDecks doesn't re-push this deck (or worse, pull a
-    // slightly-newer cloud copy over it due to clock skew).
-    saveDeckToLibrary({ silent: true, updatedAt: now, lastSyncedAt: now });
-    refreshSyncIndicatorBaseline();
-
-    say("Deck synced to web successfully.");
-    if (!silent) showToast(`Synced "${deckTitle}" to cloud · ${state.masterCards.length} cards`);
-    return now;
-  } catch (error) {
-    const errorMessage = String(error?.message || "");
-    say(
-      errorMessage.includes("category") || errorMessage.includes("last_accessed_at")
-        ? "Failed to sync deck metadata. Run supabase_deck_categories.sql in Supabase first."
-        : errorMessage.includes("notes")
-          ? "Failed to sync deck metadata. Run supabase_deck_notes.sql in Supabase first."
-          : "Failed to sync deck to web.",
-      "error"
-    );
-    if (!silent) showToast("Cloud sync failed", "error");
-    console.error(error);
-    return false;
-  } finally {
-    if (syncBtn) setButtonLoading(syncBtn, false);
-  }
-}
-
-
-
-
 
 const swipeConfig = {
   intentDistance: 12,
@@ -2054,12 +1817,8 @@ const el = {
   pasteImportBtn: document.querySelector("#pasteImportBtn"),
   pasteCancelBtn: document.querySelector("#pasteCancelBtn"),
   parseBtn: document.querySelector("#parseBtn"),
-  openWebDecksFromImportBtn: document.querySelector("#openWebDecksFromImportBtn"),
   sampleBtn: document.querySelector("#sampleBtn"),
-  deckMenuBtn: document.querySelector("#deckMenuBtn"),
-  deckMenu: document.querySelector("#deckMenu"),
   newDeckBtn: document.querySelector("#newDeckBtn"),
-  newDeckFromImportBtn: document.querySelector("#newDeckFromImportBtn"),
   importBtn: document.querySelector("#importBtn"),
   myDecksBtn: document.querySelector("#myDecksBtn"),
   syncNowBtn: document.querySelector("#syncNowBtn"),
@@ -2831,6 +2590,52 @@ function unlockPageScroll() {
   window.scrollTo(0, scrollY);
 }
 
+// True while any modal/panel/overlay is on screen — used to keep the global
+// keydown handler's card shortcuts (Space/Enter/arrows/K/R) from silently
+// acting on the card underneath an open dialog.
+function anyModalOpen() {
+  return Boolean(
+    (el.confirmModal && !el.confirmModal.hidden) ||
+    (el.promptModal && !el.promptModal.hidden) ||
+    (el.frameCardModal && !el.frameCardModal.hidden) ||
+    (el.myDecksPanel && !el.myDecksPanel.hidden) ||
+    (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) ||
+    (el.importSelectorPanel && !el.importSelectorPanel.hidden) ||
+    (el.stylePanel && !el.stylePanel.hidden) ||
+    (el.diagramModal && !el.diagramModal.hidden) ||
+    (el.webDecksPanel && !el.webDecksPanel.hidden) ||
+    (el.syncModal && !el.syncModal.hidden) ||
+    (el.allCardsPanel && !el.allCardsPanel.hidden) ||
+    (el.importPanel && el.importPanel.classList.contains("is-open"))
+  );
+}
+
+// Closes whichever modal/panel/overlay is currently open, reusing each one's
+// own Cancel/Close control so its cleanup (unbinding onclick handlers, etc.)
+// runs exactly as it would from a real click — then releases the scroll lock.
+// Used by the global Escape handler, which previously only closed a subset of
+// these (exportMenu/deckMenu/diagramModal/allCardsPanel/stylePanel/
+// importPanel/webDecksPanel) while unconditionally unlocking scroll — so e.g.
+// a confirm/help/prompt dialog was left stuck open with the page scrollable
+// behind it.
+function closeTopmostOverlay() {
+  el.exportMenu.hidden = true;
+  closeDeckMenu();
+  closeDiagramModal();
+  closeAllCardsPanel();
+  closeStylePanel();
+  closeImportPanel();
+  el.webDecksPanel.hidden = true;
+  if (el.myDecksPanel && !el.myDecksPanel.hidden) closeMyDecksPanel();
+  if (el.importSelectorPanel && !el.importSelectorPanel.hidden) closeImportSelectorPanel();
+  if (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) closeHelpModal();
+  if (el.confirmModal && !el.confirmModal.hidden) el.confirmModalCancelBtn?.click();
+  if (el.promptModal && !el.promptModal.hidden) el.promptModalCancelBtn?.click();
+  if (el.frameCardModal && !el.frameCardModal.hidden) el.frameCardCancelBtn?.click();
+  if (el.syncModal && !el.syncModal.hidden) el.syncModal.hidden = true;
+  unlockPageScroll();
+}
+
 function openStylePanel() {
   lockPageScroll();
   state.styleEditProfile = detectStyleProfile();
@@ -2893,7 +2698,11 @@ async function loadStyleFromWeb(force = false) {
     setStyleStatus(data.updated_at ? `Loaded ${new Date(data.updated_at).toLocaleString()}` : "Loaded synced style");
   } catch (error) {
     console.warn("Could not load synced style", error);
-    setStyleStatus("Style sync table not ready");
+    setStyleStatus(
+      error?.code === "42501"
+        ? "Style sync blocked — check app_style_settings RLS policy"
+        : "Style sync table not ready"
+    );
   }
 }
 
@@ -2928,7 +2737,12 @@ async function syncStyleToWeb() {
   } catch (error) {
     console.error("Failed to sync style", error);
     setStyleStatus("Sync failed");
-    setStatus("Failed to sync style. Create the app_style_settings table first.", "error");
+    setStatus(
+      error?.code === "42501"
+        ? "Failed to sync style — its RLS policy doesn't match id: \"global\". Re-run supabase_style_settings.sql (or the app_style_settings section of supabase_schema.sql)."
+        : "Failed to sync style. Create the app_style_settings table first.",
+      "error"
+    );
   } finally {
     syncBtn.disabled = false;
   }
@@ -3312,6 +3126,24 @@ async function fetchCloudDeckList() {
   return data || [];
 }
 
+// Cross-device delete tombstones (see supabase_deck_tombstones.sql). A local
+// tombstone alone only stops THIS device from resurrecting a deck it deleted —
+// another device that hasn't reconciled since still holds a local copy and
+// will push it right back. This durable, shared list is what lets that other
+// device learn "this deck was deleted elsewhere" before it re-pushes.
+// Best-effort: an unmigrated project (table doesn't exist yet) degrades to the
+// old local-only behavior rather than breaking sync.
+async function fetchDeletedDeckIds() {
+  try {
+    const { data, error } = await supabaseClient.from("deleted_decks").select("deck_id");
+    if (error) throw error;
+    return (data || []).map((row) => String(row.deck_id));
+  } catch (error) {
+    console.warn("Could not fetch deck-deletion tombstones (run supabase_deck_tombstones.sql?)", error);
+    return [];
+  }
+}
+
 // Per-deck sync state for the My Decks "Sync" column, comparing the on-device
 // copy against the cloud (when we can reach it). `cloudById` is a Map of cloud
 // decks, or null when we haven't/can't fetch it. Mirrors the timestamp logic
@@ -3600,6 +3432,15 @@ function parseDelimitedCards(markdown) {
     }
 
     if (!inCard) continue;
+
+    // A literal "---" the user typed inside a card (e.g. a Markdown horizontal
+    // rule) is escaped as "\---" on export (see formatCardList) so it round-trips
+    // instead of being mistaken for the front/back separator below. Unescape it
+    // back to plain content and skip the separator checks for this line.
+    if (!inFence && /^\s*\\---(?!-)/.test(rest)) {
+      pushContent(rest.replace(/^(\s*)\\---/, "$1---"));
+      continue;
+    }
 
     if (!inFence && side === "front" && rest.trim() === "---") {
       side = "back";
@@ -4024,7 +3865,12 @@ function protectMath(markdown) {
       }
     }
 
-    if ((source.startsWith("\\[", index) || source.startsWith("\\(", index)) && !isEscaped(source, index)) {
+    // A literal "[" immediately before "\[" (or "\(") is Markdown's escaped-bracket
+    // syntax for bracket characters inside link text — e.g. Turndown emits
+    // "[\[1\]](url)" for a link whose visible text is "[1]" (citation markers).
+    // That's never a real LaTeX delimiter someone typed, so don't swallow it as math.
+    const precededByLinkBracket = index > 0 && source[index - 1] === "[" && !isEscaped(source, index - 1);
+    if (!precededByLinkBracket && (source.startsWith("\\[", index) || source.startsWith("\\(", index)) && !isEscaped(source, index)) {
       const displayMode = source[index + 1] === "[";
       const closeToken = displayMode ? "\\]" : "\\)";
       const close = findUnescaped(source, closeToken, index + 2);
@@ -4069,8 +3915,68 @@ function applyClozeMarkup(text) {
 }
 
 // Apply the inline transforms (cloze, then math) that run on non-fenced text.
+// Inline code spans (`code`, or ``code`` etc. so a literal backtick can appear
+// inside — CommonMark closes on a run of exactly the same length as the
+// opener) must be skipped, the same way preprocessSpecialBlocks already skips
+// ``` fences — otherwise typing `{{x}}` or `$x$` as literal documentation
+// (e.g. showing Mustache/Jinja2 syntax, or LaTeX syntax itself) turns it into
+// a live cloze/math widget instead of staying inline code. Triple-backtick
+// FENCES never reach here at all (already sliced out by preprocessSpecialBlocks).
+//
+// Cloze and code-span detection can't just run as two independent passes
+// (cloze-then-code or code-then-cloze) — whichever delimiter the text writer
+// meant to open FIRST has to win: "{{`SELECT`}}" clozes a code term (cloze
+// opens first, its content includes an ordinary code span, which still
+// becomes <code> once marked.parse() sees it — cloze's own regex is left
+// alone, it doesn't need to know about code), while "`{{x}}`" documents
+// literal cloze syntax as code (backtick opens first, content stays fully
+// literal). This scans left-to-right and lets whichever token starts earlier
+// consume its full span before continuing.
 function protectInline(segment) {
-  return protectMath(applyClozeMarkup(segment));
+  let output = "";
+  let i = 0;
+  const len = segment.length;
+
+  while (i < len) {
+    const clozeStart = segment.indexOf("{{", i);
+    const backtickMatch = /`+/.exec(segment.slice(i));
+    const codeStart = backtickMatch ? i + backtickMatch.index : -1;
+
+    if (codeStart !== -1 && (clozeStart === -1 || codeStart < clozeStart)) {
+      const tickRun = backtickMatch[0];
+      const afterOpen = codeStart + tickRun.length;
+      const closeRe = new RegExp("`{" + tickRun.length + "}(?!`)");
+      const closeMatch = closeRe.exec(segment.slice(afterOpen));
+      if (closeMatch) {
+        const codeEnd = afterOpen + closeMatch.index + closeMatch[0].length;
+        output += protectMath(applyClozeMarkup(segment.slice(i, codeStart)));
+        output += segment.slice(codeStart, codeEnd); // raw code span, untouched
+        i = codeEnd;
+        continue;
+      }
+      // Backtick run with no matching close — not a real code span. Fall
+      // through to check for a cloze at/after this position instead.
+    }
+
+    if (clozeStart !== -1) {
+      const closeIdx = segment.indexOf("}}", clozeStart + 2);
+      if (closeIdx !== -1) {
+        output += protectMath(applyClozeMarkup(segment.slice(i, clozeStart)));
+        const inner = segment.slice(clozeStart + 2, closeIdx);
+        output += `<span class="cloze" tabindex="0" role="button" aria-label="Hidden text, tap to reveal">${protectMath(inner)}</span>`;
+        i = closeIdx + 2;
+        continue;
+      }
+    }
+
+    // Neither a valid code span nor a valid cloze from here on — process
+    // whatever's left as plain text (any stray "`"/"{{" survive literally,
+    // same as CommonMark treats an unmatched backtick) and stop.
+    output += protectMath(applyClozeMarkup(segment.slice(i)));
+    break;
+  }
+
+  return output;
 }
 
 // Raw-markdown convenience for side-by-side images: a line that is two or more
@@ -6635,9 +6541,33 @@ function replayDeck(scope) {
   showCard();
 }
 
+// A card's question/answer can legitimately contain a standalone "---" line
+// (a Markdown horizontal rule — "Both sides support Markdown" per
+// FlashCard_Format.txt), which is otherwise indistinguishable from the
+// front/back separator this same format uses. Escape it so export→import
+// round-trips instead of truncating the question at the first such line (see
+// parseDelimitedCards, which unescapes "\---" back to "---"). Fence-aware to
+// match the parser, which never treats "---" inside a ``` block as anything
+// but literal content — e.g. YAML frontmatter inside a fenced code sample
+// must NOT be escaped, or it comes back out of the parser still escaped.
+function escapeCardSideSeparator(text) {
+  let inFence = false;
+  return String(text || "")
+    .split("\n")
+    .map((line) => {
+      if (/^\s*```/.test(line.trim())) {
+        inFence = !inFence;
+        return line;
+      }
+      if (!inFence && /^\s*---(?!-)/.test(line)) return line.replace(/^(\s*)---/, "$1\\---");
+      return line;
+    })
+    .join("\n");
+}
+
 function formatCardList(title, cards) {
   const body = cards.length
-    ? cards.map((card) => `::\n${card.question.trim()}\n\n---\n\n${card.answer.trim()}\n::`).join("\n\n")
+    ? cards.map((card) => `::\n${escapeCardSideSeparator(card.question.trim())}\n\n---\n\n${escapeCardSideSeparator(card.answer.trim())}\n::`).join("\n\n")
     : "_None_";
   return `## ${title}\n\n${body}`;
 }
@@ -6806,7 +6736,22 @@ function persistWorkingDeck() {
 // chatty and unnecessary. The cloud only gets touched at app startup, when
 // connectivity returns, and via the explicit "Sync Now" button — all through
 // reconcileAllDecks().
+// True only for an actual DOMException quota failure — checked by name/code
+// rather than assuming, since browsers vary (modern: "QuotaExceededError";
+// legacy WebKit/Firefox: code 22 / 1014, or name "NS_ERROR_DOM_QUOTA_REACHED").
+function isQuotaExceededError(error) {
+  if (!error) return false;
+  return error.name === "QuotaExceededError"
+    || error.name === "NS_ERROR_DOM_QUOTA_REACHED"
+    || error.code === 22
+    || error.code === 1014;
+}
+
 let deckAutosaveStorageFailed = false;
+// Set by saveDeckToLibrary's catch block so scheduleDeckAutosave can tell a
+// genuine quota failure apart from any other save error without changing
+// saveDeckToLibrary's return contract (many callers just check truthiness).
+let lastSaveErrorWasQuota = false;
 function scheduleDeckAutosave() {
   // After a storage-quota failure, stop scheduling further writes — the
   // toast already told the user, and hammering a full localStorage just
@@ -6816,11 +6761,25 @@ function scheduleDeckAutosave() {
   deckAutosaveTimer = setTimeout(() => {
     deckAutosaveTimer = null;
     persistWorkingDeck();
+    // An empty deck (e.g. the last card was just deleted) has nothing to
+    // save — saveDeckToLibrary correctly no-ops and returns null for this,
+    // but that's not a storage failure, so don't treat it as one.
+    if (!state.masterCards.length && !state.notes.trim()) {
+      setSyncIndicator("saved");
+      return;
+    }
     const savedMeta = saveDeckToLibrary({ silent: true });
     if (!savedMeta) {
-      deckAutosaveStorageFailed = true;
-      setSyncIndicator("error");
-      showToast("Device storage full — clear old decks to keep saving", "error");
+      // Only latch (and stop future autosaves) on a REAL quota error. Any
+      // other save failure is presumably transient/one-off — don't lock the
+      // rest of the session out of autosaving over it.
+      if (lastSaveErrorWasQuota) {
+        deckAutosaveStorageFailed = true;
+        setSyncIndicator("error");
+        showToast("Device storage full — clear old decks to keep saving", "error");
+      } else {
+        setSyncIndicator("error");
+      }
       return;
     }
     setSyncIndicator("saved");
@@ -7006,7 +6965,17 @@ async function pullCloudDeckToLibrary(cloud) {
   };
 
   const existing = readLocalDeckIndex().find((m) => String(m.deckId) === String(cloud.id));
-  const localId = existing?.id || generateLocalDeckId();
+  // Derived from cloud.id rather than a random generateLocalDeckId() when no
+  // local entry exists yet: this "find existing, else create" isn't atomic
+  // (read the index, then write it back), so two overlapping reconciles for
+  // the SAME cloud deck — most commonly two tabs of the app open at once,
+  // each with its own independent in-memory reconcile guard — can both miss
+  // seeing each other's in-progress write and each mint a DIFFERENT random
+  // id. Whichever's index write lands last "wins"; the other's snapshot is
+  // never referenced by the index again and leaks in localStorage forever.
+  // A deterministic id means both racing calls converge on the same key —
+  // one just overwrites the other with equivalent data, no orphan created.
+  const localId = existing?.id || `ld_cloud_${cloud.id}`;
   snapshot.localDeckId = localId;
 
   // Diff against whatever was on this device before we overwrite it below,
@@ -7165,6 +7134,23 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudIdSet = new Set(cloudDecks.map((d) => String(d.id)));
 
+    // Cross-device delete: a deck this device never tombstoned locally, but
+    // that another device deleted (and recorded in the shared deleted_decks
+    // table). Adopt the tombstone and remove the stale local copy now, before
+    // the push loop below would otherwise see "no cloud row, so mine must be
+    // newer" and re-create it.
+    const remoteDeletedIds = await fetchDeletedDeckIds();
+    for (const deckId of remoteDeletedIds) {
+      if (isDeckTombstoned(deckId)) continue;
+      tombstoneDeck(deckId);
+      const staleLocal = readLocalDeckIndex().find((m) => String(m.deckId) === String(deckId));
+      if (staleLocal) {
+        const wasActive = state.deckId && String(state.deckId) === String(deckId);
+        deleteDeckFromLibrary(staleLocal.id);
+        if (wasActive) resetActiveDeckAfterDelete();
+      }
+    }
+
     // Prune tombstones whose cloud row is already gone — the deletion has fully
     // propagated, so there's nothing left to re-assert and no reason to keep
     // blocking that id forever.
@@ -7296,6 +7282,65 @@ function generateLocalDeckId() {
   return `ld_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Mirrors a card that was appended straight to a cloud deck (currently only
+// saveQuickNote) into the matching local library entry, if one exists. Without
+// this the local quick_notes snapshot's updatedAt stays behind the cloud's, so
+// the next reconcile treats the cloud as newer and pulls it over any
+// not-yet-synced local edit to that same deck — silently dropping it (see
+// commit b72c48a for the conflict this is a partial, additive-only fix for).
+function appendCardToLocalLibraryDeck(deckId, card, now) {
+  if (!deckId) return;
+  const index = readLocalDeckIndex();
+  const entry = index.find((e) => e.deckId === deckId);
+  if (!entry) return;
+  const resolvedNow = now || new Date().toISOString();
+  try {
+    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
+    if (!raw) return;
+    const snapshot = JSON.parse(raw);
+    snapshot.cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
+    snapshot.cards.push(card);
+    localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
+  } catch (error) {
+    console.warn("Could not append card to local deck snapshot", error);
+    return;
+  }
+  entry.cardCount = (entry.cardCount || 0) + 1;
+  entry.updatedAt = resolvedNow;
+  writeLocalDeckIndex(index);
+}
+
+// Keeps the local library mirror in step with a deck-metadata write that went
+// straight to Supabase (a title/category edit from the active-deck menu, a
+// list-row rename, or a bulk category change) — without this, the local
+// copy's updatedAt stays behind the cloud's, so the next reconcile sees the
+// cloud as "newer" and pulls it over any not-yet-synced local card edits,
+// silently discarding them. Only patches title/category + updatedAt; leaves
+// card content alone so it doesn't clobber other pending local edits.
+function syncLocalLibraryMetaForDeck(deckId, { title, category, now } = {}) {
+  if (!deckId) return;
+  const index = readLocalDeckIndex();
+  const entry = index.find((e) => e.deckId === deckId);
+  if (!entry) return;
+  const resolvedNow = now || new Date().toISOString();
+  if (title !== undefined) entry.title = title;
+  if (category !== undefined) entry.category = category;
+  entry.updatedAt = resolvedNow;
+  writeLocalDeckIndex(index);
+
+  try {
+    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
+    if (raw) {
+      const snapshot = JSON.parse(raw);
+      if (title !== undefined) snapshot.deckTitle = title;
+      if (category !== undefined) snapshot.deckCategory = category;
+      localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
+    }
+  } catch (error) {
+    console.warn("Could not update local deck snapshot metadata", error);
+  }
+}
+
 // Newest first.
 function listLocalDecks() {
   return readLocalDeckIndex()
@@ -7357,9 +7402,18 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
 
   try {
     localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
+    lastSaveErrorWasQuota = false;
   } catch (error) {
     console.warn("Could not save deck to library", error);
-    if (!silent) setStatus("Could not save deck — device storage may be full.", "error");
+    lastSaveErrorWasQuota = isQuotaExceededError(error);
+    if (!silent) {
+      setStatus(
+        lastSaveErrorWasQuota
+          ? "Could not save deck — device storage is full. Delete some old decks to free space."
+          : `Could not save deck: ${error?.message || error?.name || "unknown error"}`,
+        "error"
+      );
+    }
     return null;
   }
 
@@ -7412,6 +7466,38 @@ function deleteDeckFromLibrary(id) {
   localStorage.removeItem(LOCAL_DECK_PREFIX + id);
   writeLocalDeckIndex(readLocalDeckIndex().filter((entry) => entry.id !== id));
   if (state.localDeckId === id) state.localDeckId = null;
+  // Deleting a deck is the natural "free up space" action after a quota
+  // failure latched autosave off — give the next edit a chance to retry
+  // instead of requiring a full new-deck/page reload to recover.
+  deckAutosaveStorageFailed = false;
+}
+
+// One-time cleanup for snapshots orphaned by the race in pullCloudDeckToLibrary
+// (see its comment) — a deck snapshot written to LOCAL_DECK_PREFIX + id but
+// never referenced by the index again after a losing race, so it sits in
+// localStorage forever, invisible in My Decks, silently eating quota. Removes
+// any LOCAL_DECK_PREFIX key whose id isn't in the current index. Safe: a
+// snapshot only ever exists there if it was written alongside a matching
+// index entry, so "not in the index" means nothing currently references it.
+function pruneOrphanedDeckSnapshots() {
+  const validIds = new Set(readLocalDeckIndex().map((entry) => String(entry.id)));
+  // readLocalDeckIndex() returns [] both when the library is genuinely empty
+  // AND when the index key is corrupt/unparseable (its own catch-and-return-[]).
+  // Treating the latter as "nothing is valid" would delete every real
+  // snapshot on the device. If the index is legitimately empty there's
+  // nothing to prune anyway, so skipping costs nothing either way.
+  if (!validIds.size) return 0;
+  let removed = 0;
+  for (const key of Object.keys(localStorage)) {
+    if (!key.startsWith(LOCAL_DECK_PREFIX)) continue;
+    const id = key.slice(LOCAL_DECK_PREFIX.length);
+    if (!validIds.has(id)) {
+      localStorage.removeItem(key);
+      removed++;
+    }
+  }
+  if (removed) console.log(`Cleaned up ${removed} orphaned local deck snapshot(s).`);
+  return removed;
 }
 
 function readDeckTombstones() {
@@ -7501,6 +7587,15 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
   if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
     const { error } = await supabaseClient.from("decks").delete().eq("id", deckId);
     cloudError = error || null;
+    // Best-effort: record the deletion in the shared tombstone table so other
+    // devices learn about it on their next reconcile instead of re-pushing
+    // their still-held local copy (see supabase_deck_tombstones.sql). Missing
+    // table/migration degrades silently to the old local-only behavior.
+    try {
+      await supabaseClient.from("deleted_decks").upsert({ deck_id: deckId });
+    } catch (e) {
+      console.warn("Could not record cross-device delete tombstone", e);
+    }
   }
   return { cloudError };
 }
@@ -9006,12 +9101,6 @@ document.getElementById("setupForm")?.addEventListener("submit", (e) => {
   showLoginScreen();
 });
 
-document.getElementById("setupResetBtn")?.addEventListener("click", () => {
-  clearSupabaseConfig();
-  supabaseClient = null;
-  showSetupScreen();
-});
-
 document.getElementById("loginForm")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = document.getElementById("loginEmail").value.trim();
@@ -9055,11 +9144,9 @@ document.getElementById("closeWebDecksBtn")?.addEventListener("click", () => {
   el.webDecksPanel.hidden = true;
   unlockPageScroll();
 });
-document.getElementById("syncBtn")?.addEventListener("click", showSyncModal);
 document.getElementById("cancelSyncBtn")?.addEventListener("click", () => {
   el.syncModal.hidden = true;
 });
-document.getElementById("confirmSyncBtn")?.addEventListener("click", syncDeckToWeb);
 document.getElementById("refreshWebDecksBtn")?.addEventListener("click", () => fetchWebDecks({ toast: true }));
 
 el.parseBtn.addEventListener("click", () => buildCards());
@@ -9068,13 +9155,6 @@ el.fetchBtn.addEventListener("click", fetchUrl);
 el.urlInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") fetchUrl();
 });
-if (el.deckMenuBtn) {
-  el.deckMenuBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    el.exportMenu.hidden = true;
-    setDeckMenuOpen(el.deckMenu.hidden);
-  });
-}
 el.importBtn.addEventListener("click", () => {
   closeDeckMenu();
   openImportPanel();
@@ -9385,17 +9465,13 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.target.matches("input, textarea")) return;
   if (event.key === "Escape") {
-    el.exportMenu.hidden = true;
-    closeDeckMenu();
-    closeDiagramModal();
-    closeAllCardsPanel();
-    closeStylePanel();
-    closeImportPanel();
-    el.webDecksPanel.hidden = true;
-    unlockPageScroll();
+    closeTopmostOverlay();
+    return;
   }
-  if (!el.allCardsPanel.hidden) return;
-  // Card shortcuts are meaningless while the Notes view covers the card stage.
+  // Card shortcuts are meaningless while any modal/panel is open (it either
+  // covers the card stage or shouldn't let keys leak through to it) or while
+  // the Notes view covers the card stage.
+  if (anyModalOpen()) return;
   if (state.viewMode === "notes") return;
   // A focused cloze handles its own Space/Enter (reveal) — don't also flip.
   if (event.target.closest?.(".cloze")) return;
@@ -9463,6 +9539,12 @@ function initAppForUser() {
   setStyleStatus("Local style");
   installManifestLink();
   registerServiceWorker();
+  // One-time-per-boot cleanup of snapshots orphaned by a since-fixed race in
+  // pullCloudDeckToLibrary (concurrent tabs reconciling the same cloud deck
+  // could each mint a different local id; the loser's snapshot was never
+  // referenced by the index again and leaked in storage forever). Safe to
+  // run regardless of connectivity — it only looks at already-persisted data.
+  pruneOrphanedDeckSnapshots();
   // Mirror every cloud deck onto this device (and push anything newer locally)
   // so the PWA has a full, up-to-date offline library. Runs in the background.
   if (navigator.onLine) {
@@ -9536,6 +9618,12 @@ function flushWorkingDeck() {
     console.warn("Could not commit active edit before save", error);
   }
   persistWorkingDeck();
+  // persistWorkingDeck only writes the ephemeral working-deck cache (wiped on
+  // every boot). If the tab/process is killed right after this — the whole
+  // reason this handler exists — an edit committed above but not yet flushed
+  // by the debounced scheduleDeckAutosave() timer would otherwise never reach
+  // the library, and the next reconcile wouldn't even know it happened.
+  saveDeckToLibrary({ silent: true });
 }
 window.addEventListener("pagehide", flushWorkingDeck);
 document.addEventListener("visibilitychange", () => {
@@ -9682,10 +9770,6 @@ if (el.newDeckBtn) {
   el.newDeckBtn.addEventListener("click", createNewDeck);
 }
 
-if (el.newDeckFromImportBtn) {
-  el.newDeckFromImportBtn.addEventListener("click", createNewDeck);
-}
-
 function addBlankCardAtCursor() {
   if (!state.masterCards.length && !state.deckTitle) {
     setStatus("Create a new deck or import one first.", "error");
@@ -9790,12 +9874,28 @@ function insertAtCursor(textarea, text, atPos) {
 
 // Replace the first occurrence of `find` with `replace` in the textarea (used to swap the
 // "uploading…" placeholder for the final markdown once the upload resolves).
+// Used to swap an "uploading…" placeholder for the final markdown once an
+// async image upload resolves. The caret is preserved relative to the
+// replaced region rather than always snapped to right after the replacement
+// — the upload is async, so the user may have kept typing further down in
+// the textarea while it was in flight; without this, the caret would jump
+// back and split their in-progress typing as soon as the upload finished.
 function replaceInTextarea(textarea, find, replace) {
   const idx = textarea.value.indexOf(find);
   if (idx === -1) return;
-  textarea.value = textarea.value.slice(0, idx) + replace + textarea.value.slice(idx + find.length);
-  const caret = idx + replace.length;
-  textarea.selectionStart = textarea.selectionEnd = caret;
+  const findEnd = idx + find.length;
+  const delta = replace.length - find.length;
+  const adjust = (pos) => {
+    if (pos <= idx) return pos;
+    if (pos >= findEnd) return pos + delta;
+    return idx + replace.length; // caret was inside the placeholder itself
+  };
+  const newStart = adjust(textarea.selectionStart);
+  const newEnd = adjust(textarea.selectionEnd);
+
+  textarea.value = textarea.value.slice(0, idx) + replace + textarea.value.slice(findEnd);
+  textarea.selectionStart = newStart;
+  textarea.selectionEnd = newEnd;
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
@@ -9915,20 +10015,45 @@ function promptForImgbbKeyThenRetry(textarea, file, atPos) {
 }
 
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.
+// An image pasted/dropped mid-paragraph in Notes shares that paragraph with
+// surrounding text and isn't directly resizable — it shows a "move to own
+// line" promote button instead of the corner-drag grip (see findImageTokens
+// below) until manually promoted. Padding the token with blank lines when it
+// isn't already at a block boundary lands it as its own block right away, so
+// the grip appears immediately without an extra manual step.
+function padImageTokenAsOwnBlock(textarea, token, atPos) {
+  const pos = typeof atPos === "number"
+    ? Math.max(0, Math.min(atPos, textarea.value.length))
+    : textarea.selectionStart;
+  const end = typeof atPos === "number" ? pos : textarea.selectionEnd;
+  const before = textarea.value.slice(0, pos);
+  const after = textarea.value.slice(end);
+  const needsLead = before !== "" && !/\n[ \t]*\n[ \t]*$/.test(before);
+  const needsTrail = after !== "" && !/^[ \t]*\n[ \t]*\n/.test(after);
+  return (needsLead ? "\n\n" : "") + token + (needsTrail ? "\n\n" : "");
+}
+
 // `atPos` (optional) forces the placeholder to the caret captured before the file
 // picker opened; without it the current caret is used (paste/drop already have focus).
 async function insertImageUpload(textarea, file, atPos) {
   if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
-  const token = `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
-  insertAtCursor(textarea, token, atPos);
+  const uploadToken = `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
+  // Own-block padding only matters where the corner-drag resize grip lives (Notes);
+  // card question/answer text has no such control, so leave inline insertion as-is there.
+  const insertedToken = textarea === el.notesEdit
+    ? padImageTokenAsOwnBlock(textarea, uploadToken, atPos)
+    : uploadToken;
+  insertAtCursor(textarea, insertedToken, atPos);
   showToast("Optimizing image…", "info");
   try {
     const optimized = await optimizeImage(file);
     const url = await uploadImageToImgbb(optimized);
-    replaceInTextarea(textarea, token, `![](${url})`);
+    replaceInTextarea(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
   } catch (err) {
-    replaceInTextarea(textarea, token, "");
+    // Remove the padding blank lines along with the placeholder — a bare
+    // uploadToken removal would leave them stranded as empty paragraphs.
+    replaceInTextarea(textarea, insertedToken, "");
     if (err.message === "NO_KEY") {
       promptForImgbbKeyThenRetry(textarea, file, atPos);
     } else if (err.message === "OFFLINE") {
@@ -10049,6 +10174,30 @@ function htmlToMarkdown(html) {
         return isDisplay ? "\n$$\n" + tex + "\n$$\n" : "$" + tex + "$";
       }
       return content;
+    }
+  });
+
+  // Citation/footnote markers (Wikipedia's "[1]", "[a]" etc.) are a <sup> that
+  // wraps a single link to an in-page anchor (e.g. #cite_note-6, or — when
+  // copied from a live page rather than raw HTML — the browser resolves that
+  // to an absolute URL like ".../Albert_Einstein#cite_note-6"). The anchor
+  // target never survives the paste, so keeping them just litters notes with
+  // dead, bracket-clad links scattered through the text — drop the marker and
+  // keep the surrounding prose clean.
+  turndownService.addRule("footnote-reference", {
+    filter: function (node) {
+      if (node.nodeName !== "SUP") return false;
+      const links = node.querySelectorAll("a");
+      if (links.length !== 1) return false;
+      const href = links[0].getAttribute("href") || "";
+      const hashIndex = href.indexOf("#");
+      if (hashIndex === -1) return false;
+      if (href.startsWith("#")) return true;
+      const fragment = href.slice(hashIndex + 1);
+      return /^(cite_note|cite_ref|fn|footnote|note)[-_]/i.test(fragment);
+    },
+    replacement: function () {
+      return "";
     }
   });
 
@@ -10313,57 +10462,133 @@ function enableSyntaxHighlighting(textarea) {
 }
 
 // Formatting helpers
-function toggleWrap(text, wrapper) {
-  if (text.startsWith(wrapper) && text.endsWith(wrapper)) {
-    return text.substring(wrapper.length, text.length - wrapper.length);
+// Toggles a marker pair around the current selection. A naive check of just
+// the selected substring's own edges breaks two ways: (1) if the user
+// double-clicks to reselect only the word inside an already-wrapped run
+// (double-click stops at the marker's punctuation), the markers sit just
+// OUTSIDE the new selection and get missed, so toggling re-wraps instead of
+// un-wrapping (**hello** -> ****hello****); (2) a selection spanning multiple
+// independently-wrapped runs (e.g. "**a** **b**") coincidentally starts/ends
+// with the wrapper too, so a naive strip chops off the wrong characters and
+// produces unbalanced markup. This checks the characters just outside the
+// selection first (unambiguous), then falls back to stripping the selection's
+// own edges only when doing so is unambiguous (no marker recurs inside),
+// otherwise it just wraps — non-destructive nesting instead of corrupting text.
+function toggleWrapPair(val, start, end, open, close = open) {
+  const before = val.slice(Math.max(0, start - open.length), start);
+  const after = val.slice(end, end + close.length);
+  if (before === open && after === close) {
+    return { text: val.slice(start, end), rangeStart: start - open.length, rangeEnd: end + close.length };
   }
-  return wrapper + text + wrapper;
+
+  const selected = val.slice(start, end);
+  if (selected.startsWith(open) && selected.endsWith(close) && selected.length >= open.length + close.length) {
+    const inner = selected.slice(open.length, selected.length - close.length);
+    if (!inner.includes(open) && !inner.includes(close)) {
+      return { text: inner, rangeStart: start, rangeEnd: end };
+    }
+  }
+
+  return { text: open + selected + close, rangeStart: start, rangeEnd: end };
 }
 
-function toggleUnderline(text) {
-  if (text.startsWith("<u>") && text.endsWith("</u>")) {
-    return text.substring(3, text.length - 4);
-  }
-  return "<u>" + text + "</u>";
+function toggleWrap(val, start, end, wrapper) {
+  return toggleWrapPair(val, start, end, wrapper, wrapper);
 }
 
-function toggleStrikethrough(text) {
-  if (text.startsWith("~~") && text.endsWith("~~")) {
-    return text.substring(2, text.length - 2);
-  }
-  return "~~" + text + "~~";
+function toggleUnderline(val, start, end) {
+  return toggleWrapPair(val, start, end, "<u>", "</u>");
 }
 
-function toggleCode(text) {
-  if (text.startsWith("`") && text.endsWith("`")) {
-    return text.substring(1, text.length - 1);
-  }
-  return "`" + text + "`";
+function toggleStrikethrough(val, start, end) {
+  return toggleWrapPair(val, start, end, "~~", "~~");
 }
 
-function toggleKbd(text) {
-  if (text.startsWith("<kbd>") && text.endsWith("</kbd>")) {
-    return text.substring(5, text.length - 6);
-  }
-  return "<kbd>" + text + "</kbd>";
+function toggleCode(val, start, end) {
+  return toggleWrapPair(val, start, end, "`", "`");
 }
 
-function toggleCloze(text) {
-  if (text.startsWith("{{") && text.endsWith("}}")) {
-    return text.substring(2, text.length - 2);
-  }
-  return "{{" + text + "}}";
+function toggleKbd(val, start, end) {
+  return toggleWrapPair(val, start, end, "<kbd>", "</kbd>");
 }
 
+function toggleCloze(val, start, end) {
+  return toggleWrapPair(val, start, end, "{{", "}}");
+}
+
+// Strips opening/closing tags individually rather than pair-matching them
+// with a lazy [\s\S]*? capture — pair-matching mishandles nesting (e.g. two
+// nested <span style> wrappers: the lazy match consumes the outer open tag
+// through the FIRST </span> it finds, which is the inner one, so the outer
+// </span> is left behind unmatched and the inner span survives disguised as
+// the only one). Stripping tags individually is correct at any nesting depth
+// and needs no pairing at all. Used by the explicit "Clear formatting"
+// action — per-property toolbar actions (font/color/highlight) use
+// applyInlineStyleProperty/clearInlineStyleProperty instead, which merge
+// into existing styling rather than destroying it.
 function clearStyling(text) {
   let cleared = text;
-  cleared = cleared.replace(/<span style="[^"]*">([\s\S]*?)<\/span>/gi, "$1");
-  cleared = cleared.replace(/<font [^>]*>([\s\S]*?)<\/font>/gi, "$1");
-  cleared = cleared.replace(/<mark>([\s\S]*?)<\/mark>/gi, "$1");
-  cleared = cleared.replace(/<u>([\s\S]*?)<\/u>/gi, "$1");
-  cleared = cleared.replace(/<del>([\s\S]*?)<\/del>/gi, "$1");
-  cleared = cleared.replace(/<kbd[^>]*>([\s\S]*?)<\/kbd>/gi, "$1");
+  cleared = cleared.replace(/<span style="[^"]*">/gi, "").replace(/<\/span>/gi, "");
+  cleared = cleared.replace(/<font [^>]*>/gi, "").replace(/<\/font>/gi, "");
+  cleared = cleared.replace(/<mark>/gi, "").replace(/<\/mark>/gi, "");
+  cleared = cleared.replace(/<u>/gi, "").replace(/<\/u>/gi, "");
+  cleared = cleared.replace(/<del>/gi, "").replace(/<\/del>/gi, "");
+  cleared = cleared.replace(/<kbd[^>]*>/gi, "").replace(/<\/kbd>/gi, "");
   return cleared;
+}
+
+function parseInlineStyle(styleAttr) {
+  const props = {};
+  String(styleAttr || "").split(";").forEach((decl) => {
+    const idx = decl.indexOf(":");
+    if (idx === -1) return;
+    const prop = decl.slice(0, idx).trim().toLowerCase();
+    const value = decl.slice(idx + 1).trim();
+    if (prop && value) props[prop] = value;
+  });
+  return props;
+}
+
+function serializeInlineStyle(props) {
+  return Object.entries(props).map(([k, v]) => `${k}: ${v};`).join(" ");
+}
+
+// A selection that is ENTIRELY one <span style="..."> wrapping — no partial
+// wrap, no sibling spans, no unmatched nesting inside — so a font/color/
+// highlight action can merge a property into it instead of stripping
+// whatever styling is already there.
+function matchWholeStyleSpan(text) {
+  const m = /^<span style="([^"]*)">([\s\S]*)<\/span>$/.exec(text);
+  if (!m) return null;
+  const inner = m[2];
+  const opens = (inner.match(/<span\b/gi) || []).length;
+  const closes = (inner.match(/<\/span>/gi) || []).length;
+  if (opens !== closes) return null;
+  return { styleAttr: m[1], inner };
+}
+
+// Sets one CSS property on the selection's existing style span (merging with
+// whatever else is set — e.g. a prior color survives a later font change)
+// instead of clearStyling's old behavior of nuking every other inline style/
+// tag first. Falls back to a fresh wrap when the selection isn't already
+// entirely one style span (e.g. plain text, or a selection spanning multiple
+// runs) — in that case there's nothing to merge into.
+function applyInlineStyleProperty(text, property, value) {
+  const whole = matchWholeStyleSpan(text);
+  const props = whole ? parseInlineStyle(whole.styleAttr) : {};
+  const inner = whole ? whole.inner : text;
+  props[property] = value;
+  return `<span style="${serializeInlineStyle(props)}">${inner}</span>`;
+}
+
+function clearInlineStyleProperty(text, property) {
+  const whole = matchWholeStyleSpan(text);
+  if (!whole) return text;
+  const props = parseInlineStyle(whole.styleAttr);
+  delete props[property];
+  return Object.keys(props).length
+    ? `<span style="${serializeInlineStyle(props)}">${whole.inner}</span>`
+    : whole.inner;
 }
 
 function toggleBulletPoints(text) {
@@ -10495,56 +10720,63 @@ function handleToolbarClick(event) {
 
   let formatFn = null;
 
+  // Toggle actions look at text just outside the selection too (see
+  // toggleWrapPair), so they take the full value + range and may return an
+  // extended range that swallows adjacent markers. Everything else only
+  // touches the selected substring and keeps the original [start, end) range.
   if (button.dataset.action === "bold") {
-    formatFn = text => toggleWrap(text, "**");
+    formatFn = (val, s, e) => toggleWrap(val, s, e, "**");
   } else if (button.dataset.action === "italic") {
-    formatFn = text => toggleWrap(text, "*");
+    formatFn = (val, s, e) => toggleWrap(val, s, e, "*");
   } else if (button.dataset.action === "underline") {
-    formatFn = text => toggleUnderline(text);
+    formatFn = (val, s, e) => toggleUnderline(val, s, e);
   } else if (button.dataset.action === "strikethrough") {
-    formatFn = text => toggleStrikethrough(text);
+    formatFn = (val, s, e) => toggleStrikethrough(val, s, e);
   } else if (button.dataset.action === "code") {
-    formatFn = text => toggleCode(text);
+    formatFn = (val, s, e) => toggleCode(val, s, e);
   } else if (button.dataset.action === "cloze") {
-    formatFn = text => toggleCloze(text);
+    formatFn = (val, s, e) => toggleCloze(val, s, e);
   } else if (button.dataset.action === "kbd") {
-    formatFn = text => toggleKbd(text);
+    formatFn = (val, s, e) => toggleKbd(val, s, e);
   } else if (button.dataset.action === "bullet") {
-    formatFn = text => toggleBulletPoints(text);
+    formatFn = (val, s, e) => toggleBulletPoints(val.slice(s, e));
   } else if (button.dataset.action === "clear-all") {
-    formatFn = text => clearFormatting(text);
+    formatFn = (val, s, e) => clearFormatting(val.slice(s, e));
   } else if (button.dataset.font) {
     const font = button.dataset.font;
-    formatFn = text => `<span style="font-family: ${font};">${clearStyling(text)}</span>`;
+    formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "font-family", font);
   } else if (button.dataset.color) {
     const color = button.dataset.color;
     if (color === "clear") {
-      formatFn = text => clearStyling(text);
+      formatFn = (val, s, e) => clearInlineStyleProperty(val.slice(s, e), "color");
     } else {
-      formatFn = text => `<span style="color: ${color};">${clearStyling(text)}</span>`;
+      formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "color", color);
     }
   } else if (button.dataset.highlight) {
     const highlight = button.dataset.highlight;
     if (highlight === "clear") {
-      formatFn = text => clearStyling(text);
+      formatFn = (val, s, e) => clearInlineStyleProperty(val.slice(s, e), "background-color");
     } else {
-      formatFn = text => `<span style="background-color: ${highlight};">${clearStyling(text)}</span>`;
+      formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "background-color", highlight);
     }
   }
 
   if (!formatFn) return;
 
-  const replacement = formatFn(selectedText);
-
   textarea.focus();
   const val = textarea.value;
-  textarea.value = val.substring(0, start) + replacement + val.substring(end);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  const result = formatFn(val, start, end);
+  const isRange = result && typeof result === "object";
+  const replacement = isRange ? result.text : result;
+  const rangeStart = isRange ? result.rangeStart : start;
+  const rangeEnd = isRange ? result.rangeEnd : end;
+
+  textarea.value = val.substring(0, rangeStart) + replacement + val.substring(rangeEnd);
 
   // Restore selection
-  textarea.selectionStart = start;
-  textarea.selectionEnd = start + replacement.length;
-  
+  textarea.selectionStart = rangeStart;
+  textarea.selectionEnd = rangeStart + replacement.length;
+
   // Trigger input event to save values to state
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 
@@ -10637,6 +10869,8 @@ async function saveQuickNote(rawText, button) {
       .from("decks")
       .update({ updated_at: now, last_accessed_at: now })
       .eq("id", deckId);
+
+    appendCardToLocalLibraryDeck(deckId, { id: cardId, question: text, answer: "", status: null }, now);
 
     setStatus("Saved to quick_notes.");
     showToast("Saved to quick_notes");
