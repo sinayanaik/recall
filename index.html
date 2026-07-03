@@ -423,17 +423,17 @@
         <div class="web-decks-tools">
           <div class="web-decks-tools-left">
             <button class="web-decks-refresh" id="myDecksRefreshBtn" type="button">&#8635; Refresh</button>
-            <button class="web-decks-refresh" id="manageCloudBtn" type="button" hidden>&#9729; Manage cloud decks</button>
           </div>
         </div>
         <div class="web-decks-table-wrap">
           <table class="web-decks-table my-decks-table">
             <colgroup>
+              <col style="width:24%">
+              <col style="width:12%">
+              <col style="width:8%">
+              <col style="width:16%">
+              <col style="width:14%">
               <col style="width:26%">
-              <col style="width:13%">
-              <col style="width:9%">
-              <col style="width:22%">
-              <col style="width:30%">
             </colgroup>
             <thead>
               <tr>
@@ -441,11 +441,12 @@
                 <th>Category</th>
                 <th>Cards</th>
                 <th>Saved</th>
+                <th>Sync</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="myDecksListTable">
-              <tr><td colspan="5" class="web-decks-empty">No decks saved on this device yet.</td></tr>
+              <tr><td colspan="6" class="web-decks-empty">No decks saved on this device yet.</td></tr>
             </tbody>
           </table>
         </div>

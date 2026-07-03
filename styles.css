@@ -2726,35 +2726,56 @@ svg.nomnoml-light-svg [fill="none"] {
 
 .my-decks-table th:nth-child(1),
 .my-decks-table td:nth-child(1) {
-  width: 26%;
+  width: 24%;
 }
 
 .my-decks-table th:nth-child(2),
 .my-decks-table td:nth-child(2) {
-  width: 13%;
+  width: 12%;
 }
 
 .my-decks-table th:nth-child(3),
 .my-decks-table td:nth-child(3) {
-  width: 9%;
+  width: 8%;
 }
 
 .my-decks-table th:nth-child(4),
 .my-decks-table td:nth-child(4) {
   /* Saved now shows a time alongside the date, so it needs more room. */
-  width: 22%;
+  width: 16%;
 }
 
 .my-decks-table th:nth-child(5),
 .my-decks-table td:nth-child(5) {
+  /* Sync status pill. */
+  width: 14%;
+}
+
+.my-decks-table th:nth-child(6),
+.my-decks-table td:nth-child(6) {
   /* Actions holds 3 inline buttons (Load/Rename/Delete) — give it enough
      room that they never wrap onto separate lines. */
-  width: 30%;
+  width: 26%;
 }
 
 .my-decks-table .my-deck-actions {
   justify-content: center;
 }
+
+/* Sync-status column — a compact, color-coded pill that predicts what the next
+   sync will do to each deck (see deckSyncStatusCell). */
+.my-deck-sync {
+  font-weight: 800;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+/* Prefixed with `.my-decks-table td` so these win over the mobile stacked-card
+   rule (`td:nth-child(5)`) that otherwise mutes the whole cell. */
+.my-decks-table td.my-deck-sync.sync-ok { color: #34d399; }
+.my-decks-table td.my-deck-sync.sync-pending { color: #fbbf24; }
+.my-decks-table td.my-deck-sync.sync-behind { color: #60a5fa; }
+.my-decks-table td.my-deck-sync.sync-local,
+.my-decks-table td.my-deck-sync.sync-cloud-only { color: var(--muted); }
 
 /* The shared modal width (--modal-width, 60vw) is comfortable for prose
    modals but cramped for a 5-column data table with inline action buttons
@@ -7477,7 +7498,8 @@ kbd {
 
   .my-decks-table td:nth-child(2),
   .my-decks-table td:nth-child(3),
-  .my-decks-table td:nth-child(4) {
+  .my-decks-table td:nth-child(4),
+  .my-decks-table td:nth-child(5) {
     display: inline-flex;
     justify-content: center;
     font-size: 0.76rem;
@@ -7486,15 +7508,17 @@ kbd {
 
   .my-decks-table td:nth-child(2)::before,
   .my-decks-table td:nth-child(3)::before,
-  .my-decks-table td:nth-child(4)::before {
+  .my-decks-table td:nth-child(4)::before,
+  .my-decks-table td:nth-child(5)::before {
     display: inline;
     content: attr(data-label) ": ";
     flex-shrink: 0;
     margin-right: 4px;
     font-weight: 700;
+    color: var(--muted);
   }
 
-  .my-decks-table td:nth-child(5) {
+  .my-decks-table td:nth-child(6) {
     width: 100%;
     margin-top: 4px;
   }
