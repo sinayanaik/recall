@@ -1,0 +1,25 @@
+Final flashcard format:
+
+```markdown
+::
+Front
+---
+Back
+::
+```
+
+Parser rules:
+
+```text
+:: starts and ends a card
+--- separates front and back
+Everything before --- = front
+Everything after --- = back
+Both sides support Markdown
+Blank lines/spaces around :: and --- are optional
+```
+
+Also fallback
+
+( ## or ### or #### ) as front page
+and below it as back

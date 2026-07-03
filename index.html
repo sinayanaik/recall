@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="en" data-theme="dark-amoled">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0d1110">
+    <meta name="application-name" content="Recall">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Recall">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Recall</title>
+    <link rel="icon" type="image/png" href="fevicon.png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
+    <link rel="stylesheet" href="styles.css?v=20260703-2">
+  </head>
+  <body>
+    <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
+    <main class="app-shell">
+      <div class="mobile-backdrop" id="mobileBackdrop" hidden></div>
+      <header class="appbar">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" aria-label="Open menu" aria-expanded="false">&#9776;</button>
+        <div class="toolbar" id="mainToolbar">
+          <div class="toolbar-drawer-head">
+            <span class="toolbar-drawer-title">Recall</span>
+            <button class="toolbar-close-btn" id="toolbarCloseBtn" type="button" aria-label="Close menu">&#215;</button>
+          </div>
+
+          <span class="drawer-section-label">Decks</span>
+          <button class="tool-button" id="newDeckBtn" type="button">&#43; New Deck</button>
+          <button class="tool-button" id="importBtn" type="button">&#8679; Import from File</button>
+          <button class="tool-button" id="myDecksBtn" type="button" title="All your decks — saved on this device and synced to the cloud automatically">&#128218; My Decks</button>
+          <button class="tool-button" id="syncNowBtn" type="button" title="Sync all decks with the cloud now (two-way, keeps the newest of each)">&#8635; Sync Now</button>
+
+          <span class="drawer-section-label">Study</span>
+          <button class="tool-button" id="allCardsBtn" type="button">&#8801; Browse All Cards</button>
+          <button class="tool-button" id="notesBtn" type="button" title="Freeform study notes for this deck">&#128221; Study Notes</button>
+          <div class="menu-wrap">
+            <button class="tool-button" id="exportBtn" type="button">&#8659; Export Cards&#8230;</button>
+            <div class="export-menu" id="exportMenu" hidden>
+              <button type="button" data-export="pdf" data-scope="all">Cornell PDF</button>
+              <button type="button" data-export="markdown" data-scope="all">Markdown</button>
+              <button type="button" data-export="json" data-scope="all">JSON</button>
+            </div>
+          </div>
+
+          <span class="drawer-section-label">App</span>
+          <button class="tool-button" id="styleBtn" type="button" title="Edit style" aria-label="Edit style">&#9711; Themes</button>
+          <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
+          <button class="tool-button" id="logoutBtn" type="button" title="Sign out" hidden>&#8594; Sign Out</button>
+        </div>
+
+        <div class="deck-meta">
+          <span class="deck-title-wrap" id="deckTitleWrap" hidden>
+            <span class="deck-title" id="deckTitle"></span>
+            <button class="deck-title-edit" id="editDeckTitleBtn" type="button" title="Edit deck title" aria-label="Edit deck title">&#9998;</button>
+          </span>
+          <span class="deck-meta-row2" id="deckMeta2Row" hidden>
+            <span class="deck-category" id="deckCategory">Uncategorized</span>
+            <button class="deck-title-edit deck-category-edit" id="editDeckCategoryBtn" type="button" title="Edit deck category" aria-label="Edit deck category">&#9998;</button>
+            <span class="deck-meta-sep" aria-hidden="true"></span>
+            <span id="positionText">0/0</span>
+            <strong id="scoreText">Known 0 / Review 0</strong>
+            <span class="deck-meta-sep" aria-hidden="true"></span>
+            <span class="sync-indicator" id="syncIndicator" data-state="idle" title="Saving happens automatically"></span>
+          </span>
+        </div>
+      </header>
+
+      <section class="study-layout" aria-label="Flashcard study area">
+        <section class="quiz-panel" aria-label="Flashcard quiz">
+          <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="Deck view">
+            <button class="is-active" type="button" data-view-mode="cards">&#9634; Cards</button>
+            <button type="button" data-view-mode="notes">&#128221; Notes</button>
+          </div>
+
+          <div class="progress-track" aria-hidden="true">
+            <span class="progress-known" id="progressKnown"></span>
+            <span class="progress-review" id="progressReview"></span>
+            <span class="progress-remaining" id="progressBar"></span>
+          </div>
+
+          <div class="deck" id="deck">
+            <div class="deck-empty-state" id="deckEmptyState" hidden>
+              <div class="deck-empty-icon" id="deckEmptyIcon" aria-hidden="true">📚</div>
+              <h2 class="deck-empty-title" id="deckEmptyTitle">Recall</h2>
+              <p class="deck-empty-body" id="deckEmptyBody">Choose how to get started:</p>
+              <div class="deck-empty-panel" id="deckEmptyPanel">
+                <div class="deck-empty-panel-row">
+                  <span class="deck-empty-panel-label">Sync Status</span>
+                  <span class="deck-empty-panel-value" id="deckEmptySyncValue"></span>
+                </div>
+                <div class="deck-empty-panel-row">
+                  <span class="deck-empty-panel-label">Your Decks</span>
+                  <span class="deck-empty-panel-value" id="deckEmptyLibraryValue"></span>
+                </div>
+              </div>
+              <div class="deck-empty-actions" id="deckEmptyActionsNone">
+                <button class="deck-empty-action" id="deckEmptyNewBtn" type="button">
+                  <span class="deck-empty-action-icon" aria-hidden="true">✦</span>
+                  New Deck
+                </button>
+                <button class="deck-empty-action" id="deckEmptyImportBtn" type="button">
+                  <span class="deck-empty-action-icon" aria-hidden="true">⬆</span>
+                  Import
+                </button>
+                <button class="deck-empty-action" id="deckEmptyWebBtn" type="button">
+                  <span class="deck-empty-action-icon" aria-hidden="true">📚</span>
+                  My Decks
+                </button>
+              </div>
+              <div class="deck-empty-actions" id="deckEmptyActionsActive" hidden>
+                <button class="deck-empty-action" id="deckEmptyAddCardBtn" type="button">
+                  <span class="deck-empty-action-icon" aria-hidden="true">+</span>
+                  Add Card
+                </button>
+                <button class="deck-empty-action" id="deckEmptyGoNotesBtn" type="button">
+                  <span class="deck-empty-action-icon" aria-hidden="true">📝</span>
+                  Write Notes
+                </button>
+              </div>
+              <div class="deck-empty-sync-report" id="deckEmptySyncReport" hidden></div>
+            </div>
+            <div class="swipe-hint" id="swipeHint" hidden aria-hidden="true">
+              <div class="swipe-hint-row">
+                <span class="swipe-hint-dir">← Review</span>
+                <span class="swipe-hint-center">Swipe to sort</span>
+                <span class="swipe-hint-dir">Known →</span>
+              </div>
+              <p class="swipe-hint-sub">Tap card to flip</p>
+            </div>
+            <article class="card" id="card" tabindex="0" aria-label="Current quiz card">
+              <div class="card-face card-question">
+                <div class="face-header">
+                  <div class="face-label-row">
+                    <span class="face-label">Question</span>
+                    <span class="card-status-badge" id="questionStatusBadge" data-status="">Uncategorized</span>
+                  </div>
+                  <div class="edit-toolbar" id="questionEditToolbar" hidden></div>
+                  <div>
+                    <button class="edit-card-btn" id="deleteCardBtn" type="button" title="Delete card" aria-label="Delete card" style="color: #ff4a4a;">&#128465;</button>
+                    <button class="edit-card-btn edit-toggle-pill" id="editQuestionBtn" type="button" title="Edit question" aria-label="Edit question"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
+                  </div>
+                </div>
+                <div class="rendered" id="questionView"></div>
+                <textarea class="edit-textarea" id="questionEdit" hidden spellcheck="false"></textarea>
+              </div>
+              <div class="card-face card-answer">
+                <div class="face-header">
+                  <div class="face-label-row">
+                    <span class="face-label">Answer</span>
+                    <span class="card-status-badge" id="answerStatusBadge" data-status="">Uncategorized</span>
+                  </div>
+                  <div class="edit-toolbar" id="answerEditToolbar" hidden></div>
+                  <button class="edit-card-btn edit-toggle-pill" id="editAnswerBtn" type="button" title="Edit answer" aria-label="Edit answer"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
+                </div>
+                <div class="rendered" id="answerView"></div>
+                <textarea class="edit-textarea" id="answerEdit" hidden spellcheck="false"></textarea>
+              </div>
+              <div id="deckSummary" class="deck-summary-overlay" hidden></div>
+            </article>
+          </div>
+
+          <div class="notes-stage" id="notesStage" hidden>
+            <div class="notes-head">
+              <div class="face-label-row">
+                <span class="face-label">Study Notes</span>
+              </div>
+              <div class="edit-toolbar" id="notesEditToolbar" hidden></div>
+              <button class="edit-card-btn" id="makeCardFromNotesBtn" type="button" title="Make a flashcard from the selected notes text" aria-label="Make a flashcard from the selected notes text">&#10133;</button>
+              <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
+            </div>
+            <div class="rendered notes-rendered" id="notesView"></div>
+            <textarea class="edit-textarea notes-edit" id="notesEdit" hidden spellcheck="false" placeholder="Write your notes here…"></textarea>
+            <button class="notes-make-card-btn" id="makeCardFromSelectionBtn" type="button" hidden>&#43; Make card</button>
+          </div>
+
+          <div class="controls" aria-label="Card actions">
+            <button class="review" id="reviewBtn" type="button" title="Review" aria-label="Mark card for review" data-shortcut="Review (R)"><span aria-hidden="true">❌</span><span>Review</span></button>
+            <button class="nav-card" id="prevCardBtn" type="button" title="Previous card" aria-label="Previous card" data-shortcut="Prev (←)"><span aria-hidden="true">&#8592;</span><span>Prev</span></button>
+            <button class="nav-card" id="addCardBtn" type="button" title="Add card" aria-label="Add card" data-shortcut="Add"><span aria-hidden="true">+</span><span>Add</span></button>
+            <button class="nav-card" id="nextCardBtn" type="button" title="Next card" aria-label="Next card" data-shortcut="Next (→)"><span>Next</span><span aria-hidden="true">&#8594;</span></button>
+            <button class="known" id="knownBtn" type="button" title="Known" aria-label="Mark card known" data-shortcut="Known (K)"><span>Known</span><span aria-hidden="true">✅</span></button>
+          </div>
+          <div class="deck-utility-actions" aria-label="Deck actions">
+            <button id="shuffleBtn" type="button" title="Shuffle" aria-label="Shuffle cards">
+              <span aria-hidden="true">&#8644;</span><span>Shuffle</span>
+            </button>
+            <button id="resetBtn" type="button" title="Restart" aria-label="Restart quiz">
+              <span aria-hidden="true">&#8635;</span><span>Restart</span>
+            </button>
+          </div>
+          <div class="replay-actions" aria-label="Replay options">
+            <button id="replayAllBtn" type="button">All cards</button>
+            <button id="replayReviewBtn" type="button">Review only</button>
+            <button id="replayKnownBtn" type="button">Known only</button>
+            <button id="replayUncategorizedBtn" type="button">Uncategorized</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <section class="import-panel" id="importPanel" aria-label="Import notes">
+      <div class="import-card">
+        <div class="import-head">
+          <div>
+            <h1>Import notes</h1>
+            <p>Import local files, paste Markdown, or fetch a deck via URL.</p>
+          </div>
+          <button class="icon-button" id="closeImportBtn" type="button" aria-label="Close import panel">&#215;</button>
+        </div>
+
+        <div class="import-grid">
+          <div class="import-group">
+            <h3 class="import-group-title">URL</h3>
+            <div class="url-row-compact">
+              <input id="urlInput" type="url" placeholder="https://... URL" autocomplete="off" class="url-input-compact">
+              <button id="fetchBtn" type="button" class="import-action-btn small-btn" title="Fetch URL">Fetch</button>
+            </div>
+          </div>
+
+          <div class="import-group">
+            <h3 class="import-group-title">Local</h3>
+            <div class="import-file-row">
+              <label class="file-pick import-action-btn">
+                <input id="fileInput" type="file" accept=".md,.markdown,.txt,.json,.zip,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed">
+                <span class="import-icon" aria-hidden="true">📁</span>
+                <span>Import Deck</span>
+              </label>
+              <button id="pasteDeckBtn" type="button" class="paste-source-btn" title="Paste Markdown deck" aria-label="Paste Markdown deck">
+                <span aria-hidden="true">📋</span>
+              </button>
+            </div>
+            <div class="import-file-row">
+              <label class="file-pick import-action-btn">
+                <input id="fileInputCards" type="file" accept=".md,.markdown,.txt,.json,.zip,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed">
+                <span class="import-icon" aria-hidden="true">📄</span>
+                <span>Import Cards</span>
+              </label>
+              <button id="pasteCardsBtn" type="button" class="paste-source-btn" title="Paste Markdown cards" aria-label="Paste Markdown cards">
+                <span aria-hidden="true">📋</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="paste-editor-panel" id="pasteEditorPanel" hidden>
+          <div class="paste-editor-head">
+            <div>
+              <h3 id="pasteEditorTitle">Paste Markdown</h3>
+              <p id="pasteEditorHint">Paste raw Markdown, preview the cards, then import it.</p>
+            </div>
+            <button class="icon-button" id="pasteCancelBtn" type="button" aria-label="Close Markdown editor">&#215;</button>
+          </div>
+          <div class="paste-editor-body">
+            <textarea id="pasteMarkdownInput" spellcheck="false" placeholder="Paste Markdown here"></textarea>
+            <section class="paste-preview-panel" aria-label="Pasted card preview">
+              <div class="paste-preview-head">
+                <h4>Preview</h4>
+                <span id="pastePreviewSummary">No preview yet</span>
+              </div>
+              <div class="paste-preview-list" id="pastePreviewList">
+                <div class="paste-preview-empty">Paste Markdown and click Preview.</div>
+              </div>
+            </section>
+          </div>
+          <div class="paste-editor-actions">
+            <button id="pastePreviewBtn" type="button" class="import-action-btn">Preview Cards</button>
+            <button id="pasteImportBtn" type="button" class="import-action-btn import-action-primary" disabled>Import Pasted Deck</button>
+          </div>
+        </div>
+
+        <!-- Hidden legacy fields for JS compatibility -->
+        <div hidden>
+          <textarea id="sourceInput" spellcheck="false"></textarea>
+          <button id="parseBtn" type="button">Import</button>
+          <button id="sampleBtn" type="button">Load sample</button>
+        </div>
+
+        <p class="status" id="statusText" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="print-root" id="printRoot" aria-hidden="true"></section>
+
+    <section class="all-cards-panel" id="allCardsPanel" hidden aria-label="All cards">
+      <div class="all-cards-shell">
+        <div class="all-cards-head">
+          <div>
+            <h1>All cards</h1>
+            <p id="allCardsSummary">0 cards</p>
+          </div>
+          <div class="all-cards-head-actions">
+            <button class="all-answers-toggle" id="toggleAllAnswersBtn" type="button" aria-pressed="false">Show answers</button>
+            <button class="icon-button" id="closeAllCardsBtn" type="button" aria-label="Close all cards">&#215;</button>
+          </div>
+        </div>
+        <div class="all-cards-list" id="allCardsList"></div>
+      </div>
+    </section>
+
+    <section class="diagram-modal" id="diagramModal" hidden aria-label="Diagram preview">
+      <div class="diagram-modal-head">
+        <span>Diagram</span>
+        <div style="display: flex; gap: 8px;">
+          <button class="icon-button" id="diagramZoomOutBtn" type="button" aria-label="Zoom out" style="font-size: 1.2rem;">&minus;</button>
+          <button class="icon-button" id="diagramZoomInBtn" type="button" aria-label="Zoom in" style="font-size: 1.2rem;">&plus;</button>
+          <button class="icon-button" id="closeDiagramBtn" type="button" aria-label="Close diagram preview" style="margin-left: 12px;">&#215;</button>
+        </div>
+      </div>
+      <div class="diagram-modal-body" id="diagramModalBody"></div>
+    </section>
+
+    <section class="style-panel" id="stylePanel" hidden aria-label="Style settings">
+      <div class="style-shell">
+        <div class="style-head">
+          <div>
+            <h1>Style</h1>
+            <p id="styleSyncStatus">Local style</p>
+          </div>
+          <button class="icon-button" id="closeStyleBtn" type="button" aria-label="Close style settings">&#215;</button>
+        </div>
+        <div class="style-grid" id="styleControls">
+          <label class="style-field">
+            <span>Theme</span>
+            <div class="theme-select" id="themeSelect">
+              <button class="theme-select-button" id="themeBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                <span class="theme-preview" aria-hidden="true">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+                <span class="theme-select-label" id="themeCurrentLabel">AMOLED Black</span>
+                <span class="theme-caret" aria-hidden="true">v</span>
+              </button>
+              <div class="theme-menu" id="themeMenu" role="listbox" aria-label="Theme" hidden></div>
+            </div>
+          </label>
+        </div>
+        <div class="style-actions">
+          <button id="syncDownBtn" type="button">Sync Down</button>
+          <button id="applyStyleBtn" type="button">Apply</button>
+          <button id="syncUpBtn" type="button">Sync Up</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="web-decks-panel" id="webDecksPanel" hidden aria-label="Web Decks">
+      <div class="web-decks-shell">
+        <div class="web-decks-head">
+          <div>
+            <h1>Web Decks</h1>
+            <p>Load, delete, or categorize decks stored on the web.</p>
+          </div>
+          <button class="icon-button" id="closeWebDecksBtn" type="button" aria-label="Close web decks panel">&#215;</button>
+        </div>
+        <div class="web-decks-tools">
+          <div class="web-decks-tools-left">
+            <label>
+              <span>Category</span>
+              <select id="webDeckCategoryFilter">
+                <option value="">All categories</option>
+              </select>
+            </label>
+            <button class="web-decks-refresh" id="refreshWebDecksBtn" type="button">Refresh List</button>
+            <div class="web-decks-bulk-actions" id="webDecksBulkActions" hidden>
+              <span class="bulk-title">Selected (<strong id="selectedDecksCount">0</strong>)</span>
+              <div class="bulk-buttons">
+                <button id="bulkLoadBtn" class="bulk-action-btn bulk-load" type="button">Load</button>
+                <button id="bulkCategoryBtn" class="bulk-action-btn bulk-category" type="button">Categorize</button>
+                <div class="bulk-export-dropdown">
+                  <button id="bulkExportBtn" class="bulk-action-btn bulk-export" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
+                  <div class="bulk-export-menu" id="bulkExportMenu" hidden>
+                    <button type="button" data-bulk-export="pdf">Cornell PDF</button>
+                    <button type="button" data-bulk-export="markdown">Markdown</button>
+                    <button type="button" data-bulk-export="json">JSON</button>
+                  </div>
+                </div>
+                <button id="bulkDeleteBtn" class="bulk-action-btn bulk-delete" type="button">Delete</button>
+              </div>
+            </div>
+          </div>
+          <div class="web-decks-global-export">
+            <button id="globalWebExportBtn" type="button" aria-haspopup="true" aria-expanded="false">Export All</button>
+            <div class="web-decks-global-export-menu" id="globalWebExportMenu" hidden>
+              <button type="button" data-global-web-export="pdf">Cornell PDF</button>
+              <button type="button" data-global-web-export="markdown">Markdown</button>
+              <button type="button" data-global-web-export="json">JSON</button>
+            </div>
+          </div>
+        </div>
+        <div class="web-decks-table-wrap">
+          <table class="web-decks-table">
+            <thead>
+              <tr>
+                <th style="width: 40px; text-align: center;"><input type="checkbox" id="selectAllWebDecksCheckbox"></th>
+                <th>Title</th>
+                <th>Category</th>
+                <th>Last Accessed</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="webDecksListTable">
+              <tr><td colspan="5" class="web-decks-empty">Click "Refresh List" to load web decks.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="web-decks-panel" id="myDecksPanel" hidden aria-label="My Decks">
+      <div class="web-decks-shell">
+        <div class="web-decks-head">
+          <div>
+            <h1>My Decks</h1>
+            <p>Every deck you study lives here — saved on this device and synced to the cloud automatically.</p>
+          </div>
+          <button class="icon-button" id="closeMyDecksBtn" type="button" aria-label="Close my decks panel">&#215;</button>
+        </div>
+        <div class="web-decks-tools">
+          <div class="web-decks-tools-left">
+            <button class="web-decks-refresh" id="myDecksRefreshBtn" type="button">&#8635; Refresh</button>
+            <button class="web-decks-refresh" id="manageCloudBtn" type="button" hidden>&#9729; Manage cloud decks</button>
+          </div>
+        </div>
+        <div class="web-decks-table-wrap">
+          <table class="web-decks-table my-decks-table">
+            <colgroup>
+              <col style="width:26%">
+              <col style="width:13%">
+              <col style="width:9%">
+              <col style="width:22%">
+              <col style="width:30%">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Category</th>
+                <th>Cards</th>
+                <th>Saved</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="myDecksListTable">
+              <tr><td colspan="5" class="web-decks-empty">No decks saved on this device yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="sync-modal" id="syncModal" hidden aria-label="Sync Details">
+      <div class="sync-modal-content">
+        <h2 id="syncModalTitle">Sync Confirmation</h2>
+        <div id="syncDetailsContent" class="sync-modal-details"></div>
+        <div class="sync-modal-actions">
+          <button id="cancelSyncBtn" type="button" class="sync-modal-btn">Cancel</button>
+          <button id="confirmSyncBtn" type="button" class="sync-modal-btn is-primary">Confirm Sync</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="help-modal" id="helpModal" hidden aria-label="How to use Recall">
+      <div class="help-modal-content">
+        <div class="help-modal-head">
+          <h2 class="help-modal-title">How to use Recall</h2>
+          <button class="icon-button" id="helpModalCloseBtn" type="button" aria-label="Close help">&#215;</button>
+        </div>
+        <div class="help-modal-body">
+
+          <section class="help-section">
+            <h3 class="help-section-title">1. Load a Deck</h3>
+            <p>Open the <strong>Deck</strong> menu in the toolbar to get started:</p>
+            <div class="help-btn-row">
+              <button type="button" class="tool-button" tabindex="-1">Deck ▾</button>
+            </div>
+            <ul class="help-list">
+              <li><strong>Import</strong> — paste Markdown, upload a <code>.md</code> file, or fetch from a URL</li>
+              <li><strong>New Deck</strong> — start a blank deck and add cards manually</li>
+              <li><strong>Web Decks</strong> — load a deck you previously synced (requires sign-in)</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">Study Notes 📝 — learn first, card later</h3>
+            <p>Every deck has a freeform <strong>Notes</strong> document beside its cards. Use the <strong>Cards ⇄ Notes</strong> toggle at the top of the study area (or <strong>Study Notes</strong> in the toolbar).</p>
+            <ul class="help-list">
+              <li><strong>Write notes first</strong> — full Markdown: headings, math, diagrams, code, pasted images</li>
+              <li><strong>Highlight → + Make card</strong> — select any fact (text, images, math) in the rendered notes; the floating button shows how much is captured. Tap it to preview the selection as the card's <em>answer</em> and frame the <em>question</em> that should bring it to mind (Ctrl+Enter to add)</li>
+              <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">2. Study Cards</h3>
+            <p>Each card has a <strong>question</strong> side and an <strong>answer</strong> side. Tap or press <kbd>Space</kbd> to flip:</p>
+            <div class="help-card-demo" aria-hidden="true">
+              <div class="help-card-face">Question side</div>
+              <div class="help-card-arrow">↕ flip</div>
+              <div class="help-card-face help-card-face-answer">Answer side</div>
+            </div>
+            <p>After reviewing the answer, sort the card using the action buttons:</p>
+            <div class="help-btn-row">
+              <button type="button" class="review help-demo-btn" tabindex="-1"><span aria-hidden="true">❌</span><span>Review</span></button>
+              <button type="button" class="nav-card help-demo-btn" tabindex="-1"><span aria-hidden="true">←</span></button>
+              <button type="button" class="nav-card help-demo-btn" tabindex="-1"><span aria-hidden="true">+</span></button>
+              <button type="button" class="nav-card help-demo-btn" tabindex="-1"><span aria-hidden="true">→</span></button>
+              <button type="button" class="known help-demo-btn" tabindex="-1"><span>Known</span><span aria-hidden="true">✅</span></button>
+            </div>
+            <table class="help-table">
+              <tr><td><button type="button" class="review help-demo-btn help-demo-btn-sm" tabindex="-1">❌ Review</button></td><td>Mark for re-study (moves to the Review pile)</td></tr>
+              <tr><td><button type="button" class="known help-demo-btn help-demo-btn-sm" tabindex="-1">✅ Known</button></td><td>Mark as learned (moves to the Known pile)</td></tr>
+              <tr><td><button type="button" class="nav-card help-demo-btn help-demo-btn-sm" tabindex="-1">← →</button></td><td>Navigate without sorting</td></tr>
+              <tr><td><button type="button" class="nav-card help-demo-btn help-demo-btn-sm" tabindex="-1">+</button></td><td>Add a new blank card after the current one</td></tr>
+            </table>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">3. Keyboard Shortcuts</h3>
+            <table class="help-table">
+              <tr><td><kbd>Space</kbd> / <kbd>Enter</kbd></td><td>Flip card</td></tr>
+              <tr><td><kbd>K</kbd></td><td>Mark Known</td></tr>
+              <tr><td><kbd>R</kbd></td><td>Mark for Review</td></tr>
+              <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Navigate cards</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>E</kbd></td><td>Toggle edit / rendered view</td></tr>
+            </table>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">4. Swipe Gestures (touch)</h3>
+            <table class="help-table">
+              <tr><td>Swipe <strong>right</strong></td><td>Mark Known ✅</td></tr>
+              <tr><td>Swipe <strong>left</strong></td><td>Mark for Review ❌</td></tr>
+              <tr><td>Swipe <strong>up / down</strong></td><td>Navigate to next / previous</td></tr>
+              <tr><td>Tap card</td><td>Flip to answer</td></tr>
+            </table>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">5. Edit &amp; Format Cards</h3>
+            <p>Click the pencil icon <button type="button" class="edit-card-btn help-demo-btn" tabindex="-1">✏</button> on the question or answer face — or <strong>long-press the card with a mouse</strong> — to edit. Click the save icon <button type="button" class="edit-card-btn help-demo-btn" tabindex="-1">💾</button> to save. Edits are always committed when you navigate away. <em>On phones and tablets, long-press selects text — use the pencil icon to edit.</em></p>
+            <p>While editing, a <strong>formatting toolbar</strong> appears above the text. Select some text, then click a button to wrap it:</p>
+            <table class="help-table">
+              <tr><td><kbd>B</kbd> <kbd>I</kbd> <kbd>U</kbd> <kbd>S</kbd></td><td>Bold, Italic, Underline, Strikethrough</td></tr>
+              <tr><td><kbd>&lt;/&gt;</kbd></td><td>Inline code</td></tr>
+              <tr><td><kbd>[…]</kbd></td><td>Cloze — hide the selection as a fill-in-the-blank; tap it on the card to reveal</td></tr>
+              <tr><td><kbd>Aa</kbd></td><td>Font family picker</td></tr>
+              <tr><td><kbd>🎨</kbd></td><td>Text colour (with “Clear colour”)</td></tr>
+              <tr><td><kbd>-</kbd></td><td>Toggle bullet list</td></tr>
+              <tr><td><kbd>🖼️</kbd></td><td>Insert an image (opens a file picker, uploads to ImgBB)</td></tr>
+              <tr><td><kbd>Tx</kbd></td><td>Clear all formatting from the selection</td></tr>
+            </table>
+            <h4 class="help-subsection-title">Images 🖼️</h4>
+            <p>Add images three ways while editing a card:</p>
+            <ul class="help-list">
+              <li><strong>Paste</strong> — copy any image (a screenshot, or an image from a webpage) and press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the editor</li>
+              <li><strong>Drag &amp; drop</strong> — drag an image file onto the editor <em>(desktop)</em></li>
+              <li><strong>Toolbar 🖼️</strong> — tap the image button to open your file picker. <em>On phones and tablets this offers your camera or photo library</em></li>
+            </ul>
+            <p>Each image is <strong>optimized in your browser</strong> (downscaled to 1600px max and re-encoded to WebP) before being uploaded to <a href="https://api.imgbb.com/" target="_blank" rel="noopener noreferrer">ImgBB</a> (a free image host); an <code>![](…)</code> link is then inserted automatically. Set your free ImgBB API key on the Supabase setup screen (<strong>Change Supabase project</strong>) — the first time you insert an image without one, you'll be prompted for it. Images need a connection to upload.</p>
+            <p><strong>Google Drive links</strong> just work: paste a public share link like <code>![](https://drive.google.com/file/d/FILE_ID/view)</code> and it renders directly — no need to convert it first.</p>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">6. Quick Notes 📌</h3>
+            <p>Found something worth keeping while reviewing an answer? Capture it without leaving your deck:</p>
+            <ul class="help-list">
+              <li>Open the <strong>answer</strong> in edit mode (pencil icon — long-press works on desktop — then flip to the answer side)</li>
+              <li><strong>Select the text</strong> you want to keep</li>
+              <li>Click the <strong>📌</strong> button at the end of the formatting toolbar</li>
+            </ul>
+            <p>The selection is saved as a new card in a dedicated <code>quick_notes</code> cloud deck (created automatically the first time). The selected text becomes the card’s <strong>question</strong>, with a blank answer for you to fill in later. A <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Saved to quick_notes</span> toast confirms it worked. Open your <code>quick_notes</code> deck any time from <strong>Web Decks</strong>. <em>(Requires sign-in, since notes are stored in the cloud.)</em></p>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">7. Track Progress</h3>
+            <p>The coloured bar at the top of the card area shows your session progress:</p>
+            <div class="help-progress-demo" aria-hidden="true">
+              <div class="help-progress-known" style="width:30%"></div>
+              <div class="help-progress-review" style="width:20%"></div>
+              <div class="help-progress-remaining" style="width:25%"></div>
+            </div>
+            <div class="help-legend">
+              <span class="help-legend-dot" style="background:var(--known)"></span><span>Known</span>
+              <span class="help-legend-dot" style="background:var(--review)"></span><span>Review</span>
+              <span class="help-legend-dot" style="background:var(--accent)"></span><span>Progress</span>
+            </div>
+            <p>The left and right side panels show the stacks of Known and Review cards. Click any card brick there to preview it.</p>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">8. All Cards Panel</h3>
+            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">All</button> to see every card in a scrollable Cornell-note view. You can edit, delete, or reorder cards from here.</p>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">9. Sync, Cloud &amp; Web Decks</h3>
+            <div class="help-btn-row">
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">⟳ Sync to Cloud</button>
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">☶ Web Decks</button>
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">Export ▾</button>
+            </div>
+            <ul class="help-list">
+              <li><strong>Sync to Cloud</strong> — save the current deck to your account (requires sign-in)</li>
+              <li><strong>Web Decks</strong> — browse your saved decks. The list is <strong>loaded automatically</strong> each time you open the panel; hit <strong>Refresh List</strong> any time to re-fetch. From here you can load, rename, re-categorise, export, or delete decks (singly or in bulk)</li>
+              <li><strong>Export → Markdown</strong> — download the full deck as a <code>.md</code> file</li>
+              <li><strong>Export → Cornell PDF</strong> — export Known or Review cards as printable notes</li>
+              <li><strong>Export → JSON / SQL</strong> — machine-readable formats for data portability</li>
+            </ul>
+            <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Synced to cloud</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Cloud sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">10. Offline &amp; My Decks 💾</h3>
+            <div class="help-btn-row">
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">⏬ Save to Device</button>
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">💾 My Decks</button>
+            </div>
+            <p>Once you’ve opened the app online once, it keeps working with no connection:</p>
+            <ul class="help-list">
+              <li><strong>You stay signed in</strong> offline (after signing in online at least once), so you go straight to your decks.</li>
+              <li><strong>Your current deck is auto-saved</strong> and restored on reload — you never lose work.</li>
+              <li><strong>Save to Device</strong> stores the current deck in an on-device library. Open <strong>My Decks</strong> to load, rename, or delete saved decks — all offline.</li>
+              <li>Any <strong>Web Deck you open online is mirrored</strong> into My Decks automatically, so it’s there to study offline later.</li>
+              <li>An <strong>Offline</strong> badge appears bottom-left when you lose connection.</li>
+            </ul>
+            <p>Cloud actions — <strong>Sync to Cloud</strong>, <strong>Web Decks</strong>, and a first-time login — need internet. Syncing while offline saves to your device instead.</p>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">11. Card Format</h3>
+            <p>When importing or pasting Markdown, use the <code>::</code> separator format:</p>
+            <pre class="help-code">::
+What is the capital of France?
+---
+Paris
+::
+
+::
+What year was the Eiffel Tower built?
+---
+1889
+::</pre>
+            <p>You can also use <code>##</code>, <code>###</code>, or <code>####</code> headings as card fronts, with the content below as the back.</p>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">12. Themes &amp; Style</h3>
+            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">Style</button> to choose from 10 built-in themes, adjust font size, card radius, and more. Desktop and mobile save separate style profiles.</p>
+          </section>
+
+        </div>
+        <div class="help-modal-foot">
+          <button type="button" class="sync-modal-btn is-primary" id="helpModalCloseFootBtn">Got it</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="confirm-modal" id="confirmModal" hidden aria-label="Confirm action">
+      <div class="confirm-modal-content">
+        <p id="confirmModalMessage" class="confirm-modal-message"></p>
+        <div class="sync-modal-actions">
+          <button id="confirmModalCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
+          <button id="confirmModalOkBtn" type="button" class="sync-modal-btn is-primary">Confirm</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="confirm-modal" id="promptModal" hidden aria-label="Enter value">
+      <div class="confirm-modal-content">
+        <h3 id="promptModalTitle" class="prompt-modal-title"></h3>
+        <p id="promptModalHint" class="confirm-modal-message"></p>
+        <input id="promptModalInput" type="text" class="prompt-modal-input" autocomplete="off">
+        <div class="sync-modal-actions">
+          <button id="promptModalCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
+          <button id="promptModalOkBtn" type="button" class="sync-modal-btn is-primary">OK</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="confirm-modal" id="frameCardModal" hidden aria-label="Make a flashcard from notes">
+      <div class="confirm-modal-content frame-card-content">
+        <h3 class="prompt-modal-title">Make a flashcard</h3>
+        <div class="frame-card-field">
+          <span class="frame-card-label">Answer — captured from your notes</span>
+          <div class="rendered frame-card-answer" id="frameCardAnswerPreview"></div>
+        </div>
+        <div class="frame-card-field">
+          <span class="frame-card-label">Question — what should bring it to mind?</span>
+          <textarea id="frameCardQuestionInput" class="prompt-modal-input frame-card-question" rows="3" autocomplete="off" placeholder="e.g. What happens in the thylakoid membranes?"></textarea>
+        </div>
+        <div class="sync-modal-actions">
+          <button id="frameCardCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
+          <button id="frameCardAddBtn" type="button" class="sync-modal-btn is-primary">Add card</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="import-selector-panel" id="importSelectorPanel" hidden aria-label="Select decks to import">
+      <div class="import-selector-shell">
+        <div class="import-selector-head">
+          <div>
+            <h1>Select Decks to Import</h1>
+            <p>Multiple decks were detected in this file. Choose which ones you want to import.</p>
+          </div>
+          <button class="icon-button" id="closeImportSelectorBtn" type="button" aria-label="Close import selector">&#215;</button>
+        </div>
+        <div class="import-selector-body">
+          <div class="import-selector-table-wrap">
+            <table class="import-selector-table">
+              <thead>
+                <tr>
+                  <th style="width: 50px; text-align: center;"><input type="checkbox" id="selectAllImportSelectorCheckbox" checked></th>
+                  <th>Deck Title</th>
+                  <th>Category</th>
+                  <th style="text-align: right; padding-right: 14px;">Cards</th>
+                </tr>
+              </thead>
+              <tbody id="importSelectorListTable">
+                <!-- Injected dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="import-selector-actions">
+          <button id="importSelectorLoadBtn" class="import-action-btn import-action-primary" type="button">Load Selected Decks</button>
+          <button id="importSelectorCancelBtn" class="import-action-btn" type="button">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="setupOverlay" class="login-overlay" hidden>
+      <div class="login-card">
+        <h1 class="login-title">Recall</h1>
+        <p class="setup-subtitle">Connect your Supabase project</p>
+        <form id="setupForm" novalidate>
+          <div class="login-field">
+            <label for="setupUrl">Project URL</label>
+            <input id="setupUrl" type="url" placeholder="https://xxxxx.supabase.co" autocomplete="off" required />
+          </div>
+          <div class="login-field">
+            <label for="setupKey">Anon / Public Key</label>
+            <input id="setupKey" type="text" placeholder="your-anon-key" autocomplete="off" required />
+          </div>
+          <p class="setup-hint">Find these in Supabase Dashboard &rarr; Project Settings &rarr; API</p>
+          <div class="login-field">
+            <label for="setupImgbbKey">ImgBB API key <span style="opacity:.7">(optional — for image paste)</span></label>
+            <input id="setupImgbbKey" type="text" placeholder="your-imgbb-api-key" autocomplete="off" />
+          </div>
+          <p class="setup-hint">Free key at <a href="https://api.imgbb.com/" target="_blank" rel="noopener noreferrer">api.imgbb.com</a> &rarr; used to upload pasted/dropped images. Can add later.</p>
+          <p id="setupError" class="login-error" aria-live="polite"></p>
+          <button id="setupSubmitBtn" class="login-btn-primary" type="submit">Connect</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="imgbbOverlay" class="login-overlay" hidden>
+      <div class="login-card">
+        <h1 class="login-title">Add images</h1>
+        <p class="setup-subtitle">Enter your free ImgBB API key</p>
+        <form id="imgbbForm" novalidate>
+          <div class="login-field">
+            <label for="imgbbKeyInput">ImgBB API key</label>
+            <input id="imgbbKeyInput" type="text" placeholder="your-imgbb-api-key" autocomplete="off" required />
+          </div>
+          <p class="setup-hint">Get a free key at <a href="https://api.imgbb.com/" target="_blank" rel="noopener noreferrer">api.imgbb.com</a> &rarr; sign in &rarr; <strong>Add API key</strong>. It's stored only on this device and used to upload pasted images.</p>
+          <p id="imgbbError" class="login-error" aria-live="polite"></p>
+          <button id="imgbbSaveBtn" class="login-btn-primary" type="submit">Save &amp; upload</button>
+          <button id="imgbbCancelBtn" class="login-btn-secondary" type="button">Cancel</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="loginOverlay" class="login-overlay" hidden>
+      <div class="login-card">
+        <h1 class="login-title">Recall</h1>
+        <form id="loginForm" data-mode="login" novalidate>
+          <div class="login-field">
+            <label for="loginEmail">Email</label>
+            <input id="loginEmail" type="email" placeholder="you@example.com" autocomplete="email" required />
+          </div>
+          <div class="login-field">
+            <label for="loginPassword">Password</label>
+            <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" required />
+          </div>
+          <p id="loginError" class="login-error" aria-live="polite"></p>
+          <button id="loginSubmitBtn" class="login-btn-primary" type="submit">Sign In</button>
+          <button id="loginToggleBtn" class="login-btn-secondary" type="button">Create account</button>
+          <button id="loginChangeProjectBtn" class="login-btn-link" type="button">Change Supabase project</button>
+        </form>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@14.1.2/marked.min.js"></script>
+    <script>window.Prism = window.Prism || {}; window.Prism.manual = true;</script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@panzoom/panzoom@4.5.0/dist/panzoom.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/graphre/dist/graphre.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
+    <script src="app.js?v=20260703-2"></script>
+  </body>
+</html>
