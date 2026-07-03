@@ -7590,6 +7590,33 @@ function clearDeckTombstone(deckId) {
   }
 }
 
+// Clear the currently-open deck back to the empty home screen and cancel any
+// pending autosave. Used when the deck you're looking at is deleted — without
+// this, the lingering debounced save (or the next navigation on the still-
+// visible deck) would call saveDeckToLibrary and re-create it as a brand-new
+// local deck, resurrecting exactly what was just deleted.
+function resetActiveDeckAfterDelete() {
+  if (deckAutosaveTimer) {
+    clearTimeout(deckAutosaveTimer);
+    deckAutosaveTimer = null;
+  }
+  state.deckId = null;
+  state.localDeckId = null;
+  state.deckTitle = "";
+  state.deckCategory = defaultDeckCategory;
+  state.notes = "";
+  state.sourceTitle = "";
+  state.importTitleHint = "";
+  state.masterCards = [];
+  state.statusById = {};
+  state.current = 0;
+  resetStudyDeck(state.masterCards);
+  try { localStorage.removeItem(deckStorageKey); } catch { /* storage may be unavailable */ }
+  setViewMode("cards");
+  closeAllCardsPanel();
+  showCard();
+}
+
 // Delete a deck from EVERYWHERE it lives — the on-device library AND the cloud
 // mirror — and tombstone its cloud id so a background reconcile (or another
 // device still holding a copy) can't resurrect it. This is the only correct way
@@ -7603,9 +7630,15 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
     deckId = meta?.deckId || null;
   }
 
+  // Capture this BEFORE deleteDeckFromLibrary nulls state.localDeckId.
+  const wasActiveDeck =
+    (localId && state.localDeckId && String(localId) === String(state.localDeckId)) ||
+    (deckId && state.deckId && String(deckId) === String(state.deckId));
+
   if (deckId) tombstoneDeck(deckId);
   if (localId) deleteDeckFromLibrary(localId);
   if (state.deckId && String(state.deckId) === String(deckId)) state.deckId = null;
+  if (wasActiveDeck) resetActiveDeckAfterDelete();
 
   let cloudError = null;
   if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
