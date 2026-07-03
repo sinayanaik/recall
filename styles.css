@@ -2207,34 +2207,35 @@ svg.nomnoml-light-svg [fill="none"] {
   font-weight: 900;
 }
 
-/* ── Editable images in rendered Notes: resize, side-by-side, free move ──
-   Scoped to #notesView (and #printRoot for export) so cards/diagrams keep
-   the forced full-width fill above untouched. A more specific selector is
-   used to out-rank .diagram-shell img's !important rule rather than fight
-   it with !important in generated content. */
+/* ── Editable images in rendered Notes: corner-drag resize ──────────────────
+   Scoped to #notesView (and #printRoot for export) so cards/diagrams keep the
+   forced full-width fill above untouched. A more specific selector out-ranks
+   .diagram-shell img's !important rule rather than fighting it. */
 #notesView .diagram-shell img.has-custom-size,
 #printRoot .diagram-shell img.has-custom-size {
   width: var(--notes-img-w) !important;
   max-width: var(--notes-img-w) !important;
 }
 
-/* An untouched (never resized) image shouldn't default to filling the whole
-   panel width — cap it at a reasonable size and let the shell hug the image
-   (below) instead of always spanning edge-to-edge with empty padding. */
+/* An untouched (never resized) image shouldn't fill the whole panel width —
+   cap it and let the shell hug the image. */
 #notesView .diagram-shell img:not(.has-custom-size),
 #printRoot .diagram-shell img:not(.has-custom-size) {
   width: auto !important;
   max-width: min(420px, 100%) !important;
 }
 
+/* Images in Notes are always centered in the column. */
 #notesView .diagram-shell {
   width: fit-content;
   max-width: 100%;
-  /* Floor wide enough for the control bar (drag handle + resize handle + 4
-     preset buttons) to lay out in one row without wrapping or overflowing a
-     very narrow/small image's shell — the overlay is positioned relative to
-     this box, and .diagram-shell's own overflow:auto would otherwise clip it. */
-  min-width: 210px;
+  margin-inline: auto;
+}
+
+/* Let the grip / size badge escape the shell's overflow:auto clip while
+   actively resizing. */
+#notesView .diagram-shell.is-resizing {
+  overflow: visible;
 }
 
 #notesView .diagram-shell img {
@@ -2242,39 +2243,85 @@ svg.nomnoml-light-svg [fill="none"] {
   user-select: none;
 }
 
+/* Legacy side-by-side rows (no longer creatable) still render, centered. */
 .notes-img-row {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: flex-start;
+  justify-content: center;
 }
 
 .notes-img-row .diagram-shell {
-  flex: 1 1 0;
-  /* min-width actually comes from the higher-specificity #notesView
-     .diagram-shell rule above (210px, wide enough for the control bar) */
+  flex: 0 1 auto;
+  margin-inline: 0;
 }
 
-.notes-img-row .diagram-shell:has(img.has-custom-size) {
-  flex: 0 0 auto;
+/* Bottom-right blue corner resize grip on the image — the only image control.
+   Subtle by default, brightens on hover / while dragging. */
+.notes-img-resize-handle {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 33;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px 3px 6px 3px;
+  background:
+    linear-gradient(135deg, transparent 0 45%, var(--accent-contrast, #fff) 45% 55%, transparent 55% 70%, var(--accent-contrast, #fff) 70% 80%, transparent 80%),
+    var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0.6;
+  transition: opacity 0.12s ease, transform 0.12s ease;
 }
 
-/* Always visible (not gated behind hover/selection) — hover-based reveal
-   turned out to feel unreliable in practice: touch devices have no hover at
-   all, and a control that only appears intermittently reads as "some images
-   have controls, some don't." Keeping the pill small and semi-transparent
-   keeps it from being too visually loud while always being discoverable. */
+#notesView .diagram-shell:hover .notes-img-resize-handle,
+#notesView .diagram-shell.is-resizing .notes-img-resize-handle {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+/* The "Zoom" pill also lives at the bottom-right of a diagram-shell; on an
+   editable notes image that's where the resize grip sits, so move the pill to
+   the bottom-left to avoid overlap. */
+#notesView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
+  float: left;
+  left: 0;
+  right: auto;
+}
+
+/* Live px/% readout shown while dragging the corner grip. */
+.notes-img-size-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 26px;
+  z-index: 34;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 0.7rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* One-click "move to own line" button for an image still embedded in text or
+   nested in a list/quote — promoting it makes it a resizable block. Sits
+   inside the shell's top-left so it's visible without hover. */
 .notes-img-controls {
   position: absolute;
   top: 6px;
   left: 6px;
-  z-index: 31;
+  z-index: 32;
   display: flex;
-  align-items: center;
-  gap: 4px;
   padding: 3px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--line);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
@@ -2290,78 +2337,6 @@ svg.nomnoml-light-svg [fill="none"] {
   white-space: nowrap;
 }
 
-.notes-img-drag-handle,
-.notes-img-split-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text);
-  cursor: grab;
-  touch-action: none;
-  font-size: 0.85rem;
-}
-
-.notes-img-split-btn {
-  cursor: pointer;
-  color: var(--danger, #e05a5a);
-}
-
-.notes-img-presets {
-  display: flex;
-  gap: 2px;
-}
-
-.notes-img-presets button {
-  border: none;
-  border-radius: 999px;
-  background: var(--panel-2);
-  color: var(--muted);
-  font-size: 0.65rem;
-  font-weight: 800;
-  padding: 3px 6px;
-  cursor: pointer;
-}
-
-.notes-img-presets button:hover {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
-}
-
-/* A flex child inside .notes-img-controls (NOT independently positioned) —
-   keeping every control in the same top-left bar avoids it overlapping the
-   split/drag buttons on short, wide-aspect-ratio images where a corner-
-   anchored handle and a top bar can occupy the same screen space. */
-.notes-img-resize-handle {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: var(--accent);
-  border: 2px solid var(--accent-contrast, #fff);
-  cursor: nwse-resize;
-  touch-action: none;
-}
-
-#notesView .diagram-shell.is-dragging {
-  opacity: 0.45;
-}
-
-#notesView .diagram-shell.is-pair-target {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.notes-drop-indicator {
-  height: 3px;
-  margin: 6px 0;
-  border-radius: 2px;
-  background: var(--accent);
-}
 
 .diagram-modal {
   position: fixed;

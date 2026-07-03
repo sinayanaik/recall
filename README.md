@@ -37,7 +37,7 @@ A static web app for learning something for the first time: write freeform **Stu
 - **Swipe + keyboard navigation** — swipe left/right on mobile, arrow keys on desktop
 - **Known / Review categorization** — cards can be marked Known or Review and replayed in filtered sessions
 - **Inline card editing** — edit question or answer text directly in the study view, with a rich **formatting toolbar** (bold, italic, underline, strikethrough, code, cloze fill-in-the-blanks, fonts, colours, bullet lists)
-- **Image paste & upload** — paste, drag-and-drop, or pick any image while editing; it's uploaded to a free [ImgBB](https://api.imgbb.com/) host and inserted as Markdown. Public Google Drive share links are auto-embedded so they render directly.
+- **Image paste & upload** — paste, drag-and-drop, or pick any image while editing; it's uploaded to a free [ImgBB](https://api.imgbb.com/) host and inserted as Markdown. Public Google Drive share links are auto-embedded so they render directly. In Study Notes, an image on its own line can be **resized by dragging the blue corner grip** (with a live size badge); images stay centered, and writing images separated by `|` on one line renders them **side by side**.
 - **Study Notes per deck** — every deck carries a freeform Markdown notes document (Cards ⇄ Notes toggle in the study view). Study first, then highlight any fact in the rendered notes and tap **+ Make card**: the selection becomes the card's *answer* and you're prompted to frame the *question* that should recall it. Notes sync to the cloud with the deck and travel inside Markdown/JSON exports. *(Existing Supabase projects: run `supabase_deck_notes.sql` once in the SQL Editor.)*
 - **Quick Notes** — select any text while editing an answer and save it straight to a dedicated `quick_notes` cloud deck with one click
 - **Toast confirmations** — every cloud action (sync, load, delete, rename, export, quick note) pops a toast so you always know it worked
@@ -399,6 +399,22 @@ Public Google Drive share links are embedded automatically — just paste the li
 ```
 
 The app rewrites it to a directly-embeddable form (`https://drive.google.com/thumbnail?id=FILE_ID&sz=w1000`) at render time, so the file shows instead of a broken image. The file must be shared as **"Anyone with the link"**.
+
+### Resizing images in Notes
+
+An image that sits on its own line in the rendered **Study Notes** is resizable: a small **blue grip** appears at its bottom-right corner — drag it to set the width, with a live badge showing the size in pixels and as a percent of the notes column. Images are always centered. The width is stored as an absolute pixel size in the deck's Markdown (`<img style="width:…">`), so it stays put regardless of window size and travels with exports and cloud sync.
+
+An image pasted in the middle of a sentence, or nested inside a list or quote, shows a single **"Move to own line"** button first — one click promotes it to its own block, and the resize grip then appears.
+
+### Side-by-side images
+
+To place images in a row, write them on one line separated by `|`:
+
+```markdown
+![](first.png) | ![](second.png) | ![](third.png)
+```
+
+They render side by side, and each stays individually resizable via its corner grip. (The line must be *only* images and `|` separators — a `|` in ordinary prose, or a Markdown table row, is left alone.) Resizing one image in a `|` row rewrites that line into an explicit `<div class="notes-img-row">…</div>` block so it can carry the per-image width; it renders identically.
 
 ---
 
