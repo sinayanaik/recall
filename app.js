@@ -555,30 +555,6 @@ function setKnownWebDeckCategories(categories = []) {
   return webDeckCategories;
 }
 
-function populateWebDeckCategoryFilter(decks = []) {
-  const filter = el.webDeckCategoryFilter;
-  if (!filter) return "";
-
-  const selected = filter.value || "";
-  const categories = setKnownWebDeckCategories(categoriesFromDecks(decks));
-
-  filter.innerHTML = "";
-  const allOption = document.createElement("option");
-  allOption.value = "";
-  allOption.textContent = "All categories";
-  filter.appendChild(allOption);
-
-  categories.forEach((category) => {
-    const option = document.createElement("option");
-    option.value = category;
-    option.textContent = category;
-    filter.appendChild(option);
-  });
-
-  filter.value = categories.includes(selected) ? selected : "";
-  return filter.value;
-}
-
 async function refreshKnownWebDeckCategories() {
   if (!supabaseClient) return webDeckCategories;
   const { data, error } = await supabaseClient
@@ -679,20 +655,6 @@ async function chooseDeckCategory(currentCategory = defaultDeckCategory) {
   });
 }
 
-function deckLastAccessedAt(deck = {}) {
-  return deck.last_accessed_at || deck.updated_at || deck.created_at || "";
-}
-
-function formatWebDeckAccessDate(value) {
-  if (!value) return { date: "Never", time: "" };
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return { date: "Never", time: "" };
-  return {
-    date: date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }),
-    time: date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-  };
-}
-
 async function touchWebDeckAccess(deckId) {
   if (!deckId || !supabaseClient) return false;
 
@@ -708,184 +670,6 @@ async function touchWebDeckAccess(deckId) {
 }
 
 
-
-function webDecksSkeletonRows(count = 4) {
-  const row = "<tr class=\"web-decks-skeleton-row\">" + Array.from({ length: 5 }, () => "<td><div class=\"skeleton-bar\"></div></td>").join("") + "</tr>";
-  return row.repeat(count);
-}
-
-async function fetchWebDecks({ toast = false } = {}) {
-  if (!supabaseClient) return;
-  if (!navigator.onLine) {
-    const tbody = el.webDecksListTable;
-    if (tbody) tbody.innerHTML = "<tr><td colspan=\"5\" class=\"web-decks-empty\">You're offline. Open “My Decks” to study decks saved on this device.</td></tr>";
-    setStatus("Offline — web decks need a connection. Your device decks still work.", "error");
-    if (toast) showToast("Offline — can't reach web decks", "info");
-    return;
-  }
-  const refreshBtn = document.getElementById("refreshWebDecksBtn");
-  if (refreshBtn) setButtonLoading(refreshBtn, true, "Loading…");
-  if (el.webDecksListTable && !el.webDecksListTable.children.length) {
-    el.webDecksListTable.innerHTML = webDecksSkeletonRows();
-  }
-  try {
-    setStatus("Fetching web decks...");
-    const { data, error } = await supabaseClient
-      .from("decks")
-      .select("*, cards(count)")
-      .order("last_accessed_at", { ascending: false, nullsFirst: false })
-      .order("updated_at", { ascending: false });
-      
-    if (error) throw error;
-    
-    const tbody = el.webDecksListTable;
-    if (!tbody) return;
-
-    tbody.innerHTML = "";
-
-    if (el.selectAllWebDecksCheckbox) {
-      el.selectAllWebDecksCheckbox.checked = false;
-      el.selectAllWebDecksCheckbox.indeterminate = false;
-    }
-    updateBulkActionVisibility();
-
-    const selectedCategory = populateWebDeckCategoryFilter(data || []);
-    const visibleDecks = selectedCategory
-      ? (data || []).filter((deck) => normalizeDeckCategory(deck.category) === selectedCategory)
-      : (data || []);
-    const categories = webDeckCategories;
-
-    if (!data || data.length === 0) {
-      tbody.innerHTML = "<tr><td colspan=\"5\" class=\"web-decks-empty\">No web decks found.</td></tr>";
-      setStatus("Web decks loaded.");
-      if (toast) showToast("No web decks found", "info");
-      return;
-    }
-
-    if (!visibleDecks.length) {
-      tbody.innerHTML = "<tr><td colspan=\"5\" class=\"web-decks-empty\">No decks in this category.</td></tr>";
-      setStatus("Web decks loaded.");
-      if (toast) showToast("No decks in this category", "info");
-      return;
-    }
-    
-    visibleDecks.forEach(deck => {
-      const accessed = formatWebDeckAccessDate(deckLastAccessedAt(deck));
-      const category = normalizeDeckCategory(deck.category);
-      const tr = document.createElement("tr");
-
-      const tdSelect = document.createElement("td");
-      tdSelect.dataset.label = "Select";
-      tdSelect.className = "web-deck-select-cell";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.className = "web-deck-row-checkbox";
-      checkbox.dataset.deckId = deck.id;
-      checkbox.addEventListener("change", () => {
-        updateBulkActionVisibility();
-      });
-      tdSelect.appendChild(checkbox);
-
-      const tdTitle = document.createElement("td");
-      tdTitle.dataset.label = "Title";
-      const titleWrap = document.createElement("div");
-      titleWrap.className = "web-deck-title";
-
-      const titleText = document.createElement("span");
-      titleText.className = "web-deck-title-text";
-      titleText.textContent = deck.title || "Untitled";
-
-      const cardCount = deck.cards?.[0]?.count ?? null;
-      const countBadge = document.createElement("span");
-      countBadge.className = "web-deck-card-count";
-      countBadge.textContent = cardCount !== null ? `${cardCount} cards` : "";
-      if (cardCount === null) countBadge.hidden = true;
-
-      const renameBtn = document.createElement("button");
-      renameBtn.className = "web-deck-rename";
-      renameBtn.type = "button";
-      renameBtn.title = "Rename web deck";
-      renameBtn.setAttribute("aria-label", `Rename ${deck.title || "Untitled"}`);
-      renameBtn.textContent = "Rename";
-      renameBtn.onclick = () => renameWebDeck(deck.id, deck.title || "Untitled");
-
-      titleWrap.appendChild(titleText);
-      tdTitle.appendChild(titleWrap);
-
-      const tdDate = document.createElement("td");
-      tdDate.dataset.label = "Accessed";
-      const dateWrap = document.createElement("div");
-      dateWrap.className = "web-deck-accessed";
-      const dateText = document.createElement("strong");
-      dateText.textContent = accessed.date;
-      const timeText = document.createElement("span");
-      timeText.textContent = accessed.time;
-      dateWrap.appendChild(dateText);
-      dateWrap.appendChild(timeText);
-      tdDate.appendChild(dateWrap);
-
-      const tdCategory = document.createElement("td");
-      tdCategory.dataset.label = "Category";
-      tdCategory.appendChild(createWebDeckCategoryControl(deck, category, categories));
-      
-      const tdActions = document.createElement("td");
-      tdActions.dataset.label = "Actions";
-      const actionsWrap = document.createElement("div");
-      actionsWrap.className = "web-deck-actions";
-      
-      const loadBtn = document.createElement("button");
-      loadBtn.className = "web-deck-action";
-      loadBtn.textContent = "Load";
-      loadBtn.onclick = () => loadWebDeck(deck.id);
-
-      const exportWrap = createWebDeckExportControl(deck);
-      
-      const delBtn = document.createElement("button");
-      delBtn.className = "web-deck-action web-deck-delete";
-      delBtn.textContent = "Delete";
-      delBtn.onclick = () => deleteWebDeck(deck.id);
-      
-      // Mobile-only meta row: category pill + count + date (all hidden on desktop via CSS)
-      const mobileMeta = document.createElement("div");
-      mobileMeta.className = "web-deck-mobile-meta";
-      const mobileCat = document.createElement("span");
-      mobileCat.className = "web-deck-cat-pill";
-      mobileCat.textContent = category;
-      if (!category || category === defaultDeckCategory) mobileCat.hidden = true;
-      const mobileDate = document.createElement("span");
-      mobileDate.className = "web-deck-mobile-date";
-      mobileDate.textContent = accessed.date;
-      mobileMeta.appendChild(mobileCat);
-      if (cardCount !== null) mobileMeta.appendChild(countBadge);
-      mobileMeta.appendChild(mobileDate);
-      actionsWrap.appendChild(mobileMeta);
-
-      const buttonRow = document.createElement("div");
-      buttonRow.className = "web-deck-button-row";
-      buttonRow.appendChild(loadBtn);
-      buttonRow.appendChild(exportWrap);
-      buttonRow.appendChild(renameBtn);
-      buttonRow.appendChild(delBtn);
-      actionsWrap.appendChild(buttonRow);
-      tdActions.appendChild(actionsWrap);
-      
-      tr.appendChild(tdSelect);
-      tr.appendChild(tdTitle);
-      tr.appendChild(tdCategory);
-      tr.appendChild(tdDate);
-      tr.appendChild(tdActions);
-      tbody.appendChild(tr);
-    });
-    setStatus("Web decks updated.");
-    if (toast) showToast(`Refreshed · ${visibleDecks.length} ${visibleDecks.length === 1 ? "deck" : "decks"}`);
-  } catch (error) {
-    console.error("Failed to fetch web decks", error);
-    setStatus("Failed to fetch web decks.", "error");
-    if (toast) showToast("Couldn't refresh web decks", "error");
-  } finally {
-    if (refreshBtn) setButtonLoading(refreshBtn, false);
-  }
-}
 
 async function updateWebDeckTitle(deckId, title) {
   if (!deckId || !supabaseClient) return false;
@@ -935,194 +719,12 @@ async function applyWebDeckCategory(deckId, category) {
   return normalized;
 }
 
-function createWebDeckCategoryControl(deck, currentCategory, categories = webDeckCategories) {
-  const wrap = document.createElement("div");
-  wrap.className = "web-deck-category-editor";
-
-  const select = document.createElement("select");
-  select.className = "web-deck-category-select";
-  select.setAttribute("aria-label", `Category for ${deck.title || "Untitled"}`);
-
-  categoriesFromDecks([], [...categories, currentCategory]).forEach((category) => {
-    const option = document.createElement("option");
-    option.value = category;
-    option.textContent = category;
-    select.appendChild(option);
-  });
-
-  const newOption = document.createElement("option");
-  newOption.value = "__new__";
-  newOption.textContent = "+ New category";
-  select.appendChild(newOption);
-  select.value = normalizeDeckCategory(currentCategory);
-
-  const newRow = document.createElement("div");
-  newRow.className = "web-deck-category-new";
-  newRow.hidden = true;
-
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "New category";
-  input.autocomplete = "off";
-  input.spellcheck = false;
-
-  const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
-  saveBtn.textContent = "Save";
-
-  const cancelBtn = document.createElement("button");
-  cancelBtn.type = "button";
-  cancelBtn.textContent = "Cancel";
-
-  const saveNewCategory = async () => {
-    if (!input.value.trim()) {
-      setStatus("Category cannot be empty.", "error");
-      input.focus();
-      return;
-    }
-
-    const nextCategory = normalizeDeckCategory(input.value);
-    saveBtn.disabled = true;
-    try {
-      setStatus("Updating deck category...");
-      await applyWebDeckCategory(deck.id, nextCategory);
-      setStatus("Deck category updated.");
-      showToast(`Category set to "${nextCategory}"`);
-      fetchWebDecks();
-    } catch (error) {
-      console.error("Failed to update deck category", error);
-      setStatus("Failed to update deck category. Run the deck category SQL migration first.", "error");
-      showToast("Couldn't update category", "error");
-      saveBtn.disabled = false;
-    }
-  };
-
-  select.addEventListener("change", async () => {
-    if (select.value === "__new__") {
-      newRow.hidden = false;
-      input.value = "";
-      input.focus();
-      return;
-    }
-
-    const nextCategory = normalizeDeckCategory(select.value);
-    if (nextCategory === normalizeDeckCategory(currentCategory)) return;
-
-    select.disabled = true;
-    try {
-      setStatus("Updating deck category...");
-      await applyWebDeckCategory(deck.id, nextCategory);
-      setStatus("Deck category updated.");
-      showToast(`Category set to "${nextCategory}"`);
-      fetchWebDecks();
-    } catch (error) {
-      console.error("Failed to update deck category", error);
-      setStatus("Failed to update deck category. Run the deck category SQL migration first.", "error");
-      showToast("Couldn't update category", "error");
-      select.disabled = false;
-      select.value = normalizeDeckCategory(currentCategory);
-    }
-  });
-
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") saveNewCategory();
-    if (event.key === "Escape") {
-      newRow.hidden = true;
-      select.value = normalizeDeckCategory(currentCategory);
-    }
-  });
-  saveBtn.addEventListener("click", saveNewCategory);
-  cancelBtn.addEventListener("click", () => {
-    newRow.hidden = true;
-    select.value = normalizeDeckCategory(currentCategory);
-  });
-
-  newRow.append(input, saveBtn, cancelBtn);
-  wrap.append(select, newRow);
-  return wrap;
-}
-
 function closeWebDeckExportMenus(exceptMenu = null) {
   document.querySelectorAll(".web-deck-export-menu, .web-decks-global-export-menu, .bulk-export-menu").forEach((menu) => {
     if (menu !== exceptMenu) {
       menu.hidden = true;
       const trigger = menu.previousElementSibling;
       if (trigger?.matches("[aria-expanded]")) trigger.setAttribute("aria-expanded", "false");
-    }
-  });
-}
-
-function createWebDeckExportControl(deck) {
-  const wrap = document.createElement("div");
-  wrap.className = "web-deck-export-wrap";
-
-  const button = document.createElement("button");
-  button.className = "web-deck-action web-deck-export";
-  button.type = "button";
-  button.setAttribute("aria-haspopup", "true");
-  button.setAttribute("aria-expanded", "false");
-  button.title = "Export deck";
-  button.setAttribute("aria-label", `Export ${deck.title || "Untitled"}`);
-  button.textContent = "Export";
-
-  const menu = document.createElement("div");
-  menu.className = "web-deck-export-menu";
-  menu.hidden = true;
-
-  [
-    ["pdf", "Cornell PDF"],
-    ["markdown", "Markdown"],
-    ["json", "JSON"],
-    ["sql", "SQL"]
-  ].forEach(([format, label]) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.textContent = label;
-    item.addEventListener("click", (event) => {
-      event.stopPropagation();
-      menu.hidden = true;
-      button.setAttribute("aria-expanded", "false");
-      exportWebDeck(deck.id, format);
-    });
-    menu.appendChild(item);
-  });
-
-  button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const shouldOpen = menu.hidden;
-    closeWebDeckExportMenus(menu);
-    menu.hidden = !shouldOpen;
-    button.setAttribute("aria-expanded", String(shouldOpen));
-  });
-
-  wrap.append(button, menu);
-  return wrap;
-}
-
-async function renameWebDeck(deckId, currentTitle = "") {
-  if (!deckId || !supabaseClient) return;
-
-  showPromptModal("Rename Deck", "", currentTitle || "Untitled", async (nextTitle) => {
-    const title = nextTitle.trim();
-    if (!title) {
-      setStatus("Deck title cannot be empty.", "error");
-      return;
-    }
-    try {
-      setStatus("Renaming web deck...");
-      await updateWebDeckTitle(deckId, title);
-      if (state.deckId === deckId) {
-        state.deckTitle = title;
-        state.sourceTitle = title;
-        updateMeta();
-      }
-      setStatus("Web deck renamed.");
-      showToast(`Renamed to "${title}"`);
-      fetchWebDecks();
-    } catch (error) {
-      console.error("Failed to rename web deck", error);
-      setStatus("Failed to rename web deck.", "error");
-      showToast("Couldn't rename deck", "error");
     }
   });
 }
@@ -1211,33 +813,6 @@ async function fetchWebDeckPayload(deckId) {
 
   if (cardsError) throw cardsError;
   return normalizeWebDeckPayload(deckData, cardsData || []);
-}
-
-async function fetchAllWebDeckPayloads() {
-  const { data: decksData, error: decksError } = await supabaseClient
-    .from("decks")
-    .select("*")
-    .order("last_accessed_at", { ascending: false, nullsFirst: false })
-    .order("updated_at", { ascending: false });
-
-  if (decksError) throw decksError;
-
-  const { data: cardsData, error: cardsError } = await supabaseClient
-    .from("cards")
-    .select("*")
-    .order("deck_id", { ascending: true })
-    .order("position", { ascending: true });
-
-  if (cardsError) throw cardsError;
-
-  const cardsByDeck = (cardsData || []).reduce((grouped, card) => {
-    const deckId = String(card.deck_id || "");
-    if (!grouped.has(deckId)) grouped.set(deckId, []);
-    grouped.get(deckId).push(card);
-    return grouped;
-  }, new Map());
-
-  return (decksData || []).map((deck) => normalizeWebDeckPayload(deck, cardsByDeck.get(String(deck.id)) || []));
 }
 
 function webDeckPayloadMarkdown(payload) {
@@ -1350,128 +925,6 @@ function exportSql(scope = "all") {
   setStatus("Exported current deck as SQL.");
 }
 
-async function exportWebDeck(deckId, format) {
-  if (!deckId || !supabaseClient) return;
-
-  try {
-    setStatus("Exporting web deck...");
-    const payload = await fetchWebDeckPayload(deckId);
-    const baseName = slugifyFileName(payload.deck.title || "recall");
-
-    if (format === "pdf") {
-      await exportCardsPdf(payload.deck.title, payload.cards, {
-        fileBaseName: baseName,
-        statusById: statusByIdFromCards(payload.cards)
-      });
-    } else if (format === "markdown") {
-      downloadTextFile(webDeckPayloadMarkdown(payload), `${baseName}.md`, "text/markdown;charset=utf-8");
-      setStatus("Exported web deck as Markdown.");
-    } else if (format === "sql") {
-      downloadTextFile(buildDeckSql([payload], `${payload.deck.title} SQL Export`), `${baseName}.sql`, "application/sql;charset=utf-8");
-      setStatus("Exported web deck as SQL.");
-    } else {
-      downloadTextFile(`${JSON.stringify(deckPayloadSnapshot(payload), null, 2)}\n`, `${baseName}.json`, "application/json;charset=utf-8");
-      setStatus("Exported web deck as JSON.");
-    }
-
-    if (format !== "pdf") showToast(`Exported "${payload.deck.title || "deck"}" as ${format.toUpperCase()}`);
-    await touchWebDeckAccess(deckId);
-    fetchWebDecks();
-  } catch (error) {
-    console.error("Failed to export web deck", error);
-    setStatus("Failed to export web deck.", "error");
-    showToast("Export failed", "error");
-  }
-}
-
-async function exportAllWebDecks(format) {
-  if (!supabaseClient) return;
-
-  try {
-    setStatus("Exporting all web decks...");
-    const payloads = await fetchAllWebDeckPayloads();
-    if (!payloads.length) {
-      setStatus("No web decks to export.", "error");
-      return;
-    }
-
-    if (format === "pdf") {
-      const cards = [];
-      const statusById = {};
-      payloads.forEach((payload) => {
-        cards.push({
-          type: "deck-divider",
-          title: payload.deck.title,
-          category: payload.deck.category
-        });
-        payload.cards.forEach((card) => {
-          const id = `${payload.deck.id}:${card.id}`;
-          cards.push({
-            id,
-            question: card.question,
-            answer: card.answer,
-            position: cards.length
-          });
-          const status = normalizeCardStatus(card.status);
-          if (status) statusById[id] = status;
-        });
-      });
-      await exportCardsPdf("All Web Decks", cards, { fileBaseName: "all-web-decks", statusById });
-    } else if (format === "markdown") {
-      downloadTextFile(
-        payloads.map(webDeckPayloadMarkdown).join("\n\n---\n\n"),
-        "all-web-decks.md",
-        "text/markdown;charset=utf-8"
-      );
-      setStatus("Exported all web decks as Markdown.");
-    } else if (format === "sql") {
-      downloadTextFile(buildDeckSql(payloads, "All Web Decks SQL Export"), "all-web-decks.sql", "application/sql;charset=utf-8");
-      setStatus("Exported all web decks as SQL.");
-    } else {
-      downloadTextFile(
-        `${JSON.stringify({
-          app: "recall",
-          version: 1,
-          exportedAt: new Date().toISOString(),
-          decks: payloads.map(deckPayloadSnapshot)
-        }, null, 2)}\n`,
-        "all-web-decks.json",
-        "application/json;charset=utf-8"
-      );
-      setStatus("Exported all web decks as JSON.");
-    }
-
-    if (format !== "pdf") showToast(`Exported all web decks as ${format.toUpperCase()}`);
-    fetchWebDecks();
-  } catch (error) {
-    console.error("Failed to export all web decks", error);
-    setStatus("Failed to export all web decks.", "error");
-    showToast("Export failed", "error");
-  }
-}
-
-async function deleteWebDeck(deckId) {
-  if (!supabaseClient) return;
-  showConfirmModal("Delete this deck from this device and the cloud? This cannot be undone.", async () => {
-    try {
-      setStatus("Deleting deck...");
-      // Remove the on-device mirror copy too (matched by cloud id). Deleting only
-      // the cloud row lets the surviving local copy re-upload it on next sync.
-      const localMeta = readLocalDeckIndex().find((m) => String(m.deckId) === String(deckId));
-      const { cloudError } = await deleteDeckEverywhere({ localId: localMeta?.id || null, deckId });
-      if (cloudError) throw cloudError;
-      setStatus("Deck deleted successfully.");
-      showToast("Deck deleted everywhere");
-      fetchWebDecks();
-      if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
-    } catch (error) {
-      console.error("Failed to delete web deck", error);
-      setStatus("Failed to delete web deck.", "error");
-      showToast("Couldn't delete deck", "error");
-    }
-  }, { confirmLabel: "Delete", danger: true });
-}
-
 async function loadWebDeck(deckId) {
   if (!deckId || !supabaseClient) return;
   if (!navigator.onLine) {
@@ -1522,7 +975,6 @@ async function loadWebDeck(deckId) {
     closeAllCardsPanel();
     setStatus(`Loaded ${cards.length} cards from web successfully.`);
     showToast(`Loaded "${state.deckTitle || "deck"}" · ${cards.length} cards`);
-    el.webDecksPanel.hidden = true;
     if (el.myDecksPanel) el.myDecksPanel.hidden = true;
     unlockPageScroll();
     closeImportPanel();
@@ -1824,6 +1276,10 @@ const el = {
   syncNowBtn: document.querySelector("#syncNowBtn"),
   myDecksPanel: document.querySelector("#myDecksPanel"),
   myDecksListTable: document.querySelector("#myDecksListTable"),
+  myDecksCategoryFilter: document.querySelector("#myDecksCategoryFilter"),
+  myDecksSelectAllCheckbox: document.querySelector("#myDecksSelectAllCheckbox"),
+  myDecksBulkActions: document.querySelector("#myDecksBulkActions"),
+  myDecksSelectedCount: document.querySelector("#myDecksSelectedCount"),
   closeMyDecksBtn: document.querySelector("#closeMyDecksBtn"),
   myDecksRefreshBtn: document.querySelector("#myDecksRefreshBtn"),
   closeImportBtn: document.querySelector("#closeImportBtn"),
@@ -1836,6 +1292,8 @@ const el = {
   diagramZoomOutBtn: document.querySelector("#diagramZoomOutBtn"),
   exportBtn: document.querySelector("#exportBtn"),
   exportMenu: document.querySelector("#exportMenu"),
+  exportNotesBtn: document.querySelector("#exportNotesBtn"),
+  exportNotesMenu: document.querySelector("#exportNotesMenu"),
   allCardsBtn: document.querySelector("#allCardsBtn"),
   allCardsPanel: document.querySelector("#allCardsPanel"),
   allCardsList: document.querySelector("#allCardsList"),
@@ -1859,9 +1317,6 @@ const el = {
   editDeckTitleBtn: document.querySelector("#editDeckTitleBtn"),
   deckCategory: document.querySelector("#deckCategory"),
   editDeckCategoryBtn: document.querySelector("#editDeckCategoryBtn"),
-  webDeckCategoryFilter: document.querySelector("#webDeckCategoryFilter"),
-  globalWebExportBtn: document.querySelector("#globalWebExportBtn"),
-  globalWebExportMenu: document.querySelector("#globalWebExportMenu"),
   shuffleBtn: document.querySelector("#shuffleBtn"),
   resetBtn: document.querySelector("#resetBtn"),
   card: document.querySelector("#card"),
@@ -1938,9 +1393,6 @@ const el = {
   frameCardCancelBtn: document.querySelector("#frameCardCancelBtn"),
   syncModal: document.querySelector("#syncModal"),
   syncDetailsContent: document.querySelector("#syncDetailsContent"),
-  webDecksPanel: document.querySelector("#webDecksPanel"),
-  webDecksListTable: document.querySelector("#webDecksListTable"),
-  selectAllWebDecksCheckbox: document.querySelector("#selectAllWebDecksCheckbox"),
   logoutBtn: document.querySelector("#logoutBtn"),
 };
 
@@ -2033,7 +1485,10 @@ function configureMermaid(themeId) {
   const accent = isPrintTheme ? cssVariableColor("--print-accent", theme.colors.accent) : cssVariableColor("--accent", theme.colors.accent);
   mermaid.initialize({
     startOnLoad: false,
-    securityLevel: "loose",
+    // "strict" — deck markdown can come from arbitrary URLs/files, and "loose"
+    // lets diagram source register click callbacks / unsanitized labels that
+    // bypass the DOMPurify pipeline every other rendered surface goes through.
+    securityLevel: "strict",
     theme: "base",
     themeVariables: {
       primaryColor: card,
@@ -2123,17 +1578,6 @@ function resolveFontFamily(value) {
 
 function styleValue(source, key, defaults = styleDefaults) {
   return Object.prototype.hasOwnProperty.call(source, key) ? String(source[key]) : defaults[key];
-}
-
-function decimalPlaces(value) {
-  const text = String(value);
-  return text.includes(".") ? text.split(".")[1].length : 0;
-}
-
-function formatStyleNumber(value, step) {
-  const precision = decimalPlaces(step || 1);
-  const fixed = value.toFixed(precision);
-  return fixed.includes(".") ? fixed.replace(/\.?0+$/, "") || "0" : fixed;
 }
 
 function escapeRegExp(value) {
@@ -2603,7 +2047,6 @@ function anyModalOpen() {
     (el.importSelectorPanel && !el.importSelectorPanel.hidden) ||
     (el.stylePanel && !el.stylePanel.hidden) ||
     (el.diagramModal && !el.diagramModal.hidden) ||
-    (el.webDecksPanel && !el.webDecksPanel.hidden) ||
     (el.syncModal && !el.syncModal.hidden) ||
     (el.allCardsPanel && !el.allCardsPanel.hidden) ||
     (el.importPanel && el.importPanel.classList.contains("is-open"))
@@ -2615,17 +2058,16 @@ function anyModalOpen() {
 // runs exactly as it would from a real click — then releases the scroll lock.
 // Used by the global Escape handler, which previously only closed a subset of
 // these (exportMenu/deckMenu/diagramModal/allCardsPanel/stylePanel/
-// importPanel/webDecksPanel) while unconditionally unlocking scroll — so e.g.
+// importPanel) while unconditionally unlocking scroll — so e.g.
 // a confirm/help/prompt dialog was left stuck open with the page scrollable
 // behind it.
 function closeTopmostOverlay() {
   el.exportMenu.hidden = true;
-  closeDeckMenu();
+  if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
   closeDiagramModal();
   closeAllCardsPanel();
   closeStylePanel();
   closeImportPanel();
-  el.webDecksPanel.hidden = true;
   if (el.myDecksPanel && !el.myDecksPanel.hidden) closeMyDecksPanel();
   if (el.importSelectorPanel && !el.importSelectorPanel.hidden) closeImportSelectorPanel();
   if (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) closeHelpModal();
@@ -2947,14 +2389,6 @@ function openImportPanel() {
   el.importPanel.classList.add("is-open");
 }
 
-function openWebDecksPanel() {
-  lockPageScroll();
-  el.webDecksPanel.hidden = false;
-  // Prefetch the deck list on open so the panel is never stale/empty; the
-  // "Refresh List" button remains for an on-demand re-fetch.
-  fetchWebDecks();
-}
-
 function closeImportPanel() {
   closePasteEditor(true);
   el.importPanel.classList.remove("is-open");
@@ -2982,15 +2416,614 @@ function formatLocalDeckSavedDate(iso) {
 }
 
 function myDecksEmptyRow(message) {
-  return `<tr><td colspan="6" class="web-decks-empty">${escapeHtml(message)}</td></tr>`;
+  return `<tr><td colspan="7" class="web-decks-empty">${escapeHtml(message)}</td></tr>`;
 }
+
+// ── Unified deck access ────────────────────────────────────────────────────
+// Every My Decks feature that needs full deck content (export, combined bulk
+// load) goes through myDeckPayload so it behaves identically for on-device
+// decks (offline included) and cloud-only decks: the local snapshot is
+// preferred, the cloud is the fallback.
+
+function localDeckPayload(localId) {
+  try {
+    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + localId);
+    if (!raw) return null;
+    const snapshot = JSON.parse(raw);
+    const meta = readLocalDeckIndex().find((m) => m.id === localId) || {};
+    return normalizeWebDeckPayload({
+      id: snapshot.deckId || localId,
+      title: snapshot.deckTitle || meta.title || "Untitled",
+      category: snapshot.deckCategory || meta.category,
+      notes: snapshot.notes || "",
+      current_card_index: snapshot.current || 0,
+      created_at: null,
+      updated_at: meta.updatedAt || null,
+      last_accessed_at: meta.updatedAt || null
+    }, (snapshot.cards || []).map((card, index) => ({
+      id: card.id,
+      deck_id: snapshot.deckId || localId,
+      question: card.question,
+      answer: card.answer,
+      position: index,
+      status: card.status
+    })));
+  } catch (error) {
+    console.warn("Could not read local deck snapshot", localId, error);
+    return null;
+  }
+}
+
+async function myDeckPayload({ localId = null, deckId = null } = {}) {
+  if (localId) {
+    const payload = localDeckPayload(localId);
+    if (payload) return payload;
+  }
+  if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
+    return fetchWebDeckPayload(deckId);
+  }
+  throw new Error("Deck data unavailable — cloud-only decks need a connection");
+}
+
+// ── Selection & bulk-action bar ────────────────────────────────────────────
+
+function selectedMyDecks() {
+  return Array.from(el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox:checked") || [])
+    .map((checkbox) => ({
+      localId: checkbox.dataset.localId || null,
+      deckId: checkbox.dataset.deckId || null
+    }));
+}
+
+function updateMyDecksBulkBar() {
+  const all = el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox") || [];
+  const selected = el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox:checked") || [];
+  if (el.myDecksSelectedCount) el.myDecksSelectedCount.textContent = String(selected.length);
+  if (el.myDecksBulkActions) el.myDecksBulkActions.hidden = selected.length === 0;
+  if (el.myDecksSelectAllCheckbox) {
+    el.myDecksSelectAllCheckbox.checked = all.length > 0 && selected.length === all.length;
+    el.myDecksSelectAllCheckbox.indeterminate = selected.length > 0 && selected.length < all.length;
+  }
+}
+
+function createDeckSelectCell({ localId = null, deckId = null, title = "" } = {}) {
+  const td = document.createElement("td");
+  td.dataset.label = "Select";
+  td.className = "web-deck-select-cell";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "my-deck-row-checkbox web-deck-row-checkbox";
+  if (localId) checkbox.dataset.localId = localId;
+  if (deckId) checkbox.dataset.deckId = deckId;
+  checkbox.setAttribute("aria-label", `Select ${title || "deck"}`);
+  checkbox.addEventListener("change", updateMyDecksBulkBar);
+  td.appendChild(checkbox);
+  return td;
+}
+
+// ── Category editing (works for local, synced, and cloud-only decks) ───────
+
+// Offline / not-yet-uploaded path: update the local library only. Bumping
+// updatedAt counts as an edit, so the next reconcile pushes the new category.
+function setLocalDeckCategory(localId, category) {
+  const normalized = normalizeDeckCategory(category);
+  const index = readLocalDeckIndex();
+  const entry = index.find((e) => e.id === localId);
+  if (!entry) return;
+  entry.category = normalized;
+  entry.updatedAt = new Date().toISOString();
+  writeLocalDeckIndex(index);
+  try {
+    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + localId);
+    if (raw) {
+      const snapshot = JSON.parse(raw);
+      snapshot.deckCategory = normalized;
+      localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
+    }
+  } catch (error) {
+    console.warn("Could not update local deck snapshot category", error);
+  }
+}
+
+async function setMyDeckCategory({ localId = null, deckId = null } = {}, category) {
+  const normalized = normalizeDeckCategory(category);
+  setKnownWebDeckCategories([...webDeckCategories, normalized]);
+  if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
+    // Updates the cloud row and keeps the local mirror's meta/timestamp aligned.
+    await applyWebDeckCategory(deckId, normalized);
+  } else if (localId) {
+    setLocalDeckCategory(localId, normalized);
+    if (state.localDeckId === localId) {
+      state.deckCategory = normalized;
+      updateMeta();
+    }
+  } else {
+    throw new Error("Offline — a cloud-only deck can't be categorized right now");
+  }
+  return normalized;
+}
+
+function createDeckCategoryControl(sel, currentCategory, categories, deckTitle) {
+  const wrap = document.createElement("div");
+  wrap.className = "web-deck-category-editor";
+
+  const select = document.createElement("select");
+  select.className = "web-deck-category-select";
+  select.setAttribute("aria-label", `Category for ${deckTitle || "Untitled"}`);
+
+  categoriesFromDecks([], [...categories, currentCategory]).forEach((category) => {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = category;
+    select.appendChild(option);
+  });
+  const newOption = document.createElement("option");
+  newOption.value = "__new__";
+  newOption.textContent = "+ New category";
+  select.appendChild(newOption);
+  select.value = normalizeDeckCategory(currentCategory);
+
+  const newRow = document.createElement("div");
+  newRow.className = "web-deck-category-new";
+  newRow.hidden = true;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "New category";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = "Save";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "Cancel";
+
+  const commit = async (nextCategory) => {
+    select.disabled = true;
+    saveBtn.disabled = true;
+    try {
+      setStatus("Updating deck category...");
+      const normalized = await setMyDeckCategory(sel, nextCategory);
+      setStatus("Deck category updated.");
+      showToast(`Category set to "${normalized}"`);
+      renderMyDecksList();
+    } catch (error) {
+      console.error("Failed to update deck category", error);
+      setStatus("Failed to update deck category.", "error");
+      showToast("Couldn't update category", "error");
+      select.disabled = false;
+      saveBtn.disabled = false;
+      select.value = normalizeDeckCategory(currentCategory);
+    }
+  };
+
+  select.addEventListener("change", () => {
+    if (select.value === "__new__") {
+      newRow.hidden = false;
+      input.value = "";
+      input.focus();
+      return;
+    }
+    const nextCategory = normalizeDeckCategory(select.value);
+    if (nextCategory === normalizeDeckCategory(currentCategory)) return;
+    commit(nextCategory);
+  });
+
+  const saveNewCategory = () => {
+    if (!input.value.trim()) {
+      setStatus("Category cannot be empty.", "error");
+      input.focus();
+      return;
+    }
+    commit(input.value);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveNewCategory();
+    if (event.key === "Escape") {
+      newRow.hidden = true;
+      select.value = normalizeDeckCategory(currentCategory);
+    }
+  });
+  saveBtn.addEventListener("click", saveNewCategory);
+  cancelBtn.addEventListener("click", () => {
+    newRow.hidden = true;
+    select.value = normalizeDeckCategory(currentCategory);
+  });
+
+  newRow.append(input, saveBtn, cancelBtn);
+  wrap.append(select, newRow);
+  return wrap;
+}
+
+// ── Rename (local library + immediate cloud rename when reachable) ─────────
+
+function renameMyDeck({ localId = null, deckId = null } = {}, currentTitle = "") {
+  showPromptModal("Rename Deck", "", currentTitle || "Untitled", async (nextTitle) => {
+    const title = nextTitle.trim();
+    if (!title) {
+      setStatus("Deck title cannot be empty.", "error");
+      return;
+    }
+    try {
+      if (localId) renameDeckInLibrary(localId, title);
+      if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
+        // Best-effort immediate cloud rename (also re-aligns the local
+        // mirror's timestamp); on failure the local rename, whose updatedAt
+        // was just bumped, is pushed by the next reconcile anyway.
+        try {
+          await updateWebDeckTitle(deckId, title);
+        } catch (error) {
+          console.warn("Cloud rename failed — the next sync will push it", error);
+        }
+      }
+      if ((localId && state.localDeckId === localId) || (deckId && state.deckId && String(state.deckId) === String(deckId))) {
+        state.deckTitle = title;
+        state.sourceTitle = title;
+        updateMeta();
+      }
+      renderMyDecksList();
+      setStatus("Deck renamed.");
+      showToast(`Renamed to "${title}"`);
+    } catch (error) {
+      console.error("Failed to rename deck", error);
+      setStatus("Failed to rename deck.", "error");
+      showToast("Couldn't rename deck", "error");
+    }
+  });
+}
+
+// ── Exports (single deck, selected decks, everything) ──────────────────────
+
+// Shared writer for every My Decks export path. `payloads` come from
+// myDeckPayload; a single payload exports as that deck, several export as one
+// document/file with per-deck dividers (PDF) or concatenation (MD/SQL/JSON).
+async function exportDeckPayloads(payloads, format, { fileBaseName, title }) {
+  if (format === "pdf") {
+    if (payloads.length === 1) {
+      const payload = payloads[0];
+      await exportCardsPdf(payload.deck.title, payload.cards, {
+        fileBaseName,
+        statusById: statusByIdFromCards(payload.cards)
+      });
+      return;
+    }
+    const cards = [];
+    const statusById = {};
+    payloads.forEach((payload) => {
+      cards.push({
+        type: "deck-divider",
+        title: payload.deck.title,
+        category: payload.deck.category
+      });
+      payload.cards.forEach((card) => {
+        const id = `${payload.deck.id}:${card.id}`;
+        cards.push({ id, question: card.question, answer: card.answer, position: cards.length });
+        const status = normalizeCardStatus(card.status);
+        if (status) statusById[id] = status;
+      });
+    });
+    await exportCardsPdf(title, cards, { fileBaseName, statusById });
+    return;
+  }
+
+  if (format === "html" || format === "doc") {
+    const cards = [];
+    const statusById = {};
+    if (payloads.length === 1) {
+      payloads[0].cards.forEach((card) => cards.push(card));
+      Object.assign(statusById, statusByIdFromCards(payloads[0].cards));
+    } else {
+      payloads.forEach((payload) => {
+        cards.push({
+          type: "deck-divider",
+          title: payload.deck.title,
+          category: payload.deck.category
+        });
+        payload.cards.forEach((card) => {
+          const id = `${payload.deck.id}:${card.id}`;
+          cards.push({ id, question: card.question, answer: card.answer, position: cards.length });
+          const status = normalizeCardStatus(card.status);
+          if (status) statusById[id] = status;
+        });
+      });
+    }
+    const bodyHtml = await prepareExportHtml(buildFlatCardsDocument(title, cards, { sourceTitle: title, statusById }));
+    if (format === "doc") {
+      const html = await wrapWordDocument(bodyHtml, fileBaseName);
+      downloadTextFile(html, `${fileBaseName}.doc`, "application/msword;charset=utf-8");
+      setStatus("Exported as Word (.doc).");
+    } else {
+      const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName);
+      downloadTextFile(html, `${fileBaseName}.html`, "text/html;charset=utf-8");
+      setStatus("Exported as standalone HTML.");
+    }
+    return;
+  }
+
+  if (format === "markdown") {
+    downloadTextFile(
+      payloads.map(webDeckPayloadMarkdown).join("\n\n---\n\n"),
+      `${fileBaseName}.md`,
+      "text/markdown;charset=utf-8"
+    );
+    setStatus("Exported as Markdown.");
+    return;
+  }
+
+  if (format === "sql") {
+    downloadTextFile(buildDeckSql(payloads, `${title} SQL Export`), `${fileBaseName}.sql`, "application/sql;charset=utf-8");
+    setStatus("Exported as SQL.");
+    return;
+  }
+
+  const body = payloads.length === 1
+    ? deckPayloadSnapshot(payloads[0])
+    : {
+      app: "recall",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      decks: payloads.map(deckPayloadSnapshot)
+    };
+  downloadTextFile(`${JSON.stringify(body, null, 2)}\n`, `${fileBaseName}.json`, "application/json;charset=utf-8");
+  setStatus("Exported as JSON.");
+}
+
+async function exportMyDeck(sel, format) {
+  try {
+    setStatus("Exporting deck...");
+    const payload = await myDeckPayload(sel);
+    await exportDeckPayloads([payload], format, {
+      fileBaseName: slugifyFileName(payload.deck.title || "recall"),
+      title: payload.deck.title || "Deck"
+    });
+    if (format !== "pdf") showToast(`Exported "${payload.deck.title || "deck"}" as ${format.toUpperCase()}`);
+    if (sel.deckId && supabaseClient && isSignedIn && navigator.onLine) {
+      touchWebDeckAccess(sel.deckId).catch(() => {});
+    }
+  } catch (error) {
+    console.error("Failed to export deck", error);
+    setStatus("Failed to export deck.", "error");
+    showToast("Export failed", "error");
+  }
+}
+
+async function exportSelectedMyDecks(selections, format) {
+  if (!selections.length) return;
+  try {
+    setStatus(`Exporting ${selections.length} deck${selections.length === 1 ? "" : "s"}...`);
+    const payloads = [];
+    for (const sel of selections) payloads.push(await myDeckPayload(sel));
+    await exportDeckPayloads(payloads, format, { fileBaseName: "selected-decks", title: "Selected Decks" });
+    if (format !== "pdf") showToast(`Exported ${payloads.length} deck${payloads.length === 1 ? "" : "s"} as ${format.toUpperCase()}`);
+  } catch (error) {
+    console.error("Failed to export selected decks", error);
+    setStatus("Failed to export selected decks.", "error");
+    showToast("Export failed", "error");
+  }
+}
+
+// Everything My Decks shows: all on-device decks, plus cloud-only decks when
+// the cloud is reachable (skipped with a warning when it isn't).
+async function allMyDeckSelections() {
+  const localDecks = listLocalDecks();
+  const selections = localDecks.map((deck) => ({ localId: deck.id, deckId: deck.deckId || null }));
+  if (supabaseClient && isSignedIn && navigator.onLine) {
+    try {
+      const localCloudIds = new Set(localDecks.map((d) => String(d.deckId)).filter((id) => id && id !== "null"));
+      (await fetchCloudDeckList())
+        .filter((deck) => !localCloudIds.has(String(deck.id)) && !isDeckTombstoned(deck.id))
+        .forEach((deck) => selections.push({ localId: null, deckId: String(deck.id) }));
+    } catch (error) {
+      console.warn("Could not include cloud-only decks in the export", error);
+    }
+  }
+  return selections;
+}
+
+async function exportAllMyDecks(format) {
+  try {
+    setStatus("Exporting all decks...");
+    const selections = await allMyDeckSelections();
+    if (!selections.length) {
+      setStatus("No decks to export.", "error");
+      return;
+    }
+    const payloads = [];
+    for (const sel of selections) payloads.push(await myDeckPayload(sel));
+    await exportDeckPayloads(payloads, format, { fileBaseName: "all-decks", title: "All Decks" });
+    if (format !== "pdf") showToast(`Exported all decks as ${format.toUpperCase()}`);
+  } catch (error) {
+    console.error("Failed to export all decks", error);
+    setStatus("Failed to export all decks.", "error");
+    showToast("Export failed", "error");
+  }
+}
+
+function createDeckExportControl(sel, deckTitle) {
+  const wrap = document.createElement("div");
+  wrap.className = "web-deck-export-wrap";
+
+  const button = document.createElement("button");
+  button.className = "bulk-action-btn bulk-export";
+  button.type = "button";
+  button.setAttribute("aria-haspopup", "true");
+  button.setAttribute("aria-expanded", "false");
+  button.title = "Export deck";
+  button.setAttribute("aria-label", `Export ${deckTitle || "Untitled"}`);
+  button.textContent = "Export";
+
+  const menu = document.createElement("div");
+  menu.className = "web-deck-export-menu";
+  menu.hidden = true;
+
+  [
+    ["pdf", "Cornell PDF"],
+    ["html", "Standalone HTML"],
+    ["doc", "Word (.doc)"],
+    ["markdown", "Markdown"],
+    ["json", "JSON"],
+    ["sql", "SQL"]
+  ].forEach(([format, label]) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.textContent = label;
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      menu.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      exportMyDeck(sel, format);
+    });
+    menu.appendChild(item);
+  });
+
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const shouldOpen = menu.hidden;
+    closeWebDeckExportMenus(menu);
+    menu.hidden = !shouldOpen;
+    button.setAttribute("aria-expanded", String(shouldOpen));
+  });
+
+  wrap.append(button, menu);
+  return wrap;
+}
+
+// ── Bulk actions ───────────────────────────────────────────────────────────
+
+async function loadSelectedMyDecks(selections) {
+  if (!selections.length) return;
+
+  if (selections.length === 1) {
+    const sel = selections[0];
+    // Persist the outgoing deck before its in-memory state is replaced (see
+    // the per-row Load handler for why the flush matters).
+    flushWorkingDeck();
+    if (sel.localId) {
+      if (loadDeckFromLibrary(sel.localId)) {
+        closeMyDecksPanel();
+        showToast("Deck loaded");
+      }
+    } else if (sel.deckId) {
+      closeMyDecksPanel();
+      loadWebDeck(sel.deckId);
+    }
+    return;
+  }
+
+  setStatus(`Loading ${selections.length} decks...`);
+  try {
+    const payloads = [];
+    for (const sel of selections) payloads.push(await myDeckPayload(sel));
+    flushWorkingDeck();
+
+    const combinedCards = [];
+    const combinedStatusById = {};
+    const usedIds = new Set();
+    const titles = [];
+    let combinedCategory = "";
+    payloads.forEach((payload) => {
+      titles.push(payload.deck.title || "Untitled");
+      if (!combinedCategory) combinedCategory = normalizeDeckCategory(payload.deck.category);
+      payload.cards.forEach((card) => {
+        // Older decks may carry deterministic ids that collide across decks —
+        // remint on collision so statuses/navigation stay per-card.
+        let id = String(card.id);
+        while (usedIds.has(id)) id = `${id}-${Math.random().toString(36).slice(2, 6)}`;
+        usedIds.add(id);
+        combinedCards.push({ id, question: card.question, answer: card.answer });
+        const status = normalizeCardStatus(card.status);
+        if (status) combinedStatusById[id] = status;
+      });
+    });
+
+    state.deckId = null;
+    // Fresh combined deck — detach from any previously-loaded library entry so
+    // its first autosave creates a NEW deck instead of overwriting that one.
+    state.localDeckId = null;
+    state.masterCards = combinedCards;
+    resetStudyDeck(state.masterCards);
+    state.statusById = combinedStatusById;
+    state.current = 0;
+    state.deckTitle = `Combined: ${titles.join(", ")}`.slice(0, 80);
+    state.deckCategory = combinedCategory || defaultDeckCategory;
+    state.sourceTitle = state.deckTitle;
+    state.importTitleHint = state.deckTitle;
+    state.notes = "";
+    setViewMode("cards");
+
+    syncResults();
+    closeAllCardsPanel();
+    closeMyDecksPanel();
+    showCard();
+    setStatus(`Loaded ${selections.length} decks.`);
+    showToast(`Loaded ${selections.length} decks · ${combinedCards.length} cards`);
+  } catch (error) {
+    console.error("Failed to load selected decks", error);
+    setStatus("Failed to load selected decks.", "error");
+    showToast("Couldn't load selected decks", "error");
+  }
+}
+
+async function categorizeSelectedMyDecks(selections) {
+  if (!selections.length) return;
+  const category = await chooseDeckCategory();
+  if (category === null) return;
+
+  setStatus(`Updating category for ${selections.length} deck${selections.length === 1 ? "" : "s"}...`);
+  let failed = 0;
+  for (const sel of selections) {
+    try {
+      await setMyDeckCategory(sel, category);
+    } catch (error) {
+      failed += 1;
+      console.error("Failed to update deck category", sel, error);
+    }
+  }
+  renderMyDecksList();
+  if (failed) {
+    setStatus(`Category updated, but ${failed} deck${failed === 1 ? "" : "s"} failed.`, "error");
+    showToast(`Couldn't update ${failed} deck${failed === 1 ? "" : "s"}`, "error");
+  } else {
+    setStatus("Deck categories updated.");
+    showToast(`Set category "${normalizeDeckCategory(category)}" on ${selections.length} deck${selections.length === 1 ? "" : "s"}`);
+  }
+}
+
+function deleteSelectedMyDecks(selections) {
+  if (!selections.length) return;
+  showConfirmModal(
+    `Delete ${selections.length} selected ${selections.length === 1 ? "deck" : "decks"} from this device and the cloud? This cannot be undone.`,
+    async () => {
+      setStatus(`Deleting ${selections.length} decks...`);
+      let cloudFailures = 0;
+      for (const sel of selections) {
+        const { cloudError } = await deleteDeckEverywhere({ localId: sel.localId, deckId: sel.deckId });
+        if (cloudError) cloudFailures += 1;
+      }
+      renderMyDecksList();
+      if (cloudFailures) {
+        showToast("Deleted here — cloud delete will retry on next sync", "info");
+      } else {
+        showToast(`Deleted ${selections.length} deck${selections.length === 1 ? "" : "s"} everywhere`, "info");
+      }
+      setStatus("Selected decks deleted.");
+    },
+    { confirmLabel: "Delete All", danger: true }
+  );
+}
+
+// ── Rows ───────────────────────────────────────────────────────────────────
 
 // One row for a deck stored in the on-device library. `cloudById` (Map or null)
 // drives the Sync column — null renders a tentative state before the cloud
 // fetch resolves.
-function buildLocalDeckRow(deck, cloudById = null) {
+function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategories) {
   const tr = document.createElement("tr");
   if (deck.id === state.localDeckId) tr.classList.add("is-current-local-deck");
+  const sel = { localId: deck.id, deckId: deck.deckId || null };
 
   const tdTitle = document.createElement("td");
   tdTitle.dataset.label = "Title";
@@ -2998,7 +3031,7 @@ function buildLocalDeckRow(deck, cloudById = null) {
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";
-  tdCategory.textContent = normalizeDeckCategory(deck.category);
+  tdCategory.appendChild(createDeckCategoryControl(sel, deck.category, categories, deck.title));
 
   const tdCount = document.createElement("td");
   tdCount.dataset.label = "Cards";
@@ -3038,14 +3071,7 @@ function buildLocalDeckRow(deck, cloudById = null) {
   renameBtn.type = "button";
   renameBtn.className = "bulk-action-btn bulk-category";
   renameBtn.textContent = "Rename";
-  renameBtn.addEventListener("click", () => {
-    const next = window.prompt("Rename deck", deck.title || "");
-    if (next && next.trim()) {
-      renameDeckInLibrary(deck.id, next);
-      renderMyDecksList();
-      if (state.localDeckId === deck.id) updateMeta();
-    }
-  });
+  renameBtn.addEventListener("click", () => renameMyDeck(sel, deck.title || ""));
 
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
@@ -3065,16 +3091,17 @@ function buildLocalDeckRow(deck, cloudById = null) {
     }, { confirmLabel: "Delete", danger: true });
   });
 
-  actionsWrap.append(loadBtn, renameBtn, deleteBtn);
+  actionsWrap.append(loadBtn, createDeckExportControl(sel, deck.title), renameBtn, deleteBtn);
   tdActions.append(actionsWrap);
-  tr.append(tdTitle, tdCategory, tdCount, tdSaved, deckSyncStatusCell(deck, cloudById), tdActions);
+  tr.append(createDeckSelectCell({ ...sel, title: deck.title }), tdTitle, tdCategory, tdCount, tdSaved, deckSyncStatusCell(deck, cloudById), tdActions);
   return tr;
 }
 
 // One row for a deck that only exists in the cloud (not yet on this device).
-function buildCloudDeckRow(deck) {
+function buildCloudDeckRow(deck, categories = webDeckCategories) {
   const tr = document.createElement("tr");
   tr.classList.add("is-cloud-only-deck");
+  const sel = { localId: null, deckId: String(deck.id) };
 
   const tdTitle = document.createElement("td");
   tdTitle.dataset.label = "Title";
@@ -3082,7 +3109,7 @@ function buildCloudDeckRow(deck) {
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";
-  tdCategory.textContent = normalizeDeckCategory(deck.category);
+  tdCategory.appendChild(createDeckCategoryControl(sel, deck.category, categories, deck.title));
 
   const tdCount = document.createElement("td");
   tdCount.dataset.label = "Cards";
@@ -3118,9 +3145,31 @@ function buildCloudDeckRow(deck) {
     loadWebDeck(deck.id);
   });
 
-  actionsWrap.append(loadBtn);
+  const renameBtn = document.createElement("button");
+  renameBtn.type = "button";
+  renameBtn.className = "bulk-action-btn bulk-category";
+  renameBtn.textContent = "Rename";
+  renameBtn.addEventListener("click", () => renameMyDeck(sel, deck.title || ""));
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "bulk-action-btn bulk-delete";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.addEventListener("click", () => {
+    showConfirmModal(`Delete "${deck.title || "this deck"}" from the cloud? This cannot be undone.`, async () => {
+      const { cloudError } = await deleteDeckEverywhere({ localId: null, deckId: deck.id });
+      renderMyDecksList();
+      if (cloudError) {
+        showToast("Delete failed — will retry on next sync", "info");
+      } else {
+        showToast("Deck deleted everywhere", "info");
+      }
+    }, { confirmLabel: "Delete", danger: true });
+  });
+
+  actionsWrap.append(loadBtn, createDeckExportControl(sel, deck.title), renameBtn, deleteBtn);
   tdActions.append(actionsWrap);
-  tr.append(tdTitle, tdCategory, tdCount, tdSaved, tdSync, tdActions);
+  tr.append(createDeckSelectCell({ ...sel, title: deck.title }), tdTitle, tdCategory, tdCount, tdSaved, tdSync, tdActions);
   return tr;
 }
 
@@ -3204,15 +3253,38 @@ function deckSyncStatusCell(deck, cloudById) {
   return td;
 }
 
+// Repopulates the category filter from every known category, preserving the
+// current selection when it still exists. Returns the active filter value.
+function populateMyDecksCategoryFilter(categories) {
+  const filter = el.myDecksCategoryFilter;
+  if (!filter) return "";
+
+  const selected = filter.value || "";
+  filter.innerHTML = "";
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All categories";
+  filter.appendChild(allOption);
+  categories.forEach((category) => {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = category;
+    filter.appendChild(option);
+  });
+  filter.value = categories.includes(selected) ? selected : "";
+  return filter.value;
+}
+
 // The unified library view: on-device decks first, then any cloud decks that
 // aren't on this device yet (for signed-in, online users). `cloudById` (a Map,
 // or null before/without a cloud fetch) drives the per-deck Sync column.
-function renderMyDecksRows(localDecks, cloudById, { cloudOnly = [] } = {}) {
+function renderMyDecksRows(localDecks, cloudById, { cloudOnly = [], categories = webDeckCategories } = {}) {
   const tbody = el.myDecksListTable;
   if (!tbody) return;
   tbody.innerHTML = "";
-  localDecks.forEach((deck) => tbody.appendChild(buildLocalDeckRow(deck, cloudById)));
-  cloudOnly.forEach((deck) => tbody.appendChild(buildCloudDeckRow(deck)));
+  localDecks.forEach((deck) => tbody.appendChild(buildLocalDeckRow(deck, cloudById, categories)));
+  cloudOnly.forEach((deck) => tbody.appendChild(buildCloudDeckRow(deck, categories)));
+  updateMyDecksBulkBar();
 }
 
 async function renderMyDecksList() {
@@ -3224,10 +3296,14 @@ async function renderMyDecksList() {
 
   const canCloud = Boolean(supabaseClient && isSignedIn);
 
+  let categories = categoriesFromDecks(localDecks, webDeckCategories);
+  let selectedCategory = populateMyDecksCategoryFilter(categories);
+  const inCategory = (deck) => !selectedCategory || normalizeDeckCategory(deck.category) === selectedCategory;
+
   // Render on-device rows immediately (with a tentative Sync column) so the list
   // never waits on the network; the cloud fetch below re-renders with the real
   // sync state and appends any cloud-only decks.
-  renderMyDecksRows(localDecks, null);
+  renderMyDecksRows(localDecks.filter(inCategory), null, { categories });
 
   if (!(canCloud && navigator.onLine)) {
     if (!localDecks.length) {
@@ -3236,21 +3312,30 @@ async function renderMyDecksList() {
           ? "No decks on this device yet. Create or import a deck — it saves and syncs automatically."
           : "No decks yet. Create or import a deck to get started."
       );
+    } else if (!localDecks.filter(inCategory).length) {
+      tbody.innerHTML = myDecksEmptyRow("No decks in this category.");
     }
     return;
   }
 
   const loadingRow = document.createElement("tr");
-  loadingRow.innerHTML = `<td colspan="6" class="web-decks-empty">Checking the cloud for more decks…</td>`;
+  loadingRow.innerHTML = `<td colspan="7" class="web-decks-empty">Checking the cloud for more decks…</td>`;
   tbody.appendChild(loadingRow);
 
   try {
     const cloudDecks = await fetchCloudDeckList();
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudOnly = cloudDecks.filter((deck) => !localCloudIds.has(String(deck.id)) && !isDeckTombstoned(deck.id));
-    renderMyDecksRows(localDecks, cloudById, { cloudOnly });
+    categories = categoriesFromDecks([...localDecks, ...cloudOnly], webDeckCategories);
+    setKnownWebDeckCategories(categories);
+    selectedCategory = populateMyDecksCategoryFilter(categories);
+    const visibleLocal = localDecks.filter(inCategory);
+    const visibleCloudOnly = cloudOnly.filter(inCategory);
+    renderMyDecksRows(visibleLocal, cloudById, { cloudOnly: visibleCloudOnly, categories });
     if (!localDecks.length && !cloudOnly.length) {
       tbody.innerHTML = myDecksEmptyRow("No decks yet. Create or import a deck — it saves and syncs automatically.");
+    } else if (!visibleLocal.length && !visibleCloudOnly.length) {
+      tbody.innerHTML = myDecksEmptyRow("No decks in this category.");
     }
   } catch (error) {
     loadingRow.remove();
@@ -3259,14 +3344,6 @@ async function renderMyDecksList() {
       tbody.innerHTML = myDecksEmptyRow("No decks on this device yet. (Couldn't reach the cloud right now.)");
     }
   }
-}
-
-function saveCurrentDeckToDevice() {
-  const meta = saveDeckToLibrary();
-  if (!meta) return;
-  showToast(`Saved "${meta.title}" to device · ${meta.cardCount} cards`);
-  setStatus("Deck saved to this device.");
-  if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
 }
 
 function normalizeMarkdown(text) {
@@ -3716,8 +3793,13 @@ function parseCards(markdown) {
     return true;
   });
 
+  // Ids include a random suffix because card ids are the GLOBAL primary key in
+  // the cloud `cards` table (not scoped per deck): a purely index+question id
+  // collides whenever two decks are imported from similar (or the same)
+  // markdown, and the sync upsert would then silently reassign the existing
+  // row's deck_id — stealing the card from the other deck.
   return cards.map((card, index) => ({
-    id: `${index}-${card.question.slice(0, 32)}`,
+    id: `${index}-${card.question.slice(0, 24)}-${Math.random().toString(36).slice(2, 8)}`,
     question: card.question,
     answer: card.answer
   }));
@@ -4656,211 +4738,6 @@ function deleteAllCard(cardId) {
   }, { confirmLabel: "Delete", danger: true });
 }
 
-function updateBulkActionVisibility() {
-  const selectedCheckboxes = document.querySelectorAll(".web-deck-row-checkbox:checked");
-  const count = selectedCheckboxes.length;
-  const bulkBar = document.getElementById("webDecksBulkActions");
-  const countSpan = document.getElementById("selectedDecksCount");
-  
-  if (countSpan) countSpan.textContent = count;
-  
-  if (bulkBar) {
-    bulkBar.hidden = count === 0;
-  }
-
-  const allCheckboxes = document.querySelectorAll(".web-deck-row-checkbox");
-  if (el.selectAllWebDecksCheckbox && allCheckboxes.length > 0) {
-    el.selectAllWebDecksCheckbox.checked = selectedCheckboxes.length === allCheckboxes.length;
-    el.selectAllWebDecksCheckbox.indeterminate = selectedCheckboxes.length > 0 && selectedCheckboxes.length < allCheckboxes.length;
-  }
-}
-
-async function loadSelectedWebDecks(deckIds) {
-  if (!deckIds.length || !supabaseClient) return;
-  setStatus(`Loading ${deckIds.length} decks from web...`);
-  try {
-    const combinedCards = [];
-    const combinedStatusById = {};
-    const titles = [];
-    let combinedCategory = "";
-
-    for (const deckId of deckIds) {
-      const { data: deckData, error: deckError } = await supabaseClient
-        .from("decks")
-        .select("*")
-        .eq("id", deckId)
-        .single();
-      if (deckError) throw deckError;
-
-      const { data: cardsData, error: cardsError } = await supabaseClient
-        .from("cards")
-        .select("*")
-        .eq("deck_id", deckId)
-        .order("position", { ascending: true });
-      if (cardsError) throw cardsError;
-
-      titles.push(deckData.title || "Untitled");
-      if (!combinedCategory) {
-        combinedCategory = normalizeDeckCategory(deckData.category);
-      }
-
-      cardsData.forEach((rawCard, index) => {
-        const id = String(rawCard.id || `${index}-${rawCard.question.slice(0, 32)}`);
-        const status = normalizeCardStatus(rawCard.status);
-        if (status) {
-          combinedStatusById[id] = status;
-        }
-        combinedCards.push({ id, question: rawCard.question, answer: rawCard.answer });
-      });
-    }
-
-    state.deckId = null;
-    state.masterCards = combinedCards;
-    resetStudyDeck(state.masterCards);
-    state.statusById = combinedStatusById;
-    state.current = 0;
-    state.deckTitle = titles.join(" + ");
-    state.deckCategory = combinedCategory;
-    state.sourceTitle = state.deckTitle;
-    state.importTitleHint = state.deckTitle;
-
-    syncResults();
-    closeAllCardsPanel();
-    el.webDecksPanel.hidden = true;
-    unlockPageScroll();
-    showCard();
-    setStatus(`Successfully loaded ${deckIds.length} decks.`);
-    showToast(`Loaded ${deckIds.length} decks · ${combinedCards.length} cards`);
-  } catch (error) {
-    console.error("Failed to load selected web decks", error);
-    setStatus("Failed to load selected web decks.", "error");
-    showToast("Couldn't load selected decks", "error");
-  }
-}
-
-async function deleteSelectedWebDecks(deckIds) {
-  if (!deckIds.length || !supabaseClient) return;
-  showConfirmModal(
-    `Delete ${deckIds.length} selected ${deckIds.length === 1 ? "deck" : "decks"} from this device and the cloud? This cannot be undone.`,
-    async () => {
-      setStatus(`Deleting ${deckIds.length} decks...`);
-      try {
-        const localIndex = readLocalDeckIndex();
-        for (const deckId of deckIds) {
-          const localMeta = localIndex.find((m) => String(m.deckId) === String(deckId));
-          const { cloudError } = await deleteDeckEverywhere({ localId: localMeta?.id || null, deckId });
-          if (cloudError) throw cloudError;
-        }
-        setStatus(`Successfully deleted ${deckIds.length} decks.`);
-        showToast(`Deleted ${deckIds.length} decks everywhere`);
-        fetchWebDecks();
-        if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
-      } catch (error) {
-        console.error("Failed to delete selected web decks", error);
-        setStatus("Failed to delete selected web decks.", "error");
-        showToast("Couldn't delete selected decks", "error");
-      }
-    },
-    { confirmLabel: "Delete All", danger: true }
-  );
-}
-
-async function changeSelectedWebDecksCategory(deckIds) {
-  if (!deckIds.length || !supabaseClient) return;
-
-  showPromptModal("Set Category", `Apply to ${deckIds.length} selected decks`, "General", async (nextCategory) => {
-    const category = normalizeDeckCategory(nextCategory.trim());
-    if (!category) {
-      setStatus("Category cannot be empty.", "error");
-      return;
-    }
-    setStatus(`Updating category for ${deckIds.length} decks...`);
-    try {
-      for (const deckId of deckIds) {
-        await applyWebDeckCategory(deckId, category);
-        if (state.deckId === deckId) state.deckCategory = category;
-      }
-      updateMeta();
-      setStatus(`Updated category for ${deckIds.length} decks.`);
-      showToast(`Set category "${category}" on ${deckIds.length} decks`);
-      fetchWebDecks();
-    } catch (error) {
-      console.error("Failed to update selected decks category", error);
-      setStatus("Failed to update selected decks category.", "error");
-      showToast("Couldn't update categories", "error");
-    }
-  });
-}
-
-async function exportSelectedWebDecks(deckIds, format) {
-  if (!deckIds.length || !supabaseClient) return;
-
-  try {
-    setStatus(`Exporting ${deckIds.length} web decks...`);
-    const payloads = [];
-    for (const deckId of deckIds) {
-      const payload = await fetchWebDeckPayload(deckId);
-      payloads.push(payload);
-    }
-
-    if (format === "pdf") {
-      const cards = [];
-      const statusById = {};
-      payloads.forEach((payload) => {
-        cards.push({
-          type: "deck-divider",
-          title: payload.deck.title,
-          category: payload.deck.category
-        });
-        payload.cards.forEach((card) => {
-          const id = `${payload.deck.id}:${card.id}`;
-          cards.push({
-            id,
-            question: card.question,
-            answer: card.answer,
-            position: cards.length
-          });
-          const status = normalizeCardStatus(card.status);
-          if (status) statusById[id] = status;
-        });
-      });
-      await exportCardsPdf("Selected Web Decks", cards, { fileBaseName: "selected-web-decks", statusById });
-    } else if (format === "markdown") {
-      downloadTextFile(
-        payloads.map(webDeckPayloadMarkdown).join("\n\n---\n\n"),
-        "selected-web-decks.md",
-        "text/markdown;charset=utf-8"
-      );
-      setStatus("Exported selected web decks as Markdown.");
-    } else if (format === "sql") {
-      downloadTextFile(buildDeckSql(payloads, "Selected Web Decks SQL Export"), "selected-web-decks.sql", "application/sql;charset=utf-8");
-      setStatus("Exported selected web decks as SQL.");
-    } else {
-      downloadTextFile(
-        `${JSON.stringify({
-          app: "recall",
-          version: 1,
-          exportedAt: new Date().toISOString(),
-          decks: payloads.map(deckPayloadSnapshot)
-        }, null, 2)}\n`,
-        "selected-web-decks.json",
-        "application/json;charset=utf-8"
-      );
-      setStatus("Exported selected web decks as JSON.");
-    }
-    
-    if (format !== "pdf") showToast(`Exported ${deckIds.length} decks as ${format.toUpperCase()}`);
-    for (const deckId of deckIds) {
-      await touchWebDeckAccess(deckId);
-    }
-    fetchWebDecks();
-  } catch (error) {
-    console.error("Failed to export selected web decks", error);
-    setStatus("Failed to export selected web decks.", "error");
-    showToast("Export failed", "error");
-  }
-}
-
 function setAllCardStatus(cardId, status) {
   if (state.statusById[cardId] === status) {
     delete state.statusById[cardId];
@@ -4874,7 +4751,10 @@ function setAllCardStatus(cardId, status) {
 }
 
 function createBlankCard() {
-  return { id: 'card-' + Date.now(), question: '', answer: '' };
+  // Random suffix: bare Date.now() collides when two cards are added within
+  // the same millisecond (rapid double-click on Add), and card ids must be
+  // globally unique in the cloud (see parseCards).
+  return { id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, question: '', answer: '' };
 }
 
 function refreshAllCardsAround(cardId, side = "question") {
@@ -5140,6 +5020,10 @@ function saveAllCardEditor(item) {
 
   card[side] = value;
   updateMeta();
+  // showCard (below) schedules an autosave, but only runs when the edited card
+  // is the one on screen — schedule explicitly so edits to any other card are
+  // persisted too instead of waiting for the next navigation/tab-hide flush.
+  scheduleDeckAutosave();
   if (state.cards[state.current]?.id === card.id || state.previewCard?.id === card.id) {
     showCard();
   }
@@ -5340,7 +5224,9 @@ function updateMeta() {
 
   const disabled = !state.previewCard && (total === 0 || state.current >= total);
   el.prevCardBtn.disabled = Boolean(state.previewCard) || total === 0 || state.current <= 0;
-  el.nextCardBtn.disabled = Boolean(state.previewCard) || total === 0 || state.current >= total - 1;
+  // Next stays enabled on the LAST card — one more step shows the end-of-deck
+  // summary (same as swiping/arrow keys); it only disables on the summary itself.
+  el.nextCardBtn.disabled = Boolean(state.previewCard) || total === 0 || state.current >= total;
   el.knownBtn.disabled = disabled;
   el.reviewBtn.disabled = disabled;
   el.shuffleBtn.disabled = total < 2;
@@ -5353,6 +5239,7 @@ function updateMeta() {
   el.replayAllBtn.disabled = state.masterCards.length === 0;
   if (el.viewModeToggle) el.viewModeToggle.hidden = !hasDeck;
   if (el.notesBtn) el.notesBtn.disabled = !hasDeck;
+  if (el.exportNotesBtn) el.exportNotesBtn.disabled = !hasDeck || !state.notes.trim();
   if (!hasDeck && state.viewMode === "notes") setViewMode("cards");
 }
 
@@ -5431,6 +5318,7 @@ el.editNotesBtn?.addEventListener("click", () => {
 
 el.notesEdit?.addEventListener("input", () => {
   state.notes = el.notesEdit.value;
+  if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
   scheduleDeckAutosave();
 });
 
@@ -6405,8 +6293,10 @@ async function loadSelectedImportDecks() {
     combinedCards = combinedCards.concat(deck.cards);
   });
 
+  // Random suffix for the same reason as parseCards: card ids are globally
+  // unique in the cloud, so deterministic index+question ids collide across decks.
   const cards = combinedCards.map((card, index) => ({
-    id: `${index}-${card.question.slice(0, 32)}`,
+    id: `${index}-${card.question.slice(0, 24)}-${Math.random().toString(36).slice(2, 8)}`,
     question: card.question,
     answer: card.answer
   }));
@@ -6659,7 +6549,8 @@ function deckSnapshot() {
 
 function clearBrowserPersistence() {
   try {
-    localStorage.removeItem(themeStorageKey);
+    // themeStorageKey is intentionally kept — setTheme saves the user's theme
+    // choice there and initAppForUser restores it on the next boot.
     localStorage.removeItem("flashcards_style_cache");
     // deckStorageKey is cleared on every boot — a refresh should start on the
     // clean home screen, not reopen the last deck. Only credentials, the saved
@@ -7025,7 +6916,14 @@ async function pullCloudDeckToLibrary(cloud) {
   // reports its total card count instead of an add/edit/delete breakdown.
   let stats;
   const oldRaw = existing ? localStorage.getItem(LOCAL_DECK_PREFIX + localId) : null;
-  const oldSnapshot = oldRaw ? JSON.parse(oldRaw) : null;
+  let oldSnapshot = null;
+  // A corrupt snapshot must not abort the pull — it's about to be overwritten
+  // with fresh cloud data anyway; only the report's diff falls back to "all new".
+  try {
+    oldSnapshot = oldRaw ? JSON.parse(oldRaw) : null;
+  } catch {
+    oldSnapshot = null;
+  }
   if (oldSnapshot) {
     const oldStatusById = Object.fromEntries((oldSnapshot.cards || []).map((c) => [String(c.id), c.status]));
     // calculateSyncDiff(local, web) reports "added" as local-only and
@@ -7208,11 +7106,10 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       if (remoteDeletedSet.has(String(tid))) {
         clearDeckTombstone(tid); // fully propagated — safe to forget
       } else {
-        try {
-          await supabaseClient.from("deleted_decks").upsert({ deck_id: tid });
-        } catch (e) {
-          console.warn("Retry of cross-device delete tombstone failed", tid, e);
-        }
+        // supabase-js reports failures via the returned `error`, not by
+        // throwing — check it, or a failed write looks like success.
+        const { error: retryError } = await supabaseClient.from("deleted_decks").upsert({ deck_id: tid });
+        if (retryError) console.warn("Retry of cross-device delete tombstone failed", tid, retryError);
       }
     }
 
@@ -7222,11 +7119,8 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       // race with an in-flight sync, or another device that re-pushed it. Don't
       // pull it back; re-assert the deletion in the cloud instead.
       if (isDeckTombstoned(cloud.id)) {
-        try {
-          await supabaseClient.from("decks").delete().eq("id", cloud.id);
-        } catch (e) {
-          console.warn("Tombstone re-delete failed", cloud.id, e);
-        }
+        const { error: redeleteError } = await supabaseClient.from("decks").delete().eq("id", cloud.id);
+        if (redeleteError) console.warn("Tombstone re-delete failed", cloud.id, redeleteError);
         continue;
       }
       const localMeta = readLocalDeckIndex().find((m) => String(m.deckId) === String(cloud.id));
@@ -7653,11 +7547,11 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
     // resurrect. A failed write here (offline blip, or unmigrated project with
     // no deleted_decks table) is retried by reconcileAllDecks while the local
     // tombstone persists, so the deletion still eventually propagates.
-    try {
-      await supabaseClient.from("deleted_decks").upsert({ deck_id: deckId });
-    } catch (e) {
-      console.warn("Could not record cross-device delete tombstone", e);
-    }
+    // supabase-js reports failures via the returned `error`, not by throwing.
+    // A failed write here is retried by reconcileAllDecks while the local
+    // tombstone persists, so the deletion still eventually propagates.
+    const { error: tombstoneError } = await supabaseClient.from("deleted_decks").upsert({ deck_id: deckId });
+    if (tombstoneError) console.warn("Could not record cross-device delete tombstone", tombstoneError);
     const { error } = await supabaseClient.from("decks").delete().eq("id", deckId);
     cloudError = error || null;
   }
@@ -7753,10 +7647,6 @@ function exportJson() {
   link.remove();
   URL.revokeObjectURL(url);
   setStatus("Exported all cards and markers as JSON.");
-}
-
-function contentFits(node) {
-  return node.scrollHeight <= node.clientHeight + 1 && node.scrollWidth <= node.clientWidth + 1;
 }
 
 function fitLiveQuestion() {
@@ -7894,50 +7784,6 @@ function scheduleLiveQuestionFit() {
   });
 }
 
-function fitPrintNode(node) {
-  node.style.transform = "";
-  node.style.width = "";
-
-  const shouldGrow = node.classList.contains("fit-question");
-  const settings = normalizeStyleSettings(state.styleSettings);
-  const answerFontSize = parseFloat(settings.answerFontSize) || parseFloat(styleDefaults.answerFontSize);
-  const fillRatio = Math.min(Math.max((parseFloat(settings.questionFillPercent) || parseFloat(styleDefaults.questionFillPercent)) / 100, 0.1), 0.95);
-  const lineHeight = parseFloat(settings.questionLineHeight) || parseFloat(styleDefaults.questionLineHeight) || 1.18;
-  const maxQuestionFontSize = numericStyleValue(settings.questionMaxFontSize) ?? numericStyleValue(styleDefaults.questionMaxFontSize) ?? 64;
-  const questionUpper = Math.max(1, Math.min(maxQuestionFontSize, 220, node.clientHeight * fillRatio / Math.max(lineHeight, 0.1), Math.max(node.clientWidth, 1)));
-
-  if (!shouldGrow && contentFits(node)) return;
-
-  let low = shouldGrow ? 1 : 4;
-  let high = shouldGrow ? questionUpper : Math.max(4, answerFontSize);
-  let best = low;
-
-  for (let index = 0; index < 10; index += 1) {
-    const mid = (low + high) / 2;
-    node.style.fontSize = `${mid}px`;
-    if (contentFits(node)) {
-      best = mid;
-      low = mid;
-    } else {
-      high = mid;
-    }
-  }
-
-  node.style.fontSize = `${Math.max(low, best - 0.5)}px`;
-
-  if (!contentFits(node)) {
-    const xScale = node.clientWidth / Math.max(node.scrollWidth, 1);
-    const yScale = node.clientHeight / Math.max(node.scrollHeight, 1);
-    const scale = Math.max(0.35, Math.min(xScale, yScale, 1) - 0.02);
-    node.style.width = `${100 / scale}%`;
-    node.style.transform = `scale(${scale})`;
-  }
-}
-
-function fitPrintPages() {
-  el.printRoot.querySelectorAll(".fit-content").forEach(fitPrintNode);
-}
-
 function afterPaint() {
   return new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -8050,6 +7896,323 @@ function buildCornellPrintDocument(title, cards, scope, options = {}) {
       </section>
     </div>
   `;
+}
+
+// ── Standalone HTML / Word (.doc) export ────────────────────────────────
+// A flat, non-Cornell layout (no flex/table trickery) so the same markup
+// reads fine both as a self-contained HTML file and inside Word's HTML
+// filter, which ignores modern layout CSS. Math/Mermaid/Nomnoml are baked
+// to static markup by rendering off-screen in el.printRoot first, same as
+// the Cornell PDF flow, so the exported file needs no JS to display right.
+let cachedExportStylesheetCss = null;
+
+async function fetchExportStylesheetCss() {
+  if (cachedExportStylesheetCss != null) return cachedExportStylesheetCss;
+  const hrefs = Array.from(document.querySelectorAll('link[rel="stylesheet"][href]')).map((link) => link.href);
+  const chunks = await Promise.all(hrefs.map(async (href) => {
+    try {
+      const response = await fetch(href);
+      if (!response.ok) return "";
+      return await response.text();
+    } catch (error) {
+      console.warn("Could not inline stylesheet for standalone export:", href, error);
+      return "";
+    }
+  }));
+  cachedExportStylesheetCss = chunks.join("\n");
+  return cachedExportStylesheetCss;
+}
+
+// Reuses the app's live theme tokens (--bg/--text/--card/--line), scoped by
+// the data-theme attribute the wrapper documents set on <html>, so a
+// standalone HTML export opens looking like whatever theme was active when
+// it was exported instead of always the print palette. The literal fallback
+// after each var() only helps real browsers if the variable somehow doesn't
+// resolve — Word's HTML engine doesn't parse var() at all, so it just drops
+// these rules and falls back to plain black-on-white, which is fine.
+function flatExportExtraCss() {
+  return `
+    html, body { margin: 0; background: var(--bg, #eef2f2); color: var(--text, #17201c); }
+    body { padding: 24px; font-family: var(--app-font-family, Arial, Helvetica, sans-serif); }
+    .flat-export-document { max-width: 900px; margin: 0 auto; }
+    .flat-export-cover { margin-bottom: 24px; border-bottom: 2px solid var(--line, #b9c9c5); padding-bottom: 12px; }
+    .flat-export-cover h1 { margin: 0 0 6px; font-size: 1.6em; }
+    .flat-export-cover p { margin: 0; opacity: .7; }
+    .flat-export-card {
+      border: 1px solid var(--line, #b9c9c5);
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 18px;
+      background: var(--card, #ffffff);
+      page-break-inside: avoid;
+    }
+    .flat-export-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      opacity: .6;
+      margin-bottom: 6px;
+    }
+    .flat-export-question { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--line, #b9c9c5); }
+    .flat-export-divider {
+      border: 1px dashed var(--line, #b9c9c5);
+      border-radius: 10px;
+      padding: 10px 14px;
+      margin: 22px 0;
+      text-align: center;
+    }
+    .flat-export-divider span { display: block; font-size: 11px; text-transform: uppercase; opacity: .6; }
+    .flat-export-divider h2 { margin: 4px 0; }
+    .flat-export-notes { padding-top: 4px; }
+    img { max-width: 100%; }
+  `;
+}
+
+async function buildExportStyleTag() {
+  const css = await fetchExportStylesheetCss();
+  return `<style>${css}\n${flatExportExtraCss()}</style>`;
+}
+
+function flatCardHtml(card, index, { statusById = state.statusById } = {}) {
+  const status = normalizeCardStatus(statusById[card.id] || card.status);
+  const statusLabel = cardStatusLabel(status);
+  return `
+    <article class="flat-export-card">
+      <div class="flat-export-question">
+        <span class="flat-export-label">${cardOrdinalLabel(index)} &middot; ${escapeHtml(statusLabel)}</span>
+        <div class="rendered">${markdownToSafeHtml(card.question)}</div>
+      </div>
+      <div class="flat-export-answer">
+        <span class="flat-export-label">Answer</span>
+        <div class="rendered">${markdownToSafeHtml(card.answer)}</div>
+      </div>
+    </article>
+  `;
+}
+
+function flatDeckDividerHtml(entry) {
+  return `
+    <div class="flat-export-divider">
+      <span>Deck</span>
+      <h2>${escapeHtml(entry.title || "Untitled")}</h2>
+      <p>Category: ${escapeHtml(normalizeDeckCategory(entry.category))}</p>
+    </div>
+  `;
+}
+
+function buildFlatCardsDocument(title, cards, options = {}) {
+  const total = printableCardCount(cards);
+  const sourceTitle = options.sourceTitle || state.deckTitle || state.sourceTitle || "Recall";
+  const statusById = options.statusById || state.statusById;
+  let cardIndex = 0;
+  const cardsHtml = cards.map((entry) => {
+    if (isPrintDeckDivider(entry)) return flatDeckDividerHtml(entry);
+    const html = flatCardHtml(entry, cardIndex, { statusById });
+    cardIndex += 1;
+    return html;
+  }).join("\n");
+  return `
+    <header class="flat-export-cover">
+      <h1>${escapeHtml(sourceTitle)}</h1>
+      <p>${escapeHtml(title)} &middot; ${total} ${total === 1 ? "card" : "cards"} &middot; ${new Date().toLocaleString()}</p>
+    </header>
+    <section class="flat-export-cards" aria-label="${escapeHtml(title)} cards">
+      ${cardsHtml}
+    </section>
+  `;
+}
+
+function buildNotesExportBody(title, notesMarkdown) {
+  return `
+    <header class="flat-export-cover">
+      <h1>${escapeHtml(title)}</h1>
+      <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+    </header>
+    <section class="flat-export-notes rendered">
+      ${markdownToSafeHtml(notesMarkdown)}
+    </section>
+  `;
+}
+
+// Notes have no Cornell table (no fixed question/answer columns), so unlike
+// the card PDF they just flow as regular paragraphs — the layout that was
+// splitting oddly across pages for cards was the fixed-height Cornell rows,
+// which don't apply here.
+function buildNotesPrintDocument(title, notesMarkdown) {
+  return `
+    <div class="print-preview-actions" data-print-ui>
+      <button type="button" data-print-close>Close</button>
+      <button type="button" data-print-now>Download PDF</button>
+    </div>
+    <div class="cornell-print-document">
+      <header class="cornell-print-cover">
+        <div>
+          <h1>${escapeHtml(title)}</h1>
+          <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+        </div>
+      </header>
+      <section class="rendered" aria-label="${escapeHtml(title)} notes">
+        ${markdownToSafeHtml(notesMarkdown)}
+      </section>
+    </div>
+  `;
+}
+
+// Renders off-screen in el.printRoot (same trick exportCardsPdf uses) so
+// math/diagrams are baked to static markup, then hands back plain HTML.
+// Word only ever sees the file we hand it (no live network fetch the way a
+// browser does while printing), and a saved standalone HTML file is meant to
+// keep working with no connection at all — so every <img src> pointing at a
+// remote URL gets pulled down once here and turned into a data: URI.
+async function embedImagesAsDataUris(container) {
+  const images = Array.from(container.querySelectorAll("img[src]"));
+  await Promise.all(images.map(async (img) => {
+    const src = img.getAttribute("src");
+    if (!src || src.startsWith("data:")) return;
+    try {
+      const response = await fetch(src, { mode: "cors" });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+      img.setAttribute("src", dataUrl);
+    } catch (error) {
+      console.warn("Could not embed image for export (kept as a link):", src, error);
+    }
+  }));
+}
+
+async function prepareExportHtml(bodyHtml) {
+  el.printRoot.innerHTML = bodyHtml;
+  el.printRoot.classList.remove("is-preview");
+  el.printRoot.classList.add("is-preparing");
+  el.printRoot.setAttribute("aria-hidden", "true");
+  configureMermaid("print");
+  try {
+    await enhanceRenderedMarkdown(el.printRoot);
+  } finally {
+    configureMermaid(currentThemeId());
+  }
+  await embedImagesAsDataUris(el.printRoot);
+  await (document.fonts?.ready || Promise.resolve());
+  await afterPaint();
+  const html = el.printRoot.innerHTML;
+  el.printRoot.innerHTML = "";
+  el.printRoot.classList.remove("is-preparing");
+  el.printRoot.setAttribute("aria-hidden", "true");
+  return html;
+}
+
+async function wrapStandaloneHtmlDocument(bodyHtml, title) {
+  const styleTag = await buildExportStyleTag();
+  return `<!doctype html>
+<html lang="en" data-theme="${escapeHtml(currentThemeId())}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+${styleTag}
+</head>
+<body>
+<div class="flat-export-document">
+${bodyHtml}
+</div>
+</body>
+</html>`;
+}
+
+async function wrapWordDocument(bodyHtml, title) {
+  const styleTag = await buildExportStyleTag();
+  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40" data-theme="${escapeHtml(currentThemeId())}">
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(title)}</title>
+<!--[if gte mso 9]>
+<xml><w:WordDocument><w:View>Print</w:View><w:DoNotOptimizeForBrowser/></w:WordDocument></xml>
+<![endif]-->
+${styleTag}
+</head>
+<body>
+<div class="flat-export-document">
+${bodyHtml}
+</div>
+</body>
+</html>`;
+}
+
+async function exportCardsFlat(scope, format) {
+  const cards = cardsForScope(scope);
+  const title = scopeTitle(scope);
+  if (!printableCardCount(cards)) {
+    setStatus(`No ${scope === "review" ? "review" : scope} cards to export.`, "error");
+    return;
+  }
+  const formatLabel = format === "doc" ? "Word" : "standalone HTML";
+  setStatus(`Preparing ${title.toLowerCase()} ${formatLabel} export...`);
+  el.exportBtn.disabled = true;
+  try {
+    const bodyHtml = await prepareExportHtml(buildFlatCardsDocument(title, cards, { sourceTitle: state.deckTitle || state.sourceTitle }));
+    const docTitle = exportBaseName(scope);
+    if (format === "doc") {
+      const html = await wrapWordDocument(bodyHtml, docTitle);
+      downloadTextFile(html, `${docTitle}.doc`, "application/msword;charset=utf-8");
+    } else {
+      const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
+      downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
+    }
+    setStatus(`Exported ${title.toLowerCase()} as ${formatLabel}.`);
+  } catch (error) {
+    console.error("Cards export failed", error);
+    setStatus("Could not prepare the export.", "error");
+  } finally {
+    el.exportBtn.disabled = false;
+  }
+}
+
+function notesExportBaseName() {
+  return `${slugifyFileName(state.deckTitle || state.sourceTitle || "recall")} - notes`;
+}
+
+async function exportNotesFlat(format) {
+  const notes = state.notes || "";
+  if (!notes.trim()) {
+    setStatus("No notes to export.", "error");
+    return;
+  }
+  const title = state.deckTitle || "Notes";
+  const docTitle = notesExportBaseName();
+
+  if (format === "markdown") {
+    downloadTextFile(`# ${title}\n\n${notes.trim()}\n`, `${docTitle}.md`, "text/markdown;charset=utf-8");
+    setStatus("Exported notes as Markdown.");
+    return;
+  }
+
+  const formatLabel = format === "doc" ? "Word" : "standalone HTML";
+  setStatus(`Preparing notes ${formatLabel} export...`);
+  if (el.exportNotesBtn) el.exportNotesBtn.disabled = true;
+  try {
+    const bodyHtml = await prepareExportHtml(buildNotesExportBody(title, notes));
+    if (format === "doc") {
+      const html = await wrapWordDocument(bodyHtml, docTitle);
+      downloadTextFile(html, `${docTitle}.doc`, "application/msword;charset=utf-8");
+    } else {
+      const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
+      downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
+    }
+    setStatus(`Exported notes as ${formatLabel}.`);
+  } catch (error) {
+    console.error("Notes export failed", error);
+    setStatus("Could not prepare the notes export.", "error");
+  } finally {
+    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
+  }
 }
 
 function markOversizePrintRows() {
@@ -8391,11 +8554,65 @@ function handleExportAction(format, scope) {
     exportSql(scope);
     return;
   }
+  if (format === "html" || format === "doc") {
+    exportCardsFlat(scope, format);
+    return;
+  }
   exportMarkdown(scope);
 }
 
-function exportResults() {
-  exportMarkdown("all");
+async function exportNotesPdf() {
+  const notes = state.notes || "";
+  if (!notes.trim()) {
+    setStatus("No notes to export as PDF.", "error");
+    return;
+  }
+  const title = state.deckTitle || "Notes";
+
+  setStatus("Preparing notes PDF...");
+  if (el.exportNotesBtn) el.exportNotesBtn.disabled = true;
+  el.printRoot.innerHTML = "";
+  el.printRoot.classList.add("is-preparing");
+  el.printRoot.classList.remove("is-preview");
+  el.printRoot.setAttribute("aria-hidden", "true");
+  printTitleBeforeExport = document.title;
+  document.title = notesExportBaseName();
+  try {
+    await afterPaint();
+    el.printRoot.innerHTML = buildNotesPrintDocument(title, notes);
+    configureMermaid("print");
+    try {
+      await enhanceRenderedMarkdown(el.printRoot);
+    } finally {
+      configureMermaid(currentThemeId());
+    }
+    await (document.fonts?.ready || Promise.resolve());
+    await afterPaint();
+
+    installPdfPrintStyle();
+    el.printRoot.classList.remove("is-preparing");
+    el.printRoot.classList.add("is-preview");
+    el.printRoot.setAttribute("aria-hidden", "false");
+    printPreviewOpen = true;
+    lockPageScroll();
+    setStatus("Notes PDF preview is ready. Use Download PDF.");
+  } catch (error) {
+    console.error("Notes PDF export failed", error);
+    closePrintPreview();
+    setStatus("Could not prepare the notes PDF export.", "error");
+  } finally {
+    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
+  }
+}
+
+function handleExportNotesAction(format) {
+  if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
+  if (format === "pdf") {
+    setStatus("Opening notes PDF export...");
+    window.setTimeout(() => exportNotesPdf(), 0);
+    return;
+  }
+  exportNotesFlat(format);
 }
 
 async function fetchText(url) {
@@ -9095,18 +9312,7 @@ function installManifestLink() {
   document.head.appendChild(link);
 }
 
-function setDeckMenuOpen(open) {
-  if (!el.deckMenu || !el.deckMenuBtn) return;
-  el.deckMenu.hidden = !open;
-  el.deckMenuBtn.setAttribute("aria-expanded", String(open));
-}
-
-function closeDeckMenu() {
-  setDeckMenuOpen(false);
-}
-
 function createNewDeck() {
-  closeDeckMenu();
   const doCreate = () => {
     deckAutosaveStorageFailed = false;
     state.deckId = null;
@@ -9204,14 +9410,9 @@ document.getElementById("loginChangeProjectBtn")?.addEventListener("click", () =
 
 document.getElementById("logoutBtn")?.addEventListener("click", handleLogout);
 
-document.getElementById("closeWebDecksBtn")?.addEventListener("click", () => {
-  el.webDecksPanel.hidden = true;
-  unlockPageScroll();
-});
 document.getElementById("cancelSyncBtn")?.addEventListener("click", () => {
   el.syncModal.hidden = true;
 });
-document.getElementById("refreshWebDecksBtn")?.addEventListener("click", () => fetchWebDecks({ toast: true }));
 
 el.parseBtn.addEventListener("click", () => buildCards());
 el.sampleBtn.addEventListener("click", loadSample);
@@ -9220,15 +9421,12 @@ el.urlInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") fetchUrl();
 });
 el.importBtn.addEventListener("click", () => {
-  closeDeckMenu();
   openImportPanel();
 });
 el.myDecksBtn?.addEventListener("click", () => {
-  closeDeckMenu();
   openMyDecksPanel();
 });
 el.syncNowBtn?.addEventListener("click", () => {
-  closeDeckMenu();
   reconcileAllDecks({ explicit: true });
 });
 el.closeMyDecksBtn?.addEventListener("click", closeMyDecksPanel);
@@ -9240,86 +9438,75 @@ el.selectAllImportSelectorCheckbox.addEventListener("change", toggleAllImportSel
 el.importSelectorLoadBtn.addEventListener("click", loadSelectedImportDecks);
 el.editDeckTitleBtn.addEventListener("click", editCurrentDeckTitle);
 el.editDeckCategoryBtn?.addEventListener("click", editCurrentDeckCategory);
-el.webDeckCategoryFilter?.addEventListener("change", fetchWebDecks);
 
-// Web Decks selection & bulk actions event listener initialization
-el.selectAllWebDecksCheckbox?.addEventListener("change", (e) => {
+// ── My Decks: selection, bulk actions, category filter, export-all ─────────
+el.myDecksCategoryFilter?.addEventListener("change", () => renderMyDecksList());
+
+el.myDecksSelectAllCheckbox?.addEventListener("change", (e) => {
   const checked = e.target.checked;
-  document.querySelectorAll(".web-deck-row-checkbox").forEach((cb) => {
+  el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox").forEach((cb) => {
     cb.checked = checked;
   });
-  updateBulkActionVisibility();
+  updateMyDecksBulkBar();
 });
 
-const bulkLoadBtn = document.getElementById("bulkLoadBtn");
-if (bulkLoadBtn) {
-  bulkLoadBtn.addEventListener("click", () => {
-    const selectedIds = Array.from(document.querySelectorAll(".web-deck-row-checkbox:checked")).map(cb => cb.dataset.deckId);
-    if (selectedIds.length > 0) {
-      loadSelectedWebDecks(selectedIds);
-    }
-  });
-}
+document.getElementById("myDecksBulkLoadBtn")?.addEventListener("click", () => {
+  const selections = selectedMyDecks();
+  if (selections.length) loadSelectedMyDecks(selections);
+});
 
-const bulkCategoryBtn = document.getElementById("bulkCategoryBtn");
-if (bulkCategoryBtn) {
-  bulkCategoryBtn.addEventListener("click", () => {
-    const selectedIds = Array.from(document.querySelectorAll(".web-deck-row-checkbox:checked")).map(cb => cb.dataset.deckId);
-    if (selectedIds.length > 0) {
-      changeSelectedWebDecksCategory(selectedIds);
-    }
-  });
-}
+document.getElementById("myDecksBulkCategoryBtn")?.addEventListener("click", () => {
+  const selections = selectedMyDecks();
+  if (selections.length) categorizeSelectedMyDecks(selections);
+});
 
-const bulkDeleteBtn = document.getElementById("bulkDeleteBtn");
-if (bulkDeleteBtn) {
-  bulkDeleteBtn.addEventListener("click", () => {
-    const selectedIds = Array.from(document.querySelectorAll(".web-deck-row-checkbox:checked")).map(cb => cb.dataset.deckId);
-    if (selectedIds.length > 0) {
-      deleteSelectedWebDecks(selectedIds);
-    }
-  });
-}
+document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () => {
+  const selections = selectedMyDecks();
+  if (selections.length) deleteSelectedMyDecks(selections);
+});
 
-const bulkExportBtn = document.getElementById("bulkExportBtn");
-const bulkExportMenu = document.getElementById("bulkExportMenu");
-if (bulkExportBtn && bulkExportMenu) {
-  bulkExportBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const shouldOpen = bulkExportMenu.hidden;
-    closeWebDeckExportMenus(bulkExportMenu);
-    bulkExportMenu.hidden = !shouldOpen;
-    bulkExportBtn.setAttribute("aria-expanded", String(shouldOpen));
-  });
-
-  bulkExportMenu.querySelectorAll("[data-bulk-export]").forEach(btn => {
-    btn.addEventListener("click", (e) => {
+{
+  const bulkExportBtn = document.getElementById("myDecksBulkExportBtn");
+  const bulkExportMenu = document.getElementById("myDecksBulkExportMenu");
+  if (bulkExportBtn && bulkExportMenu) {
+    bulkExportBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      bulkExportMenu.hidden = true;
-      bulkExportBtn.setAttribute("aria-expanded", "false");
-      const format = btn.dataset.bulkExport;
-      const selectedIds = Array.from(document.querySelectorAll(".web-deck-row-checkbox:checked")).map(cb => cb.dataset.deckId);
-      if (selectedIds.length > 0) {
-        exportSelectedWebDecks(selectedIds, format);
-      }
+      const shouldOpen = bulkExportMenu.hidden;
+      closeWebDeckExportMenus(bulkExportMenu);
+      bulkExportMenu.hidden = !shouldOpen;
+      bulkExportBtn.setAttribute("aria-expanded", String(shouldOpen));
     });
-  });
+    bulkExportMenu.querySelectorAll("[data-bulk-export]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        bulkExportMenu.hidden = true;
+        bulkExportBtn.setAttribute("aria-expanded", "false");
+        const selections = selectedMyDecks();
+        if (selections.length) exportSelectedMyDecks(selections, btn.dataset.bulkExport);
+      });
+    });
+  }
+
+  const exportAllBtn = document.getElementById("myDecksExportAllBtn");
+  const exportAllMenu = document.getElementById("myDecksExportAllMenu");
+  if (exportAllBtn && exportAllMenu) {
+    exportAllBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const shouldOpen = exportAllMenu.hidden;
+      closeWebDeckExportMenus(exportAllMenu);
+      exportAllMenu.hidden = !shouldOpen;
+      exportAllBtn.setAttribute("aria-expanded", String(shouldOpen));
+    });
+    exportAllMenu.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-export-all]");
+      if (!button) return;
+      event.stopPropagation();
+      exportAllMenu.hidden = true;
+      exportAllBtn.setAttribute("aria-expanded", "false");
+      exportAllMyDecks(button.dataset.exportAll);
+    });
+  }
 }
-el.globalWebExportBtn?.addEventListener("click", (event) => {
-  event.stopPropagation();
-  const shouldOpen = el.globalWebExportMenu?.hidden;
-  closeWebDeckExportMenus(el.globalWebExportMenu);
-  if (el.globalWebExportMenu) el.globalWebExportMenu.hidden = !shouldOpen;
-  el.globalWebExportBtn.setAttribute("aria-expanded", String(Boolean(shouldOpen)));
-});
-el.globalWebExportMenu?.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-global-web-export]");
-  if (!button) return;
-  event.stopPropagation();
-  el.globalWebExportMenu.hidden = true;
-  el.globalWebExportBtn?.setAttribute("aria-expanded", "false");
-  exportAllWebDecks(button.dataset.globalWebExport);
-});
 el.styleBtn.addEventListener("click", openStylePanel);
 el.closeStyleBtn.addEventListener("click", closeStylePanel);
 el.applyStyleBtn.addEventListener("click", () => applyCurrentStyleSettings());
@@ -9358,10 +9545,6 @@ el.allCardsPanel.addEventListener("wheel", handleStylePanelWheel, { passive: fal
 el.importPanel.addEventListener("touchstart", handleStylePanelTouchStart, { passive: true });
 el.importPanel.addEventListener("touchmove", handleStylePanelTouchMove, { passive: false });
 el.importPanel.addEventListener("wheel", handleStylePanelWheel, { passive: false });
-
-el.webDecksPanel.addEventListener("touchstart", handleStylePanelTouchStart, { passive: true });
-el.webDecksPanel.addEventListener("touchmove", handleStylePanelTouchMove, { passive: false });
-el.webDecksPanel.addEventListener("wheel", handleStylePanelWheel, { passive: false });
 
 if (el.myDecksPanel) {
   el.myDecksPanel.addEventListener("touchstart", handleStylePanelTouchStart, { passive: true });
@@ -9441,13 +9624,23 @@ el.allCardsList.addEventListener("keydown", (event) => {
 });
 el.exportBtn.addEventListener("click", (event) => {
   event.stopPropagation();
-  closeDeckMenu();
+  if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
   el.exportMenu.hidden = !el.exportMenu.hidden;
 });
 el.exportMenu.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-export]");
   if (!button) return;
   handleExportAction(button.dataset.export, button.dataset.scope);
+});
+el.exportNotesBtn?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  el.exportMenu.hidden = true;
+  el.exportNotesMenu.hidden = !el.exportNotesMenu.hidden;
+});
+el.exportNotesMenu?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-export-notes]");
+  if (!button) return;
+  handleExportNotesAction(button.dataset.exportNotes);
 });
 el.printRoot.addEventListener("click", (event) => {
   if (event.target.closest("[data-print-close]")) {
@@ -9543,8 +9736,14 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     flipCard();
   }
-  if (event.key === "ArrowRight") navigateCard(1, "next");
-  if (event.key === "ArrowLeft") navigateCard(-1, "prev");
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    if (event.key === "ArrowDown") event.preventDefault(); // don't also scroll the page
+    navigateCard(1, "next");
+  }
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    if (event.key === "ArrowUp") event.preventDefault();
+    navigateCard(-1, "prev");
+  }
   if (event.key === "k" || event.key === "K") moveCard("known");
   if (event.key === "r" || event.key === "R") moveCard("review");
 });
@@ -9555,13 +9754,12 @@ document.addEventListener("click", (event) => {
   }
   if (!event.target.closest(".web-deck-export-wrap, .web-decks-global-export, .bulk-export-dropdown")) {
     closeWebDeckExportMenus();
-    el.globalWebExportBtn?.setAttribute("aria-expanded", "false");
-    const bulkExportBtn = document.getElementById("bulkExportBtn");
-    if (bulkExportBtn) bulkExportBtn.setAttribute("aria-expanded", "false");
+    document.getElementById("myDecksExportAllBtn")?.setAttribute("aria-expanded", "false");
+    document.getElementById("myDecksBulkExportBtn")?.setAttribute("aria-expanded", "false");
   }
   if (!event.target.closest(".menu-wrap")) {
     el.exportMenu.hidden = true;
-    closeDeckMenu();
+    if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
   }
 });
 
@@ -9595,7 +9793,13 @@ function initAppForUser() {
   setStyleProfiles(loadLocalStyleSettings());
   applyActiveStyleSettings({ force: true });
   renderThemeMenu();
-  setTheme("dark-amoled");
+  let savedTheme = null;
+  try {
+    savedTheme = localStorage.getItem(themeStorageKey);
+  } catch (error) {
+    console.warn("Could not read saved theme", error);
+  }
+  setTheme(savedTheme || "dark-amoled");
   setStatus("");
   // Start on a clean home screen each load — the last-open deck is no longer
   // auto-restored (only credentials, the saved "My Decks" library, and styles persist).
@@ -9616,6 +9820,35 @@ function initAppForUser() {
   }
 }
 
+// The on-device deck library is a mirror of ONE account's cloud data. If a
+// different account signs in on this device, the previous user's local decks
+// must not survive — the next reconcile would push them straight into the new
+// account's cloud (and the old tombstones would suppress the new user's own
+// decks). The previous user's data is safe in their own cloud account.
+const LAST_USER_STORAGE_KEY = "flashcards_last_user_id";
+
+function ensureLocalLibraryOwner(userId) {
+  if (!userId) return;
+  try {
+    const previous = localStorage.getItem(LAST_USER_STORAGE_KEY);
+    if (previous && previous !== String(userId)) {
+      Object.keys(localStorage)
+        .filter((key) => key.startsWith(LOCAL_DECK_PREFIX))
+        .forEach((key) => localStorage.removeItem(key));
+      localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
+      localStorage.removeItem(LOCAL_DECK_TOMBSTONES_KEY);
+      localStorage.removeItem(LAST_GLOBAL_SYNC_KEY);
+      localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
+      localStorage.removeItem(deckStorageKey);
+      state.localDeckId = null;
+      console.log("Cleared local deck library — different account signed in.");
+    }
+    localStorage.setItem(LAST_USER_STORAGE_KEY, String(userId));
+  } catch (error) {
+    console.warn("Could not verify local library owner", error);
+  }
+}
+
 let authListenerSubscription = null;
 
 function setupAuthListener() {
@@ -9626,6 +9859,7 @@ function setupAuthListener() {
   const { data } = supabaseClient.auth.onAuthStateChange((event, session) => {
     if (session?.user) {
       isSignedIn = true;
+      ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
       if (!appInitialized) {
         appInitialized = true;
@@ -9660,6 +9894,7 @@ async function bootApp() {
   const session = await getCachedSession();
   if (session?.user) {
     isSignedIn = true;
+    ensureLocalLibraryOwner(session.user.id);
     showAuthenticatedUI();
     if (!appInitialized) {
       appInitialized = true;
@@ -10522,8 +10757,20 @@ function enableSyntaxHighlighting(textarea) {
   // Initialize
   sync();
   syncScroll();
-  window.addEventListener("resize", syncScroll);
 }
+
+// One shared resize handler re-syncs every highlight backdrop still in the DOM.
+// (A per-textarea window listener would leak: the All Cards panel recreates its
+// editor textareas on every render, and each captured listener would pin the
+// detached DOM subtree in memory forever.)
+window.addEventListener("resize", () => {
+  document.querySelectorAll(".highlight-textarea-wrapper > textarea").forEach((textarea) => {
+    const backdrop = textarea.parentElement?.querySelector(".highlight-textarea-backdrop");
+    if (!backdrop) return;
+    backdrop.scrollTop = textarea.scrollTop;
+    backdrop.scrollLeft = textarea.scrollLeft;
+  });
+});
 
 // Formatting helpers
 // Toggles a marker pair around the current selection. A naive check of just
@@ -10928,7 +11175,7 @@ async function saveQuickNote(rawText, button) {
       });
     if (cardError) throw cardError;
 
-    // Bump the deck so it surfaces as recently used in the Web Decks panel.
+    // Bump the deck so it surfaces as recently used in My Decks.
     await supabaseClient
       .from("decks")
       .update({ updated_at: now, last_accessed_at: now })
@@ -10985,8 +11232,8 @@ async function saveQuickNote(rawText, button) {
     toolbar.addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn) return;
-      // Export has inline expansion inside the drawer — don't close for it
-      if (btn.id === "exportBtn") return;
+      // Export menus have inline expansion inside the drawer — don't close for them
+      if (btn.id === "exportBtn" || btn.id === "exportNotesBtn") return;
       // Close button, section-label clicks, and all other actions close the drawer
       setTimeout(closeMenu, 150);
     });

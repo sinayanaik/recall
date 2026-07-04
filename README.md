@@ -47,7 +47,7 @@ A static web app for learning something for the first time: write freeform **Stu
 - **Multi-user auth with per-user isolation** — email + password login; Row Level Security scopes every deck, card, and tombstone to its owner, so each account sees only its own data. No credentials stored in the source code
 - **Per-project config** — Supabase URL and anon key are entered at first launch and stored in `localStorage`; swap them anytime
 - **In-app Help & Guide** — a built-in walkthrough of every button and workflow
-- **Exports** — Markdown, JSON, and Cornell Notes PDF for the current deck
+- **Exports** — Markdown, JSON, SQL, and Cornell Notes PDF — for the current deck, any single deck, a selection, or the whole library from My Decks
 - **Themes** — 10 built-in themes (7 dark, 3 light) with a full style editor for fonts, sizes, and layout
 - **PWA** — installable on desktop and mobile, works offline after first load
 
@@ -259,7 +259,7 @@ All actions live in a single **menu drawer**, opened with the **☰** button in 
 |---|---|
 | **≡ Browse All Cards** | Opens the All Cards panel — browse and edit every card at once |
 | **📝 Study Notes** | Switches to the deck's freeform notes view (also reachable via the Cards ⇄ Notes toggle) |
-| **⇓ Export Cards…** | Opens the export menu — Cornell PDF, Markdown, or JSON (see [Exporting](#exporting)) |
+| **⇓ Export Cards…** | Opens the export menu — Cornell PDF, Markdown, JSON, or SQL (see [Exporting](#exporting)) |
 
 ### App
 
@@ -298,9 +298,8 @@ These appear when you reach the last card:
 
 - **Flip the card** — click/tap the card, or press `Space` / `Enter`
 - **Navigate** — swipe left (next) or right (previous) on mobile; `→` / `↓` and `←` / `↑` on desktop
-- **Mark Known** — click **✅ Known** (or press `K`), or swipe right past the threshold; the card moves to the Known stack (right panel)
-- **Mark Review** — click **❌ Review** (or press `R`), or swipe left past the threshold; the card moves to the Review stack (left panel)
-- **Click a card in the stack** — loads that specific card directly
+- **Mark Known** — click **✅ Known** (or press `K`); the card is counted in the Known pile
+- **Mark Review** — click **❌ Review** (or press `R`); the card is counted in the Review pile
 - **Progress bar** — the thin bar at the top of the card area shows how far through the deck you are
 - **Score display** — the header shows `Known X / Review Y` as a live count
 
@@ -416,6 +415,9 @@ Click **Export Cards…** in the menu and pick a format. Export covers the whole
 | **Cornell PDF** | Printable Cornell Notes layout — question on the left column, answer on the right. Opens a print dialog automatically. |
 | **Markdown** | The deck as a `.md` file using `::` block format |
 | **JSON** | Full deck with card statuses and study notes — can be re-imported into this app |
+| **SQL** | `INSERT … ON CONFLICT` statements for the `decks`/`cards` tables — restore or seed a Supabase project directly |
+
+Any deck in the library — not just the one currently open — can be exported from **My Decks** (per-deck **Export**, bulk **Export** for a selection, or **Export All**).
 
 ---
 
@@ -436,19 +438,25 @@ Open **My Decks** from the menu. It lists **every** deck — those saved on this
 
 | Column | Shows |
 |---|---|
-| **Title** / **Category** | Deck name and its category (📝 next to the count means it has study notes) |
+| **Select** | Checkbox for bulk actions (header checkbox selects all) |
+| **Title** / **Category** | Deck name and an inline **category editor** — pick an existing category or create a new one right in the row (📝 next to the count means it has study notes) |
 | **Cards** | Card count |
 | **Saved** | When the on-device copy was last written (or ☁ Cloud for cloud-only decks) |
 | **Sync** | Live status — **In sync**, **☁ Cloud only** (not pulled down yet), **Local only** (not backed up), or pending changes |
+
+A **category filter** above the table narrows the list, and **Export All** downloads the whole library (on-device *and* cloud) as Cornell PDF, Markdown, JSON, or SQL.
 
 Per-deck actions:
 
 | Action | What it does |
 |---|---|
 | **Load** | Opens that deck into the study view (pulls it down first if it's cloud-only) |
-| **Rename** | Renames the deck (syncs on the next reconcile) |
+| **Export** | Downloads that one deck as Cornell PDF, Markdown, JSON, or SQL — works offline for on-device decks |
+| **Rename** | Renames the deck (updates the cloud immediately when reachable, otherwise on the next reconcile) |
 | **Delete** | Removes the deck from this device **and** the cloud (via a tombstone); if the cloud delete can't complete now, it retries on the next sync |
 | **⟳ Refresh** | Re-reads the on-device library and re-checks cloud status |
+
+Selecting one or more decks reveals the **bulk action bar**: **Load** (opens the selection as one combined deck), **Categorize** (set a category on all selected decks at once), **Export** (one file covering the selection), and **Delete**.
 
 ---
 

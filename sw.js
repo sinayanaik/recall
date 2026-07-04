@@ -1,8 +1,8 @@
-const CACHE_NAME = "recall-v20260703-2";
+const CACHE_NAME = "recall-v20260704-1";
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260703-2",
-  "./app.js?v=20260703-2",
+  "./styles.css?v=20260704-1",
+  "./app.js?v=20260704-1",
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
@@ -70,6 +70,14 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(request))
+      .catch(() =>
+        caches.match(request).then((cached) => {
+          if (cached) return cached;
+          // Offline navigation to a URL variant that was never cached verbatim
+          // (e.g. /index.html when only "./" is precached) still gets the shell.
+          if (request.mode === "navigate") return caches.match("./");
+          return undefined;
+        })
+      )
   );
 });

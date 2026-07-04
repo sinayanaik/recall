@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260703-2">
+    <link rel="stylesheet" href="styles.css?v=20260704-1">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -42,8 +42,20 @@
             <button class="tool-button" id="exportBtn" type="button">&#8659; Export Cards&#8230;</button>
             <div class="export-menu" id="exportMenu" hidden>
               <button type="button" data-export="pdf" data-scope="all">Cornell PDF</button>
+              <button type="button" data-export="html" data-scope="all">Standalone HTML</button>
+              <button type="button" data-export="doc" data-scope="all">Word (.doc)</button>
               <button type="button" data-export="markdown" data-scope="all">Markdown</button>
               <button type="button" data-export="json" data-scope="all">JSON</button>
+              <button type="button" data-export="sql" data-scope="all">SQL</button>
+            </div>
+          </div>
+          <div class="menu-wrap">
+            <button class="tool-button" id="exportNotesBtn" type="button" title="Export this deck's study notes">&#8659; Export Notes&#8230;</button>
+            <div class="export-menu" id="exportNotesMenu" hidden>
+              <button type="button" data-export-notes="pdf">PDF</button>
+              <button type="button" data-export-notes="html">Standalone HTML</button>
+              <button type="button" data-export-notes="doc">Word (.doc)</button>
+              <button type="button" data-export-notes="markdown">Markdown</button>
             </div>
           </div>
 
@@ -126,9 +138,9 @@
             </div>
             <div class="swipe-hint" id="swipeHint" hidden aria-hidden="true">
               <div class="swipe-hint-row">
-                <span class="swipe-hint-dir">← Review</span>
-                <span class="swipe-hint-center">Swipe to sort</span>
-                <span class="swipe-hint-dir">Known →</span>
+                <span class="swipe-hint-dir">← Next</span>
+                <span class="swipe-hint-center">Swipe to navigate</span>
+                <span class="swipe-hint-dir">Prev →</span>
               </div>
               <p class="swipe-hint-sub">Tap card to flip</p>
             </div>
@@ -348,69 +360,6 @@
       </div>
     </section>
 
-    <section class="web-decks-panel" id="webDecksPanel" hidden aria-label="Web Decks">
-      <div class="web-decks-shell">
-        <div class="web-decks-head">
-          <div>
-            <h1>Web Decks</h1>
-            <p>Load, delete, or categorize decks stored on the web.</p>
-          </div>
-          <button class="icon-button" id="closeWebDecksBtn" type="button" aria-label="Close web decks panel">&#215;</button>
-        </div>
-        <div class="web-decks-tools">
-          <div class="web-decks-tools-left">
-            <label>
-              <span>Category</span>
-              <select id="webDeckCategoryFilter">
-                <option value="">All categories</option>
-              </select>
-            </label>
-            <button class="web-decks-refresh" id="refreshWebDecksBtn" type="button">Refresh List</button>
-            <div class="web-decks-bulk-actions" id="webDecksBulkActions" hidden>
-              <span class="bulk-title">Selected (<strong id="selectedDecksCount">0</strong>)</span>
-              <div class="bulk-buttons">
-                <button id="bulkLoadBtn" class="bulk-action-btn bulk-load" type="button">Load</button>
-                <button id="bulkCategoryBtn" class="bulk-action-btn bulk-category" type="button">Categorize</button>
-                <div class="bulk-export-dropdown">
-                  <button id="bulkExportBtn" class="bulk-action-btn bulk-export" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
-                  <div class="bulk-export-menu" id="bulkExportMenu" hidden>
-                    <button type="button" data-bulk-export="pdf">Cornell PDF</button>
-                    <button type="button" data-bulk-export="markdown">Markdown</button>
-                    <button type="button" data-bulk-export="json">JSON</button>
-                  </div>
-                </div>
-                <button id="bulkDeleteBtn" class="bulk-action-btn bulk-delete" type="button">Delete</button>
-              </div>
-            </div>
-          </div>
-          <div class="web-decks-global-export">
-            <button id="globalWebExportBtn" type="button" aria-haspopup="true" aria-expanded="false">Export All</button>
-            <div class="web-decks-global-export-menu" id="globalWebExportMenu" hidden>
-              <button type="button" data-global-web-export="pdf">Cornell PDF</button>
-              <button type="button" data-global-web-export="markdown">Markdown</button>
-              <button type="button" data-global-web-export="json">JSON</button>
-            </div>
-          </div>
-        </div>
-        <div class="web-decks-table-wrap">
-          <table class="web-decks-table">
-            <thead>
-              <tr>
-                <th style="width: 40px; text-align: center;"><input type="checkbox" id="selectAllWebDecksCheckbox"></th>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Last Accessed</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="webDecksListTable">
-              <tr><td colspan="5" class="web-decks-empty">Click "Refresh List" to load web decks.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
     <section class="web-decks-panel" id="myDecksPanel" hidden aria-label="My Decks">
       <div class="web-decks-shell">
         <div class="web-decks-head">
@@ -422,21 +371,59 @@
         </div>
         <div class="web-decks-tools">
           <div class="web-decks-tools-left">
+            <label>
+              <span>Category</span>
+              <select id="myDecksCategoryFilter">
+                <option value="">All categories</option>
+              </select>
+            </label>
             <button class="web-decks-refresh" id="myDecksRefreshBtn" type="button">&#8635; Refresh</button>
+            <div class="web-decks-bulk-actions" id="myDecksBulkActions" hidden>
+              <span class="bulk-title">Selected (<strong id="myDecksSelectedCount">0</strong>)</span>
+              <div class="bulk-buttons">
+                <button id="myDecksBulkLoadBtn" class="bulk-action-btn bulk-load" type="button">Load</button>
+                <button id="myDecksBulkCategoryBtn" class="bulk-action-btn bulk-category" type="button">Categorize</button>
+                <div class="bulk-export-dropdown">
+                  <button id="myDecksBulkExportBtn" class="bulk-action-btn bulk-export" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
+                  <div class="bulk-export-menu" id="myDecksBulkExportMenu" hidden>
+                    <button type="button" data-bulk-export="pdf">Cornell PDF</button>
+                    <button type="button" data-bulk-export="html">Standalone HTML</button>
+                    <button type="button" data-bulk-export="doc">Word (.doc)</button>
+                    <button type="button" data-bulk-export="markdown">Markdown</button>
+                    <button type="button" data-bulk-export="json">JSON</button>
+                    <button type="button" data-bulk-export="sql">SQL</button>
+                  </div>
+                </div>
+                <button id="myDecksBulkDeleteBtn" class="bulk-action-btn bulk-delete" type="button">Delete</button>
+              </div>
+            </div>
+          </div>
+          <div class="web-decks-global-export">
+            <button id="myDecksExportAllBtn" type="button" aria-haspopup="true" aria-expanded="false">Export All</button>
+            <div class="web-decks-global-export-menu" id="myDecksExportAllMenu" hidden>
+              <button type="button" data-export-all="pdf">Cornell PDF</button>
+              <button type="button" data-export-all="html">Standalone HTML</button>
+              <button type="button" data-export-all="doc">Word (.doc)</button>
+              <button type="button" data-export-all="markdown">Markdown</button>
+              <button type="button" data-export-all="json">JSON</button>
+              <button type="button" data-export-all="sql">SQL</button>
+            </div>
           </div>
         </div>
         <div class="web-decks-table-wrap">
           <table class="web-decks-table my-decks-table">
             <colgroup>
-              <col style="width:24%">
-              <col style="width:12%">
-              <col style="width:8%">
-              <col style="width:16%">
+              <col style="width:4%">
+              <col style="width:21%">
+              <col style="width:13%">
+              <col style="width:7%">
               <col style="width:14%">
-              <col style="width:26%">
+              <col style="width:13%">
+              <col style="width:28%">
             </colgroup>
             <thead>
               <tr>
+                <th style="text-align: center;"><input type="checkbox" id="myDecksSelectAllCheckbox" aria-label="Select all decks"></th>
                 <th>Title</th>
                 <th>Category</th>
                 <th>Cards</th>
@@ -446,7 +433,7 @@
               </tr>
             </thead>
             <tbody id="myDecksListTable">
-              <tr><td colspan="6" class="web-decks-empty">No decks saved on this device yet.</td></tr>
+              <tr><td colspan="7" class="web-decks-empty">No decks saved on this device yet.</td></tr>
             </tbody>
           </table>
         </div>
@@ -474,14 +461,11 @@
 
           <section class="help-section">
             <h3 class="help-section-title">1. Load a Deck</h3>
-            <p>Open the <strong>Deck</strong> menu in the toolbar to get started:</p>
-            <div class="help-btn-row">
-              <button type="button" class="tool-button" tabindex="-1">Deck ▾</button>
-            </div>
+            <p>Open the menu (<strong>☰</strong>, top-left) to get started:</p>
             <ul class="help-list">
-              <li><strong>Import</strong> — paste Markdown, upload a <code>.md</code> file, or fetch from a URL</li>
-              <li><strong>New Deck</strong> — start a blank deck and add cards manually</li>
-              <li><strong>Web Decks</strong> — load a deck you previously synced (requires sign-in)</li>
+              <li><strong>+ New Deck</strong> — start a blank deck and add cards manually</li>
+              <li><strong>Import from File</strong> — paste Markdown, upload a <code>.md</code>/<code>.json</code>/<code>.zip</code> file, or fetch from a URL</li>
+              <li><strong>My Decks</strong> — every deck you've studied, saved on this device and mirrored to the cloud</li>
             </ul>
           </section>
 
@@ -525,7 +509,7 @@
               <tr><td><kbd>Space</kbd> / <kbd>Enter</kbd></td><td>Flip card</td></tr>
               <tr><td><kbd>K</kbd></td><td>Mark Known</td></tr>
               <tr><td><kbd>R</kbd></td><td>Mark for Review</td></tr>
-              <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Navigate cards</td></tr>
+              <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Navigate cards</td></tr>
               <tr><td><kbd>Ctrl</kbd> + <kbd>E</kbd></td><td>Toggle edit / rendered view</td></tr>
             </table>
           </section>
@@ -533,11 +517,11 @@
           <section class="help-section">
             <h3 class="help-section-title">4. Swipe Gestures (touch)</h3>
             <table class="help-table">
-              <tr><td>Swipe <strong>right</strong></td><td>Mark Known ✅</td></tr>
-              <tr><td>Swipe <strong>left</strong></td><td>Mark for Review ❌</td></tr>
-              <tr><td>Swipe <strong>up / down</strong></td><td>Navigate to next / previous</td></tr>
+              <tr><td>Swipe <strong>left</strong></td><td>Next card</td></tr>
+              <tr><td>Swipe <strong>right</strong></td><td>Previous card</td></tr>
               <tr><td>Tap card</td><td>Flip to answer</td></tr>
             </table>
+            <p>Use the <strong>✅ Known</strong> / <strong>❌ Review</strong> buttons (or <kbd>K</kbd> / <kbd>R</kbd>) to sort cards.</p>
           </section>
 
           <section class="help-section">
@@ -573,7 +557,7 @@
               <li><strong>Select the text</strong> you want to keep</li>
               <li>Click the <strong>📌</strong> button at the end of the formatting toolbar</li>
             </ul>
-            <p>The selection is saved as a new card in a dedicated <code>quick_notes</code> cloud deck (created automatically the first time). The selected text becomes the card’s <strong>question</strong>, with a blank answer for you to fill in later. A <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Saved to quick_notes</span> toast confirms it worked. Open your <code>quick_notes</code> deck any time from <strong>Web Decks</strong>. <em>(Requires sign-in, since notes are stored in the cloud.)</em></p>
+            <p>The selection is saved as a new card in a dedicated <code>quick_notes</code> cloud deck (created automatically the first time). The selected text becomes the card’s <strong>question</strong>, with a blank answer for you to fill in later. A <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Saved to quick_notes</span> toast confirms it worked. Open your <code>quick_notes</code> deck any time from <strong>My Decks</strong>. <em>(Requires sign-in, since notes are stored in the cloud.)</em></p>
           </section>
 
           <section class="help-section">
@@ -589,46 +573,39 @@
               <span class="help-legend-dot" style="background:var(--review)"></span><span>Review</span>
               <span class="help-legend-dot" style="background:var(--accent)"></span><span>Progress</span>
             </div>
-            <p>The left and right side panels show the stacks of Known and Review cards. Click any card brick there to preview it.</p>
+            <p>The header shows a live <strong>Known X / Review Y</strong> count, and each card carries a status badge. Replay filtered sessions (Review only, Known only, Uncategorized) from the buttons below the card.</p>
           </section>
 
           <section class="help-section">
             <h3 class="help-section-title">8. All Cards Panel</h3>
-            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">All</button> to see every card in a scrollable Cornell-note view. You can edit, delete, or reorder cards from here.</p>
+            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">≡ Browse All Cards</button> to see every card in a scrollable Cornell-note view. You can edit, delete, or reorder cards from here.</p>
           </section>
 
           <section class="help-section">
-            <h3 class="help-section-title">9. Sync, Cloud &amp; Web Decks</h3>
+            <h3 class="help-section-title">9. Sync &amp; Cloud</h3>
             <div class="help-btn-row">
-              <button type="button" class="tool-button help-demo-btn" tabindex="-1">⟳ Sync to Cloud</button>
-              <button type="button" class="tool-button help-demo-btn" tabindex="-1">☶ Web Decks</button>
-              <button type="button" class="tool-button help-demo-btn" tabindex="-1">Export ▾</button>
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">⟳ Sync Now</button>
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">📚 My Decks</button>
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">⇓ Export Cards…</button>
             </div>
             <ul class="help-list">
-              <li><strong>Sync to Cloud</strong> — save the current deck to your account (requires sign-in)</li>
-              <li><strong>Web Decks</strong> — browse your saved decks. The list is <strong>loaded automatically</strong> each time you open the panel; hit <strong>Refresh List</strong> any time to re-fetch. From here you can load, rename, re-categorise, export, or delete decks (singly or in bulk)</li>
-              <li><strong>Export → Markdown</strong> — download the full deck as a <code>.md</code> file</li>
-              <li><strong>Export → Cornell PDF</strong> — export Known or Review cards as printable notes</li>
-              <li><strong>Export → JSON / SQL</strong> — machine-readable formats for data portability</li>
+              <li><strong>Sync is automatic</strong> — every deck is mirrored to your account in the background; <strong>Sync Now</strong> forces an immediate two-way reconcile (newest copy of each deck wins)</li>
+              <li><strong>My Decks</strong> — every deck, on this device and in the cloud, with a live sync-status column. Per deck: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several decks for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
+              <li><strong>Export Cards…</strong> (menu) — the current deck as Cornell PDF, Markdown, JSON, or SQL</li>
             </ul>
-            <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Synced to cloud</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Cloud sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
+            <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Deck deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
           </section>
 
           <section class="help-section">
             <h3 class="help-section-title">10. Offline &amp; My Decks 💾</h3>
-            <div class="help-btn-row">
-              <button type="button" class="tool-button help-demo-btn" tabindex="-1">⏬ Save to Device</button>
-              <button type="button" class="tool-button help-demo-btn" tabindex="-1">💾 My Decks</button>
-            </div>
             <p>Once you’ve opened the app online once, it keeps working with no connection:</p>
             <ul class="help-list">
               <li><strong>You stay signed in</strong> offline (after signing in online at least once), so you go straight to your decks.</li>
-              <li><strong>Your current deck is auto-saved</strong> and restored on reload — you never lose work.</li>
-              <li><strong>Save to Device</strong> stores the current deck in an on-device library. Open <strong>My Decks</strong> to load, rename, or delete saved decks — all offline.</li>
-              <li>Any <strong>Web Deck you open online is mirrored</strong> into My Decks automatically, so it’s there to study offline later.</li>
+              <li><strong>Saving is automatic</strong> — every edit is written to the on-device library in the background; there is no manual save button. A reload starts on the clean home screen; reopen your deck from <strong>My Decks</strong>.</li>
+              <li><strong>Every cloud deck is mirrored</strong> onto the device automatically, so the whole library is available offline — load, rename, or delete with no connection.</li>
               <li>An <strong>Offline</strong> badge appears bottom-left when you lose connection.</li>
             </ul>
-            <p>Cloud actions — <strong>Sync to Cloud</strong>, <strong>Web Decks</strong>, and a first-time login — need internet. Syncing while offline saves to your device instead.</p>
+            <p>A first-time login needs internet. Edits made offline (including deletes) sync automatically once the connection returns.</p>
           </section>
 
           <section class="help-section">
@@ -650,7 +627,7 @@ What year was the Eiffel Tower built?
 
           <section class="help-section">
             <h3 class="help-section-title">12. Themes &amp; Style</h3>
-            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">Style</button> to choose from 10 built-in themes, adjust font size, card radius, and more. Desktop and mobile save separate style profiles.</p>
+            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">◯ Themes</button> to choose from 10 built-in themes, adjust font size, card radius, and more. Desktop and mobile save separate style profiles.</p>
           </section>
 
         </div>
@@ -811,6 +788,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260703-2"></script>
+    <script src="app.js?v=20260704-1"></script>
   </body>
 </html>
