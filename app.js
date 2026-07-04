@@ -3023,6 +3023,11 @@ function buildLocalDeckRow(deck, cloudById = null) {
   loadBtn.className = "bulk-action-btn bulk-load";
   loadBtn.textContent = "Load";
   loadBtn.addEventListener("click", () => {
+    // Persist the outgoing deck before its in-memory state is replaced. The
+    // autosave debounce resets on every edit, so a pending timer can hold all
+    // edits/marks since the last pause; without this flush, switching decks
+    // before it fires would drop them.
+    flushWorkingDeck();
     if (loadDeckFromLibrary(deck.id)) {
       closeMyDecksPanel();
       showToast(`Loaded "${deck.title || "deck"}"`);
@@ -3106,6 +3111,9 @@ function buildCloudDeckRow(deck) {
   loadBtn.className = "bulk-action-btn bulk-load";
   loadBtn.textContent = "Load";
   loadBtn.addEventListener("click", () => {
+    // Flush the outgoing deck to the library before loadWebDeck overwrites the
+    // in-memory state (see the local-deck Load handler above for why).
+    flushWorkingDeck();
     closeMyDecksPanel();
     loadWebDeck(deck.id);
   });
@@ -7174,6 +7182,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // the push loop below would otherwise see "no cloud row, so mine must be
     // newer" and re-create it.
     const remoteDeletedIds = await fetchDeletedDeckIds();
+    const remoteDeletedSet = new Set(remoteDeletedIds.map(String));
     for (const deckId of remoteDeletedIds) {
       if (isDeckTombstoned(deckId)) continue;
       tombstoneDeck(deckId);
@@ -7185,11 +7194,26 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       }
     }
 
-    // Prune tombstones whose cloud row is already gone — the deletion has fully
-    // propagated, so there's nothing left to re-assert and no reason to keep
-    // blocking that id forever.
+    // Reconcile local tombstones against the cloud. A tombstone may only be
+    // forgotten once the deck row is gone AND its durable cross-device record
+    // (deleted_decks) is in place. Pruning on "row is gone" alone is unsafe:
+    // if the original delete's deleted_decks write failed, another device that
+    // still holds a copy would re-push it and resurrect the deck. When the row
+    // is gone but that shared record is missing, re-assert it here and keep the
+    // local tombstone until it lands.
     for (const tid of Object.keys(readDeckTombstones())) {
-      if (!cloudIdSet.has(String(tid))) clearDeckTombstone(tid);
+      // Deck row still present (or re-pushed by another device) — the pull loop
+      // below re-deletes it; keep blocking so it can't be adopted back locally.
+      if (cloudIdSet.has(String(tid))) continue;
+      if (remoteDeletedSet.has(String(tid))) {
+        clearDeckTombstone(tid); // fully propagated — safe to forget
+      } else {
+        try {
+          await supabaseClient.from("deleted_decks").upsert({ deck_id: tid });
+        } catch (e) {
+          console.warn("Retry of cross-device delete tombstone failed", tid, e);
+        }
+      }
     }
 
     // 1) Cloud → local: pull anything missing locally or newer in the cloud.
@@ -7619,17 +7643,23 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
 
   let cloudError = null;
   if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
-    const { error } = await supabaseClient.from("decks").delete().eq("id", deckId);
-    cloudError = error || null;
-    // Best-effort: record the deletion in the shared tombstone table so other
-    // devices learn about it on their next reconcile instead of re-pushing
-    // their still-held local copy (see supabase_deck_tombstones.sql). Missing
-    // table/migration degrades silently to the old local-only behavior.
+    // Record the durable cross-device tombstone FIRST — it's the signal every
+    // other device relies on to not re-push its still-held copy (see
+    // supabase_deck_tombstones.sql). Writing it before the row delete is
+    // strictly safer: if the delete below fails, a device that adopts this
+    // tombstone re-deletes the row (see the pull loop in reconcileAllDecks),
+    // whereas the reverse order can delete the row but leave no record — and a
+    // later reconcile would then prune the local tombstone and let the deck
+    // resurrect. A failed write here (offline blip, or unmigrated project with
+    // no deleted_decks table) is retried by reconcileAllDecks while the local
+    // tombstone persists, so the deletion still eventually propagates.
     try {
       await supabaseClient.from("deleted_decks").upsert({ deck_id: deckId });
     } catch (e) {
       console.warn("Could not record cross-device delete tombstone", e);
     }
+    const { error } = await supabaseClient.from("decks").delete().eq("id", deckId);
+    cloudError = error || null;
   }
   return { cloudError };
 }

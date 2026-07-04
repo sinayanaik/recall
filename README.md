@@ -21,7 +21,7 @@ A static web app for learning something for the first time: write freeform **Stu
 - [Quick Notes](#quick-notes)
 - [All Cards Panel](#all-cards-panel)
 - [Exporting](#exporting)
-- [Web Decks (Cloud Sync)](#web-decks-cloud-sync)
+- [My Decks & Cloud Sync](#my-decks--cloud-sync)
 - [Notifications](#notifications)
 - [Style Settings](#style-settings)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
@@ -40,13 +40,15 @@ A static web app for learning something for the first time: write freeform **Stu
 - **Image paste & upload** — paste, drag-and-drop, or pick any image while editing; it's uploaded to a free [ImgBB](https://api.imgbb.com/) host and inserted as Markdown. Public Google Drive share links are auto-embedded so they render directly. In Study Notes, an image on its own line can be **resized by dragging the blue corner grip** (with a live size badge); images stay centered, and writing images separated by `|` on one line renders them **side by side**.
 - **Study Notes per deck** — every deck carries a freeform Markdown notes document (Cards ⇄ Notes toggle in the study view). Study first, then highlight any fact in the rendered notes and tap **+ Make card**: the selection becomes the card's *answer* and you're prompted to frame the *question* that should recall it. Notes sync to the cloud with the deck and travel inside Markdown/JSON exports. *(Existing Supabase projects: run `supabase_deck_notes.sql` once in the SQL Editor.)*
 - **Quick Notes** — select any text while editing an answer and save it straight to a dedicated `quick_notes` cloud deck with one click
-- **Toast confirmations** — every cloud action (sync, load, delete, rename, export, quick note) pops a toast so you always know it worked
+- **Toast confirmations** — every cloud action (sync, load, delete, rename, quick note) pops a toast so you always know it worked
 - **All Cards panel** — browse, search, and edit every card in a deck at once
-- **Cloud sync** — push any local deck to Supabase; pull it back on any device
-- **Multi-user auth** — email + password login; no credentials stored in the source code
+- **Automatic two-way cloud sync** — every deck is mirrored to Supabase and back in the background, with **last-write-wins per deck** (by `updated_at`); no manual push/pull, and a **Sync Now** button forces a reconcile on demand. Saving to the device is automatic too
+- **Unified My Decks library** — one panel lists every deck (on-device *and* cloud-only), each with a live sync-status badge; load, rename, or delete from here. Deletes propagate across devices via durable **delete tombstones**, so a deck removed on one device stays removed everywhere
+- **Multi-user auth with per-user isolation** — email + password login; Row Level Security scopes every deck, card, and tombstone to its owner, so each account sees only its own data. No credentials stored in the source code
 - **Per-project config** — Supabase URL and anon key are entered at first launch and stored in `localStorage`; swap them anytime
-- **Exports** — Markdown, JSON, SQL, and Cornell Notes PDF (filtered by Known / Review / All)
-- **Themes** — 10 built-in themes (dark and light variants) with a full style editor for fonts, sizes, and colours
+- **In-app Help & Guide** — a built-in walkthrough of every button and workflow
+- **Exports** — Markdown, JSON, and Cornell Notes PDF for the current deck
+- **Themes** — 10 built-in themes (7 dark, 3 light) with a full style editor for fonts, sizes, and layout
 - **PWA** — installable on desktop and mobile, works offline after first load
 
 ---
@@ -59,7 +61,7 @@ The entire app is three files: `index.html`, `styles.css`, `app.js`. All depende
 
 ```bash
 git clone <repo-url>
-cd Markdown_Flashcards
+cd recall
 python3 -m http.server 8080
 ```
 
@@ -88,77 +90,34 @@ Each deployment needs its own Supabase project. The app connects to whichever pr
 
 Go to [supabase.com](https://supabase.com) → New project.
 
-### 2. Create the tables
+### 2. Create the tables and policies
 
-Open the **SQL Editor** in your Supabase dashboard and run:
+Everything the app needs is in the `.sql` files shipped in this repo. Open the **SQL Editor** in your Supabase dashboard and run these files **in order** — each is safe to re-run:
 
-```sql
--- Decks table
-CREATE TABLE public.decks (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  category TEXT NOT NULL DEFAULT 'Uncategorized',
-  notes TEXT NOT NULL DEFAULT '',
-  current_card_index INT DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  last_accessed_at TIMESTAMPTZ DEFAULT NOW()
-);
+| Order | File | What it creates |
+|---|---|---|
+| 1 | `supabase_schema.sql` | The `decks`, `cards`, and `app_style_settings` tables, indexes, **per-user Row Level Security** (each row carries a `user_id` defaulting to `auth.uid()`; policies scope every deck/card to its owner) |
+| 2 | `supabase_style_settings.sql` | Enriches the one-row global `app_style_settings` document — adds the JSON `CHECK` constraint, an `updated_at` trigger, and seeds sensible layout defaults |
+| 3 | `supabase_deck_tombstones.sql` | The `deleted_decks` table — durable cross-device **delete tombstones** so a deck removed on one device is not resurrected by another |
 
-CREATE INDEX decks_category_last_accessed_at_idx
-  ON public.decks (category, last_accessed_at DESC);
+> **Row Level Security is per user**, not shared. Each account sees only its own decks, cards, and tombstones. (The one exception is the global `app_style_settings` row, which is intentionally shared across everyone on the deployment — it holds only layout/size settings, no content.)
 
-CREATE INDEX decks_last_accessed_at_idx
-  ON public.decks (last_accessed_at DESC);
+**Upgrading an existing deployment?** If your project predates some of these columns/tables, run only the migration files you need — each adds missing pieces without touching existing data:
 
--- Cards table
-CREATE TABLE public.cards (
-  id TEXT PRIMARY KEY,
-  deck_id TEXT REFERENCES public.decks(id) ON DELETE CASCADE,
-  question TEXT NOT NULL,
-  answer TEXT NOT NULL,
-  position INT NOT NULL,
-  status TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
+- `supabase_deck_categories.sql` — adds the `category` and `last_accessed_at` columns used to group and sort decks
+- `supabase_deck_notes.sql` — adds the per-deck `notes` column (Study Notes)
+- `supabase_deck_tombstones.sql` — adds cross-device delete tombstones
 
--- Style settings table (one shared row keyed to 'global')
-CREATE TABLE public.app_style_settings (
-  id TEXT PRIMARY KEY DEFAULT 'global',
-  settings JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+(A brand-new project created with `supabase_schema.sql` already includes the `category`, `notes`, and `last_accessed_at` columns, so the first two migrations are only for older deployments.)
 
-### 3. Enable Row Level Security and add policies
-
-```sql
--- Enable RLS
-ALTER TABLE public.decks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.cards ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.app_style_settings ENABLE ROW LEVEL SECURITY;
-
--- Any authenticated (logged-in) user gets full access
-CREATE POLICY "Authenticated full access" ON public.decks
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
-CREATE POLICY "Authenticated full access" ON public.cards
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-
-CREATE POLICY "Authenticated full access" ON public.app_style_settings
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
-```
-
-### 4. Create a user account
+### 3. Create a user account
 
 In Supabase Dashboard → **Authentication → Users → Add user**.  
 Enter an email and password. The user is created immediately — no email required.
 
 To allow self sign-up from the app: **Authentication → Providers → Email → turn off "Confirm email"**.
 
-### 5. Get your API credentials
+### 4. Get your API credentials
 
 In Supabase Dashboard → **Project Settings → API**:
 
@@ -248,7 +207,7 @@ A measure of disorder or randomness in a thermodynamic system.
 
 ## Importing Decks
 
-Click **Deck → Import** in the top-left toolbar to open the Import panel.
+Open the menu (**☰**, top-left) and click **Import from File** to open the Import panel.
 
 ### Import methods
 
@@ -277,46 +236,50 @@ For public web pages (not raw Markdown), the app falls back to Jina Reader autom
 Click **Load Sample** to instantly load a built-in example deck. Good for trying the app before creating your own content.
 
 ### Appending vs replacing
-By default importing replaces the current deck. To add cards to an existing deck without replacing it, use **Deck → Import** and choose the append option in the paste editor.
+By default importing replaces the current deck. To add cards to an existing deck without replacing it, reopen **Import from File** and choose the append option in the paste editor.
 
 ---
 
 ## Toolbar Reference
 
-### Deck menu (top-left)
+All actions live in a single **menu drawer**, opened with the **☰** button in the top-left (on every screen size). The drawer is grouped into three sections:
+
+### Decks
 
 | Button | Action |
 |---|---|
-| **Deck** | Opens the deck menu |
-| **New Deck** | Clears the current deck and starts a blank one |
-| **Import** | Opens the Import panel to load cards from a file, URL, or paste |
-| **Web Decks** | Opens the Web Decks panel to browse and load decks stored in Supabase |
-| **My Decks** | Opens the on-device deck library — load, rename, or delete decks saved locally (works offline) |
+| **+ New Deck** | Clears the current deck and starts a blank one |
+| **⇧ Import from File** | Opens the Import panel to load cards from a file, URL, or paste |
+| **📚 My Decks** | Opens the unified deck library — every deck, on-device *and* cloud-only, with a live sync status; load, rename, or delete (see [My Decks & Cloud Sync](#my-decks--cloud-sync)) |
+| **⟳ Sync Now** | Forces an immediate two-way reconcile with the cloud (sync is otherwise automatic) |
 
-### Main toolbar buttons
+### Study
 
 | Button | Action |
 |---|---|
-| **Save to Device** | Saves the current deck to this device's local library (works offline) |
-| **Sync to Cloud** | Syncs the currently loaded local deck to your Supabase database (shows a confirmation toast) |
-| **Web Decks** | Opens the Web Decks panel (auto-loads the deck list) |
-| **My Decks** | Opens the on-device deck library (works offline) |
-| **Export** | Opens the export menu (see [Exporting](#exporting)) |
-| **All** | Opens the All Cards panel — browse and edit every card at once |
-| **Aa** | Opens the Style Settings panel to customise fonts, sizes, and theme |
-| **Sign out** | Signs out of the current session and returns to the login screen |
+| **≡ Browse All Cards** | Opens the All Cards panel — browse and edit every card at once |
+| **📝 Study Notes** | Switches to the deck's freeform notes view (also reachable via the Cards ⇄ Notes toggle) |
+| **⇓ Export Cards…** | Opens the export menu — Cornell PDF, Markdown, or JSON (see [Exporting](#exporting)) |
+
+### App
+
+| Button | Action |
+|---|---|
+| **○ Themes** | Opens the Style Settings panel to pick a theme and customise fonts, sizes, and layout |
+| **? Help & Guide** | Opens the in-app walkthrough of every feature |
+| **→ Sign Out** | Signs out of the current session and returns to the login screen |
+
+> **Saving is automatic.** There is no "Save to Device" or "Sync to Cloud" button — every edit is written to the on-device library and mirrored to the cloud in the background. The **sync indicator** next to the deck title shows the current state, and **Sync Now** forces a reconcile if you don't want to wait.
 
 ### Study view buttons
 
 | Button | Action |
 |---|---|
-| **← Review** | Marks the current card as Review (needs more practice) |
-| **Known →** | Marks the current card as Known |
-| **✎** (pencil, question side) | Switches the question to edit mode (shows the formatting toolbar) |
-| **✎** (pencil, answer side) | Switches the answer to edit mode (formatting toolbar + **📌** Quick Note button) |
-| **+** | Adds a new blank card after the current position |
-| **✕** | Deletes the current card |
-| **◀ ▶** | Navigate to previous / next card |
+| **❌ Review** | Marks the current card as Review (needs more practice) — shortcut `R` |
+| **✅ Known** | Marks the current card as Known — shortcut `K` |
+| **+ Add** | Adds a new blank card after the current position |
+| **🗑** | Deletes the current card |
+| **✎ / 👁** (edit toggle, each face) | Toggles that face between view and edit mode (shows the formatting toolbar) |
 
 ### End-of-deck replay buttons
 
@@ -324,10 +287,10 @@ These appear when you reach the last card:
 
 | Button | Action |
 |---|---|
-| **Replay Review** | Restarts the session with only Review-marked cards |
-| **Replay Known** | Restarts with only Known-marked cards |
-| **Replay Uncategorized** | Restarts with cards not yet marked either way |
-| **Replay All** | Restarts with all cards in the deck |
+| **All cards** | Restarts with all cards in the deck |
+| **Review only** | Restarts the session with only Review-marked cards |
+| **Known only** | Restarts with only Known-marked cards |
+| **Uncategorized** | Restarts with cards not yet marked either way |
 
 ---
 
@@ -335,8 +298,8 @@ These appear when you reach the last card:
 
 - **Flip the card** — click/tap the card, or press `Space` / `Enter`
 - **Navigate** — swipe left (next) or right (previous) on mobile; `→` / `↓` and `←` / `↑` on desktop
-- **Mark Known** — click **Known →** or swipe right past the threshold; the card moves to the Known stack (right panel)
-- **Mark Review** — click **← Review** or swipe left past the threshold; the card moves to the Review stack (left panel)
+- **Mark Known** — click **✅ Known** (or press `K`), or swipe right past the threshold; the card moves to the Known stack (right panel)
+- **Mark Review** — click **❌ Review** (or press `R`), or swipe left past the threshold; the card moves to the Review stack (left panel)
 - **Click a card in the stack** — loads that specific card directly
 - **Progress bar** — the thin bar at the top of the card area shows how far through the deck you are
 - **Score display** — the header shows `Known X / Review Y` as a live count
@@ -426,7 +389,7 @@ Quick Notes let you capture a snippet of an answer into a separate deck without 
 2. **Select** the text you want to keep
 3. Click the **📌** button at the end of the formatting toolbar
 
-The selection is saved as a new card in a dedicated **`quick_notes`** cloud deck, which is created automatically the first time you use the feature. The selected text becomes the card's **question**, leaving the **answer blank** for you to fill in later. A toast confirms the save, and you can open the `quick_notes` deck any time from **Web Decks**.
+The selection is saved as a new card in a dedicated **`quick_notes`** cloud deck, which is created automatically the first time you use the feature. The selected text becomes the card's **question**, leaving the **answer blank** for you to fill in later. A toast confirms the save, and you can open the `quick_notes` deck any time from **My Decks**.
 
 > **Requires sign-in.** Quick Notes are stored as a cloud deck in Supabase, so you must be logged in. If you are not connected/signed in, a toast explains why the note could not be saved.
 
@@ -434,7 +397,7 @@ The selection is saved as a new card in a dedicated **`quick_notes`** cloud deck
 
 ## All Cards Panel
 
-Click **All** in the toolbar to open a full list of every card in the current deck.
+Click **Browse All Cards** in the menu to open a full list of every card in the current deck.
 
 - **Search** — type in the search box to filter cards by question or answer text
 - **Toggle answers** — click **Show All Answers** / **Hide All Answers** to expand or collapse every answer at once
@@ -446,64 +409,46 @@ Click **All** in the toolbar to open a full list of every card in the current de
 
 ## Exporting
 
-Click **Export** in the toolbar. Choose a scope and format:
-
-### Scopes
-
-| Scope | Which cards are included |
-|---|---|
-| **Known** | Only cards marked as Known |
-| **Review** | Only cards marked as Review |
-| **All** | Every card in the deck |
-
-### Formats
+Click **Export Cards…** in the menu and pick a format. Export covers the whole current deck:
 
 | Format | Description |
 |---|---|
 | **Cornell PDF** | Printable Cornell Notes layout — question on the left column, answer on the right. Opens a print dialog automatically. |
 | **Markdown** | The deck as a `.md` file using `::` block format |
-| **JSON** | Full deck with card statuses — can be re-imported into this app |
-| **SQL** | `INSERT` statements compatible with Supabase / PostgreSQL |
+| **JSON** | Full deck with card statuses and study notes — can be re-imported into this app |
 
 ---
 
-## Web Decks (Cloud Sync)
+## My Decks & Cloud Sync
 
-Web Decks are decks stored in Supabase. They are available on any device and any browser that is logged into the same account.
+Sync is **automatic and two-way**. Every deck lives in an on-device library *and* is mirrored to your Supabase account in the background — there is no manual "push" or "pull", and no Overwrite/Merge prompt.
 
-### Syncing a local deck to the cloud
+### How reconciliation works
 
-1. Load a deck locally (import or create)
-2. Click **Sync to Cloud** in the toolbar
-3. A preview diff appears showing what changed vs. the existing cloud version
-4. Choose **Overwrite** (fully replace the cloud copy) or **Merge** (keep any cloud-only cards)
-5. Click **Confirm Sync**
+- **Last-write-wins per deck.** When a deck exists both locally and in the cloud, whichever copy has the newer `updated_at` timestamp wins the *whole deck* — its title, category, cards, and study notes replace the older side. (Conflict resolution is deck-level, not field-level: if the same deck is edited on two devices between syncs, the later save wins and the other side's edits to that deck are dropped.)
+- **Runs on its own.** A reconcile fires shortly after you sign in and whenever the device comes back online. **Sync Now** in the menu forces one immediately.
+- **Delete tombstones.** Deleting a deck records a durable tombstone in the `deleted_decks` table, so the deletion propagates to your other devices instead of a stale copy re-uploading and resurrecting the deck. (Requires `supabase_deck_tombstones.sql`; without it, deletes only apply on the device that made them.)
+- **Offline-friendly.** Because every cloud deck is copied onto the device, the whole library stays available offline; changes reconcile when the connection returns.
 
-The sync confirmation modal shows:
-- Cards that will be **added**
-- Cards that will be **updated**
-- Cards that will be **deleted**
+### The My Decks panel
 
-When the sync finishes, a toast confirms success (or reports the error) — see [Notifications](#notifications).
+Open **My Decks** from the menu. It lists **every** deck — those saved on this device and those that exist only in the cloud — in one table:
 
-### Web Decks panel buttons
-
-Open **Deck → Web Decks** to see the panel. The deck list is **fetched automatically every time you open the panel**, so it is never stale — use **Refresh List** any time you want to pull the latest manually.
-
-| Button | Action |
+| Column | Shows |
 |---|---|
-| **Refresh List** | Re-fetches the deck list from Supabase (the list also auto-loads on open) |
-| **Load** (per deck) | Loads that deck into the study view |
-| Deck title (click) | Opens an inline editor to rename the deck |
-| Category badge (click) | Opens a dropdown to change or create a category |
-| **Delete** (per deck) | Permanently deletes the deck and all its cards from Supabase |
-| Export icon (per deck) | Exports that single deck as Markdown, JSON, SQL, or Cornell PDF |
-| **Checkbox** | Select a deck for bulk actions |
-| **Load Selected** | Loads all checked decks, merging them into one session |
-| **Delete Selected** | Permanently deletes all checked decks |
-| **Export Selected** | Exports all checked decks as a single file |
-| **Export All** | Exports every deck in the database as a single file |
-| Category filter dropdown | Filters the list to show only decks in the selected category |
+| **Title** / **Category** | Deck name and its category (📝 next to the count means it has study notes) |
+| **Cards** | Card count |
+| **Saved** | When the on-device copy was last written (or ☁ Cloud for cloud-only decks) |
+| **Sync** | Live status — **In sync**, **☁ Cloud only** (not pulled down yet), **Local only** (not backed up), or pending changes |
+
+Per-deck actions:
+
+| Action | What it does |
+|---|---|
+| **Load** | Opens that deck into the study view (pulls it down first if it's cloud-only) |
+| **Rename** | Renames the deck (syncs on the next reconcile) |
+| **Delete** | Removes the deck from this device **and** the cloud (via a tombstone); if the cloud delete can't complete now, it retries on the next sync |
+| **⟳ Refresh** | Re-reads the on-device library and re-checks cloud status |
 
 ---
 
@@ -513,30 +458,31 @@ Every action that touches the cloud gives you immediate, unmistakable feedback t
 
 | Result | Example toast |
 |---|---|
-| **Success** | ✓ "Synced *Deck* to cloud · N cards", "Deck loaded", "Saved to quick_notes", "Refreshed · N decks" |
-| **Error** | ✕ "Cloud sync failed", "Couldn't load deck", "Couldn't save quick note" |
+| **Success** | ✓ "Loaded *Deck*", "Saved to quick_notes", "Deck deleted everywhere", "Deck renamed" |
+| **Info** | ⓘ "Deleted here — cloud delete will retry on next sync" |
+| **Error** | ✕ "Couldn't load deck", "Couldn't save quick note" |
 
-Toasts appear for syncing, loading, deleting, renaming, re-categorising, exporting (single, selected, and all), refreshing the Web Decks list, and saving Quick Notes. The detailed status text at the bottom of the screen is still updated as well.
+Toasts appear for loading, deleting, and renaming decks, saving Quick Notes, and background sync results. A **sync report** additionally summarises what each reconcile pulled, pushed, or failed on. The sync indicator next to the deck title always reflects the current state.
 
 ---
 
 ## Style Settings
 
-Click **Aa** in the toolbar to open the style panel.
+Click **Themes** in the menu to open the style panel.
 
 | Control | What it changes |
 |---|---|
-| **Theme** | Switches between 10 built-in colour themes (dark and light variants) |
-| **Question font** | Font family for the front of the card |
-| **Answer font** | Font family for the back of the card |
-| **Question size** | Font size for the question |
-| **Answer size** | Font size for the answer |
+| **Theme** | Switches between the 10 built-in themes (7 dark, 3 light) |
+| **Question / Answer font** | Font family for the front / back of the card |
+| **Question / Answer size** | Font size for the question / answer |
 | **Question fill** | What percentage of the card height the front occupies |
 | **Card width** | How wide the card is relative to the screen |
-| **Sync Style** | Saves your current style settings to Supabase so they apply on every device |
-| **Load Style** | Loads the last-synced style from Supabase (overwrites local settings) |
+| …and more | Spacing, padding, corner radius, line height, and other layout dimensions |
+| **Sync Up** | Saves your current style settings to Supabase so they apply on every device |
+| **Sync Down** | Loads the last-synced style from Supabase (overwrites local settings) |
+| **Apply** | Applies the edited settings to the current view |
 
-Style profiles are separate for desktop and mobile, so the card can look different on different screen sizes.
+Style profiles are separate for desktop and mobile, so the card can look different on different screen sizes. Themes control colours; the **Aa** layout settings (sizes, spacing) are stored in the shared global `app_style_settings` row.
 
 ---
 
@@ -547,6 +493,8 @@ Style profiles are separate for desktop and mobile, so the card can look differe
 | `Space` / `Enter` | Flip card (show answer / hide answer) |
 | `→` / `↓` | Next card |
 | `←` / `↑` | Previous card |
+| `K` | Mark current card Known |
+| `R` | Mark current card for Review |
 | `Escape` | Close any open panel or modal |
 
 ---
@@ -563,12 +511,11 @@ When served over HTTPS (GitHub Pages, Netlify, etc.), the app registers a servic
 After you've opened the app online at least once (so the app shell and libraries are cached), it stays usable with no connection:
 
 - **Stays signed in** — your session is read from local storage, so you reach your decks instead of the login wall. (You must have signed in online at least once; a fresh sign-in/sign-up still needs the network.)
-- **Working deck is never lost** — the current deck is auto-saved to the device and restored on reload, online or off.
-- **My Decks (on-device library)** — **Save to Device** stores the current deck locally; open **My Decks** to load, rename, or delete saved decks. All of this works fully offline.
-- **Web Decks are mirrored** — any Web Deck you open while online is automatically copied into **My Decks**, so you can study it later offline.
+- **Working deck is never lost** — every edit is auto-saved to the **My Decks** library (debounced, plus a final flush when the tab is hidden or closed), so nothing is lost if the app is closed mid-session. A reload starts on the clean home screen by design; reopen your deck from **My Decks**.
+- **Full library offline** — because every cloud deck is mirrored onto the device automatically, **My Decks** works fully offline; you can load, rename, and delete saved decks with no connection.
 - An **Offline** badge appears (bottom-left) whenever you lose connection.
 
-Cloud-only actions — **Sync to Cloud**, browsing **Web Decks**, and a first-time login — still require an internet connection. Attempting **Sync to Cloud** while offline saves the deck to your device instead.
+A first-time login still needs the network, and any edits made offline (including deletes) reconcile with the cloud automatically once the connection returns.
 
 ---
 
@@ -584,10 +531,12 @@ Cloud-only actions — **Sync to Cloud**, browsing **Web Decks**, and a first-ti
 | PDF export | Print-to-PDF via a generated standalone document |
 | ZIP import/export | [JSZip](https://stuk.github.io/jszip/) |
 | Markdown export | [Turndown](https://github.com/mixmark-io/turndown) |
-| Database | [Supabase](https://supabase.com/) (Postgres + Auth + RLS) |
-| Auth | Supabase email + password (`signInWithPassword`) |
-| Config storage | `localStorage` — URL and anon key never touch the source code |
-| Offline | Service worker + Cache API |
+| Database | [Supabase](https://supabase.com/) (Postgres + Auth + per-user RLS) — schema in `supabase_schema.sql`, migrations in the other `supabase_*.sql` files |
+| Auth | Supabase email + password (`signInWithPassword` / `signUp`) |
+| Cloud sync | Automatic two-way reconcile, last-write-wins per deck by `updated_at`; cross-device delete tombstones in `deleted_decks` |
+| Config storage | `localStorage` — Supabase URL, anon key, and ImgBB key never touch the source code |
+| Image hosting | [ImgBB](https://api.imgbb.com/) (browser-side WebP optimization before upload) |
+| Offline | Service worker (`sw.js`) + Cache API; full deck library mirrored on-device |
 | Deployment | Any static host — GitHub Pages, Netlify, Vercel, local server |
 
-The entire application logic lives in `app.js`. There are no modules, no transpilation, and no runtime dependencies beyond what the CDN `<script>` tags load.
+The entire application logic lives in `app.js` (`index.html` + `styles.css` for markup and styling). There are no modules, no transpilation, and no runtime dependencies beyond what the CDN `<script>` tags load.
