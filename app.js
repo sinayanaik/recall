@@ -5924,16 +5924,29 @@ function beginImageResize(event, shell, img, tokenIndex, rowPos) {
     img.classList.add("has-custom-size");
     paintBadge();
   };
-  const onUp = () => {
+  // A single teardown for every way the drag can end. Without also handling
+  // pointercancel (fired when a touch/pen gesture is interrupted — scroll
+  // takeover, second finger, the browser stealing the pointer), onUp would never
+  // run: the live size badge would stay stranded in the DOM and the document
+  // pointermove listener would leak, which is the "stray UI element that pops up
+  // and won't go away" symptom.
+  let finished = false;
+  const end = (commit) => {
+    if (finished) return;
+    finished = true;
     document.removeEventListener("pointermove", onMove);
     document.removeEventListener("pointerup", onUp);
+    document.removeEventListener("pointercancel", onCancel);
     shell.classList.remove("is-resizing");
     badge.remove();
-    commitImageWidth(tokenIndex, rowPos, widthPx);
+    if (commit) commitImageWidth(tokenIndex, rowPos, widthPx);
   };
+  const onUp = () => end(true);
+  const onCancel = () => end(false); // interrupted — drop the badge, keep last live width
   paintBadge();
   document.addEventListener("pointermove", onMove);
-  document.addEventListener("pointerup", onUp, { once: true });
+  document.addEventListener("pointerup", onUp);
+  document.addEventListener("pointercancel", onCancel);
 }
 
 // Splits a mixed paragraph (image pasted mid-sentence, alongside other text)
@@ -6001,41 +6014,62 @@ function attachNotesImageResizeHandle(shell, img, tokenIndex, rowPos) {
   shell.appendChild(resizeHandle);
 }
 
-// Re-attaches the resize grip after every notes render. Cross-references
-// rendered .diagram-shell elements (DOM order) against findImageTokens (source
-// order) — both orders match since none of preprocessSpecialBlocks's transforms
-// reorder or remove image blocks.
+// Re-attaches the resize grip / promote button after every notes render.
+//
+// Rendering wraps EVERY <img> in a .diagram-shell (addDiagramZoomControl), but
+// findImageTokens only classifies the images it can map back to a resizable /
+// promotable source block — an image buried in a table cell or wrapped in a link
+// inside running text is rendered (and shelled) yet left unclassified. Pairing
+// the two lists purely by ordinal position therefore slipped the whole sequence
+// the moment one such image appeared: a resize grip meant for a later image got
+// attached to (and would then rewrite) the wrong one.
+//
+// Instead, match each classified image to its shell by src, walked as an ordered
+// subsequence: a shell whose image isn't in the classified list fails the src
+// check and is simply skipped (keeping only its Zoom pill) rather than consuming
+// a control slot. src is compared through normalizeImageUrl so a Drive link whose
+// rendered src was already rewritten still matches its raw markdown href.
 function enhanceNotesImageControls() {
   if (!el.notesView) return;
   const tokens = notesLexTokens();
   const imageTokens = findImageTokens(tokens);
   const shells = Array.from(el.notesView.querySelectorAll(".diagram-shell")).filter((s) => s.querySelector("img"));
 
-  let cursor = 0;
+  // One slot per classified image, in document order, carrying its owning entry.
+  const slots = [];
   imageTokens.forEach((entry) => {
-    const count = entry.images.length;
-    const entryShells = shells.slice(cursor, cursor + count);
-    cursor += count;
-    entryShells.forEach((shell, i) => {
-      const img = shell.querySelector("img");
-      if (!img) return;
-      img.draggable = false;
-      shell.dataset.tokenIndex = String(entry.tokenIndex);
-      const widthPx = entry.images[i]?.widthPx;
-      if (widthPx) {
-        img.style.setProperty("--notes-img-w", `${widthPx}px`);
-        img.classList.add("has-custom-size");
-      } else {
-        img.classList.remove("has-custom-size");
-      }
-      if (entry.isInline) {
-        attachImagePromoteControl(shell, () => promoteInlineImage(entry.tokenIndex, entry.inlinePos));
-      } else if (entry.isDeep) {
-        attachImagePromoteControl(shell, () => promoteDeepImage(entry.tokenIndex, entry.imageRaw, entry.images[0]));
-      } else {
-        attachNotesImageResizeHandle(shell, img, entry.tokenIndex, entry.isRow ? i : null);
-      }
+    entry.images.forEach((img, subIndex) => {
+      slots.push({ entry, subIndex, url: normalizeImageUrl(img.url || "") });
     });
+  });
+
+  let slotIdx = 0;
+  shells.forEach((shell) => {
+    const img = shell.querySelector("img");
+    if (!img) return;
+    if (slotIdx >= slots.length) return;
+    const slot = slots[slotIdx];
+    const src = normalizeImageUrl(img.getAttribute("src") || "");
+    if (src !== slot.url) return; // unclassified image (table cell, linked, …) — Zoom only
+    slotIdx++;
+
+    const { entry, subIndex } = slot;
+    img.draggable = false;
+    shell.dataset.tokenIndex = String(entry.tokenIndex);
+    const widthPx = entry.images[subIndex]?.widthPx;
+    if (widthPx) {
+      img.style.setProperty("--notes-img-w", `${widthPx}px`);
+      img.classList.add("has-custom-size");
+    } else {
+      img.classList.remove("has-custom-size");
+    }
+    if (entry.isInline) {
+      attachImagePromoteControl(shell, () => promoteInlineImage(entry.tokenIndex, entry.inlinePos));
+    } else if (entry.isDeep) {
+      attachImagePromoteControl(shell, () => promoteDeepImage(entry.tokenIndex, entry.imageRaw, entry.images[0]));
+    } else {
+      attachNotesImageResizeHandle(shell, img, entry.tokenIndex, entry.isRow ? subIndex : null);
+    }
   });
 }
 
