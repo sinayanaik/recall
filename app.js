@@ -2730,15 +2730,16 @@ async function exportDeckPayloads(payloads, format, { fileBaseName, title }) {
         });
       });
     }
-    const bodyHtml = await prepareExportHtml(buildFlatCardsDocument(title, cards, { sourceTitle: title, statusById }));
+    const rawBodyHtml = buildCornellFlatDocument(title, cards, { sourceTitle: title, statusById });
     if (format === "doc") {
-      const html = await wrapWordDocument(bodyHtml, fileBaseName);
-      downloadTextFile(html, `${fileBaseName}.doc`, "application/msword;charset=utf-8");
-      setStatus("Exported as Word (.doc).");
+      const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName);
+      downloadTextFile(bytes, `${fileBaseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      setStatus(`Exported as Word (.docx).${imageEmbedSuffix(failedImageCount)}`);
     } else {
+      const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
       const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName);
       downloadTextFile(html, `${fileBaseName}.html`, "text/html;charset=utf-8");
-      setStatus("Exported as standalone HTML.");
+      setStatus(`Exported as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
     }
     return;
   }
@@ -2862,7 +2863,7 @@ function createDeckExportControl(sel, deckTitle) {
   [
     ["pdf", "Cornell PDF"],
     ["html", "Standalone HTML"],
-    ["doc", "Word (.doc)"],
+    ["doc", "Word (.docx)"],
     ["markdown", "Markdown"],
     ["json", "JSON"],
     ["sql", "SQL"]
@@ -4440,7 +4441,11 @@ function markdownTableFits(table, wrapper) {
 
 function fitMarkdownTables(container) {
   container.querySelectorAll("table").forEach((table) => {
-    if (table.closest("pre")) return;
+    // Genuine markdown tables always live inside a `.rendered` block. Skip
+    // anything else (e.g. the structural <table> the Cornell HTML/Word
+    // export uses for its question/answer columns) so this auto-fit pass
+    // doesn't reflow layout tables it was never meant to touch.
+    if (table.closest("pre") || !table.closest(".rendered")) return;
 
     const wrapper = wrapMarkdownTable(table);
     applyMarkdownTableLabels(table);
@@ -5568,12 +5573,17 @@ el.makeCardFromNotesBtn?.addEventListener("click", () => {
 // back into state.notes — safe inside arbitrary surrounding markdown (lists,
 // quotes, code fences) because marked already knows the real block boundaries.
 //
-// A resized image is persisted as a raw <img> HTML block carrying an absolute
-// pixel width (marked/DOMPurify pass it through untouched; DOMPurify's ADD_ATTR
-// allows style/class). Untouched `![alt](url)` images are left alone. Only an
-// image on its own blank-line-separated line is directly resizable; one mixed
-// into running text or nested in a list/quote first gets a one-click "move to
-// own line" button that promotes it to such a block. Images are always centered.
+// A resized image is persisted as a raw <img> HTML block/inline element
+// carrying an absolute pixel width (marked/DOMPurify pass it through
+// untouched; DOMPurify's ADD_ATTR allows style/class). Untouched
+// `![alt](url)` images are left alone. A standalone image (its own
+// paragraph) or one sharing a paragraph with other text are both directly
+// resizable in place — every rendered <img> gets wrapped in a block-level
+// .diagram-shell, so it always occupies its own visual row regardless of
+// markdown-source block boundaries. Only an image buried inside a list or
+// blockquote still needs the one-click "move to own line" promote button,
+// since extracting it means splicing its enclosing token, not just swapping
+// an inline slice. Images are always centered.
 
 function notesLexTokens() {
   return marked.lexer(state.notes || "");
@@ -5600,9 +5610,12 @@ function imgTagHtml({ url, alt = "", widthPx = null }) {
 }
 
 // Walks top-level marked tokens and returns every image-bearing block in
-// document order. A standalone image (its own paragraph / raw <img>) is
-// directly resizable. An image inside running text (isInline) or nested in a
-// list/quote (isDeep) is flagged so it can be promoted to its own line first.
+// document order. A standalone image (its own paragraph / raw <img>) and one
+// sharing a paragraph with other text (isInline) are both directly
+// resizable — commitImageWidth rewrites just that image's own raw slice for
+// the isInline case, leaving the surrounding text untouched. Only one nested
+// in a list/quote (isDeep) is flagged for the "move to its own line" promote
+// button first, since pulling it out means splicing its enclosing token.
 // Legacy side-by-side rows (`.notes-img-row`, no longer creatable) are still
 // detected so their images stay resizable and the DOM↔token mapping in
 // enhanceNotesImageControls stays aligned.
@@ -5660,9 +5673,9 @@ function findImageTokens(tokens) {
         return;
       }
     }
-    // An image pasted mid-sentence shares its paragraph with other text — it
-    // can't be resized in place, so it's flagged for the "move to own line"
-    // promote control instead.
+    // An image pasted mid-sentence shares its paragraph with other text.
+    // `inlinePos` lets commitImageWidth find and replace just this image's
+    // own raw slice within the paragraph, so it's still resizable in place.
     if (token.type === "paragraph" && Array.isArray(token.tokens) && token.tokens.length > 1) {
       token.tokens.forEach((inline, inlinePos) => {
         if (inline.type === "image") {
@@ -5765,24 +5778,36 @@ function rebuildNotesFromTokens(tokens) {
 
 // Freestyle sizing — an absolute pixel width with only a sanity floor/ceiling,
 // so an image can be shrunk to a small accent or blown up past its container
-// (the shell scrolls). rowPos targets one image of a side-by-side row. Resizing
-// an image in a `|`-separated row rewrites that line into the explicit
-// `<div class="notes-img-row">` form (the only representation that can carry a
-// per-image width); it renders identically.
-function commitImageWidth(tokenIndex, rowPos, px) {
+// (the shell scrolls). `subPos` disambiguates when a single token carries more
+// than one image: a side-by-side `|`-separated row (subPos = index in the
+// row) or an image sharing a paragraph with other text (subPos = inlinePos).
+// Resizing a row image rewrites that line into the explicit
+// `<div class="notes-img-row">` form (the only representation that can carry
+// a per-image width); it renders identically. Resizing an inline image
+// replaces just its own raw slice within the shared paragraph, in place —
+// the surrounding text is left untouched, no promotion/extraction needed.
+function commitImageWidth(tokenIndex, subPos, px) {
   const widthPx = Math.min(2000, Math.max(20, Math.round(px)));
   const tokens = notesLexTokens();
   const token = tokens[tokenIndex];
   if (!token) return;
+  const entries = findImageTokens(tokens).filter((e) => e.tokenIndex === tokenIndex);
 
-  if (rowPos !== null) {
-    const entry = findImageTokens(tokens).find((e) => e.tokenIndex === tokenIndex && e.isRow);
-    if (!entry || !entry.images[rowPos]) return;
-    const images = entry.images.map((im, i) => (i === rowPos ? { ...im, widthPx } : im));
+  const rowEntry = subPos !== null ? entries.find((e) => e.isRow) : null;
+  const inlineEntry = subPos !== null ? entries.find((e) => e.isInline && e.inlinePos === subPos) : null;
+
+  if (rowEntry) {
+    if (!rowEntry.images[subPos]) return;
+    const images = rowEntry.images.map((im, i) => (i === subPos ? { ...im, widthPx } : im));
     const rowHtml = `<div class="notes-img-row">${images.map(imgTagHtml).join("")}</div>\n\n`;
     tokens[tokenIndex] = { type: "html", raw: rowHtml, text: rowHtml, pre: false, block: true };
+  } else if (inlineEntry) {
+    const inline = token.tokens[inlineEntry.inlinePos];
+    if (!inline) return;
+    const newImgRaw = imgTagHtml({ ...inlineEntry.images[0], widthPx });
+    tokens[tokenIndex] = { ...token, raw: token.raw.replace(inline.raw, newImgRaw) };
   } else {
-    const entry = findImageTokens(tokens).find((e) => e.tokenIndex === tokenIndex);
+    const entry = entries.find((e) => !e.isRow && !e.isInline);
     if (!entry) return;
     const html = imgTagHtml({ ...entry.images[0], widthPx }) + "\n\n";
     tokens[tokenIndex] = { type: "html", raw: html, text: html, pre: false, block: true };
@@ -5843,36 +5868,6 @@ function beginImageResize(event, shell, img, tokenIndex, rowPos) {
   document.addEventListener("pointermove", onMove);
   document.addEventListener("pointerup", onUp);
   document.addEventListener("pointercancel", onCancel);
-}
-
-// Splits a mixed paragraph (image pasted mid-sentence, alongside other text)
-// into up to three blocks — text-before, the image as its own standalone block,
-// text-after — using the paragraph's own inline tokens' raw slices so
-// formatting either side survives. The image then qualifies as a standalone
-// block on the next render and gets the resize grip.
-function promoteInlineImage(tokenIndex, inlinePos) {
-  const tokens = notesLexTokens();
-  const token = tokens[tokenIndex];
-  if (!token || token.type !== "paragraph" || !Array.isArray(token.tokens)) return;
-  const inline = token.tokens[inlinePos];
-  if (!inline) return;
-
-  const info = inline.type === "image"
-    ? { url: inline.href, alt: inline.text || "", widthPx: null }
-    : parseImgTagFromHtml(inline.raw || inline.text || "");
-  if (!info) return;
-
-  const before = token.tokens.slice(0, inlinePos).map((t) => t.raw).join("").trim();
-  const after = token.tokens.slice(inlinePos + 1).map((t) => t.raw).join("").trim();
-
-  const replacement = [];
-  if (before) replacement.push({ type: "paragraph", raw: before + "\n\n", text: before, tokens: [] });
-  const imgHtml = imgTagHtml(info) + "\n\n";
-  replacement.push({ type: "html", raw: imgHtml, text: imgHtml, pre: false, block: true });
-  if (after) replacement.push({ type: "paragraph", raw: after + "\n\n", text: after, tokens: [] });
-
-  tokens.splice(tokenIndex, 1, ...replacement);
-  rebuildNotesFromTokens(tokens);
 }
 
 // Minimal overlay for an image that isn't (yet) its own clean top-level block —
@@ -5959,12 +5954,15 @@ function enhanceNotesImageControls() {
     } else {
       img.classList.remove("has-custom-size");
     }
-    if (entry.isInline) {
-      attachImagePromoteControl(shell, () => promoteInlineImage(entry.tokenIndex, entry.inlinePos));
-    } else if (entry.isDeep) {
+    if (entry.isDeep) {
+      // Still needs manual promotion: extracting an image out of a list/quote
+      // means splicing its enclosing token's raw content, not just swapping
+      // one inline slice — a meaningfully bigger rewrite than the in-place
+      // resize the row/plain-paragraph/inline cases below get directly.
       attachImagePromoteControl(shell, () => promoteDeepImage(entry.tokenIndex, entry.imageRaw, entry.images[0]));
     } else {
-      attachNotesImageResizeHandle(shell, img, entry.tokenIndex, entry.isRow ? subIndex : null);
+      const subPos = entry.isRow ? subIndex : (entry.isInline ? entry.inlinePos : null);
+      attachNotesImageResizeHandle(shell, img, entry.tokenIndex, subPos);
     }
   });
 }
@@ -7898,12 +7896,13 @@ function buildCornellPrintDocument(title, cards, scope, options = {}) {
   `;
 }
 
-// ── Standalone HTML / Word (.doc) export ────────────────────────────────
-// A flat, non-Cornell layout (no flex/table trickery) so the same markup
-// reads fine both as a self-contained HTML file and inside Word's HTML
-// filter, which ignores modern layout CSS. Math/Mermaid/Nomnoml are baked
-// to static markup by rendering off-screen in el.printRoot first, same as
-// the Cornell PDF flow, so the exported file needs no JS to display right.
+// ── Standalone HTML export ──────────────────────────────────────────────
+// A Cornell layout built from <table> (not flex/grid) so the same markup
+// reads fine both as a self-contained HTML file and — for the .docx export
+// further below, which shares this same rendering step — inside a real
+// Word document. Math/Mermaid/Nomnoml are baked to static markup by
+// rendering off-screen in el.printRoot first, same as the Cornell PDF flow,
+// so the exported file needs no JS to display right.
 let cachedExportStylesheetCss = null;
 
 async function fetchExportStylesheetCss() {
@@ -7923,28 +7922,58 @@ async function fetchExportStylesheetCss() {
   return cachedExportStylesheetCss;
 }
 
-// Reuses the app's live theme tokens (--bg/--text/--card/--line), scoped by
-// the data-theme attribute the wrapper documents set on <html>, so a
-// standalone HTML export opens looking like whatever theme was active when
-// it was exported instead of always the print palette. The literal fallback
-// after each var() only helps real browsers if the variable somehow doesn't
-// resolve — Word's HTML engine doesn't parse var() at all, so it just drops
-// these rules and falls back to plain black-on-white, which is fine.
-function flatExportExtraCss() {
+// Only feeds the standalone HTML export (the .docx export builds its own
+// WordprocessingML further below and never touches this CSS) — a real
+// browser resolves var(...) fine, so this stays var()-based rather than
+// baking in literal colors.
+function exportExtraCss() {
   return `
     html, body { margin: 0; background: var(--bg, #eef2f2); color: var(--text, #17201c); }
     body { padding: 24px; font-family: var(--app-font-family, Arial, Helvetica, sans-serif); }
     .flat-export-document { max-width: 900px; margin: 0 auto; }
     .flat-export-cover { margin-bottom: 24px; border-bottom: 2px solid var(--line, #b9c9c5); padding-bottom: 12px; }
     .flat-export-cover h1 { margin: 0 0 6px; font-size: 1.6em; }
-    .flat-export-cover p { margin: 0; opacity: .7; }
-    .flat-export-card {
-      border: 1px solid var(--line, #b9c9c5);
+    .flat-export-cover p { margin: 0; color: var(--muted, #56645f); }
+    .flat-export-notes { padding-top: 4px; }
+    .flat-export-divider { margin: 20px 0; }
+    .flat-export-divider td {
+      border: 1px dashed var(--line, #b9c9c5);
       border-radius: 10px;
-      padding: 14px 18px;
+      padding: 10px 14px;
+      text-align: center;
+    }
+    .flat-export-divider span { display: block; font-size: 11px; text-transform: uppercase; color: var(--muted, #56645f); }
+    .flat-export-divider h2 { margin: 4px 0; }
+
+    /* Cornell-style two-column card, built as a <table> (not flex/grid) so
+       Word's HTML filter — which drops modern layout CSS — still renders the
+       question/answer columns side by side instead of stacking them. */
+    table.cornell-flat-row {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
       margin-bottom: 18px;
-      background: var(--card, #ffffff);
+      border: 2px solid var(--line, #b9c9c5);
       page-break-inside: avoid;
+    }
+    .cornell-flat-question, .cornell-flat-answer { padding: 14px 16px; vertical-align: top; }
+    .cornell-flat-question {
+      width: 34%;
+      background: var(--panel-2, #f0eee7);
+      border-right: 2px solid var(--line, #b9c9c5);
+      font-weight: 700;
+    }
+    .cornell-flat-answer { background: var(--card, #ffffff); }
+    .cornell-flat-row-number {
+      display: inline-block;
+      min-width: 20px;
+      padding: 2px 7px;
+      margin-bottom: 8px;
+      border: 1px solid var(--accent, #16796c);
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--accent-strong, #0d5e53);
     }
     .flat-export-label {
       display: block;
@@ -7952,64 +7981,82 @@ function flatExportExtraCss() {
       font-weight: 700;
       letter-spacing: .05em;
       text-transform: uppercase;
-      opacity: .6;
+      color: var(--muted, #56645f);
       margin-bottom: 6px;
     }
-    .flat-export-question { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--line, #b9c9c5); }
-    .flat-export-divider {
-      border: 1px dashed var(--line, #b9c9c5);
-      border-radius: 10px;
-      padding: 10px 14px;
-      margin: 22px 0;
-      text-align: center;
-    }
-    .flat-export-divider span { display: block; font-size: 11px; text-transform: uppercase; opacity: .6; }
-    .flat-export-divider h2 { margin: 4px 0; }
-    .flat-export-notes { padding-top: 4px; }
+
+    /* Rendered markdown prose (questions/answers/notes). */
+    .rendered { color: var(--text, #17201c); }
+    .rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { color: var(--text, #17201c); margin: 0.5em 0 0.3em; }
+    .rendered p { margin: 0 0 0.6em; }
+    .rendered ul, .rendered ol { margin: 0 0 0.6em; padding-left: 1.4em; }
+    .rendered blockquote { margin: 0 0 0.6em; padding-left: 12px; border-left: 3px solid var(--accent, #16796c); color: var(--muted, #56645f); }
+    .rendered a { color: var(--accent-strong, #0d5e53); }
+    .rendered code { background: var(--panel-2, #f0eee7); padding: 1px 5px; border-radius: 4px; font-family: "Courier New", monospace; }
+    .rendered pre { background: var(--panel-2, #f0eee7); border: 1px solid var(--line, #b9c9c5); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+    .rendered pre code { background: none; padding: 0; }
+    .rendered table { border-collapse: collapse; width: 100%; margin: 0 0 0.6em; }
+    .rendered th, .rendered td { border: 1px solid var(--line, #b9c9c5); padding: 6px 8px; }
     img { max-width: 100%; }
+    .export-image-fallback {
+      display: inline-block;
+      padding: 3px 10px;
+      border: 1px dashed var(--line, #b9c9c5);
+      border-radius: 6px;
+      color: var(--accent-strong, #0d5e53);
+      text-decoration: none;
+    }
   `;
 }
 
 async function buildExportStyleTag() {
   const css = await fetchExportStylesheetCss();
-  return `<style>${css}\n${flatExportExtraCss()}</style>`;
+  return `<style>${css}\n${exportExtraCss()}</style>`;
 }
 
-function flatCardHtml(card, index, { statusById = state.statusById } = {}) {
+// Table-based Cornell layout for HTML/Word export — a real <table> (not the
+// flex .cornell-question-rail/.cornell-answer-cell the app and PDF print use)
+// so the question/answer columns still sit side by side once Word's HTML
+// filter strips out anything it doesn't understand.
+function cornellFlatCardHtml(card, index, { statusById = state.statusById } = {}) {
   const status = normalizeCardStatus(statusById[card.id] || card.status);
   const statusLabel = cardStatusLabel(status);
   return `
-    <article class="flat-export-card">
-      <div class="flat-export-question">
-        <span class="flat-export-label">${cardOrdinalLabel(index)} &middot; ${escapeHtml(statusLabel)}</span>
-        <div class="rendered">${markdownToSafeHtml(card.question)}</div>
-      </div>
-      <div class="flat-export-answer">
-        <span class="flat-export-label">Answer</span>
-        <div class="rendered">${markdownToSafeHtml(card.answer)}</div>
-      </div>
-    </article>
+    <table class="cornell-flat-row" cellspacing="0" cellpadding="0">
+      <tr>
+        <td class="cornell-flat-question">
+          <span class="cornell-flat-row-number">${cardOrdinalLabel(index)}</span>
+          <div class="rendered">${markdownToSafeHtml(card.question)}</div>
+        </td>
+        <td class="cornell-flat-answer">
+          <span class="flat-export-label">${escapeHtml(statusLabel)}</span>
+          <div class="rendered">${markdownToSafeHtml(card.answer)}</div>
+        </td>
+      </tr>
+    </table>
   `;
 }
 
-function flatDeckDividerHtml(entry) {
+function cornellFlatDeckDividerHtml(entry) {
   return `
-    <div class="flat-export-divider">
-      <span>Deck</span>
-      <h2>${escapeHtml(entry.title || "Untitled")}</h2>
-      <p>Category: ${escapeHtml(normalizeDeckCategory(entry.category))}</p>
-    </div>
+    <table class="flat-export-divider" cellspacing="0" cellpadding="0" width="100%">
+      <tr><td>
+        <span>Deck</span>
+        <h2>${escapeHtml(entry.title || "Untitled")}</h2>
+        <p>Category: ${escapeHtml(normalizeDeckCategory(entry.category))}</p>
+      </td></tr>
+    </table>
   `;
 }
 
-function buildFlatCardsDocument(title, cards, options = {}) {
+function buildCornellFlatDocument(title, cards, options = {}) {
   const total = printableCardCount(cards);
   const sourceTitle = options.sourceTitle || state.deckTitle || state.sourceTitle || "Recall";
   const statusById = options.statusById || state.statusById;
   let cardIndex = 0;
   const cardsHtml = cards.map((entry) => {
-    if (isPrintDeckDivider(entry)) return flatDeckDividerHtml(entry);
-    const html = flatCardHtml(entry, cardIndex, { statusById });
+    if (isPrintDeckDivider(entry)) return cornellFlatDeckDividerHtml(entry);
+    const html = cornellFlatCardHtml(entry, cardIndex, { statusById });
     cardIndex += 1;
     return html;
   }).join("\n");
@@ -8018,7 +8065,7 @@ function buildFlatCardsDocument(title, cards, options = {}) {
       <h1>${escapeHtml(sourceTitle)}</h1>
       <p>${escapeHtml(title)} &middot; ${total} ${total === 1 ? "card" : "cards"} &middot; ${new Date().toLocaleString()}</p>
     </header>
-    <section class="flat-export-cards" aria-label="${escapeHtml(title)} cards">
+    <section class="cornell-flat-cards" aria-label="${escapeHtml(title)} cards">
       ${cardsHtml}
     </section>
   `;
@@ -8066,15 +8113,34 @@ function buildNotesPrintDocument(title, notesMarkdown) {
 // browser does while printing), and a saved standalone HTML file is meant to
 // keep working with no connection at all — so every <img src> pointing at a
 // remote URL gets pulled down once here and turned into a data: URI.
+//
+// Some remote hosts (private Drive shares, hotlink protection, rate limits)
+// respond 200 with an HTML sign-in/error page instead of image bytes, or
+// reject the cross-origin fetch outright. Embedding that response verbatim
+// produces an unreadable image (Word shows this as a broken "Read Error"
+// tile), so any src that doesn't resolve to real image bytes is swapped for
+// a plain link instead — broken but honest, rather than silently corrupt.
+function unembeddableImageFallback(img, src) {
+  const link = document.createElement("a");
+  link.className = "export-image-fallback";
+  link.href = src;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = img.getAttribute("alt")?.trim() || "View image";
+  return link;
+}
+
 async function embedImagesAsDataUris(container) {
   const images = Array.from(container.querySelectorAll("img[src]"));
+  let failedCount = 0;
   await Promise.all(images.map(async (img) => {
     const src = img.getAttribute("src");
     if (!src || src.startsWith("data:")) return;
     try {
       const response = await fetch(src, { mode: "cors" });
-      if (!response.ok) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob();
+      if (!blob.type.startsWith("image/")) throw new Error(`Not image bytes (got ${blob.type || "unknown"})`);
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result);
@@ -8083,12 +8149,21 @@ async function embedImagesAsDataUris(container) {
       });
       img.setAttribute("src", dataUrl);
     } catch (error) {
-      console.warn("Could not embed image for export (kept as a link):", src, error);
+      console.warn("Could not embed image for export, linking to original instead:", src, error);
+      failedCount += 1;
+      img.replaceWith(unembeddableImageFallback(img, src));
     }
   }));
+  return failedCount;
 }
 
-async function prepareExportHtml(bodyHtml) {
+// Mounts + renders + embeds into el.printRoot and leaves it mounted (unlike
+// prepareExportHtml, which serializes it to a string and tears it down).
+// The .docx builder needs the live DOM — real <img>/<svg> elements it can
+// rasterize with their actual pixel dimensions — not a string it would have
+// to re-parse, so it shares this step and calls finishExportRoot() itself
+// once it's done reading the DOM.
+async function prepareExportRoot(bodyHtml) {
   el.printRoot.innerHTML = bodyHtml;
   el.printRoot.classList.remove("is-preview");
   el.printRoot.classList.add("is-preparing");
@@ -8099,20 +8174,35 @@ async function prepareExportHtml(bodyHtml) {
   } finally {
     configureMermaid(currentThemeId());
   }
-  await embedImagesAsDataUris(el.printRoot);
+  const failedImageCount = await embedImagesAsDataUris(el.printRoot);
   await (document.fonts?.ready || Promise.resolve());
   await afterPaint();
-  const html = el.printRoot.innerHTML;
+  return failedImageCount;
+}
+
+function finishExportRoot() {
   el.printRoot.innerHTML = "";
   el.printRoot.classList.remove("is-preparing");
   el.printRoot.setAttribute("aria-hidden", "true");
-  return html;
 }
 
+async function prepareExportHtml(bodyHtml) {
+  const failedImageCount = await prepareExportRoot(bodyHtml);
+  const html = el.printRoot.innerHTML;
+  finishExportRoot();
+  return { html, failedImageCount };
+}
+
+// A real browser (unlike Word) resolves var() fine, so the standalone HTML
+// export embeds the actual stylesheet plus the live inline custom-property
+// overrides from the style settings panel (fonts, sizes, widths, theme) —
+// opening the file reproduces the exact look of the app when it was
+// exported, not just its default theme.
 async function wrapStandaloneHtmlDocument(bodyHtml, title) {
   const styleTag = await buildExportStyleTag();
+  const liveStyle = document.documentElement.getAttribute("style") || "";
   return `<!doctype html>
-<html lang="en" data-theme="${escapeHtml(currentThemeId())}">
+<html lang="en" data-theme="${escapeHtml(currentThemeId())}" style="${escapeHtml(liveStyle)}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8127,23 +8217,693 @@ ${bodyHtml}
 </html>`;
 }
 
-async function wrapWordDocument(bodyHtml, title) {
-  const styleTag = await buildExportStyleTag();
-  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40" data-theme="${escapeHtml(currentThemeId())}">
-<head>
-<meta charset="utf-8">
-<title>${escapeHtml(title)}</title>
-<!--[if gte mso 9]>
-<xml><w:WordDocument><w:View>Print</w:View><w:DoNotOptimizeForBrowser/></w:WordDocument></xml>
-<![endif]-->
-${styleTag}
-</head>
-<body>
-<div class="flat-export-document">
-${bodyHtml}
-</div>
-</body>
-</html>`;
+// ── Real .docx export ───────────────────────────────────────────────────
+// Word's HTML filter never evaluates var(...), and — separately, the actual
+// root cause of the "Read Error" image placeholder — it's notoriously
+// unable to decode `data:` base64 image URIs at all, even ones a real
+// browser renders fine. An HTML-file-wearing-a-.doc-extension can never be
+// fully reliable for embedded images because of this. A .docx, on the other
+// hand, is just a zip archive of XML parts plus real media files — the
+// format Word actually reads natively — so this builds one from scratch:
+// a small hand-rolled (uncompressed/STORE) zip writer, and an HTML-DOM to
+// WordprocessingML converter that walks the exact same rendered/enhanced
+// DOM the HTML and PDF exports use (headings, paragraphs, lists, tables,
+// code blocks, links, bold/italic/underline/strike, and images/diagrams —
+// each raster-decoded once via canvas and embedded as a real media part
+// referenced by relationship id, never as inline base64 text).
+
+let cachedCrc32Table = null;
+function crc32Table() {
+  if (cachedCrc32Table) return cachedCrc32Table;
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[n] = c >>> 0;
+  }
+  cachedCrc32Table = table;
+  return table;
+}
+
+function crc32(bytes) {
+  const table = crc32Table();
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) {
+    crc = table[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function utf8Bytes(text) {
+  return new TextEncoder().encode(text);
+}
+
+// Minimal ZIP writer — STORE method only (no compression). No zip library
+// is available in this project, so this hand-rolls just enough of the ZIP
+// spec (local file headers, central directory, end record) to produce a
+// valid archive any zip/docx reader — including Word itself — can open.
+function buildZipArchive(files) {
+  const localChunks = [];
+  const centralChunks = [];
+  let offset = 0;
+
+  files.forEach(({ name, data }) => {
+    const nameBytes = utf8Bytes(name);
+    const checksum = crc32(data);
+
+    const localHeader = new DataView(new ArrayBuffer(30));
+    localHeader.setUint32(0, 0x04034b50, true);
+    localHeader.setUint16(4, 20, true);
+    localHeader.setUint16(6, 0, true);
+    localHeader.setUint16(8, 0, true);
+    localHeader.setUint16(10, 0, true);
+    localHeader.setUint16(12, 0, true);
+    localHeader.setUint32(14, checksum, true);
+    localHeader.setUint32(18, data.length, true);
+    localHeader.setUint32(22, data.length, true);
+    localHeader.setUint16(26, nameBytes.length, true);
+    localHeader.setUint16(28, 0, true);
+    localChunks.push(new Uint8Array(localHeader.buffer), nameBytes, data);
+
+    const centralHeader = new DataView(new ArrayBuffer(46));
+    centralHeader.setUint32(0, 0x02014b50, true);
+    centralHeader.setUint16(4, 20, true);
+    centralHeader.setUint16(6, 20, true);
+    centralHeader.setUint16(8, 0, true);
+    centralHeader.setUint16(10, 0, true);
+    centralHeader.setUint16(12, 0, true);
+    centralHeader.setUint16(14, 0, true);
+    centralHeader.setUint32(16, checksum, true);
+    centralHeader.setUint32(20, data.length, true);
+    centralHeader.setUint32(24, data.length, true);
+    centralHeader.setUint16(28, nameBytes.length, true);
+    centralHeader.setUint16(30, 0, true);
+    centralHeader.setUint16(32, 0, true);
+    centralHeader.setUint16(34, 0, true);
+    centralHeader.setUint16(36, 0, true);
+    centralHeader.setUint32(38, 0, true);
+    centralHeader.setUint32(42, offset, true);
+    centralChunks.push(new Uint8Array(centralHeader.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + data.length;
+  });
+
+  const centralStart = offset;
+  const centralSize = centralChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+
+  const endRecord = new DataView(new ArrayBuffer(22));
+  endRecord.setUint32(0, 0x06054b50, true);
+  endRecord.setUint16(4, 0, true);
+  endRecord.setUint16(6, 0, true);
+  endRecord.setUint16(8, files.length, true);
+  endRecord.setUint16(10, files.length, true);
+  endRecord.setUint32(12, centralSize, true);
+  endRecord.setUint32(16, centralStart, true);
+  endRecord.setUint16(20, 0, true);
+
+  const allChunks = [...localChunks, ...centralChunks, new Uint8Array(endRecord.buffer)];
+  const totalLength = allChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const result = new Uint8Array(totalLength);
+  let pos = 0;
+  allChunks.forEach((chunk) => {
+    result.set(chunk, pos);
+    pos += chunk.length;
+  });
+  return result;
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
+    .replace(/[ --]/g, "");
+}
+
+function hex6(value, fallback) {
+  const clean = String(value || "").replace(/^#/, "").trim();
+  return /^[0-9a-fA-F]{6}$/.test(clean) ? clean.toUpperCase() : fallback;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Could not decode image for Word export"));
+    img.src = src;
+  });
+}
+
+// Re-encodes any image (jpeg/png/gif/webp/whatever a browser can decode) to
+// PNG via canvas — guarantees a single, universally Word-safe media type
+// regardless of the source format's quirks.
+async function rasterizeToPng(src) {
+  const img = await loadImageElement(src);
+  const width = img.naturalWidth || img.width || 300;
+  const height = img.naturalHeight || img.height || 200;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  const buffer = await blob.arrayBuffer();
+  return { bytes: new Uint8Array(buffer), widthPx: width, heightPx: height };
+}
+
+async function svgElementToPngBytes(svg) {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox?.baseVal;
+  const width = Math.max(1, Math.round(rect.width) || Math.round(viewBox?.width) || 400);
+  const height = Math.max(1, Math.round(rect.height) || Math.round(viewBox?.height) || 300);
+  const clone = svg.cloneNode(true);
+  clone.setAttribute("width", String(width));
+  clone.setAttribute("height", String(height));
+  if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  const serialized = new XMLSerializer().serializeToString(clone);
+  const svgSrc = `data:image/svg+xml;base64,${bytesToBase64(utf8Bytes(serialized))}`;
+  return rasterizeToPng(svgSrc);
+}
+
+// Walks the already-rendered export DOM once, rasterizing every real <img>
+// (embedImagesAsDataUris already turned remote URLs into data: URIs, or
+// swapped unreadable ones for a plain <a> fallback link — nothing left to
+// do for those) and every <svg> diagram (mermaid/nomnoml) to PNG bytes,
+// keyed by element so the XML walk below can look each one up directly.
+async function collectDocxMedia(container) {
+  const media = [];
+  const elementMedia = new Map();
+  let mediaIndex = 0;
+
+  const images = Array.from(container.querySelectorAll("img[src]"));
+  for (const img of images) {
+    const src = img.getAttribute("src");
+    if (!src || !src.startsWith("data:")) continue;
+    try {
+      const { bytes, widthPx, heightPx } = await rasterizeToPng(src);
+      mediaIndex += 1;
+      const rId = `rIdImage${mediaIndex}`;
+      media.push({ rId, name: `image${mediaIndex}.png`, bytes });
+      elementMedia.set(img, { rId, widthPx, heightPx });
+    } catch (error) {
+      console.warn("Could not rasterize image for Word export:", src, error);
+    }
+  }
+
+  const svgs = Array.from(container.querySelectorAll("svg"));
+  for (const svg of svgs) {
+    try {
+      const { bytes, widthPx, heightPx } = await svgElementToPngBytes(svg);
+      mediaIndex += 1;
+      const rId = `rIdImage${mediaIndex}`;
+      media.push({ rId, name: `image${mediaIndex}.png`, bytes });
+      elementMedia.set(svg, { rId, widthPx, heightPx });
+    } catch (error) {
+      console.warn("Could not rasterize diagram for Word export:", error);
+    }
+  }
+
+  return { media, elementMedia };
+}
+
+function docxImageExtent(widthPx, heightPx, maxWidthIn) {
+  const emuPerPx = 9525;
+  const maxWidthEmu = Math.round(maxWidthIn * 914400);
+  let widthEmu = Math.round(widthPx * emuPerPx);
+  let heightEmu = Math.round(heightPx * emuPerPx);
+  if (widthEmu > maxWidthEmu && widthEmu > 0) {
+    const scale = maxWidthEmu / widthEmu;
+    widthEmu = maxWidthEmu;
+    heightEmu = Math.round(heightEmu * scale);
+  }
+  return { widthEmu: Math.max(1, widthEmu), heightEmu: Math.max(1, heightEmu) };
+}
+
+function ooxmlInlineImageRun(rId, widthEmu, heightEmu, docPrId, name) {
+  return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${docPrId}" name="${escapeXml(name)}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="${docPrId}" name="${escapeXml(name)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+}
+
+function ooxmlRunProps(props, theme) {
+  const parts = [];
+  if (props.bold) parts.push("<w:b/>");
+  if (props.italic) parts.push("<w:i/>");
+  if (props.underline) parts.push('<w:u w:val="single"/>');
+  if (props.strike) parts.push("<w:strike/>");
+  if (props.code) {
+    parts.push(`<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:shd w:val="clear" w:color="auto" w:fill="${theme.panel2}"/>`);
+  }
+  if (props.color) parts.push(`<w:color w:val="${hex6(props.color, theme.text)}"/>`);
+  return parts.length ? `<w:rPr>${parts.join("")}</w:rPr>` : "";
+}
+
+function ooxmlTextRun(text, props, theme) {
+  if (!text) return "";
+  return `<w:r>${ooxmlRunProps(props, theme)}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>`;
+}
+
+// Recursive inline (run-level) HTML→OOXML walk. `ctx` carries render-wide
+// state (media lookup, hyperlink relationships, theme colors, doc-level
+// counters); `props` carries the current run formatting inherited from
+// ancestor tags (bold/italic/underline/strike/color/monospace) plus the
+// max width (in inches) images should be constrained to in this context.
+function inlineRunsForNode(node, ctx, props) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return ooxmlTextRun(node.textContent, props, ctx.theme);
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const tag = node.tagName.toLowerCase();
+
+  if (node.dataset && node.dataset.tex) {
+    return ooxmlTextRun(decodeURIComponent(node.dataset.tex), { ...props, code: true }, ctx.theme);
+  }
+  if (tag === "br") return "<w:r><w:br/></w:r>";
+  if (tag === "script" || tag === "style") return "";
+
+  if (tag === "img" || tag === "svg") {
+    const info = ctx.elementMedia.get(node);
+    if (!info) return "";
+    ctx.docPrCounter.value += 1;
+    const { widthEmu, heightEmu } = docxImageExtent(info.widthPx, info.heightPx, props.maxWidthIn);
+    const name = tag === "img" ? (node.getAttribute("alt") || "image") : "diagram";
+    return ooxmlInlineImageRun(info.rId, widthEmu, heightEmu, ctx.docPrCounter.value, name);
+  }
+
+  if (tag === "a" && node.getAttribute("href")) {
+    const href = node.getAttribute("href");
+    const rId = ctx.getHyperlinkRelId(href);
+    const linkProps = { ...props, color: ctx.theme.accentStrong, underline: true };
+    const inner = Array.from(node.childNodes).map((child) => inlineRunsForNode(child, ctx, linkProps)).join("");
+    return `<w:hyperlink r:id="${rId}" w:history="1">${inner || ooxmlTextRun(href, linkProps, ctx.theme)}</w:hyperlink>`;
+  }
+
+  const nextProps = { ...props };
+  if (tag === "strong" || tag === "b") nextProps.bold = true;
+  if (tag === "em" || tag === "i") nextProps.italic = true;
+  if (tag === "u") nextProps.underline = true;
+  if (tag === "del") nextProps.strike = true;
+  if (tag === "kbd" || tag === "code") nextProps.code = true;
+  if (tag === "font") {
+    const color = node.getAttribute("color");
+    if (color) nextProps.color = color;
+  }
+
+  return Array.from(node.childNodes).map((child) => inlineRunsForNode(child, ctx, nextProps)).join("");
+}
+
+function childInlineRuns(node, ctx, props) {
+  return Array.from(node.childNodes).map((child) => inlineRunsForNode(child, ctx, props)).join("");
+}
+
+function ooxmlParagraph(runsXml, pProps = {}) {
+  const parts = [];
+  if (pProps.styleId) parts.push(`<w:pStyle w:val="${pProps.styleId}"/>`);
+  if (pProps.numId) parts.push(`<w:numPr><w:ilvl w:val="${pProps.ilvl || 0}"/><w:numId w:val="${pProps.numId}"/></w:numPr>`);
+  if (pProps.jc) parts.push(`<w:jc w:val="${pProps.jc}"/>`);
+  if (pProps.indentLeftTwips) parts.push(`<w:ind w:left="${pProps.indentLeftTwips}"/>`);
+  const borders = [];
+  if (pProps.borderLeftColor) borders.push(`<w:left w:val="single" w:sz="18" w:space="8" w:color="${pProps.borderLeftColor}"/>`);
+  if (pProps.borderBottomColor) borders.push(`<w:bottom w:val="single" w:sz="6" w:space="1" w:color="${pProps.borderBottomColor}"/>`);
+  if (borders.length) parts.push(`<w:pBdr>${borders.join("")}</w:pBdr>`);
+  if (pProps.shadeFill) parts.push(`<w:shd w:val="clear" w:color="auto" w:fill="${pProps.shadeFill}"/>`);
+  if (pProps.spacingAfter != null) parts.push(`<w:spacing w:after="${pProps.spacingAfter}"/>`);
+  const pPr = parts.length ? `<w:pPr>${parts.join("")}</w:pPr>` : "";
+  return `<w:p>${pPr}${runsXml}</w:p>`;
+}
+
+function mergeOverride(base, override) {
+  return { ...override, ...base };
+}
+
+function withScope(ctx, patch) {
+  return { ...ctx, ...patch };
+}
+
+const DOCX_HEADING_STYLE_BY_LEVEL = { 1: "Heading1", 2: "Heading2", 3: "Heading3", 4: "Heading4", 5: "Heading4", 6: "Heading4" };
+const DOCX_NESTED_BLOCK_TAGS = new Set(["ul", "ol", "p", "pre", "blockquote", "table", "div"]);
+
+function childBlocks(node, ctx) {
+  const blocks = [];
+  Array.from(node.childNodes).forEach((child) => {
+    blocksForNode(child, ctx).forEach((block) => blocks.push(block));
+  });
+  return blocks;
+}
+
+function blocksForListItem(li, ctx, numId) {
+  const inlineChildren = [];
+  const nestedElements = [];
+  Array.from(li.childNodes).forEach((child) => {
+    if (child.nodeType === Node.ELEMENT_NODE && DOCX_NESTED_BLOCK_TAGS.has(child.tagName.toLowerCase())) {
+      nestedElements.push(child);
+    } else {
+      inlineChildren.push(child);
+    }
+  });
+  const runs = inlineChildren.map((child) => inlineRunsForNode(child, ctx, ctx.inlineProps)).join("");
+  const itemProps = mergeOverride({ numId, ilvl: Math.min(ctx.listDepth, 3), spacingAfter: 40 }, ctx.blockOverride);
+  const blocks = [ooxmlParagraph(runs, itemProps)];
+  nestedElements.forEach((nested) => {
+    const tag = nested.tagName.toLowerCase();
+    const nestedCtx = tag === "ul" || tag === "ol" ? withScope(ctx, { listDepth: ctx.listDepth + 1 }) : ctx;
+    blocksForNode(nested, nestedCtx).forEach((block) => blocks.push(block));
+  });
+  return blocks;
+}
+
+function tcXml(cellBlocks, { widthTwips, shadeFill, theme } = {}) {
+  const parts = [];
+  if (widthTwips) parts.push(`<w:tcW w:w="${widthTwips}" w:type="dxa"/>`);
+  if (shadeFill) parts.push(`<w:shd w:val="clear" w:color="auto" w:fill="${shadeFill}"/>`);
+  parts.push(`<w:tcBorders><w:top w:val="single" w:sz="4" w:color="${theme.line}"/><w:left w:val="single" w:sz="4" w:color="${theme.line}"/><w:bottom w:val="single" w:sz="4" w:color="${theme.line}"/><w:right w:val="single" w:sz="4" w:color="${theme.line}"/></w:tcBorders>`);
+  const tcPr = `<w:tcPr>${parts.join("")}</w:tcPr>`;
+  const body = cellBlocks.length ? cellBlocks.join("") : ooxmlParagraph("");
+  return `<w:tc>${tcPr}${body}</w:tc>`;
+}
+
+const DOCX_PAGE_WIDTH_TWIPS = 10080;
+
+function tableToOoxml(table, ctx) {
+  const theme = ctx.theme;
+  const borderBlock = `<w:tblBorders><w:top w:val="single" w:sz="4" w:color="${theme.line}"/><w:left w:val="single" w:sz="4" w:color="${theme.line}"/><w:bottom w:val="single" w:sz="4" w:color="${theme.line}"/><w:right w:val="single" w:sz="4" w:color="${theme.line}"/><w:insideH w:val="single" w:sz="4" w:color="${theme.line}"/><w:insideV w:val="single" w:sz="4" w:color="${theme.line}"/></w:tblBorders>`;
+
+  if (table.classList.contains("cornell-flat-row")) {
+    const questionTd = table.querySelector(".cornell-flat-question");
+    const answerTd = table.querySelector(".cornell-flat-answer");
+    const questionWidth = Math.round(DOCX_PAGE_WIDTH_TWIPS * 0.34);
+    const answerWidth = DOCX_PAGE_WIDTH_TWIPS - questionWidth;
+    const questionBlocks = questionTd ? childBlocks(questionTd, withScope(ctx, { maxWidthIn: questionWidth / 1440 })) : [];
+    const answerBlocks = answerTd ? childBlocks(answerTd, withScope(ctx, { maxWidthIn: answerWidth / 1440 })) : [];
+    return `<w:tbl><w:tblPr><w:tblW w:w="${DOCX_PAGE_WIDTH_TWIPS}" w:type="dxa"/>${borderBlock}</w:tblPr><w:tblGrid><w:gridCol w:w="${questionWidth}"/><w:gridCol w:w="${answerWidth}"/></w:tblGrid><w:tr>${tcXml(questionBlocks, { widthTwips: questionWidth, shadeFill: theme.panel2, theme })}${tcXml(answerBlocks, { widthTwips: answerWidth, shadeFill: theme.card, theme })}</w:tr></w:tbl>`;
+  }
+
+  if (table.classList.contains("flat-export-divider")) {
+    const cell = table.querySelector("td") || table;
+    const blocks = childBlocks(cell, withScope(ctx, { blockOverride: mergeOverride({ jc: "center" }, ctx.blockOverride) }));
+    return `<w:tbl><w:tblPr><w:tblW w:w="${DOCX_PAGE_WIDTH_TWIPS}" w:type="dxa"/><w:tblBorders><w:top w:val="dashed" w:sz="6" w:color="${theme.line}"/><w:left w:val="dashed" w:sz="6" w:color="${theme.line}"/><w:bottom w:val="dashed" w:sz="6" w:color="${theme.line}"/><w:right w:val="dashed" w:sz="6" w:color="${theme.line}"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="${DOCX_PAGE_WIDTH_TWIPS}"/></w:tblGrid><w:tr>${tcXml(blocks, { widthTwips: DOCX_PAGE_WIDTH_TWIPS, theme })}</w:tr></w:tbl>`;
+  }
+
+  // Genuine markdown table.
+  const rows = Array.from(table.querySelectorAll(":scope > thead > tr, :scope > tbody > tr, :scope > tr"));
+  const columnCount = rows.reduce((max, row) => Math.max(max, row.children.length), 0) || 1;
+  const colWidth = Math.round(DOCX_PAGE_WIDTH_TWIPS / columnCount);
+  const cellCtx = withScope(ctx, { maxWidthIn: colWidth / 1440 });
+  const rowsXml = rows.map((row) => {
+    const cellsXml = Array.from(row.children).map((cell) => {
+      const isHeader = cell.tagName.toLowerCase() === "th";
+      const blocks = childBlocks(cell, cellCtx);
+      return tcXml(blocks.length ? blocks : [ooxmlParagraph(childInlineRuns(cell, cellCtx, cellCtx.inlineProps))], {
+        widthTwips: colWidth,
+        shadeFill: isHeader ? theme.panel2 : undefined,
+        theme
+      });
+    }).join("");
+    return `<w:tr>${cellsXml}</w:tr>`;
+  }).join("");
+
+  return `<w:tbl><w:tblPr><w:tblW w:w="${DOCX_PAGE_WIDTH_TWIPS}" w:type="dxa"/>${borderBlock}</w:tblPr><w:tblGrid>${"<w:gridCol w:w=\"" + colWidth + "\"/>".repeat(columnCount)}</w:tblGrid>${rowsXml}</w:tbl>`;
+}
+
+// Recursive block-level HTML→OOXML walk, dispatched by tag name. Produces
+// an array of block XML strings (each a <w:p> paragraph or a <w:tbl>
+// table) — never nested inside one another, matching how WordprocessingML
+// requires block content to be siblings under <w:body> or <w:tc>.
+function blocksForNode(node, ctx) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.textContent.replace(/\s+/g, " ");
+    return text.trim() ? [ooxmlParagraph(ooxmlTextRun(text, ctx.inlineProps, ctx.theme), ctx.blockOverride)] : [];
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return [];
+  const tag = node.tagName.toLowerCase();
+  if (tag === "script" || tag === "style" || tag === "button") return [];
+
+  if (/^h[1-6]$/.test(tag)) {
+    const runs = childInlineRuns(node, ctx, ctx.inlineProps);
+    return [ooxmlParagraph(runs, mergeOverride({ styleId: DOCX_HEADING_STYLE_BY_LEVEL[Number(tag[1])], spacingAfter: 120 }, ctx.blockOverride))];
+  }
+
+  if (tag === "p") {
+    const runs = childInlineRuns(node, ctx, ctx.inlineProps);
+    return runs ? [ooxmlParagraph(runs, mergeOverride({ spacingAfter: 160 }, ctx.blockOverride))] : [];
+  }
+
+  if (tag === "hr") {
+    return [ooxmlParagraph("", mergeOverride({ borderBottomColor: ctx.theme.line, spacingAfter: 160 }, ctx.blockOverride))];
+  }
+
+  // Diagrams (mermaid/nomnoml) render as a bare <svg> sitting directly
+  // inside a block-level wrapper div, not inside a <p> — so unlike an <img>
+  // (which marked.js always wraps in a paragraph), this needs its own
+  // block case. Without it, the fallback below would descend into the
+  // SVG's internal <text> elements and leak out raw diagram label text
+  // instead of embedding the rasterized image.
+  if (tag === "svg" || tag === "img") {
+    const runs = inlineRunsForNode(node, ctx, ctx.inlineProps);
+    return runs ? [ooxmlParagraph(runs, mergeOverride({ jc: "center", spacingAfter: 160 }, ctx.blockOverride))] : [];
+  }
+
+  if (tag === "blockquote") {
+    const nextOverride = mergeOverride({ indentLeftTwips: 360, borderLeftColor: ctx.theme.accent }, ctx.blockOverride);
+    return childBlocks(node, withScope(ctx, { blockOverride: nextOverride, inlineProps: { ...ctx.inlineProps, color: ctx.theme.muted } }));
+  }
+
+  if (tag === "ul" || tag === "ol") {
+    const numId = tag === "ul" ? ctx.bulletNumId : ctx.decimalNumId;
+    const blocks = [];
+    Array.from(node.children).forEach((li) => {
+      if (li.tagName.toLowerCase() !== "li") return;
+      blocksForListItem(li, ctx, numId).forEach((block) => blocks.push(block));
+    });
+    return blocks;
+  }
+
+  if (tag === "pre") {
+    const codeEl = node.querySelector("code") || node;
+    const text = codeEl.textContent.replace(/\n+$/, "");
+    const lines = text.length ? text.split("\n") : [""];
+    return lines.map((line) => ooxmlParagraph(
+      ooxmlTextRun(line || " ", { ...ctx.inlineProps, code: true }, ctx.theme),
+      mergeOverride({ shadeFill: ctx.theme.panel2, spacingAfter: 0 }, ctx.blockOverride)
+    ));
+  }
+
+  if (tag === "table") {
+    return [tableToOoxml(node, ctx)];
+  }
+
+  return childBlocks(node, ctx);
+}
+
+function createDocxRenderContext(elementMedia, theme) {
+  const hyperlinkCache = new Map();
+  const hyperlinks = [];
+  return {
+    elementMedia,
+    theme,
+    docPrCounter: { value: 0 },
+    hyperlinks,
+    getHyperlinkRelId(url) {
+      if (hyperlinkCache.has(url)) return hyperlinkCache.get(url);
+      const rId = `rIdLink${hyperlinks.length + 1}`;
+      hyperlinks.push({ rId, url });
+      hyperlinkCache.set(url, rId);
+      return rId;
+    },
+    bulletNumId: 1,
+    decimalNumId: 2,
+    blockOverride: {},
+    inlineProps: { maxWidthIn: DOCX_PAGE_WIDTH_TWIPS / 1440 },
+    listDepth: 0
+  };
+}
+
+// Resolves any valid CSS color expression (a plain hex custom property, a
+// var() reference, or a color-mix() expression) to a concrete hex string by
+// actually applying it to a real CSS property on a throwaway element and
+// reading back the browser's resolved value — custom properties don't
+// evaluate functions like color-mix() themselves (they're just substituted
+// token text), but a real used property always does.
+function resolveCssColorValue(expression, fallbackHex) {
+  if (!expression) return fallbackHex;
+  const probe = document.createElement("div");
+  probe.style.display = "none";
+  probe.style.color = expression;
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).color;
+  probe.remove();
+
+  // Plain rgb()/rgba() — 0–255 integers.
+  const rgbMatch = resolved.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+  if (rgbMatch) {
+    const [r, g, b] = rgbMatch.slice(1, 4).map((n) => Math.max(0, Math.min(255, Math.round(parseFloat(n)))));
+    return [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
+  }
+
+  // A color-mix() result (used by --print-question/--print-accent-strong)
+  // resolves in Chromium to the CSS Color 4 `color(srgb r g b)` syntax —
+  // 0–1 floats, not 0–255 — which the rgb() regex above never matches, so
+  // this silently fell back to the hardcoded default for every theme.
+  const colorFnMatch = resolved.match(/color\([a-z0-9-]+\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/i);
+  if (colorFnMatch) {
+    const [r, g, b] = colorFnMatch.slice(1, 4).map((n) => Math.max(0, Math.min(255, Math.round(parseFloat(n) * 255))));
+    return [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
+  }
+
+  return fallbackHex;
+}
+
+// A Word document page is always white paper — reusing the app's live
+// theme colors verbatim would be unreadable for any dark theme (near-white
+// text on a white page). The app already solves exactly this problem for
+// the Cornell PDF export with a fixed, always-print-safe --print-* palette
+// (only its accent tracks the live theme); the .docx export reuses that
+// same palette rather than inventing its own.
+function docxThemeFromPrintVars() {
+  const computed = getComputedStyle(document.documentElement);
+  const raw = (name) => computed.getPropertyValue(name).trim();
+  const resolve = (name, fallbackHex) => resolveCssColorValue(raw(name), fallbackHex);
+  return {
+    card: resolve("--print-surface", "FFFFFF"),
+    panel2: resolve("--print-question", "F0EEE7"),
+    text: resolve("--print-text", "17201C"),
+    muted: resolve("--print-muted", "56645F"),
+    line: resolve("--print-line", "B9C9C5"),
+    accent: resolve("--print-accent", "16796C"),
+    accentStrong: resolve("--print-accent-strong", "0D5E53")
+  };
+}
+
+const DOCX_CONTENT_TYPES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`;
+
+const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`;
+
+const DOCX_NUMBERING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:abstractNum w:abstractNumId="0">
+${[0, 1, 2, 3].map((lvl) => `<w:lvl w:ilvl="${lvl}"><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/><w:pPr><w:ind w:left="${720 + lvl * 720}" w:hanging="360"/></w:pPr><w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr></w:lvl>`).join("\n")}
+</w:abstractNum>
+<w:abstractNum w:abstractNumId="1">
+${[0, 1, 2, 3].map((lvl) => `<w:lvl w:ilvl="${lvl}"><w:numFmt w:val="decimal"/><w:lvlText w:val="%${lvl + 1}."/><w:pPr><w:ind w:left="${720 + lvl * 720}" w:hanging="360"/></w:pPr></w:lvl>`).join("\n")}
+</w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+</w:numbering>`;
+
+function buildDocxStylesXml(theme) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:rPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="200" w:after="100"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="160" w:after="80"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="120" w:after="60"/></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="${theme.accentStrong}"/><w:u w:val="single"/></w:rPr></w:style>
+</w:styles>`;
+}
+
+function buildDocxCoreXml(title) {
+  const now = new Date().toISOString();
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<dc:title>${escapeXml(title)}</dc:title>
+<dc:creator>Recall</dc:creator>
+<cp:lastModifiedBy>Recall</cp:lastModifiedBy>
+<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>
+<dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>
+</cp:coreProperties>`;
+}
+
+const DOCX_APP_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Recall</Application></Properties>`;
+
+function buildDocxDocumentRelsXml(media, hyperlinks) {
+  const mediaRels = media.map(({ rId, name }) => `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${name}"/>`).join("\n");
+  const linkRels = hyperlinks.map(({ rId, url }) => `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeXml(url)}" TargetMode="External"/>`).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+${mediaRels}
+${linkRels}
+</Relationships>`;
+}
+
+function buildDocxDocumentXml(bodyBlocksXml) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+${bodyBlocksXml}
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1080" w:right="1080" w:bottom="1080" w:left="1080" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
+</w:body>
+</w:document>`;
+}
+
+// Ties the whole pipeline together: mounts+renders+embeds bodyHtml (same
+// as the HTML/PDF exports), rasterizes its images/diagrams to PNG media
+// parts, walks the DOM into WordprocessingML, and zips it all into a real
+// .docx byte stream.
+async function buildDocxBytes(bodyHtml, title) {
+  const failedImageCount = await prepareExportRoot(bodyHtml);
+  const { media, elementMedia } = await collectDocxMedia(el.printRoot);
+  const theme = docxThemeFromPrintVars();
+  const ctx = createDocxRenderContext(elementMedia, theme);
+  const bodyBlocksXml = childBlocks(el.printRoot, ctx).join("\n");
+  finishExportRoot();
+
+  const documentXml = buildDocxDocumentXml(bodyBlocksXml);
+  const documentRelsXml = buildDocxDocumentRelsXml(media, ctx.hyperlinks);
+  const stylesXml = buildDocxStylesXml(theme);
+  const coreXml = buildDocxCoreXml(title);
+
+  const files = [
+    { name: "[Content_Types].xml", data: utf8Bytes(DOCX_CONTENT_TYPES) },
+    { name: "_rels/.rels", data: utf8Bytes(DOCX_ROOT_RELS) },
+    { name: "docProps/core.xml", data: utf8Bytes(coreXml) },
+    { name: "docProps/app.xml", data: utf8Bytes(DOCX_APP_XML) },
+    { name: "word/document.xml", data: utf8Bytes(documentXml) },
+    { name: "word/styles.xml", data: utf8Bytes(stylesXml) },
+    { name: "word/numbering.xml", data: utf8Bytes(DOCX_NUMBERING_XML) },
+    { name: "word/_rels/document.xml.rels", data: utf8Bytes(documentRelsXml) },
+    ...media.map(({ name, bytes }) => ({ name: `word/media/${name}`, data: bytes }))
+  ];
+
+  return { bytes: buildZipArchive(files), failedImageCount };
+}
+
+// Appended to the success status when embedImagesAsDataUris couldn't inline
+// every image (e.g. a private Drive share or a host that blocks hotlinking),
+// so the user knows some images were kept as plain links instead of quietly
+// discovering a broken image glyph after opening the file.
+function imageEmbedSuffix(failedImageCount) {
+  if (!failedImageCount) return "";
+  return ` (${failedImageCount} image${failedImageCount === 1 ? "" : "s"} couldn't be embedded — kept as ${failedImageCount === 1 ? "a link" : "links"})`;
 }
 
 async function exportCardsFlat(scope, format) {
@@ -8157,16 +8917,20 @@ async function exportCardsFlat(scope, format) {
   setStatus(`Preparing ${title.toLowerCase()} ${formatLabel} export...`);
   el.exportBtn.disabled = true;
   try {
-    const bodyHtml = await prepareExportHtml(buildFlatCardsDocument(title, cards, { sourceTitle: state.deckTitle || state.sourceTitle }));
     const docTitle = exportBaseName(scope);
+    const rawBodyHtml = buildCornellFlatDocument(title, cards, { sourceTitle: state.deckTitle || state.sourceTitle });
+    let failedImageCount;
     if (format === "doc") {
-      const html = await wrapWordDocument(bodyHtml, docTitle);
-      downloadTextFile(html, `${docTitle}.doc`, "application/msword;charset=utf-8");
+      const result = await buildDocxBytes(rawBodyHtml, docTitle);
+      failedImageCount = result.failedImageCount;
+      downloadTextFile(result.bytes, `${docTitle}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     } else {
+      const { html: bodyHtml, failedImageCount: htmlFailed } = await prepareExportHtml(rawBodyHtml);
+      failedImageCount = htmlFailed;
       const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
       downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
     }
-    setStatus(`Exported ${title.toLowerCase()} as ${formatLabel}.`);
+    setStatus(`Exported ${title.toLowerCase()} as ${format === "doc" ? "Word (.docx)" : formatLabel}.${imageEmbedSuffix(failedImageCount)}`);
   } catch (error) {
     console.error("Cards export failed", error);
     setStatus("Could not prepare the export.", "error");
@@ -8198,15 +8962,19 @@ async function exportNotesFlat(format) {
   setStatus(`Preparing notes ${formatLabel} export...`);
   if (el.exportNotesBtn) el.exportNotesBtn.disabled = true;
   try {
-    const bodyHtml = await prepareExportHtml(buildNotesExportBody(title, notes));
+    const rawBodyHtml = buildNotesExportBody(title, notes);
+    let failedImageCount;
     if (format === "doc") {
-      const html = await wrapWordDocument(bodyHtml, docTitle);
-      downloadTextFile(html, `${docTitle}.doc`, "application/msword;charset=utf-8");
+      const result = await buildDocxBytes(rawBodyHtml, docTitle);
+      failedImageCount = result.failedImageCount;
+      downloadTextFile(result.bytes, `${docTitle}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     } else {
+      const { html: bodyHtml, failedImageCount: htmlFailed } = await prepareExportHtml(rawBodyHtml);
+      failedImageCount = htmlFailed;
       const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
       downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
     }
-    setStatus(`Exported notes as ${formatLabel}.`);
+    setStatus(`Exported notes as ${format === "doc" ? "Word (.docx)" : formatLabel}.${imageEmbedSuffix(failedImageCount)}`);
   } catch (error) {
     console.error("Notes export failed", error);
     setStatus("Could not prepare the notes export.", "error");
@@ -10314,35 +11082,18 @@ function promptForImgbbKeyThenRetry(textarea, file, atPos) {
 }
 
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.
-// An image pasted/dropped mid-paragraph in Notes shares that paragraph with
-// surrounding text and isn't directly resizable — it shows a "move to own
-// line" promote button instead of the corner-drag grip (see findImageTokens
-// below) until manually promoted. Padding the token with blank lines when it
-// isn't already at a block boundary lands it as its own block right away, so
-// the grip appears immediately without an extra manual step.
-function padImageTokenAsOwnBlock(textarea, token, atPos) {
-  const pos = typeof atPos === "number"
-    ? Math.max(0, Math.min(atPos, textarea.value.length))
-    : textarea.selectionStart;
-  const end = typeof atPos === "number" ? pos : textarea.selectionEnd;
-  const before = textarea.value.slice(0, pos);
-  const after = textarea.value.slice(end);
-  const needsLead = before !== "" && !/\n[ \t]*\n[ \t]*$/.test(before);
-  const needsTrail = after !== "" && !/^[ \t]*\n[ \t]*\n/.test(after);
-  return (needsLead ? "\n\n" : "") + token + (needsTrail ? "\n\n" : "");
-}
-
+// Dropped in wherever the caret is — no surrounding blank-line padding needed:
+// every rendered <img> gets wrapped in a block-level .diagram-shell (see
+// enhanceNotesImageControls below), so it always lands on its own visual row
+// regardless of whether it shares a markdown paragraph with other text. That
+// same paragraph-sharing case gets the corner-drag resize grip immediately
+// too (findImageTokens' `isInline` case), not a "move to its own line" step.
 // `atPos` (optional) forces the placeholder to the caret captured before the file
 // picker opened; without it the current caret is used (paste/drop already have focus).
 async function insertImageUpload(textarea, file, atPos) {
   if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
   const uploadToken = `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
-  // Own-block padding only matters where the corner-drag resize grip lives (Notes);
-  // card question/answer text has no such control, so leave inline insertion as-is there.
-  const insertedToken = textarea === el.notesEdit
-    ? padImageTokenAsOwnBlock(textarea, uploadToken, atPos)
-    : uploadToken;
-  insertAtCursor(textarea, insertedToken, atPos);
+  insertAtCursor(textarea, uploadToken, atPos);
   showToast("Optimizing image…", "info");
   try {
     const optimized = await optimizeImage(file);
@@ -10350,9 +11101,7 @@ async function insertImageUpload(textarea, file, atPos) {
     replaceInTextarea(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
   } catch (err) {
-    // Remove the padding blank lines along with the placeholder — a bare
-    // uploadToken removal would leave them stranded as empty paragraphs.
-    replaceInTextarea(textarea, insertedToken, "");
+    replaceInTextarea(textarea, uploadToken, "");
     if (err.message === "NO_KEY") {
       promptForImgbbKeyThenRetry(textarea, file, atPos);
     } else if (err.message === "OFFLINE") {
