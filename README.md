@@ -15,6 +15,7 @@ A static web app for learning something for the first time: write freeform **Stu
 - [Toolbar Reference](#toolbar-reference)
 - [Studying](#studying)
 - [Editing & Formatting Cards](#editing--formatting-cards)
+- [Study Notes](#study-notes)
 - [Images](#images)
 - [Quick Notes](#quick-notes)
 - [All Cards Panel](#all-cards-panel)
@@ -30,30 +31,31 @@ A static web app for learning something for the first time: write freeform **Stu
 
 ## Features
 
-- **Markdown rendering** — full GFM, tables, code blocks with syntax highlighting (Prism), LaTeX math (KaTeX), Mermaid diagrams, and nomnoml diagrams
-- **Multiple import sources** — paste Markdown, upload `.md` / `.txt` / `.json` / `.zip`, fetch from a raw URL, or use Jina Reader for public web pages
-- **Swipe + keyboard navigation** — swipe left/right on mobile, arrow keys on desktop
-- **Known / Review categorization** — cards can be marked Known or Review and replayed in filtered sessions
-- **Inline card editing** — edit question or answer text directly in the study view, with a rich **formatting toolbar** (bold, italic, underline, strikethrough, code, cloze fill-in-the-blanks, fonts, colours, bullet lists)
-- **Image paste & upload** — paste, drag-and-drop, or pick any image while editing; it's uploaded to a free [ImgBB](https://api.imgbb.com/) host and inserted as Markdown. Public Google Drive share links are auto-embedded so they render directly. In Study Notes, an image on its own line can be **resized by dragging the blue corner grip** (with a live size badge); images stay centered, and writing images separated by `|` on one line renders them **side by side**.
-- **Study Notes per deck** — every deck carries a freeform Markdown notes document (Cards ⇄ Notes toggle in the study view). Study first, then highlight any fact in the rendered notes and tap **+ Make card**: the selection becomes the card's *answer* and you're prompted to frame the *question* that should recall it. Notes sync to the cloud with the deck and travel inside Markdown/JSON exports. *(Existing Supabase projects: run `supabase_deck_notes.sql` once in the SQL Editor.)*
+- **Markdown rendering** — full GFM, tables, code blocks with syntax highlighting (Prism), LaTeX math (KaTeX), Mermaid diagrams, and nomnoml diagrams. Any rendered diagram or image opens in a **zoomable pan/zoom viewer** (Panzoom).
+- **Multiple import sources** — paste Markdown, upload `.md` / `.txt` / `.json` / `.zip`, fetch from a raw URL, or use Jina Reader for public web pages. Each source can either **start a new deck** or **append to the current one**.
+- **Swipe + keyboard navigation** — swipe left/right on mobile, arrow keys on desktop; plus **Shuffle** and **Restart** for the current session
+- **Known / Review categorization** — cards can be marked Known or Review and replayed in filtered sessions (All / Review only / Known only / Uncategorized)
+- **Two ways to format** — edit a card's raw Markdown with a rich **edit-mode toolbar** (bold, italic, underline, strikethrough, code, cloze fill-in-the-blanks, fonts, text colours, bullet lists, image insert, clear), *or* select text right in the rendered view and use the **format-in-place toolbar** (B/I/U/S, code, cloze, plus text-colour and highlight split-buttons) with no need to enter edit mode
+- **Cloze fill-in-the-blanks** — hide any span as `{{…}}`; tap a cloze to reveal it, or flip **all** clozes on a card (or in the notes) at once with the 👀/🙈 button
+- **Image paste & upload** — paste, drag-and-drop, or pick any image while editing; it's optimized in-browser (WebP) and uploaded to a free [ImgBB](https://api.imgbb.com/) host, then inserted as Markdown. Public Google Drive share links are auto-embedded so they render directly. In Study Notes, an image on its own line can be **resized by dragging the blue corner grip** (with a live size badge); images stay centered, and writing images separated by `|` on one line renders them **side by side**.
+- **Study Notes per deck** — every deck carries a freeform Markdown notes document (Cards ⇄ Notes toggle in the study view). Study first, then highlight any fact in the rendered notes and tap **+ Make card**: the selection becomes the card's *answer* and you're prompted to frame the *question* that should recall it. Long notes get an auto-generated, collapsible **table of contents** (☰) with scroll-spy and click-to-jump. Notes sync to the cloud with the deck and travel inside Markdown/JSON exports. *(Existing Supabase projects: run `supabase_deck_notes.sql` once in the SQL Editor.)*
 - **Quick Notes** — select any text while editing an answer and save it straight to a dedicated `quick_notes` cloud deck with one click
 - **Toast confirmations** — every cloud action (sync, load, delete, rename, quick note) pops a toast so you always know it worked
 - **All Cards panel** — browse, search, and edit every card in a deck at once
 - **Automatic two-way cloud sync** — every deck is mirrored to Supabase and back in the background, with **last-write-wins per deck** (by `updated_at`); no manual push/pull, and a **Sync Now** button forces a reconcile on demand. Saving to the device is automatic too
-- **Unified My Decks library** — one panel lists every deck (on-device *and* cloud-only), each with a live sync-status badge; load, rename, or delete from here. Deletes propagate across devices via durable **delete tombstones**, so a deck removed on one device stays removed everywhere
+- **Unified My Decks library** — one panel lists every deck (on-device *and* cloud-only), each with a live sync-status badge; load, rename, categorize, or delete from here. Deletes propagate across devices via durable **delete tombstones**, so a deck removed on one device stays removed everywhere
 - **Multi-user auth with per-user isolation** — email + password login; Row Level Security scopes every deck, card, and tombstone to its owner, so each account sees only its own data. No credentials stored in the source code
-- **Per-project config** — Supabase URL and anon key are entered at first launch and stored in `localStorage`; swap them anytime
+- **Per-project config** — Supabase URL, anon key, and (optional) ImgBB key are entered at first launch and stored in `localStorage`; swap them anytime
 - **In-app Help & Guide** — a built-in walkthrough of every button and workflow
-- **Exports** — Markdown, JSON, SQL, and Cornell Notes PDF — for the current deck, any single deck, a selection, or the whole library from My Decks
-- **Themes** — 10 built-in themes (7 dark, 3 light) with a full style editor for fonts, sizes, and layout
+- **Rich exports** — cards as **Cornell PDF, Standalone HTML, Word (.docx), Markdown, JSON, or SQL**, and study notes as **PDF, Standalone HTML, Word (.docx), or Markdown** — for the current deck, any single deck, a selection, or the whole library from My Decks
+- **Themes** — 10 built-in themes (7 dark, 3 light) with a full style editor for fonts, sizes, spacing, and layout (separate desktop / mobile profiles)
 - **PWA** — installable on desktop and mobile, works offline after first load
 
 ---
 
 ## Self-Hosting
 
-The entire app is three files: `index.html`, `styles.css`, `app.js`. All dependencies are loaded from CDN at runtime.
+The app's core is three files — `index.html`, `styles.css`, `app.js` — with `sw.js` and `manifest.webmanifest` (plus `icons/` and `fevicon.png`) enabling the installable PWA, and the `supabase_*.sql` files for backend setup. All JS/CSS dependencies are loaded from CDN at runtime. Deploy the whole folder as-is; there is no build step.
 
 ### Option 1 — Local (development / personal use)
 
@@ -205,36 +207,41 @@ A measure of disorder or randomness in a thermodynamic system.
 
 ## Importing Decks
 
-Open the menu (**☰**, top-left) and click **Import from File** to open the Import panel.
+Open the menu (**☰**, top-left) and click **Import from File** to open the Import panel. The panel has three groups: **URL**, **Local**, and (once you paste or pick a file) a **paste editor with live preview**.
+
+### New deck vs. add to current deck
+
+Every import method comes in two flavours — the difference is only whether the cards **replace** the current deck or **append** to it:
+
+| Action | What it does |
+|---|---|
+| **📁 Import Deck** / **📋 (next to it)** | Starts a **new deck** from the file or pasted Markdown (replaces what's open) |
+| **📄 Import Cards** / **📋 (next to it)** | **Appends** the imported cards to the deck you already have open |
 
 ### Import methods
 
-#### Paste Markdown
-1. Click **Paste Markdown**
-2. Paste your content into the editor
-3. Click **Preview** to see how many cards were detected
-4. Click **Import** to load the deck
-
-#### Upload a file
-Click **Choose file** or drag and drop onto the panel. Supported formats:
-
-| File type | What happens |
-|---|---|
-| `.md` / `.txt` | Parsed as Markdown using the card formats above |
-| `.json` | Re-imported with full card state (statuses, positions) |
-| `.zip` | All `.md` and `.json` files inside are listed; choose which decks to load |
-
 #### Fetch from URL
-Paste a raw Markdown URL into the URL bar and click **Fetch**.  
-For public web pages (not raw Markdown), the app falls back to Jina Reader automatically.
+Paste a URL into the **URL** field and click **Fetch**. A raw Markdown URL is parsed directly; for a public web page (not raw Markdown), the app falls back to **Jina Reader** automatically to extract readable content.
 
 > **Notion pages:** Public pages work via Jina Reader. Private pages must be exported as Markdown first — the Notion API requires a secret token that a static app cannot safely hold.
 
-#### Load Sample
-Click **Load Sample** to instantly load a built-in example deck. Good for trying the app before creating your own content.
+#### Upload a file
+Click **Import Deck** / **Import Cards** (or drag and drop onto the panel). Supported formats:
 
-### Appending vs replacing
-By default importing replaces the current deck. To add cards to an existing deck without replacing it, reopen **Import from File** and choose the append option in the paste editor.
+| File type | What happens |
+|---|---|
+| `.md` / `.markdown` / `.txt` | Parsed as Markdown using the [card formats](#card-formats) above |
+| `.json` | Re-imported with full card state (statuses, positions, study notes) |
+| `.zip` | All `.md` and `.json` files inside are listed in a **selector** where you tick which decks to load |
+
+If a single file contains **multiple decks**, a *Select Decks to Import* dialog lists them so you can choose which ones to bring in.
+
+#### Paste Markdown
+Click the **📋** button next to **Import Deck** (new deck) or **Import Cards** (append). In the paste editor:
+
+1. Paste your raw Markdown on the left
+2. Click **Preview Cards** — the right pane shows how many cards were detected and how each splits into question/answer
+3. Click **Import Pasted Deck** to load them
 
 ---
 
@@ -257,7 +264,8 @@ All actions live in a single **menu drawer**, opened with the **☰** button in 
 |---|---|
 | **≡ Browse All Cards** | Opens the All Cards panel — browse and edit every card at once |
 | **📝 Study Notes** | Switches to the deck's freeform notes view (also reachable via the Cards ⇄ Notes toggle) |
-| **⇓ Export Cards…** | Opens the export menu — Cornell PDF, Markdown, JSON, or SQL (see [Exporting](#exporting)) |
+| **⇓ Export Cards…** | Opens the card export menu — **Cornell PDF, Standalone HTML, Word (.docx), Markdown, JSON, or SQL** (see [Exporting](#exporting)) |
+| **⇓ Export Notes…** | Opens the notes export menu — **PDF, Standalone HTML, Word (.docx), or Markdown** (disabled until the deck has notes) |
 
 ### App
 
@@ -271,13 +279,31 @@ All actions live in a single **menu drawer**, opened with the **☰** button in 
 
 ### Study view buttons
 
+The row of five buttons under the card:
+
 | Button | Action |
 |---|---|
 | **❌ Review** | Marks the current card as Review (needs more practice) — shortcut `R` |
-| **✅ Known** | Marks the current card as Known — shortcut `K` |
+| **← Prev** | Previous card — shortcut `←` / `↑` |
 | **+ Add** | Adds a new blank card after the current position |
-| **🗑** | Deletes the current card |
-| **✎ / 👁** (edit toggle, each face) | Toggles that face between view and edit mode (shows the formatting toolbar) |
+| **Next →** | Next card — shortcut `→` / `↓` |
+| **✅ Known** | Marks the current card as Known — shortcut `K` |
+
+Deck-wide utilities (below that row):
+
+| Button | Action |
+|---|---|
+| **⇄ Shuffle** | Randomizes the order of the current session |
+| **⟳ Restart** | Restarts the session from the first card |
+| **👀 Reveal clozes** | Flips every cloze on the current card open at once; press again (🙈) to hide them all (you can still tap any single cloze) |
+
+On the card faces themselves:
+
+| Button | Action |
+|---|---|
+| **✎ / 👁** (edit toggle, each face) | Toggles that face between rendered view and raw-edit mode (`Ctrl`/`⌘`+`E`). The edit toolbar shows in edit mode; the [format-in-place toolbar](#editing--formatting-cards) shows in rendered mode |
+| **🗑** | Deletes the current card (on the question face) |
+| **✎** next to the deck title / category | Renames the deck, or edits its category inline, from the header |
 
 ### End-of-deck replay buttons
 
@@ -298,21 +324,42 @@ These appear when you reach the last card:
 - **Navigate** — swipe left (next) or right (previous) on mobile; `→` / `↓` and `←` / `↑` on desktop
 - **Mark Known** — click **✅ Known** (or press `K`); the card is counted in the Known pile
 - **Mark Review** — click **❌ Review** (or press `R`); the card is counted in the Review pile
-- **Progress bar** — the thin bar at the top of the card area shows how far through the deck you are
-- **Score display** — the header shows `Known X / Review Y` as a live count
+- **Shuffle / Restart** — **⇄ Shuffle** randomizes the order; **⟳ Restart** returns to the first card
+- **Reveal clozes** — **👀 Reveal clozes** flips every fill-in-the-blank on the card open at once (🙈 to hide them again)
+- **Progress bar** — the segmented bar at the top of the card area shows Known (green), Review (red), and remaining progress
+- **Score display** — the header shows `Known X / Review Y` as a live count, and each card carries a status badge
+- **Replay** — when you reach the last card, replay buttons let you restart with **All cards**, **Review only**, **Known only**, or **Uncategorized**
 
 ---
 
 ## Editing & Formatting Cards
 
+There are **two** ways to format a card face — you rarely need to leave the rendered view.
+
+### Format-in-place (rendered view)
+
+Above each rendered card face — and above the Study Notes preview — sits a compact **format-in-place toolbar**. Select some text right in the rendered output and click a button to format it *without entering edit mode*:
+
+| Button | Formatting |
+|---|---|
+| **B** / **I** / **U** / **S** | Bold, Italic, Underline, Strikethrough |
+| **&lt;/&gt;** | Inline code |
+| **🎨** (split button) | Text colour — click the paint side to apply the current default colour in one tap, or the ▾ side (which shows a live swatch) to pick a different colour, which becomes the new default |
+| **🖍️** (split button) | Highlight — same split-button behaviour for a background highlight colour |
+| **[…]** | Cloze the selection in place (tap again on the same text to un-cloze) |
+
+Your chosen default colours are remembered in `localStorage`. Formatting is written back into the deck's Markdown source and auto-saved. (Selections must fall entirely inside the rendered text; for structural edits, use edit mode.)
+
+### Raw edit mode
+
 Enter edit mode on the question or answer face in either of two ways:
 
 - Click the **pencil** (✎) icon on that face, or
-- **Long-press** the card with a mouse (desktop only)
+- **Long-press** the card with a mouse (desktop only), or press `Ctrl`/`⌘`+`E`
 
 > **On touch devices**, long-press is reserved for selecting text, so use the **pencil** (✎) icon to enter or leave edit mode.
 
-While editing, a **formatting toolbar** appears above the text. Select a span of text, then click a button to wrap it in Markdown/HTML:
+While editing, a fuller **formatting toolbar** appears above the text. Select a span of text, then click a button to wrap it in Markdown/HTML:
 
 | Button | Formatting |
 |---|---|
@@ -328,6 +375,28 @@ While editing, a **formatting toolbar** appears above the text. Select a span of
 | **📌** | Save the selection as a Quick Note (answer toolbar only — see below) |
 
 Click the **save** (💾) icon to commit. Edits are also committed automatically whenever you navigate away from the card.
+
+---
+
+## Study Notes
+
+Every deck carries a freeform **Study Notes** document alongside its cards — the idea is to *learn first, card later*. Switch with the **Cards ⇄ Notes** toggle at the top of the study area, or **Study Notes** in the menu.
+
+- **Write in full Markdown** — headings, tables, LaTeX math, code, Mermaid/nomnoml diagrams, and pasted/resized images all render just like on a card. Toggle the ✎ pencil to switch between writing and the rendered preview.
+- **Highlight → + Make card** — select any fact in the rendered notes (text, images, math). A floating **+ Make card** pill shows how much is captured; tapping it opens a dialog where the selection is previewed as the card's **answer** and you frame the **question** that should recall it (`Ctrl`/`⌘`+`Enter` to add). The **➕** button in the notes header does the same for the current selection.
+- **Cloze in notes** — the same `[…]` cloze tools work here; the **👀** button in the notes header reveals/hides every cloze in the notes at once.
+- **Notes travel with the deck** — they auto-save, sync to the cloud, and are embedded inside Markdown and JSON exports. They can also be exported on their own (see [Exporting](#exporting)).
+
+### Table of contents
+
+When your notes contain Markdown headings, a **☰** button appears at the left of the notes header. It opens a sliding **"On this page"** drawer that mirrors your headings:
+
+- **Nested by level** — headings indent by depth (normalized to the shallowest level), with graduated dots.
+- **Click to jump** — selecting an entry smooth-scrolls that heading to the top of the notes and briefly flashes it.
+- **Scroll-spy** — the entry for the section you're currently reading stays highlighted as you scroll.
+- **Easy dismiss** — close it with the **✕**, the `Escape` key, another tap of **☰**, or by clicking anywhere outside the drawer. On phones it also closes after you pick a heading.
+
+The TOC rebuilds automatically every time the notes render, and hides itself while you're in raw-edit mode.
 
 ---
 
@@ -406,16 +475,26 @@ Click **Browse All Cards** in the menu to open a full list of every card in the 
 
 ## Exporting
 
+### Export Cards
+
 Click **Export Cards…** in the menu and pick a format. Export covers the whole current deck:
 
 | Format | Description |
 |---|---|
 | **Cornell PDF** | Printable Cornell Notes layout — question on the left column, answer on the right. Opens a print dialog automatically. |
-| **Markdown** | The deck as a `.md` file using `::` block format |
-| **JSON** | Full deck with card statuses and study notes — can be re-imported into this app |
+| **Standalone HTML** | A single self-contained `.html` file — all styles inlined, images embedded as data URIs, and math/Mermaid/nomnoml diagrams baked to static markup, so it renders anywhere with no network |
+| **Word (.docx)** | A real Word document (WordprocessingML) built from the Cornell layout, with images embedded |
+| **Markdown** | The deck as a `.md` file using `::` block format (study notes ride along inside an HTML comment block) |
+| **JSON** | Full deck with card statuses, positions, and study notes — can be re-imported into this app |
 | **SQL** | `INSERT … ON CONFLICT` statements for the `decks`/`cards` tables — restore or seed a Supabase project directly |
 
-Any deck in the library — not just the one currently open — can be exported from **My Decks** (per-deck **Export**, bulk **Export** for a selection, or **Export All**).
+### Export Notes
+
+When a deck has Study Notes, **Export Notes…** in the menu (disabled otherwise) exports just the notes document — as **PDF** (printable), **Standalone HTML**, **Word (.docx)**, or **Markdown**. Headings, math, diagrams, and images are all rendered/baked into the output.
+
+### Exporting from My Decks
+
+Any deck in the library — not just the one currently open — can be exported from **My Decks**: per-deck **Export**, bulk **Export** for a selection, or **Export All** for the whole library (on-device *and* cloud). All six card formats are available in each of those menus.
 
 ---
 
@@ -442,14 +521,14 @@ Open **My Decks** from the menu. It lists **every** deck — those saved on this
 | **Saved** | When the on-device copy was last written (or ☁ Cloud for cloud-only decks) |
 | **Sync** | Live status — **In sync**, **☁ Cloud only** (not pulled down yet), **Local only** (not backed up), or pending changes |
 
-A **category filter** above the table narrows the list, and **Export All** downloads the whole library (on-device *and* cloud) as Cornell PDF, Markdown, JSON, or SQL.
+A **category filter** above the table narrows the list, and **Export All** downloads the whole library (on-device *and* cloud) as Cornell PDF, Standalone HTML, Word (.docx), Markdown, JSON, or SQL.
 
 Per-deck actions:
 
 | Action | What it does |
 |---|---|
 | **Load** | Opens that deck into the study view (pulls it down first if it's cloud-only) |
-| **Export** | Downloads that one deck as Cornell PDF, Markdown, JSON, or SQL — works offline for on-device decks |
+| **Export** | Downloads that one deck as Cornell PDF, Standalone HTML, Word (.docx), Markdown, JSON, or SQL — works offline for on-device decks |
 | **Rename** | Renames the deck (updates the cloud immediately when reachable, otherwise on the next reconcile) |
 | **Delete** | Removes the deck from this device **and** the cloud (via a tombstone); if the cloud delete can't complete now, it retries on the next sync |
 | **⟳ Refresh** | Re-reads the on-device library and re-checks cloud status |
@@ -476,17 +555,24 @@ Toasts appear for loading, deleting, and renaming decks, saving Quick Notes, and
 
 Click **Themes** in the menu to open the style panel.
 
-| Control | What it changes |
+The panel exposes the theme picker plus grouped sliders and selects:
+
+| Group | What it changes |
 |---|---|
-| **Theme** | Switches between the 10 built-in themes (7 dark, 3 light) |
-| **Question / Answer font** | Font family for the front / back of the card |
-| **Question / Answer size** | Font size for the question / answer |
-| **Question fill** | What percentage of the card height the front occupies |
-| **Card width** | How wide the card is relative to the screen |
-| …and more | Spacing, padding, corner radius, line height, and other layout dimensions |
+| **Theme** | Switches between the 10 built-in themes (7 dark, 3 light): AMOLED Black / Emerald / Violet, Forest, Graphite, Navy, Bronze (dark) and Paper, Snow, Ink (light) |
+| **Typography** | Base font family/size/line-height, raw-Markdown editor font size, and code font size/line-height |
+| **Layout Percentages** | App width/height, card width, card max height, modal width, visual (image/diagram) max width, and import-box height — all as a percent of the screen |
+| **Spacing And Shape** | Section gaps and panel/card padding |
+| **Question** / **Answer And Card** | Per-face font family, fill %, max font size, line height, horizontal/vertical alignment, weight, and padding |
+| **Buttons And Inputs** | Button gap and the corner radii for cards, panels, buttons, and inputs |
+
+Actions at the bottom of the panel:
+
+| Button | What it does |
+|---|---|
+| **Apply** | Applies the edited settings to the current view |
 | **Sync Up** | Saves your current style settings to Supabase so they apply on every device |
 | **Sync Down** | Loads the last-synced style from Supabase (overwrites local settings) |
-| **Apply** | Applies the edited settings to the current view |
 
 Style profiles are separate for desktop and mobile, so the card can look different on different screen sizes. Themes control colours; the **Aa** layout settings (sizes, spacing) are stored in the shared global `app_style_settings` row.
 
@@ -501,8 +587,9 @@ Style profiles are separate for desktop and mobile, so the card can look differe
 | `←` / `↑` | Previous card |
 | `K` | Mark current card Known |
 | `R` | Mark current card for Review |
-| `Ctrl`/`⌘` + `E` | Toggle edit / rendered view |
-| `Escape` | Close any open panel or modal |
+| `Ctrl`/`⌘` + `E` | Toggle edit / rendered view (focused card face) |
+| `Ctrl`/`⌘` + `Enter` | Add the card in the *Make a flashcard from notes* dialog |
+| `Escape` | Close any open panel, modal, or the notes table of contents |
 
 ---
 
@@ -515,7 +602,7 @@ When served over HTTPS (GitHub Pages, Netlify, etc.), the app registers a servic
 
 ### Working offline
 
-The service worker **precaches the entire dependency set on first load** — the app shell plus every CDN library (marked, DOMPurify, KaTeX + all its math fonts, Prism + the common language grammars, Mermaid, nomnoml, JSZip, Turndown, Panzoom, the Supabase client). So after a single online visit the app is fully self-contained: math, diagrams, syntax highlighting, and exports all work with no connection, not just the features you happened to exercise while online.
+The service worker **precaches the entire dependency set on first load** — the app shell (HTML/CSS/JS, manifest, icons) plus every CDN library (marked, DOMPurify, KaTeX + all its math fonts, Prism core + Python + the common language grammars, Mermaid, nomnoml + graphre, JSZip, Turndown + the GFM plugin, Panzoom, the Supabase client). So after a single online visit the app is fully self-contained: math, diagrams, syntax highlighting, and exports all work with no connection, not just the features you happened to exercise while online.
 
 - **Registers unconditionally** — the worker installs on the login/setup screen too, before you sign in or configure a cloud project, so the offline cache is in place from the very first visit.
 - **Stays signed in** — your session is read from local storage, so you reach your decks instead of the login wall. (You must have signed in online at least once; a fresh sign-in/sign-up still needs the network.)
@@ -534,17 +621,18 @@ A first-time login still needs the network, and any edits made offline (includin
 | Framework | None — plain HTML + CSS + JS, no build step |
 | Markdown rendering | [marked](https://marked.js.org/) + [DOMPurify](https://github.com/cure53/DOMPurify) |
 | Math | [KaTeX](https://katex.org/) via `auto-render` |
-| Diagrams | [Mermaid](https://mermaid.js.org/) + [nomnoml](https://nomnoml.com/) |
-| Code highlighting | [Prism](https://prismjs.com/) (autoloader) |
-| PDF export | Print-to-PDF via a generated standalone document |
+| Diagrams | [Mermaid](https://mermaid.js.org/) + [nomnoml](https://nomnoml.com/) (with its [graphre](https://github.com/skanaar/graphre) layout engine) |
+| Code highlighting | [Prism](https://prismjs.com/) — core + Python, plus the autoloader for other languages |
+| Diagram / image zoom | [Panzoom](https://github.com/timmywil/panzoom) in the diagram modal |
+| Document export | Print-to-PDF (Cornell layout), self-contained **Standalone HTML** (styles inlined, images as data URIs, diagrams/math baked to static markup), and **Word `.docx`** (hand-built WordprocessingML) — for both cards and notes |
 | ZIP import/export | [JSZip](https://stuk.github.io/jszip/) |
-| Markdown export | [Turndown](https://github.com/mixmark-io/turndown) |
+| Markdown export | [Turndown](https://github.com/mixmark-io/turndown) + [turndown-plugin-gfm](https://github.com/mixmark-io/turndown-plugin-gfm) |
 | Database | [Supabase](https://supabase.com/) (Postgres + Auth + per-user RLS) — schema in `supabase_schema.sql`, migrations in the other `supabase_*.sql` files |
 | Auth | Supabase email + password (`signInWithPassword` / `signUp`) |
 | Cloud sync | Automatic two-way reconcile, last-write-wins per deck by `updated_at`; cross-device delete tombstones in `deleted_decks` |
-| Config storage | `localStorage` — Supabase URL, anon key, and ImgBB key never touch the source code |
-| Image hosting | [ImgBB](https://api.imgbb.com/) (browser-side WebP optimization before upload) |
-| Offline | Service worker (`sw.js`) + Cache API; full deck library mirrored on-device |
+| Config storage | `localStorage` — Supabase URL, anon key, ImgBB key, and format-toolbar colour defaults never touch the source code |
+| Image hosting | [ImgBB](https://api.imgbb.com/) (browser-side WebP optimization before upload); public Google Drive links rewritten to embeddable form at render time |
+| Offline | Service worker (`sw.js`) + Cache API; full dependency set precached; full deck library mirrored on-device |
 | Deployment | Any static host — GitHub Pages, Netlify, Vercel, local server |
 
 The entire application logic lives in `app.js` (`index.html` + `styles.css` for markup and styling). There are no modules, no transpilation, and no runtime dependencies beyond what the CDN `<script>` tags load.
