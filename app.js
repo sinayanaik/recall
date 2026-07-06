@@ -1321,6 +1321,12 @@ const el = {
   resetBtn: document.querySelector("#resetBtn"),
   clozeToggleBtn: document.querySelector("#clozeToggleBtn"),
   clozeToggleNotesBtn: document.querySelector("#clozeToggleNotesBtn"),
+  clozeQuestionBtn: document.querySelector("#clozeQuestionBtn"),
+  clozeAnswerBtn: document.querySelector("#clozeAnswerBtn"),
+  makeClozeFromNotesBtn: document.querySelector("#makeClozeFromNotesBtn"),
+  questionRenderToolbar: document.querySelector("#questionRenderToolbar"),
+  answerRenderToolbar: document.querySelector("#answerRenderToolbar"),
+  notesRenderToolbar: document.querySelector("#notesRenderToolbar"),
   card: document.querySelector("#card"),
   questionView: document.querySelector("#questionView"),
   answerView: document.querySelector("#answerView"),
@@ -5568,6 +5574,435 @@ el.makeCardFromNotesBtn?.addEventListener("click", () => {
   createCardFromNotesSelection(text);
 });
 
+// ── Make a cloze from a rendered-view text selection ───────────────────────
+// Clozes ({{…}}) can be authored in the raw editor, but it's far quicker to
+// highlight the word(s) you want to hide right in the rendered card or notes
+// and press the header "make cloze" button ([…]). We find the highlighted text
+// in the underlying markdown SOURCE and wrap it in {{ }} — or unwrap it if it
+// was already a cloze (a toggle, matching the editor's [{…}] button) — then
+// re-render and save. No need to drop into edit mode.
+
+// The current selection inside `view`, captured both as markdown (so inline
+// bold/math/etc. survive) and as plain text — either may be the string that
+// appears verbatim in the source. Returns null when there's no live selection
+// inside this rendered view.
+function renderedSelectionStrings(view) {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  if (!view || view.hidden) return null;
+  const range = selection.getRangeAt(0);
+  if (!view.contains(range.commonAncestorContainer)) return null;
+  const fragment = cleanedSelectionFragment(range);
+  const asText = fragment.textContent.trim();
+  let asMarkdown = "";
+  try {
+    asMarkdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
+  } catch { asMarkdown = ""; }
+  if (!asText && !asMarkdown) return null;
+  // Which occurrence of the plain-text selection this is within the rendered
+  // view — i.e. how many identical copies precede it. Without this a repeated
+  // word (e.g. "the") would always cloze the FIRST copy in the source, not the
+  // one you highlighted, so the toast says "Cloze added" while your selection
+  // visibly stays put. 0 = first occurrence, so a match is still found even if
+  // this measurement is off.
+  let occurrence = 0;
+  if (asText) {
+    try {
+      const pre = document.createRange();
+      pre.setStart(view, 0);
+      pre.setEnd(range.startContainer, range.startOffset);
+      occurrence = countOccurrences(pre.toString(), asText);
+    } catch { occurrence = 0; }
+  }
+  return { asText, asMarkdown, occurrence };
+}
+
+// Non-overlapping count of `needle` in `haystack`.
+function countOccurrences(haystack, needle) {
+  if (!needle) return 0;
+  let count = 0;
+  let idx = 0;
+  while ((idx = haystack.indexOf(needle, idx)) !== -1) {
+    count += 1;
+    idx += needle.length;
+  }
+  return count;
+}
+
+// Index of the n-th (0-based) occurrence of `needle`, or -1 if there are fewer.
+function nthIndexOf(haystack, needle, n) {
+  let idx = -1;
+  for (let i = 0; i <= n; i += 1) {
+    idx = haystack.indexOf(needle, idx + 1);
+    if (idx === -1) return -1;
+  }
+  return idx;
+}
+
+// Locate the SELECTED occurrence of a rendered selection inside the markdown
+// source. Targets `sel.occurrence` (the copy the user actually highlighted)
+// rather than blindly the first match, so repeated words act in place. Tries
+// the plain text first (occurrence-aware); falls back to the markdown
+// serialization (so a selected image / math / bold run that isn't present
+// verbatim as plain text still matches). Returns { idx, end, needle } or null
+// when the selection can't be located at all (e.g. it spans block boundaries).
+function locateSelectionInSource(source, sel) {
+  const attempts = [];
+  if (sel.asText) attempts.push({ needle: sel.asText, occurrence: sel.occurrence || 0 });
+  if (sel.asMarkdown && sel.asMarkdown !== sel.asText) attempts.push({ needle: sel.asMarkdown, occurrence: 0 });
+
+  for (const { needle, occurrence } of attempts) {
+    let idx = nthIndexOf(source, needle, occurrence);
+    if (idx === -1) idx = source.indexOf(needle); // occurrence miscounted → first match
+    if (idx === -1) continue;
+    return { idx, end: idx + needle.length, needle };
+  }
+  return null;
+}
+
+// Wrap the located occurrence in {{ }} — or strip the braces if it's already
+// exactly a cloze. Returns { text, action } or null when the selection can't be
+// located in the source (the user can still use the raw editor).
+function clozeToggleInSource(source, sel) {
+  const loc = locateSelectionInSource(source, sel);
+  if (!loc) return null;
+  const { idx, end, needle } = loc;
+  // Already exactly wrapped in {{ }}? Toggle the cloze off.
+  if (source.slice(Math.max(0, idx - 2), idx) === "{{" && source.slice(end, end + 2) === "}}") {
+    return { text: source.slice(0, idx - 2) + needle + source.slice(end + 2), action: "removed" };
+  }
+  // Sub-selection inside a larger existing cloze (an unclosed {{ precedes the
+  // match, with a }} still to come): wrapping it would nest clozes and break
+  // rendering. Report it as already hidden instead.
+  const before = source.slice(0, idx);
+  if (before.lastIndexOf("{{") > before.lastIndexOf("}}") && source.indexOf("}}", end) !== -1) {
+    return { text: source, action: "already" };
+  }
+  return { text: source.slice(0, idx) + "{{" + needle + "}}" + source.slice(end), action: "added" };
+}
+
+// Shared driver for the three "make cloze from selection" header buttons.
+function makeClozeFromSelection({ view, label, getSource, setSource, rerender }) {
+  const sel = renderedSelectionStrings(view);
+  if (!sel) {
+    setStatus(`Select some text in the ${label} first, then tap […] to hide it as a cloze.`, "error");
+    return;
+  }
+  const result = clozeToggleInSource(getSource(), sel);
+  if (!result) {
+    setStatus("Couldn't match that selection in the source — try selecting whole words, or use the editor to place the {{cloze}}.", "error");
+    return;
+  }
+  if (result.action === "already") {
+    showToast("That text is already inside a cloze", "info");
+    return;
+  }
+  setSource(result.text);
+  window.getSelection()?.removeAllRanges();
+  rerender();
+  scheduleDeckAutosave();
+  showToast(result.action === "removed" ? "Cloze removed" : "Cloze added");
+}
+
+// Persist a question/answer edit to both the active deck and the master list
+// (mirrors the save path in toggleEditMode / commitEditIfActive).
+function setCurrentCardField(side, value) {
+  const card = state.cards[state.current];
+  if (!card) return;
+  if (side === "question") card.question = value;
+  else card.answer = value;
+  const masterIndex = state.masterCards.findIndex((c) => c.id === card.id);
+  if (masterIndex > -1) {
+    if (side === "question") state.masterCards[masterIndex].question = value;
+    else state.masterCards[masterIndex].answer = value;
+  }
+}
+
+// One place that knows, for each rendered surface (card question/answer, notes),
+// its view element, how to read/write its markdown source, how to re-render, and
+// whether it's currently in raw-edit mode. Shared by the header cloze buttons
+// and the rendered-view formatting toolbar so both stay in lock-step.
+function renderTargetConfig(target) {
+  if (target === "notes") {
+    return {
+      view: el.notesView,
+      label: "notes",
+      isEditing: () => isNotesEditing(),
+      getSource: () => state.notes,
+      setSource: (v) => {
+        state.notes = v;
+        if (el.notesEdit) el.notesEdit.value = v;
+      },
+      rerender: () =>
+        renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn)),
+    };
+  }
+  const side = target === "answer" ? "answer" : "question";
+  const view = side === "question" ? el.questionView : el.answerView;
+  return {
+    view,
+    label: side,
+    // The rendered view is hidden (edit mode) or there's simply no card.
+    isEditing: () => !state.cards[state.current] || !view || view.hidden,
+    getSource: () => state.cards[state.current]?.[side] || "",
+    setSource: (v) => setCurrentCardField(side, v),
+    rerender: () =>
+      renderMarkdown(view, state.cards[state.current]?.[side] || "", true).then(() => {
+        if (side === "question") scheduleLiveQuestionFit();
+        resetClozeButton(el.clozeToggleBtn);
+      }),
+  };
+}
+
+// pointerdown + preventDefault keeps the text selection alive through the tap
+// (a plain click can collapse it before the handler reads it) — same trick the
+// floating "+ Make card" pill uses.
+function wireClozeButton(button, target) {
+  button?.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const config = renderTargetConfig(target);
+    if (config.isEditing()) {
+      setStatus(`Switch the ${config.label} to preview to cloze a selection there.`, "error");
+      return;
+    }
+    makeClozeFromSelection(config);
+  });
+}
+wireClozeButton(el.clozeQuestionBtn, "question");
+wireClozeButton(el.clozeAnswerBtn, "answer");
+wireClozeButton(el.makeClozeFromNotesBtn, "notes");
+
+// ── Rendered-view formatting toolbar ───────────────────────────────────────
+// A persistent row (bold/italic/underline/strike/code, a text-colour and a
+// highlight split-button, and cloze) sits above each rendered card face and the
+// notes preview. It formats the current text selection WITHOUT entering raw-edit
+// mode: it locates the selection in the markdown source (occurrence-aware, so a
+// repeated word is styled in place) and reuses the exact same transform
+// functions as the raw editor's toolbar (toggleWrap, applyInlineStyleProperty,
+// …), then re-renders and autosaves.
+
+// Text-colour palette mirrors the editor toolbar's; highlight uses soft tints
+// that stay legible behind dark text.
+const RENDER_TEXT_COLORS = [
+  { name: "Red", value: "#ef4444" },
+  { name: "Orange", value: "#f97316" },
+  { name: "Yellow", value: "#f59e0b" },
+  { name: "Green", value: "#10b981" },
+  { name: "Teal", value: "#14b8a6" },
+  { name: "Blue", value: "#3b82f6" },
+  { name: "Indigo", value: "#6366f1" },
+  { name: "Purple", value: "#8b5cf6" },
+  { name: "Pink", value: "#ec4899" },
+  { name: "Accent", value: "var(--accent-strong)" },
+  { name: "White", value: "#ffffff" },
+  { name: "Gray", value: "#9ca3af" },
+];
+const RENDER_HIGHLIGHT_COLORS = [
+  { name: "Yellow", value: "#fde68a" },
+  { name: "Green", value: "#bbf7d0" },
+  { name: "Blue", value: "#bfdbfe" },
+  { name: "Pink", value: "#fbcfe8" },
+  { name: "Orange", value: "#fed7aa" },
+  { name: "Purple", value: "#e9d5ff" },
+  { name: "Teal", value: "#99f6e4" },
+  { name: "Gray", value: "#e5e7eb" },
+];
+
+// The currently-chosen default for each split-button's one-click apply. Persisted
+// so it survives reloads; seeded from the first palette swatch.
+const renderFormatDefaults = {
+  color: localStorage.getItem("recall:renderColorDefault") || RENDER_TEXT_COLORS[0].value,
+  highlight: localStorage.getItem("recall:renderHighlightDefault") || RENDER_HIGHLIGHT_COLORS[0].value,
+};
+
+function renderSplitControlHtml(prop, glyph, label, swatches) {
+  const items = swatches
+    .map(
+      (c) =>
+        `<button type="button" class="render-swatch-btn" data-render-color="${c.value}" data-render-prop="${prop}" style="--sw:${c.value};" title="${c.name}"></button>`
+    )
+    .join("");
+  return `
+    <span class="render-split" data-render-split="${prop}">
+      <button type="button" class="render-btn render-split-main" data-render-action="${prop}-apply" title="Apply ${label} (current default)">${glyph}</button>
+      <button type="button" class="render-btn render-split-side" data-render-action="${prop}-menu" title="Choose ${label}" aria-haspopup="true" aria-expanded="false"><span class="render-swatch" data-render-swatch="${prop}"></span><span class="render-caret" aria-hidden="true">▾</span></button>
+      <div class="render-color-menu" data-render-menu="${prop}" hidden>
+        ${items}
+        <button type="button" class="render-swatch-clear" data-render-color="clear" data-render-prop="${prop}" title="Remove ${label}">Clear</button>
+      </div>
+    </span>`;
+}
+
+function createRenderToolbarHtml() {
+  return `
+    <button type="button" class="render-btn" data-render-action="bold" title="Bold"><b>B</b></button>
+    <button type="button" class="render-btn" data-render-action="italic" title="Italic"><i>I</i></button>
+    <button type="button" class="render-btn" data-render-action="underline" title="Underline"><u>U</u></button>
+    <button type="button" class="render-btn" data-render-action="strikethrough" title="Strikethrough"><s>S</s></button>
+    <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
+    ${renderSplitControlHtml("color", "🎨", "text colour", RENDER_TEXT_COLORS)}
+    ${renderSplitControlHtml("highlight", "🖍️", "highlight", RENDER_HIGHLIGHT_COLORS)}
+    <button type="button" class="render-btn make-cloze-btn" data-render-action="cloze" title="Cloze — hide the selection as a fill-in-the-blank">[&hellip;]</button>`;
+}
+
+// Paint the little swatch on each split-button's side control to the current
+// default colour, so you can see what a one-click apply will use.
+function refreshRenderSwatches() {
+  document.querySelectorAll('[data-render-swatch="color"]').forEach((s) => {
+    s.style.background = renderFormatDefaults.color;
+  });
+  document.querySelectorAll('[data-render-swatch="highlight"]').forEach((s) => {
+    s.style.background = renderFormatDefaults.highlight;
+  });
+}
+
+function initRenderToolbars() {
+  [el.questionRenderToolbar, el.answerRenderToolbar, el.notesRenderToolbar].forEach((tb) => {
+    if (tb) tb.innerHTML = createRenderToolbarHtml();
+  });
+  refreshRenderSwatches();
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initRenderToolbars);
+} else {
+  initRenderToolbars();
+}
+
+function closeAllRenderMenus() {
+  document.querySelectorAll(".render-color-menu").forEach((m) => (m.hidden = true));
+  document.querySelectorAll(".render-split-side").forEach((b) => b.setAttribute("aria-expanded", "false"));
+}
+
+// When the located text is exactly the inner content of a <span style="…">…
+// </span>, return the range of the WHOLE span. Colour/highlight/clear then see
+// the entire span (via matchWholeStyleSpan) so they merge a new property in or
+// strip one, instead of nesting yet another span around the inner text.
+function enclosingStyleSpan(source, idx, end) {
+  const open = /<span style="[^"]*">$/.exec(source.slice(0, idx));
+  if (!open) return null;
+  if (!source.slice(end).startsWith("</span>")) return null;
+  return { start: idx - open[0].length, end: end + "</span>".length };
+}
+
+// Core engine: apply a raw-editor transform fn to the selected occurrence in the
+// source, then persist + re-render. `formatFn(value, start, end)` returns either
+// a replacement string for [start,end) or a { text, rangeStart, rangeEnd } range
+// object — exactly the shape the editor toolbar's fns already return. Pass
+// { expandStyleSpan: true } (colour/highlight) so an existing style span around
+// the selection is merged into rather than nested.
+function applyRenderFormat(config, formatFn, opts = {}) {
+  if (config.isEditing()) {
+    setStatus(`Switch the ${config.label} to preview to format a selection there.`, "error");
+    return;
+  }
+  const sel = renderedSelectionStrings(config.view);
+  if (!sel) {
+    setStatus(`Select some text in the ${config.label} first, then tap a formatting button.`, "error");
+    return;
+  }
+  const source = config.getSource();
+  const loc = locateSelectionInSource(source, sel);
+  if (!loc) {
+    setStatus("Couldn't match that selection in the source — try selecting whole words, or use the editor.", "error");
+    return;
+  }
+  let { idx, end } = loc;
+  if (opts.expandStyleSpan) {
+    const span = enclosingStyleSpan(source, idx, end);
+    if (span) {
+      idx = span.start;
+      end = span.end;
+    }
+  }
+  const result = formatFn(source, idx, end);
+  const isRange = result && typeof result === "object";
+  const replacement = isRange ? result.text : result;
+  const rangeStart = isRange ? result.rangeStart : idx;
+  const rangeEnd = isRange ? result.rangeEnd : end;
+  config.setSource(source.substring(0, rangeStart) + replacement + source.substring(rangeEnd));
+  window.getSelection()?.removeAllRanges();
+  config.rerender();
+  scheduleDeckAutosave();
+}
+
+const RENDER_INLINE_FORMATS = {
+  bold: (v, s, e) => toggleWrap(v, s, e, "**"),
+  italic: (v, s, e) => toggleWrap(v, s, e, "*"),
+  underline: (v, s, e) => toggleUnderline(v, s, e),
+  strikethrough: (v, s, e) => toggleStrikethrough(v, s, e),
+  code: (v, s, e) => toggleCode(v, s, e),
+};
+
+function applyRenderColor(config, prop, value) {
+  const property = prop === "highlight" ? "background-color" : "color";
+  const formatFn =
+    value === "clear"
+      ? (v, s, e) => clearInlineStyleProperty(v.slice(s, e), property)
+      : (v, s, e) => applyInlineStyleProperty(v.slice(s, e), property, value);
+  applyRenderFormat(config, formatFn, { expandStyleSpan: true });
+}
+
+function setRenderDefault(prop, value) {
+  if (value === "clear") return; // "clear" is an action, never a default
+  renderFormatDefaults[prop] = value;
+  localStorage.setItem(prop === "highlight" ? "recall:renderHighlightDefault" : "recall:renderColorDefault", value);
+  refreshRenderSwatches();
+}
+
+function handleRenderToolbarAction(btn, toolbar) {
+  const target = toolbar.dataset.renderTarget;
+  const config = renderTargetConfig(target);
+  const action = btn.dataset.renderAction;
+  const colorVal = btn.dataset.renderColor;
+
+  // Open/close a split-button's colour menu.
+  if (action === "color-menu" || action === "highlight-menu") {
+    const prop = action.slice(0, action.indexOf("-"));
+    const menu = toolbar.querySelector(`.render-color-menu[data-render-menu="${prop}"]`);
+    const willOpen = menu && menu.hidden;
+    closeAllRenderMenus();
+    if (menu && willOpen) {
+      menu.hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+    }
+    return;
+  }
+
+  // A swatch (or Clear) inside a menu: set it as the new default, then apply.
+  if (colorVal !== undefined) {
+    const prop = btn.dataset.renderProp;
+    closeAllRenderMenus();
+    setRenderDefault(prop, colorVal);
+    applyRenderColor(config, prop, colorVal);
+    return;
+  }
+
+  // One-click apply of the current default colour/highlight.
+  if (action === "color-apply") return applyRenderColor(config, "color", renderFormatDefaults.color);
+  if (action === "highlight-apply") return applyRenderColor(config, "highlight", renderFormatDefaults.highlight);
+
+  // Cloze reuses its dedicated driver (toggle + "already"/"removed" toasts).
+  if (action === "cloze") return makeClozeFromSelection(config);
+
+  // Plain inline toggles.
+  const fn = RENDER_INLINE_FORMATS[action];
+  if (fn) applyRenderFormat(config, fn);
+}
+
+// pointerdown (not click) so preventDefault preserves the live selection.
+document.addEventListener("pointerdown", (event) => {
+  const btn = event.target.closest(".render-toolbar [data-render-action], .render-toolbar [data-render-color]");
+  if (btn) {
+    event.preventDefault();
+    event.stopPropagation();
+    handleRenderToolbarAction(btn, btn.closest(".render-toolbar"));
+    return;
+  }
+  // A pointer down anywhere outside an open split control dismisses its menu.
+  if (!event.target.closest(".render-split")) closeAllRenderMenus();
+});
+
 // ── Editable images in rendered Notes: corner-drag resize ─────────────────
 // state.notes is a plain markdown string, so resizing works by tokenizing it
 // into top-level blocks with marked.lexer() (each token's `.raw` is the exact
@@ -9701,7 +10136,7 @@ function closestElement(target, selector) {
 }
 
 function isCardActionTarget(target) {
-  return Boolean(closestElement(target, "a, button, input, textarea, .cloze"));
+  return Boolean(closestElement(target, "a, button, input, textarea, .cloze, .render-toolbar"));
 }
 
 function isHorizontallyScrollable(node) {
@@ -11247,6 +11682,22 @@ function htmlToMarkdown(html, options = {}) {
       });
     });
   }
+
+  // App clozes render as <span class="cloze">…</span>. Turn them back into
+  // {{…}} so a card (or note) built from a selection that includes a cloze
+  // keeps the fill-in-the-blank instead of flattening it to plain text. The
+  // inner content is converted first, so a cloze wrapping bold/math/an image
+  // round-trips as {{**ATP**}}, {{$x$}}, {{![](url)}} etc. Added unconditionally
+  // (not gated on preserveInlineStyles): .cloze is our own class, so pasted web
+  // HTML never carries it, and any Recall content copied as HTML should keep it.
+  turndownService.addRule("cloze", {
+    filter: (node) =>
+      node.nodeName === "SPAN" && node.classList && node.classList.contains("cloze"),
+    replacement: (content) => {
+      const inner = content.trim();
+      return inner ? `{{${inner}}}` : "";
+    }
+  });
 
   // Restore KaTeX rendered math back into standard LaTeX ($...$ or $$...$$)
   turndownService.addRule("katex", {
