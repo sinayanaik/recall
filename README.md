@@ -2,8 +2,6 @@
 
 A static web app for learning something for the first time: write freeform **Study Notes** per deck, highlight any fact in them to make it a flashcard answer (you frame the question), then study the deck as swipeable Markdown flashcards — with Supabase-backed cloud storage and multi-user authentication. No build step, no framework — just open it in a browser.
 
-*(Formerly "Markdown Flashcards" — existing decks, exports, and local data keep working unchanged.)*
-
 ---
 
 ## Table of Contents
