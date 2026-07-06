@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260706-3">
+    <link rel="stylesheet" href="styles.css?v=20260706-4">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -182,6 +182,7 @@
 
           <div class="notes-stage" id="notesStage" hidden>
             <div class="notes-head">
+              <button class="notes-toc-toggle" id="notesTocBtn" type="button" title="Table of contents" aria-label="Table of contents" aria-expanded="false" aria-controls="notesTocDrawer"><span class="notes-toc-bars" aria-hidden="true"></span></button>
               <div class="face-label-row">
                 <span class="face-label">Study Notes</span>
               </div>
@@ -192,6 +193,16 @@
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
             </div>
             <div class="rendered notes-rendered" id="notesView"></div>
+            <nav class="notes-toc-drawer" id="notesTocDrawer" hidden aria-label="Notes table of contents">
+              <div class="notes-toc-head">
+                <span class="notes-toc-title">On this page</span>
+                <button class="notes-toc-close" id="notesTocCloseBtn" type="button" title="Close" aria-label="Close table of contents">&times;</button>
+              </div>
+              <div class="notes-toc-scroll">
+                <ol class="notes-toc-list" id="notesTocList"></ol>
+                <p class="notes-toc-empty" id="notesTocEmpty" hidden>No headings yet. Add <code>#</code> Markdown headings to your notes and they'll map out here.</p>
+              </div>
+            </nav>
             <textarea class="edit-textarea notes-edit" id="notesEdit" hidden spellcheck="false" placeholder="Write your notes here…"></textarea>
             <button class="notes-make-card-btn" id="makeCardFromSelectionBtn" type="button" hidden>&#43; Make card</button>
           </div>
@@ -798,6 +809,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260706-5"></script>
+    <script src="app.js?v=20260706-6"></script>
   </body>
 </html>

@@ -1386,6 +1386,11 @@ const el = {
   notesBtn: document.querySelector("#notesBtn"),
   notesStage: document.querySelector("#notesStage"),
   notesView: document.querySelector("#notesView"),
+  notesTocBtn: document.querySelector("#notesTocBtn"),
+  notesTocDrawer: document.querySelector("#notesTocDrawer"),
+  notesTocList: document.querySelector("#notesTocList"),
+  notesTocEmpty: document.querySelector("#notesTocEmpty"),
+  notesTocCloseBtn: document.querySelector("#notesTocCloseBtn"),
   notesEdit: document.querySelector("#notesEdit"),
   notesEditToolbar: document.querySelector("#notesEditToolbar"),
   editNotesBtn: document.querySelector("#editNotesBtn"),
@@ -4340,7 +4345,10 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   }
   container.innerHTML = markdownToSafeHtml(displayMarkdown);
   await enhanceRenderedMarkdown(container);
-  if (container === el.notesView) enhanceNotesImageControls();
+  if (container === el.notesView) {
+    enhanceNotesImageControls();
+    buildNotesToc();
+  }
 }
 
 function markdownTableColumnCount(table) {
@@ -5292,6 +5300,7 @@ function enterNotesEditing() {
   el.notesEditToolbar.hidden = false;
   el.editNotesBtn.classList.add("is-editing");
   el.editNotesBtn.title = "Back to preview";
+  if (el.notesTocDrawer?.classList.contains("is-open")) closeNotesToc();
   hideNotesSelectionButton();
   el.notesEdit.dispatchEvent(new Event("input", { bubbles: true }));
   el.notesEdit.focus();
@@ -5338,6 +5347,178 @@ el.viewModeToggle?.addEventListener("click", (event) => {
 });
 
 el.notesBtn?.addEventListener("click", () => setViewMode("notes"));
+
+// ── Notes table of contents ────────────────────────────────────────
+// The rendered notes carry no navigation of their own; long study notes
+// become a wall of text. buildNotesToc() scans the freshly rendered
+// headings, gives each a stable anchor id, and mirrors them into a
+// slide-in drawer (the ☰ hamburger in the notes head). Clicking an entry
+// scrolls that heading to the top of the notes viewport, and a scroll-spy
+// keeps the entry for the section you're reading highlighted.
+let notesTocHeadings = [];
+let notesTocScrollFrame = 0;
+
+function slugifyHeading(text, used) {
+  const base = String(text || "")
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-") || "section";
+  let slug = `toc-${base}`;
+  let n = 2;
+  while (used.has(slug)) slug = `toc-${base}-${n++}`;
+  used.add(slug);
+  return slug;
+}
+
+function buildNotesToc() {
+  if (!el.notesView || !el.notesTocList) return;
+  const used = new Set();
+  notesTocHeadings = Array.from(
+    el.notesView.querySelectorAll("h1, h2, h3, h4, h5, h6")
+  ).filter((h) => h.textContent.trim() !== "");
+
+  el.notesTocList.innerHTML = "";
+  const hasHeadings = notesTocHeadings.length > 0;
+  if (el.notesTocEmpty) el.notesTocEmpty.hidden = hasHeadings;
+  el.notesTocList.hidden = !hasHeadings;
+
+  if (!hasHeadings) {
+    if (el.notesTocDrawer && !el.notesTocDrawer.hidden) closeNotesToc();
+    if (el.notesTocBtn) el.notesTocBtn.classList.remove("has-toc");
+    return;
+  }
+  if (el.notesTocBtn) el.notesTocBtn.classList.add("has-toc");
+
+  // Normalise the shallowest heading level to depth 0 so notes that start at
+  // ## still indent from the left edge rather than looking pushed-in.
+  const minLevel = notesTocHeadings.reduce(
+    (min, h) => Math.min(min, Number(h.tagName[1])),
+    6
+  );
+
+  notesTocHeadings.forEach((heading, index) => {
+    if (!heading.id) heading.id = slugifyHeading(heading.textContent, used);
+    else used.add(heading.id);
+    const level = Number(heading.tagName[1]);
+    const depth = Math.min(level - minLevel, 4);
+
+    const li = document.createElement("li");
+    li.className = "notes-toc-item";
+    const link = document.createElement("a");
+    link.className = "notes-toc-link";
+    link.href = `#${heading.id}`;
+    link.dataset.tocIndex = String(index);
+    link.style.setProperty("--toc-depth", String(depth));
+    link.innerHTML =
+      `<span class="notes-toc-dot" data-level="${level}"></span>` +
+      `<span class="notes-toc-text"></span>`;
+    link.querySelector(".notes-toc-text").textContent = heading.textContent.trim();
+    li.appendChild(link);
+    el.notesTocList.appendChild(li);
+  });
+
+  updateNotesTocActive();
+}
+
+function scrollNotesHeadingIntoView(heading) {
+  if (!heading || !el.notesView) return;
+  const viewTop = el.notesView.getBoundingClientRect().top;
+  const headTop = heading.getBoundingClientRect().top;
+  const target = el.notesView.scrollTop + (headTop - viewTop) - 8;
+  el.notesView.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+}
+
+function updateNotesTocActive() {
+  if (!el.notesTocList || !notesTocHeadings.length) return;
+  const viewTop = el.notesView.getBoundingClientRect().top;
+  // The active section is the last heading whose top has scrolled to (or above)
+  // a line a little below the viewport top.
+  let activeIndex = 0;
+  notesTocHeadings.forEach((heading, index) => {
+    if (heading.getBoundingClientRect().top - viewTop <= 24) activeIndex = index;
+  });
+  el.notesTocList.querySelectorAll(".notes-toc-link").forEach((link) => {
+    const on = Number(link.dataset.tocIndex) === activeIndex;
+    link.classList.toggle("is-active", on);
+    if (on) link.setAttribute("aria-current", "true");
+    else link.removeAttribute("aria-current");
+  });
+}
+
+function openNotesToc() {
+  if (!el.notesTocDrawer) return;
+  el.notesTocDrawer.hidden = false;
+  // Force reflow so the open transition runs from the hidden state.
+  void el.notesTocDrawer.offsetWidth;
+  el.notesTocDrawer.classList.add("is-open");
+  el.notesTocBtn?.classList.add("is-active");
+  el.notesTocBtn?.setAttribute("aria-expanded", "true");
+  updateNotesTocActive();
+}
+
+function closeNotesToc() {
+  if (!el.notesTocDrawer) return;
+  el.notesTocDrawer.classList.remove("is-open");
+  el.notesTocBtn?.classList.remove("is-active");
+  el.notesTocBtn?.setAttribute("aria-expanded", "false");
+  const drawer = el.notesTocDrawer;
+  const hideAfter = () => {
+    if (!drawer.classList.contains("is-open")) drawer.hidden = true;
+  };
+  drawer.addEventListener("transitionend", hideAfter, { once: true });
+  // Fallback in case the transition never fires (e.g. reduced motion).
+  setTimeout(hideAfter, 260);
+}
+
+function toggleNotesToc() {
+  if (el.notesTocDrawer?.classList.contains("is-open")) closeNotesToc();
+  else openNotesToc();
+}
+
+el.notesTocBtn?.addEventListener("click", toggleNotesToc);
+el.notesTocCloseBtn?.addEventListener("click", closeNotesToc);
+
+el.notesTocList?.addEventListener("click", (event) => {
+  const link = event.target.closest(".notes-toc-link");
+  if (!link) return;
+  event.preventDefault();
+  const heading = notesTocHeadings[Number(link.dataset.tocIndex)];
+  scrollNotesHeadingIntoView(heading);
+  heading?.classList.add("notes-heading-flash");
+  setTimeout(() => heading?.classList.remove("notes-heading-flash"), 1200);
+  // On narrow screens the drawer overlays the notes, so step out of the way.
+  if (window.matchMedia("(max-width: 720px)").matches) closeNotesToc();
+});
+
+el.notesView?.addEventListener(
+  "scroll",
+  () => {
+    if (notesTocScrollFrame) return;
+    notesTocScrollFrame = requestAnimationFrame(() => {
+      notesTocScrollFrame = 0;
+      updateNotesTocActive();
+    });
+  },
+  { passive: true }
+);
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && el.notesTocDrawer?.classList.contains("is-open")) {
+    closeNotesToc();
+  }
+});
+
+// Clicking anywhere outside the open drawer (including the notes themselves)
+// dismisses the TOC. The toggle button is excluded so its own click still
+// toggles rather than close-then-reopen.
+document.addEventListener("pointerdown", (event) => {
+  if (!el.notesTocDrawer?.classList.contains("is-open")) return;
+  if (el.notesTocDrawer.contains(event.target)) return;
+  if (el.notesTocBtn?.contains(event.target)) return;
+  closeNotesToc();
+});
 
 // ── Select text in notes (rendered OR raw) → make a flashcard in this deck ──
 // Highlighting text/images in the notes preview, or a text range in the raw
