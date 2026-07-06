@@ -321,7 +321,7 @@ While editing, a **formatting toolbar** appears above the text. Select a span of
 | **B** / **I** / **U** | Bold, Italic, Underline |
 | **S** | Strikethrough |
 | **&lt;/&gt;** | Inline code |
-| **[…]** | Cloze — hide the selection as a fill-in-the-blank (`{{text}}`); tap it on the card to reveal |
+| **[…]** | Cloze — hide the selection as a fill-in-the-blank (`{{text}}`); tap it on the card to reveal, or use the **👀 Reveal clozes** button under the card to flip them all at once (press again to hide them all — 🙈). Revealed cloze text uses a distinct italic-serif font — no highlight box — so you can still tell which words were blanks. |
 | **Aa** | Font family picker |
 | **🎨** | Text colour (includes "Clear colour") |
 | **-** | Toggle bullet list |
@@ -503,6 +503,7 @@ Style profiles are separate for desktop and mobile, so the card can look differe
 | `←` / `↑` | Previous card |
 | `K` | Mark current card Known |
 | `R` | Mark current card for Review |
+| `Ctrl`/`⌘` + `E` | Toggle edit / rendered view |
 | `Escape` | Close any open panel or modal |
 
 ---
@@ -516,14 +517,15 @@ When served over HTTPS (GitHub Pages, Netlify, etc.), the app registers a servic
 
 ### Working offline
 
-After you've opened the app online at least once (so the app shell and libraries are cached), it stays usable with no connection:
+The service worker **precaches the entire dependency set on first load** — the app shell plus every CDN library (marked, DOMPurify, KaTeX + all its math fonts, Prism + the common language grammars, Mermaid, nomnoml, JSZip, Turndown, Panzoom, the Supabase client). So after a single online visit the app is fully self-contained: math, diagrams, syntax highlighting, and exports all work with no connection, not just the features you happened to exercise while online.
 
+- **Registers unconditionally** — the worker installs on the login/setup screen too, before you sign in or configure a cloud project, so the offline cache is in place from the very first visit.
 - **Stays signed in** — your session is read from local storage, so you reach your decks instead of the login wall. (You must have signed in online at least once; a fresh sign-in/sign-up still needs the network.)
 - **Working deck is never lost** — every edit is auto-saved to the **My Decks** library (debounced, plus a final flush when the tab is hidden or closed), so nothing is lost if the app is closed mid-session. A reload starts on the clean home screen by design; reopen your deck from **My Decks**.
 - **Full library offline** — because every cloud deck is mirrored onto the device automatically, **My Decks** works fully offline; you can load, rename, and delete saved decks with no connection.
 - An **Offline** badge appears (bottom-left) whenever you lose connection.
 
-A first-time login still needs the network, and any edits made offline (including deletes) reconcile with the cloud automatically once the connection returns.
+A first-time login still needs the network, and any edits made offline (including deletes) reconcile with the cloud automatically once the connection returns. Remote user content that isn't part of the app itself — images hosted on ImgBB/Google Drive, `Fetch from URL`, and the Jina Reader import — naturally still needs a connection.
 
 ---
 

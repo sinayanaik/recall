@@ -1731,10 +1731,14 @@ button:disabled {
   padding: 0 0.35em;
   transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
+/* Hidden state — an empty fill-in slot: a soft tint under a dashed outline
+   with no visible text, so it clearly reads as "a blank to reveal" rather than
+   highlighted text. */
 .cloze:not(.is-revealed) {
   color: transparent;
-  background: color-mix(in srgb, var(--accent) 32%, var(--panel));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 5px;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -1743,16 +1747,49 @@ button:disabled {
   visibility: hidden;
 }
 .cloze:not(.is-revealed):hover {
-  background: color-mix(in srgb, var(--accent) 45%, var(--panel));
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 75%, transparent);
 }
+/* Revealed contents — a distinct italic serif in the accent colour, with NO
+   background box and NO underline, so it reads as revealed answer text and is
+   never mistaken for a highlight. */
 .cloze.is-revealed {
   color: var(--accent-strong);
+  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+  font-style: italic;
   font-weight: 600;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: transparent;
+  box-shadow: none;
+  padding: 0 0.1em;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .cloze:focus-visible {
   outline: 2px solid var(--accent-strong);
   outline-offset: 1px;
+}
+/* The Reveal-clozes glyph flips 👀 (reveal) ⇄ 🙈 (hide) — deliberately not the
+   single 👁 used by the edit/rendered toggle, so the two don't look alike. */
+.cloze-toggle-glyph {
+  font-style: normal;
+  line-height: 1;
+}
+/* Active state for the Reveal-clozes buttons (deck utility row + notes) when
+   every cloze in the view is currently shown. */
+#clozeToggleBtn[aria-pressed="true"],
+.cloze-toggle-icon[aria-pressed="true"] {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* Raw markdown editor: tint {{cloze}} enclosures (colour only — the highlight
+   backdrop must keep the same character metrics as the textarea behind it). */
+.syntax-cloze {
+  color: var(--accent-strong) !important;
+}
+.syntax-cloze-brace {
+  color: var(--accent) !important;
+  opacity: 0.5 !important;
 }
 
 .card-question .rendered {
@@ -2273,13 +2310,14 @@ svg.nomnoml-light-svg [fill="none"] {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   cursor: nwse-resize;
   touch-action: none;
-  opacity: 0.6;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  /* Always visible so every image (including ones nested in bullets) advertises
+     that it's resizable without needing a hover to discover the grip. */
+  opacity: 1;
+  transition: transform 0.12s ease;
 }
 
 #notesView .diagram-shell:hover .notes-img-resize-handle,
 #notesView .diagram-shell.is-resizing .notes-img-resize-handle {
-  opacity: 1;
   transform: scale(1.08);
 }
 
@@ -2309,34 +2347,6 @@ svg.nomnoml-light-svg [fill="none"] {
   white-space: nowrap;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
-
-/* One-click "move to own line" button for an image still embedded in text or
-   nested in a list/quote — promoting it makes it a resizable block. Sits
-   inside the shell's top-left so it's visible without hover. */
-.notes-img-controls {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  z-index: 32;
-  display: flex;
-  padding: 3px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border: 1px solid var(--line);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-}
-
-.notes-img-promote-btn {
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 0.72rem;
-  font-weight: 800;
-  padding: 4px 10px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
 
 .diagram-modal {
   position: fixed;

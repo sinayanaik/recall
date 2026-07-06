@@ -1319,6 +1319,8 @@ const el = {
   editDeckCategoryBtn: document.querySelector("#editDeckCategoryBtn"),
   shuffleBtn: document.querySelector("#shuffleBtn"),
   resetBtn: document.querySelector("#resetBtn"),
+  clozeToggleBtn: document.querySelector("#clozeToggleBtn"),
+  clozeToggleNotesBtn: document.querySelector("#clozeToggleNotesBtn"),
   card: document.querySelector("#card"),
   questionView: document.querySelector("#questionView"),
   answerView: document.querySelector("#answerView"),
@@ -5274,7 +5276,7 @@ function commitNotesEditIfActive() {
   if (!isNotesEditing()) return;
   state.notes = el.notesEdit.value;
   resetNotesEditingUI();
-  renderMarkdown(el.notesView, state.notes, true);
+  renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
   scheduleDeckAutosave();
   updateMeta();
 }
@@ -5309,7 +5311,7 @@ function setViewMode(mode) {
   });
   hideNotesSelectionButton();
   if (notesActive) {
-    renderMarkdown(el.notesView, state.notes, true);
+    renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
     if (!state.notes.trim()) enterNotesEditing();
   } else if (changed) {
     showCard();
@@ -5374,7 +5376,7 @@ function cleanedSelectionFragment(range) {
 // its .diagram-shell wrapper.
 function notesSelectionMarkdown(range) {
   const fragment = cleanedSelectionFragment(range);
-  const markdown = htmlToMarkdown(fragment.innerHTML).trim();
+  const markdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
   return markdown || fragment.textContent.trim();
 }
 
@@ -5613,9 +5615,9 @@ function imgTagHtml({ url, alt = "", widthPx = null }) {
 // document order. A standalone image (its own paragraph / raw <img>) and one
 // sharing a paragraph with other text (isInline) are both directly
 // resizable — commitImageWidth rewrites just that image's own raw slice for
-// the isInline case, leaving the surrounding text untouched. Only one nested
-// in a list/quote (isDeep) is flagged for the "move to its own line" promote
-// button first, since pulling it out means splicing its enclosing token.
+// the isInline case, leaving the surrounding text untouched. One nested in a
+// list/quote (isDeep) is resized in place too, via commitDeepImageWidth, which
+// swaps its raw slice inside the enclosing token without pulling it out.
 // Legacy side-by-side rows (`.notes-img-row`, no longer creatable) are still
 // detected so their images stay resizable and the DOM↔token mapping in
 // enhanceNotesImageControls stays aligned.
@@ -5710,12 +5712,12 @@ function findImageTokens(tokens) {
       return;
     }
     // Anything else — most commonly a list or blockquote — can have images
-    // buried in its nested items/sub-tokens. Those get a "move to its own line"
-    // control that extracts them to a clean top-level block (promoteDeepImage).
+    // buried in its nested items/sub-tokens. Those get the same corner resize
+    // grip, committed in place by commitDeepImageWidth.
     const deep = [];
     collectImagesDeep(token, deep);
     deep.forEach((found) => {
-      results.push({ tokenIndex, isRow: false, isDeep: true, imageRaw: found.raw, images: [{ url: found.url, alt: found.alt, widthPx: null }] });
+      results.push({ tokenIndex, isRow: false, isDeep: true, imageRaw: found.raw, images: [{ url: found.url, alt: found.alt, widthPx: found.widthPx ?? null }] });
     });
   });
   return results;
@@ -5740,22 +5742,23 @@ function collectImagesDeep(token, results) {
   if (Array.isArray(token.items)) token.items.forEach((t) => collectImagesDeep(t, results));
 }
 
-// Extracts an image found via collectImagesDeep out of its enclosing top-level
-// token (a list, blockquote, etc.) by removing its exact raw source slice, then
-// inserts it as a standalone block immediately after so it becomes resizable.
-function promoteDeepImage(tokenIndex, imageRaw, info) {
+// Resizes an image found via collectImagesDeep IN PLACE — nested in its
+// enclosing top-level token (a list item, blockquote, etc.). Its exact raw
+// source slice is swapped for a sized raw <img> tag, leaving the surrounding
+// list/quote structure untouched, so the image stays put under its bullet
+// instead of being promoted to its own line. On the next resize the slice is
+// the <img> tag itself (collectImagesDeep re-detects it and reads back the
+// width), so repeated drags keep working.
+function commitDeepImageWidth(tokenIndex, imageRaw, info, px) {
+  const widthPx = Math.min(2000, Math.max(20, Math.round(px)));
   const tokens = notesLexTokens();
   const token = tokens[tokenIndex];
   if (!token) return;
   const idx = token.raw.indexOf(imageRaw);
   if (idx === -1) return;
-  const newRaw = token.raw.slice(0, idx) + token.raw.slice(idx + imageRaw.length);
-  const imgHtml = imgTagHtml(info) + "\n\n";
-  const replacement = [
-    { ...token, raw: newRaw },
-    { type: "html", raw: imgHtml, text: imgHtml, pre: false, block: true }
-  ];
-  tokens.splice(tokenIndex, 1, ...replacement);
+  const newImgRaw = imgTagHtml({ ...info, widthPx });
+  const newRaw = token.raw.slice(0, idx) + newImgRaw + token.raw.slice(idx + imageRaw.length);
+  tokens[tokenIndex] = { ...token, raw: newRaw };
   rebuildNotesFromTokens(tokens);
 }
 
@@ -5772,7 +5775,7 @@ function rebuildNotesFromTokens(tokens) {
     .join("")
     .replace(/\n+$/, "\n");
   if (isNotesEditing()) el.notesEdit.value = state.notes;
-  renderMarkdown(el.notesView, state.notes, true);
+  renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
   scheduleDeckAutosave();
 }
 
@@ -5819,7 +5822,7 @@ function commitImageWidth(tokenIndex, subPos, px) {
 // corner to grow, in to shrink. Width is what's stored; height is auto, so
 // aspect ratio is preserved for free. A live badge shows the current px width
 // and its share of the notes column so sizing isn't guesswork.
-function beginImageResize(event, shell, img, tokenIndex, rowPos) {
+function beginImageResize(event, shell, img, onCommit) {
   event.preventDefault();
   event.stopPropagation();
   shell.setPointerCapture?.(event.pointerId);
@@ -5860,7 +5863,7 @@ function beginImageResize(event, shell, img, tokenIndex, rowPos) {
     document.removeEventListener("pointercancel", onCancel);
     shell.classList.remove("is-resizing");
     badge.remove();
-    if (commit) commitImageWidth(tokenIndex, rowPos, widthPx);
+    if (commit) onCommit(widthPx);
   };
   const onUp = () => end(true);
   const onCancel = () => end(false); // interrupted — drop the badge, keep last live width
@@ -5870,38 +5873,20 @@ function beginImageResize(event, shell, img, tokenIndex, rowPos) {
   document.addEventListener("pointercancel", onCancel);
 }
 
-// Minimal overlay for an image that isn't (yet) its own clean top-level block —
-// still embedded in running text, or buried inside a list/quote. Clicking the
-// button promotes it via the callback; the resize grip then appears once
-// findImageTokens sees it as a standalone block on the next render.
-function attachImagePromoteControl(shell, onPromote) {
-  shell.querySelector(".notes-img-controls")?.remove();
-  shell.querySelector(".notes-img-resize-handle")?.remove();
-  const controls = document.createElement("div");
-  controls.className = "notes-img-controls";
-  const promoteBtn = document.createElement("button");
-  promoteBtn.type = "button";
-  promoteBtn.className = "notes-img-promote-btn";
-  promoteBtn.title = "Move to its own line to resize it";
-  promoteBtn.textContent = "⤢ Move to own line";
-  promoteBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    onPromote();
-  });
-  controls.appendChild(promoteBtn);
-  shell.appendChild(controls);
-}
-
-// Attaches the blue corner-drag resize grip to a standalone (or legacy-row)
-// image. This is the only image control.
-function attachNotesImageResizeHandle(shell, img, tokenIndex, rowPos) {
+// Attaches the blue corner-drag resize grip to an image. `onCommit(widthPx)`
+// persists the final size — the caller supplies the right write path for the
+// image's shape (standalone/row/inline, or nested in a list/quote). This is the
+// only image control: every rendered notes image gets it, so images buried in
+// bullet points are resized in place just like any other, with no intermediate
+// "move to own line" step.
+function attachNotesImageResizeHandle(shell, img, onCommit) {
   shell.querySelector(".notes-img-controls")?.remove();
   shell.querySelector(".notes-img-resize-handle")?.remove();
   const resizeHandle = document.createElement("div");
   resizeHandle.className = "notes-img-resize-handle";
   resizeHandle.title = "Drag to resize";
   resizeHandle.setAttribute("aria-hidden", "true");
-  resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, tokenIndex, rowPos));
+  resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, onCommit));
   shell.appendChild(resizeHandle);
 }
 
@@ -5955,14 +5940,17 @@ function enhanceNotesImageControls() {
       img.classList.remove("has-custom-size");
     }
     if (entry.isDeep) {
-      // Still needs manual promotion: extracting an image out of a list/quote
-      // means splicing its enclosing token's raw content, not just swapping
-      // one inline slice — a meaningfully bigger rewrite than the in-place
-      // resize the row/plain-paragraph/inline cases below get directly.
-      attachImagePromoteControl(shell, () => promoteDeepImage(entry.tokenIndex, entry.imageRaw, entry.images[0]));
+      // An image nested in a list/quote is resized in place too: instead of
+      // extracting it to its own line first, commitDeepImageWidth rewrites just
+      // its raw slice within the enclosing token's content, keeping it exactly
+      // where it sits under the bullet.
+      const info = entry.images[0];
+      attachNotesImageResizeHandle(shell, img, (px) =>
+        commitDeepImageWidth(entry.tokenIndex, entry.imageRaw, info, px)
+      );
     } else {
       const subPos = entry.isRow ? subIndex : (entry.isInline ? entry.inlinePos : null);
-      attachNotesImageResizeHandle(shell, img, entry.tokenIndex, subPos);
+      attachNotesImageResizeHandle(shell, img, (px) => commitImageWidth(entry.tokenIndex, subPos, px));
     }
   });
 }
@@ -6126,6 +6114,8 @@ async function showCard(direction = 0) {
   maybeShowSwipeHint();
   await renderMarkdown(el.questionView, card.question, true);
   await renderMarkdown(el.answerView, card.answer, true);
+  // Fresh spans render hidden; reset the bulk button label to "Reveal clozes".
+  resetClozeButton(el.clozeToggleBtn);
   scheduleLiveQuestionFit();
   updateMeta();
   if (enterClass) {
@@ -10055,16 +10045,27 @@ function handleDiagramPointerEnd(event) {
   }
 }
 
+let serviceWorkerRegistered = false;
+
 function registerServiceWorker() {
+  if (serviceWorkerRegistered) return;
   if (!pwaAssetsSupported()) return;
   if (!("serviceWorker" in navigator)) return;
   if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
 
-  window.addEventListener("load", () => {
+  serviceWorkerRegistered = true;
+  const register = () => {
     navigator.serviceWorker.register("./sw.js").catch((error) => {
       console.warn("Service worker registration failed", error);
     });
-  });
+  };
+  // Register after `load` to avoid competing with first-paint fetches — but if
+  // the page has already finished loading (this runs from the async auth/boot
+  // flow, long after `load` fires), a "load" listener would never run, so
+  // register immediately instead. This is why offline previously never worked:
+  // the SW was only ever set up inside initAppForUser(), after `load`.
+  if (document.readyState === "complete") register();
+  else window.addEventListener("load", register, { once: true });
 }
 
 function pwaAssetsSupported() {
@@ -10673,6 +10674,15 @@ async function bootApp() {
   }
 }
 
+// Set up offline support up front, regardless of Supabase config or auth state.
+// The service worker and its precache are what make the app usable offline, so
+// they must not be gated behind login or a configured cloud project — a logged
+// -out user on the login/setup screen should still get the cached app shell and
+// all rendering dependencies. (initAppForUser() also calls these post-login; both
+// are idempotent.)
+installManifestLink();
+registerServiceWorker();
+
 bootApp();
 
 // Commit any in-progress edit into the session before the tab is hidden or closed.
@@ -11194,7 +11204,7 @@ function openImagePicker(textarea, atPos) {
 
 // Shared HTML→Markdown converter (paste handler + notes selection capture).
 // Returns "" when Turndown is unavailable or conversion fails.
-function htmlToMarkdown(html) {
+function htmlToMarkdown(html, options = {}) {
   if (typeof TurndownService === "undefined") return "";
 
   const turndownService = new TurndownService({
@@ -11207,6 +11217,35 @@ function htmlToMarkdown(html) {
   // Load GFM plugin for tables, strikethrough, etc. if available
   if (typeof turndownPluginGfm !== "undefined" && turndownPluginGfm.gfm) {
     turndownService.use(turndownPluginGfm.gfm);
+  }
+
+  // Notes carry inline styling as raw HTML — colored/font-family text
+  // (`<span style="…">` from the toolbar's color/font pickers), underline
+  // (`<u>`), highlight (`<mark>`) and keyboard keys (`<kbd>`). Turndown drops
+  // these by default, keeping only the text, so a card made from a styled
+  // notes selection lost its color/font/underline. When preserveInlineStyles
+  // is set (the notes-selection path), re-emit them so the styling survives
+  // into the card exactly as it looked in the notes. This is intentionally NOT
+  // enabled for the general clipboard-paste path, where preserving every
+  // web/Office `<span style>` would just litter pasted markdown.
+  if (options.preserveInlineStyles) {
+    turndownService.addRule("styled-span", {
+      filter: (node) =>
+        node.nodeName === "SPAN" &&
+        node.getAttribute("style") &&
+        /(?:^|;)\s*(?:color|font-family|background-color|background)\s*:/i.test(node.getAttribute("style")),
+      replacement: (content, node) => `<span style="${node.getAttribute("style")}">${content}</span>`
+    });
+    [
+      ["u", "U"],
+      ["mark", "MARK"],
+      ["kbd", "KBD"]
+    ].forEach(([tag, nodeName]) => {
+      turndownService.addRule(`keep-${tag}`, {
+        filter: (node) => node.nodeName === nodeName,
+        replacement: (content) => `<${tag}>${content}</${tag}>`
+      });
+    });
   }
 
   // Restore KaTeX rendered math back into standard LaTeX ($...$ or $$...$$)
@@ -11448,11 +11487,43 @@ document.addEventListener("click", (e) => {
   }
 });
 
-// Toggle a cloze (fill-in-the-blank) between hidden and revealed when tapped.
+// Toggle a single cloze (fill-in-the-blank) between hidden and revealed on tap.
 document.addEventListener("click", (e) => {
   const cloze = e.target.closest(".cloze");
   if (cloze) cloze.classList.toggle("is-revealed");
 });
+
+// --- Global "flip all clozes" button (current card / notes only) ------------
+// A plain alternating switch: each press flips EVERY cloze in the view to the
+// opposite of the button's current state — press once to reveal them all, press
+// again to hide them all. The button's aria-pressed is the single source of
+// truth (true = currently showing), so the action is always predictable. The
+// button resets to hidden whenever the view re-renders (see resetClozeButton).
+// Tapping an individual cloze still overrides just that one afterwards.
+function setClozeButtonState(button, revealed) {
+  if (!button) return;
+  button.setAttribute("aria-pressed", revealed ? "true" : "false");
+  const label = button.querySelector(".cloze-toggle-label");
+  if (label) label.textContent = revealed ? "Hide clozes" : "Reveal clozes";
+  const glyph = button.querySelector(".cloze-toggle-glyph");
+  if (glyph) glyph.textContent = revealed ? "🙈" : "👀";
+  button.title = revealed ? "Hide all clozes on this card" : "Reveal all clozes on this card";
+}
+
+function toggleClozes(container, button) {
+  if (!container || !button) return;
+  const reveal = button.getAttribute("aria-pressed") !== "true";
+  container.querySelectorAll(".cloze").forEach((c) => c.classList.toggle("is-revealed", reveal));
+  setClozeButtonState(button, reveal);
+}
+
+// New card / re-rendered notes start with every cloze hidden again.
+function resetClozeButton(button) {
+  setClozeButtonState(button, false);
+}
+
+el.clozeToggleBtn?.addEventListener("click", () => toggleClozes(el.card, el.clozeToggleBtn));
+el.clozeToggleNotesBtn?.addEventListener("click", () => toggleClozes(el.notesStage, el.clozeToggleNotesBtn));
 
 // Keyboard activation for clozes (they carry role="button").
 document.addEventListener("keydown", (e) => {
@@ -11487,6 +11558,15 @@ function enableSyntaxHighlighting(textarea) {
 
     // Fade out HTML syntax tags
     let highlighted = escaped.replace(/(&lt;\/?[a-zA-Z0-9]+(?:\s+[^&]*)?&gt;)/g, '<span class="syntax-tag">$1</span>');
+
+    // Tint {{cloze}} enclosures so blanks stand out in the raw markdown. Only
+    // colour changes are applied here (never font-style/weight/family) — the
+    // backdrop must keep identical character metrics to the transparent
+    // textarea it sits behind, or the caret would drift out of alignment.
+    highlighted = highlighted.replace(
+      /(\{\{)([\s\S]*?)(\}\})/g,
+      '<span class="syntax-cloze"><span class="syntax-cloze-brace">$1</span>$2<span class="syntax-cloze-brace">$3</span></span>'
+    );
 
     if (highlighted.endsWith("\n") || highlighted === "") {
       highlighted += " ";
