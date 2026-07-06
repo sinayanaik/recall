@@ -9407,18 +9407,18 @@ function installPdfPrintStyle() {
   }
   style.textContent = `
     @media print {
-      @page { size: A4 portrait; margin: 12mm; }
+      @page { size: A4 portrait; margin: 14mm; }
 
       /* Card layout */
       .cornell-print-document { width: auto !important; border: none !important; box-shadow: none !important; }
-      .cornell-print-table { padding: 6mm 0 0 !important; }
+      .cornell-print-table { padding: 7mm 0 0 !important; }
       .cornell-print-row {
         display: flex !important;
         flex-direction: row !important;
         align-items: stretch !important;
-        border: 2px solid #bbb !important;
-        border-radius: 0 !important;
-        margin-bottom: 6mm !important;
+        border: 1.5px solid #bbb !important;
+        border-radius: 8px !important;
+        margin-bottom: 7mm !important;
         overflow: hidden !important;
         break-inside: avoid !important;
         page-break-inside: avoid !important;
@@ -9427,11 +9427,38 @@ function installPdfPrintStyle() {
         flex: 0 0 45mm !important;
         width: 45mm !important;
         min-width: 45mm !important;
-        border-right: 2px solid #bbb !important;
+        border-right: 1.5px solid #bbb !important;
+        padding: 5mm !important;
       }
       .cornell-print-row .cornell-answer-cell {
         flex: 1 1 0 !important;
         min-width: 0 !important;
+        padding: 5mm 6mm !important;
+      }
+      .cornell-print-row .rendered { line-height: 1.42 !important; }
+      .cornell-print-row .rendered p { margin: 0 0 0.55em !important; }
+      .cornell-print-row .rendered p:last-child { margin-bottom: 0 !important; }
+
+      /* Cover header spacing */
+      .cornell-print-cover { padding: 0 0 5mm !important; margin-bottom: 3mm !important; }
+
+      /* Clozes: always shown filled-in (never blank) in the exported PDF.
+         Bold in the strong accent colour — no italics, no serif switch — so
+         the answers stand out clearly without looking faint. */
+      .cornell-print-document .cloze,
+      .cornell-print-document .cloze.is-revealed {
+        color: var(--print-accent-strong) !important;
+        font-family: inherit !important;
+        font-style: normal !important;
+        font-weight: 700 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+      }
+      .cornell-print-document .cloze * {
+        visibility: visible !important;
+        color: inherit !important;
+        font-weight: 700 !important;
       }
       /* Oversized cards (taller than a page): let them fragment but start on new page */
       .cornell-print-row.is-oversize {
@@ -9616,6 +9643,60 @@ function openStandalonePrintDocument() {
   setStatus("Opened a dedicated print page. Choose Save as PDF there.");
 }
 
+// One-click PDF: print the prepared document through a hidden same-origin iframe
+// instead of a pop-up window. The iframe needs no user gesture (so it survives
+// the async render step that a pop-up blocker would otherwise kill) and prints
+// only its own document. The embedded auto-print script fires window.print()
+// once fonts and images settle; we tear the frame down on afterprint.
+function printViaHiddenIframe(html) {
+  document.querySelector("#recallPrintFrame")?.remove();
+  const iframe = document.createElement("iframe");
+  iframe.id = "recallPrintFrame";
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.cssText = "position:fixed; right:0; bottom:0; width:0; height:0; border:0; opacity:0; pointer-events:none;";
+  document.body.appendChild(iframe);
+
+  const win = iframe.contentWindow;
+  if (!win) {
+    iframe.remove();
+    return false;
+  }
+
+  let removed = false;
+  const cleanup = () => {
+    if (removed) return;
+    removed = true;
+    window.setTimeout(() => iframe.remove(), 1000);
+  };
+  win.addEventListener("afterprint", cleanup, { once: true });
+  // Safety net in case afterprint never arrives (some mobile browsers).
+  window.setTimeout(cleanup, 120000);
+
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  return true;
+}
+
+// Serialize the freshly rendered print root and send it straight to the browser
+// print dialog — the one-click path shared by every PDF export. Returns false
+// when the root isn't ready yet.
+function printPreparedDocument() {
+  const html = standalonePrintDocumentHtml();
+  if (!html) {
+    setStatus("Could not prepare the PDF export.", "error");
+    return false;
+  }
+  return printViaHiddenIframe(html);
+}
+
+// Reveal every {{cloze}} in the print root so the exported PDF shows the answers
+// filled in rather than as blank redaction bars. Run before measuring rows so
+// the revealed text is accounted for in the page layout.
+function revealPrintRootClozes() {
+  el.printRoot.querySelectorAll(".cloze").forEach((node) => node.classList.add("is-revealed"));
+}
+
 async function exportCardsPdf(sourceTitle, cards, options = {}) {
   const title = options.title || "All Cards";
   const statusById = options.statusById || {};
@@ -9645,24 +9726,23 @@ async function exportCardsPdf(sourceTitle, cards, options = {}) {
     } finally {
       configureMermaid(currentThemeId());
     }
+    revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();
 
     adjustCornellRows(el.printRoot);
     await afterPaint();
     installPdfPrintStyle();
-    el.printRoot.classList.remove("is-preparing");
-    el.printRoot.classList.add("is-preview");
-    el.printRoot.setAttribute("aria-hidden", "false");
-    printPreviewOpen = true;
-    lockPageScroll();
     markOversizePrintRows();
-    setStatus(`${sourceTitle} Cornell PDF preview is ready. Use Download PDF.`);
+    const opened = printPreparedDocument();
+    setStatus(opened
+      ? `Opening ${sourceTitle} Cornell PDF — choose Save as PDF in the dialog.`
+      : "Could not prepare the PDF export.", opened ? undefined : "error");
   } catch (error) {
     console.error("PDF export failed", error);
-    closePrintPreview();
     setStatus("Could not prepare the PDF export.", "error");
   } finally {
+    closePrintPreview();
     el.exportBtn.disabled = false;
   }
 }
@@ -9692,24 +9772,23 @@ async function exportPdf(scope = "all") {
     } finally {
       configureMermaid(currentThemeId());
     }
+    revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();
 
     adjustCornellRows(el.printRoot);
     await afterPaint();
     installPdfPrintStyle();
-    el.printRoot.classList.remove("is-preparing");
-    el.printRoot.classList.add("is-preview");
-    el.printRoot.setAttribute("aria-hidden", "false");
-    printPreviewOpen = true;
-    lockPageScroll();
     markOversizePrintRows();
-    setStatus(`${title} Cornell PDF preview is ready. Use Download PDF.`);
+    const opened = printPreparedDocument();
+    setStatus(opened
+      ? `Opening ${title} Cornell PDF — choose Save as PDF in the dialog.`
+      : "Could not prepare the PDF export.", opened ? undefined : "error");
   } catch (error) {
     console.error("PDF export failed", error);
-    closePrintPreview();
     setStatus("Could not prepare the PDF export.", "error");
   } finally {
+    closePrintPreview();
     el.exportBtn.disabled = false;
   }
 }
@@ -9761,21 +9840,20 @@ async function exportNotesPdf() {
     } finally {
       configureMermaid(currentThemeId());
     }
+    revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();
 
     installPdfPrintStyle();
-    el.printRoot.classList.remove("is-preparing");
-    el.printRoot.classList.add("is-preview");
-    el.printRoot.setAttribute("aria-hidden", "false");
-    printPreviewOpen = true;
-    lockPageScroll();
-    setStatus("Notes PDF preview is ready. Use Download PDF.");
+    const opened = printPreparedDocument();
+    setStatus(opened
+      ? "Opening notes PDF — choose Save as PDF in the dialog."
+      : "Could not prepare the notes PDF export.", opened ? undefined : "error");
   } catch (error) {
     console.error("Notes PDF export failed", error);
-    closePrintPreview();
     setStatus("Could not prepare the notes PDF export.", "error");
   } finally {
+    closePrintPreview();
     if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
   }
 }

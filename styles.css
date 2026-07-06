@@ -1750,14 +1750,13 @@ button:disabled {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
   box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 75%, transparent);
 }
-/* Revealed contents — a distinct italic serif in the accent colour, with NO
-   background box and NO underline, so it reads as revealed answer text and is
-   never mistaken for a highlight. */
+/* Revealed contents — bold in the accent colour, keeping the surrounding font
+   (no italics, no serif switch), with NO background box and NO underline, so it
+   reads as revealed answer text and is never mistaken for a highlight. */
 .cloze.is-revealed {
   color: var(--accent-strong);
-  font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
-  font-style: italic;
-  font-weight: 600;
+  font-style: normal;
+  font-weight: 700;
   background: transparent;
   box-shadow: none;
   padding: 0 0.1em;
@@ -5273,13 +5272,13 @@ textarea {
     width: 45mm !important;
     min-width: 45mm !important;
     border-right: 2px solid var(--print-line) !important;
-    padding: 3mm 4mm;
+    padding: 5mm;
   }
 
   .cornell-print-row .cornell-answer-cell {
     flex: 1 1 0 !important;
     min-width: 0 !important;
-    padding: 3mm 4mm;
+    padding: 5mm 6mm;
   }
 
   .cornell-print-row .rendered {
