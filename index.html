@@ -152,13 +152,12 @@
                     <span class="card-status-badge" id="questionStatusBadge" data-status="">Uncategorized</span>
                   </div>
                   <div class="edit-toolbar" id="questionEditToolbar" hidden></div>
-                  <div>
-                    <button class="edit-card-btn make-cloze-btn" id="clozeQuestionBtn" type="button" title="Make a cloze — select text in the question, then tap to hide it as a fill-in-the-blank" aria-label="Make a cloze from the selected question text">[&hellip;]</button>
+                  <div class="render-toolbar" id="questionRenderToolbar" data-render-target="question" aria-label="Format the selected question text"></div>
+                  <div class="face-header-actions">
                     <button class="edit-card-btn" id="deleteCardBtn" type="button" title="Delete card" aria-label="Delete card" style="color: #ff4a4a;">&#128465;</button>
                     <button class="edit-card-btn edit-toggle-pill" id="editQuestionBtn" type="button" title="Edit question" aria-label="Edit question"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
                   </div>
                 </div>
-                <div class="render-toolbar" id="questionRenderToolbar" data-render-target="question" aria-label="Format the selected question text"></div>
                 <div class="rendered" id="questionView"></div>
                 <textarea class="edit-textarea" id="questionEdit" hidden spellcheck="false"></textarea>
               </div>
@@ -169,10 +168,11 @@
                     <span class="card-status-badge" id="answerStatusBadge" data-status="">Uncategorized</span>
                   </div>
                   <div class="edit-toolbar" id="answerEditToolbar" hidden></div>
-                  <button class="edit-card-btn make-cloze-btn" id="clozeAnswerBtn" type="button" title="Make a cloze — select text in the answer, then tap to hide it as a fill-in-the-blank" aria-label="Make a cloze from the selected answer text">[&hellip;]</button>
-                  <button class="edit-card-btn edit-toggle-pill" id="editAnswerBtn" type="button" title="Edit answer" aria-label="Edit answer"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
+                  <div class="render-toolbar" id="answerRenderToolbar" data-render-target="answer" aria-label="Format the selected answer text"></div>
+                  <div class="face-header-actions">
+                    <button class="edit-card-btn edit-toggle-pill" id="editAnswerBtn" type="button" title="Edit answer" aria-label="Edit answer"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
+                  </div>
                 </div>
-                <div class="render-toolbar" id="answerRenderToolbar" data-render-target="answer" aria-label="Format the selected answer text"></div>
                 <div class="rendered" id="answerView"></div>
                 <textarea class="edit-textarea" id="answerEdit" hidden spellcheck="false"></textarea>
               </div>
@@ -186,12 +186,11 @@
                 <span class="face-label">Study Notes</span>
               </div>
               <div class="edit-toolbar" id="notesEditToolbar" hidden></div>
+              <div class="render-toolbar" id="notesRenderToolbar" data-render-target="notes" aria-label="Format the selected notes text"></div>
               <button class="edit-card-btn cloze-toggle-icon" id="clozeToggleNotesBtn" type="button" aria-pressed="false" title="Reveal all fill-in-the-blank clozes" aria-label="Reveal or hide all clozes in these notes"><span class="cloze-toggle-glyph">&#128064;</span></button>
-              <button class="edit-card-btn make-cloze-btn" id="makeClozeFromNotesBtn" type="button" title="Make a cloze — select text in the notes, then tap to hide it as a fill-in-the-blank" aria-label="Make a cloze from the selected notes text">[&hellip;]</button>
               <button class="edit-card-btn" id="makeCardFromNotesBtn" type="button" title="Make a flashcard from the selected notes text" aria-label="Make a flashcard from the selected notes text">&#10133;</button>
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
             </div>
-            <div class="render-toolbar" id="notesRenderToolbar" data-render-target="notes" aria-label="Format the selected notes text"></div>
             <div class="rendered notes-rendered" id="notesView"></div>
             <textarea class="edit-textarea notes-edit" id="notesEdit" hidden spellcheck="false" placeholder="Write your notes here…"></textarea>
             <button class="notes-make-card-btn" id="makeCardFromSelectionBtn" type="button" hidden>&#43; Make card</button>

@@ -1321,9 +1321,6 @@ const el = {
   resetBtn: document.querySelector("#resetBtn"),
   clozeToggleBtn: document.querySelector("#clozeToggleBtn"),
   clozeToggleNotesBtn: document.querySelector("#clozeToggleNotesBtn"),
-  clozeQuestionBtn: document.querySelector("#clozeQuestionBtn"),
-  clozeAnswerBtn: document.querySelector("#clozeAnswerBtn"),
-  makeClozeFromNotesBtn: document.querySelector("#makeClozeFromNotesBtn"),
   questionRenderToolbar: document.querySelector("#questionRenderToolbar"),
   answerRenderToolbar: document.querySelector("#answerRenderToolbar"),
   notesRenderToolbar: document.querySelector("#notesRenderToolbar"),
@@ -5754,24 +5751,9 @@ function renderTargetConfig(target) {
   };
 }
 
-// pointerdown + preventDefault keeps the text selection alive through the tap
-// (a plain click can collapse it before the handler reads it) — same trick the
-// floating "+ Make card" pill uses.
-function wireClozeButton(button, target) {
-  button?.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const config = renderTargetConfig(target);
-    if (config.isEditing()) {
-      setStatus(`Switch the ${config.label} to preview to cloze a selection there.`, "error");
-      return;
-    }
-    makeClozeFromSelection(config);
-  });
-}
-wireClozeButton(el.clozeQuestionBtn, "question");
-wireClozeButton(el.clozeAnswerBtn, "answer");
-wireClozeButton(el.makeClozeFromNotesBtn, "notes");
+// The standalone per-face "[…] make cloze" buttons were folded into the inline
+// render toolbar's cloze control (data-render-action="cloze" → the same
+// makeClozeFromSelection driver), so there's no separate button to wire here.
 
 // ── Rendered-view formatting toolbar ───────────────────────────────────────
 // A persistent row (bold/italic/underline/strike/code, a text-colour and a

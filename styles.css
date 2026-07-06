@@ -6038,19 +6038,26 @@ textarea {
 }
 
 /* ── Rendered-view formatting toolbar ─────────────────────────────────────
-   A persistent row above each rendered card face / notes preview that formats
-   the current selection in place. Auto-hidden while that surface is in raw-edit
-   mode (its edit textarea is visible). */
+   Formats the current selection in place (no raw-edit mode). It lives inline
+   inside the card/notes header row (see .face-header / .notes-head), so it's a
+   bare button strip — no panel background, border, or vertical margin of its
+   own. It shrinks and scrolls horizontally when a very narrow screen can't fit
+   every control, keeping the whole header on a single row. Auto-hidden while
+   that surface is in raw-edit mode (its edit textarea is visible). */
 .render-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 3px;
-  margin: 0 0 8px;
-  padding: 3px 5px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.render-toolbar::-webkit-scrollbar {
+  display: none;
 }
 .card-face:has(> .edit-textarea:not([hidden])) .render-toolbar,
 .notes-stage:has(> .edit-textarea:not([hidden])) .render-toolbar {
@@ -6060,6 +6067,7 @@ textarea {
   min-height: 26px;
   height: 26px;
   min-width: 26px;
+  flex: 0 0 auto;
   padding: 0 7px;
   display: inline-flex;
   align-items: center;
@@ -6167,6 +6175,73 @@ textarea {
   color: var(--accent-strong);
 }
 
+/* ── Merge the formatting strip into the card / notes header row ───────────
+   The render-toolbar sits between the face label (left) and the icon actions
+   (right); flex-grow lets it fill the middle and push the actions to the edge,
+   while its own overflow-x keeps everything on one line on narrow screens. */
+.face-header,
+.notes-head {
+  flex-wrap: nowrap;
+}
+.face-header > .face-label-row,
+.notes-head > .face-label-row {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+.face-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+/* The three notes action icons (reveal-all, make-card, edit) keep their size
+   and stay clustered at the right end of the row. */
+.notes-head > .edit-card-btn {
+  flex: 0 0 auto;
+}
+/* Grow no longer needed on the make-card button — the render strip claims the
+   free space, so drop the old auto-margin that would fight it. */
+.notes-head #makeCardFromNotesBtn {
+  margin-left: 0;
+}
+
+/* Keep the rendered-view toolbar on a single row on narrow screens by tightening
+   spacing and shrinking the split-control swatch/caret so all controls fit. */
+@media (max-width: 560px) {
+  .render-toolbar {
+    gap: 2px;
+  }
+  .render-btn {
+    min-width: 22px;
+    padding: 0 5px;
+    font-size: 0.8rem;
+  }
+  .render-btn code {
+    font-size: 0.74rem;
+  }
+  .render-split-main {
+    padding-right: 3px;
+  }
+  .render-split-side {
+    padding: 0 3px;
+    gap: 1px;
+  }
+  .render-swatch {
+    width: 10px;
+    height: 10px;
+  }
+  .render-caret {
+    font-size: 0.55rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .render-btn {
+    min-width: 20px;
+    padding: 0 3px;
+  }
+}
+
 .edit-toolbar button.toolbar-quick-note.quick-note-saved {
   background-color: color-mix(in srgb, var(--known) 35%, var(--panel)) !important;
 }
@@ -6272,13 +6347,19 @@ textarea {
 
 @media (max-width: 600px) {
   .face-header {
-    flex-wrap: wrap;
     gap: 8px;
   }
-  .face-header .face-label-row {
+  /* Only fan out onto multiple rows while editing (the 6-per-row edit-toolbar
+     grid below needs its own line). In view mode the header stays a single
+     nowrap row with the inline formatting strip. */
+  .face-header:has(> .edit-toolbar:not([hidden])),
+  .notes-head:has(> .edit-toolbar:not([hidden])) {
+    flex-wrap: wrap;
+  }
+  .face-header:has(> .edit-toolbar:not([hidden])) .face-label-row {
     order: 1;
   }
-  .face-header > div:not(.face-label-row):not(.edit-toolbar) {
+  .face-header:has(> .edit-toolbar:not([hidden])) > div:not(.face-label-row):not(.edit-toolbar) {
     order: 2;
   }
   /* Lay the toolbar out as centered rows on mobile. A fixed 1/6 flex-basis keeps
@@ -7777,10 +7858,14 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 8px;
+}
+/* Only wrap while editing, so the raw-edit toolbar can drop to its own line. */
+.notes-head:has(> .edit-toolbar:not([hidden])) {
+  flex-wrap: wrap;
 }
 
 .notes-head .edit-toolbar,
