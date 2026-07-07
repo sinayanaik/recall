@@ -5278,6 +5278,7 @@ function resetNotesEditingUI() {
   el.notesEdit.hidden = true;
   el.notesView.hidden = false;
   el.notesEditToolbar.hidden = true;
+  if (el.notesRenderToolbar) el.notesRenderToolbar.hidden = false;
   el.editNotesBtn.classList.remove("is-editing");
   el.editNotesBtn.title = "Edit notes";
   hideNotesSelectionButton();
@@ -5298,6 +5299,7 @@ function enterNotesEditing() {
   el.notesView.hidden = true;
   el.notesEdit.hidden = false;
   el.notesEditToolbar.hidden = false;
+  if (el.notesRenderToolbar) el.notesRenderToolbar.hidden = true;
   el.editNotesBtn.classList.add("is-editing");
   el.editNotesBtn.title = "Back to preview";
   if (el.notesTocDrawer?.classList.contains("is-open")) closeNotesToc();
@@ -7627,18 +7629,42 @@ async function reconcileAllDecks({ explicit = false } = {}) {
   updateDeckEmptyStatus();
   if (explicit) setStatus("Syncing all decks…");
 
-  // Flush any pending debounced autosave first. Without this, an edit made in
-  // the last ~400ms lives only in memory (deckAutosaveTimer hasn't fired), so
-  // the library copy's `updatedAt` is stale — a cloud copy could then read as
-  // "newer" and the pull below would overwrite and reload the deck, silently
-  // discarding that in-flight edit. Flushing writes it out and bumps the
-  // timestamp so local edits correctly win the last-write-wins comparison.
-  if (deckAutosaveTimer) {
-    clearTimeout(deckAutosaveTimer);
-    deckAutosaveTimer = null;
+  // Commit any open card editor into state first. Card edit text lives only in
+  // the textarea (there's no live input listener, unlike the notes editor) until
+  // a blur/commit event — and a background reconcile (the auto-sync when
+  // connectivity returns) fires with no such event. Left uncommitted, the edit
+  // isn't in state, so the flush below can't save it: if the cloud copy then
+  // reads as "newer", the pull would reload the active deck and silently drop
+  // the in-progress edit. Committing lands it in state so the flush persists it
+  // and it wins the last-write-wins comparison. (Mirrors flushWorkingDeck, which
+  // already does this on pagehide/visibilitychange for the same reason.)
+  let committedActiveEdit = false;
+  try {
+    committedActiveEdit = commitEditIfActive();
+  } catch (error) {
+    console.warn("Could not commit active edit before sync", error);
+  }
+
+  // Flush any pending debounced autosave. Without this, an edit made in the last
+  // ~400ms lives only in memory (deckAutosaveTimer hasn't fired), so the library
+  // copy's `updatedAt` is stale — a cloud copy could then read as "newer" and
+  // the pull below would overwrite and reload the deck, silently discarding that
+  // in-flight edit. Flushing writes it out and bumps the timestamp so local
+  // edits correctly win the last-write-wins comparison. Also runs when we just
+  // committed an editor edit above, which schedules no timer of its own.
+  if (deckAutosaveTimer || committedActiveEdit) {
+    if (deckAutosaveTimer) {
+      clearTimeout(deckAutosaveTimer);
+      deckAutosaveTimer = null;
+    }
     persistWorkingDeck();
     saveDeckToLibrary({ silent: true });
   }
+  // commitEditIfActive updates state but doesn't re-render the card (it's
+  // display-agnostic), so re-render the current card to show the committed text
+  // rather than the stale pre-edit render left behind when the editor closed.
+  // Local now wins last-write-wins, so the active deck won't be pulled/reloaded.
+  if (committedActiveEdit) showCard();
 
   // A brand-new deck that's only in memory (never auto-saved) still belongs in
   // the mirror — add it so it gets pushed. Decks already in the library keep
@@ -11410,12 +11436,14 @@ updateOnlineIndicator();
 
 function commitEditIfActive() {
   const sides = [
-    { side: "question", view: el.questionView, edit: el.questionEdit, toolbar: el.questionEditToolbar, btn: el.editQuestionBtn },
-    { side: "answer",   view: el.answerView,   edit: el.answerEdit,   toolbar: el.answerEditToolbar,   btn: el.editAnswerBtn },
+    { side: "question", view: el.questionView, edit: el.questionEdit, toolbar: el.questionEditToolbar, renderToolbar: el.questionRenderToolbar, btn: el.editQuestionBtn },
+    { side: "answer",   view: el.answerView,   edit: el.answerEdit,   toolbar: el.answerEditToolbar,   renderToolbar: el.answerRenderToolbar,   btn: el.editAnswerBtn },
   ];
   const card = state.cards[state.current];
-  for (const { side, view, edit, toolbar, btn } of sides) {
+  let committed = false;
+  for (const { side, view, edit, toolbar, renderToolbar, btn } of sides) {
     if (view.hidden === false) continue; // not in edit mode for this side
+    committed = true;
     if (card) {
       const newValue = edit.value.trim();
       if (side === "question") card.question = newValue;
@@ -11430,11 +11458,13 @@ function commitEditIfActive() {
     edit.hidden = true;
     edit.value = "";
     if (toolbar) toolbar.hidden = true;
+    if (renderToolbar) renderToolbar.hidden = false;
     if (btn) {
       btn.classList.remove('is-editing');
       btn.title = side === "question" ? "Edit question" : "Edit answer";
     }
   }
+  return committed;
 }
 
 function toggleEditMode(side) {
@@ -11443,16 +11473,18 @@ function toggleEditMode(side) {
   const view = isQuestion ? el.questionView : el.answerView;
   const edit = isQuestion ? el.questionEdit : el.answerEdit;
   const toolbar = isQuestion ? el.questionEditToolbar : el.answerEditToolbar;
+  const renderToolbar = isQuestion ? el.questionRenderToolbar : el.answerRenderToolbar;
   const currentCard = state.cards[state.current];
-  
+
   if (!currentCard) return;
 
   const isEditing = view.hidden;
-  
+
   if (!isEditing) {
     view.hidden = true;
     edit.hidden = false;
     if (toolbar) toolbar.hidden = false;
+    if (renderToolbar) renderToolbar.hidden = true;
     edit.value = isQuestion ? currentCard.question : currentCard.answer;
     if (btn) {
       btn.classList.add('is-editing');
@@ -11476,6 +11508,7 @@ function toggleEditMode(side) {
     view.hidden = false;
     edit.hidden = true;
     if (toolbar) toolbar.hidden = true;
+    if (renderToolbar) renderToolbar.hidden = false;
     if (btn) {
       btn.classList.remove('is-editing');
       btn.title = isQuestion ? 'Edit question' : 'Edit answer';
