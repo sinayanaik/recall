@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260706-4">
+    <link rel="stylesheet" href="styles.css?v=20260711-6">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -390,14 +390,45 @@
           <button class="icon-button" id="closeMyDecksBtn" type="button" aria-label="Close my decks panel">&#215;</button>
         </div>
         <div class="web-decks-tools">
-          <div class="web-decks-tools-left">
-            <label>
-              <span>Category</span>
+          <div class="web-decks-tools-row web-decks-tools-primary">
+            <div class="my-decks-viewswitch" id="myDecksViewSwitch" role="group" aria-label="Library view">
+              <button type="button" data-mydecks-view="grid" aria-pressed="false" title="Grid — every deck at once">&#9638; Grid</button>
+              <button type="button" data-mydecks-view="folder" aria-pressed="true" title="Folder — browse one level at a time">&#128193; Folder</button>
+              <button type="button" data-mydecks-view="tree" aria-pressed="false" title="Tree — the full nested hierarchy">&#127793; Tree</button>
+            </div>
+            <div class="web-decks-tools-primary-right">
+              <div class="my-decks-display-toggle" id="myDecksDisplayToggle" role="group" aria-label="Deck display">
+                <button type="button" data-mydecks-display="tiles" aria-pressed="true" title="Show decks as tiles">&#9638; Tiles</button>
+                <button type="button" data-mydecks-display="list" aria-pressed="false" title="Show decks as a list">&#9776; List</button>
+              </div>
+              <button class="web-decks-refresh" id="myDecksTreeToggleAll" type="button" title="Expand or collapse all folders" hidden>&#8645; Expand all</button>
+              <button class="web-decks-refresh web-decks-primary-btn" id="myDecksNewDeckBtn" type="button" title="Create a new deck in the current folder">&#43; New deck</button>
+              <button class="web-decks-refresh" id="myDecksNewFolderBtn" type="button" title="Create a new folder">&#128193; New folder</button>
+              <button class="web-decks-refresh" id="myDecksRefreshBtn" type="button">&#8635; Refresh</button>
+              <div class="web-decks-global-export">
+                <button id="myDecksExportAllBtn" type="button" aria-haspopup="true" aria-expanded="false">Export All</button>
+                <div class="web-decks-global-export-menu" id="myDecksExportAllMenu" hidden>
+                  <button type="button" data-export-all="pdf">Cornell PDF</button>
+                  <button type="button" data-export-all="html">Standalone HTML</button>
+                  <button type="button" data-export-all="doc">Word (.docx)</button>
+                  <button type="button" data-export-all="markdown">Markdown</button>
+                  <button type="button" data-export-all="json">JSON</button>
+                  <button type="button" data-export-all="sql">SQL</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="web-decks-tools-row web-decks-tools-secondary">
+            <nav class="my-decks-breadcrumb" id="myDecksBreadcrumb" aria-label="Folder path" hidden></nav>
+            <div class="my-decks-search">
+              <input type="search" id="myDecksSearch" placeholder="&#128269; Search decks…" aria-label="Search decks by title" autocomplete="off">
+            </div>
+            <label class="my-decks-filter">
+              <span>Folder</span>
               <select id="myDecksCategoryFilter">
-                <option value="">All categories</option>
+                <option value="">All folders</option>
               </select>
             </label>
-            <button class="web-decks-refresh" id="myDecksRefreshBtn" type="button">&#8635; Refresh</button>
             <div class="web-decks-bulk-actions" id="myDecksBulkActions" hidden>
               <span class="bulk-title">Selected (<strong id="myDecksSelectedCount">0</strong>)</span>
               <div class="bulk-buttons">
@@ -418,44 +449,36 @@
               </div>
             </div>
           </div>
-          <div class="web-decks-global-export">
-            <button id="myDecksExportAllBtn" type="button" aria-haspopup="true" aria-expanded="false">Export All</button>
-            <div class="web-decks-global-export-menu" id="myDecksExportAllMenu" hidden>
-              <button type="button" data-export-all="pdf">Cornell PDF</button>
-              <button type="button" data-export-all="html">Standalone HTML</button>
-              <button type="button" data-export-all="doc">Word (.docx)</button>
-              <button type="button" data-export-all="markdown">Markdown</button>
-              <button type="button" data-export-all="json">JSON</button>
-              <button type="button" data-export-all="sql">SQL</button>
-            </div>
-          </div>
         </div>
-        <div class="web-decks-table-wrap">
-          <table class="web-decks-table my-decks-table">
-            <colgroup>
-              <col style="width:4%">
-              <col style="width:21%">
-              <col style="width:13%">
-              <col style="width:7%">
-              <col style="width:14%">
-              <col style="width:13%">
-              <col style="width:28%">
-            </colgroup>
-            <thead>
-              <tr>
-                <th style="text-align: center;"><input type="checkbox" id="myDecksSelectAllCheckbox" aria-label="Select all decks"></th>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Cards</th>
-                <th>Saved</th>
-                <th>Sync</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="myDecksListTable">
-              <tr><td colspan="7" class="web-decks-empty">No decks saved on this device yet.</td></tr>
-            </tbody>
-          </table>
+        <div class="web-decks-body" id="myDecksBody">
+          <div class="web-decks-table-wrap" id="myDecksTableWrap">
+            <table class="web-decks-table my-decks-table">
+              <colgroup>
+                <col style="width:4%">
+                <col style="width:30%">
+                <col style="width:15%">
+                <col style="width:7%">
+                <col style="width:14%">
+                <col style="width:12%">
+                <col style="width:18%">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style="text-align: center;"><input type="checkbox" id="myDecksSelectAllCheckbox" aria-label="Select all decks"></th>
+                  <th>Title</th>
+                  <th>Category</th>
+                  <th>Cards</th>
+                  <th>Saved</th>
+                  <th>Sync</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="myDecksListTable">
+                <tr><td colspan="7" class="web-decks-empty">No decks saved on this device yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="my-decks-grid" id="myDecksGrid" hidden></div>
         </div>
       </div>
     </section>
@@ -809,6 +832,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260706-6"></script>
+    <script src="app.js?v=20260711-6"></script>
   </body>
 </html>

@@ -2603,11 +2603,34 @@ svg.nomnoml-light-svg [fill="none"] {
 
 .web-decks-tools {
   display: flex;
-  align-items: end;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   gap: 10px;
   margin-bottom: 12px;
 }
+
+.web-decks-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.web-decks-tools-primary {
+  justify-content: space-between;
+}
+
+.web-decks-tools-primary-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.web-decks-tools-secondary {
+  align-items: center;
+}
+.web-decks-tools-secondary .web-decks-bulk-actions { margin-left: auto; }
 
 .web-decks-tools label {
   display: grid;
@@ -2716,6 +2739,9 @@ svg.nomnoml-light-svg [fill="none"] {
    Category/Cards far too wide. All columns (including Actions, which
    .web-decks-table th/td:last-child would otherwise right-align) read as
    a centered grid rather than a left/right-ragged table. */
+/* Column widths come from the 7-column <colgroup> in index.html (checkbox,
+   Title, Category, Cards, Saved, Sync, Actions) — the single source of truth, so
+   there are no per-cell width overrides here to drift out of sync with it. */
 .my-decks-table th,
 .my-decks-table td,
 .my-decks-table th:last-child,
@@ -2723,42 +2749,36 @@ svg.nomnoml-light-svg [fill="none"] {
   text-align: center;
 }
 
-.my-decks-table th:nth-child(1),
-.my-decks-table td:nth-child(1) {
-  width: 24%;
+/* Compact-but-informative list rows: tighter padding + smaller controls so the
+   full row (through Delete) fits without a horizontal scrollbar. */
+.my-decks-table th,
+.my-decks-table td {
+  padding: 6px 7px;
+  font-size: 0.84rem;
 }
-
-.my-decks-table th:nth-child(2),
-.my-decks-table td:nth-child(2) {
-  width: 12%;
-}
-
-.my-decks-table th:nth-child(3),
-.my-decks-table td:nth-child(3) {
-  width: 8%;
-}
-
-.my-decks-table th:nth-child(4),
-.my-decks-table td:nth-child(4) {
-  /* Saved now shows a time alongside the date, so it needs more room. */
-  width: 16%;
-}
-
-.my-decks-table th:nth-child(5),
-.my-decks-table td:nth-child(5) {
-  /* Sync status pill. */
-  width: 14%;
-}
-
-.my-decks-table th:nth-child(6),
-.my-decks-table td:nth-child(6) {
-  /* Actions holds 3 inline buttons (Load/Rename/Delete) — give it enough
-     room that they never wrap onto separate lines. */
-  width: 26%;
-}
-
+.my-decks-table td[data-label="Title"] { font-weight: 700; }
+.my-decks-table td[data-label="Saved"] { font-size: 0.76rem; color: var(--muted); }
 .my-decks-table .my-deck-actions {
   justify-content: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+}
+/* Icon-only action buttons: square, self-explanatory glyphs with tooltips. */
+.my-deck-actions .icon-action {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.my-decks-table .my-deck-sync { font-size: 0.72rem; white-space: nowrap; }
+.my-decks-table .web-deck-category-editor select,
+.my-decks-table .web-deck-category-editor {
+  min-height: 26px;
+  font-size: 0.76rem;
 }
 
 /* Sync-status column — a compact, color-coded pill that predicts what the next
@@ -2787,6 +2807,340 @@ svg.nomnoml-light-svg [fill="none"] {
 .web-decks-empty {
   color: var(--muted);
   text-align: center;
+}
+
+/* ── Folder tree (My Decks) ─────────────────────────────────────────────────
+   Deck rows nest under collapsible folder header rows. Depth is carried on
+   each row as the --folder-depth custom property and turned into indentation
+   here, so the same markup works for any nesting level. */
+.deck-folder-row > td {
+  text-align: left !important;
+  padding: 6px 10px !important;
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.deck-folder-row.drag-over > td {
+  background: color-mix(in srgb, var(--accent, #6366f1) 22%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--accent, #6366f1) 70%, transparent);
+  outline-offset: -3px;
+}
+.deck-folder-row.dragging { opacity: 0.5; }
+
+.deck-folder-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: calc(var(--folder-depth, 0) * 22px);
+}
+
+.deck-folder-twisty {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.8rem;
+  width: 18px;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.deck-folder-label {
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text, inherit);
+  font-weight: 800;
+  font-size: 0.9rem;
+  padding: 2px 4px;
+}
+.deck-folder-label:hover { text-decoration: underline; }
+.deck-folder-icon { font-size: 0.95rem; }
+.deck-folder-count {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+.deck-folder-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.deck-folder-row:hover .deck-folder-actions,
+.deck-folder-row:focus-within .deck-folder-actions { opacity: 1; }
+.deck-folder-action {
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  background: var(--panel-2, transparent);
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+.deck-folder-action:hover { color: var(--text, inherit); border-color: var(--accent, #6366f1); }
+
+/* The persistent root drop zone at the top of the list. */
+.deck-root-row > td { background: transparent; border-top: none; }
+.deck-root-row .deck-folder-name { font-weight: 800; }
+.deck-root-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-style: italic;
+  margin-left: 4px;
+}
+
+/* Deck rows are draggable and indented under their folder. */
+.my-decks-table tr.my-deck-row { cursor: grab; }
+.my-decks-table tr.my-deck-row.dragging { opacity: 0.5; cursor: grabbing; }
+.my-decks-table tr.my-deck-row td[data-label="Title"] {
+  text-align: left;
+  padding-left: calc(var(--folder-depth, 0) * 22px + 14px);
+}
+/* Folder-view nav rows enter the folder on click and don't indent. */
+.deck-folder-nav .deck-folder-label { cursor: pointer; }
+.deck-folder-nav { cursor: grab; }
+
+/* ── My Decks: view switcher / display toggle / search / breadcrumb ──────────*/
+.my-decks-viewswitch,
+.my-decks-display-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  flex: 0 0 auto;
+}
+.my-decks-viewswitch button,
+.my-decks-display-toggle button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--button-font-size);
+  font-weight: 800;
+  padding: 6px 12px;
+  border-radius: 7px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.my-decks-viewswitch button[aria-pressed="true"],
+.my-decks-display-toggle button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.my-decks-viewswitch button:hover:not([aria-pressed="true"]),
+.my-decks-display-toggle button:hover:not([aria-pressed="true"]) { color: var(--text); }
+
+.web-decks-primary-btn {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel)) !important;
+  color: var(--accent) !important;
+}
+
+.my-decks-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+.my-decks-search input {
+  width: 100%;
+  min-height: var(--input-height);
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+  color: var(--text);
+  padding: var(--input-padding);
+  font: inherit;
+  font-size: var(--button-font-size);
+}
+.my-decks-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.my-decks-filter {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  min-width: 0 !important;
+}
+.my-decks-filter span { flex: 0 0 auto; }
+.my-decks-filter select { min-width: 140px; }
+
+.my-decks-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  flex: 1 1 100%;
+  overflow-x: auto;
+}
+.breadcrumb-crumb {
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 800;
+  font-size: 0.86rem;
+  padding: 4px 8px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+.breadcrumb-crumb:hover { color: var(--text); background: var(--panel-2); }
+.breadcrumb-crumb[aria-current="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.breadcrumb-crumb.drag-over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.breadcrumb-sep { color: var(--muted); font-size: 0.8rem; }
+
+/* ── My Decks: body host (table vs grid) ────────────────────────────────────*/
+.web-decks-body { min-height: 0; display: flex; flex-direction: column; }
+
+/* ── My Decks: deck + folder tiles ──────────────────────────────────────────*/
+.my-decks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 2px;
+  align-content: start;
+}
+
+.deck-tile,
+.folder-tile {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+.deck-tile { cursor: grab; }
+.deck-tile:hover,
+.folder-tile:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 3px 12px color-mix(in srgb, var(--accent) 12%, transparent); }
+.deck-tile:focus-visible,
+.folder-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.deck-tile.dragging,
+.folder-tile.dragging { opacity: 0.5; cursor: grabbing; }
+.deck-tile.drag-over,
+.folder-tile.drag-over {
+  border-color: var(--accent);
+  outline: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: -3px;
+}
+.deck-tile.is-current-local-deck { border-color: var(--accent); }
+.deck-tile.is-cloud-only-deck { border-style: dashed; }
+.deck-tile:has(.my-deck-row-checkbox:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--card));
+}
+
+.deck-tile-select { position: absolute; top: 8px; right: 8px; margin: 0; cursor: pointer; }
+.deck-tile-title {
+  font-weight: 800;
+  font-size: 0.95rem;
+  line-height: 1.25;
+  padding-right: 22px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.deck-tile-chip {
+  align-self: flex-start;
+  max-width: 100%;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deck-tile-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+.deck-tile-count { color: var(--muted); font-size: 0.78rem; font-weight: 700; }
+.deck-tile-sync { font-size: 0.72rem; font-weight: 800; white-space: nowrap; }
+
+.deck-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.deck-tile-actions .my-deck-export { position: relative; }
+.deck-tile-overflow { position: relative; margin-left: auto; }
+.deck-tile-overflow-btn {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-radius: 7px;
+  cursor: pointer;
+  font-weight: 900;
+  line-height: 1;
+  padding: 5px 9px;
+}
+.deck-tile-overflow-btn:hover { color: var(--text); border-color: var(--accent); }
+.deck-tile-overflow-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  min-width: 150px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.deck-tile-overflow-menu button {
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.84rem;
+  padding: 7px 10px;
+  border-radius: 6px;
+}
+.deck-tile-overflow-menu button:hover { background: var(--panel-2); }
+
+.folder-tile { cursor: pointer; }
+.folder-tile-main { display: flex; align-items: center; gap: 8px; }
+.folder-tile-icon { font-size: 1.05rem; }
+.folder-tile-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-tile-count { color: var(--muted); font-size: 0.76rem; font-weight: 700; margin-left: auto; }
+
+.my-decks-empty-card {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  text-align: center;
+  padding: 32px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
 }
 
 .skeleton-bar {
@@ -5094,6 +5448,17 @@ textarea {
     overflow-wrap: anywhere;
     -webkit-line-clamp: unset;
   }
+
+  /* My Decks redesign: let the toolbar rows wrap and the tile grid go 1–2 wide. */
+  .web-decks-tools-primary { flex-direction: column; align-items: stretch; gap: 8px; }
+  .web-decks-tools-primary-right { justify-content: flex-start; }
+  .my-decks-viewswitch,
+  .my-decks-display-toggle { width: 100%; justify-content: center; }
+  .my-decks-viewswitch button,
+  .my-decks-display-toggle button { flex: 1 1 0; }
+  .my-decks-search { flex: 1 1 100%; order: -1; }
+  .my-decks-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .my-decks-breadcrumb { width: 100%; }
 
   .web-deck-button-row {
     display: grid;
@@ -7702,25 +8067,42 @@ kbd {
     margin-top: 8px;
   }
 
-  .my-decks-table td:nth-child(1) {
+  /* Folder header + root rows stay full-width bars (not stacked cards), and
+     their single cell keeps its own left-aligned indented layout. */
+  .my-decks-table tr.deck-folder-row {
+    display: block;
+    flex-direction: unset;
+    align-items: stretch;
+    padding: 0;
+    border-radius: 8px;
+    background: none;
+  }
+  .my-decks-table tr.deck-folder-row > td { display: block; width: 100%; }
+  .my-decks-table tr.my-deck-row td[data-label="Title"] { padding-left: 0; }
+
+  /* Keyed off data-label (not nth-child) so the layout stays correct regardless
+     of the leading checkbox column. */
+  .my-decks-table td.web-deck-select-cell { display: none; }
+
+  .my-decks-table td[data-label="Title"] {
     font-weight: 800;
     font-size: 0.95rem;
   }
 
-  .my-decks-table td:nth-child(2),
-  .my-decks-table td:nth-child(3),
-  .my-decks-table td:nth-child(4),
-  .my-decks-table td:nth-child(5) {
+  .my-decks-table td[data-label="Category"],
+  .my-decks-table td[data-label="Cards"],
+  .my-decks-table td[data-label="Saved"],
+  .my-decks-table td[data-label="Sync"] {
     display: inline-flex;
     justify-content: center;
     font-size: 0.76rem;
     color: var(--muted);
   }
 
-  .my-decks-table td:nth-child(2)::before,
-  .my-decks-table td:nth-child(3)::before,
-  .my-decks-table td:nth-child(4)::before,
-  .my-decks-table td:nth-child(5)::before {
+  .my-decks-table td[data-label="Category"]::before,
+  .my-decks-table td[data-label="Cards"]::before,
+  .my-decks-table td[data-label="Saved"]::before,
+  .my-decks-table td[data-label="Sync"]::before {
     display: inline;
     content: attr(data-label) ": ";
     flex-shrink: 0;
@@ -7729,7 +8111,7 @@ kbd {
     color: var(--muted);
   }
 
-  .my-decks-table td:nth-child(6) {
+  .my-decks-table td[data-label="Actions"] {
     width: 100%;
     margin-top: 4px;
   }
@@ -7737,10 +8119,18 @@ kbd {
   .my-decks-table .my-deck-actions {
     justify-content: center;
     width: 100%;
+    gap: 10px;
   }
 
-  .my-decks-table .my-deck-actions .bulk-action-btn {
-    flex: 1 1 0;
+  /* Icon actions stay compact + centered in the stacked card (don't stretch). */
+  .my-decks-table .my-deck-actions .icon-action,
+  .my-decks-table .my-deck-actions .web-deck-export-wrap {
+    flex: 0 0 auto;
+  }
+  .my-decks-table .my-deck-actions .icon-action {
+    min-width: 38px;
+    min-height: 34px;
+    font-size: 1.05rem;
   }
 }
 

@@ -52,6 +52,11 @@ const state = {
   deckCategory: "Uncategorized",
   notes: "",
   viewMode: "cards",
+  // My Decks library UI preferences (persisted per device).
+  myDecksView: (() => { try { const v = localStorage.getItem("flashcards_mydecks_view_v1"); return ["grid", "folder", "tree"].includes(v) ? v : "folder"; } catch (_) { return "folder"; } })(),
+  myDecksDisplay: (() => { try { const v = localStorage.getItem("flashcards_mydecks_display_v1"); return ["tiles", "list"].includes(v) ? v : "tiles"; } catch (_) { return "tiles"; } })(),
+  myDecksCwd: (() => { try { return localStorage.getItem("flashcards_mydecks_cwd_v1") || ""; } catch (_) { return ""; } })(),
+  myDecksSearch: "",
   sourceTitle: "",
   importTitleHint: "",
   results: {
@@ -531,15 +536,164 @@ function showAuthenticatedUI() {
 }
 
 
-function normalizeDeckCategory(value) {
+// A deck's `category` is a "/"-delimited folder path (e.g. "Math/Calculus"):
+// each segment is a folder, nesting is arbitrary depth. Legacy flat categories
+// (no "/") are simply single-segment paths, so this stays backward compatible.
+const FOLDER_SEP = "/";
+
+// Splits a category into its trimmed, non-empty folder segments.
+function folderSegments(value) {
   return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim() || defaultDeckCategory;
+    .split(FOLDER_SEP)
+    .map((segment) => segment.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function normalizeDeckCategory(value) {
+  const segments = folderSegments(value);
+  return segments.length ? segments.join(FOLDER_SEP) : defaultDeckCategory;
+}
+
+// True when `path` is `ancestor` itself or nested beneath it.
+function isCategoryUnder(path, ancestor) {
+  const p = normalizeDeckCategory(path);
+  const a = normalizeDeckCategory(ancestor);
+  return p === a || p.startsWith(a + FOLDER_SEP);
+}
+
+// Rewrites a category whose path is `fromPath` (or nested under it) so its
+// `fromPath` prefix becomes `toPath`; returns it unchanged otherwise.
+function rewriteCategoryPrefix(category, fromPath, toPath) {
+  const current = normalizeDeckCategory(category);
+  const from = normalizeDeckCategory(fromPath);
+  if (current === from) return normalizeDeckCategory(toPath);
+  if (current.startsWith(from + FOLDER_SEP)) {
+    return normalizeDeckCategory(toPath + current.slice(from.length));
+  }
+  return current;
 }
 
 function categorySortValue(value) {
   const category = normalizeDeckCategory(value);
   return category === defaultDeckCategory ? "" : category.toLowerCase();
+}
+
+// ── Empty-folder registry ──────────────────────────────────────────────────
+// Folders only exist implicitly, as prefixes of deck categories — so a folder
+// with no decks yet has nowhere to live. This device-local list keeps such
+// freshly-created (or emptied) folders visible until a deck lands in them; once
+// one does, the folder persists everywhere via that deck's synced category.
+const KNOWN_FOLDERS_KEY = "flashcards_folders_v1";
+const COLLAPSED_FOLDERS_KEY = "flashcards_folder_collapsed_v1";
+
+function readKnownFolders() {
+  try {
+    const list = JSON.parse(localStorage.getItem(KNOWN_FOLDERS_KEY) || "[]");
+    return Array.isArray(list) ? list.map(normalizeDeckCategory).filter((p) => p !== defaultDeckCategory) : [];
+  } catch (error) {
+    console.warn("Could not read known folders", error);
+    return [];
+  }
+}
+
+function writeKnownFolders(list) {
+  const unique = Array.from(new Set((list || []).map(normalizeDeckCategory)))
+    .filter((p) => p !== defaultDeckCategory);
+  localStorage.setItem(KNOWN_FOLDERS_KEY, JSON.stringify(unique));
+  return unique;
+}
+
+function addKnownFolder(path) {
+  const normalized = normalizeDeckCategory(path);
+  if (normalized === defaultDeckCategory) return;
+  writeKnownFolders([...readKnownFolders(), normalized]);
+}
+
+function readCollapsedFolders() {
+  try {
+    const list = JSON.parse(localStorage.getItem(COLLAPSED_FOLDERS_KEY) || "[]");
+    return new Set(Array.isArray(list) ? list.map(normalizeDeckCategory) : []);
+  } catch (error) {
+    console.warn("Could not read collapsed folders", error);
+    return new Set();
+  }
+}
+
+function writeCollapsedFolders(set) {
+  localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(Array.from(set)));
+}
+
+// Folders are FOLDED BY DEFAULT: a folder is expanded only if its path is in this
+// set (the inverse of a "collapsed" list), so a fresh library shows everything
+// folded. Supersedes COLLAPSED_FOLDERS_KEY for the tree view.
+const EXPANDED_FOLDERS_KEY = "flashcards_folder_expanded_v1";
+
+function readExpandedFolders() {
+  try {
+    const list = JSON.parse(localStorage.getItem(EXPANDED_FOLDERS_KEY) || "[]");
+    return new Set(Array.isArray(list) ? list.map(normalizeDeckCategory) : []);
+  } catch (error) {
+    console.warn("Could not read expanded folders", error);
+    return new Set();
+  }
+}
+
+function writeExpandedFolders(set) {
+  localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify(Array.from(set)));
+}
+
+function isFolderCollapsed(path) {
+  return !readExpandedFolders().has(normalizeDeckCategory(path));
+}
+
+// ── My Decks view + display preferences (persisted per device) ──────────────
+const MYDECKS_VIEW_KEY = "flashcards_mydecks_view_v1";       // grid | folder | tree
+const MYDECKS_DISPLAY_KEY = "flashcards_mydecks_display_v1"; // tiles | list
+const MYDECKS_CWD_KEY = "flashcards_mydecks_cwd_v1";         // Folder-view path
+
+function setMyDecksView(view) {
+  if (!["grid", "folder", "tree"].includes(view)) return;
+  state.myDecksView = view;
+  try { localStorage.setItem(MYDECKS_VIEW_KEY, view); } catch (_) {}
+}
+
+function setMyDecksDisplay(display) {
+  if (!["tiles", "list"].includes(display)) return;
+  state.myDecksDisplay = display;
+  try { localStorage.setItem(MYDECKS_DISPLAY_KEY, display); } catch (_) {}
+}
+
+function setMyDecksCwd(path) {
+  state.myDecksCwd = normalizeDeckCategory(path) === defaultDeckCategory ? "" : normalizeDeckCategory(path);
+  try { localStorage.setItem(MYDECKS_CWD_KEY, state.myDecksCwd); } catch (_) {}
+}
+
+// Builds a nested folder tree from a set of category paths and the decks that
+// carry them. Each node: { name, path, children:Map<name,node>, decks:[] }.
+// `deckEntries` is an array of { deck, kind } where kind is "local"|"cloud".
+function buildFolderTree(deckEntries = [], extraFolders = []) {
+  const root = { name: "", path: "", children: new Map(), decks: [] };
+  const ensure = (path) => {
+    const segments = folderSegments(path);
+    let node = root;
+    let acc = "";
+    segments.forEach((segment) => {
+      acc = acc ? acc + FOLDER_SEP + segment : segment;
+      if (!node.children.has(segment)) {
+        node.children.set(segment, { name: segment, path: acc, children: new Map(), decks: [] });
+      }
+      node = node.children.get(segment);
+    });
+    return node;
+  };
+  // Uncategorized decks live at the tree root so they aren't buried in a folder.
+  extraFolders.forEach((path) => ensure(path));
+  deckEntries.forEach((entry) => {
+    const category = normalizeDeckCategory(entry.deck.category);
+    const node = category === defaultDeckCategory ? root : ensure(category);
+    node.decks.push(entry);
+  });
+  return root;
 }
 
 function categoriesFromDecks(decks = [], extraCategories = []) {
@@ -1276,12 +1430,22 @@ const el = {
   syncNowBtn: document.querySelector("#syncNowBtn"),
   myDecksPanel: document.querySelector("#myDecksPanel"),
   myDecksListTable: document.querySelector("#myDecksListTable"),
+  myDecksBody: document.querySelector("#myDecksBody"),
+  myDecksTableWrap: document.querySelector("#myDecksTableWrap"),
+  myDecksGrid: document.querySelector("#myDecksGrid"),
+  myDecksViewSwitch: document.querySelector("#myDecksViewSwitch"),
+  myDecksDisplayToggle: document.querySelector("#myDecksDisplayToggle"),
+  myDecksBreadcrumb: document.querySelector("#myDecksBreadcrumb"),
+  myDecksSearch: document.querySelector("#myDecksSearch"),
+  myDecksNewDeckBtn: document.querySelector("#myDecksNewDeckBtn"),
+  myDecksTreeToggleAll: document.querySelector("#myDecksTreeToggleAll"),
   myDecksCategoryFilter: document.querySelector("#myDecksCategoryFilter"),
   myDecksSelectAllCheckbox: document.querySelector("#myDecksSelectAllCheckbox"),
   myDecksBulkActions: document.querySelector("#myDecksBulkActions"),
   myDecksSelectedCount: document.querySelector("#myDecksSelectedCount"),
   closeMyDecksBtn: document.querySelector("#closeMyDecksBtn"),
   myDecksRefreshBtn: document.querySelector("#myDecksRefreshBtn"),
+  myDecksNewFolderBtn: document.querySelector("#myDecksNewFolderBtn"),
   closeImportBtn: document.querySelector("#closeImportBtn"),
   importPanel: document.querySelector("#importPanel"),
   printRoot: document.querySelector("#printRoot"),
@@ -2408,6 +2572,10 @@ function closeImportPanel() {
 function openMyDecksPanel() {
   lockPageScroll();
   el.myDecksPanel.hidden = false;
+  // Reset the transient search each time the panel opens so it never surprises
+  // the user with a stale filter; keep the persisted view/display/cwd.
+  state.myDecksSearch = "";
+  if (el.myDecksSearch) el.myDecksSearch.value = "";
   renderMyDecksList();
 }
 
@@ -2478,7 +2646,8 @@ async function myDeckPayload({ localId = null, deckId = null } = {}) {
 // ── Selection & bulk-action bar ────────────────────────────────────────────
 
 function selectedMyDecks() {
-  return Array.from(el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox:checked") || [])
+  const host = el.myDecksBody || el.myDecksListTable;
+  return Array.from(host?.querySelectorAll(".my-deck-row-checkbox:checked") || [])
     .map((checkbox) => ({
       localId: checkbox.dataset.localId || null,
       deckId: checkbox.dataset.deckId || null
@@ -2486,8 +2655,10 @@ function selectedMyDecks() {
 }
 
 function updateMyDecksBulkBar() {
-  const all = el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox") || [];
-  const selected = el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox:checked") || [];
+  // Query the whole body host, not just the table — tiles live in a sibling grid.
+  const host = el.myDecksBody || el.myDecksListTable;
+  const all = host?.querySelectorAll(".my-deck-row-checkbox") || [];
+  const selected = host?.querySelectorAll(".my-deck-row-checkbox:checked") || [];
   if (el.myDecksSelectedCount) el.myDecksSelectedCount.textContent = String(selected.length);
   if (el.myDecksBulkActions) el.myDecksBulkActions.hidden = selected.length === 0;
   if (el.myDecksSelectAllCheckbox) {
@@ -2496,10 +2667,10 @@ function updateMyDecksBulkBar() {
   }
 }
 
-function createDeckSelectCell({ localId = null, deckId = null, title = "" } = {}) {
-  const td = document.createElement("td");
-  td.dataset.label = "Select";
-  td.className = "web-deck-select-cell";
+// The bare selection checkbox, shared by table rows (wrapped in a <td>) and grid
+// tiles. Both keep the same `.my-deck-row-checkbox` class + data-* so bulk
+// selection works identically regardless of how the deck is drawn.
+function createDeckSelectControl({ localId = null, deckId = null, title = "" } = {}) {
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.className = "my-deck-row-checkbox web-deck-row-checkbox";
@@ -2507,7 +2678,14 @@ function createDeckSelectCell({ localId = null, deckId = null, title = "" } = {}
   if (deckId) checkbox.dataset.deckId = deckId;
   checkbox.setAttribute("aria-label", `Select ${title || "deck"}`);
   checkbox.addEventListener("change", updateMyDecksBulkBar);
-  td.appendChild(checkbox);
+  return checkbox;
+}
+
+function createDeckSelectCell({ localId = null, deckId = null, title = "" } = {}) {
+  const td = document.createElement("td");
+  td.dataset.label = "Select";
+  td.className = "web-deck-select-cell";
+  td.appendChild(createDeckSelectControl({ localId, deckId, title }));
   return td;
 }
 
@@ -2853,18 +3031,18 @@ async function exportAllMyDecks(format) {
   }
 }
 
-function createDeckExportControl(sel, deckTitle) {
+function createDeckExportControl(sel, deckTitle, { compact = false } = {}) {
   const wrap = document.createElement("div");
   wrap.className = "web-deck-export-wrap";
 
   const button = document.createElement("button");
-  button.className = "bulk-action-btn bulk-export";
+  button.className = compact ? "bulk-action-btn bulk-export icon-action" : "bulk-action-btn bulk-export";
   button.type = "button";
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", "false");
   button.title = "Export deck";
   button.setAttribute("aria-label", `Export ${deckTitle || "Untitled"}`);
-  button.textContent = "Export";
+  button.textContent = compact ? "⬇" : "Export";
 
   const menu = document.createElement("div");
   menu.className = "web-deck-export-menu";
@@ -3028,13 +3206,120 @@ function deleteSelectedMyDecks(selections) {
 
 // ── Rows ───────────────────────────────────────────────────────────────────
 
+// Shared deck helpers used by both the table rows and the grid tiles, so the two
+// presentations stay in lock-step. `kind` is "local" | "cloud".
+function deckSelOf(deck, kind) {
+  return kind === "cloud"
+    ? { localId: null, deckId: String(deck.id) }
+    : { localId: deck.id, deckId: deck.deckId || null };
+}
+
+function deckCardInfo(deck, kind) {
+  const count = kind === "cloud"
+    ? (Array.isArray(deck.cards) ? deck.cards[0]?.count : deck.cardCount)
+    : deck.cardCount;
+  const hasNotes = kind === "cloud" ? Boolean(String(deck.notes || "").trim()) : Boolean(deck.hasNotes);
+  return { count: count ?? null, hasNotes };
+}
+
+// Loads a deck into the study view. Persists the outgoing deck first — the
+// autosave debounce resets on every edit, so a pending timer can hold all
+// edits/marks since the last pause; without this flush, switching decks before it
+// fires would drop them.
+function loadDeckEntry(deck, kind) {
+  flushWorkingDeck();
+  if (kind === "cloud") {
+    closeMyDecksPanel();
+    loadWebDeck(deck.id);
+  } else if (loadDeckFromLibrary(deck.id)) {
+    closeMyDecksPanel();
+    showToast(`Loaded "${deck.title || "deck"}"`);
+  }
+}
+
+function buildDeckLoadButton(deck, kind) {
+  const loadBtn = document.createElement("button");
+  loadBtn.type = "button";
+  loadBtn.className = "bulk-action-btn bulk-load";
+  loadBtn.textContent = "Load";
+  loadBtn.addEventListener("click", () => loadDeckEntry(deck, kind));
+  return loadBtn;
+}
+
+function buildDeckRenameButton(sel, deck) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "bulk-action-btn bulk-category";
+  b.textContent = "Rename";
+  b.addEventListener("click", () => renameMyDeck(sel, deck.title || ""));
+  return b;
+}
+
+// Confirms and deletes a deck (from device and/or cloud as appropriate).
+function deleteDeckEntry(deck, kind) {
+  if (kind === "cloud") {
+    showConfirmModal(`Delete "${deck.title || "this deck"}" from the cloud? This cannot be undone.`, async () => {
+      const { cloudError } = await deleteDeckEverywhere({ localId: null, deckId: deck.id });
+      renderMyDecksList();
+      showToast(cloudError ? "Delete failed — will retry on next sync" : "Deck deleted everywhere", "info");
+    }, { confirmLabel: "Delete", danger: true });
+  } else {
+    const inCloud = Boolean(deck.deckId);
+    const scope = inCloud ? "from this device and the cloud" : "from this device";
+    showConfirmModal(`Delete "${deck.title || "this deck"}" ${scope}? This cannot be undone.`, async () => {
+      const { cloudError } = await deleteDeckEverywhere({ localId: deck.id, deckId: deck.deckId || null });
+      renderMyDecksList();
+      if (cloudError) showToast("Deleted here — cloud delete will retry on next sync", "info");
+      else showToast(inCloud ? "Deck deleted everywhere" : "Deck deleted from device", "info");
+    }, { confirmLabel: "Delete", danger: true });
+  }
+}
+
+function buildDeckDeleteButton(deck, kind) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "bulk-action-btn bulk-delete";
+  b.textContent = "Delete";
+  b.addEventListener("click", () => deleteDeckEntry(deck, kind));
+  return b;
+}
+
+// A compact icon button for the My Decks list actions. Icon-only (with a tooltip
+// and aria-label) so the whole row stays tight and never overflows.
+function iconActionButton(icon, label, cls, deck, handler) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = `bulk-action-btn icon-action ${cls}`;
+  b.textContent = icon;
+  b.title = label;
+  b.setAttribute("aria-label", `${label} ${deck.title || "deck"}`);
+  b.addEventListener("click", handler);
+  return b;
+}
+
+// The Load / Export / Rename / Delete cluster for list rows — self-explanatory
+// icons (▶ open · ⬇ export · ✎ rename · 🗑 delete) with tooltips + aria-labels.
+function buildDeckActions(deck, kind) {
+  const sel = deckSelOf(deck, kind);
+  const wrap = document.createElement("div");
+  wrap.className = "my-deck-actions";
+  wrap.append(
+    iconActionButton("▶", "Load", "bulk-load", deck, () => loadDeckEntry(deck, kind)),
+    createDeckExportControl(sel, deck.title, { compact: true }),
+    iconActionButton("✎", "Rename", "bulk-category", deck, () => renameMyDeck(sel, deck.title || "")),
+    iconActionButton("🗑", "Delete", "bulk-delete", deck, () => deleteDeckEntry(deck, kind)),
+  );
+  return wrap;
+}
+
 // One row for a deck stored in the on-device library. `cloudById` (Map or null)
 // drives the Sync column — null renders a tentative state before the cloud
 // fetch resolves.
 function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategories) {
   const tr = document.createElement("tr");
   if (deck.id === state.localDeckId) tr.classList.add("is-current-local-deck");
-  const sel = { localId: deck.id, deckId: deck.deckId || null };
+  const sel = deckSelOf(deck, "local");
+  const { count, hasNotes } = deckCardInfo(deck, "local");
 
   const tdTitle = document.createElement("td");
   tdTitle.dataset.label = "Title";
@@ -3046,8 +3331,8 @@ function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategorie
 
   const tdCount = document.createElement("td");
   tdCount.dataset.label = "Cards";
-  tdCount.textContent = String(deck.cardCount ?? "—") + (deck.hasNotes ? " 📝" : "");
-  if (deck.hasNotes) tdCount.title = "This deck has study notes";
+  tdCount.textContent = String(count ?? "—") + (hasNotes ? " 📝" : "");
+  if (hasNotes) tdCount.title = "This deck has study notes";
 
   const tdSaved = document.createElement("td");
   tdSaved.dataset.label = "Saved";
@@ -3059,51 +3344,8 @@ function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategorie
   // cell with display:flex stops participating in the table's column-track
   // sizing (it gets sized by its flex content instead), which was squeezing
   // this column down to a sliver regardless of its CSS width.
-  const actionsWrap = document.createElement("div");
-  actionsWrap.className = "my-deck-actions";
+  tdActions.append(buildDeckActions(deck, "local"));
 
-  const loadBtn = document.createElement("button");
-  loadBtn.type = "button";
-  loadBtn.className = "bulk-action-btn bulk-load";
-  loadBtn.textContent = "Load";
-  loadBtn.addEventListener("click", () => {
-    // Persist the outgoing deck before its in-memory state is replaced. The
-    // autosave debounce resets on every edit, so a pending timer can hold all
-    // edits/marks since the last pause; without this flush, switching decks
-    // before it fires would drop them.
-    flushWorkingDeck();
-    if (loadDeckFromLibrary(deck.id)) {
-      closeMyDecksPanel();
-      showToast(`Loaded "${deck.title || "deck"}"`);
-    }
-  });
-
-  const renameBtn = document.createElement("button");
-  renameBtn.type = "button";
-  renameBtn.className = "bulk-action-btn bulk-category";
-  renameBtn.textContent = "Rename";
-  renameBtn.addEventListener("click", () => renameMyDeck(sel, deck.title || ""));
-
-  const deleteBtn = document.createElement("button");
-  deleteBtn.type = "button";
-  deleteBtn.className = "bulk-action-btn bulk-delete";
-  deleteBtn.textContent = "Delete";
-  deleteBtn.addEventListener("click", () => {
-    const inCloud = Boolean(deck.deckId);
-    const scope = inCloud ? "from this device and the cloud" : "from this device";
-    showConfirmModal(`Delete "${deck.title || "this deck"}" ${scope}? This cannot be undone.`, async () => {
-      const { cloudError } = await deleteDeckEverywhere({ localId: deck.id, deckId: deck.deckId || null });
-      renderMyDecksList();
-      if (cloudError) {
-        showToast("Deleted here — cloud delete will retry on next sync", "info");
-      } else {
-        showToast(inCloud ? "Deck deleted everywhere" : "Deck deleted from device", "info");
-      }
-    }, { confirmLabel: "Delete", danger: true });
-  });
-
-  actionsWrap.append(loadBtn, createDeckExportControl(sel, deck.title), renameBtn, deleteBtn);
-  tdActions.append(actionsWrap);
   tr.append(createDeckSelectCell({ ...sel, title: deck.title }), tdTitle, tdCategory, tdCount, tdSaved, deckSyncStatusCell(deck, cloudById), tdActions);
   return tr;
 }
@@ -3112,7 +3354,8 @@ function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategorie
 function buildCloudDeckRow(deck, categories = webDeckCategories) {
   const tr = document.createElement("tr");
   tr.classList.add("is-cloud-only-deck");
-  const sel = { localId: null, deckId: String(deck.id) };
+  const sel = deckSelOf(deck, "cloud");
+  const { count, hasNotes } = deckCardInfo(deck, "cloud");
 
   const tdTitle = document.createElement("td");
   tdTitle.dataset.label = "Title";
@@ -3124,8 +3367,7 @@ function buildCloudDeckRow(deck, categories = webDeckCategories) {
 
   const tdCount = document.createElement("td");
   tdCount.dataset.label = "Cards";
-  const cloudCount = Array.isArray(deck.cards) ? deck.cards[0]?.count : deck.cardCount;
-  tdCount.textContent = String(cloudCount ?? "—") + (String(deck.notes || "").trim() ? " 📝" : "");
+  tdCount.textContent = String(count ?? "—") + (hasNotes ? " 📝" : "");
 
   const tdSaved = document.createElement("td");
   tdSaved.dataset.label = "Saved";
@@ -3133,53 +3375,17 @@ function buildCloudDeckRow(deck, categories = webDeckCategories) {
   tdSaved.textContent = "☁ Cloud";
   tdSaved.title = "In the cloud — tap Load to pull it onto this device";
 
+  const status = deckSyncStatus(deck, null, true);
   const tdSync = document.createElement("td");
   tdSync.dataset.label = "Sync";
-  tdSync.classList.add("my-deck-sync", "sync-cloud-only");
-  tdSync.textContent = "☁ Cloud only";
-  tdSync.title = "In the cloud but not on this device yet — Load to pull it down.";
+  tdSync.classList.add("my-deck-sync", status.cls);
+  tdSync.textContent = status.label;
+  tdSync.title = status.title;
 
   const tdActions = document.createElement("td");
   tdActions.dataset.label = "Actions";
-  const actionsWrap = document.createElement("div");
-  actionsWrap.className = "my-deck-actions";
+  tdActions.append(buildDeckActions(deck, "cloud"));
 
-  const loadBtn = document.createElement("button");
-  loadBtn.type = "button";
-  loadBtn.className = "bulk-action-btn bulk-load";
-  loadBtn.textContent = "Load";
-  loadBtn.addEventListener("click", () => {
-    // Flush the outgoing deck to the library before loadWebDeck overwrites the
-    // in-memory state (see the local-deck Load handler above for why).
-    flushWorkingDeck();
-    closeMyDecksPanel();
-    loadWebDeck(deck.id);
-  });
-
-  const renameBtn = document.createElement("button");
-  renameBtn.type = "button";
-  renameBtn.className = "bulk-action-btn bulk-category";
-  renameBtn.textContent = "Rename";
-  renameBtn.addEventListener("click", () => renameMyDeck(sel, deck.title || ""));
-
-  const deleteBtn = document.createElement("button");
-  deleteBtn.type = "button";
-  deleteBtn.className = "bulk-action-btn bulk-delete";
-  deleteBtn.textContent = "Delete";
-  deleteBtn.addEventListener("click", () => {
-    showConfirmModal(`Delete "${deck.title || "this deck"}" from the cloud? This cannot be undone.`, async () => {
-      const { cloudError } = await deleteDeckEverywhere({ localId: null, deckId: deck.id });
-      renderMyDecksList();
-      if (cloudError) {
-        showToast("Delete failed — will retry on next sync", "info");
-      } else {
-        showToast("Deck deleted everywhere", "info");
-      }
-    }, { confirmLabel: "Delete", danger: true });
-  });
-
-  actionsWrap.append(loadBtn, createDeckExportControl(sel, deck.title), renameBtn, deleteBtn);
-  tdActions.append(actionsWrap);
   tr.append(createDeckSelectCell({ ...sel, title: deck.title }), tdTitle, tdCategory, tdCount, tdSaved, tdSync, tdActions);
   return tr;
 }
@@ -3217,11 +3423,13 @@ async function fetchDeletedDeckIds() {
 // decks, or null when we haven't/can't fetch it. Mirrors the timestamp logic
 // reconcileAllDecks uses to decide direction, so the column predicts what the
 // next sync will do to each deck.
-function deckSyncStatusCell(deck, cloudById) {
-  const td = document.createElement("td");
-  td.dataset.label = "Sync";
-  td.classList.add("my-deck-sync");
-
+// Presentation-agnostic sync state — { label, cls, title } — consumed by both the
+// table "Sync" cell and the grid-tile sync badge. `cloudOnly` short-circuits to the
+// cloud-only badge (a deck not yet on this device).
+function deckSyncStatus(deck, cloudById, cloudOnly = false) {
+  if (cloudOnly) {
+    return { label: "☁ Cloud only", cls: "sync-cloud-only", title: "In the cloud but not on this device yet — Load to pull it down." };
+  }
   const canCloud = Boolean(supabaseClient && isSignedIn);
   let label, cls, title;
   if (!canCloud) {
@@ -3258,8 +3466,15 @@ function deckSyncStatusCell(deck, cloudById) {
       }
     }
   }
+  return { label, cls, title };
+}
+
+function deckSyncStatusCell(deck, cloudById) {
+  const { label, cls, title } = deckSyncStatus(deck, cloudById);
+  const td = document.createElement("td");
+  td.dataset.label = "Sync";
+  td.classList.add("my-deck-sync", cls);
   td.textContent = label;
-  td.classList.add(cls);
   td.title = title;
   return td;
 }
@@ -3274,7 +3489,7 @@ function populateMyDecksCategoryFilter(categories) {
   filter.innerHTML = "";
   const allOption = document.createElement("option");
   allOption.value = "";
-  allOption.textContent = "All categories";
+  allOption.textContent = "All folders";
   filter.appendChild(allOption);
   categories.forEach((category) => {
     const option = document.createElement("option");
@@ -3286,74 +3501,769 @@ function populateMyDecksCategoryFilter(categories) {
   return filter.value;
 }
 
-// The unified library view: on-device decks first, then any cloud decks that
-// aren't on this device yet (for signed-in, online users). `cloudById` (a Map,
-// or null before/without a cloud fetch) drives the per-deck Sync column.
-function renderMyDecksRows(localDecks, cloudById, { cloudOnly = [], categories = webDeckCategories } = {}) {
+// ── Folder tree: drag-and-drop state & operations ──────────────────────────
+// The deck currently being dragged, or a folder being re-parented. Held at
+// module scope because dragstart (on the row) and drop (on a folder) are
+// separate events on different elements.
+let myDecksDrag = null;
+// Snapshot of the decks in the last render, so folder rename/move/delete can
+// iterate every affected deck (including cloud-only ones) without re-fetching.
+let myDecksRendered = { local: [], cloudOnly: [] };
+
+function clearFolderDropHighlights() {
+  el.myDecksListTable?.querySelectorAll(".drag-over").forEach((row) => row.classList.remove("drag-over"));
+}
+
+function toggleFolderCollapsed(path) {
+  const expanded = readExpandedFolders();
+  const key = normalizeDeckCategory(path);
+  if (expanded.has(key)) expanded.delete(key);
+  else expanded.add(key);
+  writeExpandedFolders(expanded);
+  repaintMyDecks();
+}
+
+// Expands (or collapses) every folder currently in the tree at once.
+function setAllFoldersExpanded(expand) {
+  if (!expand) { writeExpandedFolders(new Set()); repaintMyDecks(); return; }
+  const paths = new Set();
+  const walk = (node) => node.children.forEach((child) => { paths.add(child.path); walk(child); });
+  const entries = [
+    ...(myDecksRendered.local || []).map((deck) => ({ deck, kind: "local" })),
+    ...(myDecksRendered.cloudOnly || []).map((deck) => ({ deck, kind: "cloud" })),
+  ];
+  walk(buildFolderTree(entries, readKnownFolders()));
+  writeExpandedFolders(paths);
+  repaintMyDecks();
+}
+
+// True when every folder in the current tree is already expanded (drives the
+// Expand-all / Collapse-all toggle label).
+function allFoldersExpanded() {
+  const expanded = readExpandedFolders();
+  const entries = [
+    ...(myDecksRendered.local || []).map((deck) => ({ deck, kind: "local" })),
+    ...(myDecksRendered.cloudOnly || []).map((deck) => ({ deck, kind: "cloud" })),
+  ];
+  let total = 0, open = 0;
+  const walk = (node) => node.children.forEach((child) => { total += 1; if (expanded.has(child.path)) open += 1; walk(child); });
+  walk(buildFolderTree(entries, readKnownFolders()));
+  return total > 0 && open === total;
+}
+
+function folderTotalDeckCount(node) {
+  let count = node.decks.length;
+  node.children.forEach((child) => { count += folderTotalDeckCount(child); });
+  return count;
+}
+
+function sortedFolderChildren(node) {
+  return Array.from(node.children.values())
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+}
+
+// Every visible deck (local + cloud-only) whose category is `path` or nested
+// under it, as { sel, category } — the unit folder rename/move/delete act on.
+function decksUnderFolder(path) {
+  const out = [];
+  (myDecksRendered.local || []).forEach((deck) => {
+    if (isCategoryUnder(deck.category, path)) {
+      out.push({ sel: { localId: deck.id, deckId: deck.deckId || null }, category: normalizeDeckCategory(deck.category) });
+    }
+  });
+  (myDecksRendered.cloudOnly || []).forEach((deck) => {
+    if (isCategoryUnder(deck.category, path)) {
+      out.push({ sel: { localId: null, deckId: String(deck.id) }, category: normalizeDeckCategory(deck.category) });
+    }
+  });
+  return out;
+}
+
+// Re-paths every deck under `fromPath` (and the known-folder + collapsed
+// registries) so the `fromPath` prefix becomes `toPath`. Used by folder
+// rename, move (re-parent), and delete-into-parent.
+async function rewriteFolderPaths(fromPath, toPath) {
+  const affected = decksUnderFolder(fromPath);
+  for (const item of affected) {
+    await setMyDeckCategory(item.sel, rewriteCategoryPrefix(item.category, fromPath, toPath));
+  }
+  writeKnownFolders(readKnownFolders().map((p) => rewriteCategoryPrefix(p, fromPath, toPath)));
+  const nextExpanded = new Set();
+  readExpandedFolders().forEach((p) => nextExpanded.add(rewriteCategoryPrefix(p, fromPath, toPath)));
+  writeExpandedFolders(nextExpanded);
+  // Keep the Folder-view cwd pointing at the renamed/moved folder if we were in it.
+  if (state.myDecksCwd && isCategoryUnder(state.myDecksCwd, fromPath)) {
+    setMyDecksCwd(rewriteCategoryPrefix(state.myDecksCwd, fromPath, toPath));
+  }
+  return affected.length;
+}
+
+function createFolder(parentPath = "") {
+  showPromptModal("New folder", parentPath ? `Inside "${parentPath}"` : "", "", (name) => {
+    const path = normalizeDeckCategory(parentPath ? `${parentPath}${FOLDER_SEP}${name}` : name);
+    if (path === defaultDeckCategory) { showToast("Folder name can't be empty", "error"); return; }
+    addKnownFolder(path);
+    if (parentPath) { const ex = readExpandedFolders(); ex.add(normalizeDeckCategory(parentPath)); writeExpandedFolders(ex); }
+    showToast(`Folder "${path}" created`);
+    renderMyDecksList();
+  });
+}
+
+function renameFolder(path) {
+  const segments = folderSegments(path);
+  const parent = segments.slice(0, -1).join(FOLDER_SEP);
+  showPromptModal("Rename folder", "", segments[segments.length - 1] || "", async (name) => {
+    const nextPath = normalizeDeckCategory(parent ? `${parent}${FOLDER_SEP}${name}` : name);
+    if (nextPath === defaultDeckCategory) { showToast("Folder name can't be empty", "error"); return; }
+    if (nextPath === normalizeDeckCategory(path)) return;
+    try {
+      await rewriteFolderPaths(path, nextPath);
+      showToast(`Renamed to "${nextPath}"`);
+      renderMyDecksList();
+    } catch (error) {
+      console.error("Folder rename failed", error);
+      showToast("Couldn't rename — offline?", "error");
+    }
+  });
+}
+
+// Re-parents `fromPath` under `newParentPath` (root when ""), keeping its own
+// last segment. Refuses to drop a folder into itself or its own descendant.
+async function moveFolder(fromPath, newParentPath) {
+  const from = normalizeDeckCategory(fromPath);
+  const leaf = folderSegments(from).slice(-1)[0] || "";
+  const nextPath = normalizeDeckCategory(newParentPath ? `${newParentPath}${FOLDER_SEP}${leaf}` : leaf);
+  if (nextPath === from) return 0;
+  if (isCategoryUnder(nextPath, from)) return 0; // would nest a folder inside itself
+  return rewriteFolderPaths(from, nextPath);
+}
+
+function deleteFolder(path) {
+  const segments = folderSegments(path);
+  const leaf = segments[segments.length - 1] || path;
+  const parent = segments.slice(0, -1).join(FOLDER_SEP);
+  const total = decksUnderFolder(path).length;
+  const message = total > 0
+    ? `Delete folder "${leaf}"? Its ${total === 1 ? "1 deck moves" : total + " decks move"} to ${parent || "Uncategorized"}. No decks are deleted.`
+    : `Delete empty folder "${leaf}"?`;
+  showConfirmModal(message, async () => {
+    try {
+      await rewriteFolderPaths(path, parent);
+      showToast(`Folder "${leaf}" deleted`);
+      renderMyDecksList();
+    } catch (error) {
+      console.error("Folder delete failed", error);
+      showToast("Couldn't delete — offline?", "error");
+    }
+  }, { confirmLabel: "Delete", danger: true });
+}
+
+// Resolves a completed drop onto `folderPath` ("" = root/Uncategorized).
+async function handleDropOnFolder(folderPath) {
+  const drag = myDecksDrag;
+  myDecksDrag = null;
+  clearFolderDropHighlights();
+  if (!drag) return;
+  try {
+    if (drag.type === "deck") {
+      if (normalizeDeckCategory(drag.category) === normalizeDeckCategory(folderPath)) return;
+      await setMyDeckCategory(drag.sel, folderPath);
+      showToast(`Moved to "${normalizeDeckCategory(folderPath)}"`);
+      renderMyDecksList();
+    } else if (drag.type === "folder") {
+      if (folderPath === drag.path || isCategoryUnder(folderPath, drag.path)) return;
+      await moveFolder(drag.path, folderPath);
+      showToast("Folder moved");
+      renderMyDecksList();
+    }
+  } catch (error) {
+    console.error("Drop failed", error);
+    showToast("Couldn't move — offline?", "error");
+  }
+}
+
+// Wires an element as a drop target for `folderPath`; rejects illegal folder
+// drops (onto self/descendant) so the cursor shows "no-drop".
+function attachFolderDropTarget(row, folderPath) {
+  row.addEventListener("dragover", (e) => {
+    if (!myDecksDrag) return;
+    if (myDecksDrag.type === "folder" && (folderPath === myDecksDrag.path || isCategoryUnder(folderPath, myDecksDrag.path))) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    row.classList.add("drag-over");
+  });
+  row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+  row.addEventListener("drop", (e) => { e.preventDefault(); handleDropOnFolder(folderPath); });
+}
+
+// One collapsible folder header row (spans all columns).
+function buildFolderRow(node, depth, isCollapsed) {
+  const tr = document.createElement("tr");
+  tr.className = "deck-folder-row";
+  tr.dataset.folderPath = node.path;
+  tr.style.setProperty("--folder-depth", String(depth));
+  tr.draggable = true;
+
+  const td = document.createElement("td");
+  td.colSpan = 7;
+  const wrap = document.createElement("div");
+  wrap.className = "deck-folder-wrap";
+
+  const twisty = document.createElement("button");
+  twisty.type = "button";
+  twisty.className = "deck-folder-twisty";
+  twisty.setAttribute("aria-label", isCollapsed ? "Expand folder" : "Collapse folder");
+  twisty.textContent = isCollapsed ? "▶" : "▼";
+  twisty.addEventListener("click", () => toggleFolderCollapsed(node.path));
+
+  const label = document.createElement("button");
+  label.type = "button";
+  label.className = "deck-folder-label";
+  label.innerHTML = `<span class="deck-folder-icon">📁</span><span class="deck-folder-name"></span>`;
+  label.querySelector(".deck-folder-name").textContent = node.name;
+  label.addEventListener("click", () => toggleFolderCollapsed(node.path));
+
+  const total = folderTotalDeckCount(node);
+  const count = document.createElement("span");
+  count.className = "deck-folder-count";
+  count.textContent = total === 1 ? "1 deck" : `${total} decks`;
+
+  const actions = document.createElement("div");
+  actions.className = "deck-folder-actions";
+  const mkBtn = (text, title, handler) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "deck-folder-action";
+    b.textContent = text;
+    b.title = title;
+    b.addEventListener("click", handler);
+    return b;
+  };
+  actions.append(
+    mkBtn("+", "New subfolder", () => createFolder(node.path)),
+    mkBtn("Rename", "Rename folder", () => renameFolder(node.path)),
+    mkBtn("Delete", "Delete folder", () => deleteFolder(node.path)),
+  );
+
+  wrap.append(twisty, label, count, actions);
+  td.append(wrap);
+  tr.append(td);
+
+  attachFolderDropTarget(tr, node.path);
+  tr.addEventListener("dragstart", (e) => {
+    if (e.target.closest(".deck-folder-action, .deck-folder-twisty")) { e.preventDefault(); return; }
+    myDecksDrag = { type: "folder", path: node.path };
+    tr.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", node.path); } catch (_) {}
+  });
+  tr.addEventListener("dragend", () => { tr.classList.remove("dragging"); myDecksDrag = null; clearFolderDropHighlights(); });
+  return tr;
+}
+
+// The always-present root drop target — drag a deck or folder here to lift it
+// out of any folder (back to Uncategorized / top level).
+function buildRootDropRow() {
+  const tr = document.createElement("tr");
+  tr.className = "deck-folder-row deck-root-row";
+  const td = document.createElement("td");
+  td.colSpan = 7;
+  td.innerHTML = `<div class="deck-folder-wrap"><span class="deck-folder-icon">🏠</span><span class="deck-folder-name">All decks</span><span class="deck-root-hint">drop here to remove from a folder</span></div>`;
+  tr.append(td);
+  attachFolderDropTarget(tr, "");
+  return tr;
+}
+
+// Makes any deck element (table row or grid tile) a drag source for filing into a
+// folder. Dragging is suppressed when it starts on an interactive control so the
+// checkbox, buttons, and inline category editor stay usable.
+function makeDeckDraggable(el, sel, deck) {
+  el.dataset.folder = normalizeDeckCategory(deck.category);
+  el.draggable = true;
+  el.addEventListener("dragstart", (e) => {
+    if (e.target.closest("input, select, textarea, button, a, .web-deck-category-editor")) { e.preventDefault(); return; }
+    myDecksDrag = { type: "deck", sel, category: normalizeDeckCategory(deck.category), title: deck.title || "" };
+    el.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", deck.title || "deck"); } catch (_) {}
+  });
+  el.addEventListener("dragend", () => { el.classList.remove("dragging"); myDecksDrag = null; clearFolderDropHighlights(); });
+}
+
+// Table-row variant: adds the tree indent + row class, then shared drag behaviour.
+function decorateDeckRow(tr, sel, deck, indentLevel) {
+  tr.classList.add("my-deck-row");
+  tr.style.setProperty("--folder-depth", String(indentLevel));
+  makeDeckDraggable(tr, sel, deck);
+}
+
+function renderFolderDecks(tbody, node, depth, ctx) {
+  node.decks.forEach((entry) => {
+    const tr = entry.kind === "local"
+      ? buildLocalDeckRow(entry.deck, ctx.cloudById, ctx.categories)
+      : buildCloudDeckRow(entry.deck, ctx.categories);
+    const sel = entry.kind === "local"
+      ? { localId: entry.deck.id, deckId: entry.deck.deckId || null }
+      : { localId: null, deckId: String(entry.deck.id) };
+    decorateDeckRow(tr, sel, entry.deck, depth);
+    tbody.appendChild(tr);
+  });
+}
+
+function renderFolderChildren(tbody, node, depth, ctx) {
+  sortedFolderChildren(node).forEach((child) => {
+    const isCollapsed = !ctx.expanded.has(child.path);
+    tbody.appendChild(buildFolderRow(child, depth, isCollapsed));
+    if (!isCollapsed) {
+      renderFolderChildren(tbody, child, depth + 1, ctx);
+      renderFolderDecks(tbody, child, depth + 1, ctx);
+    }
+  });
+}
+
+// The unified library view rendered as a nested folder tree: folders (from deck
+// category paths plus any empty "known" folders) with their decks nested
+// beneath, and Uncategorized decks loose at the root. `cloudById` (a Map, or
+// null before/without a cloud fetch) drives the per-deck Sync column.
+// ── Folder-view navigation helpers ─────────────────────────────────────────
+function setMyDecksCwdAndRender(path) {
+  setMyDecksCwd(path);
+  repaintMyDecks();
+}
+
+// Walks the built tree to the node for `path` (root when ""), or null if the path
+// no longer exists (e.g. the folder was just deleted out from under the cwd).
+function findTreeNode(tree, path) {
+  if (!path) return tree;
+  let node = tree;
+  for (const seg of folderSegments(path)) {
+    node = node.children.get(seg);
+    if (!node) return null;
+  }
+  return node;
+}
+
+function renderMyDecksBreadcrumb() {
+  const nav = el.myDecksBreadcrumb;
+  if (!nav) return;
+  nav.innerHTML = "";
+  const cwd = state.myDecksCwd;
+  const mk = (label, path, isCurrent) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "breadcrumb-crumb";
+    b.textContent = label;
+    if (isCurrent) b.setAttribute("aria-current", "true");
+    b.addEventListener("click", () => setMyDecksCwdAndRender(path));
+    attachFolderDropTarget(b, path); // drop a deck/folder on a crumb to move it here
+    return b;
+  };
+  nav.appendChild(mk("🏠 All", "", cwd === ""));
+  let acc = "";
+  const segs = folderSegments(cwd);
+  segs.forEach((seg, i) => {
+    acc = acc ? acc + FOLDER_SEP + seg : seg;
+    const sep = document.createElement("span");
+    sep.className = "breadcrumb-sep";
+    sep.textContent = "›";
+    nav.appendChild(sep);
+    nav.appendChild(mk(seg, acc, i === segs.length - 1));
+  });
+}
+
+// ── Folder + deck cluster builders (shared by tiles and folder-nav rows) ────
+function buildFolderActionCluster(path) {
+  const wrap = document.createElement("div");
+  wrap.className = "deck-folder-actions";
+  const mk = (text, title, handler) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "deck-folder-action";
+    b.textContent = text;
+    b.title = title;
+    b.addEventListener("click", (e) => { e.stopPropagation(); handler(); });
+    return b;
+  };
+  wrap.append(
+    mk("＋ Deck", "New deck in this folder", () => newDeckInFolder(path)),
+    mk("＋ Folder", "New subfolder", () => createFolder(path)),
+    mk("Rename", "Rename folder", () => renameFolder(path)),
+    mk("Delete", "Delete folder", () => deleteFolder(path)),
+  );
+  return wrap;
+}
+
+// A folder as a grid tile (Folder view, Tiles display). Double-click / Enter drills
+// in; it is a drop target and is itself draggable for re-parenting. No inline action
+// buttons — folder management lives in the toolbar and Tree view.
+function buildFolderTile(node) {
+  const tile = document.createElement("div");
+  tile.className = "folder-tile";
+  tile.tabIndex = 0;
+  tile.dataset.folderPath = node.path;
+  tile.title = "Double-click to open";
+  const total = folderTotalDeckCount(node);
+  const main = document.createElement("div");
+  main.className = "folder-tile-main";
+  main.innerHTML = `<span class="folder-tile-icon">📁</span><span class="folder-tile-name"></span>`;
+  main.querySelector(".folder-tile-name").textContent = node.name;
+  const count = document.createElement("span");
+  count.className = "folder-tile-count";
+  count.textContent = total === 1 ? "1 deck" : `${total} decks`;
+  main.appendChild(count);
+  tile.append(main);
+
+  const enter = () => setMyDecksCwdAndRender(node.path);
+  tile.addEventListener("dblclick", enter);
+  tile.addEventListener("keydown", (e) => { if (e.target !== tile) return; if (e.key === "Enter") { e.preventDefault(); enter(); } });
+  attachFolderDropTarget(tile, node.path);
+  tile.draggable = true;
+  tile.addEventListener("dragstart", (e) => {
+    myDecksDrag = { type: "folder", path: node.path };
+    tile.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", node.path); } catch (_) {}
+  });
+  tile.addEventListener("dragend", () => { tile.classList.remove("dragging"); myDecksDrag = null; clearFolderDropHighlights(); });
+  return tile;
+}
+
+// A folder as a table row for Folder view (List display) — single level, click to
+// enter (unlike the Tree view's expand-in-place row).
+function buildFolderNavRow(node) {
+  const tr = document.createElement("tr");
+  tr.className = "deck-folder-row deck-folder-nav";
+  tr.dataset.folderPath = node.path;
+  const td = document.createElement("td");
+  td.colSpan = 7;
+  const wrap = document.createElement("div");
+  wrap.className = "deck-folder-wrap";
+  const label = document.createElement("button");
+  label.type = "button";
+  label.className = "deck-folder-label";
+  label.innerHTML = `<span class="deck-folder-icon">📁</span><span class="deck-folder-name"></span>`;
+  label.querySelector(".deck-folder-name").textContent = node.name;
+  label.addEventListener("click", () => setMyDecksCwdAndRender(node.path));
+  const total = folderTotalDeckCount(node);
+  const count = document.createElement("span");
+  count.className = "deck-folder-count";
+  count.textContent = total === 1 ? "1 deck" : `${total} decks`;
+  wrap.append(label, count, buildFolderActionCluster(node.path));
+  td.append(wrap);
+  tr.append(td);
+  attachFolderDropTarget(tr, node.path);
+  tr.draggable = true;
+  tr.addEventListener("dragstart", (e) => {
+    if (e.target.closest("button")) { e.preventDefault(); return; }
+    myDecksDrag = { type: "folder", path: node.path };
+    tr.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", node.path); } catch (_) {}
+  });
+  tr.addEventListener("dragend", () => { tr.classList.remove("dragging"); myDecksDrag = null; clearFolderDropHighlights(); });
+  return tr;
+}
+
+// Closes any open deck-tile overflow menus (one-at-a-time behaviour).
+function closeAllDeckTileMenus(except) {
+  el.myDecksGrid?.querySelectorAll(".deck-tile-overflow-menu:not([hidden])").forEach((menu) => {
+    if (menu !== except) {
+      menu.hidden = true;
+      menu.previousElementSibling?.setAttribute("aria-expanded", "false");
+    }
+  });
+}
+
+// A deck as a grid tile. Reuses the shared select control, sync status, category,
+// and Load/Export/Rename/Delete operations so tiles behave exactly like rows.
+function buildDeckTile(entry, ctx) {
+  const { deck, kind } = entry;
+  const sel = deckSelOf(deck, kind);
+  const { count, hasNotes } = deckCardInfo(deck, kind);
+  const status = deckSyncStatus(deck, ctx.cloudById, kind === "cloud");
+
+  const tile = document.createElement("div");
+  tile.className = "deck-tile";
+  tile.tabIndex = 0;
+  if (kind === "local" && deck.id === state.localDeckId) tile.classList.add("is-current-local-deck");
+  if (kind === "cloud") tile.classList.add("is-cloud-only-deck");
+
+  const selWrap = document.createElement("label");
+  selWrap.className = "deck-tile-select";
+  selWrap.title = "Select";
+  selWrap.appendChild(createDeckSelectControl({ ...sel, title: deck.title }));
+
+  const title = document.createElement("div");
+  title.className = "deck-tile-title";
+  title.textContent = deck.title || "Untitled deck";
+  title.title = deck.title || "";
+
+  const chip = document.createElement("span");
+  chip.className = "deck-tile-chip";
+  chip.textContent = normalizeDeckCategory(deck.category);
+  chip.title = normalizeDeckCategory(deck.category);
+
+  const meta = document.createElement("div");
+  meta.className = "deck-tile-meta";
+  const countEl = document.createElement("span");
+  countEl.className = "deck-tile-count";
+  countEl.textContent = `${count ?? "—"} ${count === 1 ? "card" : "cards"}${hasNotes ? " · 📝" : ""}`;
+  if (hasNotes) countEl.title = "This deck has study notes";
+  const badge = document.createElement("span");
+  badge.className = `deck-tile-sync ${status.cls}`;
+  badge.textContent = status.label;
+  badge.title = status.title;
+  meta.append(countEl, badge);
+
+  const actions = document.createElement("div");
+  actions.className = "deck-tile-actions";
+  actions.append(buildDeckLoadButton(deck, kind), createDeckExportControl(sel, deck.title));
+
+  // Overflow (⋯): Rename / Move to folder / Delete
+  const overflow = document.createElement("div");
+  overflow.className = "deck-tile-overflow";
+  const ovBtn = document.createElement("button");
+  ovBtn.type = "button";
+  ovBtn.className = "deck-tile-overflow-btn";
+  ovBtn.setAttribute("aria-haspopup", "true");
+  ovBtn.setAttribute("aria-expanded", "false");
+  ovBtn.title = "More actions";
+  ovBtn.textContent = "⋯";
+  const menu = document.createElement("div");
+  menu.className = "deck-tile-overflow-menu";
+  menu.hidden = true;
+  const mkItem = (text, handler) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.addEventListener("click", () => { menu.hidden = true; ovBtn.setAttribute("aria-expanded", "false"); handler(); });
+    return b;
+  };
+  menu.append(
+    mkItem("Rename", () => renameMyDeck(sel, deck.title || "")),
+    mkItem("Move to folder…", () => moveDeckViaMenu(deck, kind)),
+    mkItem("Delete", () => buildDeckDeleteButton(deck, kind).click()),
+  );
+  ovBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.hidden;
+    closeAllDeckTileMenus(menu);
+    menu.hidden = !willOpen;
+    ovBtn.setAttribute("aria-expanded", String(willOpen));
+  });
+  overflow.append(ovBtn, menu);
+  actions.append(overflow);
+
+  tile.append(selWrap, title, chip, meta, actions);
+
+  // Enter / double-click loads the deck (checkbox handles selection).
+  tile.addEventListener("dblclick", (e) => { if (e.target.closest("button, input, label, .deck-tile-overflow")) return; loadDeckEntry(deck, kind); });
+  tile.addEventListener("keydown", (e) => { if (e.target !== tile) return; if (e.key === "Enter") { e.preventDefault(); loadDeckEntry(deck, kind); } });
+  makeDeckDraggable(tile, sel, deck);
+  return tile;
+}
+
+async function moveDeckViaMenu(deck, kind) {
+  const sel = deckSelOf(deck, kind);
+  const category = await chooseDeckCategory(normalizeDeckCategory(deck.category));
+  if (category === null) return;
+  try {
+    await setMyDeckCategory(sel, category);
+    showToast(`Moved to "${normalizeDeckCategory(category)}"`);
+    renderMyDecksList();
+  } catch (error) {
+    console.error("Move via menu failed", error);
+    showToast("Couldn't move — offline?", "error");
+  }
+}
+
+// ── Empty states ────────────────────────────────────────────────────────────
+function myDecksEmptyMessage(ctx) {
+  if (ctx.search) return `No decks match “${ctx.search}”.`;
+  if (ctx.totalDecks === 0) return ctx.loading ? "Checking the cloud for your decks…" : "No decks yet. Use ＋ New deck to create your first one.";
+  return "Nothing filed here yet. Use ＋ New deck, or drag a deck onto a folder.";
+}
+
+function buildEmptyCard(message) {
+  const div = document.createElement("div");
+  div.className = "my-decks-empty-card";
+  div.textContent = message;
+  return div;
+}
+
+function appendEmptyRow(tbody, message) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td colspan="7" class="web-decks-empty"></td>`;
+  tr.querySelector("td").textContent = message;
+  tbody.appendChild(tr);
+}
+
+// ── The three views ─────────────────────────────────────────────────────────
+function renderDeckRowInto(tbody, entry, ctx, { draggable = false } = {}) {
+  const tr = entry.kind === "local"
+    ? buildLocalDeckRow(entry.deck, ctx.cloudById, ctx.categories)
+    : buildCloudDeckRow(entry.deck, ctx.categories);
+  if (draggable) makeDeckDraggable(tr, deckSelOf(entry.deck, entry.kind), entry.deck);
+  tbody.appendChild(tr);
+}
+
+// Tree — the full nested, collapsible hierarchy (always a list).
+function renderMyDecksTreeView(entries, ctx) {
   const tbody = el.myDecksListTable;
-  if (!tbody) return;
   tbody.innerHTML = "";
-  localDecks.forEach((deck) => tbody.appendChild(buildLocalDeckRow(deck, cloudById, categories)));
-  cloudOnly.forEach((deck) => tbody.appendChild(buildCloudDeckRow(deck, categories)));
+  const knownFolders = ctx.search ? [] : readKnownFolders().filter((path) => !ctx.scope || isCategoryUnder(path, ctx.scope));
+  const tree = buildFolderTree(entries, knownFolders);
+  const rctx = { cloudById: ctx.cloudById, categories: ctx.categories, expanded: readExpandedFolders() };
+  tbody.appendChild(buildRootDropRow());
+  renderFolderChildren(tbody, tree, 0, rctx);
+  renderFolderDecks(tbody, tree, 0, rctx); // loose (Uncategorized) decks at the root
+  if (!tbody.querySelector(".my-deck-row, .deck-folder-row:not(.deck-root-row)")) {
+    appendEmptyRow(tbody, myDecksEmptyMessage(ctx));
+  }
+}
+
+// Grid — every deck flat, no hierarchy.
+function renderMyDecksGridView(entries, ctx) {
+  if (state.myDecksDisplay === "tiles") {
+    const grid = el.myDecksGrid;
+    grid.innerHTML = "";
+    entries.forEach((entry) => grid.appendChild(buildDeckTile(entry, ctx)));
+    if (!entries.length) grid.appendChild(buildEmptyCard(myDecksEmptyMessage(ctx)));
+  } else {
+    const tbody = el.myDecksListTable;
+    tbody.innerHTML = "";
+    entries.forEach((entry) => renderDeckRowInto(tbody, entry, ctx));
+    if (!entries.length) appendEmptyRow(tbody, myDecksEmptyMessage(ctx));
+  }
+}
+
+// Folder — Finder-style, one level of the tree at `state.myDecksCwd`.
+function renderMyDecksFolderView(entries, ctx) {
+  const knownFolders = ctx.search ? [] : readKnownFolders();
+  const tree = buildFolderTree(entries, knownFolders);
+  let node = findTreeNode(tree, state.myDecksCwd);
+  if (!node) { setMyDecksCwd(""); node = tree; renderMyDecksBreadcrumb(); }
+  const childFolders = sortedFolderChildren(node);
+  const decks = node.decks;
+
+  if (state.myDecksDisplay === "tiles") {
+    const grid = el.myDecksGrid;
+    grid.innerHTML = "";
+    childFolders.forEach((child) => grid.appendChild(buildFolderTile(child)));
+    decks.forEach((entry) => grid.appendChild(buildDeckTile(entry, ctx)));
+    if (!childFolders.length && !decks.length) grid.appendChild(buildEmptyCard(myDecksEmptyMessage(ctx)));
+  } else {
+    const tbody = el.myDecksListTable;
+    tbody.innerHTML = "";
+    // No root drop row here — the breadcrumb's "🏠 All" crumb is the drop-to-root
+    // target, so a second "All decks" row would just be a confusing duplicate.
+    childFolders.forEach((child) => tbody.appendChild(buildFolderNavRow(child)));
+    decks.forEach((entry) => renderDeckRowInto(tbody, entry, ctx, { draggable: true }));
+    if (!childFolders.length && !decks.length) appendEmptyRow(tbody, myDecksEmptyMessage(ctx));
+  }
+}
+
+// ── Chrome (view switch / display toggle / breadcrumb / host) ───────────────
+function setMyDecksHost(useTiles) {
+  if (el.myDecksTableWrap) el.myDecksTableWrap.hidden = useTiles;
+  if (el.myDecksGrid) el.myDecksGrid.hidden = !useTiles;
+  // Clear the inactive host so stale nodes — and crucially their selection
+  // checkboxes, which the bulk bar counts across the whole body — don't linger.
+  // Runs before the active renderer repopulates its own host.
+  if (useTiles) { if (el.myDecksListTable) el.myDecksListTable.innerHTML = ""; }
+  else if (el.myDecksGrid) el.myDecksGrid.innerHTML = "";
+}
+
+function syncMyDecksChrome() {
+  const view = state.myDecksView;
+  const display = view === "tree" ? "list" : state.myDecksDisplay;
+  el.myDecksViewSwitch?.querySelectorAll("[data-mydecks-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mydecksView === view)));
+  el.myDecksDisplayToggle?.querySelectorAll("[data-mydecks-display]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mydecksDisplay === display)));
+  if (el.myDecksDisplayToggle) el.myDecksDisplayToggle.hidden = (view === "tree");
+  if (el.myDecksTreeToggleAll) {
+    el.myDecksTreeToggleAll.hidden = (view !== "tree");
+    if (view === "tree") {
+      const allOpen = allFoldersExpanded();
+      el.myDecksTreeToggleAll.textContent = allOpen ? "⊟ Collapse all" : "⊞ Expand all";
+      el.myDecksTreeToggleAll.dataset.expandAll = allOpen ? "0" : "1";
+    }
+  }
+  if (el.myDecksBreadcrumb) {
+    el.myDecksBreadcrumb.hidden = (view !== "folder");
+    if (view === "folder") renderMyDecksBreadcrumb();
+  }
+  setMyDecksHost(display === "tiles");
+}
+
+// Last painted data set, so pure presentation changes (switching view/display,
+// searching, drilling into a folder, expand/collapse) can repaint instantly from
+// memory instead of re-hitting the cloud.
+let myDecksCache = null;
+
+// Repaints the current view from the cached data set — no network. Falls back to a
+// full (re)load if nothing has been painted yet.
+function repaintMyDecks() {
+  if (!myDecksCache) { renderMyDecksList(); return; }
+  const c = myDecksCache;
+  paintMyDecks(c.localDecks, c.cloudById, { cloudOnly: c.cloudOnly, categories: c.categories, scope: c.scope, loading: false });
+}
+
+// Renders whichever view is active from an already-scoped deck set, applying the
+// title search first. `loading` marks a first paint still awaiting the cloud.
+function paintMyDecks(localDecks, cloudById, { cloudOnly = [], categories = webDeckCategories, scope = "", loading = false } = {}) {
+  myDecksCache = { localDecks, cloudById, cloudOnly, categories, scope };
+  myDecksRendered = { local: localDecks, cloudOnly };
+  const search = (state.myDecksSearch || "").trim().toLowerCase();
+  const matches = (deck) => !search || String(deck.title || "").toLowerCase().includes(search);
+  const entries = [
+    ...localDecks.filter(matches).map((deck) => ({ deck, kind: "local" })),
+    ...cloudOnly.filter(matches).map((deck) => ({ deck, kind: "cloud" })),
+  ];
+  const ctx = { cloudById, categories, scope, search, loading, totalDecks: localDecks.length + cloudOnly.length };
+  syncMyDecksChrome();
+  if (state.myDecksView === "grid") renderMyDecksGridView(entries, ctx);
+  else if (state.myDecksView === "folder") renderMyDecksFolderView(entries, ctx);
+  else renderMyDecksTreeView(entries, ctx);
   updateMyDecksBulkBar();
 }
 
+// Guards against a stale cloud fetch overwriting a newer render.
+let myDecksRenderSeq = 0;
+
 async function renderMyDecksList() {
-  const tbody = el.myDecksListTable;
-  if (!tbody) return;
+  if (!el.myDecksBody) return;
+  const seq = ++myDecksRenderSeq;
 
   const localDecks = listLocalDecks();
   const localCloudIds = new Set(localDecks.map((d) => String(d.deckId)).filter((id) => id && id !== "null"));
-
   const canCloud = Boolean(supabaseClient && isSignedIn);
 
-  let categories = categoriesFromDecks(localDecks, webDeckCategories);
+  // Category lists (for the filter and the inline per-row category editor) include
+  // empty "known" folders so they can be selected before a deck lands.
+  let categories = categoriesFromDecks(localDecks, [...webDeckCategories, ...readKnownFolders()]);
   let selectedCategory = populateMyDecksCategoryFilter(categories);
-  const inCategory = (deck) => !selectedCategory || normalizeDeckCategory(deck.category) === selectedCategory;
+  const inScope = (deck) => !selectedCategory || isCategoryUnder(deck.category, selectedCategory);
 
-  // Render on-device rows immediately (with a tentative Sync column) so the list
-  // never waits on the network; the cloud fetch below re-renders with the real
-  // sync state and appends any cloud-only decks.
-  renderMyDecksRows(localDecks.filter(inCategory), null, { categories });
+  // Paint on-device decks immediately (tentative Sync column) so the library never
+  // waits on the network; the cloud fetch below repaints with real sync state.
+  paintMyDecks(localDecks.filter(inScope), null, { categories, scope: selectedCategory, loading: canCloud && navigator.onLine });
 
-  if (!(canCloud && navigator.onLine)) {
-    if (!localDecks.length) {
-      tbody.innerHTML = myDecksEmptyRow(
-        canCloud
-          ? "No decks on this device yet. Create or import a deck — it saves and syncs automatically."
-          : "No decks yet. Create or import a deck to get started."
-      );
-    } else if (!localDecks.filter(inCategory).length) {
-      tbody.innerHTML = myDecksEmptyRow("No decks in this category.");
-    }
-    return;
-  }
-
-  const loadingRow = document.createElement("tr");
-  loadingRow.innerHTML = `<td colspan="7" class="web-decks-empty">Checking the cloud for more decks…</td>`;
-  tbody.appendChild(loadingRow);
+  if (!(canCloud && navigator.onLine)) return;
 
   try {
     const cloudDecks = await fetchCloudDeckList();
+    if (seq !== myDecksRenderSeq) return; // a newer render superseded this one
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudOnly = cloudDecks.filter((deck) => !localCloudIds.has(String(deck.id)) && !isDeckTombstoned(deck.id));
-    categories = categoriesFromDecks([...localDecks, ...cloudOnly], webDeckCategories);
-    setKnownWebDeckCategories(categories);
+    categories = categoriesFromDecks([...localDecks, ...cloudOnly], [...webDeckCategories, ...readKnownFolders()]);
+    setKnownWebDeckCategories(categoriesFromDecks([...localDecks, ...cloudOnly], webDeckCategories));
     selectedCategory = populateMyDecksCategoryFilter(categories);
-    const visibleLocal = localDecks.filter(inCategory);
-    const visibleCloudOnly = cloudOnly.filter(inCategory);
-    renderMyDecksRows(visibleLocal, cloudById, { cloudOnly: visibleCloudOnly, categories });
-    if (!localDecks.length && !cloudOnly.length) {
-      tbody.innerHTML = myDecksEmptyRow("No decks yet. Create or import a deck — it saves and syncs automatically.");
-    } else if (!visibleLocal.length && !visibleCloudOnly.length) {
-      tbody.innerHTML = myDecksEmptyRow("No decks in this category.");
-    }
+    const inScope2 = (deck) => !selectedCategory || isCategoryUnder(deck.category, selectedCategory);
+    paintMyDecks(localDecks.filter(inScope2), cloudById, { cloudOnly: cloudOnly.filter(inScope2), categories, scope: selectedCategory, loading: false });
   } catch (error) {
-    loadingRow.remove();
+    if (seq !== myDecksRenderSeq) return;
     console.warn("Could not fetch cloud decks for My Decks", error);
-    if (!localDecks.length) {
-      tbody.innerHTML = myDecksEmptyRow("No decks on this device yet. (Couldn't reach the cloud right now.)");
-    }
+    // The on-device paint already stands; nothing more to show.
   }
 }
 
@@ -10783,21 +11693,23 @@ function installManifestLink() {
   document.head.appendChild(link);
 }
 
-function createNewDeck() {
+function createNewDeck({ title = "New Deck", category = defaultDeckCategory, notesMode = false } = {}) {
+  const name = String(title || "New Deck").trim() || "New Deck";
+  const cat = normalizeDeckCategory(category);
   const doCreate = () => {
     deckAutosaveStorageFailed = false;
     state.deckId = null;
     // Detach from any previously-loaded library entry so this new deck saves as
     // its own entry rather than overwriting the deck that was just open.
     state.localDeckId = null;
-    state.deckTitle = "New Deck";
-    state.deckCategory = defaultDeckCategory;
+    state.deckTitle = name;
+    state.deckCategory = cat;
     state.notes = "";
-    state.sourceTitle = "New Deck";
-    state.importTitleHint = "New Deck";
+    state.sourceTitle = name;
+    state.importTitleHint = name;
     state.masterCards = [];
     resetStudyDeck(state.masterCards);
-    setViewMode("cards");
+    setViewMode(notesMode ? "notes" : "cards");
     closeImportPanel();
     closeAllCardsPanel();
     showCard();
@@ -10808,6 +11720,23 @@ function createNewDeck() {
   } else {
     doCreate();
   }
+}
+
+// Creates a deck inside a folder from the My Decks library: prompts for a title,
+// files it under `folderPath`, closes the panel, and drops the user into the new
+// deck in notes mode ready to write. The deck is filed under `folderPath` (set on
+// state.deckCategory) and persists to the library + cloud on the first edit via
+// autosave — the library never stores a truly empty deck.
+function newDeckInFolder(folderPath = "") {
+  const cat = normalizeDeckCategory(folderPath);
+  const where = cat === defaultDeckCategory ? "" : ` in "${cat}"`;
+  showPromptModal("New deck", `Name your new deck${where}. Start adding notes and cards right away.`, "New Deck", (title) => {
+    const name = String(title || "").trim();
+    if (!name) { showToast("Deck name can't be empty", "error"); return; }
+    createNewDeck({ title: name, category: cat, notesMode: true });
+    closeMyDecksPanel();
+    showToast(`New deck "${name}"${where} — add notes or cards to save it`);
+  });
 }
 
 
@@ -10902,6 +11831,52 @@ el.syncNowBtn?.addEventListener("click", () => {
 });
 el.closeMyDecksBtn?.addEventListener("click", closeMyDecksPanel);
 el.myDecksRefreshBtn?.addEventListener("click", () => renderMyDecksList());
+
+// The folder new decks/folders are created under: the cwd in Folder view, else the
+// scope-filter value (root when neither is set).
+function currentMyDecksFolder() {
+  if (state.myDecksView === "folder") return state.myDecksCwd || "";
+  return el.myDecksCategoryFilter?.value || "";
+}
+el.myDecksNewFolderBtn?.addEventListener("click", () => createFolder(currentMyDecksFolder()));
+el.myDecksNewDeckBtn?.addEventListener("click", () => newDeckInFolder(currentMyDecksFolder()));
+
+// View switcher (Grid / Folder / Tree) — pure presentation, repaint from cache.
+el.myDecksViewSwitch?.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-mydecks-view]");
+  if (!btn) return;
+  setMyDecksView(btn.dataset.mydecksView);
+  repaintMyDecks();
+});
+
+// Display toggle (Tiles / List) — pure presentation, repaint from cache.
+el.myDecksDisplayToggle?.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-mydecks-display]");
+  if (!btn) return;
+  setMyDecksDisplay(btn.dataset.mydecksDisplay);
+  repaintMyDecks();
+});
+
+// Expand-all / Collapse-all (Tree view)
+el.myDecksTreeToggleAll?.addEventListener("click", () => {
+  setAllFoldersExpanded(el.myDecksTreeToggleAll.dataset.expandAll === "1");
+});
+
+// Title search (debounced) — filters the cached set, no refetch.
+let myDecksSearchTimer = null;
+el.myDecksSearch?.addEventListener("input", (e) => {
+  const value = e.target.value;
+  clearTimeout(myDecksSearchTimer);
+  myDecksSearchTimer = setTimeout(() => { state.myDecksSearch = value; repaintMyDecks(); }, 160);
+});
+
+// Close any open deck-tile overflow menu on an outside click or Escape.
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".deck-tile-overflow")) closeAllDeckTileMenus();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeAllDeckTileMenus();
+});
 el.closeImportBtn.addEventListener("click", closeImportPanel);
 el.closeImportSelectorBtn.addEventListener("click", closeImportSelectorPanel);
 el.importSelectorCancelBtn.addEventListener("click", closeImportSelectorPanel);
@@ -10915,7 +11890,8 @@ el.myDecksCategoryFilter?.addEventListener("change", () => renderMyDecksList());
 
 el.myDecksSelectAllCheckbox?.addEventListener("change", (e) => {
   const checked = e.target.checked;
-  el.myDecksListTable?.querySelectorAll(".my-deck-row-checkbox").forEach((cb) => {
+  const host = el.myDecksBody || el.myDecksListTable;
+  host?.querySelectorAll(".my-deck-row-checkbox").forEach((cb) => {
     cb.checked = checked;
   });
   updateMyDecksBulkBar();
@@ -11553,7 +12529,7 @@ el.answerEdit.addEventListener('blur', (e) => {
 
 
 if (el.newDeckBtn) {
-  el.newDeckBtn.addEventListener("click", createNewDeck);
+  el.newDeckBtn.addEventListener("click", () => createNewDeck());
 }
 
 function addBlankCardAtCursor() {
