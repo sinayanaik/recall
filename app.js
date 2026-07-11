@@ -1500,6 +1500,16 @@ let draggedAllCardId = "";
 let printTitleBeforeExport = "";
 let printPreviewOpen = false;
 let allCardsAnswersVisible = false;
+// Dense one-line-per-card view for the All Cards panel — ideal for decks of
+// short entries (e.g. quick_notes single words / phrases). Persisted so the
+// preference sticks across sessions.
+let allCardsCompact = localStorage.getItem("recall:allCardsCompact") === "1";
+// Status filter for the All Cards panel: "all" | "none" (uncategorized) |
+// "review" | "known". Applied as a data-attr on the list so it's a pure CSS
+// hide/show that survives status changes without a re-render.
+const ALL_CARDS_FILTERS = new Set(["all", "none", "review", "known"]);
+let allCardsFilter = localStorage.getItem("recall:allCardsFilter") || "all";
+if (!ALL_CARDS_FILTERS.has(allCardsFilter)) allCardsFilter = "all";
 const pdfPrintStyleId = "pdfPrintStyle";
 let liveQuestionFitFrame = 0;
 let markdownTableFitFrame = 0;
@@ -1566,6 +1576,8 @@ const el = {
   allCardsList: document.querySelector("#allCardsList"),
   allCardsSummary: document.querySelector("#allCardsSummary"),
   toggleAllAnswersBtn: document.querySelector("#toggleAllAnswersBtn"),
+  toggleCompactBtn: document.querySelector("#toggleCompactBtn"),
+  allCardsFilter: document.querySelector("#allCardsFilter"),
   closeAllCardsBtn: document.querySelector("#closeAllCardsBtn"),
   styleBtn: document.querySelector("#styleBtn"),
   stylePanel: document.querySelector("#stylePanel"),
@@ -1601,6 +1613,7 @@ const el = {
   questionEdit: document.querySelector("#questionEdit"),
   answerEdit: document.querySelector("#answerEdit"),
   deleteCardBtn: document.querySelector("#deleteCardBtn"),
+  goToNotesBtn: document.querySelector("#goToNotesBtn"),
   addCardBtn: document.querySelector("#addCardBtn"),
   positionText: document.querySelector("#positionText"),
   scoreText: document.querySelector("#scoreText"),
@@ -1663,6 +1676,8 @@ const el = {
   editNotesBtn: document.querySelector("#editNotesBtn"),
   makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
   makeCardFromNotesBtn: document.querySelector("#makeCardFromNotesBtn"),
+  makeCardFromQuestionBtn: document.querySelector("#makeCardFromQuestionBtn"),
+  makeCardFromAnswerBtn: document.querySelector("#makeCardFromAnswerBtn"),
   frameCardModal: document.querySelector("#frameCardModal"),
   frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
@@ -6149,6 +6164,9 @@ function updateAllCardStatuses() {
       button.classList.toggle("is-active", button.dataset.allStatus === status);
     });
   });
+  // A card whose status just changed may fall in/out of an active filter —
+  // refresh the CSS filter + header count so it drops out (or the count updates).
+  applyAllCardsFilter();
 }
 
 function allCardById(cardId) {
@@ -6281,6 +6299,8 @@ function flipAllCard(item) {
 function adjustCornellRowHeight(row) {
   if (!row) return;
   row.style.minHeight = "";
+  // Compact rows size to their content — no forced min-height.
+  if (row.closest(".all-cards-list.is-compact")) return;
   const rail = row.querySelector(".cornell-question-rail");
   const question = rail?.querySelector(".rendered");
   const answerCell = row.querySelector(".cornell-answer-cell");
@@ -6308,6 +6328,62 @@ function updateAllAnswersToggleButton() {
   el.toggleAllAnswersBtn.setAttribute("aria-pressed", allCardsAnswersVisible ? "true" : "false");
 }
 
+function updateCompactToggleButton() {
+  if (!el.toggleCompactBtn) return;
+  el.toggleCompactBtn.classList.toggle("is-active", allCardsCompact);
+  el.toggleCompactBtn.setAttribute("aria-pressed", allCardsCompact ? "true" : "false");
+}
+
+// Toggle the dense one-line-per-card view. Pure CSS switch on the list, so no
+// re-render is needed — just clear the JS-computed inline row heights (compact
+// rows size to their content) and re-measure.
+function setAllCardsCompact(on) {
+  allCardsCompact = Boolean(on);
+  localStorage.setItem("recall:allCardsCompact", allCardsCompact ? "1" : "0");
+  updateCompactToggleButton();
+  if (el.allCardsList) {
+    el.allCardsList.classList.toggle("is-compact", allCardsCompact);
+    el.allCardsList.querySelectorAll(".cornell-card").forEach((row) => { row.style.minHeight = ""; });
+    if (!allCardsCompact) adjustCornellRows(el.allCardsList);
+  }
+}
+
+// Number of cards matching the active status filter.
+function allCardsFilterMatchCount() {
+  if (allCardsFilter === "all") return state.masterCards.length;
+  return state.masterCards.filter((card) => {
+    const status = normalizeCardStatus(state.statusById[card.id]);
+    return allCardsFilter === "none" ? !status : status === allCardsFilter;
+  }).length;
+}
+
+// Reflect the active filter on the list (drives the CSS hide/show), the filter
+// buttons, and the header count. Called on render, on filter change, and after
+// a status change (so a card toggled under an active filter drops out live).
+function applyAllCardsFilter() {
+  if (el.allCardsList) el.allCardsList.dataset.filter = allCardsFilter;
+  if (el.allCardsFilter) {
+    el.allCardsFilter.querySelectorAll("[data-filter]").forEach((btn) => {
+      btn.classList.toggle("is-active", btn.dataset.filter === allCardsFilter);
+    });
+  }
+  if (el.allCardsSummary) {
+    const total = state.masterCards.length;
+    const totalLabel = `${total} ${total === 1 ? "card" : "cards"}`;
+    if (allCardsFilter === "all") {
+      el.allCardsSummary.textContent = totalLabel;
+    } else {
+      el.allCardsSummary.textContent = `${allCardsFilterMatchCount()} of ${totalLabel}`;
+    }
+  }
+}
+
+function setAllCardsFilter(filter) {
+  allCardsFilter = ALL_CARDS_FILTERS.has(filter) ? filter : "all";
+  localStorage.setItem("recall:allCardsFilter", allCardsFilter);
+  applyAllCardsFilter();
+}
+
 async function setAllCardsAnswersVisible(visible) {
   allCardsAnswersVisible = Boolean(visible);
   updateAllAnswersToggleButton();
@@ -6329,8 +6405,10 @@ async function renderAllCards() {
   const cards = state.masterCards;
   const renderId = allCardsRenderId;
   el.allCardsList.innerHTML = "";
-  el.allCardsSummary.textContent = `${cards.length} ${cards.length === 1 ? "card" : "cards"}`;
+  el.allCardsList.classList.toggle("is-compact", allCardsCompact);
   updateAllAnswersToggleButton();
+  updateCompactToggleButton();
+  applyAllCardsFilter();
 
   for (const [index, card] of cards.entries()) {
     if (renderId !== allCardsRenderId) return;
@@ -6865,13 +6943,57 @@ document.addEventListener("pointerdown", (event) => {
   closeNotesToc();
 });
 
-// ── Select text in notes (rendered OR raw) → make a flashcard in this deck ──
-// Highlighting text/images in the notes preview, or a text range in the raw
-// markdown editor, floats a "+ Make card · N words" pill next to the
-// selection; tapping it opens the frame-card modal where the captured
-// selection (serialized back to markdown, so images and math survive) is
-// previewed as the ANSWER and the user frames the question.
+// ── Select text in notes OR a card (rendered OR raw) → make a flashcard ──
+// Highlighting text/images in the notes preview, a card's question/answer
+// preview, or a text range in any of their raw markdown editors, floats a
+// "+ Make card · N words" pill next to the selection; tapping it opens the
+// frame-card modal where the captured selection (serialized back to
+// markdown, so images and math survive) is previewed as the ANSWER and the
+// user frames the question.
 // Works offline — the new card syncs with the normal flow.
+
+// The three faces that support "select text → make a flashcard". Only one is
+// ever active at a time: notes while state.viewMode === "notes", question/
+// answer while state.viewMode === "cards".
+const SELECTION_TARGETS = [
+  { name: "notes", view: el.notesView, edit: el.notesEdit, isActive: () => state.viewMode === "notes" },
+  { name: "question", view: el.questionView, edit: el.questionEdit, isActive: () => state.viewMode === "cards" },
+  { name: "answer", view: el.answerView, edit: el.answerEdit, isActive: () => state.viewMode === "cards" },
+];
+
+function isTargetEditing(target) {
+  return Boolean(target.edit && !target.edit.hidden);
+}
+
+// The active target (if any) currently in raw-edit mode with a live,
+// non-collapsed selection in its textarea.
+function activeEditingTarget() {
+  return (
+    SELECTION_TARGETS.find((t) => {
+      if (!t.isActive() || !isTargetEditing(t)) return false;
+      const { selectionStart, selectionEnd } = t.edit;
+      return selectionStart !== selectionEnd;
+    }) || null
+  );
+}
+
+// The active target (if any) whose RENDERED view contains the live selection.
+function activeRenderedTarget() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  return (
+    SELECTION_TARGETS.find(
+      (t) =>
+        t.isActive() &&
+        !isTargetEditing(t) &&
+        t.view &&
+        !t.view.hidden &&
+        t.view.contains(selection.anchorNode) &&
+        t.view.contains(selection.focusNode)
+    ) || null
+  );
+}
+
 let notesSelectionTimer = null;
 
 function hideNotesSelectionButton() {
@@ -6881,12 +7003,12 @@ function hideNotesSelectionButton() {
 }
 
 // The live selection's range, but only when it's a real selection inside the
-// rendered notes view.
-function notesSelectionRange() {
+// given target's rendered view.
+function notesSelectionRange(target) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
-  if (!el.notesView || el.notesView.hidden) return null;
-  if (!el.notesView.contains(selection.anchorNode) || !el.notesView.contains(selection.focusNode)) return null;
+  if (!target?.view || target.view.hidden) return null;
+  if (!target.view.contains(selection.anchorNode) || !target.view.contains(selection.focusNode)) return null;
   return selection.getRangeAt(0);
 }
 
@@ -6907,11 +7029,11 @@ function cleanedSelectionFragment(range) {
 // (the common case — dragging across a few lines of a longer block) falls
 // through to its inline-code rule instead, which collapses every newline to
 // a space and drops the language. Returns null for a non-code selection.
-function notesSelectionCodeFence(range) {
+function notesSelectionCodeFence(range, target) {
   const anchor = range.commonAncestorContainer;
   const node = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
   const codeEl = node?.closest?.("code");
-  if (!codeEl || !el.notesView?.contains(codeEl)) return null;
+  if (!codeEl || !target?.view?.contains(codeEl)) return null;
   const raw = range.toString();
   if (!raw.trim()) return null;
   const langMatch = codeEl.className.match(/language-([\w+-]*)/);
@@ -6924,8 +7046,8 @@ function notesSelectionCodeFence(range) {
 // etc. survive into the card. selection.toString() would only give plain
 // text — for a selected image it literally yields the "Zoom" button label of
 // its .diagram-shell wrapper.
-function notesSelectionMarkdown(range) {
-  const codeFence = notesSelectionCodeFence(range);
+function notesSelectionMarkdown(range, target) {
+  const codeFence = notesSelectionCodeFence(range, target);
   if (codeFence) return codeFence;
   const fragment = cleanedSelectionFragment(range);
   const markdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
@@ -6953,9 +7075,9 @@ function findRawCodeFence(value, start, end) {
 // query. If the selection is the inner lines of an existing fence (fence
 // markers just outside the selected range), re-wraps it in that same fence
 // + language so it doesn't turn into unfenced plain text on the new card.
-function notesEditSelectionText() {
-  if (!isNotesEditing()) return "";
-  const { selectionStart, selectionEnd, value } = el.notesEdit;
+function notesEditSelectionText(target) {
+  if (!isTargetEditing(target)) return "";
+  const { selectionStart, selectionEnd, value } = target.edit;
   if (selectionStart === selectionEnd) return "";
   const raw = value.slice(selectionStart, selectionEnd);
   if (/^```/.test(raw.trim())) return raw;
@@ -6963,13 +7085,16 @@ function notesEditSelectionText() {
   return fence ? `\`\`\`${fence.language}\n${raw}\n\`\`\`` : raw;
 }
 
-// The current selection's markdown, regardless of whether notes are being
-// viewed (rendered) or edited (raw) — shared by the floating pill and the
-// persistent toolbar button.
+// The current selection's markdown, regardless of which face (notes,
+// question, answer) is active and whether it's viewed (rendered) or edited
+// (raw) — shared by the floating pill and the persistent header buttons.
 function currentNotesSelectionMarkdown() {
-  if (isNotesEditing()) return notesEditSelectionText().trim();
-  const range = notesSelectionRange();
-  return range ? notesSelectionMarkdown(range) : "";
+  const editingTarget = activeEditingTarget();
+  if (editingTarget) return notesEditSelectionText(editingTarget).trim();
+  const renderedTarget = activeRenderedTarget();
+  if (!renderedTarget) return "";
+  const range = notesSelectionRange(renderedTarget);
+  return range ? notesSelectionMarkdown(range, renderedTarget) : "";
 }
 
 function scheduleNotesSelectionCheck() {
@@ -7039,13 +7164,10 @@ function textareaSelectionRect(textarea) {
 function positionNotesSelectionButton() {
   const button = el.makeCardFromSelectionBtn;
   if (!button) return;
-  if (state.viewMode !== "notes") {
-    hideNotesSelectionButton();
-    return;
-  }
 
-  if (isNotesEditing()) {
-    const raw = notesEditSelectionText();
+  const editingTarget = activeEditingTarget();
+  if (editingTarget) {
+    const raw = notesEditSelectionText(editingTarget);
     const text = raw.trim();
     if (!text) {
       hideNotesSelectionButton();
@@ -7062,8 +7184,8 @@ function positionNotesSelectionButton() {
     // Track the actual selection (same approach as the rendered-view branch
     // below) instead of parking in the textarea's corner regardless of where
     // the selection actually is.
-    const selRect = textareaSelectionRect(el.notesEdit);
-    const editRect = el.notesEdit.getBoundingClientRect();
+    const selRect = textareaSelectionRect(editingTarget.edit);
+    const editRect = editingTarget.edit.getBoundingClientRect();
     const btnRect = button.getBoundingClientRect();
     const margin = 8;
     let top = selRect.bottom + margin;
@@ -7080,7 +7202,8 @@ function positionNotesSelectionButton() {
     return;
   }
 
-  const range = notesSelectionRange();
+  const renderedTarget = activeRenderedTarget();
+  const range = renderedTarget ? notesSelectionRange(renderedTarget) : null;
   const fragment = range ? cleanedSelectionFragment(range) : null;
   const text = fragment ? fragment.textContent.trim() : "";
   const imageCount = fragment ? fragment.querySelectorAll("img").length : 0;
@@ -7091,7 +7214,7 @@ function positionNotesSelectionButton() {
   const rect = range.getBoundingClientRect();
   // Capture the selection as markdown now: tapping the button may dissolve
   // the selection before the click handler runs.
-  button.dataset.selectionText = notesSelectionMarkdown(range);
+  button.dataset.selectionText = notesSelectionMarkdown(range, renderedTarget);
   // Show how much is being captured, so the selection size is obvious.
   const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
   const parts = [];
@@ -7113,7 +7236,7 @@ function positionNotesSelectionButton() {
   button.style.left = `${left}px`;
 }
 
-function addCardFromNotes(question, answer) {
+function addCardFromNotes(question, answer, noteAnchor = null) {
   const card = {
     // Random suffix: bare Date.now() collides when cards are created from
     // several selections in quick succession.
@@ -7121,6 +7244,11 @@ function addCardFromNotes(question, answer) {
     question,
     answer
   };
+  // Remember where in these notes the answer came from, so the card can offer
+  // a "Go to notes" jump back to that exact spot (see resolveCardNoteAnchor /
+  // jumpToNoteForCurrentCard). Only cards distilled from a notes selection get
+  // this; a selection made in a card face passes null.
+  if (noteAnchor && (noteAnchor.text || noteAnchor.source)) card.noteAnchor = noteAnchor;
   const refreshActive = activeDeckMatchesMasterOrder();
   state.masterCards.push(card);
   if (refreshActive) state.cards.push(card);
@@ -7131,7 +7259,7 @@ function addCardFromNotes(question, answer) {
   setStatus(state.deckId ? "Card added from notes locally. Sync to update the web deck." : "Card added from notes.");
 }
 
-function createCardFromNotesSelection(markdown) {
+function createCardFromNotesSelection(markdown, noteAnchor = null) {
   // The highlighted fact is what you want to recall — it becomes the ANSWER;
   // the user frames the question that should bring it to mind. The modal
   // shows exactly what was captured (rendered, images included) so there's
@@ -7159,7 +7287,7 @@ function createCardFromNotesSelection(markdown) {
       setStatus("Card not added — a question is required.", "error");
       return;
     }
-    addCardFromNotes(question, answer);
+    addCardFromNotes(question, answer, noteAnchor);
   };
   el.frameCardAddBtn.onclick = () => cleanup(true);
   el.frameCardCancelBtn.onclick = () => cleanup(false);
@@ -7171,44 +7299,303 @@ function createCardFromNotesSelection(markdown) {
   };
 }
 
-document.addEventListener("selectionchange", () => {
-  if (state.viewMode !== "notes") return;
-  scheduleNotesSelectionCheck();
-});
+// ── Card ⇄ Notes linking ───────────────────────────────────────────────────
+// A card distilled from a notes selection remembers where it came from
+// (captureNotesAnchor at creation time), and offers a "Go to notes" button
+// that switches to the notes view and scrolls/flashes that exact spot
+// (jumpToNoteForCurrentCard). The link survives note edits and cloud round-
+// trips: an explicit anchor is stored on the card when possible, and cards
+// that lost it (e.g. reloaded from a pre-feature cloud row) fall back to
+// matching their answer text against the current notes.
+
+// Strip markdown syntax down to the plain text a reader sees — used both to
+// build a searchable anchor snippet and to match a card's answer against the
+// rendered notes for the content fallback.
+function notesAnchorPlainText(src) {
+  return String(src || "")
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```[^\n]*\n?/g, "").replace(/```/g, "")) // code fences → inner text
+    .replace(/`([^`]*)`/g, "$1")                 // inline code
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")        // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")     // links → label
+    .replace(/\{\{|\}\}/g, "")                   // cloze braces
+    .replace(/[*_~>#]+/g, "")                    // inline emphasis / heading / quote markers
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Snapshot of where the current NOTES selection sits, captured while the
+// selection is still live. Returns null for a selection made anywhere other
+// than the notes surface (so cards framed from a card face aren't note-linked).
+function captureNotesAnchor() {
+  const notes = state.notes || "";
+  if (!notes.trim()) return null;
+  const notesTarget = SELECTION_TARGETS[0]; // { name: "notes", ... }
+  if (state.viewMode !== "notes") return null;
+
+  // Raw editor: exact character offsets are available directly.
+  if (isTargetEditing(notesTarget)) {
+    const { selectionStart, selectionEnd } = notesTarget.edit;
+    if (selectionStart === selectionEnd) return null;
+    const source = notes.slice(selectionStart, selectionEnd);
+    const text = notesAnchorPlainText(source);
+    if (!source.trim() && !text) return null;
+    return { offset: selectionStart, source: source.slice(0, 400), text: text.slice(0, 400) };
+  }
+
+  // Rendered view: locate the selection back in the markdown source for an
+  // offset hint; the plain text is the reliable key for re-finding it.
+  const range = notesSelectionRange(notesTarget);
+  if (!range) return null;
+  const sel = renderedSelectionStrings(notesTarget.view);
+  const plain = (range.toString() || (sel && sel.asText) || "").trim();
+  let offset = null;
+  let source = "";
+  if (sel) {
+    const loc = locateSelectionInSource(notes, sel);
+    if (loc) {
+      offset = loc.idx;
+      source = notes.slice(loc.idx, loc.end);
+    }
+  }
+  if (!plain && !source) return null;
+  return { offset, source: source.slice(0, 400), text: plain.slice(0, 400) };
+}
+
+// Like captureNotesAnchor, but tags the anchor with the deck the notes belong
+// to — so a card stored in a DIFFERENT deck (a quick_notes pin) can navigate
+// back to the right deck first before searching its notes.
+function captureSourceAnchor() {
+  const anchor = captureNotesAnchor();
+  if (!anchor) return null;
+  anchor.deckLocalId = state.localDeckId || null;
+  anchor.deckId = state.deckId || null;
+  anchor.deckTitle = state.deckTitle || "";
+  return anchor;
+}
+
+// The note anchor to use for a card: its stored anchor, or a content fallback
+// when the card's answer text still appears in the notes. Returns null when
+// there's nothing to link to.
+function resolveCardNoteAnchor(card) {
+  if (!card) return null;
+  const stored = card.noteAnchor;
+  if (stored && (stored.text || stored.source)) {
+    // A cross-deck anchor (e.g. a quick_notes pin) points at ANOTHER deck's
+    // notes — trust it unconditionally; jumpToNoteForCurrentCard loads that
+    // deck before searching. A same-deck anchor only earns the button when this
+    // deck actually has notes to jump into.
+    if (stored.deckLocalId || stored.deckId) return stored;
+    return (state.notes || "").trim() ? stored : null;
+  }
+  // Content fallback (same deck only): the answer's text still sits in the notes.
+  const notes = state.notes || "";
+  if (!notes.trim()) return null;
+  const plain = notesAnchorPlainText(card.answer);
+  if (plain.length < 12) return null;
+  if (notesAnchorPlainText(notes).includes(plain)) return { offset: null, source: "", text: plain };
+  return null;
+}
+
+function cardHasNoteLink(card) {
+  return Boolean(resolveCardNoteAnchor(card));
+}
+
+// Character index of the anchor within raw state.notes (for raw-editor jumps),
+// or null if it can't be found.
+function resolveRawNoteIndex(anchor) {
+  const notes = state.notes || "";
+  const needle = anchor.source || anchor.text;
+  if (!needle) return null;
+  if (anchor.offset != null && notes.slice(anchor.offset, anchor.offset + needle.length) === needle) {
+    return anchor.offset;
+  }
+  let idx = notes.indexOf(needle);
+  if (idx === -1 && anchor.text) idx = notes.indexOf(anchor.text);
+  return idx === -1 ? null : idx;
+}
+
+// Build a DOM Range spanning the anchor text inside the rendered notes view, so
+// it can be scrolled to and flashed. Falls back to a shorter prefix when the
+// full selection can't be matched verbatim (e.g. the notes were edited since).
+function findRenderedNoteRange(anchor) {
+  const view = el.notesView;
+  const needle = (anchor.text || "").trim();
+  if (!view || !needle) return null;
+
+  const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
+  const segments = [];
+  let full = "";
+  let node;
+  while ((node = walker.nextNode())) {
+    segments.push({ node, start: full.length });
+    full += node.textContent;
+  }
+  if (!segments.length) return null;
+
+  let matchStart = full.indexOf(needle);
+  let matchLen = needle.length;
+  if (matchStart === -1) {
+    // The rendered text collapses source whitespace differently — retry with a
+    // short prefix, which is far likelier to survive verbatim.
+    const prefix = needle.slice(0, 40).trim();
+    matchStart = prefix ? full.indexOf(prefix) : -1;
+    if (matchStart === -1) return null;
+    matchLen = prefix.length;
+  }
+  const matchEnd = matchStart + matchLen;
+
+  const locate = (pos) => {
+    for (let i = segments.length - 1; i >= 0; i -= 1) {
+      if (pos >= segments[i].start) {
+        return { node: segments[i].node, offset: pos - segments[i].start };
+      }
+    }
+    return { node: segments[0].node, offset: 0 };
+  };
+
+  try {
+    const s = locate(matchStart);
+    const e = locate(matchEnd);
+    const range = document.createRange();
+    range.setStart(s.node, Math.min(s.offset, s.node.textContent.length));
+    range.setEnd(e.node, Math.min(e.offset, e.node.textContent.length));
+    return range;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Scroll to the anchor and briefly flash it. Handles both rendered and raw
+// notes. Returns true when it found and revealed the spot.
+function revealNoteAnchor(anchor) {
+  const notesTarget = SELECTION_TARGETS[0];
+  if (isTargetEditing(notesTarget)) {
+    const idx = resolveRawNoteIndex(anchor);
+    if (idx == null) return false;
+    const len = Math.max(1, (anchor.source || anchor.text || "").length);
+    const edit = notesTarget.edit;
+    edit.focus();
+    edit.setSelectionRange(idx, idx + len);
+    scrollTextareaToOffset(edit, idx);
+    return true;
+  }
+
+  const range = findRenderedNoteRange(anchor);
+  if (!range) return false;
+  const startEl = range.startContainer.nodeType === Node.TEXT_NODE
+    ? range.startContainer.parentElement
+    : range.startContainer;
+  const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
+  (block || el.notesView).scrollIntoView({ behavior: "smooth", block: "center" });
+  // The browser's own selection highlight makes the exact span obvious; the
+  // block flash draws the eye there first.
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  try { sel?.addRange(range); } catch (_) {}
+  if (block && block.classList) {
+    block.classList.add("note-anchor-flash");
+    setTimeout(() => block.classList.remove("note-anchor-flash"), 1800);
+  }
+  return true;
+}
+
+// Switch to the notes view (if needed) and reveal the anchor. setViewMode
+// re-renders the notes markdown asynchronously, so retry across a few frames
+// before giving up. Two rAFs cover the initial render; the timeout loop is a
+// belt-and-braces fallback for slower renders / a just-loaded deck.
+function scheduleNoteJump(anchor) {
+  if (state.viewMode !== "notes") setViewMode("notes");
+  const attempt = (retries) => {
+    if (revealNoteAnchor(anchor)) return;
+    if (retries > 0) setTimeout(() => attempt(retries - 1), 120);
+    else setStatus("Couldn't find that spot in the notes — it may have been edited.", "info");
+  };
+  requestAnimationFrame(() => requestAnimationFrame(() => attempt(8)));
+}
+
+// True when the currently-loaded deck is the one this anchor came from (so no
+// deck switch is needed before jumping).
+function onAnchorSourceDeck(anchor) {
+  if (anchor.deckLocalId) return anchor.deckLocalId === state.localDeckId;
+  if (anchor.deckId) return anchor.deckId === state.deckId;
+  return true; // no deck tag = same deck by construction (in-deck make-card)
+}
+
+function jumpToNoteForCurrentCard() {
+  const card = state.cards[state.current];
+  const anchor = resolveCardNoteAnchor(card);
+  if (!anchor) {
+    setStatus("This card isn't linked to a spot in the notes.", "error");
+    return;
+  }
+
+  if (onAnchorSourceDeck(anchor)) {
+    scheduleNoteJump(anchor);
+    return;
+  }
+
+  // Cross-deck anchor (quick_notes pin): open the source deck first, then jump.
+  setStatus("Opening the source deck…");
+  if (anchor.deckLocalId && loadDeckFromLibrary(anchor.deckLocalId)) {
+    scheduleNoteJump(anchor);
+    return;
+  }
+  if (anchor.deckId && supabaseClient && navigator.onLine) {
+    loadWebDeck(anchor.deckId)
+      .then(() => scheduleNoteJump(anchor))
+      .catch(() => setStatus("Couldn't open the source deck for this note.", "error"));
+    return;
+  }
+  setStatus("Couldn't open the source deck for this note — it isn't available on this device.", "error");
+}
+
+document.addEventListener("selectionchange", scheduleNotesSelectionCheck);
 
 // <textarea> selections don't fire the document "selectionchange" event
 // reliably across browsers, so raw/edit mode is covered separately via
-// direct mouse/keyboard selection events on the editor itself.
-el.notesEdit?.addEventListener("mouseup", scheduleNotesSelectionCheck);
-el.notesEdit?.addEventListener("keyup", scheduleNotesSelectionCheck);
-el.notesEdit?.addEventListener("select", scheduleNotesSelectionCheck);
-el.notesEdit?.addEventListener("scroll", hideNotesSelectionButton, { passive: true });
+// direct mouse/keyboard selection events on each editor itself.
+[el.notesEdit, el.questionEdit, el.answerEdit].forEach((edit) => {
+  edit?.addEventListener("mouseup", scheduleNotesSelectionCheck);
+  edit?.addEventListener("keyup", scheduleNotesSelectionCheck);
+  edit?.addEventListener("select", scheduleNotesSelectionCheck);
+  edit?.addEventListener("scroll", hideNotesSelectionButton, { passive: true });
+});
 
 el.makeCardFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   // preventDefault keeps the selection from dissolving mid-tap.
   event.preventDefault();
   event.stopPropagation();
   const text = el.makeCardFromSelectionBtn.dataset.selectionText || "";
+  // Capture the note anchor while the selection is still live, before we clear it.
+  const anchor = captureNotesAnchor();
   hideNotesSelectionButton();
   window.getSelection()?.removeAllRanges();
-  createCardFromNotesSelection(text);
+  createCardFromNotesSelection(text, anchor);
 });
 
-el.notesView?.addEventListener("scroll", hideNotesSelectionButton, { passive: true });
+[el.notesView, el.questionView, el.answerView].forEach((view) => {
+  view?.addEventListener("scroll", hideNotesSelectionButton, { passive: true });
+});
 
 // Persistent alternative to the floating pill (which only appears while a
-// selection is live) — sits in the notes header and works from whatever text
-// is currently selected, rendered or raw, when tapped.
-el.makeCardFromNotesBtn?.addEventListener("click", () => {
-  const text = currentNotesSelectionMarkdown();
-  if (!text) {
-    setStatus("Select some text in your notes first, then tap this to turn it into a card.", "error");
-    return;
-  }
-  hideNotesSelectionButton();
-  window.getSelection()?.removeAllRanges();
-  createCardFromNotesSelection(text);
-});
+// selection is live) — sits in each face's header and works from whatever
+// text is currently selected there, rendered or raw, when tapped.
+function wireMakeCardButton(button, label) {
+  button?.addEventListener("click", () => {
+    const text = currentNotesSelectionMarkdown();
+    if (!text) {
+      setStatus(`Select some text in ${label} first, then tap this to turn it into a card.`, "error");
+      return;
+    }
+    const anchor = captureNotesAnchor();
+    hideNotesSelectionButton();
+    window.getSelection()?.removeAllRanges();
+    createCardFromNotesSelection(text, anchor);
+  });
+}
+wireMakeCardButton(el.makeCardFromNotesBtn, "your notes");
+wireMakeCardButton(el.makeCardFromQuestionBtn, "the question");
+wireMakeCardButton(el.makeCardFromAnswerBtn, "the answer");
 
 // ── Make a cloze from a rendered-view text selection ───────────────────────
 // Clozes ({{…}}) can be authored in the raw editor, but it's far quicker to
@@ -7464,7 +7851,9 @@ function createRenderToolbarHtml() {
     <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
     ${renderSplitControlHtml("color", "🎨", "text colour", RENDER_TEXT_COLORS)}
     ${renderSplitControlHtml("highlight", "🖍️", "highlight", RENDER_HIGHLIGHT_COLORS)}
-    <button type="button" class="render-btn make-cloze-btn" data-render-action="cloze" title="Cloze — hide the selection as a fill-in-the-blank">[&hellip;]</button>`;
+    <button type="button" class="render-btn make-cloze-btn" data-render-action="cloze" title="Cloze — hide the selection as a fill-in-the-blank">[&hellip;]</button>
+    <span class="edit-toolbar-divider" aria-hidden="true"></span>
+    <button type="button" class="render-btn render-quick-note" data-render-action="quick-note" title="Save selection to the quick_notes deck">📌</button>`;
 }
 
 // Paint the little swatch on each split-button's side control to the current
@@ -7605,6 +7994,20 @@ function handleRenderToolbarAction(btn, toolbar) {
 
   // Cloze reuses its dedicated driver (toggle + "already"/"removed" toasts).
   if (action === "cloze") return makeClozeFromSelection(config);
+
+  // Save the selection as a new card (question) in the quick_notes deck —
+  // same destination and behaviour as the raw-editor toolbar's 📌 button.
+  if (action === "quick-note") {
+    const sel = renderedSelectionStrings(config.view);
+    if (!sel) {
+      setStatus(`Select some text in the ${config.label} first, then tap 📌 to save it to quick_notes.`, "error");
+      return;
+    }
+    // Capture the source location while the selection is still live so the
+    // quick_notes card can offer a "Go to notes" jump back here.
+    saveQuickNote(sel.asMarkdown || sel.asText, btn, captureSourceAnchor());
+    return;
+  }
 
   // Plain inline toggles.
   const fn = RENDER_INLINE_FORMATS[action];
@@ -8127,6 +8530,7 @@ function buildDeckSummaryHtml() {
 }
 
 async function showCard(direction = 0) {
+  hideNotesSelectionButton();
   scheduleDeckAutosave();
   const token = state.transitionToken;
   state.previewCard = null;
@@ -8168,6 +8572,7 @@ async function showCard(direction = 0) {
   el.card.hidden = false;
   el.card.closest(".quiz-panel")?.classList.remove("deck-complete", "is-deck-empty");
   maybeShowSwipeHint();
+  if (el.goToNotesBtn) el.goToNotesBtn.hidden = !cardHasNoteLink(card);
   await renderMarkdown(el.questionView, card.question, true);
   await renderMarkdown(el.answerView, card.answer, true);
   // Fresh spans render hidden; reset the bulk button label to "Reveal clozes".
@@ -8586,7 +8991,9 @@ function deckSnapshot() {
       id: card.id || `${index}-${card.question.slice(0, 32)}`,
       question: card.question,
       answer: card.answer,
-      status: normalizeCardStatus(state.statusById[card.id])
+      status: normalizeCardStatus(state.statusById[card.id]),
+      // Preserve the note-link so "Go to notes" survives a save/reload.
+      ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
     }))
   };
 }
@@ -8618,7 +9025,11 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     .map((rawCard, index) => {
       const question = String(rawCard?.question || "").trim();
       const answer = String(rawCard?.answer || "").trim();
-      if (!question || !answer) return null;
+      // A card only needs a question — a blank answer is valid (front-only
+      // "capture now, fill later" cards, e.g. every quick_notes pin). Dropping
+      // answer-blank cards here silently emptied the quick_notes deck on load,
+      // while the cloud loader (loadWebDeck) kept them; this aligns the two.
+      if (!question) return null;
 
       let id = String(rawCard.id || `${index}-${question.slice(0, 32)}`);
       while (usedIds.has(id)) id = `${index}-${Math.random().toString(36).slice(2, 6)}-${id}`;
@@ -8627,7 +9038,11 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
       const status = normalizeCardStatus(rawCard?.status || payload.statusById?.[id]);
       if (status) statusById[id] = status;
 
-      return { id, question, answer };
+      const card = { id, question, answer };
+      // Carry the note-link through the snapshot round-trip so cards keep their
+      // "Go to notes" jump after a reload or a My Decks re-open.
+      if (rawCard?.noteAnchor && typeof rawCard.noteAnchor === "object") card.noteAnchor = rawCard.noteAnchor;
+      return card;
     })
     .filter(Boolean);
 
@@ -12653,6 +13068,13 @@ el.allCardsBtn.addEventListener("click", openAllCardsPanel);
 el.toggleAllAnswersBtn?.addEventListener("click", () => {
   setAllCardsAnswersVisible(!allCardsAnswersVisible);
 });
+el.toggleCompactBtn?.addEventListener("click", () => {
+  setAllCardsCompact(!allCardsCompact);
+});
+el.allCardsFilter?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-filter]");
+  if (btn) setAllCardsFilter(btn.dataset.filter);
+});
 el.closeAllCardsBtn.addEventListener("click", closeAllCardsPanel);
 el.allCardsList.addEventListener("click", (event) => {
   const gotoButton = event.target.closest("[data-all-goto]");
@@ -13113,6 +13535,7 @@ function toggleEditMode(side) {
   if (!currentCard) return;
 
   const isEditing = view.hidden;
+  hideNotesSelectionButton();
 
   if (!isEditing) {
     view.hidden = true;
@@ -13165,6 +13588,12 @@ el.editQuestionBtn.addEventListener('click', (e) => {
 el.editAnswerBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   toggleEditMode('answer');
+});
+
+el.goToNotesBtn?.addEventListener('click', (e) => {
+  // stopPropagation so tapping it doesn't also flip the card.
+  e.stopPropagation();
+  jumpToNoteForCurrentCard();
 });
 
 el.questionEdit.addEventListener('click', (e) => e.stopPropagation());
@@ -13821,13 +14250,13 @@ function createToolbarHtml(options = {}) {
 // Populate toolbars for static question & answer fields on load
 function initToolbars() {
   const qToolbar = el.questionEditToolbar;
-  if (qToolbar) qToolbar.innerHTML = createToolbarHtml();
+  if (qToolbar) qToolbar.innerHTML = createToolbarHtml({ quickNote: true });
 
   const aToolbar = el.answerEditToolbar;
   if (aToolbar) aToolbar.innerHTML = createToolbarHtml({ quickNote: true });
 
   const nToolbar = el.notesEditToolbar;
-  if (nToolbar) nToolbar.innerHTML = createToolbarHtml();
+  if (nToolbar) nToolbar.innerHTML = createToolbarHtml({ quickNote: true });
 
   if (el.questionEdit) enableSyntaxHighlighting(el.questionEdit);
   if (el.answerEdit) enableSyntaxHighlighting(el.answerEdit);
@@ -14237,10 +14666,13 @@ function handleToolbarClick(event) {
   // Quick note: save the selected text as a new card (question) in the
   // quick_notes web deck instead of formatting the textarea.
   if (button.dataset.action === "quick-note") {
+    // Capture before closing menus / dropping the selection, so a pin from the
+    // raw notes editor can link the quick_notes card back to this spot.
+    const anchor = captureSourceAnchor();
     document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach(d => {
       d.classList.remove("is-open");
     });
-    saveQuickNote(selectedText, button);
+    saveQuickNote(selectedText, button, anchor);
     return;
   }
 
@@ -14352,10 +14784,10 @@ async function ensureQuickNotesDeck(userId) {
 
 // Save the selected text as a new card (text becomes the question, answer left
 // blank to fill in later) appended to the quick_notes web deck.
-async function saveQuickNote(rawText, button) {
+async function saveQuickNote(rawText, button, sourceAnchor = null) {
   const text = String(rawText || "").trim();
   if (!text) {
-    setStatus("Select some text in the answer first to save a quick note.", "error");
+    setStatus("Select some text first to save a quick note.", "error");
     return;
   }
 
@@ -14403,7 +14835,13 @@ async function saveQuickNote(rawText, button) {
       .update({ updated_at: now, last_accessed_at: now })
       .eq("id", deckId);
 
-    appendCardToLocalLibraryDeck(deckId, { id: cardId, question: text, answer: "", status: null }, now);
+    // Attach the source location (deck + note offset) so the quick_notes card
+    // offers a "Go to notes" jump back to where it was pinned from. Stored on
+    // the local snapshot only — the cloud `cards` insert keeps its fixed
+    // columns, so a cross-device pull won't carry the link (acceptable).
+    const quickCard = { id: cardId, question: text, answer: "", status: null };
+    if (sourceAnchor && (sourceAnchor.text || sourceAnchor.source)) quickCard.noteAnchor = sourceAnchor;
+    appendCardToLocalLibraryDeck(deckId, quickCard, now);
 
     setStatus("Saved to quick_notes.");
     showToast("Saved to quick_notes");

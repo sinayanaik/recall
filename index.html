@@ -154,7 +154,9 @@
                   <div class="edit-toolbar" id="questionEditToolbar" hidden></div>
                   <div class="render-toolbar" id="questionRenderToolbar" data-render-target="question" aria-label="Format the selected question text"></div>
                   <div class="face-header-actions">
+                    <button class="edit-card-btn go-to-notes-btn" id="goToNotesBtn" type="button" title="Go to this card's source in the notes" aria-label="Go to this card's source in the notes" hidden>&#128196;</button>
                     <button class="edit-card-btn" id="deleteCardBtn" type="button" title="Delete card" aria-label="Delete card" style="color: #ff4a4a;">&#128465;</button>
+                    <button class="edit-card-btn" id="makeCardFromQuestionBtn" type="button" title="Make a flashcard from the selected question text" aria-label="Make a flashcard from the selected question text">&#10133;</button>
                     <button class="edit-card-btn edit-toggle-pill" id="editQuestionBtn" type="button" title="Edit question" aria-label="Edit question"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
                   </div>
                 </div>
@@ -170,6 +172,7 @@
                   <div class="edit-toolbar" id="answerEditToolbar" hidden></div>
                   <div class="render-toolbar" id="answerRenderToolbar" data-render-target="answer" aria-label="Format the selected answer text"></div>
                   <div class="face-header-actions">
+                    <button class="edit-card-btn" id="makeCardFromAnswerBtn" type="button" title="Make a flashcard from the selected answer text" aria-label="Make a flashcard from the selected answer text">&#10133;</button>
                     <button class="edit-card-btn edit-toggle-pill" id="editAnswerBtn" type="button" title="Edit answer" aria-label="Edit answer"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
                   </div>
                 </div>
@@ -204,8 +207,8 @@
               </div>
             </nav>
             <textarea class="edit-textarea notes-edit" id="notesEdit" hidden spellcheck="false" placeholder="Write your notes here…"></textarea>
-            <button class="notes-make-card-btn" id="makeCardFromSelectionBtn" type="button" hidden>&#43; Make card</button>
           </div>
+          <button class="notes-make-card-btn" id="makeCardFromSelectionBtn" type="button" hidden>&#43; Make card</button>
 
           <div class="controls" aria-label="Card actions">
             <button class="review" id="reviewBtn" type="button" title="Review" aria-label="Mark card for review" data-shortcut="Review (R)"><span aria-hidden="true">❌</span><span>Review</span></button>
@@ -326,6 +329,13 @@
             <p id="allCardsSummary">0 cards</p>
           </div>
           <div class="all-cards-head-actions">
+            <div class="all-cards-filter" id="allCardsFilter" role="group" aria-label="Filter cards by status">
+              <button class="all-cards-filter-btn is-active" type="button" data-filter="all">All</button>
+              <button class="all-cards-filter-btn" type="button" data-filter="none">Uncategorized</button>
+              <button class="all-cards-filter-btn" type="button" data-filter="review">Review</button>
+              <button class="all-cards-filter-btn" type="button" data-filter="known">Known</button>
+            </div>
+            <button class="all-answers-toggle" id="toggleCompactBtn" type="button" aria-pressed="false" title="Toggle a dense, one-line-per-card view">Compact</button>
             <button class="all-answers-toggle" id="toggleAllAnswersBtn" type="button" aria-pressed="false">Show answers</button>
             <button class="icon-button" id="closeAllCardsBtn" type="button" aria-label="Close all cards">&#215;</button>
           </div>
