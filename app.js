@@ -6203,7 +6203,11 @@ function commitNotesEditIfActive() {
   updateMeta();
 }
 
-function enterNotesEditing() {
+// `cursorOffset` (raw-markdown character index), when given, places the caret
+// there instead of the textarea's default start-of-text position — used by the
+// triple-click-to-edit handler below so switching to raw mode doesn't lose your
+// place.
+function enterNotesEditing(cursorOffset = null) {
   if (!el.notesEdit || isNotesEditing()) return;
   el.notesEdit.value = state.notes;
   el.notesView.hidden = true;
@@ -6216,7 +6220,94 @@ function enterNotesEditing() {
   hideNotesSelectionButton();
   el.notesEdit.dispatchEvent(new Event("input", { bubbles: true }));
   el.notesEdit.focus();
+  if (cursorOffset != null) {
+    const pos = Math.max(0, Math.min(cursorOffset, el.notesEdit.value.length));
+    el.notesEdit.setSelectionRange(pos, pos);
+    scrollTextareaToOffset(el.notesEdit, pos);
+  }
 }
+
+// ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
+// marked/the DOM give no source-position map back to the raw markdown, so this
+// is a best-effort text match: grab a short snippet of plain text immediately
+// before/after the click inside its block (paragraph/heading/list item/...),
+// then locate that snippet in state.notes with a regex tolerant of the
+// markdown syntax (**, `, [text](url), etc.) the renderer stripped out around
+// it. Returns null on no confident match — the caller just skips the cursor
+// hint rather than guessing wrong.
+const NOTES_BLOCK_SELECTOR = "p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th, dt, dd";
+
+function caretFromPoint(x, y) {
+  if (document.caretPositionFromPoint) {
+    const pos = document.caretPositionFromPoint(x, y);
+    return pos ? { node: pos.offsetNode, offset: pos.offset } : null;
+  }
+  if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(x, y);
+    return range ? { node: range.startContainer, offset: range.startOffset } : null;
+  }
+  return null;
+}
+
+// Character offset of (node, offset) within root's flattened text — Range
+// accepts either a text node + character offset or an element + child index,
+// so this works for both kinds of caret target.
+function textOffsetWithin(root, node, offset) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  } catch (_) {
+    return null;
+  }
+}
+
+function findRawOffsetForRenderedPoint(clientX, clientY) {
+  const caret = caretFromPoint(clientX, clientY);
+  if (!caret || !el.notesView?.contains(caret.node)) return null;
+
+  const startEl = caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : caret.node;
+  const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR);
+  if (!block || !el.notesView.contains(block)) return null;
+
+  const localOffset = textOffsetWithin(block, caret.node, caret.offset);
+  if (localOffset == null) return null;
+
+  const blockText = block.textContent || "";
+  const before = blockText.slice(Math.max(0, localOffset - 24), localOffset).trim();
+  const after = blockText.slice(localOffset, localOffset + 24).trim();
+  if (!before && !after) return null;
+
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const gap = "[^A-Za-z0-9]{0,8}"; // tolerates markdown syntax (**, `, [](), etc.) at the boundary
+  const pattern = before && after
+    ? `${escapeRe(before)}${gap}${escapeRe(after)}`
+    : escapeRe(before || after);
+
+  try {
+    const match = new RegExp(pattern).exec(state.notes);
+    if (!match) return null;
+    return before ? match.index + before.length : match.index;
+  } catch (_) {
+    return null;
+  }
+}
+
+// setSelectionRange alone doesn't reliably re-scroll a long textarea in every
+// browser, so approximate a centered scroll from the line number of `pos`.
+function scrollTextareaToOffset(textarea, pos) {
+  const before = textarea.value.slice(0, pos);
+  const lineIndex = (before.match(/\n/g) || []).length;
+  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+  textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
+}
+
+el.notesView?.addEventListener("click", (event) => {
+  if (event.detail !== 3 || isNotesEditing()) return;
+  if (event.target.closest("button, a")) return;
+  enterNotesEditing(findRawOffsetForRenderedPoint(event.clientX, event.clientY));
+});
 
 function setViewMode(mode) {
   const next = mode === "notes" ? "notes" : "cards";
