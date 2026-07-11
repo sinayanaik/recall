@@ -1724,6 +1724,63 @@ button:disabled {
   -webkit-user-select: text;
 }
 
+/* Headings sized close to body text (no giant browser-default jumps) but each
+   level still reads at a glance via its own color/weight/border/case combo —
+   big-and-bordered at the top tapering to small-caps "eyebrow" labels at the
+   bottom, rather than relying on font-size alone to carry the hierarchy. */
+.rendered h1 {
+  font-size: 1.15em;
+  font-weight: 800;
+  line-height: 1.3;
+  color: var(--accent-strong);
+  margin: 1.4em 0 0.6em;
+  padding-bottom: 0.25em;
+  border-bottom: 2px solid var(--accent);
+}
+.rendered h2 {
+  font-size: 1.08em;
+  font-weight: 800;
+  line-height: 1.35;
+  color: var(--text);
+  margin: 1.3em 0 0.5em;
+  padding-left: 0.6em;
+  border-left: 4px solid var(--accent);
+}
+.rendered h3 {
+  font-size: 1em;
+  font-weight: 800;
+  line-height: 1.4;
+  color: var(--accent-strong);
+  margin: 1.1em 0 0.4em;
+}
+.rendered h4 {
+  font-size: 1em;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1.4;
+  color: var(--text);
+  margin: 1em 0 0.35em;
+}
+.rendered h5 {
+  font-size: 0.95em;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0.9em 0 0.3em;
+}
+.rendered h6 {
+  font-size: 0.9em;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+  margin: 0.8em 0 0.3em;
+}
+
 /* Cloze deletion: hidden fill-in-the-blank that reveals on tap. */
 .cloze {
   cursor: pointer;
@@ -1856,9 +1913,22 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.card-question .rendered :is(h1, h2, h3) {
+/* The question face auto-fits its font size and centers/justifies its content
+   (see --question-fit-font-size) — the border/indent/uppercase treatment from
+   the general .rendered heading styles above would throw off that centering
+   and can clip under the fit-height cap, so headings here fall back to plain
+   text at the question's own size instead. */
+.card-question .rendered :is(h1, h2, h3, h4, h5, h6) {
   font-size: 1em;
+  font-weight: inherit;
+  font-style: inherit;
   line-height: inherit;
+  color: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .rendered :is(strong, b),
@@ -8253,12 +8323,6 @@ kbd {
   border-bottom: 1px solid var(--line);
   padding-bottom: 8px;
 }
-/* Only wrap while editing, so the raw-edit toolbar can drop to its own line. */
-.notes-head:has(> .edit-toolbar:not([hidden])) {
-  flex-wrap: wrap;
-}
-
-.notes-head .edit-toolbar,
 #makeCardFromNotesBtn {
   margin-left: auto;
 }
@@ -8267,6 +8331,32 @@ kbd {
    just needs its normal gap from the toolbar, not another shove right. */
 .notes-head .edit-toolbar:not([hidden]) ~ #makeCardFromNotesBtn {
   margin-left: 0;
+}
+
+/* Raw-edit toolbar, in the Notes header specifically: match the rendered-view
+   toolbar's placement (flows right after the label, not shoved to the far
+   right with a dead gap) and bare-strip styling (no boxed panel/border) —
+   the two toolbars occupy the same header slot and swap in and out of the
+   same spot, so they should look and sit the same way regardless of which
+   mode is active. Scoped to .notes-head so the question/answer card-face
+   toolbars (which have their own separate layout) are untouched. */
+.notes-head .edit-toolbar {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.notes-head .edit-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.notes-head .edit-toolbar button {
+  min-height: 26px !important;
+  height: 26px !important;
 }
 
 .notes-rendered {
@@ -8498,13 +8588,14 @@ kbd {
   padding: 0;
 }
 .notes-toc-item {
-  margin: 1px 0;
+  margin: 0;
 }
 .notes-toc-link {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px calc(8px + var(--toc-depth, 0) * 14px);
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 8px 3px 8px;
   border-radius: 8px;
   border-left: 2px solid transparent;
   color: var(--text);
@@ -8527,6 +8618,68 @@ kbd {
 .notes-toc-link[style*="--toc-depth: 0"] .notes-toc-text {
   font-weight: 700;
 }
+
+/* Tree rail: one 14px column per ancestor level plus a final elbow column,
+   rendered as real elements (not just indentation padding) so vertical guide
+   lines can run the full height of each row and connect seamlessly between
+   siblings — the classic file-tree/outline look. */
+.notes-toc-rail {
+  display: flex;
+  align-self: stretch;
+  flex: 0 0 auto;
+}
+.notes-toc-guide,
+.notes-toc-elbow {
+  position: relative;
+  width: 14px;
+  flex: 0 0 auto;
+  align-self: stretch;
+}
+/* Ancestor column: a straight line through the row only if that branch still
+   has more siblings coming later — otherwise it's already closed, so blank. */
+.notes-toc-guide[data-state="line"]::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--muted) 38%, transparent);
+}
+/* This item's own connector: drops from the parent's line down to mid-row,
+   then turns right toward the dot — a "└" for the last child, and with the
+   ::after continuation added below, a "├" when siblings follow. */
+.notes-toc-elbow::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  width: 8px;
+  height: 50%;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 48%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 48%, transparent);
+  border-bottom-left-radius: 5px;
+}
+.notes-toc-elbow[data-last="false"]::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--muted) 38%, transparent);
+}
+/* Highlight this row's own rail on hover/active so the path you're on stands out. */
+.notes-toc-link:hover .notes-toc-guide[data-state="line"]::before,
+.notes-toc-link:hover .notes-toc-elbow::before,
+.notes-toc-link:hover .notes-toc-elbow::after,
+.notes-toc-link.is-active .notes-toc-guide[data-state="line"]::before,
+.notes-toc-link.is-active .notes-toc-elbow::before,
+.notes-toc-link.is-active .notes-toc-elbow::after {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
 .notes-toc-dot {
   flex: 0 0 auto;
   width: 6px;

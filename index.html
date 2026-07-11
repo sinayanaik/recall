@@ -83,7 +83,7 @@
       </header>
 
       <section class="study-layout" aria-label="Flashcard study area">
-        <section class="quiz-panel" aria-label="Flashcard quiz">
+        <section class="quiz-panel is-deck-empty" aria-label="Flashcard quiz">
           <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="Deck view">
             <button class="is-active" type="button" data-view-mode="cards">&#9634; Cards</button>
             <button type="button" data-view-mode="notes">&#128221; Notes</button>
@@ -96,7 +96,7 @@
           </div>
 
           <div class="deck" id="deck">
-            <div class="deck-empty-state" id="deckEmptyState" hidden>
+            <div class="deck-empty-state" id="deckEmptyState">
               <div class="deck-empty-icon" id="deckEmptyIcon" aria-hidden="true">📚</div>
               <h2 class="deck-empty-title" id="deckEmptyTitle">Recall</h2>
               <p class="deck-empty-body" id="deckEmptyBody">Choose how to get started:</p>
@@ -144,7 +144,7 @@
               </div>
               <p class="swipe-hint-sub">Tap card to flip</p>
             </div>
-            <article class="card" id="card" tabindex="0" aria-label="Current quiz card">
+            <article class="card" id="card" tabindex="0" aria-label="Current quiz card" hidden>
               <div class="card-face card-question">
                 <div class="face-header">
                   <div class="face-label-row">

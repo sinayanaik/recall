@@ -4757,6 +4757,7 @@ function resetStudyDeck(cards = state.masterCards) {
   state.previewCard = null;
   state.flipped = false;
   resetResults();
+  resetCardUndoHistory();
 }
 
 
@@ -5652,8 +5653,74 @@ function goToCard(cardId) {
   }
 }
 
+// ── Structural card undo/redo (add / delete / reorder) ─────────────────────
+// Deliberately scoped to the card array only, not text edits — question/answer/
+// notes textareas already get native per-keystroke undo from the browser, and
+// folding those into this stack would replace that fine-grained undo with
+// coarse snapshot jumps. Reset whenever a different deck's cards are loaded
+// (see resetStudyDeck) so Ctrl+Z can't reach across decks.
+const CARD_UNDO_LIMIT = 50;
+let cardUndoStack = [];
+let cardRedoStack = [];
+
+function snapshotCardsState() {
+  return {
+    masterCards: state.masterCards.map((c) => ({ ...c })),
+    cards: state.cards.map((c) => ({ ...c })),
+    statusById: { ...state.statusById },
+    current: state.current,
+  };
+}
+
+function pushCardUndoSnapshot(snapshot) {
+  cardUndoStack.push(snapshot);
+  if (cardUndoStack.length > CARD_UNDO_LIMIT) cardUndoStack.shift();
+  cardRedoStack = [];
+}
+
+function resetCardUndoHistory() {
+  cardUndoStack = [];
+  cardRedoStack = [];
+}
+
+function restoreCardsState(snapshot) {
+  state.masterCards = snapshot.masterCards.map((c) => ({ ...c }));
+  state.cards = snapshot.cards.map((c) => ({ ...c }));
+  state.statusById = { ...snapshot.statusById };
+  state.current = state.cards.length ? Math.min(snapshot.current, state.cards.length - 1) : 0;
+  state.previewCard = null;
+  syncResults();
+  updateMeta();
+  showCard();
+  allCardsRenderId += 1;
+  renderAllCards();
+}
+
+function undoCardAction() {
+  if (!cardUndoStack.length) {
+    setStatus("Nothing to undo.");
+    return;
+  }
+  cardRedoStack.push(snapshotCardsState());
+  restoreCardsState(cardUndoStack.pop());
+  scheduleDeckAutosave();
+  setStatus("Undid last card change.");
+}
+
+function redoCardAction() {
+  if (!cardRedoStack.length) {
+    setStatus("Nothing to redo.");
+    return;
+  }
+  cardUndoStack.push(snapshotCardsState());
+  restoreCardsState(cardRedoStack.pop());
+  scheduleDeckAutosave();
+  setStatus("Redid card change.");
+}
+
 function deleteAllCard(cardId) {
-  showConfirmModal("Delete this card? This cannot be undone.", () => {
+  showConfirmModal("Delete this card?", () => {
+    pushCardUndoSnapshot(snapshotCardsState());
     state.masterCards = state.masterCards.filter(c => c.id !== cardId);
     state.cards = state.cards.filter(c => c.id !== cardId);
     delete state.statusById[cardId];
@@ -5662,7 +5729,7 @@ function deleteAllCard(cardId) {
     }
     showCard();
     renderAllCards();
-    setStatus(state.deckId ? "Card deleted locally. Sync to update the web deck." : "Card deleted.");
+    setStatus(state.deckId ? "Card deleted locally. Sync to update the web deck." : "Card deleted. Ctrl+Z to undo.");
   }, { confirmLabel: "Delete", danger: true });
 }
 
@@ -5714,6 +5781,7 @@ function insertCardAfter(cardId) {
 
   const currentCardId = state.cards[state.current]?.id || null;
   const shouldRefreshActiveDeck = activeDeckMatchesMasterOrder();
+  pushCardUndoSnapshot(snapshotCardsState());
   const newCard = createBlankCard();
   state.masterCards.splice(insertAfterIndex + 1, 0, newCard);
 
@@ -5779,6 +5847,7 @@ function reorderMasterCard(cardId, targetCardId, placement) {
 
   const currentCardId = state.cards[state.current]?.id || null;
   const shouldRefreshActiveDeck = activeDeckMatchesMasterOrder();
+  const beforeSnapshot = snapshotCardsState();
   const [card] = state.masterCards.splice(fromIndex, 1);
   let insertIndex = targetIndex + (placement === "after" ? 1 : 0);
   if (fromIndex < insertIndex) insertIndex -= 1;
@@ -5790,6 +5859,7 @@ function reorderMasterCard(cardId, targetCardId, placement) {
   }
 
   state.masterCards.splice(insertIndex, 0, card);
+  pushCardUndoSnapshot(beforeSnapshot);
   finishMasterCardReorder(cardId, shouldRefreshActiveDeck, currentCardId);
 }
 
@@ -6280,15 +6350,26 @@ function findRawOffsetForRenderedPoint(clientX, clientY) {
   if (!before && !after) return null;
 
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const gap = "[^A-Za-z0-9]{0,8}"; // tolerates markdown syntax (**, `, [](), etc.) at the boundary
+  // Lazy any-char (but not newline) gap: stripped markdown syntax isn't always
+  // punctuation-only — a link's `](https://example.com)` tail is full of letters
+  // and digits, so a gap restricted to non-alphanumeric chars can't skip over it.
+  // Newline is excluded so a short/generic word fragment can't spuriously bridge
+  // into an unrelated block elsewhere in the notes; lazy matching finds the
+  // nearest occurrence of the next literal run rather than over-consuming.
+  const gap = "[^\\n]{0,300}?";
+  // Fuzzify: keep alphanumeric runs literal, let every run of punctuation/whitespace
+  // in the snippet absorb stripped markdown syntax — not just the one at the click
+  // seam. A snippet like "bold text" must also match raw "**bold text**", where the
+  // stripped `**` sits mid-snippet (right after "text"), not at the before/after join.
+  const fuzzify = (s) => s.split(/([^A-Za-z0-9]+)/).map((part, i) => (i % 2 === 0 ? escapeRe(part) : gap)).join("");
   const pattern = before && after
-    ? `${escapeRe(before)}${gap}${escapeRe(after)}`
-    : escapeRe(before || after);
+    ? `(${fuzzify(before)})${gap}(${fuzzify(after)})`
+    : `(${fuzzify(before || after)})`;
 
   try {
     const match = new RegExp(pattern).exec(state.notes);
     if (!match) return null;
-    return before ? match.index + before.length : match.index;
+    return before ? match.index + match[1].length : match.index;
   } catch (_) {
     return null;
   }
@@ -6375,6 +6456,28 @@ function slugifyHeading(text, used) {
   return slug;
 }
 
+// Is `depths[i]` the last item among its own sibling group? (No later entry
+// at the same depth before the group is closed by something shallower.)
+function tocIsLastSibling(depths, i) {
+  const depth = depths[i];
+  for (let j = i + 1; j < depths.length; j++) {
+    if (depths[j] < depth) return true;
+    if (depths[j] === depth) return false;
+  }
+  return true;
+}
+
+// Does the ancestor guide line at `depth` still have a later sibling coming
+// (i.e. should the vertical rail continue straight through this row at that
+// column), or has that branch already closed?
+function tocGuideContinues(depths, i, depth) {
+  for (let j = i + 1; j < depths.length; j++) {
+    if (depths[j] < depth) return false;
+    if (depths[j] === depth) return true;
+  }
+  return false;
+}
+
 function buildNotesToc() {
   if (!el.notesView || !el.notesTocList) return;
   const used = new Set();
@@ -6400,12 +6503,13 @@ function buildNotesToc() {
     (min, h) => Math.min(min, Number(h.tagName[1])),
     6
   );
+  const depths = notesTocHeadings.map((h) => Math.min(Number(h.tagName[1]) - minLevel, 4));
 
   notesTocHeadings.forEach((heading, index) => {
     if (!heading.id) heading.id = slugifyHeading(heading.textContent, used);
     else used.add(heading.id);
     const level = Number(heading.tagName[1]);
-    const depth = Math.min(level - minLevel, 4);
+    const depth = depths[index];
 
     const li = document.createElement("li");
     li.className = "notes-toc-item";
@@ -6414,7 +6518,27 @@ function buildNotesToc() {
     link.href = `#${heading.id}`;
     link.dataset.tocIndex = String(index);
     link.style.setProperty("--toc-depth", String(depth));
+
+    // Tree rail: one column per ancestor level, plus an elbow connecting up
+    // to the parent chain and across to this item's dot — the last column
+    // is a "├" (more siblings follow) or "└" (last child) elbow, columns
+    // before it are plain vertical guides that only continue if that
+    // ancestor branch still has more siblings coming later in the list.
+    let rail = "";
+    for (let d = 0; d < depth; d++) {
+      if (d === depth - 1) {
+        rail += `<span class="notes-toc-elbow" data-last="${tocIsLastSibling(depths, index)}"></span>`;
+      } else {
+        // Column d represents the ancestor ONE level below it (d+1) — e.g.
+        // column 0 for a depth-3 item is its grandparent's level (depth 1),
+        // not the root's (depth 0); the root gets no column of its own since
+        // depth-0 headings never get a rail at all.
+        rail += `<span class="notes-toc-guide" data-state="${tocGuideContinues(depths, index, d + 1) ? "line" : "blank"}"></span>`;
+      }
+    }
+
     link.innerHTML =
+      (rail ? `<span class="notes-toc-rail" aria-hidden="true">${rail}</span>` : "") +
       `<span class="notes-toc-dot" data-level="${level}"></span>` +
       `<span class="notes-toc-text"></span>`;
     link.querySelector(".notes-toc-text").textContent = heading.textContent.trim();
@@ -6557,25 +6681,68 @@ function cleanedSelectionFragment(range) {
   return container;
 }
 
+// If the selection lands inside a rendered code block, rebuild the fence
+// directly from the raw selected text and the <code> element's language
+// class instead of going through the generic HTML→Markdown conversion —
+// Turndown's fenced-block rule only fires when the selection's boundary
+// crosses the whole <pre>; a selection that starts/ends *inside* the <code>
+// (the common case — dragging across a few lines of a longer block) falls
+// through to its inline-code rule instead, which collapses every newline to
+// a space and drops the language. Returns null for a non-code selection.
+function notesSelectionCodeFence(range) {
+  const anchor = range.commonAncestorContainer;
+  const node = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
+  const codeEl = node?.closest?.("code");
+  if (!codeEl || !el.notesView?.contains(codeEl)) return null;
+  const raw = range.toString();
+  if (!raw.trim()) return null;
+  const langMatch = codeEl.className.match(/language-([\w+-]*)/);
+  const lang = langMatch ? langMatch[1] : (codeEl.closest("pre")?.dataset.language || "").toLowerCase();
+  const trimmed = raw.replace(/^\n+|\n+$/g, "");
+  return `\`\`\`${lang}\n${trimmed}\n\`\`\``;
+}
+
 // Serialize the notes selection back to MARKDOWN, so images, math, bold text
 // etc. survive into the card. selection.toString() would only give plain
 // text — for a selected image it literally yields the "Zoom" button label of
 // its .diagram-shell wrapper.
 function notesSelectionMarkdown(range) {
+  const codeFence = notesSelectionCodeFence(range);
+  if (codeFence) return codeFence;
   const fragment = cleanedSelectionFragment(range);
   const markdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
   return markdown || fragment.textContent.trim();
 }
 
+// If [start, end) in the raw markdown sits inside an existing ```lang fence,
+// return its language and body bounds; else null. Used so selecting just the
+// inner lines of a code block (not the ``` marker lines themselves) still
+// keeps its fence + language when turned into a card.
+function findRawCodeFence(value, start, end) {
+  const fenceRe = /```([^\n`]*)\n([\s\S]*?)\n```/g;
+  let match;
+  while ((match = fenceRe.exec(value))) {
+    const bodyStart = match.index + 3 + match[1].length + 1;
+    const bodyEnd = bodyStart + match[2].length;
+    if (start >= bodyStart && end <= bodyEnd) return { language: match[1].trim() };
+  }
+  return null;
+}
+
 // The raw-textarea equivalent of notesSelectionRange(): plain selected text
 // (already markdown source, so no HTML→markdown conversion needed) plus its
 // image count, counted from markdown image syntax since there's no DOM to
-// query.
+// query. If the selection is the inner lines of an existing fence (fence
+// markers just outside the selected range), re-wraps it in that same fence
+// + language so it doesn't turn into unfenced plain text on the new card.
 function notesEditSelectionText() {
   if (!isNotesEditing()) return "";
   const { selectionStart, selectionEnd, value } = el.notesEdit;
   if (selectionStart === selectionEnd) return "";
-  return value.slice(selectionStart, selectionEnd);
+  const raw = value.slice(selectionStart, selectionEnd);
+  if (/^```/.test(raw.trim())) return raw;
+  const fence = findRawCodeFence(value, selectionStart, selectionEnd);
+  return fence ? `\`\`\`${fence.language}\n${raw}\n\`\`\`` : raw;
 }
 
 // The current selection's markdown, regardless of whether notes are being
@@ -6590,6 +6757,65 @@ function currentNotesSelectionMarkdown() {
 function scheduleNotesSelectionCheck() {
   if (notesSelectionTimer) clearTimeout(notesSelectionTimer);
   notesSelectionTimer = setTimeout(positionNotesSelectionButton, 160);
+}
+
+// Textareas have no native API for "where on screen is this selection" (the
+// rendered view gets that for free from Range.getBoundingClientRect()) — this
+// is the standard workaround: clone the textarea's box/font metrics into an
+// offscreen mirror div, split its text at the selection boundaries with
+// marker spans, and read the spans' positions back out. Returns a viewport-
+// relative rect, same shape as getBoundingClientRect().
+function textareaSelectionRect(textarea) {
+  const { selectionStart, selectionEnd, value } = textarea;
+  const style = getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  [
+    "boxSizing", "width", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+    "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
+    "fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "lineHeight",
+    "textTransform", "wordSpacing", "tabSize", "wordBreak",
+  ].forEach((prop) => { mirror.style[prop] = style[prop]; });
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = "break-word";
+  mirror.style.height = "auto";
+  mirror.style.top = "0";
+  mirror.style.left = "-9999px";
+
+  const markerStart = document.createElement("span");
+  markerStart.textContent = "​";
+  const markerEnd = document.createElement("span");
+  markerEnd.textContent = "​";
+  mirror.append(
+    document.createTextNode(value.slice(0, selectionStart)),
+    markerStart,
+    document.createTextNode(value.slice(selectionStart, selectionEnd)),
+    markerEnd,
+    document.createTextNode(value.slice(selectionEnd))
+  );
+  document.body.appendChild(mirror);
+
+  const textareaRect = textarea.getBoundingClientRect();
+  const mirrorRect = mirror.getBoundingClientRect();
+  const startRect = markerStart.getBoundingClientRect();
+  const endRect = markerEnd.getBoundingClientRect();
+  mirror.remove();
+
+  const toViewport = (r) => ({
+    top: textareaRect.top + (r.top - mirrorRect.top) - textarea.scrollTop,
+    bottom: textareaRect.top + (r.bottom - mirrorRect.top) - textarea.scrollTop,
+    left: textareaRect.left + (r.left - mirrorRect.left) - textarea.scrollLeft,
+    right: textareaRect.left + (r.right - mirrorRect.left) - textarea.scrollLeft,
+  });
+  const start = toViewport(startRect);
+  const end = toViewport(endRect);
+  return {
+    top: Math.min(start.top, end.top),
+    bottom: Math.max(start.bottom, end.bottom),
+    left: Math.min(start.left, end.left),
+    right: Math.max(start.right, end.right),
+  };
 }
 
 function positionNotesSelectionButton() {
@@ -6615,12 +6841,23 @@ function positionNotesSelectionButton() {
     if (imageMatches.length) parts.push(imageMatches.length === 1 ? "1 image" : `${imageMatches.length} images`);
     button.textContent = `+ Make card · ${parts.join(" + ")}`;
     button.hidden = false;
+    // Track the actual selection (same approach as the rendered-view branch
+    // below) instead of parking in the textarea's corner regardless of where
+    // the selection actually is.
+    const selRect = textareaSelectionRect(el.notesEdit);
     const editRect = el.notesEdit.getBoundingClientRect();
     const btnRect = button.getBoundingClientRect();
-    const margin = 12;
-    const top = Math.min(editRect.bottom - btnRect.height - margin, window.innerHeight - btnRect.height - margin);
-    const left = Math.min(editRect.right - btnRect.width - margin, window.innerWidth - btnRect.width - margin);
-    button.style.top = `${Math.max(margin, top)}px`;
+    const margin = 8;
+    let top = selRect.bottom + margin;
+    if (top + btnRect.height > window.innerHeight - margin) {
+      top = Math.max(margin, selRect.top - btnRect.height - margin);
+    }
+    top = Math.min(Math.max(top, editRect.top + margin), editRect.bottom - btnRect.height - margin);
+    const left = Math.min(
+      Math.max(margin, selRect.left + (selRect.right - selRect.left) / 2 - btnRect.width / 2),
+      window.innerWidth - btnRect.width - margin
+    );
+    button.style.top = `${top}px`;
     button.style.left = `${Math.max(margin, left)}px`;
     return;
   }
@@ -12258,6 +12495,20 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
+  // Structural card undo/redo (add/delete/reorder) — checked before the
+  // input/textarea guard below so it works from anywhere in the app, but
+  // deliberately excluded while a text field is focused so it doesn't fight
+  // that field's own native per-keystroke undo (see cardUndoStack comment).
+  if ((event.ctrlKey || event.metaKey) && !event.target.matches("input, textarea") && (event.key === "z" || event.key === "Z")) {
+    event.preventDefault();
+    event.shiftKey ? redoCardAction() : undoCardAction();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.target.matches("input, textarea") && (event.key === "y" || event.key === "Y")) {
+    event.preventDefault();
+    redoCardAction();
+    return;
+  }
   if (event.target.matches("input, textarea")) return;
   if (event.key === "Escape") {
     closeTopmostOverlay();
@@ -12633,6 +12884,7 @@ function addBlankCardAtCursor() {
   // which assumes a real current card and would overshoot to the
   // deck-complete summary.
   const wasEmpty = state.masterCards.length === 0;
+  pushCardUndoSnapshot(snapshotCardsState());
   const newCard = createBlankCard();
   const insertAt = wasEmpty ? 0 : state.current + 1;
   state.masterCards.splice(insertAt, 0, newCard);
@@ -12658,7 +12910,8 @@ if (el.deleteCardBtn) {
     e.stopPropagation();
     if (!state.masterCards.length) return;
     const card = state.cards[state.current];
-    showConfirmModal("Delete this card? This cannot be undone.", () => {
+    showConfirmModal("Delete this card?", () => {
+      pushCardUndoSnapshot(snapshotCardsState());
       state.masterCards = state.masterCards.filter(c => c.id !== card.id);
       state.cards = state.cards.filter(c => c.id !== card.id);
       delete state.statusById[card.id];
@@ -12666,7 +12919,7 @@ if (el.deleteCardBtn) {
         state.current = Math.max(0, state.cards.length - 1);
       }
       showCard();
-      setStatus(state.deckId ? "Card deleted locally. Sync to update the web deck." : "Card deleted.");
+      setStatus(state.deckId ? "Card deleted locally. Sync to update the web deck." : "Card deleted. Ctrl+Z to undo.");
     }, { confirmLabel: "Delete", danger: true });
   });
 }
@@ -13436,8 +13689,40 @@ function toggleStrikethrough(val, start, end) {
   return toggleWrapPair(val, start, end, "~~", "~~");
 }
 
+// Inline code can't contain a literal newline in Markdown, so a multi-line
+// selection needs a fenced ``` block instead of backticks — everything else
+// (single line, or no selection) keeps the lighter-weight ` ` wrap.
 function toggleCode(val, start, end) {
-  return toggleWrapPair(val, start, end, "`", "`");
+  const selected = val.slice(start, end);
+  return selected.includes("\n") ? toggleFence(val, start, end) : toggleWrapPair(val, start, end, "`", "`");
+}
+
+// Wrap/unwrap a multi-line selection in a fenced code block, mirroring
+// toggleWrapPair's toggle behavior (wrap plain text, or strip an existing
+// wrap back to plain text) but for ``` fences.
+function toggleFence(val, start, end) {
+  const selected = val.slice(start, end);
+
+  // Selection is a complete fenced block ("```lang\n...\n```") -> unwrap.
+  const selfFenced = selected.match(/^```[^\n]*\n([\s\S]*?)\n```$/);
+  if (selfFenced) {
+    return { text: selfFenced[1], rangeStart: start, rangeEnd: end };
+  }
+
+  // Selection is just the inner lines, with the fence markers sitting just
+  // outside it (what re-selecting the toggled-in text looks like) -> unwrap
+  // by growing the replaced range to swallow those markers too.
+  const beforeFence = val.slice(0, start).match(/```[^\n]*\n$/);
+  const afterFence = val.slice(end).match(/^\n```/);
+  if (beforeFence && afterFence) {
+    return { text: selected, rangeStart: start - beforeFence[0].length, rangeEnd: end + afterFence[0].length };
+  }
+
+  // Otherwise wrap, only adding the surrounding newlines the text doesn't
+  // already have so the fence doesn't create a stray blank line.
+  const leadNl = start > 0 && val[start - 1] !== "\n" ? "\n" : "";
+  const trailNl = end < val.length && val[end] !== "\n" ? "\n" : "";
+  return { text: `${leadNl}\`\`\`\n${selected}\n\`\`\`${trailNl}`, rangeStart: start, rangeEnd: end };
 }
 
 function toggleKbd(val, start, end) {
