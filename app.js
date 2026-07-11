@@ -602,7 +602,7 @@ function readKnownFolders() {
 function writeKnownFolders(list) {
   const unique = Array.from(new Set((list || []).map(normalizeDeckCategory)))
     .filter((p) => p !== defaultDeckCategory);
-  localStorage.setItem(KNOWN_FOLDERS_KEY, JSON.stringify(unique));
+  try { localStorage.setItem(KNOWN_FOLDERS_KEY, JSON.stringify(unique)); } catch (_) {}
   return unique;
 }
 
@@ -623,7 +623,7 @@ function readCollapsedFolders() {
 }
 
 function writeCollapsedFolders(set) {
-  localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(Array.from(set)));
+  try { localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(Array.from(set))); } catch (_) {}
 }
 
 // Folders are FOLDED BY DEFAULT: a folder is expanded only if its path is in this
@@ -642,7 +642,7 @@ function readExpandedFolders() {
 }
 
 function writeExpandedFolders(set) {
-  localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify(Array.from(set)));
+  try { localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify(Array.from(set))); } catch (_) {}
 }
 
 function isFolderCollapsed(path) {
@@ -2598,7 +2598,7 @@ function maybeShowSwipeHint() {
 function dismissSwipeHint() {
   if (!el.swipeHint || el.swipeHint.hidden) return;
   clearTimeout(swipeHintTimer);
-  localStorage.setItem("swipe-hint-seen", "1");
+  try { localStorage.setItem("swipe-hint-seen", "1"); } catch (_) {}
   el.swipeHint.classList.add("is-fading");
   setTimeout(() => {
     if (el.swipeHint) {
@@ -6339,7 +6339,7 @@ function updateCompactToggleButton() {
 // rows size to their content) and re-measure.
 function setAllCardsCompact(on) {
   allCardsCompact = Boolean(on);
-  localStorage.setItem("recall:allCardsCompact", allCardsCompact ? "1" : "0");
+  try { localStorage.setItem("recall:allCardsCompact", allCardsCompact ? "1" : "0"); } catch (_) {}
   updateCompactToggleButton();
   if (el.allCardsList) {
     el.allCardsList.classList.toggle("is-compact", allCardsCompact);
@@ -6380,7 +6380,7 @@ function applyAllCardsFilter() {
 
 function setAllCardsFilter(filter) {
   allCardsFilter = ALL_CARDS_FILTERS.has(filter) ? filter : "all";
-  localStorage.setItem("recall:allCardsFilter", allCardsFilter);
+  try { localStorage.setItem("recall:allCardsFilter", allCardsFilter); } catch (_) {}
   applyAllCardsFilter();
 }
 
@@ -7956,7 +7956,7 @@ function applyRenderColor(config, prop, value) {
 function setRenderDefault(prop, value) {
   if (value === "clear") return; // "clear" is an action, never a default
   renderFormatDefaults[prop] = value;
-  localStorage.setItem(prop === "highlight" ? "recall:renderHighlightDefault" : "recall:renderColorDefault", value);
+  try { localStorage.setItem(prop === "highlight" ? "recall:renderHighlightDefault" : "recall:renderColorDefault", value); } catch (_) {}
   refreshRenderSwatches();
 }
 
