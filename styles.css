@@ -3055,6 +3055,12 @@ svg.nomnoml-light-svg [fill="none"] {
   gap: 8px;
   min-width: 0 !important;
 }
+/* Same specificity as the global [hidden] rule below, so without the extra
+   class qualifier here the `!important` display above would win on source
+   order alone and the `hidden` attribute would silently do nothing. */
+.my-decks-filter[hidden] {
+  display: none !important;
+}
 .my-decks-filter span { flex: 0 0 auto; }
 .my-decks-filter select { min-width: 140px; }
 
@@ -8792,6 +8798,43 @@ kbd {
   .quiz-panel.notes-mode,
   .quiz-panel.notes-mode:has(.view-mode-toggle:not([hidden])) {
     grid-template-rows: auto 1fr;
+  }
+
+  /* Notes TOC drawer: on a narrow screen the rail indentation eats most of
+     the width, so ellipsis-truncating the heading text left only a handful
+     of characters visible. Wrap instead so the full title is readable. */
+  .notes-toc-drawer {
+    width: min(320px, 88%);
+  }
+
+  .notes-toc-link {
+    align-items: flex-start;
+    min-height: 34px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .notes-toc-text {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+  }
+
+  .notes-toc-dot {
+    margin-top: 4px;
+  }
+
+  /* Slightly larger touch targets for the TOC open/close controls. */
+  .notes-toc-toggle {
+    width: 34px;
+    height: 34px;
+  }
+
+  .notes-toc-close {
+    width: 30px;
+    height: 30px;
   }
 }
 

@@ -55,7 +55,10 @@ const state = {
   // My Decks library UI preferences (persisted per device).
   myDecksView: (() => { try { const v = localStorage.getItem("flashcards_mydecks_view_v1"); return ["grid", "folder", "tree"].includes(v) ? v : "folder"; } catch (_) { return "folder"; } })(),
   myDecksDisplay: (() => { try { const v = localStorage.getItem("flashcards_mydecks_display_v1"); return ["tiles", "list"].includes(v) ? v : "tiles"; } catch (_) { return "tiles"; } })(),
-  myDecksCwd: (() => { try { return localStorage.getItem("flashcards_mydecks_cwd_v1") || ""; } catch (_) { return ""; } })(),
+  // Always start at Home (root) on app open, even though the current folder
+  // is persisted per navigation below — the persisted value is only there so
+  // helpers like currentMyDecksFolder() have something to read mid-session.
+  myDecksCwd: "",
   myDecksSearch: "",
   sourceTitle: "",
   importTitleHint: "",
@@ -809,6 +812,29 @@ async function chooseDeckCategory(currentCategory = defaultDeckCategory) {
   });
 }
 
+// Whichever of two ISO timestamps (either may be null/undefined) is later,
+// or null if neither parses.
+function laterIsoTimestamp(a, b) {
+  const ta = Date.parse(a || "");
+  const tb = Date.parse(b || "");
+  if (!Number.isFinite(ta)) return Number.isFinite(tb) ? b : null;
+  if (!Number.isFinite(tb)) return a;
+  return tb > ta ? b : a;
+}
+
+// Local counterpart of touchWebDeckAccess: bumps a deck's "last opened" time
+// without touching updatedAt, so background reconcile reloads (which also call
+// loadDeckFromLibrary) don't masquerade as a real visit — only the explicit
+// open-from-My-Decks call sites invoke this.
+function touchLocalDeckAccess(id) {
+  if (!id) return;
+  const index = readLocalDeckIndex();
+  const entry = index.find((e) => e.id === id);
+  if (!entry) return;
+  entry.accessedAt = new Date().toISOString();
+  writeLocalDeckIndex(index);
+}
+
 async function touchWebDeckAccess(deckId) {
   if (!deckId || !supabaseClient) return false;
 
@@ -1138,7 +1164,8 @@ async function loadWebDeck(deckId) {
     // its timestamps to the cloud copy so it reads as already in-sync — otherwise
     // it would look "newer" and trigger a redundant re-push on the next reconcile.
     state.localDeckId = null;
-    saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at });
+    const mirroredMeta = saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at });
+    if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
     refreshSyncIndicatorBaseline();
   } catch (error) {
     setStatus("Failed to load deck from web.", "error");
@@ -1440,6 +1467,7 @@ const el = {
   myDecksNewDeckBtn: document.querySelector("#myDecksNewDeckBtn"),
   myDecksTreeToggleAll: document.querySelector("#myDecksTreeToggleAll"),
   myDecksCategoryFilter: document.querySelector("#myDecksCategoryFilter"),
+  myDecksFilterWrap: document.querySelector(".my-decks-filter"),
   myDecksSelectAllCheckbox: document.querySelector("#myDecksSelectAllCheckbox"),
   myDecksBulkActions: document.querySelector("#myDecksBulkActions"),
   myDecksSelectedCount: document.querySelector("#myDecksSelectedCount"),
@@ -3092,6 +3120,7 @@ async function loadSelectedMyDecks(selections) {
     flushWorkingDeck();
     if (sel.localId) {
       if (loadDeckFromLibrary(sel.localId)) {
+        touchLocalDeckAccess(sel.localId);
         closeMyDecksPanel();
         showToast("Deck loaded");
       }
@@ -3232,6 +3261,7 @@ function loadDeckEntry(deck, kind) {
     closeMyDecksPanel();
     loadWebDeck(deck.id);
   } else if (loadDeckFromLibrary(deck.id)) {
+    touchLocalDeckAccess(deck.id);
     closeMyDecksPanel();
     showToast(`Loaded "${deck.title || "deck"}"`);
   }
@@ -3557,9 +3587,32 @@ function folderTotalDeckCount(node) {
   return count;
 }
 
+// Most-recent "opened" time for one deck entry, local or cloud, as epoch ms
+// (0 if never recorded) — the shared key everything in the My Decks
+// navigation sorts by, so recently-used decks and folders surface first.
+function deckAccessTime(entry) {
+  const deck = entry.deck;
+  const raw = entry.kind === "local"
+    ? (deck.accessedAt || deck.updatedAt)
+    : (deck.last_accessed_at || deck.updated_at);
+  const t = Date.parse(raw || "");
+  return Number.isFinite(t) ? t : 0;
+}
+
+// A folder's own recency is the most recent access time among any deck it
+// (or any of its descendants) contains — so a folder you touched five
+// minutes ago outranks one you haven't opened in months, same as a deck would.
+function folderMostRecentAccess(node) {
+  let max = 0;
+  node.decks.forEach((entry) => { max = Math.max(max, deckAccessTime(entry)); });
+  node.children.forEach((child) => { max = Math.max(max, folderMostRecentAccess(child)); });
+  return max;
+}
+
 function sortedFolderChildren(node) {
   return Array.from(node.children.values())
-    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    .sort((a, b) => folderMostRecentAccess(b) - folderMostRecentAccess(a)
+      || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
 }
 
 // Every visible deck (local + cloud-only) whose category is `path` or nested
@@ -4214,6 +4267,11 @@ function syncMyDecksChrome() {
     el.myDecksBreadcrumb.hidden = (view !== "folder");
     if (view === "folder") renderMyDecksBreadcrumb();
   }
+  // Folder view's breadcrumb IS the "which folder am I in" control — the
+  // scope dropdown is a second, unsynced way to answer the same question
+  // (and can silently narrow the view further than the breadcrumb shows).
+  // Only Grid/Tree need it, since they have no drill-down of their own.
+  if (el.myDecksFilterWrap) el.myDecksFilterWrap.hidden = (view === "folder");
   setMyDecksHost(display === "tiles");
 }
 
@@ -4237,10 +4295,12 @@ function paintMyDecks(localDecks, cloudById, { cloudOnly = [], categories = webD
   myDecksRendered = { local: localDecks, cloudOnly };
   const search = (state.myDecksSearch || "").trim().toLowerCase();
   const matches = (deck) => !search || String(deck.title || "").toLowerCase().includes(search);
+  // Sorted by most-recently-accessed first, local and cloud-only decks
+  // interleaved on the same timeline — see deckAccessTime().
   const entries = [
     ...localDecks.filter(matches).map((deck) => ({ deck, kind: "local" })),
     ...cloudOnly.filter(matches).map((deck) => ({ deck, kind: "cloud" })),
-  ];
+  ].sort((a, b) => deckAccessTime(b) - deckAccessTime(a));
   const ctx = { cloudById, categories, scope, search, loading, totalDecks: localDecks.length + cloudOnly.length };
   syncMyDecksChrome();
   if (state.myDecksView === "grid") renderMyDecksGridView(entries, ctx);
@@ -4263,7 +4323,12 @@ async function renderMyDecksList() {
   // Category lists (for the filter and the inline per-row category editor) include
   // empty "known" folders so they can be selected before a deck lands.
   let categories = categoriesFromDecks(localDecks, [...webDeckCategories, ...readKnownFolders()]);
-  let selectedCategory = populateMyDecksCategoryFilter(categories);
+  // Repopulate the dropdown regardless of view so it's ready the moment the
+  // user switches to Grid/Tree, but only let its value narrow the result set
+  // there — Folder view scopes itself via the breadcrumb + cwd instead, and
+  // applying both would silently narrow it further than the breadcrumb shows.
+  const filterValue = populateMyDecksCategoryFilter(categories);
+  let selectedCategory = state.myDecksView === "folder" ? "" : filterValue;
   const inScope = (deck) => !selectedCategory || isCategoryUnder(deck.category, selectedCategory);
 
   // Paint on-device decks immediately (tentative Sync column) so the library never
@@ -4279,7 +4344,8 @@ async function renderMyDecksList() {
     const cloudOnly = cloudDecks.filter((deck) => !localCloudIds.has(String(deck.id)) && !isDeckTombstoned(deck.id));
     categories = categoriesFromDecks([...localDecks, ...cloudOnly], [...webDeckCategories, ...readKnownFolders()]);
     setKnownWebDeckCategories(categoriesFromDecks([...localDecks, ...cloudOnly], webDeckCategories));
-    selectedCategory = populateMyDecksCategoryFilter(categories);
+    const filterValue2 = populateMyDecksCategoryFilter(categories);
+    selectedCategory = state.myDecksView === "folder" ? "" : filterValue2;
     const inScope2 = (deck) => !selectedCategory || isCategoryUnder(deck.category, selectedCategory);
     paintMyDecks(localDecks.filter(inScope2), cloudById, { cloudOnly: cloudOnly.filter(inScope2), categories, scope: selectedCategory, loading: false });
   } catch (error) {
@@ -8804,6 +8870,9 @@ async function pullCloudDeckToLibrary(cloud) {
     // specifically means "last confirmed match with the cloud", surfaced in
     // the sync indicator pill.
     lastSyncedAt: cloud.updated_at || new Date().toISOString(),
+    // Take whichever "last opened" is more recent — this device's own record,
+    // or the cloud's (another device may have opened it more recently).
+    accessedAt: laterIsoTimestamp(existing?.accessedAt, cloud.last_accessed_at),
     deckId: String(cloud.id),
   };
   writeLocalDeckIndex([meta, ...readLocalDeckIndex().filter((m) => m.id !== localId)]);
@@ -9169,7 +9238,7 @@ function syncLocalLibraryMetaForDeck(deckId, { title, category, now } = {}) {
 function listLocalDecks() {
   return readLocalDeckIndex()
     .slice()
-    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    .sort((a, b) => String(b.accessedAt || b.updatedAt || "").localeCompare(String(a.accessedAt || a.updatedAt || "")));
 }
 
 // A content fingerprint of everything that counts as a real edit — title,
@@ -9258,6 +9327,9 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
     hasNotes: Boolean(String(snapshot.notes || "").trim()),
     updatedAt: resolvedUpdatedAt,
     lastSyncedAt: lastSyncedAt !== undefined ? lastSyncedAt : (previousEntry?.lastSyncedAt || null),
+    // Preserved as-is here — only touchLocalDeckAccess (called on a genuine
+    // open, not on every autosave) advances this.
+    accessedAt: previousEntry?.accessedAt || null,
     deckId: snapshot.deckId || null,
   };
   writeLocalDeckIndex([meta, ...readLocalDeckIndex().filter((entry) => entry.id !== localId)]);
