@@ -812,6 +812,61 @@ async function chooseDeckCategory(currentCategory = defaultDeckCategory) {
   });
 }
 
+// Asks Cards vs Notes before a bulk export (Export All / multi-select) runs —
+// unlike the single active-deck view, which already has separate Export and
+// Export Notes buttons, a bulk export otherwise has no way to say which one
+// you actually wanted. Resolves "cards" | "notes" | null (cancelled).
+function chooseExportContent() {
+  return new Promise((resolve) => {
+    const modal = document.createElement("section");
+    modal.className = "category-choice-modal";
+    modal.setAttribute("aria-label", "Choose what to export");
+
+    const shell = document.createElement("div");
+    shell.className = "category-choice-shell";
+    shell.innerHTML = `
+      <div class="category-choice-head">
+        <div>
+          <h2>Export</h2>
+          <p>What would you like to export?</p>
+        </div>
+        <button type="button" data-export-content-cancel aria-label="Close">&#215;</button>
+      </div>
+      <div class="export-content-choices">
+        <button type="button" class="export-content-choice" data-export-content="cards">
+          <span class="export-content-choice-icon">&#128209;</span>
+          <span>Cards</span>
+        </button>
+        <button type="button" class="export-content-choice" data-export-content="notes">
+          <span class="export-content-choice-icon">&#128221;</span>
+          <span>Notes</span>
+        </button>
+      </div>
+      <div class="category-choice-actions">
+        <button type="button" data-export-content-cancel>Cancel</button>
+      </div>
+    `;
+
+    const cleanup = (value = null) => {
+      modal.remove();
+      resolve(value);
+    };
+    shell.querySelectorAll("[data-export-content-cancel]").forEach((button) => {
+      button.addEventListener("click", () => cleanup(null));
+    });
+    shell.querySelectorAll("[data-export-content]").forEach((button) => {
+      button.addEventListener("click", () => cleanup(button.dataset.exportContent));
+    });
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) cleanup(null);
+    });
+
+    modal.appendChild(shell);
+    document.body.appendChild(modal);
+    shell.querySelector(".export-content-choice")?.focus();
+  });
+}
+
 // Whichever of two ISO timestamps (either may be null/undefined) is later,
 // or null if neither parses.
 function laterIsoTimestamp(a, b) {
@@ -1020,7 +1075,13 @@ function sqlTimestamp(value, fallback = new Date().toISOString()) {
   return sqlValue(parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : fallback);
 }
 
-function buildDeckSql(payloads, title = "Recall SQL Export") {
+// `includeNotes`/`includeCards` default true (today's full-deck export). A
+// bulk "Cards" or "Notes" only export sets one of these false — critically,
+// that must OMIT the notes column / the cards DELETE+INSERT entirely rather
+// than sending a blanked value through the normal upsert, which would (if this
+// script is ever run against a live database) silently wipe the omitted half
+// of every deck it touches instead of just leaving it out of the file.
+function buildDeckSql(payloads, title = "Recall SQL Export", { includeNotes = true, includeCards = true } = {}) {
   const lines = [
     `-- ${title}`,
     `-- Exported: ${new Date().toISOString()}`,
@@ -1035,24 +1096,38 @@ function buildDeckSql(payloads, title = "Recall SQL Export") {
     // newline here would break out of the "--" comment and let the rest of
     // the title be interpreted as SQL.
     lines.push(`-- Deck: ${String(deck.title || "").replace(/\r?\n/g, " ")}`);
+    const notesColumns = includeNotes ? [["notes", sqlValue(deck.notes || "")]] : [];
+    const columns = [
+      ["id", sqlValue(deck.id)],
+      ["title", sqlValue(deck.title)],
+      ["category", sqlValue(deck.category)],
+      ...notesColumns,
+      ["current_card_index", Number(deck.current_card_index) || 0],
+      ["created_at", sqlTimestamp(deck.created_at)],
+      ["updated_at", sqlTimestamp(deck.updated_at)],
+      ["last_accessed_at", sqlTimestamp(deck.last_accessed_at)]
+    ];
+    const updateColumns = ["title", "category", ...(includeNotes ? ["notes"] : []), "current_card_index", "updated_at", "last_accessed_at"];
     lines.push(
-      "INSERT INTO decks (id, title, category, notes, current_card_index, created_at, updated_at, last_accessed_at) VALUES " +
-      `(${sqlValue(deck.id)}, ${sqlValue(deck.title)}, ${sqlValue(deck.category)}, ${sqlValue(deck.notes || "")}, ${Number(deck.current_card_index) || 0}, ${sqlTimestamp(deck.created_at)}, ${sqlTimestamp(deck.updated_at)}, ${sqlTimestamp(deck.last_accessed_at)}) ` +
+      `INSERT INTO decks (${columns.map(([name]) => name).join(", ")}) VALUES ` +
+      `(${columns.map(([, value]) => value).join(", ")}) ` +
       "ON CONFLICT (id) DO UPDATE SET " +
-      "title = EXCLUDED.title, category = EXCLUDED.category, notes = EXCLUDED.notes, current_card_index = EXCLUDED.current_card_index, updated_at = EXCLUDED.updated_at, last_accessed_at = EXCLUDED.last_accessed_at;"
+      updateColumns.map((name) => `${name} = EXCLUDED.${name}`).join(", ") + ";"
     );
-    lines.push(`DELETE FROM cards WHERE deck_id = ${sqlValue(deck.id)};`);
 
-    if (payload.cards.length) {
-      const values = payload.cards.map((card, index) => (
-        `(${sqlValue(card.id)}, ${sqlValue(deck.id)}, ${sqlValue(card.question)}, ${sqlValue(card.answer)}, ${Number.isFinite(Number(card.position)) ? Number(card.position) : index}, ${sqlValue(normalizeCardStatus(card.status))}, ${sqlTimestamp(card.created_at)}, ${sqlTimestamp(card.updated_at)})`
-      ));
-      lines.push(
-        "INSERT INTO cards (id, deck_id, question, answer, position, status, created_at, updated_at) VALUES\n" +
-        values.join(",\n") +
-        "\nON CONFLICT (id) DO UPDATE SET " +
-        "deck_id = EXCLUDED.deck_id, question = EXCLUDED.question, answer = EXCLUDED.answer, position = EXCLUDED.position, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at;"
-      );
+    if (includeCards) {
+      lines.push(`DELETE FROM cards WHERE deck_id = ${sqlValue(deck.id)};`);
+      if (payload.cards.length) {
+        const values = payload.cards.map((card, index) => (
+          `(${sqlValue(card.id)}, ${sqlValue(deck.id)}, ${sqlValue(card.question)}, ${sqlValue(card.answer)}, ${Number.isFinite(Number(card.position)) ? Number(card.position) : index}, ${sqlValue(normalizeCardStatus(card.status))}, ${sqlTimestamp(card.created_at)}, ${sqlTimestamp(card.updated_at)})`
+        ));
+        lines.push(
+          "INSERT INTO cards (id, deck_id, question, answer, position, status, created_at, updated_at) VALUES\n" +
+          values.join(",\n") +
+          "\nON CONFLICT (id) DO UPDATE SET " +
+          "deck_id = EXCLUDED.deck_id, question = EXCLUDED.question, answer = EXCLUDED.answer, position = EXCLUDED.position, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at;"
+        );
+      }
     }
   });
 
@@ -1148,7 +1223,7 @@ async function loadWebDeck(deckId) {
     state.notes = String(deckData.notes || "");
     state.sourceTitle = deckData.title || "";
     state.importTitleHint = deckData.title || "";
-    setViewMode("cards");
+    setViewMode("notes");
 
     syncResults();
     touchWebDeckAccess(deckData.id).catch((error) => console.error("Failed to touch deck access", error));
@@ -2896,7 +2971,52 @@ function renameMyDeck({ localId = null, deckId = null } = {}, currentTitle = "")
 // Shared writer for every My Decks export path. `payloads` come from
 // myDeckPayload; a single payload exports as that deck, several export as one
 // document/file with per-deck dividers (PDF) or concatenation (MD/SQL/JSON).
-async function exportDeckPayloads(payloads, format, { fileBaseName, title }) {
+// `contentType` — "both" (default, the single/per-row export's long-standing
+// behaviour: cards-only for pdf/html/doc, cards+notes combined for
+// markdown/json/sql), or "cards"/"notes" when a bulk export (Export All /
+// multi-select) asked the user which one they wanted via chooseExportContent().
+async function exportDeckPayloads(payloads, format, { fileBaseName, title }, contentType = "both") {
+  if (contentType === "notes") {
+    if (format === "pdf") {
+      await exportNotesFlatPdf(payloads, { fileBaseName, title });
+      return;
+    }
+    if (format === "html" || format === "doc") {
+      const sections = payloads.map((payload) => ({
+        title: payload.deck.title,
+        category: payload.deck.category,
+        notes: payload.deck.notes || ""
+      }));
+      const rawBodyHtml = buildNotesFlatDocument(title, sections);
+      if (format === "doc") {
+        const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName);
+        downloadTextFile(bytes, `${fileBaseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        setStatus(`Exported notes as Word (.docx).${imageEmbedSuffix(failedImageCount)}`);
+      } else {
+        const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
+        const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName);
+        downloadTextFile(html, `${fileBaseName}.html`, "text/html;charset=utf-8");
+        setStatus(`Exported notes as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
+      }
+      return;
+    }
+    if (format === "markdown") {
+      downloadTextFile(
+        payloads.map((payload) => `# ${payload.deck.title}\n\n${String(payload.deck.notes || "").trim() || "*No notes for this deck.*"}`).join("\n\n---\n\n"),
+        `${fileBaseName}.md`,
+        "text/markdown;charset=utf-8"
+      );
+      setStatus("Exported notes as Markdown.");
+      return;
+    }
+    // sql / json: keep the deck row itself, but strip cards down to none.
+    payloads = payloads.map((payload) => ({ ...payload, cards: [] }));
+  } else if (contentType === "cards") {
+    // sql / json: keep the cards, but blank the notes column/field. pdf/html/doc
+    // never included notes in the first place, so nothing changes for them.
+    payloads = payloads.map((payload) => ({ ...payload, deck: { ...payload.deck, notes: "" } }));
+  }
+
   if (format === "pdf") {
     if (payloads.length === 1) {
       const payload = payloads[0];
@@ -2971,7 +3091,12 @@ async function exportDeckPayloads(payloads, format, { fileBaseName, title }) {
   }
 
   if (format === "sql") {
-    downloadTextFile(buildDeckSql(payloads, `${title} SQL Export`), `${fileBaseName}.sql`, "application/sql;charset=utf-8");
+    // Derived from contentType directly rather than the (possibly already
+    // blanked/emptied) `payloads` above — buildDeckSql needs to know to omit
+    // the notes column / the cards statements entirely, not just receive an
+    // empty value for them (see buildDeckSql's own comment for why).
+    const sqlOptions = { includeNotes: contentType !== "cards", includeCards: contentType !== "notes" };
+    downloadTextFile(buildDeckSql(payloads, `${title} SQL Export`, sqlOptions), `${fileBaseName}.sql`, "application/sql;charset=utf-8");
     setStatus("Exported as SQL.");
     return;
   }
@@ -3009,12 +3134,14 @@ async function exportMyDeck(sel, format) {
 
 async function exportSelectedMyDecks(selections, format) {
   if (!selections.length) return;
+  const contentType = await chooseExportContent();
+  if (!contentType) return; // cancelled
   try {
     setStatus(`Exporting ${selections.length} deck${selections.length === 1 ? "" : "s"}...`);
     const payloads = [];
     for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: "selected-decks", title: "Selected Decks" });
-    if (format !== "pdf") showToast(`Exported ${payloads.length} deck${payloads.length === 1 ? "" : "s"} as ${format.toUpperCase()}`);
+    await exportDeckPayloads(payloads, format, { fileBaseName: `selected-decks-${contentType}`, title: "Selected Decks" }, contentType);
+    if (format !== "pdf") showToast(`Exported ${payloads.length} deck${payloads.length === 1 ? "" : "s"} ${contentType} as ${format.toUpperCase()}`);
   } catch (error) {
     console.error("Failed to export selected decks", error);
     setStatus("Failed to export selected decks.", "error");
@@ -3041,6 +3168,8 @@ async function allMyDeckSelections() {
 }
 
 async function exportAllMyDecks(format) {
+  const contentType = await chooseExportContent();
+  if (!contentType) return; // cancelled
   try {
     setStatus("Exporting all decks...");
     const selections = await allMyDeckSelections();
@@ -3050,8 +3179,8 @@ async function exportAllMyDecks(format) {
     }
     const payloads = [];
     for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: "all-decks", title: "All Decks" });
-    if (format !== "pdf") showToast(`Exported all decks as ${format.toUpperCase()}`);
+    await exportDeckPayloads(payloads, format, { fileBaseName: `all-decks-${contentType}`, title: "All Decks" }, contentType);
+    if (format !== "pdf") showToast(`Exported all decks' ${contentType} as ${format.toUpperCase()}`);
   } catch (error) {
     console.error("Failed to export all decks", error);
     setStatus("Failed to export all decks.", "error");
@@ -3963,8 +4092,9 @@ function buildFolderTile(node) {
   const count = document.createElement("span");
   count.className = "folder-tile-count";
   count.textContent = total === 1 ? "1 deck" : `${total} decks`;
-  main.appendChild(count);
-  tile.append(main);
+  // A sibling row below the name (not crammed into the same flex row as the
+  // icon) — otherwise a long name has almost no width left to wrap into.
+  tile.append(main, count);
 
   const enter = () => setMyDecksCwdAndRender(node.path);
   tile.addEventListener("click", enter);
@@ -8234,7 +8364,7 @@ async function loadSelectedImportDecks() {
     .map((deck) => String(deck.notes || "").trim())
     .filter(Boolean)
     .join("\n\n---\n\n");
-  setViewMode("cards");
+  setViewMode("notes");
 
   closeAllCardsPanel();
   closeImportPanel();
@@ -8526,7 +8656,7 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     state.sourceTitle = String(payload.sourceTitle || "").trim() || sourceFileTitle(titleHint) || state.deckTitle;
     state.importTitleHint = String(payload.importTitleHint || "").trim() || titleHint;
     state.notes = payloadNotes;
-    setViewMode("cards");
+    setViewMode("notes");
   }
   syncResults();
   closeAllCardsPanel();
@@ -10051,6 +10181,98 @@ function buildNotesPrintDocument(title, notesMarkdown) {
       </section>
     </div>
   `;
+}
+
+// The bulk (multi-deck) counterpart of buildNotesExportBody/buildNotesPrintDocument
+// — used when a bulk export picks "Notes". `sections` is [{ title, category, notes }];
+// a single section renders exactly like the single-deck body, multiple sections get
+// the same deck-divider treatment the cards PDF already uses between decks.
+function notesFlatSectionsHtml(sections) {
+  if (sections.length === 1) {
+    return `<div class="rendered">${markdownToSafeHtml(sections[0].notes || "*No notes for this deck.*")}</div>`;
+  }
+  return sections.map((section) => `
+    ${cornellDeckDividerHtml({ title: section.title, category: section.category })}
+    <div class="rendered">${markdownToSafeHtml(section.notes || "*No notes for this deck.*")}</div>
+  `).join("");
+}
+
+function buildNotesFlatDocument(title, sections) {
+  return `
+    <header class="flat-export-cover">
+      <h1>${escapeHtml(title)}</h1>
+      <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+    </header>
+    <section class="flat-export-notes">
+      ${notesFlatSectionsHtml(sections)}
+    </section>
+  `;
+}
+
+function buildNotesFlatPrintDocument(title, sections) {
+  return `
+    <div class="print-preview-actions" data-print-ui>
+      <button type="button" data-print-close>Close</button>
+      <button type="button" data-print-now>Download PDF</button>
+    </div>
+    <div class="cornell-print-document">
+      <header class="cornell-print-cover">
+        <div>
+          <h1>${escapeHtml(title)}</h1>
+          <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+        </div>
+      </header>
+      <section aria-label="${escapeHtml(title)} notes">
+        ${notesFlatSectionsHtml(sections)}
+      </section>
+    </div>
+  `;
+}
+
+// Bulk counterpart of exportNotesPdf() — combines every selected deck's notes
+// into one print-preview document instead of the single active deck's own.
+async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
+  const sections = payloads.map((payload) => ({
+    title: payload.deck.title || "Untitled",
+    category: payload.deck.category,
+    notes: payload.deck.notes || ""
+  }));
+  if (!sections.some((section) => section.notes.trim())) {
+    setStatus("No notes to export as PDF.", "error");
+    return;
+  }
+
+  setStatus(`Preparing ${title} notes PDF...`);
+  el.printRoot.innerHTML = "";
+  el.printRoot.classList.add("is-preparing");
+  el.printRoot.classList.remove("is-preview");
+  el.printRoot.setAttribute("aria-hidden", "true");
+  printTitleBeforeExport = document.title;
+  document.title = fileBaseName;
+  try {
+    await afterPaint();
+    el.printRoot.innerHTML = buildNotesFlatPrintDocument(title, sections);
+    configureMermaid("print");
+    try {
+      await enhanceRenderedMarkdown(el.printRoot);
+    } finally {
+      configureMermaid(currentThemeId());
+    }
+    revealPrintRootClozes();
+    await (document.fonts?.ready || Promise.resolve());
+    await afterPaint();
+
+    installPdfPrintStyle();
+    const opened = printPreparedDocument();
+    setStatus(opened
+      ? `Opening ${title} notes PDF — choose Save as PDF in the dialog.`
+      : "Could not prepare the notes PDF export.", opened ? undefined : "error");
+  } catch (error) {
+    console.error("Notes PDF export failed", error);
+    setStatus("Could not prepare the notes PDF export.", "error");
+  } finally {
+    closePrintPreview();
+  }
 }
 
 // Renders off-screen in el.printRoot (same trick exportCardsPdf uses) so

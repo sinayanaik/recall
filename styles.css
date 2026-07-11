@@ -3231,8 +3231,10 @@ svg.nomnoml-light-svg [fill="none"] {
 .folder-tile { cursor: pointer; }
 .folder-tile-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .folder-tile-icon { font-size: 1.05rem; flex-shrink: 0; }
-.folder-tile-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex-shrink: 1; }
-.folder-tile-count { color: var(--muted); font-size: 0.76rem; font-weight: 700; margin-left: auto; }
+.folder-tile-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+/* Its own row below the name (see buildFolderTile) — sharing the name's flex
+   row left almost no width for a long name to wrap into. */
+.folder-tile-count { color: var(--muted); font-size: 0.76rem; font-weight: 700; }
 
 .my-decks-empty-card {
   grid-column: 1 / -1;
@@ -3379,6 +3381,32 @@ svg.nomnoml-light-svg [fill="none"] {
   background: var(--accent);
   color: var(--accent-contrast);
 }
+
+.export-content-choices {
+  display: flex;
+  gap: 10px;
+}
+.export-content-choice {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 76px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 850;
+  font-size: 0.92rem;
+  padding: 12px 8px;
+}
+.export-content-choice:hover,
+.export-content-choice:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+}
+.export-content-choice-icon { font-size: 1.4rem; }
 
 .style-shell {
   display: grid;
@@ -4803,6 +4831,20 @@ textarea {
   white-space: pre-wrap;
 }
 
+/* The on-screen code-block rule (.rendered pre code) sets white-space: pre and
+   min-width: max-content directly on <code> — fine on screen, where the pre's
+   own overflow-x: auto lets you scroll a long line. In print there's no
+   scrolling and the question rail is a fixed 45mm column with overflow:
+   hidden, so an unwrapped long code line (common in C++ operator chains like
+   std::cout<<x<<std::endl;) simply got clipped instead of wrapping. Override
+   both properties here — same specificity as the screen rule, but this one
+   wins on source order. */
+.cornell-print-row pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
 .cornell-print-row table {
   width: 100%;
   border-collapse: collapse;
@@ -5559,6 +5601,18 @@ textarea {
   .my-decks-search { flex: 1 1 100%; order: -1; }
   .my-decks-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .my-decks-breadcrumb { width: 100%; }
+
+  /* Folder tiles are narrow at 1–2 wide on mobile — a single-line ellipsis
+     left most category names cropped to a handful of characters. Wrap
+     instead, same fix as the deck tiles' own 2-line-clamp title already gets. */
+  .folder-tile-name {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: break-word;
+    hyphens: auto;
+    line-height: 1.25;
+  }
 
   .web-deck-button-row {
     display: grid;
@@ -8194,9 +8248,11 @@ kbd {
     flex: 1 1 auto;
   }
   .my-decks-table tr.deck-folder-row .deck-folder-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: break-word;
+    hyphens: auto;
     min-width: 0;
   }
   .my-decks-table tr.deck-folder-row .deck-folder-actions {
