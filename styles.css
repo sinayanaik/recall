@@ -2656,6 +2656,7 @@ svg.nomnoml-light-svg [fill="none"] {
   justify-content: space-between;
   gap: 14px;
   margin-bottom: 14px;
+  min-width: 0;
 }
 
 .web-decks-head h1 {
@@ -2677,6 +2678,10 @@ svg.nomnoml-light-svg [fill="none"] {
   align-items: stretch;
   gap: 10px;
   margin-bottom: 12px;
+  /* Grid/flex items default to min-width:auto (their content's unshrunk
+     size), which lets a row of nowrap buttons force this whole panel wider
+     than the viewport instead of wrapping. Let it shrink to the shell. */
+  min-width: 0;
 }
 
 .web-decks-tools-row {
@@ -2942,6 +2947,14 @@ svg.nomnoml-light-svg [fill="none"] {
 }
 .deck-folder-row:hover .deck-folder-actions,
 .deck-folder-row:focus-within .deck-folder-actions { opacity: 1; }
+/* Touch devices have no hover state, so the actions above would be
+   permanently invisible without this — force them on and size up the
+   tap targets for coarse pointers. */
+@media (hover: none), (pointer: coarse) {
+  .deck-folder-actions { opacity: 1; }
+  .deck-folder-twisty { width: 32px; min-height: 32px; }
+  .deck-folder-action { padding: 8px 12px; font-size: 0.8rem; }
+}
 .deck-folder-action {
   border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
   background: var(--panel-2, transparent);
@@ -3071,7 +3084,7 @@ svg.nomnoml-light-svg [fill="none"] {
 .breadcrumb-sep { color: var(--muted); font-size: 0.8rem; }
 
 /* ── My Decks: body host (table vs grid) ────────────────────────────────────*/
-.web-decks-body { min-height: 0; display: flex; flex-direction: column; }
+.web-decks-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 
 /* ── My Decks: deck + folder tiles ──────────────────────────────────────────*/
 .my-decks-grid {
@@ -3082,11 +3095,22 @@ svg.nomnoml-light-svg [fill="none"] {
   overscroll-behavior: contain;
   padding: 2px;
   align-content: start;
+  /* Flex items default to min-height:auto (their content's full height), so
+     without this the grid just grows to fit every tile instead of respecting
+     its allotted space — its own `overflow: auto` then never has anything to
+     scroll, because the box is already exactly as tall as its content. */
+  min-height: 0;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 .deck-tile,
 .folder-tile {
   position: relative;
+  /* Grid items default to min-width:auto (their content's unshrunk size).
+     A long unbroken deck/folder name would otherwise force this tile — and
+     the whole grid/modal — wider than its track instead of eliding. */
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--card);
@@ -3199,9 +3223,9 @@ svg.nomnoml-light-svg [fill="none"] {
 .deck-tile-overflow-menu button:hover { background: var(--panel-2); }
 
 .folder-tile { cursor: pointer; }
-.folder-tile-main { display: flex; align-items: center; gap: 8px; }
-.folder-tile-icon { font-size: 1.05rem; }
-.folder-tile-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-tile-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.folder-tile-icon { font-size: 1.05rem; flex-shrink: 0; }
+.folder-tile-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex-shrink: 1; }
 .folder-tile-count { color: var(--muted); font-size: 0.76rem; font-weight: 700; margin-left: auto; }
 
 .my-decks-empty-card {
@@ -8149,6 +8173,31 @@ kbd {
   }
   .my-decks-table tr.deck-folder-row > td { display: block; width: 100%; }
   .my-decks-table tr.my-deck-row td[data-label="Title"] { padding-left: 0; }
+  /* Deep nesting otherwise eats most of a phone-width row before any label
+     text appears; shrink the per-level indent instead of the desktop 22px. */
+  .my-decks-table tr.deck-folder-row .deck-folder-wrap {
+    padding-left: calc(var(--folder-depth, 0) * 10px);
+    /* A long folder name plus the +/Rename/Delete cluster doesn't fit one
+       row on a phone width — wrap the actions onto their own line instead
+       of letting them run off the edge uncontained. */
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .my-decks-table tr.deck-folder-row .deck-folder-label {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .my-decks-table tr.deck-folder-row .deck-folder-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .my-decks-table tr.deck-folder-row .deck-folder-actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    margin-left: calc(var(--folder-depth, 0) * 10px + 24px);
+  }
 
   /* Keyed off data-label (not nth-child) so the layout stays correct regardless
      of the leading checkbox column. */

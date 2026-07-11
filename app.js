@@ -3901,7 +3901,7 @@ function buildFolderTile(node) {
   tile.className = "folder-tile";
   tile.tabIndex = 0;
   tile.dataset.folderPath = node.path;
-  tile.title = "Double-click to open";
+  tile.title = "Open folder";
   const total = folderTotalDeckCount(node);
   const main = document.createElement("div");
   main.className = "folder-tile-main";
@@ -3914,6 +3914,7 @@ function buildFolderTile(node) {
   tile.append(main);
 
   const enter = () => setMyDecksCwdAndRender(node.path);
+  tile.addEventListener("click", enter);
   tile.addEventListener("dblclick", enter);
   tile.addEventListener("keydown", (e) => { if (e.target !== tile) return; if (e.key === "Enter") { e.preventDefault(); enter(); } });
   attachFolderDropTarget(tile, node.path);
@@ -3969,6 +3970,10 @@ function closeAllDeckTileMenus(except) {
   el.myDecksGrid?.querySelectorAll(".deck-tile-overflow-menu:not([hidden])").forEach((menu) => {
     if (menu !== except) {
       menu.hidden = true;
+      menu.style.position = "";
+      menu.style.right = "";
+      menu.style.left = "";
+      menu.style.top = "";
       menu.previousElementSibling?.setAttribute("aria-expanded", "false");
     }
   });
@@ -4050,6 +4055,23 @@ function buildDeckTile(entry, ctx) {
     closeAllDeckTileMenus(menu);
     menu.hidden = !willOpen;
     ovBtn.setAttribute("aria-expanded", String(willOpen));
+    if (willOpen) {
+      // The grid this tile lives in scrolls, and the menu can otherwise be
+      // clipped by that scroll container near the bottom of the list —
+      // promote it to a viewport-fixed position computed from the button.
+      const r = ovBtn.getBoundingClientRect();
+      menu.style.position = "fixed";
+      menu.style.right = "auto"; // the default CSS anchors with `right: 0`, which
+      // would otherwise stretch the box once `left` is also set explicitly below.
+      menu.style.left = "0px";
+      menu.style.top = "0px";
+      const menuW = menu.offsetWidth;
+      const menuH = menu.offsetHeight;
+      menu.style.left = `${Math.min(r.right - menuW, window.innerWidth - menuW - 4)}px`;
+      menu.style.top = (r.bottom + menuH + 4 > window.innerHeight)
+        ? `${r.top - menuH - 4}px`
+        : `${r.bottom + 4}px`;
+    }
   });
   overflow.append(ovBtn, menu);
   actions.append(overflow);
@@ -11877,7 +11899,7 @@ function preventCancelableScroll(event) {
 }
 
 function styleScrollRegion(target) {
-  return closestElement(target, ".style-grid, .all-cards-list, .paste-preview-list, textarea, .import-card, .web-decks-table-wrap, .diagram-modal-body");
+  return closestElement(target, ".style-grid, .all-cards-list, .paste-preview-list, textarea, .import-card, .web-decks-table-wrap, .my-decks-grid, .diagram-modal-body");
 }
 
 function canScrollStyleRegion(region) {
