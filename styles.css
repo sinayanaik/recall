@@ -54,6 +54,12 @@
   --answer-font-size: 23px;
   --answer-line-height: 1.58;
   --answer-font-weight: 400;
+  --notes-font-family: var(--app-font-family);
+  --notes-font-size: 18px;
+  --notes-line-height: 1.58;
+  --notes-font-weight: 400;
+  --notes-padding: 6px;
+  --notes-max-width: 100%;
   --question-fill: 58%;
   --question-max-font-size: 64px;
   --question-line-height: 1.18;
@@ -4566,7 +4572,13 @@ textarea {
 }
 
 .all-cards-list.is-compact .cornell-card {
-  min-height: 0;
+  /* Size to content, and don't clip. With min-height:0 + overflow:hidden the
+     grid auto-row collapses to the card's min-content (~one line) while wrapped
+     action buttons / a visible answer need more — the extra content then spills
+     out and visually overlaps the neighbouring rows. min-height:auto +
+     overflow:visible lets each compact row grow to fit exactly what it holds. */
+  min-height: auto;
+  overflow: visible;
   grid-template-columns: minmax(0, 1fr) auto;
   border-width: 1px;
   border-style: solid;
@@ -8644,9 +8656,22 @@ kbd {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 4px 6px 12px 2px;
+  padding: var(--notes-padding);
+  padding-bottom: calc(var(--notes-padding) + 8px);
   -webkit-user-select: text;
   user-select: text;
+  /* Dedicated Notes typography (Style → Notes), independent of the card faces. */
+  font-family: var(--notes-font-family);
+  font-size: var(--notes-font-size);
+  line-height: var(--notes-line-height);
+  font-weight: var(--notes-font-weight);
+}
+
+/* Constrain the readable measure of the notes column without shifting layout —
+   a centred inner column so long-form notes stay comfortable on wide screens. */
+.notes-rendered > * {
+  max-width: var(--notes-max-width);
+  margin-inline: auto;
 }
 
 .notes-rendered:empty::before {

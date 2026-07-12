@@ -236,7 +236,13 @@ const defaultStyleProfiles = {
     "questionVerticalAlign": "center",
     "sidePanelWidthPercent": "16",
     "visualMaxWidthPercent": "90",
-    "markdownBoxHeightPercent": "30"
+    "markdownBoxHeightPercent": "30",
+    "notesFontFamily": "system",
+    "notesFontSize": "15px",
+    "notesLineHeight": "1.5",
+    "notesFontWeight": "400",
+    "notesMaxWidthPercent": "100",
+    "notesPadding": "4px"
   },
   "desktop": {
     "appGap": "10px",
@@ -284,7 +290,13 @@ const defaultStyleProfiles = {
     "questionVerticalAlign": "center",
     "sidePanelWidthPercent": "6",
     "visualMaxWidthPercent": "50",
-    "markdownBoxHeightPercent": "30"
+    "markdownBoxHeightPercent": "30",
+    "notesFontFamily": "system",
+    "notesFontSize": "18px",
+    "notesLineHeight": "1.58",
+    "notesFontWeight": "400",
+    "notesMaxWidthPercent": "100",
+    "notesPadding": "6px"
   },
   "version": 2
 };
@@ -354,6 +366,17 @@ const styleControlGroups = [
     ]
   },
   {
+    title: "Notes",
+    fields: [
+      { key: "notesFontFamily", label: "Notes font family", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Font for the Study Notes document." },
+      { key: "notesFontSize", label: "Notes font size", type: "range", min: 10, max: 40, step: 1, unit: "px", hint: "Body text size in the Study Notes view." },
+      { key: "notesLineHeight", label: "Notes line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Reading spacing in the Study Notes view." },
+      { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
+      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "range", min: 40, max: 100, step: 1, hint: "Maximum width of the notes column as a percent of the notes area." },
+      { key: "notesPadding", label: "Notes padding", type: "range", min: 0, max: 64, step: 1, unit: "px", hint: "Inside spacing around the Study Notes content." }
+    ]
+  },
+  {
     title: "Buttons And Inputs",
     fields: [
       { key: "toolbarButtonHeight", label: "Toolbar button height", type: "range", min: 24, max: 72, step: 1, unit: "px", hint: "Height of Import, Export, and icon buttons." },
@@ -399,6 +422,10 @@ const styleCssVariables = {
   answerLineHeight: "--answer-line-height",
   answerFontWeight: "--answer-font-weight",
   answerPadding: "--answer-padding",
+  notesFontSize: "--notes-font-size",
+  notesLineHeight: "--notes-line-height",
+  notesFontWeight: "--notes-font-weight",
+  notesPadding: "--notes-padding",
   appGap: "--app-gap",
   panelPadding: "--panel-padding",
   cardPadding: "--card-face-padding",
@@ -2053,7 +2080,9 @@ function renderStyleControls() {
   styleControlGroups.forEach((group, groupIndex) => {
     const section = document.createElement("details");
     section.className = "style-section";
-    section.open = true;
+    // Start every section folded — the panel opens as a compact list of headings
+    // the user expands only where they need to, instead of one long unfolded wall.
+    section.open = false;
 
     const heading = document.createElement("summary");
     heading.textContent = group.title;
@@ -2190,15 +2219,19 @@ function applyStyleSettings(rawSettings, options = {}) {
   const visualMaxWidthPercent = numericStyleValue(settings.visualMaxWidthPercent) ?? (activeProfile === "mobile" ? 90 : 50);
   const markdownBoxHeightPercent = numericStyleValue(settings.markdownBoxHeightPercent) ?? 30;
 
+  const notesMaxWidthPercent = numericStyleValue(settings.notesMaxWidthPercent) ?? 100;
+
   const root = document.documentElement;
   root.style.setProperty("--app-font-family", resolveFontFamily(settings.fontFamily));
   root.style.setProperty("--question-font-family", resolveFontFamily(settings.questionFontFamily));
   root.style.setProperty("--answer-font-family", resolveFontFamily(settings.answerFontFamily));
+  root.style.setProperty("--notes-font-family", resolveFontFamily(settings.notesFontFamily));
   root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
   Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
-    if (key === "questionFontFamily" || key === "answerFontFamily") return;
+    if (key === "questionFontFamily" || key === "answerFontFamily" || key === "notesFontFamily") return;
     root.style.setProperty(cssVariable, settings[key]);
   });
+  root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
   root.style.setProperty("--question-fill", `${settings.questionFillPercent}%`);
   root.style.setProperty("--app-width", `${appWidthPercent}vw`);
   root.style.setProperty("--app-height", `${appHeightPercent}vh`);
@@ -8883,6 +8916,11 @@ function moveCard(result) {
 }
 
 function shuffleCards() {
+  // Clear any active inline edit and reset gesture/drag state first, so the
+  // freshly shown card is immediately tappable/swipeable — matches what
+  // resetQuiz/replayDeck do before re-rendering.
+  commitEditIfActive();
+  resetCardDrag();
   for (let index = state.cards.length - 1; index > 0; index -= 1) {
     const swap = Math.floor(Math.random() * (index + 1));
     [state.cards[index], state.cards[swap]] = [state.cards[swap], state.cards[index]];

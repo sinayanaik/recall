@@ -1,10 +1,10 @@
-const CACHE_NAME = "recall-v20260711-6";
+const CACHE_NAME = "recall-v20260712-1";
 
 // Same-origin app shell — cached atomically on install (must all succeed).
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260711-6",
-  "./app.js?v=20260711-6",
+  "./styles.css?v=20260712-1",
+  "./app.js?v=20260712-1",
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
