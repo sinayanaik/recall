@@ -4625,6 +4625,33 @@ textarea {
   justify-content: flex-end;
 }
 
+/* When a compact card is opened (answer shown), lay it out as a proper Cornell
+   two-column card: a fixed-width question rail on the left and the answer
+   beside it on the right. The closed compact grid is `minmax(0,1fr) auto`,
+   whose auto answer track grows to fit the (now long) answer body and collapses
+   the 1fr question track to ~zero width — wrapping the question one character
+   per line (the "vertical text" bug). Giving the rail a real min width and the
+   answer a flexible minmax(0,1fr) track keeps both columns side by side. */
+.all-cards-list.is-compact .cornell-card.is-flipped {
+  grid-template-columns: clamp(160px, 22vw, 280px) minmax(0, 1fr);
+}
+
+/* Restore the left divider rail so the open card reads as a Cornell column. */
+.all-cards-list.is-compact .cornell-card.is-flipped .cornell-question-rail {
+  border-right: 3px double color-mix(in srgb, var(--accent) 58%, var(--line));
+  align-content: start;
+}
+
+/* On a phone the two columns would be too cramped — stack instead. */
+@media (max-width: 640px) {
+  .all-cards-list.is-compact .cornell-card.is-flipped {
+    grid-template-columns: 1fr;
+  }
+  .all-cards-list.is-compact .cornell-card.is-flipped .cornell-question-rail {
+    border-right: none;
+  }
+}
+
 .all-cards-list.is-compact .all-card-actions button {
   min-height: 26px;
   padding: 0 8px;
