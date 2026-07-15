@@ -3414,6 +3414,103 @@ svg.nomnoml-light-svg [fill="none"] {
 }
 .export-content-choice-icon { font-size: 1.4rem; }
 
+/* Restore-from-backup preview — reuses the .category-choice-* modal shell. */
+.restore-preview-shell {
+  width: min(560px, 100%);
+}
+
+.restore-deck-list {
+  display: grid;
+  gap: 6px;
+  max-height: min(52vh, 420px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.restore-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  padding: 8px 11px;
+}
+
+.restore-badge {
+  min-width: 52px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.64rem;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.restore-row.is-new .restore-badge {
+  border: 1px solid color-mix(in srgb, var(--known, #2e9d6e) 55%, var(--line));
+  background: color-mix(in srgb, var(--known, #2e9d6e) 16%, transparent);
+  color: var(--known, #2e9d6e);
+}
+
+.restore-row.is-conflict .restore-badge {
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-strong, var(--accent));
+}
+
+.restore-row.is-unchanged {
+  opacity: 0.66;
+}
+
+.restore-row.is-unchanged .restore-badge {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+
+.restore-title {
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.restore-detail {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.restore-summary {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.restore-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.restore-preview-shell .import-action-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.restore-preview-shell .import-action-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .style-shell {
   display: grid;
   width: min(920px, 100%);

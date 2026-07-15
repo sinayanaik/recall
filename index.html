@@ -424,8 +424,11 @@
                   <button type="button" data-export-all="markdown">Markdown</button>
                   <button type="button" data-export-all="json">JSON</button>
                   <button type="button" data-export-all="sql">SQL</button>
+                  <button type="button" data-export-all="backup">Backup (.zip — all decks + notes)</button>
                 </div>
               </div>
+              <button class="web-decks-refresh" id="myDecksRestoreBtn" type="button" title="Restore decks & notes from a backup archive (.zip or .json)">&#10554; Restore</button>
+              <input id="restoreFileInput" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden>
             </div>
           </div>
           <div class="web-decks-tools-row web-decks-tools-secondary">

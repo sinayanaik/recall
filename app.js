@@ -1034,6 +1034,10 @@ function deckPayloadSnapshot(payload) {
     app: "recall", // informational only — imports never read this field, so old "markdown-flashcards" exports still load
     version: 1,
     exportedAt: new Date().toISOString(),
+    // The deck's REAL last-edited time (distinct from exportedAt, the moment the
+    // archive was written). Restore compares this to decide newest-wins, so it
+    // must survive the round-trip; falls back to null for older exports.
+    updatedAt: payload.deck.updated_at || null,
     deckTitle: payload.deck.title,
     deckCategory: payload.deck.category,
     notes: payload.deck.notes || "",
@@ -1045,7 +1049,10 @@ function deckPayloadSnapshot(payload) {
       id: card.id,
       question: card.question,
       answer: card.answer,
-      status: card.status
+      status: card.status,
+      // Per-card last-edited time when known, so card-level conflicts can also
+      // resolve newest-wins instead of blindly overwriting a newer local edit.
+      updatedAt: card.updated_at || null
     }))
   };
 }
@@ -3233,6 +3240,580 @@ async function exportAllMyDecks(format) {
     console.error("Failed to export all decks", error);
     setStatus("Failed to export all decks.", "error");
     showToast("Export failed", "error");
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Library Backup (.zip) + Safe Restore
+//
+// Backup packs every deck (cards, statuses, notes, category, timestamps) into a
+// versioned, self-describing zip. Restore reads that archive (or a legacy JSON
+// bundle), diffs each deck against the CURRENT device state without writing
+// anything, shows a preview, and only on confirm applies an additive merge:
+// it adds missing decks/cards and applies backup edits, but NEVER deletes a
+// local-only deck or card. A full safety backup is auto-downloaded first.
+// Reuses deckPayloadSnapshot / calculateSyncDiff / syncTextChanged / the local
+// library index+snapshot model so the on-disk format is unchanged.
+// ══════════════════════════════════════════════════════════════════════════
+
+const BACKUP_SCHEMA = "recall-backup";
+const BACKUP_VERSION = 1;
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Filesystem-safe local timestamp with SECONDS, so multiple backups on the same
+// day (and a backup + its pre-restore safety backup moments apart) get distinct
+// names instead of colliding. Colons are illegal in filenames -> dashes.
+function backupTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    + `_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+}
+
+// Coerce any deck shape we might read from an archive — a per-deck backup file,
+// a legacy deckPayloadSnapshot, or a normalizeWebDeckPayload deck+cards bundle —
+// into the single shape planRestore/applyRestore work with.
+function normalizeBackupDeck(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const cards = Array.isArray(raw.cards) ? raw.cards : [];
+  const title = raw.deckTitle || raw.title || (raw.deck && raw.deck.title) || "Untitled deck";
+  return {
+    deckId: raw.deckId || raw.deck_id || (raw.deck && raw.deck.id) || null,
+    title: String(title),
+    category: normalizeDeckCategory(raw.deckCategory || raw.category || (raw.deck && raw.deck.category)),
+    notes: String(raw.notes || (raw.deck && raw.deck.notes) || ""),
+    current: Number.isFinite(Number(raw.current)) ? Number(raw.current) : 0,
+    updatedAt: raw.updatedAt || raw.updated_at || raw.exportedAt || null,
+    cards: cards.map((card, index) => ({
+      id: String(card.id || `${index}`),
+      question: String(card.question || ""),
+      answer: String(card.answer || ""),
+      status: normalizeCardStatus(card.status),
+      ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
+    }))
+  };
+}
+
+async function collectBackupPayloads() {
+  const selections = await allMyDeckSelections();
+  const payloads = [];
+  for (const sel of selections) {
+    try {
+      payloads.push(await myDeckPayload(sel));
+    } catch (error) {
+      console.warn("Skipping unavailable deck in backup", sel, error);
+    }
+  }
+  return payloads;
+}
+
+async function exportLibraryBackupZip({ fileBaseName } = {}) {
+  if (!window.JSZip) {
+    setStatus("Backup needs the zip library, which failed to load.", "error");
+    return false;
+  }
+  const payloads = await collectBackupPayloads();
+  if (!payloads.length) {
+    setStatus("No decks to back up.", "error");
+    return false;
+  }
+
+  const zip = new JSZip();
+  const decksFolder = zip.folder("decks");
+  const now = new Date();
+  const manifestDecks = [];
+  const usedNames = new Set();
+
+  payloads.forEach((payload) => {
+    const snapshot = deckPayloadSnapshot(payload);
+    const idPart = String(payload.deck.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16)
+      || Math.random().toString(36).slice(2, 8);
+    const base = `${slugifyFileName(payload.deck.title || "deck") || "deck"}-${idPart}`;
+    let name = `${base}.json`;
+    let n = 2;
+    while (usedNames.has(name)) name = `${base}-${n++}.json`;
+    usedNames.add(name);
+    decksFolder.file(name, `${JSON.stringify(snapshot, null, 2)}\n`);
+    manifestDecks.push({
+      file: `decks/${name}`,
+      deckId: payload.deck.id || null,
+      title: payload.deck.title || "Untitled deck",
+      category: payload.deck.category || "",
+      cardCount: payload.cards.length,
+      hasNotes: Boolean(String(payload.deck.notes || "").trim()),
+      updatedAt: payload.deck.updated_at || null
+    });
+  });
+
+  const manifest = {
+    schema: BACKUP_SCHEMA,
+    version: BACKUP_VERSION,
+    app: "recall",
+    exportedAt: now.toISOString(),
+    deckCount: payloads.length,
+    decks: manifestDecks
+  };
+  zip.file("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+  zip.file("README.txt", [
+    "Recall library backup",
+    "",
+    `Created: ${now.toISOString()}`,
+    `Decks:   ${payloads.length}`,
+    "",
+    "Layout:",
+    "  manifest.json   index of every deck in this archive",
+    "  decks/*.json    one file per deck (cards, statuses, notes, category)",
+    "",
+    "Restore from the app: Import panel -> Restore from backup (or the My Decks",
+    "toolbar). Restore compares every deck, card and note against your current",
+    "decks and shows a preview before changing anything. It never deletes your",
+    "local-only decks or cards; it only adds what's missing and applies edits",
+    "from this backup.",
+    ""
+  ].join("\n"));
+
+  const blob = await zip.generateAsync({
+    type: "blob",
+    compression: "DEFLATE",
+    compressionOptions: { level: 6 }
+  });
+  const name = `${fileBaseName || `recall-backup-${backupTimestamp(now)}`}.zip`;
+  downloadBlob(blob, name);
+  setStatus(`Backed up ${payloads.length} deck${payloads.length === 1 ? "" : "s"} to ${name}.`);
+  return true;
+}
+
+// A parsed JSON node is either a multi-deck bundle ({decks:[...]}) or a single
+// deck snapshot — normalise both into `out`.
+function expandBackupBundleInto(parsed, out) {
+  if (parsed && Array.isArray(parsed.decks)) {
+    parsed.decks.forEach((deck) => {
+      const normalized = normalizeBackupDeck(deck);
+      if (normalized) out.push(normalized);
+    });
+  } else {
+    const normalized = normalizeBackupDeck(parsed);
+    if (normalized) out.push(normalized);
+  }
+}
+
+async function readBackupArchive(file) {
+  const name = String(file.name || "").toLowerCase();
+  const looksZip = /\.zip$/.test(name)
+    || file.type === "application/zip"
+    || file.type === "application/x-zip-compressed";
+
+  const decks = [];
+  if (looksZip) {
+    if (!window.JSZip) throw new Error("the zip library failed to load, so this .zip can't be read");
+    const zip = await JSZip.loadAsync(file);
+    let deckPaths = Object.keys(zip.files).filter((path) => /^decks\/.+\.json$/i.test(path) && !zip.files[path].dir);
+    if (!deckPaths.length) {
+      // No decks/ folder: accept any root .json (a zipped single/bundle export).
+      deckPaths = Object.keys(zip.files).filter((path) => /\.json$/i.test(path) && !path.includes("/") && !/manifest\.json$/i.test(path));
+    }
+    for (const path of deckPaths) {
+      try {
+        expandBackupBundleInto(JSON.parse(await zip.files[path].async("string")), decks);
+      } catch (error) {
+        console.warn("Skipping unreadable deck file in archive", path, error);
+      }
+    }
+    if (!decks.length) throw new Error("no decks found in this archive");
+    return decks;
+  }
+
+  // Plain JSON export (single snapshot or {decks:[...]} bundle).
+  expandBackupBundleInto(JSON.parse(await file.text()), decks);
+  if (!decks.length) throw new Error("no decks found in this file");
+  return decks;
+}
+
+// Match a backup deck to a local library entry: cloud/deck id first, then a
+// unique title match. Ambiguous title (2+ local decks share it) → treat as new.
+function findLocalMatchForBackupDeck(backupDeck, index) {
+  if (backupDeck.deckId) {
+    const byId = index.find((meta) => meta.deckId && String(meta.deckId) === String(backupDeck.deckId));
+    if (byId) return byId;
+  }
+  const title = normalizeSyncText(backupDeck.title);
+  if (title) {
+    const byTitle = index.filter((meta) => normalizeSyncText(meta.title) === title);
+    if (byTitle.length === 1) return byTitle[0];
+  }
+  return null;
+}
+
+// Dry run — classify every backup deck against the current device state WITHOUT
+// writing anything. Reuses the sync diff engine (fuzzy:false: stable-id diff).
+function planRestore(backupDecks) {
+  const index = readLocalDeckIndex();
+  const decks = [];
+  const totals = { newDecks: 0, cardsAdded: 0, cardsUpdated: 0, cardsKept: 0, notesUpdated: 0, unchanged: 0 };
+
+  backupDecks.forEach((backupDeck) => {
+    const localMeta = findLocalMatchForBackupDeck(backupDeck, index);
+    if (!localMeta) {
+      decks.push({ title: backupDeck.title, status: "new", localId: null, backupDeck, counts: { added: backupDeck.cards.length } });
+      totals.newDecks += 1;
+      totals.cardsAdded += backupDeck.cards.length;
+      return;
+    }
+
+    let localSnapshot = null;
+    try {
+      localSnapshot = JSON.parse(localStorage.getItem(LOCAL_DECK_PREFIX + localMeta.id) || "null");
+    } catch {
+      localSnapshot = null;
+    }
+    // Newest-wins per deck: the backup only overwrites an existing card or the
+    // notes when the backup deck was edited more recently than the local one.
+    // A missing card is ALWAYS added back and a local-only card is ALWAYS kept,
+    // regardless of direction — those can't lose data either way. Tie / unknown
+    // timestamps favour keeping local (never overwrite on a guess).
+    const localTime = Date.parse(localMeta.updatedAt || "") || 0;
+    const backupTime = Date.parse(backupDeck.updatedAt || "") || 0;
+    const backupNewer = backupTime > localTime;
+
+    const localCards = (localSnapshot && localSnapshot.cards) || [];
+    // Count by DISTINCT card (id-keyed union), matching exactly what
+    // mergeDeckSnapshots does on apply, so the preview never over/under-states.
+    const localById = new Map(localCards.map((card) => [String(card.id), card]));
+    const backupIds = new Set(backupDeck.cards.map((card) => String(card.id)));
+    let backupOnly = 0;  // in backup, not local -> always added back
+    let differing = 0;   // id-matched card whose question/answer/status differs
+    backupDeck.cards.forEach((backupCard) => {
+      const local = localById.get(String(backupCard.id));
+      if (!local) {
+        backupOnly += 1;
+      } else if (
+        syncTextChanged(local.question, backupCard.question)
+        || syncTextChanged(local.answer, backupCard.answer)
+        || normalizeCardStatus(local.status) !== normalizeCardStatus(backupCard.status)
+      ) {
+        differing += 1;
+      }
+    });
+    const localOnly = localCards.reduce((n, card) => n + (backupIds.has(String(card.id)) ? 0 : 1), 0);
+
+    const localNotes = (localSnapshot && localSnapshot.notes) || "";
+    const notesDiffer = syncTextChanged(localNotes, backupDeck.notes);
+
+    // What will actually be written, given the direction.
+    const overwritten = backupNewer ? differing : 0;   // matched cards replaced by backup
+    const heldLocal = backupNewer ? 0 : differing;     // matched cards kept (local newer/tie)
+    const notesUpdated = backupNewer && notesDiffer;
+    const notesHeldLocal = notesDiffer && !backupNewer;
+
+    // A write happens only if a card is added, an existing card is overwritten,
+    // or the notes are replaced. Differences we deliberately keep local are NOT
+    // changes, so a deck where the backup is older with only conflicting edits
+    // (and nothing to add) is correctly "unchanged".
+    if (!backupOnly && !overwritten && !notesUpdated) {
+      decks.push({ title: backupDeck.title, status: "unchanged", localId: localMeta.id, localMeta, localSnapshot, backupDeck, backupNewer, counts: {} });
+      totals.unchanged += 1;
+      return;
+    }
+
+    decks.push({
+      title: backupDeck.title,
+      status: "conflict",
+      localId: localMeta.id,
+      localMeta,
+      localSnapshot,
+      backupDeck,
+      backupNewer,
+      counts: {
+        added: backupOnly,
+        overwritten,
+        heldLocal,
+        kept: localOnly,
+        notesUpdated: notesUpdated ? 1 : 0,
+        notesHeldLocal: notesHeldLocal ? 1 : 0
+      }
+    });
+    totals.cardsAdded += backupOnly;
+    totals.cardsUpdated += overwritten;
+    totals.cardsKept += localOnly + heldLocal;
+    if (notesUpdated) totals.notesUpdated += 1;
+  });
+
+  return { decks, totals };
+}
+
+// Stable local id for a restored deck so re-running a restore updates in place
+// instead of duplicating (mirrors the deterministic-id reconcile at
+// applyCloudDeckToLocal). Reuses an existing local entry if the deckId is known.
+function deterministicRestoreLocalId(backupDeck) {
+  const index = readLocalDeckIndex();
+  if (backupDeck.deckId) {
+    const existing = index.find((meta) => meta.deckId && String(meta.deckId) === String(backupDeck.deckId));
+    if (existing) return existing.id;
+    return `ld_restore_${String(backupDeck.deckId).replace(/[^A-Za-z0-9_-]/g, "")}`;
+  }
+  return `ld_restore_${slugifyFileName(backupDeck.title || "deck") || "deck"}`;
+}
+
+function backupDeckToSnapshot(backupDeck, localId) {
+  return {
+    app: "recall",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    deckTitle: backupDeck.title || "",
+    deckCategory: normalizeDeckCategory(backupDeck.category),
+    notes: backupDeck.notes || "",
+    sourceTitle: backupDeck.title || "",
+    importTitleHint: backupDeck.title || "",
+    deckId: backupDeck.deckId || null,
+    current: backupDeck.current || 0,
+    localDeckId: localId,
+    cards: backupDeck.cards.map((card) => ({
+      id: card.id,
+      question: card.question,
+      answer: card.answer,
+      status: normalizeCardStatus(card.status),
+      ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
+    }))
+  };
+}
+
+// Newest-wins union merge. Always: keep every local card, append backup-only
+// cards. Only when `backupNewer` is true does the backup overwrite an
+// id-matched card's content/status or replace the notes — otherwise the local
+// copy is kept. Local-only cards are never dropped in either direction.
+function mergeDeckSnapshots(localSnapshot, backupDeck, backupNewer) {
+  const local = localSnapshot || {};
+  const cards = Array.isArray(local.cards) ? local.cards.slice() : [];
+  const indexById = new Map(cards.map((card, i) => [String(card.id), i]));
+  let added = 0;
+  let updated = 0;
+
+  backupDeck.cards.forEach((backupCard) => {
+    const key = String(backupCard.id);
+    if (indexById.has(key)) {
+      if (!backupNewer) return; // local is newer/tie -> keep the local card as-is
+      const i = indexById.get(key);
+      const current = cards[i];
+      const changed = syncTextChanged(current.question, backupCard.question)
+        || syncTextChanged(current.answer, backupCard.answer)
+        || normalizeCardStatus(current.status) !== normalizeCardStatus(backupCard.status);
+      cards[i] = {
+        ...current,
+        question: backupCard.question,
+        answer: backupCard.answer,
+        status: normalizeCardStatus(backupCard.status),
+        ...(backupCard.noteAnchor ? { noteAnchor: backupCard.noteAnchor } : {})
+      };
+      if (changed) updated += 1;
+    } else {
+      cards.push({
+        id: backupCard.id,
+        question: backupCard.question,
+        answer: backupCard.answer,
+        status: normalizeCardStatus(backupCard.status),
+        ...(backupCard.noteAnchor ? { noteAnchor: backupCard.noteAnchor } : {})
+      });
+      added += 1;
+    }
+  });
+
+  const snapshot = {
+    ...local,
+    app: "recall",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    deckTitle: local.deckTitle || backupDeck.title || "",
+    deckCategory: local.deckCategory || normalizeDeckCategory(backupDeck.category),
+    notes: backupNewer && syncTextChanged(local.notes || "", backupDeck.notes || "")
+      ? (backupDeck.notes || "")
+      : (local.notes || ""),
+    deckId: local.deckId || backupDeck.deckId || null,
+    cards
+  };
+  return { snapshot, added, updated };
+}
+
+function upsertRestoredMeta(localId, snapshot, backupDeck) {
+  const index = readLocalDeckIndex();
+  const existing = index.find((meta) => meta.id === localId);
+  const now = new Date().toISOString();
+  const meta = {
+    id: localId,
+    title: snapshot.deckTitle || "Untitled deck",
+    category: snapshot.deckCategory || defaultDeckCategory,
+    cardCount: (snapshot.cards || []).length,
+    hasNotes: Boolean(String(snapshot.notes || "").trim()),
+    updatedAt: now,
+    lastSyncedAt: existing ? existing.lastSyncedAt || null : null,
+    accessedAt: existing ? existing.accessedAt || null : null,
+    deckId: snapshot.deckId || backupDeck.deckId || null
+  };
+  writeLocalDeckIndex([meta, ...index.filter((entry) => entry.id !== localId)]);
+}
+
+// Confirmation preview — resolves true to apply, false to cancel. Nothing is
+// written until the returned promise resolves true.
+function showRestorePreview(report) {
+  return new Promise((resolve) => {
+    const modal = document.createElement("section");
+    modal.className = "category-choice-modal restore-preview-modal";
+    modal.setAttribute("aria-label", "Restore preview");
+
+    const total = report.totals;
+    const summaryBits = [];
+    if (total.newDecks) summaryBits.push(`${total.newDecks} new deck${total.newDecks === 1 ? "" : "s"}`);
+    if (total.cardsAdded) summaryBits.push(`${total.cardsAdded} card${total.cardsAdded === 1 ? "" : "s"} restored`);
+    if (total.cardsUpdated) summaryBits.push(`${total.cardsUpdated} updated`);
+    if (total.cardsKept) summaryBits.push(`${total.cardsKept} local kept`);
+    if (total.notesUpdated) summaryBits.push(`${total.notesUpdated} notes updated`);
+    if (total.unchanged) summaryBits.push(`${total.unchanged} unchanged`);
+    const willChange = total.newDecks || total.cardsAdded || total.cardsUpdated || total.notesUpdated;
+
+    const rowsHtml = report.decks.map((entry) => {
+      let badge = "MERGE";
+      let cls = "is-conflict";
+      let detail = "";
+      if (entry.status === "new") {
+        badge = "NEW";
+        cls = "is-new";
+        detail = `${entry.counts.added} card${entry.counts.added === 1 ? "" : "s"}`;
+      } else if (entry.status === "unchanged") {
+        badge = "=";
+        cls = "is-unchanged";
+        detail = "unchanged";
+      } else {
+        const c = entry.counts;
+        const bits = [];
+        if (c.added) bits.push(`+${c.added} restored`);
+        if (c.overwritten) bits.push(`~${c.overwritten} updated`);
+        if (c.heldLocal) bits.push(`${c.heldLocal} local newer (kept)`);
+        if (c.kept) bits.push(`${c.kept} local kept`);
+        if (c.notesUpdated) bits.push("notes updated");
+        if (c.notesHeldLocal) bits.push("notes differ (local newer, kept)");
+        detail = bits.join(" · ") || "changes";
+      }
+      return `<li class="restore-row ${cls}">`
+        + `<span class="restore-badge">${badge}</span>`
+        + `<span class="restore-title"></span>`
+        + `<span class="restore-detail">${escapeHtml(detail)}</span>`
+        + `</li>`;
+    }).join("");
+
+    const shell = document.createElement("div");
+    shell.className = "category-choice-shell restore-preview-shell";
+    shell.innerHTML = `
+      <div class="category-choice-head">
+        <div>
+          <h2>Restore from backup</h2>
+          <p>Reviewed against your current decks. Nothing changes until you confirm.</p>
+        </div>
+        <button type="button" data-restore-cancel aria-label="Close">&#215;</button>
+      </div>
+      <ul class="restore-deck-list">${rowsHtml}</ul>
+      <p class="restore-summary">${escapeHtml(summaryBits.join(" · ") || "No changes to apply.")}</p>
+      <p class="restore-note">A full backup of your current decks is saved first, so this is reversible. Local-only decks and cards are never deleted.</p>
+      <div class="category-choice-actions">
+        <button type="button" data-restore-cancel>Cancel</button>
+        <button type="button" class="import-action-primary" data-restore-confirm ${willChange ? "" : "disabled"}>Merge &amp; Restore</button>
+      </div>
+    `;
+
+    // Titles set via textContent (never innerHTML) so deck names can't inject markup.
+    const titleSpans = shell.querySelectorAll(".restore-title");
+    report.decks.forEach((entry, i) => {
+      if (titleSpans[i]) titleSpans[i].textContent = entry.title || "Untitled deck";
+    });
+
+    const cleanup = (value) => {
+      modal.remove();
+      resolve(value);
+    };
+    shell.querySelectorAll("[data-restore-cancel]").forEach((button) => {
+      button.addEventListener("click", () => cleanup(false));
+    });
+    shell.querySelector("[data-restore-confirm]")?.addEventListener("click", () => cleanup(true));
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) cleanup(false);
+    });
+
+    modal.appendChild(shell);
+    document.body.appendChild(modal);
+    (shell.querySelector("[data-restore-confirm]:not([disabled])") || shell.querySelector("[data-restore-cancel]"))?.focus();
+  });
+}
+
+async function applyRestore(report, { autoBackup = true } = {}) {
+  if (autoBackup) {
+    try {
+      await exportLibraryBackupZip({ fileBaseName: `recall-backup-before-restore-${backupTimestamp()}` });
+    } catch (error) {
+      console.warn("Pre-restore safety backup failed (continuing)", error);
+    }
+  }
+
+  let addedDecks = 0;
+  let mergedDecks = 0;
+  let cardsAdded = 0;
+  let cardsUpdated = 0;
+
+  report.decks.forEach((entry) => {
+    try {
+      if (entry.status === "new") {
+        const localId = deterministicRestoreLocalId(entry.backupDeck);
+        const snapshot = backupDeckToSnapshot(entry.backupDeck, localId);
+        localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
+        upsertRestoredMeta(localId, snapshot, entry.backupDeck);
+        addedDecks += 1;
+        cardsAdded += entry.backupDeck.cards.length;
+      } else if (entry.status === "conflict") {
+        const merged = mergeDeckSnapshots(entry.localSnapshot, entry.backupDeck, entry.backupNewer);
+        localStorage.setItem(LOCAL_DECK_PREFIX + entry.localId, JSON.stringify(merged.snapshot));
+        upsertRestoredMeta(entry.localId, merged.snapshot, entry.backupDeck);
+        mergedDecks += 1;
+        cardsAdded += merged.added;
+        cardsUpdated += merged.updated;
+      }
+    } catch (error) {
+      console.warn("Failed to restore deck", entry.title, error);
+    }
+  });
+
+  await renderMyDecksList();
+
+  const parts = [];
+  if (addedDecks) parts.push(`${addedDecks} deck${addedDecks === 1 ? "" : "s"} added`);
+  if (mergedDecks) parts.push(`${mergedDecks} merged`);
+  if (cardsAdded) parts.push(`${cardsAdded} card${cardsAdded === 1 ? "" : "s"} restored`);
+  if (cardsUpdated) parts.push(`${cardsUpdated} updated`);
+  setStatus(`Restore complete — ${parts.length ? parts.join(", ") : "no changes"}.`);
+  showToast("Restore complete", "success");
+}
+
+async function runRestoreFlow(file) {
+  try {
+    setStatus("Reading backup…");
+    const backupDecks = await readBackupArchive(file);
+    const report = planRestore(backupDecks);
+    const confirmed = await showRestorePreview(report);
+    if (!confirmed) {
+      setStatus("Restore cancelled.");
+      return;
+    }
+    setStatus("Restoring…");
+    await applyRestore(report);
+  } catch (error) {
+    console.error("Restore failed", error);
+    setStatus(`Restore failed: ${error && error.message ? error.message : "unreadable backup"}`, "error");
+    showToast("Restore failed", "error");
   }
 }
 
@@ -5511,6 +6092,39 @@ async function enhanceRenderedMarkdown(container) {
   fitMarkdownTables(container);
 }
 
+// Notes frequently start at ## (or deeper) because the top-level # is reserved
+// for a document title elsewhere. Promote the whole heading tree so the
+// shallowest heading in the notes renders as <h1>: if the topmost level is ##,
+// it becomes #, ### becomes ##, and so on. Every heading is shifted by the same
+// amount, so the relative structure (and the derived TOC) is preserved. Only
+// affects the rendered notes view — the raw markdown and card parsing are left
+// untouched. Fenced code is skipped so a leading `#` in code isn't mistaken for
+// a heading.
+function promoteNotesHeadings(markdown) {
+  const lines = String(markdown || "").split("\n");
+  const levels = new Array(lines.length).fill(0);
+  let inFence = false;
+  let fenceChar = "";
+  let minLevel = 7;
+  lines.forEach((line, i) => {
+    const fence = line.match(/^\s*(```+|~~~+)/);
+    if (fence) {
+      if (!inFence) { inFence = true; fenceChar = fence[1][0]; }
+      else if (line.trim().startsWith(fenceChar)) { inFence = false; }
+      return;
+    }
+    if (inFence) return;
+    const heading = line.match(/^(#{1,6})\s+\S/);
+    if (heading) {
+      levels[i] = heading[1].length;
+      if (heading[1].length < minLevel) minLevel = heading[1].length;
+    }
+  });
+  const shift = minLevel <= 6 ? minLevel - 1 : 0;
+  if (shift <= 0) return String(markdown || "");
+  return lines.map((line, i) => (levels[i] ? "#".repeat(levels[i] - shift) + line.slice(levels[i]) : line)).join("\n");
+}
+
 async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   let displayMarkdown = markdown;
   if (allowPlaceholder && (!markdown || String(markdown).trim() === "")) {
@@ -5520,6 +6134,7 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
       displayMarkdown = "<div class='empty-placeholder'>Answer</div>";
     }
   }
+  if (container === el.notesView) displayMarkdown = promoteNotesHeadings(displayMarkdown);
   container.innerHTML = markdownToSafeHtml(displayMarkdown);
   await enhanceRenderedMarkdown(container);
   if (container === el.notesView) {
@@ -6619,11 +7234,14 @@ function enterNotesEditing(cursorOffset = null) {
   hideNotesSelectionButton();
   el.notesEdit.dispatchEvent(new Event("input", { bubbles: true }));
   el.notesEdit.focus();
-  if (cursorOffset != null) {
-    const pos = Math.max(0, Math.min(cursorOffset, el.notesEdit.value.length));
-    el.notesEdit.setSelectionRange(pos, pos);
-    scrollTextareaToOffset(el.notesEdit, pos);
-  }
+  // Assigning .value leaves the caret at the very end in most browsers, so
+  // always place it explicitly — a matched offset when we have one, otherwise
+  // the top of the notes. Never let a failed match silently dump you at the end.
+  const pos = cursorOffset != null
+    ? Math.max(0, Math.min(cursorOffset, el.notesEdit.value.length))
+    : 0;
+  el.notesEdit.setSelectionRange(pos, pos);
+  scrollTextareaToOffset(el.notesEdit, pos);
 }
 
 // ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
@@ -6662,30 +7280,20 @@ function textOffsetWithin(root, node, offset) {
   }
 }
 
-function findRawOffsetForRenderedPoint(clientX, clientY) {
-  const caret = caretFromPoint(clientX, clientY);
-  if (!caret || !el.notesView?.contains(caret.node)) return null;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  const startEl = caret.node.nodeType === Node.TEXT_NODE ? caret.node.parentElement : caret.node;
-  const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR);
-  if (!block || !el.notesView.contains(block)) return null;
-
-  const localOffset = textOffsetWithin(block, caret.node, caret.offset);
-  if (localOffset == null) return null;
-
-  const blockText = block.textContent || "";
-  const before = blockText.slice(Math.max(0, localOffset - 24), localOffset).trim();
-  const after = blockText.slice(localOffset, localOffset + 24).trim();
+// Locate `before`+`after` snippets (either may be empty) inside state.notes and
+// return the character offset of the seam between them. `allowNewline` lets the
+// gap and fuzzified whitespace cross line breaks — essential inside fenced code
+// blocks, whose raw markdown keeps the newlines the click snippet spans.
+function matchSnippetInNotes(before, after, allowNewline) {
   if (!before && !after) return null;
-
-  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Lazy any-char (but not newline) gap: stripped markdown syntax isn't always
-  // punctuation-only — a link's `](https://example.com)` tail is full of letters
-  // and digits, so a gap restricted to non-alphanumeric chars can't skip over it.
-  // Newline is excluded so a short/generic word fragment can't spuriously bridge
-  // into an unrelated block elsewhere in the notes; lazy matching finds the
-  // nearest occurrence of the next literal run rather than over-consuming.
-  const gap = "[^\\n]{0,300}?";
+  // Lazy bounded gap absorbs stripped markdown syntax (a link's
+  // `](https://example.com)` tail is full of letters/digits, so a gap of only
+  // non-alphanumerics can't skip it). For prose the gap excludes newlines so a
+  // short generic fragment can't bridge into an unrelated block; inside code we
+  // must allow them so a snippet straddling two code lines still matches.
+  const gap = allowNewline ? "[\\s\\S]{0,300}?" : "[^\\n]{0,300}?";
   // Fuzzify: keep alphanumeric runs literal, let every run of punctuation/whitespace
   // in the snippet absorb stripped markdown syntax — not just the one at the click
   // seam. A snippet like "bold text" must also match raw "**bold text**", where the
@@ -6694,7 +7302,6 @@ function findRawOffsetForRenderedPoint(clientX, clientY) {
   const pattern = before && after
     ? `(${fuzzify(before)})${gap}(${fuzzify(after)})`
     : `(${fuzzify(before || after)})`;
-
   try {
     const match = new RegExp(pattern).exec(state.notes);
     if (!match) return null;
@@ -6702,6 +7309,43 @@ function findRawOffsetForRenderedPoint(clientX, clientY) {
   } catch (_) {
     return null;
   }
+}
+
+function findRawOffsetForRenderedPoint(clientX, clientY) {
+  const caret = caretFromPoint(clientX, clientY);
+  // Widgets (rendered code fences, cloze/math, images) can swallow the caret or
+  // sit outside a text block — fall back to the element under the pointer so the
+  // block lookup below can still land us in the right region of the raw notes.
+  const anchorNode = caret && el.notesView?.contains(caret.node)
+    ? caret.node
+    : document.elementFromPoint(clientX, clientY);
+  if (!anchorNode || !el.notesView?.contains(anchorNode)) return null;
+
+  const startEl = anchorNode.nodeType === Node.TEXT_NODE ? anchorNode.parentElement : anchorNode;
+  const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR);
+  if (!block || !el.notesView.contains(block)) return null;
+
+  // Code fences render verbatim, so their raw markdown keeps the exact newlines
+  // and punctuation the click snippet spans — match across lines for those.
+  const isCode = block.tagName === "PRE" || Boolean(startEl.closest("pre, code"));
+  const blockText = block.textContent || "";
+
+  // Precise hit: match the text on both sides of the exact click point.
+  const localOffset = caret && el.notesView.contains(caret.node)
+    ? textOffsetWithin(block, caret.node, caret.offset)
+    : null;
+  if (localOffset != null) {
+    const before = blockText.slice(Math.max(0, localOffset - 24), localOffset).trim();
+    const after = blockText.slice(localOffset, localOffset + 24).trim();
+    const hit = matchSnippetInNotes(before, after, isCode);
+    if (hit != null) return hit;
+  }
+
+  // Fallback: we know which block was clicked but not the precise seam (widget,
+  // failed fuzzy match, …). Land at the start of that block rather than leaving
+  // the caret to snap to the very end of the notes.
+  const blockStart = blockText.replace(/^\s+/, "").slice(0, 40).trim();
+  return matchSnippetInNotes(blockStart, "", isCode);
 }
 
 // setSelectionRange alone doesn't reliably re-scroll a long textarea in every
@@ -6886,6 +7530,43 @@ function scrollNotesHeadingIntoView(heading) {
   el.notesView.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
 }
 
+// Raw-mode counterpart of scrollNotesHeadingIntoView: the rendered notes view is
+// hidden while editing, so a TOC click must scroll the textarea instead. The Nth
+// TOC entry is the Nth ATX heading in source order (rendering preserves order and
+// count), so walk the raw lines — skipping fenced code, where a leading # isn't a
+// heading — to the Nth heading and drop the caret on that line.
+function scrollNotesEditToHeadingIndex(index) {
+  const textarea = el.notesEdit;
+  if (!textarea) return;
+  const lines = textarea.value.split("\n");
+  let inFence = false;
+  let fenceChar = "";
+  let count = -1;
+  let targetLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(/^\s*(```+|~~~+)/);
+    if (fence) {
+      if (!inFence) { inFence = true; fenceChar = fence[1][0]; }
+      else if (line.trim().startsWith(fenceChar)) { inFence = false; }
+      continue;
+    }
+    if (inFence) continue;
+    if (/^#{1,6}\s+\S/.test(line)) {
+      count += 1;
+      if (count === index) { targetLine = i; break; }
+    }
+  }
+  if (targetLine < 0) return;
+  const pos = lines.slice(0, targetLine).reduce((n, l) => n + l.length + 1, 0);
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos);
+  scrollTextareaToOffset(textarea, pos);
+  // Setting scrollTop programmatically doesn't reliably fire a scroll event in
+  // every browser, so nudge the syntax-highlight backdrop to follow.
+  textarea.dispatchEvent(new Event("scroll"));
+}
+
 function updateNotesTocActive() {
   if (!el.notesTocList || !notesTocHeadings.length) return;
   const viewTop = el.notesView.getBoundingClientRect().top;
@@ -6940,10 +7621,16 @@ el.notesTocList?.addEventListener("click", (event) => {
   const link = event.target.closest(".notes-toc-link");
   if (!link) return;
   event.preventDefault();
-  const heading = notesTocHeadings[Number(link.dataset.tocIndex)];
-  scrollNotesHeadingIntoView(heading);
-  heading?.classList.add("notes-heading-flash");
-  setTimeout(() => heading?.classList.remove("notes-heading-flash"), 1200);
+  const index = Number(link.dataset.tocIndex);
+  // In raw/edit mode the rendered view is hidden — scroll the textarea instead.
+  if (isNotesEditing()) {
+    scrollNotesEditToHeadingIndex(index);
+  } else {
+    const heading = notesTocHeadings[index];
+    scrollNotesHeadingIntoView(heading);
+    heading?.classList.add("notes-heading-flash");
+    setTimeout(() => heading?.classList.remove("notes-heading-flash"), 1200);
+  }
   // On narrow screens the drawer overlays the notes, so step out of the way.
   if (window.matchMedia("(max-width: 720px)").matches) closeNotesToc();
 });
@@ -13047,7 +13734,22 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
       event.stopPropagation();
       exportAllMenu.hidden = true;
       exportAllBtn.setAttribute("aria-expanded", "false");
-      exportAllMyDecks(button.dataset.exportAll);
+      if (button.dataset.exportAll === "backup") {
+        exportLibraryBackupZip();
+      } else {
+        exportAllMyDecks(button.dataset.exportAll);
+      }
+    });
+  }
+
+  const restoreBtn = document.getElementById("myDecksRestoreBtn");
+  const restoreInput = document.getElementById("restoreFileInput");
+  if (restoreBtn && restoreInput) {
+    restoreBtn.addEventListener("click", () => restoreInput.click());
+    restoreInput.addEventListener("change", async () => {
+      const file = restoreInput.files && restoreInput.files[0];
+      restoreInput.value = ""; // allow re-selecting the same file later
+      if (file) await runRestoreFlow(file);
     });
   }
 }
