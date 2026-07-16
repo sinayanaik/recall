@@ -2597,16 +2597,21 @@ function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm", danger
   el.confirmModalCancelBtn.onclick = () => cleanup(false);
 }
 
-function showPromptModal(title, hint, defaultValue, onConfirm) {
+function showPromptModal(title, hint, defaultValue, onConfirm, { placeholder = "" } = {}) {
   if (!el.promptModal) {
-    const result = prompt(title, defaultValue);
+    // Native prompt has no placeholder, so surface the indicative name as the
+    // (rare) fallback's default text.
+    const result = prompt(title, defaultValue || placeholder);
     if (result !== null) onConfirm(result);
     return;
   }
   el.promptModalTitle.textContent = title;
   el.promptModalHint.textContent = hint || "";
   el.promptModalHint.hidden = !hint;
+  // An empty field with an indicative placeholder (e.g. "New Deck") — nothing to
+  // clear before typing — instead of a concrete default the user must delete.
   el.promptModalInput.value = defaultValue || "";
+  el.promptModalInput.placeholder = placeholder;
   el.promptModal.hidden = false;
   lockPageScroll();
   requestAnimationFrame(() => el.promptModalInput.focus());
@@ -2674,18 +2679,39 @@ async function editCurrentDeckTitle() {
       setStatus("Deck title cannot be empty.", "error");
       return;
     }
-    setDeckTitle(title, { updateSourceTitle: true });
-    if (!state.deckId || !supabaseClient) {
-      setStatus("Deck title updated.");
-      return;
+
+    // 1) Update the live view + every title field (deckTitle/sourceTitle/
+    //    importTitleHint) right away so the header never reverts to the old name.
+    setDeckTitle(title, { updateSourceTitle: true, save: false });
+    state.importTitleHint = title;
+    updateMeta();
+
+    // 2) Persist to the local library IMMEDIATELY — independent of any network
+    //    round-trip — so the new name survives navigation/reload and, because
+    //    renameDeckInLibrary bumps updatedAt, the next reconcile pushes it even
+    //    if the cloud call below fails or the device is offline. A working deck
+    //    not yet in the library gets saved for the first time. (Previously the
+    //    local snapshot was only rewritten inside the awaited cloud call, so a
+    //    slow/failed sync left the deck saved under its old name.)
+    if (state.localDeckId) {
+      renameDeckInLibrary(state.localDeckId, title);
+    } else {
+      saveDeckToLibrary({ silent: true });
     }
-    try {
-      setStatus("Updating web deck title...");
-      await updateWebDeckTitle(state.deckId, title);
-      setStatus("Deck title updated in the cloud.");
-    } catch (error) {
-      console.error("Failed to update web deck title", error);
-      setStatus("Deck title updated locally, but cloud rename failed.", "error");
+    renderMyDecksList();
+    setStatus("Deck title updated.");
+    showToast(`Renamed to "${title}"`);
+
+    // 3) Best-effort immediate cloud rename so other devices see it now instead
+    //    of waiting for the next periodic reconcile. Failure is non-fatal.
+    if (state.deckId && supabaseClient && isSignedIn && navigator.onLine) {
+      try {
+        await updateWebDeckTitle(state.deckId, title);
+        setStatus("Deck title updated in the cloud.");
+      } catch (error) {
+        console.warn("Cloud rename failed — the next sync will push it", error);
+        setStatus("Deck renamed. Cloud update will retry on the next sync.");
+      }
     }
   });
 }
@@ -4410,14 +4436,17 @@ async function rewriteFolderPaths(fromPath, toPath) {
 }
 
 function createFolder(parentPath = "") {
-  showPromptModal("New folder", parentPath ? `Inside "${parentPath}"` : "", "", (name) => {
+  showPromptModal("New folder", parentPath ? `Inside "${parentPath}"` : "", "", (rawName) => {
+    // Empty field, "New folder" placeholder — falls back to that indicative name
+    // if left blank, so there's nothing to clear before typing.
+    const name = String(rawName || "").trim() || "New folder";
     const path = normalizeDeckCategory(parentPath ? `${parentPath}${FOLDER_SEP}${name}` : name);
     if (path === defaultDeckCategory) { showToast("Folder name can't be empty", "error"); return; }
     addKnownFolder(path);
     if (parentPath) { const ex = readExpandedFolders(); ex.add(normalizeDeckCategory(parentPath)); writeExpandedFolders(ex); }
     showToast(`Folder "${path}" created`);
     renderMyDecksList();
-  });
+  }, { placeholder: "New folder" });
 }
 
 function renameFolder(path) {
@@ -10495,7 +10524,13 @@ function syncLocalLibraryMetaForDeck(deckId, { title, category, now } = {}) {
     const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
     if (raw) {
       const snapshot = JSON.parse(raw);
-      if (title !== undefined) snapshot.deckTitle = title;
+      if (title !== undefined) {
+        snapshot.deckTitle = title;
+        // Keep the title mirrors in step so a later loadDeckFromLibrary (which
+        // reads sourceTitle first) can't resurrect the old name.
+        snapshot.sourceTitle = title;
+        snapshot.importTitleHint = title;
+      }
       if (category !== undefined) snapshot.deckCategory = category;
       localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
     }
@@ -13514,13 +13549,14 @@ function createNewDeck({ title = "New Deck", category = defaultDeckCategory, not
 function newDeckInFolder(folderPath = "") {
   const cat = normalizeDeckCategory(folderPath);
   const where = cat === defaultDeckCategory ? "" : ` in "${cat}"`;
-  showPromptModal("New deck", `Name your new deck${where}. Start adding notes and cards right away.`, "New Deck", (title) => {
-    const name = String(title || "").trim();
-    if (!name) { showToast("Deck name can't be empty", "error"); return; }
+  showPromptModal("New deck", `Name your new deck${where}. Start adding notes and cards right away.`, "", (title) => {
+    // Empty field, "New Deck" placeholder — falls back to that indicative name
+    // if left blank, so the field never needs clearing before typing.
+    const name = String(title || "").trim() || "New Deck";
     createNewDeck({ title: name, category: cat, notesMode: true });
     closeMyDecksPanel();
     showToast(`New deck "${name}"${where} — add notes or cards to save it`);
-  });
+  }, { placeholder: "New Deck" });
 }
 
 
