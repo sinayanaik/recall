@@ -1439,11 +1439,7 @@ function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true
 // startup report on the welcome screen.
 function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
   const describeCounts = (entry) => {
-    const parts = [];
-    if (entry.cardsAdded) parts.push(`${entry.cardsAdded} card${entry.cardsAdded === 1 ? "" : "s"} added`);
-    if (entry.cardsUpdated) parts.push(`${entry.cardsUpdated} card${entry.cardsUpdated === 1 ? "" : "s"} updated`);
-    if (entry.cardsDeleted) parts.push(`${entry.cardsDeleted} card${entry.cardsDeleted === 1 ? "" : "s"} deleted`);
-    if (entry.notesChanged) parts.push("notes updated");
+    const parts = describeSyncStats(entry);
     return parts.length ? parts.join(", ") : "no per-card changes (deck metadata only)";
   };
 
@@ -1556,18 +1552,29 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
     }
   }
 
+  // Tally WHICH kind of change each row represents, not just that it changed —
+  // the report names them individually (see describeSyncStats).
+  const pushStats = emptySyncStats();
   const cardsData = cards
     .map((card, index) => {
       const status = normalizeCardStatus(card.status);
       const category = card.category ? String(card.category) : null;
       const webCard = webCardsById.get(String(card.id));
-      const unchanged = webCard
-        && !syncTextChanged(card.question, webCard.question)
-        && !syncTextChanged(card.answer, webCard.answer)
-        && Number(webCard.position) === index
-        && normalizeCardStatus(webCard.status) === status
-        && (webCard.category || null) === category;
-      if (unchanged) return null;
+      if (!webCard) {
+        // isNewDeck/overwrite wiped the web side, so there's nothing to diff
+        // against and every row legitimately counts as an addition.
+        pushStats.cardsAdded += 1;
+        return { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, category, updated_at: now };
+      }
+      const edited = syncTextChanged(card.question, webCard.question) || syncTextChanged(card.answer, webCard.answer);
+      const moved = Number(webCard.position) !== index;
+      const restacked = normalizeCardStatus(webCard.status) !== status;
+      const recategorised = (webCard.category || null) !== category;
+      if (!edited && !moved && !restacked && !recategorised) return null;
+      if (edited) pushStats.cardsEdited += 1;
+      if (moved) pushStats.cardsMoved += 1;
+      if (restacked) pushStats.statusChanges += 1;
+      if (recategorised) pushStats.categoryChanges += 1;
       // `category` is sent on EVERY row, never conditionally. PostgREST requires
       // all objects in a bulk upsert to share one key set (PGRST102, "All object
       // keys must match"), so omitting it on the uncategorised rows failed the
@@ -1587,16 +1594,8 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
     await upsertCardRows(cardsData.slice(i, i + chunkSize));
   }
 
-  // Stats for the detailed sync report — cardsAdded are new ids the cloud
-  // didn't have yet; the rest of cardsData are existing cards whose text,
-  // status, or position actually changed (isNewDeck/overwrite never had a
-  // prior web copy to diff against, so every card counts as "added" there).
-  const cardsAdded = cardsData.filter((c) => !webCardsById.has(String(c.id))).length;
-  return {
-    cardsAdded,
-    cardsUpdated: cardsData.length - cardsAdded,
-    cardsDeleted
-  };
+  pushStats.cardsDeleted = cardsDeleted;
+  return pushStats;
 }
 
 
@@ -10375,12 +10374,84 @@ function tsMs(value) {
   return Number.isFinite(t) ? t : 0;
 }
 
+// The one shape every push/pull reports its diff in. Both directions fill the
+// same fields so the report can describe them with one vocabulary — and so a
+// change kind can never be silently invisible just because the side that
+// detected it had nowhere to put it (recategorising a quick note used to land
+// in exactly that gap, and the sync then claimed "nothing to sync").
+function emptySyncStats() {
+  return {
+    cardsAdded: 0,
+    cardsDeleted: 0,
+    cardsEdited: 0,      // question/answer text
+    cardsMoved: 0,       // reordered within the deck
+    statusChanges: 0,    // known / review / unsorted
+    categoryChanges: 0,  // a card's quick-note subject label
+    notesChanged: false,
+    titleChanged: false,
+    deckCategoryChanged: false,
+    noteCategoriesChanged: false  // the deck's category DEFINITIONS (decks.meta)
+  };
+}
+
+// The counted stats (summed across decks), as opposed to the deck-level
+// booleans below them, which are counted as "how many decks".
+const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges"];
+const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged"];
+
+// Human phrases for a diff, most consequential first. Returns an array so
+// callers can join, count, or truncate it. With `asTotals`, the deck-level
+// booleans have been summed into deck counts by totalSyncStats and say so.
+function describeSyncStats(stats = {}, { asTotals = false } = {}) {
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const parts = [];
+  if (stats.cardsAdded) parts.push(`${plural(stats.cardsAdded, "card", "cards")} added`);
+  if (stats.cardsDeleted) parts.push(`${plural(stats.cardsDeleted, "card", "cards")} deleted`);
+  if (stats.cardsEdited) parts.push(`${plural(stats.cardsEdited, "card", "cards")} edited`);
+  if (stats.statusChanges) parts.push(`${plural(stats.statusChanges, "card", "cards")} restacked (known/review)`);
+  if (stats.cardsMoved) parts.push(`${plural(stats.cardsMoved, "card", "cards")} reordered`);
+  if (stats.categoryChanges) parts.push(`${plural(stats.categoryChanges, "note", "notes")} recategorised`);
+  const flag = (value, label) => {
+    if (!value) return;
+    parts.push(asTotals && value > 1 ? `${label} on ${value} decks` : label);
+  };
+  flag(stats.notesChanged, "notes edited");
+  flag(stats.titleChanged, "deck renamed");
+  flag(stats.deckCategoryChanged, "deck category changed");
+  flag(stats.noteCategoriesChanged, "note categories added/renamed/removed");
+  return parts;
+}
+
+// Did the deck's quick-note category DEFINITIONS change (added, renamed,
+// recoloured, removed, reordered)? Compares through quickNoteCategoriesFromMeta
+// so both sides are normalised the same way and a meta bag that's a JSON string
+// on one side and a parsed object on the other doesn't read as a change.
+function quickNoteCategoriesDiffer(metaA, metaB) {
+  const key = (meta) => JSON.stringify(quickNoteCategoriesFromMeta(meta).map((c) => [c.id, c.name, c.color]));
+  return key(metaA) !== key(metaB);
+}
+
 // A pull/push whose diff stats are all-zero is just a timestamp-alignment
 // artifact (e.g. clock granularity between an edit-time stamp and a push-time
 // stamp) — nothing actually moved, so it shouldn't be counted or reported as
-// user-visible sync activity.
+// user-visible sync activity. Derived from describeSyncStats so a newly added
+// stat can never be counted by one and ignored by the other.
 function isNoOpStats(stats) {
-  return !stats.cardsAdded && !stats.cardsUpdated && !stats.cardsDeleted && !stats.notesChanged;
+  return describeSyncStats(stats).length === 0;
+}
+
+// Sums each change kind across every deck the sync touched, for the one-line
+// summary. Booleans count the DECKS affected ("notes edited on 2 decks").
+function totalSyncStats(deckLog) {
+  const totals = emptySyncStats();
+  for (const entry of deckLog) {
+    if (entry.direction === "failed") continue;
+    for (const key of SYNC_COUNT_STATS) totals[key] += entry[key] || 0;
+    for (const key of SYNC_FLAG_STATS) {
+      if (entry[key]) totals[key] = (totals[key] || 0) + 1;
+    }
+  }
+  return totals;
 }
 
 // Pulls one cloud deck (metadata already in hand) plus its cards into the local
@@ -10470,14 +10541,26 @@ async function pullCloudDeckToLibrary(cloud) {
     // just arrived (added), and local-only cards are what's now gone
     // (deleted from this device's copy).
     const diff = calculateSyncDiff(oldSnapshot.cards || [], cards || [], oldStatusById, { fuzzy: false });
+    // calculateSyncDiff already separates edits from restacks, moves and
+    // recategorisations — keep them apart rather than summing them into one
+    // "updated" count the report can't explain.
     stats = {
+      ...emptySyncStats(),
       cardsAdded: diff.deleted,
-      cardsUpdated: diff.edited + diff.statusChanges + diff.moved + diff.categoryChanges,
       cardsDeleted: diff.added,
-      notesChanged: syncTextChanged(oldSnapshot.notes || "", snapshot.notes)
+      cardsEdited: diff.edited,
+      cardsMoved: diff.moved,
+      statusChanges: diff.statusChanges,
+      categoryChanges: diff.categoryChanges,
+      notesChanged: syncTextChanged(oldSnapshot.notes || "", snapshot.notes),
+      titleChanged: syncTextChanged(oldSnapshot.deckTitle || "", snapshot.deckTitle || ""),
+      deckCategoryChanged: normalizeDeckCategory(oldSnapshot.deckCategory) !== normalizeDeckCategory(snapshot.deckCategory),
+      // The quick-note category DEFINITIONS live in decks.meta, so a rename or
+      // recolour on another device arrives here and nowhere else.
+      noteCategoriesChanged: quickNoteCategoriesDiffer(oldSnapshot.meta, snapshot.meta)
     };
   } else {
-    stats = { cardsAdded: snapshot.cards.length, cardsUpdated: 0, cardsDeleted: 0, notesChanged: Boolean(snapshot.notes.trim()) };
+    stats = { ...emptySyncStats(), cardsAdded: snapshot.cards.length, notesChanged: Boolean(snapshot.notes.trim()) };
   }
 
   localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
@@ -10505,7 +10588,7 @@ async function pullCloudDeckToLibrary(cloud) {
 // Pushes one library deck (by its local metadata) to the cloud, WITHOUT
 // disturbing the active in-memory deck. Mints a stable cloud id if the deck has
 // never been synced, then records it locally and aligns the timestamp.
-async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudNotes = "" } = {}) {
+async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDeck = null } = {}) {
   const raw = localStorage.getItem(LOCAL_DECK_PREFIX + localMeta.id);
   if (!raw) throw new Error("Local deck snapshot missing");
   const snapshot = JSON.parse(raw);
@@ -10519,10 +10602,12 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudNot
   }
 
   const now = new Date().toISOString();
+  const title = snapshot.deckTitle || "Untitled Deck";
+  const deckCategory = normalizeDeckCategory(snapshot.deckCategory);
   const pushStats = await pushDeckRowsToCloud({
     deckId,
-    title: snapshot.deckTitle || "Untitled Deck",
-    category: normalizeDeckCategory(snapshot.deckCategory),
+    title,
+    category: deckCategory,
     notes: snapshot.notes || "",
     currentIndex: snapshot.current,
     cards: (snapshot.cards || []).map((c) => ({
@@ -10546,13 +10631,18 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudNot
   }
   // If we just pushed the active deck (first sync), adopt its new cloud id.
   if (state.localDeckId === localMeta.id && !state.deckId) state.deckId = deckId;
-  return {
-    now,
-    stats: {
-      ...pushStats,
-      notesChanged: isNewDeck ? Boolean(String(snapshot.notes || "").trim()) : syncTextChanged(snapshot.notes, cloudNotes)
-    }
-  };
+  // Deck-level changes ride along on the same upsert as the cards, so they'd
+  // otherwise go unreported — a rename or a notes edit on its own looked
+  // identical to "nothing happened".
+  const stats = { ...pushStats };
+  if (isNewDeck) {
+    stats.notesChanged = Boolean(String(snapshot.notes || "").trim());
+  } else {
+    stats.notesChanged = syncTextChanged(snapshot.notes, cloudDeck?.notes || "");
+    stats.titleChanged = syncTextChanged(title, cloudDeck?.title || "");
+    stats.deckCategoryChanged = normalizeDeckCategory(cloudDeck?.category) !== deckCategory;
+  }
+  return { now, stats };
 }
 
 let reconcileInFlight = false;
@@ -10628,12 +10718,26 @@ async function reconcileAllDecks({ explicit = false } = {}) {
   const activeDeckId = state.deckId;
   let activePulledLocalId = null;
   let pulled = 0, pushed = 0, failed = 0;
+  // Decks whose timestamp said "newer" but whose content already matched the
+  // cloud. Not nothing: it's what a live write (e.g. recategorising a quick
+  // note, which saves to the cloud the moment you tap it) looks like by the
+  // time the sync runs — so the summary can say the changes are already safe
+  // instead of the bare, alarming "nothing to sync".
+  const alreadyMatched = [];
   // Per-deck breakdown for the detailed sync report — every deck actually
   // touched (or that failed) gets an entry naming it, its direction, and
   // exactly what changed (cards added/updated/deleted, notes).
   const deckLog = [];
 
   try {
+    // Deliver any category edit that couldn't reach the cloud when it was made,
+    // BEFORE reading the deck list. Order is the whole point: the pull below
+    // overwrites the local snapshot's meta with the cloud's copy, so flushing
+    // afterwards would be racing the very thing that erases the edit. Flushing
+    // first also means the pull reads a cloud that already agrees with us, and
+    // so reports no spurious category change.
+    const noteCategoriesFlushed = await flushPendingQuickNoteCategories();
+
     const cloudDecks = await fetchCloudDeckList();
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudIdSet = new Set(cloudDecks.map((d) => String(d.id)));
@@ -10701,6 +10805,8 @@ async function reconcileAllDecks({ explicit = false } = {}) {
           // would reset the user's live study position to the cloud's index
           // for no real reason.
           if (activeDeckId && String(cloud.id) === String(activeDeckId)) activePulledLocalId = res.localId;
+        } else {
+          alreadyMatched.push(cloud.title || "Untitled deck");
         }
       } catch (e) {
         failed++;
@@ -10719,15 +10825,30 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       const localNewer = !cloud || tsMs(localMeta.updatedAt) > tsMs(cloud.updated_at);
       if (!localNewer) continue;
       try {
-        const res = await pushLibraryDeckToCloud(localMeta, { cloudExists: Boolean(cloud), cloudNotes: cloud?.notes || "" });
+        const res = await pushLibraryDeckToCloud(localMeta, { cloudExists: Boolean(cloud), cloudDeck: cloud });
         if (!isNoOpStats(res.stats)) {
           pushed++;
           deckLog.push({ title: localMeta.title || "Untitled deck", direction: "pushed", ...res.stats });
+        } else {
+          alreadyMatched.push(localMeta.title || "Untitled deck");
         }
       } catch (e) {
         failed++;
         deckLog.push({ title: localMeta.title || "Untitled deck", direction: "failed", error: e?.message || String(e) });
         console.warn("Reconcile push failed", localMeta.id, e);
+      }
+    }
+
+    // A flushed category edit is real sync work and has to show up in the
+    // report. Fold it into the quick_notes deck's own row if the loops above
+    // already logged one, so a single deck never appears twice.
+    if (noteCategoriesFlushed) {
+      const row = deckLog.find((e) => e.direction !== "failed" && e.title === QUICK_NOTES_DECK_TITLE);
+      if (row) {
+        row.noteCategoriesChanged = true;
+      } else {
+        deckLog.push({ title: QUICK_NOTES_DECK_TITLE, direction: "pushed", ...emptySyncStats(), noteCategoriesChanged: true });
+        pushed++;
       }
     }
 
@@ -10743,14 +10864,26 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     localStorage.setItem(LAST_GLOBAL_SYNC_KEY, new Date().toISOString());
     localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
 
+    // Lead with the direction (how many decks moved, which way), then name the
+    // actual changes — "2 decks uploaded" alone never said WHAT was uploaded.
     const parts = [];
     if (pulled) parts.push(`${pulled} deck${pulled === 1 ? "" : "s"} downloaded from the cloud`);
     if (pushed) parts.push(`${pushed} deck${pushed === 1 ? "" : "s"} uploaded to the cloud`);
+    const changes = describeSyncStats(totalSyncStats(deckLog), { asTotals: true });
+    const detail = changes.length ? ` — ${changes.join(", ")}` : "";
+    // "Nothing to sync" was the single most misleading string in the app: it's
+    // also what you got right after recategorising a quick note, because that
+    // change is written to the cloud the instant you make it, leaving the sync
+    // genuinely nothing to carry. Say which of the two actually happened.
+    const nothingMoved = alreadyMatched.length
+      ? `Already up to date — ${alreadyMatched.length} deck${alreadyMatched.length === 1 ? "" : "s"} checked, ` +
+        `everything already matches the cloud (board edits save as you make them)`
+      : "Already up to date — no local or cloud changes since the last sync";
     const summary = parts.length
-      ? `Synced — ${parts.join(", ")}${failed ? ` (${failed} failed — see console)` : ""}`
+      ? `Synced — ${parts.join(", ")}${detail}${failed ? ` (${failed} failed — see console)` : ""}`
       : failed
         ? `Sync finished, but ${failed} deck${failed === 1 ? "" : "s"} failed — see console`
-        : "Already up to date — nothing to sync";
+        : nothingMoved;
     if (explicit) {
       setStatus(summary);
       showToast(summary, failed ? "error" : "success");
@@ -16037,40 +16170,214 @@ function readLocalSnapshotByDeckId(deckId) {
   } catch { return null; }
 }
 
-// Persist the managed category set: cloud deck.meta (if reachable) + the local
-// snapshot's meta mirror + the local cache. `state.quickNoteCategories` is kept
-// in step by the caller.
-async function saveQuickNoteCategories(list) {
-  const clean = normalizeQuickNoteCategories(list);
-  state.quickNoteCategories = clean;
-  writeCachedQuickNoteCategories(clean);
+// ── Category edits are OPERATIONS, not list replacements ─────────
+// Saving the whole list is what makes two devices fight: A's list is a snapshot
+// of what A could see, so writing it says "these are ALL the categories that
+// exist" — silently deleting anything B added that A hadn't heard of yet. There
+// is no way to tell "I never had Y" apart from "I deleted Y" in a bare list.
+//
+// An op says only what the user actually did, so it can be applied on top of
+// whatever the cloud holds *now* and leaves every category it doesn't name
+// alone. Deletion is explicit, so no tombstones are needed in the shared blob
+// and its shape is unchanged.
+//
+//   { type: "upsert", id, fields: { name?, color? }, full: { id, name, color } }
+//   { type: "delete", id }
+//
+// `fields` is only what changed, so A renaming a category can't revert B's
+// concurrent recolour of it. `full` is the fallback used when the id isn't in
+// the target list at all (B deleted it, or this is a fresh add).
+function categoryUpsertOp(category, fields) {
+  return {
+    type: "upsert",
+    id: String(category.id),
+    fields,
+    full: { id: String(category.id), name: category.name, color: category.color }
+  };
+}
+
+function categoryDeleteOp(id) {
+  return { type: "delete", id: String(id) };
+}
+
+// Replay ops onto a list. Pure, and the same function is used for the local
+// list and the cloud's — so what you see locally is what the merge produces.
+function applyCategoryOpsToList(list, ops) {
+  let out = normalizeQuickNoteCategories(list);
+  for (const op of ops || []) {
+    if (!op || !op.id) continue;
+    if (op.type === "delete") {
+      out = out.filter((c) => c.id !== op.id);
+      continue;
+    }
+    const index = out.findIndex((c) => c.id === op.id);
+    if (index === -1) {
+      // Not there to patch: either a new category, or one another device
+      // deleted. Re-inserting on a rename/recolour is deliberate — the user
+      // just acted on it, so treat that as intent to keep it.
+      out = [...out, { ...(op.full || {}), ...op.fields, id: op.id }];
+    } else {
+      out = out.map((c, i) => i === index ? { ...c, ...op.fields } : c);
+    }
+  }
+  return normalizeQuickNoteCategories(out);
+}
+
+// Apply category edits everywhere: local state + cache + snapshot mirror, then
+// the cloud (merged, never replaced). Anything that can't reach the cloud is
+// queued as ops and replayed by the next sync.
+//
+// Returns WHY it ended where it did — "synced" | "offline" | "no-column" |
+// "failed" — so the caller can tell the user. Every one of these outcomes used
+// to be a silent console.warn returning undefined, which is how a category that
+// only ever existed on one device still looked saved.
+async function applyQuickNoteCategoryOps(ops) {
+  // Apply locally first so the board reacts immediately, online or not. The
+  // cloud write below may widen this with other devices' categories.
+  adoptQuickNoteCategories(applyCategoryOpsToList(state.quickNoteCategories, ops));
 
   const deckId = getQuickNotesDeckId();
+  const outcome = await serialiseQuickNoteMetaWrite(() => writeQuickNoteCategoryOpsToCloud(deckId, ops));
+  // Anything that didn't land is remembered and retried by the next sync. The
+  // local snapshot alone was never enough: reconcile's push doesn't carry meta
+  // (only the pull does), so nothing on this device would ever have delivered
+  // it, and the next cloud-newer pull would overwrite the mirror and lose the
+  // edit outright. Queuing the OPS (not the resulting list) is what lets the
+  // replay merge with whatever other devices did in the meantime.
+  if (outcome === "synced") clearPendingQuickNoteCategories();
+  else queuePendingQuickNoteCategoryOps(deckId, ops);
+  return outcome;
+}
 
-  // Local snapshot mirror, so an offline reload still has colours/names.
-  const local = readLocalSnapshotByDeckId(deckId);
-  if (local) {
-    local.snapshot.meta = { ...(local.snapshot.meta || {}), quickNoteCategories: clean };
-    try { localStorage.setItem(LOCAL_DECK_PREFIX + local.localId, JSON.stringify(local.snapshot)); } catch (_) {}
-  }
-
-  if (!supabaseClient || !isSignedIn || !navigator.onLine || !deckId) return;
+// The cloud half of applyQuickNoteCategoryOps. Always call it through
+// serialiseQuickNoteMetaWrite — it read-merge-writes the shared meta blob.
+async function writeQuickNoteCategoryOpsToCloud(deckId, ops) {
+  if (!supabaseClient || !isSignedIn || !navigator.onLine || !deckId) return "offline";
   try {
     // Merge into whatever meta the deck already has so we don't clobber future
-    // sibling keys.
+    // sibling keys (noteAnchors above all — they live in the same blob).
     const { data: existing } = await supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle();
-    const meta = { ...(existing?.meta && typeof existing.meta === "object" ? existing.meta : {}), quickNoteCategories: clean };
-    const { error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId);
+    const base = existing?.meta && typeof existing.meta === "object" ? existing.meta : {};
+    // Replay our ops onto the CLOUD's current list, not over the top of it.
+    // This is the whole fix: a category another device added while we were
+    // offline is in `base` and no op names it, so it survives untouched.
+    const merged = applyCategoryOpsToList(quickNoteCategoriesFromMeta(base), ops);
+    const meta = { ...base, quickNoteCategories: merged };
+    let { data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id");
     if (error && String(error.message || "").includes("meta")) {
       // Database hasn't run supabase_quick_notes.sql — categories still work
       // locally; just can't sync until the column exists.
       console.warn("decks.meta column missing — quick-note categories are local-only until you run supabase_quick_notes.sql");
-    } else if (error) {
-      throw error;
+      return "no-column";
     }
+    if (error) throw error;
+    // An UPDATE that matches no row is not an error — it just does nothing. On
+    // an account that has never pinned a note the quick_notes deck row doesn't
+    // exist yet (only the pin flow creates it), so this reported success while
+    // saving nothing at all. `.select()` is what makes that case visible.
+    if (!updated || !updated.length) {
+      const userId = cachedUserId();
+      if (!userId) return "failed";
+      await ensureQuickNotesDeck(userId);
+      ({ data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id"));
+      if (error) throw error;
+      if (!updated || !updated.length) return "failed";
+    }
+    // The merge is authoritative now, so adopt it: it's our edit PLUS whatever
+    // other devices had added. Without this the board would keep showing only
+    // our own view until the next reload, and the following edit would be built
+    // from a list already missing their categories.
+    adoptQuickNoteCategories(merged);
   } catch (error) {
     console.warn("Could not sync quick-note categories to cloud", error);
+    return "failed";
   }
+  return "synced";
+}
+
+// Point every local mirror of the category list at one list.
+function adoptQuickNoteCategories(list) {
+  const clean = normalizeQuickNoteCategories(list);
+  state.quickNoteCategories = clean;
+  writeCachedQuickNoteCategories(clean);
+  const deckId = getQuickNotesDeckId();
+  const local = deckId ? readLocalSnapshotByDeckId(deckId) : null;
+  if (local) {
+    local.snapshot.meta = { ...(local.snapshot.meta || {}), quickNoteCategories: clean };
+    try { localStorage.setItem(LOCAL_DECK_PREFIX + local.localId, JSON.stringify(local.snapshot)); } catch (_) {}
+  }
+  return clean;
+}
+
+// ── Pending category writes ──────────────────────────────────────
+// Category edits made offline (or against a not-yet-created deck row) that
+// still owe the cloud a write. Kept per deck id so signing in as someone else
+// can never deliver the previous account's categories to the new one's deck.
+//
+// Stores OPS, not the resulting list. A queued list would say "these are all
+// the categories that exist" and delete whatever another device added while
+// this one was offline; a queued op only re-states what the user did.
+const PENDING_QN_CATEGORIES_KEY = "recall:pendingQuickNoteCategories";
+
+function readPendingQuickNoteCategories() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PENDING_QN_CATEGORIES_KEY) || "null");
+    if (!raw) return null;
+    if (Array.isArray(raw.ops)) {
+      const ops = raw.ops.filter((op) => op && op.id && (op.type === "delete" || op.type === "upsert"));
+      return ops.length ? { deckId: String(raw.deckId || ""), ops, savedAt: raw.savedAt || "" } : null;
+    }
+    // Older builds queued a whole list. Convert it to upserts so the edit still
+    // lands — the deletions it implied are unrecoverable from a list, which is
+    // exactly why this format is gone.
+    if (Array.isArray(raw.categories)) {
+      const ops = normalizeQuickNoteCategories(raw.categories)
+        .map((c) => categoryUpsertOp(c, { name: c.name, color: c.color }));
+      return ops.length ? { deckId: String(raw.deckId || ""), ops, savedAt: raw.savedAt || "" } : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Appends to whatever is already queued: several offline edits must all be
+// replayed, in order, or the earlier ones are lost.
+function queuePendingQuickNoteCategoryOps(deckId, ops) {
+  const existing = readPendingQuickNoteCategories();
+  const merged = existing && existing.deckId === (deckId || "") ? [...existing.ops, ...ops] : [...ops];
+  try {
+    localStorage.setItem(PENDING_QN_CATEGORIES_KEY, JSON.stringify({
+      deckId: deckId || "", ops: merged, savedAt: new Date().toISOString()
+    }));
+  } catch (_) {}
+}
+
+function clearPendingQuickNoteCategories() {
+  try { localStorage.removeItem(PENDING_QN_CATEGORIES_KEY); } catch (_) {}
+}
+
+// Deliver a category edit that couldn't reach the cloud when it was made.
+// Returns true only when something was actually delivered, so the sync report
+// can say so. Safe to call on every sync: it's a no-op with nothing pending.
+async function flushPendingQuickNoteCategories() {
+  const pending = readPendingQuickNoteCategories();
+  if (!pending) return false;
+  const deckId = getQuickNotesDeckId();
+  if (!deckId) return false;
+  // Queued against a different account's deck — not ours to deliver, and
+  // pushing it would write one user's categories onto another's board.
+  if (pending.deckId && pending.deckId !== deckId) {
+    clearPendingQuickNoteCategories();
+    return false;
+  }
+  // Clear first: applyQuickNoteCategoryOps re-queues on failure, and leaving the
+  // old entry in place would make it append these ops to themselves and replay
+  // each one twice on the next attempt.
+  clearPendingQuickNoteCategories();
+  // Goes back through applyQuickNoteCategoryOps so a still-failing write is
+  // re-queued rather than dropped, and the local mirrors stay in step.
+  return (await applyQuickNoteCategoryOps(pending.ops)) === "synced";
 }
 
 // ── Quick-note source anchors ────────────────────────────────────
@@ -16120,13 +16427,22 @@ function noteAnchorsFromMeta(meta) {
 // Anchor writes are read-merge-write, and two of them run per board open (the
 // local backfill and the source recovery). Serialised through one chain so they
 // can't interleave — overlapping reads would silently drop one side's anchors.
-let qnAnchorWriteChain = Promise.resolve();
+// EVERY writer of decks.meta must go through this chain. meta is a single JSON
+// blob and each writer read-merge-writes the whole of it, so two overlapping
+// writes race: the second one's read predates the first one's write, and its
+// write puts the stale copy back. Anchors were already serialised here; the
+// category writer was NOT, despite touching the same blob — so recolouring a
+// category while the board's anchor backfill was in flight could drop either
+// side's work. One chain, all writers.
+let qnMetaWriteChain = Promise.resolve();
+
+function serialiseQuickNoteMetaWrite(task) {
+  qnMetaWriteChain = qnMetaWriteChain.catch(() => {}).then(task);
+  return qnMetaWriteChain;
+}
 
 function saveQuickNoteAnchors(patch, options) {
-  qnAnchorWriteChain = qnAnchorWriteChain
-    .catch(() => {})
-    .then(() => writeQuickNoteAnchors(patch, options));
-  return qnAnchorWriteChain;
+  return serialiseQuickNoteMetaWrite(() => writeQuickNoteAnchors(patch, options));
 }
 
 async function writeQuickNoteAnchors(patch, { keepIds = null } = {}) {
@@ -16358,6 +16674,13 @@ async function loadQuickNotesData() {
 
   if (supabaseClient && isSignedIn && navigator.onLine && deckId) {
     try {
+      // Deliver a pending offline category edit BEFORE the read below, because
+      // that read treats the cloud row as authoritative. Reading first would
+      // show the pre-offline categories, and the next edit from the board would
+      // then write that stale list back and clear the pending record — losing
+      // the offline edit permanently. Same ordering rule as reconcileAllDecks.
+      await flushPendingQuickNoteCategories();
+
       const [deckRes, cardsRes] = await Promise.all([
         supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle(),
         supabaseClient.from("cards").select("id, question, answer, category, updated_at").eq("deck_id", deckId).order("position", { ascending: true })
@@ -16740,7 +17063,21 @@ async function assignQuickNoteCategory(cardId, categoryId) {
   if (card) card.category = categoryId || null;
   closeQnCatMenu();
   renderQuickNotesBoard();
-  await setQuickNoteCardCategory(cardId, categoryId || null);
+  // This write goes straight to the cloud, so say so — otherwise the only
+  // feedback you ever get is a later sync reporting "nothing to sync", which
+  // reads as "your change was lost". The return value matters: it's false when
+  // the cloud write failed, and that used to be swallowed entirely, leaving the
+  // board showing a category that exists on no other device.
+  const cat = categoryId ? findQuickNoteCategory(categoryId) : null;
+  const label = cat ? `“${cat.name}”` : "Uncategorized";
+  const ok = await setQuickNoteCardCategory(cardId, categoryId || null);
+  if (!ok) {
+    showToast(`Set to ${label} on this device — could not reach the cloud, will sync later`, "error");
+  } else if (!supabaseClient || !isSignedIn || !navigator.onLine) {
+    showToast(`Set to ${label} — saved on this device, will sync when you're back online`, "info");
+  } else {
+    showToast(`Set to ${label} — saved and synced`, "success");
+  }
 }
 
 // Floating palette used to recolour a category from the manage modal.
@@ -16800,29 +17137,47 @@ function closeQnCatModal() {
   if (el.qnCatModal) el.qnCatModal.hidden = true;
 }
 
-async function commitQuickNoteCategories(next) {
-  await saveQuickNoteCategories(next);
+// `what` names the edit that was just made ("Added “Vocabulary”"), so the toast
+// reports the specific action rather than a generic "saved".
+async function commitQuickNoteCategoryOps(ops, what = "Categories updated") {
+  const outcome = await applyQuickNoteCategoryOps(ops);
   renderQnCatModal();
   renderQuickNotesBoard();
+  const message = {
+    synced: `${what} — saved and synced`,
+    offline: `${what} — saved on this device, will sync when you're back online`,
+    "no-column": `${what} — saved on this device only. Run supabase_quick_notes.sql in Supabase to sync categories`,
+    failed: `${what} — saved on this device, but the cloud update failed`
+  }[outcome] || `${what} — saved`;
+  showToast(message, outcome === "synced" ? "success" : outcome === "offline" ? "info" : "error");
 }
 
 async function addQuickNoteCategory() {
   const name = String(el.qnCatNewName.value || "").trim();
   if (!name) { el.qnCatNewName.focus(); return; }
-  const next = [...state.quickNoteCategories, { id: generateCategoryId(), name, color: normalizeCategoryColor(qnNewColor) }];
+  const cat = { id: generateCategoryId(), name, color: normalizeCategoryColor(qnNewColor) };
   el.qnCatNewName.value = "";
-  await commitQuickNoteCategories(next);
+  await commitQuickNoteCategoryOps([categoryUpsertOp(cat, { name: cat.name, color: cat.color })], `Added “${name}”`);
 }
 
 async function renameQuickNoteCategory(id, name) {
   const clean = String(name || "").trim();
-  const next = state.quickNoteCategories.map((c) => c.id === id ? { ...c, name: clean || c.name } : c);
-  await commitQuickNoteCategories(next);
+  const previous = findQuickNoteCategory(id);
+  // A blank rename is ignored, so report — and send — the name that stuck.
+  const applied = clean || previous?.name || "Category";
+  if (previous && applied === previous.name) return;
+  // Only `name` travels: sending the whole category would revert a recolour
+  // another device made while this one was offline.
+  const cat = { ...(previous || { id }), name: applied };
+  await commitQuickNoteCategoryOps([categoryUpsertOp(cat, { name: applied })], `Renamed to “${applied}”`);
 }
 
 async function recolorQuickNoteCategory(id, color) {
-  const next = state.quickNoteCategories.map((c) => c.id === id ? { ...c, color: normalizeCategoryColor(color) } : c);
-  await commitQuickNoteCategories(next);
+  const previous = findQuickNoteCategory(id);
+  const applied = normalizeCategoryColor(color);
+  if (previous && previous.color === applied) return;
+  const cat = { ...(previous || { id }), color: applied };
+  await commitQuickNoteCategoryOps([categoryUpsertOp(cat, { color: applied })], `Recoloured “${previous ? previous.name : "category"}”`);
 }
 
 function deleteQuickNoteCategory(id) {
@@ -16832,14 +17187,14 @@ function deleteQuickNoteCategory(id) {
     ? `Delete "${cat ? cat.name : "this category"}"? ${used} note${used === 1 ? "" : "s"} will become Uncategorized.`
     : `Delete "${cat ? cat.name : "this category"}"?`;
   showConfirmModal(msg, async () => {
-    const next = state.quickNoteCategories.filter((c) => c.id !== id);
     // Detach the category from any board cards + persist those clears.
     const affected = qnBoard.cards.filter((c) => c.category === id);
     for (const card of affected) { card.category = null; await setQuickNoteCardCategory(card.id, null); }
     // Drop the deleted category's chip from the selection, or the board would
     // keep filtering on an id that no longer exists and look empty.
     qnBoard.filters.delete(id);
-    await commitQuickNoteCategories(next);
+    const freed = affected.length ? `, ${affected.length} note${affected.length === 1 ? "" : "s"} now Uncategorized` : "";
+    await commitQuickNoteCategoryOps([categoryDeleteOp(id)], `Deleted “${cat ? cat.name : "category"}”${freed}`);
   }, { confirmLabel: "Delete", danger: true });
 }
 
