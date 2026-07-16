@@ -47,6 +47,11 @@ const state = {
   cards: [],
   masterCards: [],
   statusById: {},
+  // Per-card subject label for quick_notes cards (id -> category id). Parallel
+  // to statusById; only populated when the active deck is the quick_notes deck.
+  categoryById: {},
+  // Managed category set for the quick_notes deck: [{ id, name, color }].
+  quickNoteCategories: [],
   previewCard: null,
   deckTitle: "",
   deckCategory: "Uncategorized",
@@ -1022,6 +1027,8 @@ function normalizeWebDeckPayload(deckData, cardsData = []) {
     answer: String(card.answer || ""),
     position: Number.isFinite(Number(card.position)) ? Number(card.position) : index,
     status: normalizeCardStatus(card.status),
+    // Free subject label for quick_notes cards; null on regular study cards.
+    category: card.category ? String(card.category) : null,
     created_at: card.created_at || null,
     updated_at: card.updated_at || null
   }));
@@ -1050,6 +1057,8 @@ function deckPayloadSnapshot(payload) {
       question: card.question,
       answer: card.answer,
       status: card.status,
+      // Quick-note subject label carried through backup/restore + reconcile.
+      category: card.category || null,
       // Per-card last-edited time when known, so card-level conflicts can also
       // resolve newest-wins instead of blindly overwriting a newer local edit.
       updatedAt: card.updated_at || null
@@ -1237,12 +1246,14 @@ async function loadWebDeck(deckId) {
     if (cardsError) throw cardsError;
 
     const statusById = {};
+    const categoryById = {};
     const cards = cardsData.map((rawCard, index) => {
       const id = String(rawCard.id || `${index}-${rawCard.question.slice(0, 32)}`);
       const status = normalizeCardStatus(rawCard.status);
       if (status) {
         statusById[id] = status;
       }
+      if (rawCard.category) categoryById[id] = String(rawCard.category);
       return { id, question: rawCard.question, answer: rawCard.answer };
     });
 
@@ -1250,6 +1261,9 @@ async function loadWebDeck(deckId) {
     state.masterCards = cards.slice();
     resetStudyDeck(state.masterCards);
     state.statusById = statusById;
+    state.categoryById = categoryById;
+    // Managed category set lives on the deck's meta bag (quick_notes only).
+    state.quickNoteCategories = quickNoteCategoriesFromMeta(deckData.meta);
     state.current = 0; // always start from the first card on fresh load
     state.deckTitle = deckData.title || "";
     state.deckCategory = normalizeDeckCategory(deckData.category);
@@ -1464,7 +1478,7 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
     say("Syncing... (2/3) Checking for changes");
     const { data: webCards, error } = await supabaseClient
       .from("cards")
-      .select("id, question, answer, position, status")
+      .select("id, question, answer, position, status, category")
       .eq("deck_id", deckId);
     if (!error && webCards) {
       webCardsById = new Map(webCards.map((wc) => [String(wc.id), wc]));
@@ -1482,14 +1496,22 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   const cardsData = cards
     .map((card, index) => {
       const status = normalizeCardStatus(card.status);
+      const category = card.category ? String(card.category) : null;
       const webCard = webCardsById.get(String(card.id));
       const unchanged = webCard
         && !syncTextChanged(card.question, webCard.question)
         && !syncTextChanged(card.answer, webCard.answer)
         && Number(webCard.position) === index
-        && normalizeCardStatus(webCard.status) === status;
+        && normalizeCardStatus(webCard.status) === status
+        && (webCard.category || null) === category;
       if (unchanged) return null;
-      return { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, updated_at: now };
+      const row = { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, updated_at: now };
+      // Only send the category key when set, so pushes to a database that
+      // hasn't run supabase_quick_notes.sql yet (no cards.category column) keep
+      // working for ordinary study decks. Clearing a category is done via the
+      // board's direct .update(), not this bulk diff-push.
+      if (category) row.category = category;
+      return row;
     })
     .filter(Boolean);
 
@@ -1595,6 +1617,19 @@ const el = {
   myDecksNewFolderBtn: document.querySelector("#myDecksNewFolderBtn"),
   closeImportBtn: document.querySelector("#closeImportBtn"),
   importPanel: document.querySelector("#importPanel"),
+  quickNotesBoardBtn: document.querySelector("#quickNotesBoardBtn"),
+  quickNotesBoard: document.querySelector("#quickNotesBoard"),
+  qnSummary: document.querySelector("#qnSummary"),
+  qnFilters: document.querySelector("#qnFilters"),
+  qnBody: document.querySelector("#qnBody"),
+  qnManageBtn: document.querySelector("#qnManageBtn"),
+  qnCloseBtn: document.querySelector("#qnCloseBtn"),
+  qnCatModal: document.querySelector("#qnCatModal"),
+  qnCatModalClose: document.querySelector("#qnCatModalClose"),
+  qnCatList: document.querySelector("#qnCatList"),
+  qnCatColorPicker: document.querySelector("#qnCatColorPicker"),
+  qnCatNewName: document.querySelector("#qnCatNewName"),
+  qnCatAddBtn: document.querySelector("#qnCatAddBtn"),
   printRoot: document.querySelector("#printRoot"),
   diagramModal: document.querySelector("#diagramModal"),
   diagramModalBody: document.querySelector("#diagramModalBody"),
@@ -2381,6 +2416,8 @@ function anyModalOpen() {
     (el.diagramModal && !el.diagramModal.hidden) ||
     (el.syncModal && !el.syncModal.hidden) ||
     (el.allCardsPanel && !el.allCardsPanel.hidden) ||
+    (el.quickNotesBoard && !el.quickNotesBoard.hidden) ||
+    (el.qnCatModal && !el.qnCatModal.hidden) ||
     (el.importPanel && el.importPanel.classList.contains("is-open"))
   );
 }
@@ -2394,6 +2431,11 @@ function anyModalOpen() {
 // a confirm/help/prompt dialog was left stuck open with the page scrollable
 // behind it.
 function closeTopmostOverlay() {
+  // Quick Notes: peel back its layers innermost-first so one Escape doesn't
+  // dismiss the whole board when only a popover/modal is open.
+  if (document.querySelector(".qn-cat-menu")) { closeQnCatMenu(); return; }
+  if (el.qnCatModal && !el.qnCatModal.hidden) { closeQnCatModal(); return; }
+  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) { closeQuickNotesBoard(); return; }
   el.exportMenu.hidden = true;
   if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
   closeDiagramModal();
@@ -10232,7 +10274,7 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudNot
     notes: snapshot.notes || "",
     currentIndex: snapshot.current,
     cards: (snapshot.cards || []).map((c) => ({
-      id: c.id, question: c.question, answer: c.answer, status: normalizeCardStatus(c.status)
+      id: c.id, question: c.question, answer: c.answer, status: normalizeCardStatus(c.status), category: c.category || null
     })),
     isNewDeck,
     overwrite: false,
@@ -13871,6 +13913,63 @@ el.diagramModalBody.addEventListener("pointerup", handleDiagramPointerEnd);
 el.diagramModalBody.addEventListener("pointercancel", handleDiagramPointerEnd);
 
 el.allCardsBtn.addEventListener("click", openAllCardsPanel);
+
+// ── Quick Notes board wiring ─────────────────────────────────────
+el.quickNotesBoardBtn?.addEventListener("click", openQuickNotesBoard);
+el.qnCloseBtn?.addEventListener("click", closeQuickNotesBoard);
+el.qnManageBtn?.addEventListener("click", openQnCatModal);
+el.qnFilters?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-qn-filter]");
+  if (!btn) return;
+  qnBoard.filter = btn.dataset.qnFilter;
+  renderQuickNotesBoard();
+});
+el.qnBody?.addEventListener("click", (event) => {
+  const jump = event.target.closest("[data-qn-jump]");
+  if (jump) { jumpToQuickNoteSource(jump.dataset.qnJump); return; }
+  const catBtn = event.target.closest("[data-qn-cat-btn]");
+  if (catBtn) { event.stopPropagation(); openQnCatMenu(catBtn.dataset.qnCatBtn, catBtn); }
+});
+// Floating category-picker actions (menu lives on document.body).
+document.addEventListener("click", (event) => {
+  const setItem = event.target.closest("[data-qn-set]");
+  if (setItem && setItem.closest(".qn-cat-menu")) {
+    const menu = setItem.closest(".qn-cat-menu");
+    assignQuickNoteCategory(menu.dataset.card, setItem.dataset.qnSet);
+    return;
+  }
+  const manageItem = event.target.closest("[data-qn-manage]");
+  if (manageItem && manageItem.closest(".qn-cat-menu")) {
+    closeQnCatMenu();
+    openQnCatModal();
+  }
+});
+// Manage-categories modal
+el.qnCatModalClose?.addEventListener("click", closeQnCatModal);
+el.qnCatModal?.addEventListener("click", (event) => {
+  if (event.target === el.qnCatModal) closeQnCatModal();
+});
+el.qnCatAddBtn?.addEventListener("click", addQuickNoteCategory);
+el.qnCatNewName?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); addQuickNoteCategory(); }
+});
+el.qnCatColorPicker?.addEventListener("click", (event) => {
+  const swatch = event.target.closest("[data-qn-new-color]");
+  if (!swatch) return;
+  qnNewColor = swatch.dataset.qnNewColor;
+  renderQnColorPicker(el.qnCatColorPicker, qnNewColor, "qn-new-color");
+});
+el.qnCatList?.addEventListener("click", (event) => {
+  const del = event.target.closest("[data-qn-del]");
+  if (del) { deleteQuickNoteCategory(del.dataset.qnDel); return; }
+  const recolor = event.target.closest("[data-qn-recolor]");
+  if (recolor) { openQnRecolorMenu(recolor.dataset.qnRecolor, recolor); return; }
+});
+el.qnCatList?.addEventListener("change", (event) => {
+  const rename = event.target.closest("[data-qn-rename]");
+  if (rename) renameQuickNoteCategory(rename.dataset.qnRename, rename.value);
+});
+
 el.toggleAllAnswersBtn?.addEventListener("click", () => {
   setAllCardsAnswersVisible(!allCardsAnswersVisible);
 });
@@ -15561,6 +15660,538 @@ function handleToolbarClick(event) {
 // repeated saves always append to the same deck.
 const QUICK_NOTES_DECK_TITLE = "quick_notes";
 
+// ── Quick Notes: glanceable, subject-categorised board ───────────
+// The quick_notes deck is special: rather than a known/unknown study deck it's
+// a place to skim pinned snippets across all decks at a glance, sorted into
+// user-defined subject categories. Everything below powers that treatment.
+
+// Curated swatch palette offered when creating a category (theme-friendly).
+const QUICK_NOTE_COLOR_PALETTE = [
+  "#3b82f6", "#8b5cf6", "#ec4899", "#ef4444", "#f97316",
+  "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#64748b"
+];
+const QUICK_NOTE_DEFAULT_COLOR = QUICK_NOTE_COLOR_PALETTE[0];
+
+// Local mirror of the managed category set, so the board can render instantly
+// (and offline) before/without a cloud deck load.
+const QUICK_NOTE_CATEGORIES_CACHE_KEY = "recall:quickNoteCategories";
+
+// Current signed-in user's id, read synchronously from the marker written by
+// ensureLocalLibraryOwner — lets render code detect the quick_notes deck and
+// build its id without an async auth round-trip.
+function cachedUserId() {
+  try { return localStorage.getItem(LAST_USER_STORAGE_KEY) || null; } catch { return null; }
+}
+
+// Deterministic id of the current user's quick_notes deck (or null if unknown).
+function getQuickNotesDeckId() {
+  const uid = cachedUserId();
+  return uid ? `quick-notes-${uid}` : null;
+}
+
+// True when a deck (by id and/or title) is the special quick_notes deck.
+function isQuickNotesDeck(deckId = state.deckId, title = state.deckTitle) {
+  if (deckId && String(deckId).startsWith("quick-notes-")) return true;
+  const qid = getQuickNotesDeckId();
+  if (qid && String(deckId) === qid) return true;
+  return String(title || "").trim().toLowerCase() === QUICK_NOTES_DECK_TITLE;
+}
+
+function normalizeCategoryColor(color) {
+  const value = String(color || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : QUICK_NOTE_DEFAULT_COLOR;
+}
+
+function generateCategoryId() {
+  return `qc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// Coerce any stored list into clean [{ id, name, color }] entries (deduped).
+function normalizeQuickNoteCategories(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const id = String(raw.id || "").trim();
+    const name = String(raw.name || "").trim();
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, name, color: normalizeCategoryColor(raw.color) });
+  }
+  return out;
+}
+
+// Pull the managed category set out of a deck row's meta JSON (defensive: meta
+// may be a parsed object, a JSON string, or missing on pre-migration rows).
+function quickNoteCategoriesFromMeta(meta) {
+  let bag = meta;
+  if (typeof bag === "string") {
+    try { bag = JSON.parse(bag); } catch { bag = null; }
+  }
+  const list = bag && typeof bag === "object" ? bag.quickNoteCategories : null;
+  return normalizeQuickNoteCategories(list);
+}
+
+function readCachedQuickNoteCategories() {
+  try {
+    return normalizeQuickNoteCategories(JSON.parse(localStorage.getItem(QUICK_NOTE_CATEGORIES_CACHE_KEY) || "[]"));
+  } catch { return []; }
+}
+
+function writeCachedQuickNoteCategories(list) {
+  try { localStorage.setItem(QUICK_NOTE_CATEGORIES_CACHE_KEY, JSON.stringify(list)); } catch (_) {}
+}
+
+// Read a local deck snapshot by its cloud deckId (not the local ld_ id).
+function readLocalSnapshotByDeckId(deckId) {
+  if (!deckId) return null;
+  const entry = readLocalDeckIndex().find((e) => e.deckId === deckId);
+  if (!entry) return null;
+  try {
+    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
+    return raw ? { localId: entry.id, snapshot: JSON.parse(raw) } : null;
+  } catch { return null; }
+}
+
+// Persist the managed category set: cloud deck.meta (if reachable) + the local
+// snapshot's meta mirror + the local cache. `state.quickNoteCategories` is kept
+// in step by the caller.
+async function saveQuickNoteCategories(list) {
+  const clean = normalizeQuickNoteCategories(list);
+  state.quickNoteCategories = clean;
+  writeCachedQuickNoteCategories(clean);
+
+  const deckId = getQuickNotesDeckId();
+
+  // Local snapshot mirror, so an offline reload still has colours/names.
+  const local = readLocalSnapshotByDeckId(deckId);
+  if (local) {
+    local.snapshot.meta = { ...(local.snapshot.meta || {}), quickNoteCategories: clean };
+    try { localStorage.setItem(LOCAL_DECK_PREFIX + local.localId, JSON.stringify(local.snapshot)); } catch (_) {}
+  }
+
+  if (!supabaseClient || !isSignedIn || !navigator.onLine || !deckId) return;
+  try {
+    // Merge into whatever meta the deck already has so we don't clobber future
+    // sibling keys.
+    const { data: existing } = await supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle();
+    const meta = { ...(existing?.meta && typeof existing.meta === "object" ? existing.meta : {}), quickNoteCategories: clean };
+    const { error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId);
+    if (error && String(error.message || "").includes("meta")) {
+      // Database hasn't run supabase_quick_notes.sql — categories still work
+      // locally; just can't sync until the column exists.
+      console.warn("decks.meta column missing — quick-note categories are local-only until you run supabase_quick_notes.sql");
+    } else if (error) {
+      throw error;
+    }
+  } catch (error) {
+    console.warn("Could not sync quick-note categories to cloud", error);
+  }
+}
+
+// Assign (or clear, when categoryId is falsy) a card's subject category. Writes
+// the cloud cards row + the local snapshot + bumps updatedAt so reconcile sees
+// the change. Returns true on a best-effort local success.
+async function setQuickNoteCardCategory(cardId, categoryId) {
+  if (!cardId) return false;
+  const value = categoryId ? String(categoryId) : null;
+  const now = new Date().toISOString();
+  const deckId = getQuickNotesDeckId();
+
+  // Local snapshot patch (source of truth for offline + reconcile).
+  const local = readLocalSnapshotByDeckId(deckId);
+  if (local && Array.isArray(local.snapshot.cards)) {
+    const card = local.snapshot.cards.find((c) => String(c.id) === String(cardId));
+    if (card) {
+      card.category = value;
+      card.updatedAt = now;
+      local.snapshot.updatedAt = now;
+      try {
+        localStorage.setItem(LOCAL_DECK_PREFIX + local.localId, JSON.stringify(local.snapshot));
+      } catch (_) {}
+      const index = readLocalDeckIndex();
+      const entry = index.find((e) => e.id === local.localId);
+      if (entry) { entry.updatedAt = now; writeLocalDeckIndex(index); }
+    }
+  }
+
+  // Keep the active study deck in step if the quick_notes deck is open.
+  if (isQuickNotesDeck(state.deckId, state.deckTitle)) {
+    if (value) state.categoryById[cardId] = value;
+    else delete state.categoryById[cardId];
+  }
+
+  if (!supabaseClient || !isSignedIn || !navigator.onLine) return true;
+  try {
+    const { error } = await supabaseClient
+      .from("cards")
+      .update({ category: value, updated_at: now })
+      .eq("id", cardId);
+    if (error) throw error;
+  } catch (error) {
+    console.warn("Could not sync quick-note card category to cloud", error);
+    return false;
+  }
+  return true;
+}
+
+// ── Quick Notes board (dedicated skim surface) ───────────────────
+// Independent of the active study deck: pulls the quick_notes deck's cards
+// straight from the cloud (falling back to the local snapshot offline), so the
+// board can be opened at any time without disturbing whatever you're studying.
+const qnBoard = {
+  cards: [],       // [{ id, question, answer, category, noteAnchor, updatedAt }]
+  filter: "all",   // "all" | "none" | <categoryId>
+  loading: false
+};
+
+function findQuickNoteCategory(id) {
+  return state.quickNoteCategories.find((c) => c.id === id) || null;
+}
+
+// Merge cloud cards (authoritative for text/category) with the local snapshot
+// (source of each pin's noteAnchor + the offline fallback).
+async function loadQuickNotesData() {
+  const deckId = getQuickNotesDeckId();
+  const local = readLocalSnapshotByDeckId(deckId);
+  const localCards = local && Array.isArray(local.snapshot.cards) ? local.snapshot.cards : [];
+  const anchorById = new Map(localCards.map((c) => [String(c.id), c.noteAnchor || null]));
+
+  let categories = readCachedQuickNoteCategories();
+  if (!categories.length && local) categories = quickNoteCategoriesFromMeta(local.snapshot.meta);
+
+  let cards = localCards.map((c) => ({
+    id: String(c.id),
+    question: String(c.question || ""),
+    answer: String(c.answer || ""),
+    category: c.category || null,
+    noteAnchor: c.noteAnchor || null,
+    updatedAt: c.updatedAt || null
+  }));
+
+  if (supabaseClient && isSignedIn && navigator.onLine && deckId) {
+    try {
+      const [deckRes, cardsRes] = await Promise.all([
+        supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle(),
+        supabaseClient.from("cards").select("id, question, answer, category, updated_at").eq("deck_id", deckId).order("position", { ascending: true })
+      ]);
+      if (!cardsRes.error && Array.isArray(cardsRes.data)) {
+        cards = cardsRes.data.map((c) => ({
+          id: String(c.id),
+          question: String(c.question || ""),
+          answer: String(c.answer || ""),
+          category: c.category || null,
+          noteAnchor: anchorById.get(String(c.id)) || null,
+          updatedAt: c.updated_at || null
+        }));
+      }
+      if (deckRes.data) {
+        const cloudCats = quickNoteCategoriesFromMeta(deckRes.data.meta);
+        if (cloudCats.length || !categories.length) categories = cloudCats;
+      }
+    } catch (error) {
+      console.warn("Quick notes cloud load failed; using local snapshot", error);
+    }
+  }
+
+  state.quickNoteCategories = normalizeQuickNoteCategories(categories);
+  writeCachedQuickNoteCategories(state.quickNoteCategories);
+  // Newest pins first — a skim board wants the freshest thoughts on top.
+  cards.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  qnBoard.cards = cards;
+}
+
+function quickNoteCounts() {
+  const counts = { all: qnBoard.cards.length, none: 0 };
+  for (const cat of state.quickNoteCategories) counts[cat.id] = 0;
+  for (const card of qnBoard.cards) {
+    if (card.category && counts[card.category] !== undefined) counts[card.category] += 1;
+    else counts.none += 1;
+  }
+  return counts;
+}
+
+function renderQuickNotesFilters() {
+  const counts = quickNoteCounts();
+  const chip = (key, label, color) => {
+    const active = qnBoard.filter === key ? " is-active" : "";
+    const dot = color ? `<span class="qn-chip-dot" style="background:${color}"></span>` : "";
+    return `<button type="button" class="qn-chip${active}" data-qn-filter="${escapeHtml(key)}">${dot}${escapeHtml(label)} <span class="qn-chip-count">${counts[key] || 0}</span></button>`;
+  };
+  let html = chip("all", "All");
+  for (const cat of state.quickNoteCategories) html += chip(cat.id, cat.name, cat.color);
+  html += chip("none", "Uncategorized");
+  el.qnFilters.innerHTML = html;
+}
+
+function renderQnCard(card) {
+  const cat = card.category ? findQuickNoteCategory(card.category) : null;
+  const accent = cat ? cat.color : "transparent";
+  const anchor = card.noteAnchor;
+  const source = anchor && (anchor.deckTitle || anchor.deckId || anchor.deckLocalId)
+    ? `<button type="button" class="qn-card-source" data-qn-jump="${escapeHtml(card.id)}" title="Go to where this was pinned">&#8618; ${escapeHtml(anchor.deckTitle || "source")}</button>`
+    : "";
+  const catLabel = cat
+    ? `<span class="qn-chip-dot" style="background:${cat.color}"></span>${escapeHtml(cat.name)}`
+    : `<span class="qn-card-cat-empty">Set category</span>`;
+  return `<article class="qn-card" data-qn-card="${escapeHtml(card.id)}" style="--qn-accent:${accent}">
+    <div class="qn-card-body">${markdownToSafeHtml(card.question || "")}</div>
+    <div class="qn-card-foot">
+      <button type="button" class="qn-card-cat-btn" data-qn-cat-btn="${escapeHtml(card.id)}" aria-haspopup="true">${catLabel}<span class="qn-caret" aria-hidden="true">&#9662;</span></button>
+      ${source}
+    </div>
+  </article>`;
+}
+
+function renderQnGroup(group) {
+  const color = group.cat ? group.cat.color : "#94a3b8";
+  const name = group.cat ? group.cat.name : "Uncategorized";
+  const head = `<div class="qn-group-head"><span class="qn-group-dot" style="background:${color}"></span><h2 class="qn-group-title">${escapeHtml(name)}</h2><span class="qn-group-count">${group.cards.length}</span></div>`;
+  return `<section class="qn-group">${head}<div class="qn-group-grid">${group.cards.map(renderQnCard).join("")}</div></section>`;
+}
+
+function updateQnSummary() {
+  const total = qnBoard.cards.length;
+  const cats = state.quickNoteCategories.length;
+  el.qnSummary.textContent = total
+    ? `${total} note${total === 1 ? "" : "s"} across ${cats} categor${cats === 1 ? "y" : "ies"}.`
+    : "Pinned snippets across all your decks, at a glance.";
+}
+
+function renderQuickNotesBoard() {
+  renderQuickNotesFilters();
+  updateQnSummary();
+
+  if (qnBoard.loading) {
+    el.qnBody.innerHTML = `<div class="qn-empty">Loading your quick notes&#8230;</div>`;
+    return;
+  }
+  if (!qnBoard.cards.length) {
+    el.qnBody.innerHTML = `<div class="qn-empty"><p class="qn-empty-title">No quick notes yet</p><p>Select text anywhere in a deck's notes and tap &#128204; to pin it here for a quick skim later.</p></div>`;
+    return;
+  }
+
+  const groups = [];
+  const wantAll = qnBoard.filter === "all";
+  if (wantAll || qnBoard.filter !== "none") {
+    for (const cat of state.quickNoteCategories) {
+      if (!wantAll && qnBoard.filter !== cat.id) continue;
+      const cards = qnBoard.cards.filter((c) => c.category === cat.id);
+      if (cards.length) groups.push({ cat, cards });
+    }
+  }
+  if (wantAll || qnBoard.filter === "none") {
+    const uncategorized = qnBoard.cards.filter((c) => !c.category || !findQuickNoteCategory(c.category));
+    if (uncategorized.length) groups.push({ cat: null, cards: uncategorized });
+  }
+
+  el.qnBody.innerHTML = groups.length
+    ? groups.map(renderQnGroup).join("")
+    : `<div class="qn-empty">No notes in this category yet.</div>`;
+}
+
+async function openQuickNotesBoard() {
+  if (!getQuickNotesDeckId()) {
+    setStatus("Sign in to use quick notes.", "error");
+    return;
+  }
+  closeAllCardsPanel();
+  lockPageScroll();
+  el.quickNotesBoard.hidden = false;
+  qnBoard.loading = true;
+  renderQuickNotesBoard();
+  try {
+    await loadQuickNotesData();
+  } finally {
+    qnBoard.loading = false;
+    renderQuickNotesBoard();
+  }
+}
+
+function closeQuickNotesBoard() {
+  closeQnCatMenu();
+  closeQnCatModal();
+  el.quickNotesBoard.hidden = true;
+  unlockPageScroll();
+}
+
+// Jump from a board card to the notes spot it was pinned from (may live in a
+// different deck), closing the board first. Mirrors jumpToNoteForCurrentCard.
+function jumpToQuickNoteSource(cardId) {
+  const card = qnBoard.cards.find((c) => String(c.id) === String(cardId));
+  const anchor = card && card.noteAnchor;
+  if (!anchor) {
+    setStatus("This note isn't linked to a source spot.", "info");
+    return;
+  }
+  closeQuickNotesBoard();
+  if (onAnchorSourceDeck(anchor)) { scheduleNoteJump(anchor); return; }
+  setStatus("Opening the source deck…");
+  if (anchor.deckLocalId && loadDeckFromLibrary(anchor.deckLocalId)) { scheduleNoteJump(anchor); return; }
+  if (anchor.deckId && supabaseClient && navigator.onLine) {
+    loadWebDeck(anchor.deckId)
+      .then(() => scheduleNoteJump(anchor))
+      .catch(() => setStatus("Couldn't open the source deck for this note.", "error"));
+    return;
+  }
+  setStatus("Couldn't open the source deck for this note — it isn't available on this device.", "error");
+}
+
+// ── Floating category picker (assign a category to one card) ──────
+function closeQnCatMenu() {
+  document.querySelectorAll(".qn-cat-menu").forEach((m) => m.remove());
+  document.removeEventListener("click", qnCatMenuOutside, true);
+  document.removeEventListener("keydown", qnCatMenuEsc, true);
+}
+function qnCatMenuOutside(e) {
+  if (!e.target.closest(".qn-cat-menu") && !e.target.closest("[data-qn-cat-btn]")) closeQnCatMenu();
+}
+function qnCatMenuEsc(e) { if (e.key === "Escape") closeQnCatMenu(); }
+
+function openQnCatMenu(cardId, btn) {
+  const already = document.querySelector(`.qn-cat-menu[data-card="${CSS.escape(String(cardId))}"]`);
+  closeQnCatMenu();
+  if (already) return; // second click on the same button closes it
+  const card = qnBoard.cards.find((c) => String(c.id) === String(cardId));
+  if (!card) return;
+
+  const menu = document.createElement("div");
+  menu.className = "qn-cat-menu";
+  menu.dataset.card = String(cardId);
+  const item = (id, name, color) => {
+    const active = (card.category || "") === (id || "") ? " is-active" : "";
+    const dot = color
+      ? `<span class="qn-chip-dot" style="background:${color}"></span>`
+      : `<span class="qn-chip-dot qn-dot-empty"></span>`;
+    return `<button type="button" class="qn-cat-menu-item${active}" data-qn-set="${escapeHtml(id)}">${dot}<span>${escapeHtml(name)}</span></button>`;
+  };
+  let html = state.quickNoteCategories.map((c) => item(c.id, c.name, c.color)).join("");
+  html += item("", "Uncategorized", null);
+  html += `<button type="button" class="qn-cat-menu-item qn-cat-menu-manage" data-qn-manage="1">&#9881; Manage categories&#8230;</button>`;
+  menu.innerHTML = html;
+  document.body.appendChild(menu);
+
+  const r = btn.getBoundingClientRect();
+  menu.style.position = "fixed";
+  const width = menu.offsetWidth || 200;
+  menu.style.left = `${Math.min(r.left, window.innerWidth - width - 12)}px`;
+  const spaceBelow = window.innerHeight - r.bottom;
+  if (spaceBelow < menu.offsetHeight + 12) menu.style.top = `${Math.max(12, r.top - menu.offsetHeight - 6)}px`;
+  else menu.style.top = `${r.bottom + 6}px`;
+
+  setTimeout(() => {
+    document.addEventListener("click", qnCatMenuOutside, true);
+    document.addEventListener("keydown", qnCatMenuEsc, true);
+  }, 0);
+}
+
+async function assignQuickNoteCategory(cardId, categoryId) {
+  const card = qnBoard.cards.find((c) => String(c.id) === String(cardId));
+  if (card) card.category = categoryId || null;
+  closeQnCatMenu();
+  renderQuickNotesBoard();
+  await setQuickNoteCardCategory(cardId, categoryId || null);
+}
+
+// Floating palette used to recolour a category from the manage modal.
+function openQnRecolorMenu(catId, anchorEl) {
+  closeQnCatMenu();
+  const menu = document.createElement("div");
+  menu.className = "qn-cat-menu qn-recolor-menu";
+  menu.innerHTML = QUICK_NOTE_COLOR_PALETTE
+    .map((color) => `<button type="button" class="qn-swatch" style="background:${color}" data-qn-pick="${color}" aria-label="Colour ${color}"></button>`)
+    .join("");
+  document.body.appendChild(menu);
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.position = "fixed";
+  menu.style.left = `${Math.min(r.left, window.innerWidth - menu.offsetWidth - 12)}px`;
+  menu.style.top = `${r.bottom + 6}px`;
+  menu.addEventListener("click", (event) => {
+    const swatch = event.target.closest("[data-qn-pick]");
+    if (!swatch) return;
+    recolorQuickNoteCategory(catId, swatch.dataset.qnPick);
+    closeQnCatMenu();
+  });
+  setTimeout(() => {
+    document.addEventListener("click", qnCatMenuOutside, true);
+    document.addEventListener("keydown", qnCatMenuEsc, true);
+  }, 0);
+}
+
+// ── Manage categories modal ──────────────────────────────────────
+let qnNewColor = QUICK_NOTE_DEFAULT_COLOR;
+
+function renderQnColorPicker(container, selected, attr) {
+  container.innerHTML = QUICK_NOTE_COLOR_PALETTE.map((color) => {
+    const active = color === selected ? " is-active" : "";
+    return `<button type="button" class="qn-swatch${active}" style="background:${color}" data-${attr}="${color}" aria-label="Colour ${color}"></button>`;
+  }).join("");
+}
+
+function renderQnCatModal() {
+  el.qnCatList.innerHTML = state.quickNoteCategories.length
+    ? state.quickNoteCategories.map((c) => `
+      <div class="qn-cat-row" data-cat="${escapeHtml(c.id)}">
+        <button type="button" class="qn-cat-row-swatch" data-qn-recolor="${escapeHtml(c.id)}" style="background:${c.color}" title="Change colour" aria-label="Change colour"></button>
+        <input type="text" class="qn-cat-row-name" data-qn-rename="${escapeHtml(c.id)}" value="${escapeHtml(c.name)}" maxlength="40" aria-label="Category name" />
+        <button type="button" class="qn-cat-row-del" data-qn-del="${escapeHtml(c.id)}" title="Delete category" aria-label="Delete category">&#128465;</button>
+      </div>`).join("")
+    : `<p class="qn-cat-empty">No categories yet — add your first below.</p>`;
+  renderQnColorPicker(el.qnCatColorPicker, qnNewColor, "qn-new-color");
+}
+
+function openQnCatModal() {
+  qnNewColor = QUICK_NOTE_COLOR_PALETTE.find((c) => !state.quickNoteCategories.some((x) => x.color === c)) || QUICK_NOTE_DEFAULT_COLOR;
+  renderQnCatModal();
+  el.qnCatModal.hidden = false;
+  setTimeout(() => el.qnCatNewName && el.qnCatNewName.focus(), 30);
+}
+function closeQnCatModal() {
+  if (el.qnCatModal) el.qnCatModal.hidden = true;
+}
+
+async function commitQuickNoteCategories(next) {
+  await saveQuickNoteCategories(next);
+  renderQnCatModal();
+  renderQuickNotesBoard();
+}
+
+async function addQuickNoteCategory() {
+  const name = String(el.qnCatNewName.value || "").trim();
+  if (!name) { el.qnCatNewName.focus(); return; }
+  const next = [...state.quickNoteCategories, { id: generateCategoryId(), name, color: normalizeCategoryColor(qnNewColor) }];
+  el.qnCatNewName.value = "";
+  await commitQuickNoteCategories(next);
+}
+
+async function renameQuickNoteCategory(id, name) {
+  const clean = String(name || "").trim();
+  const next = state.quickNoteCategories.map((c) => c.id === id ? { ...c, name: clean || c.name } : c);
+  await commitQuickNoteCategories(next);
+}
+
+async function recolorQuickNoteCategory(id, color) {
+  const next = state.quickNoteCategories.map((c) => c.id === id ? { ...c, color: normalizeCategoryColor(color) } : c);
+  await commitQuickNoteCategories(next);
+}
+
+function deleteQuickNoteCategory(id) {
+  const cat = findQuickNoteCategory(id);
+  const used = qnBoard.cards.filter((c) => c.category === id).length;
+  const msg = used
+    ? `Delete "${cat ? cat.name : "this category"}"? ${used} note${used === 1 ? "" : "s"} will become Uncategorized.`
+    : `Delete "${cat ? cat.name : "this category"}"?`;
+  showConfirmModal(msg, async () => {
+    const next = state.quickNoteCategories.filter((c) => c.id !== id);
+    // Detach the category from any board cards + persist those clears.
+    const affected = qnBoard.cards.filter((c) => c.category === id);
+    for (const card of affected) { card.category = null; await setQuickNoteCardCategory(card.id, null); }
+    if (qnBoard.filter === id) qnBoard.filter = "all";
+    await commitQuickNoteCategories(next);
+  }, { confirmLabel: "Delete", danger: true });
+}
+
 // Ensure the quick_notes web deck exists for the current user, returning its id.
 async function ensureQuickNotesDeck(userId) {
   const deckId = `quick-notes-${userId}`;
@@ -15645,7 +16276,7 @@ async function saveQuickNote(rawText, button, sourceAnchor = null) {
     // offers a "Go to notes" jump back to where it was pinned from. Stored on
     // the local snapshot only — the cloud `cards` insert keeps its fixed
     // columns, so a cross-device pull won't carry the link (acceptable).
-    const quickCard = { id: cardId, question: text, answer: "", status: null };
+    const quickCard = { id: cardId, question: text, answer: "", status: null, category: null };
     if (sourceAnchor && (sourceAnchor.text || sourceAnchor.source)) quickCard.noteAnchor = sourceAnchor;
     appendCardToLocalLibraryDeck(deckId, quickCard, now);
 

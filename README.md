@@ -107,8 +107,9 @@ Everything the app needs is in the `.sql` files shipped in this repo. Open the *
 - `supabase_deck_categories.sql` — adds the `category` and `last_accessed_at` columns used to group and sort decks
 - `supabase_deck_notes.sql` — adds the per-deck `notes` column (Study Notes)
 - `supabase_deck_tombstones.sql` — adds cross-device delete tombstones
+- `supabase_quick_notes.sql` — adds `cards.category` (per-note subject label) and `decks.meta` (managed category set) for the [Quick Notes board](#quick-notes)
 
-(A brand-new project created with `supabase_schema.sql` already includes the `category`, `notes`, and `last_accessed_at` columns, so the first two migrations are only for older deployments.)
+(A brand-new project created with `supabase_schema.sql` already includes the `category`, `notes`, and `last_accessed_at` columns, so the first two migrations are only for older deployments. `supabase_quick_notes.sql` is always needed for the Quick Notes board's categories, on new and old projects alike.)
 
 ### 3. Create a user account
 
@@ -458,6 +459,17 @@ Quick Notes let you capture a snippet of an answer into a separate deck without 
 The selection is saved as a new card in a dedicated **`quick_notes`** cloud deck, which is created automatically the first time you use the feature. The selected text becomes the card's **question**, leaving the **answer blank** for you to fill in later. A toast confirms the save, and you can open the `quick_notes` deck any time from **My Decks**.
 
 > **Requires sign-in.** Quick Notes are stored as a cloud deck in Supabase, so you must be logged in. If you are not connected/signed in, a toast explains why the note could not be saved.
+
+### The Quick Notes board
+
+Because quick notes are meant to be **skimmed at a glance across all your decks** rather than drilled like flashcards, they get their own surface instead of the known/unknown study flow. Open it from **📓 Quick Notes** in the toolbar (Study section). The board:
+
+- Shows every pinned snippet, **newest first**, grouped into **subject categories you define** (not the study Known/Review status).
+- Each card carries a coloured accent for its category, a **↪ source link** back to the exact spot it was pinned from (across decks), and a dropdown to (re)assign its category inline.
+- A **filter bar** with live counts lets you focus on one subject — or **Uncategorized**.
+- **⚙ Manage categories** opens a small editor to add, rename, recolour, and delete categories. Deleting a category leaves its notes as *Uncategorized* (never deletes notes).
+
+Categories and per-note assignments sync to Supabase (`decks.meta` + `cards.category`) and are mirrored locally, so the board works offline too. Run **`supabase_quick_notes.sql`** once to add those columns to an existing project.
 
 ---
 

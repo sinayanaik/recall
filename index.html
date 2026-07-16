@@ -37,6 +37,7 @@
 
           <span class="drawer-section-label">Study</span>
           <button class="tool-button" id="allCardsBtn" type="button">&#8801; Browse All Cards</button>
+          <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all decks, sorted by subject">&#128209; Quick Notes</button>
           <button class="tool-button" id="notesBtn" type="button" title="Freeform study notes for this deck">&#128221; Study Notes</button>
           <div class="menu-wrap">
             <button class="tool-button" id="exportBtn" type="button">&#8659; Export Cards&#8230;</button>
@@ -343,6 +344,39 @@
         <div class="all-cards-list" id="allCardsList"></div>
       </div>
     </section>
+
+    <section class="quick-notes-board" id="quickNotesBoard" hidden aria-label="Quick notes board">
+      <div class="qn-shell">
+        <div class="qn-head">
+          <div class="qn-head-titles">
+            <h1>&#128209; Quick Notes</h1>
+            <p id="qnSummary">Pinned snippets across all your decks, at a glance.</p>
+          </div>
+          <div class="qn-head-actions">
+            <button class="qn-manage-btn" id="qnManageBtn" type="button" title="Add, rename, recolour or remove categories">&#9881; Manage categories</button>
+            <button class="icon-button" id="qnCloseBtn" type="button" aria-label="Close quick notes">&#215;</button>
+          </div>
+        </div>
+        <div class="qn-filters" id="qnFilters" role="group" aria-label="Filter notes by category"></div>
+        <div class="qn-body" id="qnBody"></div>
+      </div>
+    </section>
+
+    <div class="qn-cat-modal-backdrop" id="qnCatModal" hidden>
+      <div class="qn-cat-modal" role="dialog" aria-modal="true" aria-labelledby="qnCatModalTitle">
+        <div class="qn-cat-modal-head">
+          <h2 id="qnCatModalTitle">Manage categories</h2>
+          <button class="icon-button" id="qnCatModalClose" type="button" aria-label="Close">&#215;</button>
+        </div>
+        <p class="qn-cat-modal-hint">Group your quick notes by subject. Colours help them stand out on the board.</p>
+        <div class="qn-cat-list" id="qnCatList"></div>
+        <div class="qn-cat-add">
+          <span class="qn-cat-swatch-picker" id="qnCatColorPicker" role="group" aria-label="Pick a colour"></span>
+          <input type="text" id="qnCatNewName" class="qn-cat-input" placeholder="New category name&#8230;" maxlength="40" />
+          <button class="qn-cat-add-btn" id="qnCatAddBtn" type="button">Add</button>
+        </div>
+      </div>
+    </div>
 
     <section class="diagram-modal" id="diagramModal" hidden aria-label="Diagram preview">
       <div class="diagram-modal-head">
