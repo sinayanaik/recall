@@ -1,5 +1,14 @@
 :root {
   color-scheme: light;
+  /* Safe-area insets, named once. index.html ships `viewport-fit=cover` with a
+     `standalone` manifest, so on a notched phone every `position: fixed` overlay
+     that reaches an edge renders *behind* the status bar / home indicator unless
+     it reserves this space itself. Tokens rather than raw env() so an overlay
+     can compose them into calc() without repeating the four-line fallback. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   --app-width-percent: 100;
   --app-height-percent: 100;
   --app-width: 100vw;
@@ -787,7 +796,12 @@ button:disabled {
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
-  padding: 0;
+  /* Full-height drawer pinned to the top/left/bottom edges: its head (title +
+     close) started at y=0, behind the status bar, and its last row ran under the
+     home indicator. Padding rather than insets on the box so the drawer's
+     background still bleeds edge to edge behind them. --safe-left matters in
+     landscape, where the notch is beside the drawer, not above it. */
+  padding: var(--safe-top) 0 var(--safe-bottom) var(--safe-left);
   gap: 0;
   background: color-mix(in srgb, var(--panel-2) 97%, var(--accent));
   border-right: 1px solid color-mix(in srgb, var(--line) 70%, var(--accent));
@@ -2486,7 +2500,13 @@ svg.nomnoml-light-svg [fill="none"] {
   display: grid;
   grid-template-rows: auto 1fr;
   background: color-mix(in srgb, var(--bg) 94%, black);
-  padding: 14px;
+  /* The head row holds the only close button — losing it behind the status bar
+     leaves no way out of the modal, so this inset is not cosmetic. */
+  padding:
+    calc(14px + var(--safe-top))
+    calc(14px + var(--safe-right))
+    calc(14px + var(--safe-bottom))
+    calc(14px + var(--safe-left));
   touch-action: none;
 }
 
@@ -4095,7 +4115,7 @@ textarea {
 /* ── Toast notifications (web-sync confirmations) ───────────────── */
 .toast-container {
   position: fixed;
-  top: 18px;
+  top: calc(18px + var(--safe-top));
   left: 50%;
   transform: translateX(-50%);
   z-index: 99999;
@@ -4183,7 +4203,13 @@ textarea {
   inset: 0;
   display: grid;
   background: color-mix(in srgb, var(--bg) 96%, black);
-  padding: clamp(10px, 2vw, 18px);
+  /* Same shape as .quick-notes-board, so the same status-bar clipping: the
+     shell's header sat behind the notch. See --safe-top. */
+  padding:
+    calc(clamp(10px, 2vw, 18px) + var(--safe-top))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-right))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-bottom))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-left));
   touch-action: none;
 }
 
@@ -5591,8 +5617,15 @@ textarea {
     font-size: 0.66rem;
   }
 
+  /* Must re-add the insets: a bare `padding: 8px` here is a shorthand and would
+     drop the safe-area gutters the base rule sets, precisely on the screens that
+     have a notch. */
   .all-cards-panel {
-    padding: 8px;
+    padding:
+      calc(8px + var(--safe-top))
+      calc(8px + var(--safe-right))
+      calc(8px + var(--safe-bottom))
+      calc(8px + var(--safe-left));
   }
 
   .all-cards-head {
@@ -5637,12 +5670,19 @@ textarea {
   }
 
   .import-panel {
-    padding: 16px;
+    padding:
+      calc(16px + var(--safe-top))
+      calc(16px + var(--safe-right))
+      calc(16px + var(--safe-bottom))
+      calc(16px + var(--safe-left));
   }
 
+  /* Only clips once the card is tall enough to hit this cap — at which point it
+     fills the screen and its head meets the status bar. The -32px mirrors the
+     panel's padding, so the insets come off here too. */
   .import-card {
     width: 100%;
-    max-height: calc(100dvh - 32px);
+    max-height: calc(100dvh - 32px - var(--safe-top) - var(--safe-bottom));
     padding: 24px 20px;
   }
 
@@ -5662,9 +5702,16 @@ textarea {
     flex-direction: column;
   }
 
+  /* Near-full-height sheet on mobile, so its top edge lands under the status
+     bar. The shell's height is derived from 100dvh below and must lose the same
+     insets, or padding here would just push its bottom off-screen instead. */
   .web-decks-panel {
     align-items: center;
-    padding: 10px;
+    padding:
+      calc(10px + var(--safe-top))
+      calc(10px + var(--safe-right))
+      calc(10px + var(--safe-bottom))
+      calc(10px + var(--safe-left));
   }
 
   .style-panel {
@@ -5672,10 +5719,15 @@ textarea {
     padding: 0;
   }
 
+  /* Bottom sheet: it sits flush on `bottom: 0`, so its last row was under the
+     home indicator. The inset goes on the sheet, not the backdrop — padding the
+     backdrop would lift the sheet and show a strip of scrim beneath it, which
+     reads as a rendering fault rather than a deliberate edge. */
   .style-shell {
     width: 100%;
     max-width: 100%;
     max-height: 92dvh;
+    padding-bottom: var(--safe-bottom);
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
   }
@@ -5695,12 +5747,15 @@ textarea {
     padding: 7px 10px;
   }
 
+  /* The -20px is the panel's 10px padding on each side; the safe insets are the
+     rest of that padding now, so subtract them too or the sheet outgrows the
+     space its own panel leaves it. */
   .web-decks-shell {
     width: 100%;
     height: calc(100vh - 20px);
-    height: calc(100dvh - 20px);
+    height: calc(100dvh - 20px - var(--safe-top) - var(--safe-bottom));
     max-height: calc(100vh - 20px);
-    max-height: calc(100dvh - 20px);
+    max-height: calc(100dvh - 20px - var(--safe-top) - var(--safe-bottom));
     padding: 14px;
   }
 
@@ -8519,8 +8574,11 @@ kbd {
     align-items: flex-end;
   }
 
+  /* Bottom sheet, same as .style-shell — inset on the sheet so its surface still
+     reaches the screen edge. */
   .help-modal-content {
     max-height: 90vh;
+    padding-bottom: var(--safe-bottom);
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
     max-width: 100%;
@@ -8689,8 +8747,8 @@ kbd {
 /* ---- Offline indicator ---- */
 .offline-indicator {
   position: fixed;
-  left: 12px;
-  bottom: 12px;
+  left: calc(12px + var(--safe-left));
+  bottom: calc(12px + var(--safe-bottom));
   z-index: 200;
   display: inline-flex;
   align-items: center;
@@ -9332,7 +9390,14 @@ kbd {
   inset: 0;
   display: grid;
   background: color-mix(in srgb, var(--bg) 94%, black);
-  padding: clamp(10px, 2vw, 18px);
+  /* The board is inset:0 under `viewport-fit=cover`, so on a notched phone in
+     standalone PWA mode its top edge sits *behind* the status bar and clips the
+     heading. The gutter is the base padding plus whatever the OS reserves. */
+  padding:
+    calc(clamp(10px, 2vw, 18px) + var(--safe-top))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-right))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-bottom))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-left));
 }
 
 .qn-shell {
@@ -9532,7 +9597,13 @@ kbd {
   row-gap: 0;
 }
 
+/* min-width:0 is load-bearing, not cosmetic. A grid item's automatic minimum
+   size is its min-content width, and .qn-card-source is `white-space: nowrap` —
+   so a note pinned from a deck with a long title made its card as wide as that
+   title, blowing straight through the column and off the screen. Wide viewports
+   hid it (the tracks were bigger than the label); phones did not. */
 .qn-grid > .qn-card {
+  min-width: 0;
   margin-bottom: 12px;
 }
 
@@ -9637,6 +9708,9 @@ kbd {
   align-items: center;
   gap: 6px;
   max-width: 100%;
+  /* Flex items refuse to shrink below min-content by default, which keeps the
+     ellipsis from ever engaging on a long category name. */
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: transparent;
@@ -9715,10 +9789,16 @@ kbd {
    rests in neutral tones and only picks up the accent on hover: at full accent
    it out-shouted the category stripe on every single card. */
 .qn-card-source {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 78%;
+  /* Block, not inline-flex: the arrow and deck title are one text run, and as a
+     flex container that run became an anonymous item that `text-overflow` can't
+     reach — so a long deck title was chopped mid-glyph instead of ellipsised.
+     There is nothing here to lay out as flex; it's a single line of text. */
+  display: block;
+  /* Shrink-to-fit rather than a percentage cap: a % max-width is ignored while
+     the card's intrinsic width is being computed, so it never actually held the
+     label back — it only looked like it did once the card was wide enough. */
+  min-width: 0;
+  flex: 0 1 auto;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: transparent;
@@ -9986,10 +10066,33 @@ kbd {
 @media (max-width: 640px) {
   .qn-head { flex-wrap: wrap; }
   .qn-manage-btn { font-size: 0.72rem; padding: 0 8px; }
-  .qn-grid { grid-template-columns: 1fr; }
-  .qn-card-source { max-width: 48%; }
+  /* minmax(0, …) rather than a bare 1fr: 1fr is minmax(auto, 1fr), whose auto
+     floor re-introduces the content-based blowout min-width:0 just removed. */
+  .qn-grid { grid-template-columns: minmax(0, 1fr); }
   /* The search box takes the full row rather than squeezing the buttons out. */
   .qn-head-actions { flex-wrap: wrap; width: 100%; }
   .qn-search-wrap { order: 3; width: 100%; }
   .qn-search { width: 100%; }
+
+  /* Full-bleed on a phone. The rounded, inset panel is framing that costs ~20px
+     of a ~360px screen and buys nothing when the board already covers it. The
+     safe-area gutters stay — those are keeping the header out from under the
+     status bar, not decoration. */
+  .quick-notes-board {
+    padding:
+      var(--safe-top)
+      var(--safe-right)
+      var(--safe-bottom)
+      var(--safe-left);
+  }
+  .qn-shell {
+    border: 0;
+    border-radius: 0;
+  }
+  .qn-head { padding: 12px 12px 10px; }
+  .qn-filters { padding: 9px 12px; }
+  .qn-body { padding: 12px; }
+
+  .qn-card { padding: 10px 11px; }
+  .qn-card-time { font-size: 0.64rem; }
 }
