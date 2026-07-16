@@ -1014,6 +1014,7 @@ function normalizeWebDeckPayload(deckData, cardsData = []) {
     title: String(deckData.title || "Untitled"),
     category: normalizeDeckCategory(deckData.category),
     notes: String(deckData.notes || ""),
+    meta: deckData.meta && typeof deckData.meta === "object" ? deckData.meta : {},
     current_card_index: Number(deckData.current_card_index) || 0,
     created_at: deckData.created_at || null,
     updated_at: deckData.updated_at || null,
@@ -1048,6 +1049,9 @@ function deckPayloadSnapshot(payload) {
     deckTitle: payload.deck.title,
     deckCategory: payload.deck.category,
     notes: payload.deck.notes || "",
+    // Deck-level bag — carries the quick_notes managed category set through
+    // backup/restore so restored notes still resolve their labels.
+    meta: payload.deck.meta && typeof payload.deck.meta === "object" ? payload.deck.meta : {},
     sourceTitle: payload.deck.title,
     importTitleHint: payload.deck.title,
     deckId: payload.deck.id,
@@ -1072,6 +1076,31 @@ function statusByIdFromCards(cards = []) {
     if (status) statusById[card.id] = status;
     return statusById;
   }, {});
+}
+
+// Quick-note subject label for a card: state.categoryById is authoritative
+// while a deck is open (the board writes there), with the card's own field as
+// the fallback for cards that never went through a deck load.
+function quickNoteCategoryForCard(card) {
+  if (!card || !card.id) return null;
+  const assigned = state.categoryById[card.id];
+  if (assigned) return String(assigned);
+  return card.category ? String(card.category) : null;
+}
+
+// Apply a loaded deck's meta bag to the in-memory category set. Only the
+// quick_notes deck owns this set: loading an ordinary deck must leave it alone,
+// or its (empty) meta would blank the categories the board still needs. Falls
+// back to the local cache so an offline/pre-migration load still has labels.
+function applyDeckMetaCategories(meta, deckId, title) {
+  if (!isQuickNotesDeck(deckId, title)) return;
+  const fromMeta = quickNoteCategoriesFromMeta(meta);
+  if (fromMeta.length) {
+    state.quickNoteCategories = fromMeta;
+    writeCachedQuickNoteCategories(fromMeta);
+  } else {
+    state.quickNoteCategories = readCachedQuickNoteCategories();
+  }
 }
 
 async function fetchWebDeckPayload(deckId) {
@@ -1145,12 +1174,16 @@ function buildDeckSql(payloads, title = "Recall SQL Export", { includeNotes = tr
       ["title", sqlValue(deck.title)],
       ["category", sqlValue(deck.category)],
       ...notesColumns,
+      // Carries the quick_notes deck's managed category set; without it a
+      // restore from this file leaves every note's label pointing at a
+      // category that no longer exists.
+      ["meta", `${sqlValue(JSON.stringify(deck.meta || {}))}::jsonb`],
       ["current_card_index", Number(deck.current_card_index) || 0],
       ["created_at", sqlTimestamp(deck.created_at)],
       ["updated_at", sqlTimestamp(deck.updated_at)],
       ["last_accessed_at", sqlTimestamp(deck.last_accessed_at)]
     ];
-    const updateColumns = ["title", "category", ...(includeNotes ? ["notes"] : []), "current_card_index", "updated_at", "last_accessed_at"];
+    const updateColumns = ["title", "category", ...(includeNotes ? ["notes"] : []), "meta", "current_card_index", "updated_at", "last_accessed_at"];
     lines.push(
       `INSERT INTO decks (${columns.map(([name]) => name).join(", ")}) VALUES ` +
       `(${columns.map(([, value]) => value).join(", ")}) ` +
@@ -1162,13 +1195,13 @@ function buildDeckSql(payloads, title = "Recall SQL Export", { includeNotes = tr
       lines.push(`DELETE FROM cards WHERE deck_id = ${sqlValue(deck.id)};`);
       if (payload.cards.length) {
         const values = payload.cards.map((card, index) => (
-          `(${sqlValue(card.id)}, ${sqlValue(deck.id)}, ${sqlValue(card.question)}, ${sqlValue(card.answer)}, ${Number.isFinite(Number(card.position)) ? Number(card.position) : index}, ${sqlValue(normalizeCardStatus(card.status))}, ${sqlTimestamp(card.created_at)}, ${sqlTimestamp(card.updated_at)})`
+          `(${sqlValue(card.id)}, ${sqlValue(deck.id)}, ${sqlValue(card.question)}, ${sqlValue(card.answer)}, ${Number.isFinite(Number(card.position)) ? Number(card.position) : index}, ${sqlValue(normalizeCardStatus(card.status))}, ${sqlValue(card.category || null)}, ${sqlTimestamp(card.created_at)}, ${sqlTimestamp(card.updated_at)})`
         ));
         lines.push(
-          "INSERT INTO cards (id, deck_id, question, answer, position, status, created_at, updated_at) VALUES\n" +
+          "INSERT INTO cards (id, deck_id, question, answer, position, status, category, created_at, updated_at) VALUES\n" +
           values.join(",\n") +
           "\nON CONFLICT (id) DO UPDATE SET " +
-          "deck_id = EXCLUDED.deck_id, question = EXCLUDED.question, answer = EXCLUDED.answer, position = EXCLUDED.position, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at;"
+          "deck_id = EXCLUDED.deck_id, question = EXCLUDED.question, answer = EXCLUDED.answer, position = EXCLUDED.position, status = EXCLUDED.status, category = EXCLUDED.category, updated_at = EXCLUDED.updated_at;"
         );
       }
     }
@@ -1189,6 +1222,7 @@ function currentDeckPayload(scope = "all") {
     answer: card.answer,
     position: index,
     status: normalizeCardStatus(state.statusById[card.id]),
+    category: quickNoteCategoryForCard(card),
     created_at: null,
     updated_at: new Date().toISOString()
   }));
@@ -1199,6 +1233,9 @@ function currentDeckPayload(scope = "all") {
       title: deckTitle,
       category: normalizeDeckCategory(state.deckCategory),
       notes: state.notes || "",
+      meta: isQuickNotesDeck(deckId, deckTitle) && state.quickNoteCategories.length
+        ? { quickNoteCategories: state.quickNoteCategories }
+        : {},
       current_card_index: Number.isFinite(state.current) ? state.current : 0,
       created_at: null,
       updated_at: new Date().toISOString(),
@@ -1232,6 +1269,9 @@ async function loadWebDeck(deckId) {
   }
 
   setStatus("Loading deck from web...");
+  // A navigation door — see recordNavHistory. Recorded synchronously, before
+  // the await below can let anything else move the user.
+  recordNavHistory();
 
   try {
     const [deckResult, cardsResult] = await Promise.all([
@@ -1263,7 +1303,7 @@ async function loadWebDeck(deckId) {
     state.statusById = statusById;
     state.categoryById = categoryById;
     // Managed category set lives on the deck's meta bag (quick_notes only).
-    state.quickNoteCategories = quickNoteCategoriesFromMeta(deckData.meta);
+    applyDeckMetaCategories(deckData.meta, deckData.id, deckData.title);
     state.current = 0; // always start from the first card on fresh load
     state.deckTitle = deckData.title || "";
     state.deckCategory = normalizeDeckCategory(deckData.category);
@@ -1290,6 +1330,7 @@ async function loadWebDeck(deckId) {
     const mirroredMeta = saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at });
     if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
     refreshSyncIndicatorBaseline();
+    refreshNavBack(); // arrived — now the button knows where "here" is
   } catch (error) {
     setStatus("Failed to load deck from web.", "error");
     showToast("Couldn't load deck", "error");
@@ -1347,7 +1388,8 @@ function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true
     deleted: 0,
     edited: 0,
     moved: 0,
-    statusChanges: 0
+    statusChanges: 0,
+    categoryChanges: 0
   };
 
   localCards.forEach((localCard, index) => {
@@ -1378,6 +1420,12 @@ function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true
     const webStatus = normalizeCardStatus(webCard.status);
     if (localStatus !== webStatus) {
       changes.statusChanges += 1;
+    }
+
+    // Quick-note label moves are real changes; without this a pull that only
+    // recategorised notes reported "no per-card changes".
+    if ((localCard.category || null) !== (webCard.category || null)) {
+      changes.categoryChanges += 1;
     }
   });
 
@@ -1441,10 +1489,25 @@ function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
   modal.hidden = false;
 }
 
+// Upsert one chunk of card rows, retrying without `category` if the database
+// hasn't run supabase_quick_notes.sql yet (no cards.category column). Mirrors
+// the deck-level `notes` fallback: never lose card edits over a missing
+// optional column.
+async function upsertCardRows(rows) {
+  if (!rows.length) return;
+  const { error } = await supabaseClient.from("cards").upsert(rows);
+  if (!error) return;
+  if (!String(error.message || "").includes("category")) throw error;
+  console.warn("cards.category column missing — run supabase_quick_notes.sql to sync quick-note categories");
+  const stripped = rows.map(({ category: _omit, ...rest }) => rest);
+  const { error: retryError } = await supabaseClient.from("cards").upsert(stripped);
+  if (retryError) throw retryError;
+}
+
 // Core cloud writer shared by the active-deck sync and the headless
 // library-reconcile sync. Upserts the deck row and diff-upserts its cards from
 // an explicit payload (never touches `state`). Throws on failure.
-// `cards`: [{ id, question, answer, status }] in display order.
+// `cards`: [{ id, question, answer, status, category }] in display order.
 async function pushDeckRowsToCloud({ deckId, title, category, notes, currentIndex, cards, isNewDeck, overwrite, now, say = () => {}, silent = true }) {
   const deckData = {
     id: deckId,
@@ -1505,13 +1568,13 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
         && normalizeCardStatus(webCard.status) === status
         && (webCard.category || null) === category;
       if (unchanged) return null;
-      const row = { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, updated_at: now };
-      // Only send the category key when set, so pushes to a database that
-      // hasn't run supabase_quick_notes.sql yet (no cards.category column) keep
-      // working for ordinary study decks. Clearing a category is done via the
-      // board's direct .update(), not this bulk diff-push.
-      if (category) row.category = category;
-      return row;
+      // `category` is sent on EVERY row, never conditionally. PostgREST requires
+      // all objects in a bulk upsert to share one key set (PGRST102, "All object
+      // keys must match"), so omitting it on the uncategorised rows failed the
+      // whole batch for any deck with a mix — and made clearing a category
+      // impossible to push. Databases without the column are handled by the
+      // retry in upsertCardRows.
+      return { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, category, updated_at: now };
     })
     .filter(Boolean);
 
@@ -1521,8 +1584,7 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   // in a partial state if chunk N fails while chunk N+1 already succeeded,
   // silently dropping the cards in the failed chunk.
   for (let i = 0; i < cardsData.length; i += chunkSize) {
-    const { error: chunkError } = await supabaseClient.from("cards").upsert(cardsData.slice(i, i + chunkSize));
-    if (chunkError) throw chunkError;
+    await upsertCardRows(cardsData.slice(i, i + chunkSize));
   }
 
   // Stats for the detailed sync report — cardsAdded are new ids the cloud
@@ -1620,6 +1682,8 @@ const el = {
   quickNotesBoardBtn: document.querySelector("#quickNotesBoardBtn"),
   quickNotesBoard: document.querySelector("#quickNotesBoard"),
   qnSummary: document.querySelector("#qnSummary"),
+  qnSearch: document.querySelector("#qnSearch"),
+  appBackBtn: document.querySelector("#appBackBtn"),
   qnFilters: document.querySelector("#qnFilters"),
   qnBody: document.querySelector("#qnBody"),
   qnManageBtn: document.querySelector("#qnManageBtn"),
@@ -2420,6 +2484,147 @@ function anyModalOpen() {
     (el.qnCatModal && !el.qnCatModal.hidden) ||
     (el.importPanel && el.importPanel.classList.contains("is-open"))
   );
+}
+
+// ── Universal back ───────────────────────────────────────────────
+// The appbar's ← works like the back key on a remote: it steps back through the
+// places you've been, whatever they were. There is no per-feature wiring and no
+// destination label — every navigation records where you WERE on its way out,
+// and back replays that.
+//
+// A "location" is whatever you're looking at: a deck (with the card you were on
+// and the view mode) or the Quick Notes board (with its filters/search/scroll).
+// Recording happens at the three doors every navigation goes through:
+// loadDeckFromLibrary, loadWebDeck and openQuickNotesBoard.
+const navHistory = [];
+// Bounded: an unbounded stack would pin snapshots forever, and nobody steps
+// back further than this.
+const NAV_HISTORY_LIMIT = 25;
+
+// >0 while we're replaying history — restoring a location must never be
+// recorded as a new navigation, or back would bounce between two places.
+let navSuppressDepth = 0;
+function suppressNavRecording(fn) {
+  navSuppressDepth += 1;
+  try { return fn(); } finally { navSuppressDepth -= 1; }
+}
+
+// Where the user is right now, or null on the welcome screen (nothing to record).
+function currentNavLocation(hint = {}) {
+  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) {
+    return {
+      kind: "quick-notes",
+      state: {
+        cardId: hint.cardId || null,
+        filters: [...qnBoard.filters],
+        query: qnBoard.query,
+        scrollTop: el.qnBody ? el.qnBody.scrollTop : 0
+      }
+    };
+  }
+  if (state.localDeckId || state.deckId) {
+    return {
+      kind: "deck",
+      localId: state.localDeckId || null,
+      deckId: state.deckId || null,
+      current: Number.isFinite(state.current) ? state.current : 0,
+      viewMode: state.viewMode
+    };
+  }
+  return null;
+}
+
+// Same place? Deck identity only — flipping cards inside a deck isn't a
+// navigation, and there's only ever one Quick Notes board.
+function sameNavLocation(a, b) {
+  if (!a || !b || a.kind !== b.kind) return false;
+  if (a.kind === "quick-notes") return true;
+  return (a.localId || a.deckId) === (b.localId || b.deckId);
+}
+
+// Called by each navigation door BEFORE it moves the user.
+//
+// Deliberately does NOT refresh the button: at this instant the user is still
+// at the old location, so "is there anywhere to go back to?" would answer no.
+// Each door calls refreshNavBack() once it has actually arrived.
+function recordNavHistory(hint) {
+  if (navSuppressDepth) return;
+  const here = currentNavLocation(hint);
+  if (!here) return;
+  const top = navHistory[navHistory.length - 1];
+  if (top && sameNavLocation(top, here)) navHistory.pop(); // refresh, don't stack
+  navHistory.push(here);
+  if (navHistory.length > NAV_HISTORY_LIMIT) navHistory.shift();
+}
+
+// The newest entry that isn't simply where we already are. Closing the board,
+// for instance, lands you back on the deck that's still sitting on top of the
+// history — going "back" to it would be a no-op, so skip past it.
+function peekNavBack() {
+  const here = currentNavLocation();
+  for (let i = navHistory.length - 1; i >= 0; i--) {
+    if (!sameNavLocation(navHistory[i], here)) return { entry: navHistory[i], index: i };
+  }
+  return null;
+}
+
+function refreshNavBack() {
+  if (el.appBackBtn) el.appBackBtn.disabled = !peekNavBack();
+}
+
+function clearNavHistory() {
+  navHistory.length = 0;
+  refreshNavBack();
+}
+
+async function goToNavLocation(location) {
+  if (location.kind === "quick-notes") {
+    qnReturnState = location.state;
+    await openQuickNotesBoard({ restore: true });
+    return;
+  }
+  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) closeQuickNotesBoard();
+  // Prefer the local copy: instant, and works offline.
+  if (location.localId && loadDeckFromLibrary(location.localId)) {
+    restoreDeckPosition(location);
+    return;
+  }
+  if (location.deckId && supabaseClient && navigator.onLine) {
+    await loadWebDeck(location.deckId);
+    restoreDeckPosition(location);
+    return;
+  }
+  setStatus("Couldn't go back — that deck isn't available on this device.", "error");
+}
+
+// Step back one place. Re-entrancy guarded: restoring is async (it may load a
+// deck), and a double-tap would otherwise skip two entries.
+let navBackBusy = false;
+async function goNavBack() {
+  if (navBackBusy) return;
+  const found = peekNavBack();
+  if (!found) return;
+  // Drop the target and anything above it, so back never revisits.
+  navHistory.length = found.index;
+  navBackBusy = true;
+  try {
+    await suppressNavRecording(() => goToNavLocation(found.entry));
+  } catch (error) {
+    console.warn("Could not go back", error);
+    setStatus("Couldn't go back to where you were.", "error");
+  } finally {
+    navBackBusy = false;
+    refreshNavBack();
+  }
+}
+
+// Put the user back on the card and view they were on when they left.
+function restoreDeckPosition(location) {
+  if (Array.isArray(state.cards) && state.cards.length) {
+    state.current = Math.min(Math.max(location.current || 0, 0), state.cards.length - 1);
+    showCard();
+  }
+  if (location.viewMode) setViewMode(location.viewMode);
 }
 
 // Closes whichever modal/panel/overlay is currently open, reusing each one's
@@ -8356,6 +8561,7 @@ function jumpToNoteForCurrentCard() {
   }
 
   // Cross-deck anchor (quick_notes pin): open the source deck first, then jump.
+  // The deck loaders record the back history themselves — nothing to do here.
   setStatus("Opening the source deck…");
   if (anchor.deckLocalId && loadDeckFromLibrary(anchor.deckLocalId)) {
     scheduleNoteJump(anchor);
@@ -9813,14 +10019,27 @@ function deckSnapshot() {
     importTitleHint: state.importTitleHint || "",
     deckId: state.deckId,
     current: Number.isFinite(state.current) ? state.current : 0,
-    cards: state.masterCards.map((card, index) => ({
-      id: card.id || `${index}-${card.question.slice(0, 32)}`,
-      question: card.question,
-      answer: card.answer,
-      status: normalizeCardStatus(state.statusById[card.id]),
-      // Preserve the note-link so "Go to notes" survives a save/reload.
-      ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
-    }))
+    // Deck-level bag. Only the quick_notes deck owns a category set, and
+    // autosave must carry it or saving the deck erases the names/colours every
+    // card chip resolves against.
+    ...(isQuickNotesDeck(state.deckId, state.deckTitle) && state.quickNoteCategories.length
+      ? { meta: { quickNoteCategories: state.quickNoteCategories } }
+      : {}),
+    cards: state.masterCards.map((card, index) => {
+      const id = card.id || `${index}-${card.question.slice(0, 32)}`;
+      return {
+        id,
+        question: card.question,
+        answer: card.answer,
+        status: normalizeCardStatus(state.statusById[card.id]),
+        // Quick-note subject label. Must round-trip: without it every autosave
+        // rewrote the snapshot with no category, and the next reconcile pushed
+        // those blanks over the cloud — silently clearing the board.
+        category: quickNoteCategoryForCard(card),
+        // Preserve the note-link so "Go to notes" survives a save/reload.
+        ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
+      };
+    })
   };
 }
 
@@ -9847,6 +10066,7 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
 
   const usedIds = new Set(append ? state.masterCards.map(c => c.id) : []);
   const statusById = append ? { ...state.statusById } : {};
+  const categoryById = append ? { ...state.categoryById } : {};
   const cards = payload.cards
     .map((rawCard, index) => {
       const question = String(rawCard?.question || "").trim();
@@ -9865,6 +10085,12 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
       if (status) statusById[id] = status;
 
       const card = { id, question, answer };
+      // Quick-note subject label, mirrored into categoryById so the board and
+      // the next autosave both see it.
+      if (rawCard?.category) {
+        card.category = String(rawCard.category);
+        categoryById[id] = card.category;
+      }
       // Carry the note-link through the snapshot round-trip so cards keep their
       // "Go to notes" jump after a reload or a My Decks re-open.
       if (rawCard?.noteAnchor && typeof rawCard.noteAnchor === "object") card.noteAnchor = rawCard.noteAnchor;
@@ -9881,10 +10107,15 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     state.cards = state.cards.concat(cards);
     state.masterCards = state.masterCards.concat(cards);
     state.statusById = statusById;
+    state.categoryById = categoryById;
   } else {
     state.masterCards = cards.slice();
     resetStudyDeck(state.masterCards);
     state.statusById = statusById;
+    // Reset with the deck — a stale map from the previously open deck would
+    // otherwise leak its labels onto same-id cards and get pushed to the cloud.
+    state.categoryById = categoryById;
+    applyDeckMetaCategories(payload.meta, payload.deckId, payload.deckTitle);
     state.current = Math.min(Math.max(Number(payload.current) || 0, 0), cards.length);
     state.deckTitle = String(payload.deckTitle || "").trim() || humanizeSourceTitle(titleHint);
     state.deckCategory = normalizeDeckCategory(payload.deckCategory || payload.category);
@@ -10174,11 +10405,16 @@ async function pullCloudDeckToLibrary(cloud) {
     importTitleHint: cloud.title || "",
     deckId: cloud.id,
     current: Number.isFinite(cloud.current_card_index) ? cloud.current_card_index : 0,
+    // Deck-level bag (quick_notes' managed category set) — a pull that dropped
+    // it left every pulled note pointing at categories this device no longer
+    // knew the name or colour of.
+    meta: cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {},
     cards: (cards || []).map((c, i) => ({
       id: String(c.id || `${i}-${String(c.question || "").slice(0, 32)}`),
       question: c.question,
       answer: c.answer,
-      status: normalizeCardStatus(c.status)
+      status: normalizeCardStatus(c.status),
+      category: c.category ? String(c.category) : null
     }))
   };
 
@@ -10210,6 +10446,22 @@ async function pullCloudDeckToLibrary(cloud) {
     oldSnapshot = null;
   }
   if (oldSnapshot) {
+    // noteAnchor is a device-local link (the cloud `cards` table has no column
+    // for it), so the incoming rows never carry one. Re-attach the anchors this
+    // device already had, or every pull would permanently break the quick-note
+    // "jump to where this was pinned" button.
+    const oldAnchorById = new Map(
+      (oldSnapshot.cards || [])
+        .filter((c) => c && c.noteAnchor)
+        .map((c) => [String(c.id), c.noteAnchor])
+    );
+    if (oldAnchorById.size) {
+      for (const card of snapshot.cards) {
+        const anchor = oldAnchorById.get(String(card.id));
+        if (anchor) card.noteAnchor = anchor;
+      }
+    }
+
     const oldStatusById = Object.fromEntries((oldSnapshot.cards || []).map((c) => [String(c.id), c.status]));
     // calculateSyncDiff(local, web) reports "added" as local-only and
     // "deleted" as web-only. Here "local"=old snapshot (the stale/outgoing
@@ -10220,7 +10472,7 @@ async function pullCloudDeckToLibrary(cloud) {
     const diff = calculateSyncDiff(oldSnapshot.cards || [], cards || [], oldStatusById, { fuzzy: false });
     stats = {
       cardsAdded: diff.deleted,
-      cardsUpdated: diff.edited + diff.statusChanges + diff.moved,
+      cardsUpdated: diff.edited + diff.statusChanges + diff.moved + diff.categoryChanges,
       cardsDeleted: diff.added,
       notesChanged: syncTextChanged(oldSnapshot.notes || "", snapshot.notes)
     };
@@ -10722,11 +10974,16 @@ function loadDeckFromLibrary(id) {
       setStatus("That saved deck could not be found.", "error");
       return false;
     }
+    // A navigation door: remember where the user was before this deck replaces
+    // it. Recorded only once the deck is known to exist — a failed open doesn't
+    // move anyone.
+    recordNavHistory();
     const payload = JSON.parse(raw);
     loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "");
     state.localDeckId = id;
     persistWorkingDeck();
     refreshSyncIndicatorBaseline();
+    refreshNavBack(); // arrived — now the button knows where "here" is
     return true;
   } catch (error) {
     console.warn("Could not load saved deck", error);
@@ -13915,18 +14172,44 @@ el.diagramModalBody.addEventListener("pointercancel", handleDiagramPointerEnd);
 el.allCardsBtn.addEventListener("click", openAllCardsPanel);
 
 // ── Quick Notes board wiring ─────────────────────────────────────
-el.quickNotesBoardBtn?.addEventListener("click", openQuickNotesBoard);
+// The toolbar button always opens a fresh board — pass no args, since a click
+// event object would otherwise arrive as the options argument.
+el.quickNotesBoardBtn?.addEventListener("click", () => openQuickNotesBoard());
+el.appBackBtn?.addEventListener("click", goNavBack);
 el.qnCloseBtn?.addEventListener("click", closeQuickNotesBoard);
 el.qnManageBtn?.addEventListener("click", openQnCatModal);
 el.qnFilters?.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-qn-filter]");
   if (!btn) return;
-  qnBoard.filter = btn.dataset.qnFilter;
+  const key = btn.dataset.qnFilter;
+  // "All" clears the selection; every other chip toggles on top of it.
+  if (key === "all") qnBoard.filters.clear();
+  else if (qnBoard.filters.has(key)) qnBoard.filters.delete(key);
+  else qnBoard.filters.add(key);
+  renderQuickNotesBoard();
+});
+// Column count changes on resize, so the cards rewrap and every span is stale.
+window.addEventListener("resize", () => {
+  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) layoutQuickNotesGrid();
+});
+el.qnSearch?.addEventListener("input", () => {
+  qnBoard.query = el.qnSearch.value || "";
+  renderQuickNotesBoard();
+});
+// Escape inside the search box clears it first, and only closes the board once
+// the box is already empty.
+el.qnSearch?.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !el.qnSearch.value) return;
+  event.stopPropagation();
+  el.qnSearch.value = "";
+  qnBoard.query = "";
   renderQuickNotesBoard();
 });
 el.qnBody?.addEventListener("click", (event) => {
   const jump = event.target.closest("[data-qn-jump]");
   if (jump) { jumpToQuickNoteSource(jump.dataset.qnJump); return; }
+  const copy = event.target.closest("[data-qn-copy]");
+  if (copy) { copyQuickNote(copy.dataset.qnCopy, copy); return; }
   const catBtn = event.target.closest("[data-qn-cat-btn]");
   if (catBtn) { event.stopPropagation(); openQnCatMenu(catBtn.dataset.qnCatBtn, catBtn); }
 });
@@ -15790,6 +16073,176 @@ async function saveQuickNoteCategories(list) {
   }
 }
 
+// ── Quick-note source anchors ────────────────────────────────────
+// A pin's noteAnchor (where it was pinned FROM) used to live only in the local
+// deck snapshot, and appendCardToLocalLibraryDeck drops it entirely when this
+// device has no local copy of the quick_notes deck — the normal case, since you
+// pin from OTHER decks. That's why source buttons went missing. Anchors now
+// live in the quick_notes deck's `meta.noteAnchors` bag ({ [cardId]: anchor }),
+// so they're cloud-synced and survive on every device. No migration needed:
+// decks.meta already exists.
+
+// Keep the stored anchor small — meta is one JSON blob for the whole deck, and
+// only these fields are needed to find the spot again.
+function trimNoteAnchor(anchor) {
+  if (!anchor || typeof anchor !== "object") return null;
+  const text = String(anchor.text || "").slice(0, 300);
+  const trimmed = {
+    offset: Number.isFinite(anchor.offset) ? anchor.offset : null,
+    source: String(anchor.source || "").slice(0, 120),
+    text,
+    deckId: anchor.deckId || null,
+    deckLocalId: anchor.deckLocalId || null,
+    deckTitle: String(anchor.deckTitle || "").slice(0, 120),
+    // Set when the anchor was recovered by searching for the note's text rather
+    // than captured at pin time — the UI says so, since it's a best guess.
+    ...(anchor.guessed ? { guessed: true } : {})
+  };
+  // Nothing to jump to without either a locator or a target deck.
+  if (!trimmed.text && !trimmed.source && !trimmed.deckId && !trimmed.deckLocalId) return null;
+  return trimmed;
+}
+
+function noteAnchorsFromMeta(meta) {
+  let bag = meta;
+  if (typeof bag === "string") {
+    try { bag = JSON.parse(bag); } catch { bag = null; }
+  }
+  const anchors = bag && typeof bag === "object" ? bag.noteAnchors : null;
+  return anchors && typeof anchors === "object" && !Array.isArray(anchors) ? anchors : {};
+}
+
+// Merge anchor patches into the quick_notes deck's meta.noteAnchors. Read-merge
+// -write so sibling meta keys (quickNoteCategories) are never clobbered.
+// `keepIds`, when given, also drops anchors whose card no longer exists — the
+// re-read happens inside this call, so a card deleted elsewhere can't strand its
+// anchor in the bag forever.
+// Anchor writes are read-merge-write, and two of them run per board open (the
+// local backfill and the source recovery). Serialised through one chain so they
+// can't interleave — overlapping reads would silently drop one side's anchors.
+let qnAnchorWriteChain = Promise.resolve();
+
+function saveQuickNoteAnchors(patch, options) {
+  qnAnchorWriteChain = qnAnchorWriteChain
+    .catch(() => {})
+    .then(() => writeQuickNoteAnchors(patch, options));
+  return qnAnchorWriteChain;
+}
+
+async function writeQuickNoteAnchors(patch, { keepIds = null } = {}) {
+  const deckId = getQuickNotesDeckId();
+  if (!deckId) return;
+  const hasPatch = patch && Object.keys(patch).length;
+  if (!hasPatch && !keepIds) return;
+  if (!supabaseClient || !isSignedIn || !navigator.onLine) return;
+  try {
+    const { data: existing } = await supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle();
+    const base = existing?.meta && typeof existing.meta === "object" ? existing.meta : {};
+    let anchors = { ...noteAnchorsFromMeta(base), ...(patch || {}) };
+    if (keepIds) {
+      anchors = Object.fromEntries(Object.entries(anchors).filter(([id]) => keepIds.has(String(id))));
+    }
+    const meta = { ...base, noteAnchors: anchors };
+    const { error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId);
+    if (error) throw error;
+  } catch (error) {
+    console.warn("Could not sync quick-note source anchors to cloud", error);
+  }
+}
+
+// ── Recovering lost source links ─────────────────────────────────
+// Notes pinned before anchors were stored have no anchor anywhere, so there is
+// nothing to restore — but the note's TEXT was copied out of some deck's notes,
+// so the origin can be found by searching for it. Every hit is persisted as a
+// real anchor, so this search runs once per note and the button is permanent
+// from then on. Same idea as resolveCardNoteAnchor's content fallback.
+
+// Deck notes indexed for searching, built once per board open (notes can be
+// large; one pass beats re-fetching per card).
+let qnDeckNotesCache = null;
+
+async function loadDeckNotesForSearch() {
+  if (qnDeckNotesCache) return qnDeckNotesCache;
+  const qid = getQuickNotesDeckId();
+  const decks = [];
+  const seen = new Set();
+
+  // Local snapshots first: free, offline, and they carry the localId that makes
+  // the jump instant.
+  for (const entry of readLocalDeckIndex()) {
+    try {
+      const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
+      if (!raw) continue;
+      const snapshot = JSON.parse(raw);
+      if (snapshot.deckId && snapshot.deckId === qid) continue; // never match the board itself
+      const plain = notesAnchorPlainText(snapshot.notes || "");
+      if (!plain) continue;
+      if (snapshot.deckId) seen.add(String(snapshot.deckId));
+      decks.push({
+        localId: entry.id,
+        deckId: snapshot.deckId || null,
+        title: snapshot.deckTitle || entry.title || "source",
+        plain
+      });
+    } catch (_) { /* a corrupt snapshot just isn't searchable */ }
+  }
+
+  // Then any cloud deck this device has no local copy of.
+  if (supabaseClient && isSignedIn && navigator.onLine) {
+    try {
+      const { data, error } = await supabaseClient.from("decks").select("id, title, notes");
+      if (error) throw error;
+      for (const deck of data || []) {
+        if (!deck || String(deck.id) === qid || seen.has(String(deck.id))) continue;
+        const plain = notesAnchorPlainText(deck.notes || "");
+        if (!plain) continue;
+        decks.push({ localId: null, deckId: String(deck.id), title: deck.title || "source", plain });
+      }
+    } catch (error) {
+      console.warn("Could not load deck notes to recover quick-note sources", error);
+    }
+  }
+
+  qnDeckNotesCache = decks;
+  return decks;
+}
+
+// Find and persist source anchors for every note that lacks one. Runs in the
+// background after the board paints, then re-renders so the buttons appear.
+async function resolveMissingQuickNoteSources() {
+  const missing = qnBoard.cards.filter((c) => !c.noteAnchor);
+  if (!missing.length) return;
+  const decks = await loadDeckNotesForSearch();
+  if (!decks.length) return;
+
+  const patch = {};
+  for (const card of missing) {
+    const needle = notesAnchorPlainText(card.question);
+    // Very short snippets match half the library; a wrong jump is worse than
+    // no button.
+    if (needle.length < 6) continue;
+    const hit = decks.find((d) => d.plain.includes(needle));
+    if (!hit) continue;
+    const anchor = trimNoteAnchor({
+      offset: null,
+      source: "",
+      text: needle,
+      deckId: hit.deckId,
+      deckLocalId: hit.localId,
+      deckTitle: hit.title,
+      guessed: true
+    });
+    if (!anchor) continue;
+    card.noteAnchor = anchor;
+    patch[String(card.id)] = anchor;
+  }
+
+  if (!Object.keys(patch).length) return;
+  renderQuickNotesBoard();
+  // One write for the whole batch, so this never runs again for these notes.
+  saveQuickNoteAnchors(patch);
+}
+
 // Assign (or clear, when categoryId is falsy) a card's subject category. Writes
 // the cloud cards row + the local snapshot + bumps updatedAt so reconcile sees
 // the change. Returns true on a best-effort local success.
@@ -15820,6 +16273,13 @@ async function setQuickNoteCardCategory(cardId, categoryId) {
   if (isQuickNotesDeck(state.deckId, state.deckTitle)) {
     if (value) state.categoryById[cardId] = value;
     else delete state.categoryById[cardId];
+    // The card's own field has to be cleared too. quickNoteCategoryForCard
+    // falls back to it when categoryById has no entry, so leaving a stale value
+    // behind made "Uncategorized" spring back to the old label on the next save.
+    for (const list of [state.masterCards, state.cards]) {
+      const card = Array.isArray(list) ? list.find((c) => String(c.id) === String(cardId)) : null;
+      if (card) card.category = value;
+    }
   }
 
   if (!supabaseClient || !isSignedIn || !navigator.onLine) return true;
@@ -15842,21 +16302,47 @@ async function setQuickNoteCardCategory(cardId, categoryId) {
 // board can be opened at any time without disturbing whatever you're studying.
 const qnBoard = {
   cards: [],       // [{ id, question, answer, category, noteAnchor, updatedAt }]
-  filter: "all",   // "all" | "none" | <categoryId>
+  // Selected category chips: a Set of category ids, plus the literal "none" for
+  // uncategorised. Empty means "All". Multi-select, so several subjects can be
+  // read side by side.
+  filters: new Set(),
+  query: "",       // free-text search across note bodies
   loading: false
 };
+
+// A card passes when nothing is selected (All), or when its own category is
+// among the selected chips.
+function quickNoteMatchesFilters(card) {
+  if (!qnBoard.filters.size) return true;
+  const known = card.category && findQuickNoteCategory(card.category);
+  return known ? qnBoard.filters.has(card.category) : qnBoard.filters.has("none");
+}
+
+// The search box narrows the board before the category filter and the chip
+// counts are applied, so the counts always describe what you can actually see.
+function quickNotesMatchingQuery() {
+  const q = qnBoard.query.trim().toLowerCase();
+  if (!q) return qnBoard.cards;
+  return qnBoard.cards.filter((c) =>
+    String(c.question || "").toLowerCase().includes(q) ||
+    String(c.answer || "").toLowerCase().includes(q)
+  );
+}
 
 function findQuickNoteCategory(id) {
   return state.quickNoteCategories.find((c) => c.id === id) || null;
 }
 
-// Merge cloud cards (authoritative for text/category) with the local snapshot
-// (source of each pin's noteAnchor + the offline fallback).
+// Merge cloud cards (authoritative for text/category) with the deck's cloud
+// meta bag (source anchors) and the local snapshot (offline fallback + anchors
+// pinned before anchors were synced).
 async function loadQuickNotesData() {
   const deckId = getQuickNotesDeckId();
   const local = readLocalSnapshotByDeckId(deckId);
   const localCards = local && Array.isArray(local.snapshot.cards) ? local.snapshot.cards : [];
-  const anchorById = new Map(localCards.map((c) => [String(c.id), c.noteAnchor || null]));
+  const anchorById = new Map(
+    localCards.filter((c) => c.noteAnchor).map((c) => [String(c.id), c.noteAnchor])
+  );
 
   let categories = readCachedQuickNoteCategories();
   if (!categories.length && local) categories = quickNoteCategoriesFromMeta(local.snapshot.meta);
@@ -15876,19 +16362,43 @@ async function loadQuickNotesData() {
         supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle(),
         supabaseClient.from("cards").select("id, question, answer, category, updated_at").eq("deck_id", deckId).order("position", { ascending: true })
       ]);
+      const cloudAnchors = deckRes.data && !deckRes.error ? noteAnchorsFromMeta(deckRes.data.meta) : {};
       if (!cardsRes.error && Array.isArray(cardsRes.data)) {
         cards = cardsRes.data.map((c) => ({
           id: String(c.id),
           question: String(c.question || ""),
           answer: String(c.answer || ""),
           category: c.category || null,
-          noteAnchor: anchorById.get(String(c.id)) || null,
+          // Cloud anchor first (works on every device), local snapshot second.
+          noteAnchor: cloudAnchors[String(c.id)] || anchorById.get(String(c.id)) || null,
           updatedAt: c.updated_at || null
         }));
       }
-      if (deckRes.data) {
-        const cloudCats = quickNoteCategoriesFromMeta(deckRes.data.meta);
-        if (cloudCats.length || !categories.length) categories = cloudCats;
+      // The cloud deck row is authoritative whenever we could read it —
+      // including when it comes back empty. Preferring the local cache on an
+      // empty cloud set meant deleting your last category on another device
+      // never propagated: the stale cache kept resurrecting it here.
+      if (deckRes.data && !deckRes.error) categories = quickNoteCategoriesFromMeta(deckRes.data.meta);
+
+      // Repair pins made before anchors were synced: any anchor this device
+      // still has locally but the cloud doesn't gets pushed up once, so the
+      // source button comes back here and appears on other devices too. Only
+      // safe when the cloud card list actually loaded — pruning against the
+      // local fallback list would delete anchors for cards this device simply
+      // hasn't pulled yet.
+      if (!cardsRes.error && Array.isArray(cardsRes.data)) {
+        const backfill = {};
+        for (const card of cards) {
+          const id = String(card.id);
+          if (cloudAnchors[id]) continue;
+          const trimmed = trimNoteAnchor(anchorById.get(id));
+          if (trimmed) backfill[id] = trimmed;
+        }
+        const liveIds = new Set(cards.map((c) => String(c.id)));
+        const orphaned = Object.keys(cloudAnchors).some((id) => !liveIds.has(String(id)));
+        if (Object.keys(backfill).length || orphaned) {
+          saveQuickNoteAnchors(backfill, { keepIds: liveIds });
+        }
       }
     } catch (error) {
       console.warn("Quick notes cloud load failed; using local snapshot", error);
@@ -15902,22 +16412,30 @@ async function loadQuickNotesData() {
   qnBoard.cards = cards;
 }
 
-function quickNoteCounts() {
-  const counts = { all: qnBoard.cards.length, none: 0 };
+function quickNoteCounts(cards = quickNotesMatchingQuery()) {
+  const counts = { all: cards.length, none: 0 };
   for (const cat of state.quickNoteCategories) counts[cat.id] = 0;
-  for (const card of qnBoard.cards) {
+  for (const card of cards) {
     if (card.category && counts[card.category] !== undefined) counts[card.category] += 1;
     else counts.none += 1;
   }
   return counts;
 }
 
-function renderQuickNotesFilters() {
-  const counts = quickNoteCounts();
+// The chips ARE the category navigation now that the board is one flat grid:
+// each toggles independently, so you can read two or three subjects together.
+// "All" is simply the state where nothing is selected.
+function renderQuickNotesFilters(cards = quickNotesMatchingQuery()) {
+  const counts = quickNoteCounts(cards);
   const chip = (key, label, color) => {
-    const active = qnBoard.filter === key ? " is-active" : "";
+    const selected = key === "all" ? !qnBoard.filters.size : qnBoard.filters.has(key);
     const dot = color ? `<span class="qn-chip-dot" style="background:${color}"></span>` : "";
-    return `<button type="button" class="qn-chip${active}" data-qn-filter="${escapeHtml(key)}">${dot}${escapeHtml(label)} <span class="qn-chip-count">${counts[key] || 0}</span></button>`;
+    // The chip wears its category's colour while selected, so the active
+    // filters and the cards they let through read as the same thing.
+    const style = color ? ` style="--qn-accent:${color}"` : "";
+    return `<button type="button" class="qn-chip${selected ? " is-active" : ""}"${style}` +
+      ` data-qn-filter="${escapeHtml(key)}" aria-pressed="${selected}">` +
+      `${dot}${escapeHtml(label)} <span class="qn-chip-count">${counts[key] || 0}</span></button>`;
   };
   let html = chip("all", "All");
   for (const cat of state.quickNoteCategories) html += chip(cat.id, cat.name, cat.color);
@@ -15927,41 +16445,99 @@ function renderQuickNotesFilters() {
 
 function renderQnCard(card) {
   const cat = card.category ? findQuickNoteCategory(card.category) : null;
-  const accent = cat ? cat.color : "transparent";
+  // The category colour drives the whole card (tint, border, badge) via this
+  // one custom property — uncategorised cards fall back to a neutral treatment.
+  const accent = cat ? cat.color : "var(--qn-neutral)";
   const anchor = card.noteAnchor;
+  // A recovered anchor is a best guess (matched by text), so say so on hover
+  // rather than promising it's exactly where you pinned from.
+  const hint = anchor && anchor.guessed
+    ? "Best match — found by searching your decks' notes"
+    : "Go to where this was pinned";
   const source = anchor && (anchor.deckTitle || anchor.deckId || anchor.deckLocalId)
-    ? `<button type="button" class="qn-card-source" data-qn-jump="${escapeHtml(card.id)}" title="Go to where this was pinned">&#8618; ${escapeHtml(anchor.deckTitle || "source")}</button>`
+    ? `<button type="button" class="qn-card-source" data-qn-jump="${escapeHtml(card.id)}" title="${escapeHtml(hint)}">&#8618; ${escapeHtml(anchor.deckTitle || "source")}</button>`
     : "";
   const catLabel = cat
     ? `<span class="qn-chip-dot" style="background:${cat.color}"></span>${escapeHtml(cat.name)}`
-    : `<span class="qn-card-cat-empty">Set category</span>`;
-  return `<article class="qn-card" data-qn-card="${escapeHtml(card.id)}" style="--qn-accent:${accent}">
+    : `<span class="qn-chip-dot qn-dot-empty"></span><span class="qn-card-cat-empty">Set category</span>`;
+  const when = formatRelativeTime(card.updatedAt);
+  const time = when ? `<time class="qn-card-time" datetime="${escapeHtml(card.updatedAt || "")}">${escapeHtml(when)}</time>` : "";
+  const classes = `qn-card${cat ? "" : " qn-card-uncat"}`;
+  return `<article class="${classes}" data-qn-card="${escapeHtml(card.id)}" style="--qn-accent:${accent}">
+    <div class="qn-card-top">
+      <button type="button" class="qn-card-cat-btn" data-qn-cat-btn="${escapeHtml(card.id)}" aria-haspopup="true" title="Change category">${catLabel}<span class="qn-caret" aria-hidden="true">&#9662;</span></button>
+      ${time}
+    </div>
     <div class="qn-card-body">${markdownToSafeHtml(card.question || "")}</div>
     <div class="qn-card-foot">
-      <button type="button" class="qn-card-cat-btn" data-qn-cat-btn="${escapeHtml(card.id)}" aria-haspopup="true">${catLabel}<span class="qn-caret" aria-hidden="true">&#9662;</span></button>
       ${source}
+      <button type="button" class="qn-card-copy" data-qn-copy="${escapeHtml(card.id)}" title="Copy this note" aria-label="Copy this note">&#128203;</button>
     </div>
   </article>`;
 }
 
-function renderQnGroup(group) {
-  const color = group.cat ? group.cat.color : "#94a3b8";
-  const name = group.cat ? group.cat.name : "Uncategorized";
-  const head = `<div class="qn-group-head"><span class="qn-group-dot" style="background:${color}"></span><h2 class="qn-group-title">${escapeHtml(name)}</h2><span class="qn-group-count">${group.cards.length}</span></div>`;
-  return `<section class="qn-group">${head}<div class="qn-group-grid">${group.cards.map(renderQnCard).join("")}</div></section>`;
-}
-
-function updateQnSummary() {
+function updateQnSummary(matching = quickNotesMatchingQuery()) {
   const total = qnBoard.cards.length;
   const cats = state.quickNoteCategories.length;
-  el.qnSummary.textContent = total
-    ? `${total} note${total === 1 ? "" : "s"} across ${cats} categor${cats === 1 ? "y" : "ies"}.`
-    : "Pinned snippets across all your decks, at a glance.";
+  if (!total) {
+    el.qnSummary.textContent = "Pinned snippets across all your decks, at a glance.";
+    return;
+  }
+  if (qnBoard.query.trim()) {
+    el.qnSummary.textContent = `${matching.length} of ${total} note${total === 1 ? "" : "s"} match your search.`;
+    return;
+  }
+  const uncategorized = quickNoteCounts(qnBoard.cards).none;
+  const tail = uncategorized ? ` · ${uncategorized} to sort` : "";
+  el.qnSummary.textContent = `${total} note${total === 1 ? "" : "s"} across ${cats} categor${cats === 1 ? "y" : "ies"}${tail}.`;
+}
+
+// Masonry pass: give every card a row span equal to its own rendered height, so
+// a short note doesn't reserve the height of the tallest card in its row. The
+// grid is 1px rows (see .qn-grid) and the 12px gap is the card's margin-bottom.
+function layoutQuickNotesGrid(retries = 3) {
+  const grid = el.qnBody?.querySelector(".qn-grid");
+  if (!grid) return;
+  const gap = 12;
+  const cards = [...grid.children];
+  // Zero heights mean the grid hasn't been laid out yet (the board was still
+  // hidden when this ran). Retry on the next frame rather than burning in a
+  // wrong span — a bounded retry so a permanently-hidden board can't spin.
+  if (cards.length && cards.every((card) => !card.getBoundingClientRect().height)) {
+    if (retries > 0) requestAnimationFrame(() => layoutQuickNotesGrid(retries - 1));
+    return;
+  }
+  for (const card of cards) {
+    const height = card.getBoundingClientRect().height;
+    if (!height) continue;
+    card.style.gridRowEnd = `span ${Math.max(1, Math.ceil(height) + gap)}`;
+  }
+  grid.classList.add("is-measured");
+}
+
+// Cards change height when the window resizes (text rewraps) or when late
+// content lands (images, fonts, KaTeX), so re-measure on both.
+let qnCardResizeObserver = null;
+function observeQuickNotesGrid() {
+  const grid = el.qnBody?.querySelector(".qn-grid");
+  if (!grid || typeof ResizeObserver === "undefined") return;
+  if (!qnCardResizeObserver) {
+    // rAF-batched: one relayout per frame no matter how many cards report.
+    let queued = false;
+    qnCardResizeObserver = new ResizeObserver(() => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; layoutQuickNotesGrid(); });
+    });
+  }
+  qnCardResizeObserver.disconnect();
+  for (const card of grid.children) qnCardResizeObserver.observe(card);
 }
 
 function renderQuickNotesBoard() {
-  renderQuickNotesFilters();
-  updateQnSummary();
+  const matching = quickNotesMatchingQuery();
+  renderQuickNotesFilters(matching);
+  updateQnSummary(matching);
 
   if (qnBoard.loading) {
     el.qnBody.innerHTML = `<div class="qn-empty">Loading your quick notes&#8230;</div>`;
@@ -15972,33 +16548,71 @@ function renderQuickNotesBoard() {
     return;
   }
 
-  const groups = [];
-  const wantAll = qnBoard.filter === "all";
-  if (wantAll || qnBoard.filter !== "none") {
-    for (const cat of state.quickNoteCategories) {
-      if (!wantAll && qnBoard.filter !== cat.id) continue;
-      const cards = qnBoard.cards.filter((c) => c.category === cat.id);
-      if (cards.length) groups.push({ cat, cards });
-    }
+  // One flat, newest-first grid — never grouped by category. Grouping meant a
+  // card physically jumped to another section the moment you categorised it,
+  // which loses your place; here it stays exactly where it is and only its
+  // colour changes.
+  const visible = matching.filter(quickNoteMatchesFilters);
+  if (visible.length) {
+    el.qnBody.innerHTML = `<div class="qn-grid">${visible.map(renderQnCard).join("")}</div>`;
+    layoutQuickNotesGrid();
+    observeQuickNotesGrid();
+    return;
   }
-  if (wantAll || qnBoard.filter === "none") {
-    const uncategorized = qnBoard.cards.filter((c) => !c.category || !findQuickNoteCategory(c.category));
-    if (uncategorized.length) groups.push({ cat: null, cards: uncategorized });
-  }
-
-  el.qnBody.innerHTML = groups.length
-    ? groups.map(renderQnGroup).join("")
-    : `<div class="qn-empty">No notes in this category yet.</div>`;
+  el.qnBody.innerHTML = qnBoard.query.trim()
+    ? `<div class="qn-empty"><p class="qn-empty-title">No matches</p><p>Nothing here matches &ldquo;${escapeHtml(qnBoard.query.trim())}&rdquo;.</p></div>`
+    : `<div class="qn-empty">No notes in the selected categories.</div>`;
 }
 
-async function openQuickNotesBoard() {
+// ── Quick Notes return state ─────────────────────────────────────
+// The board's slice of a history location (filters/search/scroll, and the note
+// you opened from it). Set by goToNavLocation from the recorded location, then
+// consumed by the next board render. See currentNavLocation.
+let qnReturnState = null;
+
+// Put the board back the way it was and mark the note you left from, so it's
+// obvious where you were.
+function restoreQnReturnState() {
+  if (!qnReturnState) return;
+  const { cardId, scrollTop } = qnReturnState;
+  qnReturnState = null;
+  el.qnBody.scrollTop = scrollTop || 0;
+  // cardId is only set when the board was left by opening a note from it — a
+  // board recorded any other way has no card to point at.
+  if (!cardId) return;
+  const card = el.qnBody.querySelector(`.qn-card[data-qn-card="${CSS.escape(cardId)}"]`);
+  if (!card) return;
+  card.scrollIntoView({ block: "nearest" });
+  card.classList.add("is-returned");
+  setTimeout(() => card.classList.remove("is-returned"), 1600);
+}
+
+async function openQuickNotesBoard({ restore = false } = {}) {
   if (!getQuickNotesDeckId()) {
     setStatus("Sign in to use quick notes.", "error");
     return;
   }
   closeAllCardsPanel();
+  // A navigation door — remember the deck the user is leaving behind.
+  recordNavHistory();
   lockPageScroll();
   el.quickNotesBoard.hidden = false;
+  refreshNavBack(); // arrived — now the button knows where "here" is
+  const returning = restore && qnReturnState;
+  if (returning) {
+    // Coming back from a source jump — keep the view the user left behind.
+    qnBoard.query = qnReturnState.query;
+    qnBoard.filters = new Set(qnReturnState.filters);
+  } else {
+    // A fresh open starts clean — a stale search or chip selection from last
+    // time would look like missing notes.
+    qnBoard.query = "";
+    qnBoard.filters.clear();
+    qnReturnState = null;
+  }
+  if (el.qnSearch) el.qnSearch.value = qnBoard.query;
+  // Deck notes may have changed since the last open — rebuild the search index.
+  qnDeckNotesCache = null;
   qnBoard.loading = true;
   renderQuickNotesBoard();
   try {
@@ -16006,7 +16620,13 @@ async function openQuickNotesBoard() {
   } finally {
     qnBoard.loading = false;
     renderQuickNotesBoard();
+    if (returning) restoreQnReturnState();
   }
+  // Deliberately not awaited: the board is already usable, and recovering the
+  // missing source links repaints them a moment later.
+  resolveMissingQuickNoteSources().catch((error) =>
+    console.warn("Could not recover quick-note sources", error)
+  );
 }
 
 function closeQuickNotesBoard() {
@@ -16014,6 +16634,9 @@ function closeQuickNotesBoard() {
   closeQnCatModal();
   el.quickNotesBoard.hidden = true;
   unlockPageScroll();
+  // Closing changes where "here" is, which changes whether back has anywhere
+  // to go (the deck below is usually the newest history entry).
+  refreshNavBack();
 }
 
 // Jump from a board card to the notes spot it was pinned from (may live in a
@@ -16025,17 +16648,43 @@ function jumpToQuickNoteSource(cardId) {
     setStatus("This note isn't linked to a source spot.", "info");
     return;
   }
+  // Record the board itself, WHILE it's still open and tagged with the note
+  // being opened, so back returns to this exact card. The deck loads below are
+  // part of this same navigation — they must not record on top of it.
+  recordNavHistory({ cardId });
   closeQuickNotesBoard();
   if (onAnchorSourceDeck(anchor)) { scheduleNoteJump(anchor); return; }
   setStatus("Opening the source deck…");
-  if (anchor.deckLocalId && loadDeckFromLibrary(anchor.deckLocalId)) { scheduleNoteJump(anchor); return; }
+  if (anchor.deckLocalId && suppressNavRecording(() => loadDeckFromLibrary(anchor.deckLocalId))) {
+    scheduleNoteJump(anchor);
+    return;
+  }
   if (anchor.deckId && supabaseClient && navigator.onLine) {
-    loadWebDeck(anchor.deckId)
+    suppressNavRecording(() => loadWebDeck(anchor.deckId))
       .then(() => scheduleNoteJump(anchor))
       .catch(() => setStatus("Couldn't open the source deck for this note.", "error"));
     return;
   }
   setStatus("Couldn't open the source deck for this note — it isn't available on this device.", "error");
+}
+
+// Copy a note's text straight to the clipboard — the most common thing to want
+// from a board you're skimming.
+async function copyQuickNote(cardId, button) {
+  const card = qnBoard.cards.find((c) => String(c.id) === String(cardId));
+  if (!card) return;
+  const text = [card.question, card.answer].filter((part) => String(part || "").trim()).join("\n\n");
+  try {
+    await navigator.clipboard.writeText(text);
+    if (button) {
+      button.classList.add("is-copied");
+      setTimeout(() => button.classList.remove("is-copied"), 1000);
+    }
+    showToast("Note copied");
+  } catch (error) {
+    console.warn("Clipboard write failed", error);
+    showToast("Couldn't copy the note", "error");
+  }
 }
 
 // ── Floating category picker (assign a category to one card) ──────
@@ -16187,7 +16836,9 @@ function deleteQuickNoteCategory(id) {
     // Detach the category from any board cards + persist those clears.
     const affected = qnBoard.cards.filter((c) => c.category === id);
     for (const card of affected) { card.category = null; await setQuickNoteCardCategory(card.id, null); }
-    if (qnBoard.filter === id) qnBoard.filter = "all";
+    // Drop the deleted category's chip from the selection, or the board would
+    // keep filtering on an id that no longer exists and look empty.
+    qnBoard.filters.delete(id);
     await commitQuickNoteCategories(next);
   }, { confirmLabel: "Delete", danger: true });
 }
@@ -16273,12 +16924,15 @@ async function saveQuickNote(rawText, button, sourceAnchor = null) {
       .eq("id", deckId);
 
     // Attach the source location (deck + note offset) so the quick_notes card
-    // offers a "Go to notes" jump back to where it was pinned from. Stored on
-    // the local snapshot only — the cloud `cards` insert keeps its fixed
-    // columns, so a cross-device pull won't carry the link (acceptable).
+    // offers a "Go to notes" jump back to where it was pinned from. Written to
+    // the deck's cloud meta bag as well as the local snapshot: the snapshot
+    // alone is silently dropped whenever this device has no local copy of the
+    // quick_notes deck, which is what detached these links before.
+    const anchor = trimNoteAnchor(sourceAnchor);
     const quickCard = { id: cardId, question: text, answer: "", status: null, category: null };
-    if (sourceAnchor && (sourceAnchor.text || sourceAnchor.source)) quickCard.noteAnchor = sourceAnchor;
+    if (anchor) quickCard.noteAnchor = anchor;
     appendCardToLocalLibraryDeck(deckId, quickCard, now);
+    if (anchor) await saveQuickNoteAnchors({ [cardId]: anchor });
 
     setStatus("Saved to quick_notes.");
     showToast("Saved to quick_notes");

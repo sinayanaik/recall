@@ -1574,6 +1574,42 @@ button:disabled {
   color: var(--accent);
 }
 
+/* ── Universal back button ────────────────────────────────────────
+   A plain ← in the appbar beside the menu, deliberately shaped exactly like it:
+   one fixed slot, same size, no destination text — it means "back", the same
+   way a remote's back key does, wherever you happen to be.
+
+   It stays in the DOM and greys out when there's no history, rather than
+   hiding: a control that appears and disappears would shove the deck title
+   sideways every time you navigated. */
+.app-back-btn {
+  display: flex;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, var(--accent));
+  border-radius: var(--toolbar-button-radius);
+  background: color-mix(in srgb, var(--panel-2) 70%, var(--panel));
+  color: var(--text);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.app-back-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.app-back-btn:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
 .mobile-backdrop {
   display: none;
   position: fixed;
@@ -9288,6 +9324,9 @@ kbd {
    for pinned snippets, distinct from the known/unknown study flow.
    ============================================================ */
 .quick-notes-board {
+  /* Stand-in accent for anything with no category — defined at the board root
+     so group sections and cards alike can resolve it. */
+  --qn-neutral: color-mix(in srgb, var(--text) 28%, transparent);
   position: fixed;
   z-index: 72;
   inset: 0;
@@ -9341,6 +9380,43 @@ kbd {
   gap: 8px;
 }
 
+.qn-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.qn-search-icon {
+  position: absolute;
+  left: 9px;
+  font-size: 0.72rem;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.qn-search {
+  width: clamp(140px, 22vw, 240px);
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  color: var(--text);
+  padding: 0 10px 0 27px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.qn-search:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+
+.qn-search::placeholder {
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .qn-manage-btn {
   min-height: 32px;
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
@@ -9389,10 +9465,15 @@ kbd {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
 }
 
+/* Selected chips light up in their OWN category colour (--qn-accent, set inline
+   per chip) so the filter bar reads as the same colour language as the cards.
+   The "All" and "Uncategorized" chips have no category colour and fall back to
+   the app accent. These are multi-select toggles, not radio buttons. */
 .qn-chip.is-active {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent-strong);
+  border-color: var(--qn-accent, var(--accent));
+  background: color-mix(in srgb, var(--qn-accent, var(--accent)) 18%, transparent);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--qn-accent, var(--accent)) 35%, transparent);
 }
 
 .qn-chip-count {
@@ -9405,8 +9486,8 @@ kbd {
 }
 
 .qn-chip.is-active .qn-chip-count {
-  color: var(--accent-strong);
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--qn-accent, var(--accent)) 28%, transparent);
 }
 
 .qn-chip-dot {
@@ -9433,63 +9514,94 @@ kbd {
   gap: 22px;
 }
 
-.qn-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  position: sticky;
-  top: -16px;
-  background: color-mix(in srgb, var(--panel) 96%, transparent);
-  padding: 6px 0;
-  z-index: 1;
-}
+/* One flat grid for the whole board — categories are chosen with the filter
+   chips up top, never by splitting the notes into sections.
 
-.qn-group-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px color-mix(in srgb, black 12%, transparent) inset;
-}
-
-.qn-group-title {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 900;
-  letter-spacing: 0.01em;
-}
-
-.qn-group-count {
-  font-size: 0.7rem;
-  font-weight: 900;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-  border-radius: 999px;
-  padding: 1px 8px;
-}
-
-.qn-group-grid {
+   Masonry: notes vary wildly in length, and a plain grid sizes every row to its
+   tallest card, leaving a dead void under every shorter one. Instead each row
+   is 1px tall and layoutQuickNotesGrid() spans each card over exactly its own
+   height, so cards stack tightly under whichever card is above them. Vertical
+   spacing comes from the card's margin-bottom (NOT row-gap, which would offset
+   every span calculation). */
+.qn-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
+  align-items: start;
+  grid-auto-rows: 1px;
+  column-gap: 12px;
+  row-gap: 0;
 }
 
-/* Note cards — the accent stripe carries the category colour. */
+.qn-grid > .qn-card {
+  margin-bottom: 12px;
+}
+
+/* Before the spans are measured, cards would all pile onto row 1 — this keeps
+   the first paint sane, and is what a no-JS/ResizeObserver fallback lands on. */
+.qn-grid:not(.is-measured) > .qn-card {
+  grid-row-end: span 200;
+}
+
+/* Note cards — deliberately plain: a solid surface, one clean border, and a
+   single colour cue (the left stripe + the badge dot). Tinted backgrounds and
+   coloured rules on every card turned a page of notes into visual noise; the
+   contrast between card and board does the separating instead. */
 .qn-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
-  border-left: 4px solid var(--qn-accent, var(--line));
-  border-radius: 12px;
+  border-left: 4px solid var(--qn-accent);
+  border-radius: 10px;
   background: var(--card);
-  padding: 12px 14px;
-  box-shadow: 0 2px 10px color-mix(in srgb, black 5%, transparent);
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  padding: 11px 13px;
+  box-shadow: 0 1px 3px color-mix(in srgb, black 8%, transparent);
+  transition: box-shadow 0.12s ease, border-color 0.12s ease;
 }
 
 .qn-card:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 18px color-mix(in srgb, black 10%, transparent);
+  border-color: color-mix(in srgb, var(--qn-accent) 45%, var(--line));
+  border-left-color: var(--qn-accent);
+  box-shadow: 0 4px 14px color-mix(in srgb, black 14%, transparent);
+}
+
+/* Unsorted notes read as provisional — same plain card, dashed stripe. */
+.qn-card-uncat {
+  border-left-style: dashed;
+}
+
+/* Briefly marks the note you jumped from when you come back, so you can pick up
+   where you left off instead of re-scanning the board. */
+.qn-card.is-returned {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: qn-card-returned 1.6s ease-out;
+}
+
+@keyframes qn-card-returned {
+  0%, 40% { background: color-mix(in srgb, var(--accent) 18%, var(--card)); }
+  100% { background: var(--card); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qn-card.is-returned { animation: none; }
+}
+
+/* Header strip: the category badge plus when it was pinned. */
+.qn-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.qn-card-time {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .qn-card-body {
@@ -9505,33 +9617,87 @@ kbd {
 .qn-card-body img { max-width: 100%; height: auto; border-radius: 8px; }
 .qn-card-body pre { overflow-x: auto; }
 
+/* margin-top:auto pins the footer to the card's bottom edge — grid rows
+   stretch cards to a shared height, so without it the source link floated in
+   the middle of any card with less text than its tallest neighbour. */
 .qn-card-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  margin-top: auto;
+  padding-top: 10px;
+  min-height: 22px;
 }
 
+/* The badge names the category (there are no group headings any more), but stays
+   a quiet neutral pill — its coloured dot carries the colour, not a fill. */
 .qn-card-cat-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
-  color: var(--text);
-  padding: 3px 10px;
-  font-size: 0.74rem;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 8px;
+  font-size: 0.71rem;
   font-weight: 800;
+  line-height: 1.4;
   cursor: pointer;
-  transition: border-color 0.15s ease;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .qn-card-cat-btn:hover {
-  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  border-color: color-mix(in srgb, var(--qn-accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--qn-accent) 10%, transparent);
+  color: var(--text);
+}
+
+.qn-card-uncat .qn-card-cat-btn {
+  border-style: dashed;
+}
+
+.qn-card-copy {
+  flex: none;
+  margin-left: auto;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  padding: 2px 6px;
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+/* Revealed on hover to keep the resting board clean — but always visible for
+   keyboard users and on touch, where there is no hover to reveal it. */
+.qn-card:hover .qn-card-copy,
+.qn-card-copy:focus-visible,
+.qn-card-copy.is-copied {
+  opacity: 1;
+}
+
+.qn-card-copy:hover {
+  border-color: color-mix(in srgb, var(--qn-accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--qn-accent) 12%, transparent);
+}
+
+/* Fixed green: this theme system has no success token, and the confirmation
+   flash must read as "copied" regardless of the category's colour. */
+.qn-card-copy.is-copied {
+  border-color: color-mix(in srgb, #22c55e 60%, var(--line));
+  background: color-mix(in srgb, #22c55e 22%, transparent);
+}
+
+@media (hover: none) {
+  .qn-card-copy { opacity: 1; }
 }
 
 .qn-card-cat-empty {
@@ -9544,24 +9710,34 @@ kbd {
   color: var(--muted);
 }
 
+/* The jump-to-source control is a real, obviously-clickable button — it's the
+   whole point of a pinned note, so it shouldn't look like passive text. It
+   rests in neutral tones and only picks up the accent on hover: at full accent
+   it out-shouted the category stripe on every single card. */
 .qn-card-source {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  max-width: 55%;
-  border: none;
+  gap: 4px;
+  max-width: 78%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
   background: transparent;
-  color: var(--accent);
-  padding: 0;
-  font-size: 0.72rem;
+  color: var(--muted);
+  padding: 3px 8px;
+  font-size: 0.71rem;
   font-weight: 800;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.qn-card-source:hover { text-decoration: underline; }
+.qn-card-source:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
 
 .qn-empty {
   margin: auto;
@@ -9810,6 +9986,10 @@ kbd {
 @media (max-width: 640px) {
   .qn-head { flex-wrap: wrap; }
   .qn-manage-btn { font-size: 0.72rem; padding: 0 8px; }
-  .qn-group-grid { grid-template-columns: 1fr; }
+  .qn-grid { grid-template-columns: 1fr; }
   .qn-card-source { max-width: 48%; }
+  /* The search box takes the full row rather than squeezing the buttons out. */
+  .qn-head-actions { flex-wrap: wrap; width: 100%; }
+  .qn-search-wrap { order: 3; width: 100%; }
+  .qn-search { width: 100%; }
 }

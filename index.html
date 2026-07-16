@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260712-1">
+    <link rel="stylesheet" href="styles.css?v=20260716-1">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -23,6 +23,13 @@
       <div class="mobile-backdrop" id="mobileBackdrop" hidden></div>
       <header class="appbar">
         <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" aria-label="Open menu" aria-expanded="false">&#9776;</button>
+        <!-- Universal back button. Like the back key on a remote: no wiring per
+             feature and no destination name — it just steps back through the
+             places you've been (decks, notes, the Quick Notes board). Always in
+             this slot; disabled when there's no history. See navHistory. -->
+        <button class="app-back-btn" id="appBackBtn" type="button" aria-label="Back" title="Back" disabled>
+          <span aria-hidden="true">&#8592;</span>
+        </button>
         <div class="toolbar" id="mainToolbar">
           <div class="toolbar-drawer-head">
             <span class="toolbar-drawer-title">Recall</span>
@@ -353,6 +360,10 @@
             <p id="qnSummary">Pinned snippets across all your decks, at a glance.</p>
           </div>
           <div class="qn-head-actions">
+            <div class="qn-search-wrap">
+              <span class="qn-search-icon" aria-hidden="true">&#128269;</span>
+              <input class="qn-search" id="qnSearch" type="search" placeholder="Search notes&#8230;" autocomplete="off" spellcheck="false" aria-label="Search quick notes">
+            </div>
             <button class="qn-manage-btn" id="qnManageBtn" type="button" title="Add, rename, recolour or remove categories">&#9881; Manage categories</button>
             <button class="icon-button" id="qnCloseBtn" type="button" aria-label="Close quick notes">&#215;</button>
           </div>
@@ -879,6 +890,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260712-1"></script>
+    <script src="app.js?v=20260716-1"></script>
   </body>
 </html>
