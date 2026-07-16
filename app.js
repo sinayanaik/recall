@@ -5898,6 +5898,36 @@ function imageMarkupToTag(token) {
   return "";
 }
 
+// Citation / footnote markers render as noise in notes that were clipped or
+// pasted from the web. Turndown escapes every "[" → "\[" and turns same-page
+// reference anchors into links, so a footnote marker arrives as `[\[1\]](#fn1)`
+// (backslash litter + a dead #fn1 link); plain reference brackets arrive as
+// `\[1\]`, and footnote lists trail a back-reference arrow (↩). The clipper now
+// fixes this at capture time, but notes captured earlier — or pasted from
+// elsewhere — still carry it, so the renderer normalises the same shapes to a
+// clean inline `[1]`. Deliberately narrow (numeric citation shapes, footnote
+// hrefs only) so real escaped brackets, exponents, and ordinary links survive.
+const CITE_INNER = "\\d+[a-z]?(?:\\s*[-\\u2013\\u2014,;]\\s*\\d+[a-z]?)*";
+const CITE_HREF_FRAG = "#(?:fn|fnref|cite|ref|reference|footnote|note|endnote|_?ftn)";
+const CITATION_LINK_RE = new RegExp(
+  "\\[\\s*\\\\?\\[?\\s*(" + CITE_INNER + ")\\s*\\\\?\\]?\\s*\\]\\(" + CITE_HREF_FRAG + "[^)]*\\)",
+  "gi"
+);
+const CITATION_ESCAPED_RE = new RegExp("\\\\\\[(\\s*" + CITE_INNER + "\\s*)\\\\\\]", "gi");
+const FOOTNOTE_BACKREF_LINK_RE = /\[[↩↵⮐︎\s]*\]\(#[^)]*\)/g;
+const FOOTNOTE_BACKREF_ARROW_RE = /[↩↵⮐]︎?/g;
+
+function normalizeCitations(text) {
+  return String(text)
+    // `[\[1\]](#fn1)` / `[1](#fn12)` → `[1]`, dropping the dead footnote anchor.
+    .replace(CITATION_LINK_RE, "[$1]")
+    // Bare escaped reference brackets: `\[1\]`, `\[1, 2\]`, `\[3-5\]` → `[1]` …
+    .replace(CITATION_ESCAPED_RE, "[$1]")
+    // Back-reference affordances left over from footnote lists.
+    .replace(FOOTNOTE_BACKREF_LINK_RE, "")
+    .replace(FOOTNOTE_BACKREF_ARROW_RE, "");
+}
+
 function preprocessSpecialBlocks(markdown) {
   const source = normalizeMarkdown(markdown || "");
   const fencePattern = /```[ \t]*([^\n]*)\n([\s\S]*?)```/g;
@@ -5906,7 +5936,7 @@ function preprocessSpecialBlocks(markdown) {
   let match;
 
   while ((match = fencePattern.exec(source))) {
-    output += protectInline(renderImageRows(source.slice(lastIndex, match.index)));
+    output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex, match.index))));
     if (/\bmermaid\b/i.test(match[1])) {
       output += `<div class="mermaid" data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
     } else if (/\bnomnoml\b/i.test(match[1])) {
@@ -5917,7 +5947,7 @@ function preprocessSpecialBlocks(markdown) {
     lastIndex = fencePattern.lastIndex;
   }
 
-  output += protectInline(renderImageRows(source.slice(lastIndex)));
+  output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex))));
   return output;
 }
 
