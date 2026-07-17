@@ -8425,9 +8425,26 @@ function textareaSelectionRect(textarea) {
   };
 }
 
+// On narrow/touch screens, reaching past the visible edge of a big selection
+// means dragging a handle until the view auto-scrolls (or scrolling by hand
+// mid-selection) — the selection's bounding rect then spans more than one
+// screen, and pinning the button to its top/bottom edge can put it anywhere
+// from the very top of the screen to the very bottom depending on which edge
+// is currently on-screen. Anchor it to a fixed spot instead: always the same
+// thumb-reachable place, regardless of how big the selection is or where it
+// scrolled to. Desktop keeps the precise follow-the-selection positioning
+// below, since dragging with a mouse doesn't hit the same problem.
+function pinSelectionButtonToBottom(button) {
+  button.style.top = "";
+  button.style.left = "";
+  button.classList.add("is-pinned-bottom");
+}
+
 function positionNotesSelectionButton() {
   const button = el.makeCardFromSelectionBtn;
   if (!button) return;
+  const mobile = Boolean(styleMobileMedia?.matches);
+  if (!mobile) button.classList.remove("is-pinned-bottom");
 
   const editingTarget = activeEditingTarget();
   if (editingTarget) {
@@ -8445,6 +8462,7 @@ function positionNotesSelectionButton() {
     if (imageMatches.length) parts.push(imageMatches.length === 1 ? "1 image" : `${imageMatches.length} images`);
     button.textContent = `+ Make card · ${parts.join(" + ")}`;
     button.hidden = false;
+    if (mobile) return pinSelectionButtonToBottom(button);
     // Track the actual selection (same approach as the rendered-view branch
     // below) instead of parking in the textarea's corner regardless of where
     // the selection actually is.
@@ -8475,7 +8493,6 @@ function positionNotesSelectionButton() {
     hideNotesSelectionButton();
     return;
   }
-  const rect = range.getBoundingClientRect();
   // Capture the selection as markdown now: tapping the button may dissolve
   // the selection before the click handler runs.
   button.dataset.selectionText = notesSelectionMarkdown(range, renderedTarget);
@@ -8486,6 +8503,8 @@ function positionNotesSelectionButton() {
   if (imageCount) parts.push(imageCount === 1 ? "1 image" : `${imageCount} images`);
   button.textContent = `+ Make card · ${parts.join(" + ")}`;
   button.hidden = false;
+  if (mobile) return pinSelectionButtonToBottom(button);
+  const rect = range.getBoundingClientRect();
   const btnRect = button.getBoundingClientRect();
   const margin = 8;
   let top = rect.bottom + margin;
@@ -8816,6 +8835,17 @@ function jumpToNoteForCurrentCard() {
 
 document.addEventListener("selectionchange", scheduleNotesSelectionCheck);
 
+// On mobile the button is pinned to a fixed spot at the bottom of the screen
+// (see pinSelectionButtonToBottom) rather than tracking the selection's own
+// position, precisely so that scrolling — the normal way to extend a
+// selection past the visible edge — doesn't make it disappear. Desktop keeps
+// hiding it on scroll, since there its position is tied to the selection rect
+// and would otherwise go stale.
+function hideNotesSelectionButtonUnlessPinned() {
+  if (styleMobileMedia?.matches) return;
+  hideNotesSelectionButton();
+}
+
 // <textarea> selections don't fire the document "selectionchange" event
 // reliably across browsers, so raw/edit mode is covered separately via
 // direct mouse/keyboard selection events on each editor itself.
@@ -8823,7 +8853,7 @@ document.addEventListener("selectionchange", scheduleNotesSelectionCheck);
   edit?.addEventListener("mouseup", scheduleNotesSelectionCheck);
   edit?.addEventListener("keyup", scheduleNotesSelectionCheck);
   edit?.addEventListener("select", scheduleNotesSelectionCheck);
-  edit?.addEventListener("scroll", hideNotesSelectionButton, { passive: true });
+  edit?.addEventListener("scroll", hideNotesSelectionButtonUnlessPinned, { passive: true });
 });
 
 el.makeCardFromSelectionBtn?.addEventListener("pointerdown", (event) => {
@@ -8839,7 +8869,7 @@ el.makeCardFromSelectionBtn?.addEventListener("pointerdown", (event) => {
 });
 
 [el.notesView, el.questionView, el.answerView].forEach((view) => {
-  view?.addEventListener("scroll", hideNotesSelectionButton, { passive: true });
+  view?.addEventListener("scroll", hideNotesSelectionButtonUnlessPinned, { passive: true });
 });
 
 // Persistent alternative to the floating pill (which only appears while a

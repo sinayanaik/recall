@@ -9062,7 +9062,17 @@ kbd {
 }
 
 .notes-make-card-btn:active {
-  transform: scale(0.96);
+  scale: 0.96;
+}
+
+/* Mobile: pinned to a fixed, thumb-reachable spot instead of tracking the
+   selection's own on-screen position — see pinSelectionButtonToBottom() in
+   app.js for why. `translate` (not the `transform` shorthand) so it composes
+   with the :active press-scale above instead of overwriting it. */
+.notes-make-card-btn.is-pinned-bottom {
+  left: 50%;
+  bottom: calc(16px + var(--safe-bottom));
+  translate: -50% 0;
 }
 
 /* ── Notes table of contents ─────────────────────────────────────── */
