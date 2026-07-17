@@ -644,6 +644,31 @@ function addKnownFolder(path) {
   writeKnownFolders([...readKnownFolders(), normalized]);
 }
 
+// Forgets a folder and every subfolder under it: drops them from the
+// known-folder registry and from the collapsed/expanded UI state, and lifts
+// the Folder-view cwd out if it pointed inside. A folder has no record of its
+// own — it is a deck-category prefix plus a registry entry — so once its decks
+// are gone this is the only thing still holding it on screen, which is exactly
+// how a deleted folder used to linger as an empty "0 decks" shell.
+function forgetFolderTree(path) {
+  const target = normalizeDeckCategory(path);
+  if (target === defaultDeckCategory) return;
+
+  writeKnownFolders(readKnownFolders().filter((p) => !isCategoryUnder(p, target)));
+
+  const prune = (set) => {
+    const next = new Set();
+    set.forEach((p) => { if (!isCategoryUnder(p, target)) next.add(p); });
+    return next;
+  };
+  writeCollapsedFolders(prune(readCollapsedFolders()));
+  writeExpandedFolders(prune(readExpandedFolders()));
+
+  if (state.myDecksCwd && isCategoryUnder(state.myDecksCwd, target)) {
+    setMyDecksCwd(folderSegments(target).slice(0, -1).join(FOLDER_SEP));
+  }
+}
+
 function readCollapsedFolders() {
   try {
     const list = JSON.parse(localStorage.getItem(COLLAPSED_FOLDERS_KEY) || "[]");
@@ -1676,6 +1701,7 @@ const el = {
   closeMyDecksBtn: document.querySelector("#closeMyDecksBtn"),
   myDecksRefreshBtn: document.querySelector("#myDecksRefreshBtn"),
   myDecksNewFolderBtn: document.querySelector("#myDecksNewFolderBtn"),
+  myDecksImportEpubInput: document.querySelector("#myDecksImportEpubInput"),
   closeImportBtn: document.querySelector("#closeImportBtn"),
   importPanel: document.querySelector("#importPanel"),
   quickNotesBoardBtn: document.querySelector("#quickNotesBoardBtn"),
@@ -3075,25 +3101,87 @@ async function myDeckPayload({ localId = null, deckId = null } = {}) {
 
 // ── Selection & bulk-action bar ────────────────────────────────────────────
 
+// The single source of truth for the title search, shared by the renderer
+// (paintMyDecks) and by folder selection below. They MUST agree: the folder
+// tree, its "N decks" label, and what checking that folder selects are all
+// derived from this — if selection saw decks the render had filtered out, a
+// folder Delete would destroy decks the user could neither see nor count.
+function myDecksSearchTerm() {
+  return (state.myDecksSearch || "").trim().toLowerCase();
+}
+
+function myDeckMatchesSearch(deck) {
+  const search = myDecksSearchTerm();
+  if (!search) return true;
+  return String(deck.title || "").toLowerCase().includes(search);
+}
+
+// Checking a folder is equivalent to checking every deck inside it (recursively,
+// via decksUnderFolder — same helper folder rename/move/delete already use) — so
+// bulk actions Just Work on folders without exportSelectedMyDecks/deleteSelectedMyDecks/
+// etc. needing to know folders exist at all. Deduped so a deck both individually
+// checked AND covered by a checked ancestor folder isn't acted on twice.
 function selectedMyDecks() {
   const host = el.myDecksBody || el.myDecksListTable;
-  return Array.from(host?.querySelectorAll(".my-deck-row-checkbox:checked") || [])
+  const direct = Array.from(host?.querySelectorAll(".my-deck-row-checkbox:checked") || [])
     .map((checkbox) => ({
       localId: checkbox.dataset.localId || null,
       deckId: checkbox.dataset.deckId || null
     }));
+  const fromFolders = Array.from(host?.querySelectorAll(".my-folder-row-checkbox:checked") || [])
+    .map((checkbox) => checkbox.dataset.folderPath)
+    .filter(Boolean)
+    // Search-filtered to match the folder row the user actually clicked: while a
+    // search is active that row is built from — and counts — only the matching
+    // decks, so selecting it must not reach the ones hiding behind the filter.
+    .flatMap((path) => decksUnderFolder(path).filter(myDeckMatchesSearch).map((entry) => entry.sel));
+
+  const seen = new Set();
+  const merged = [];
+  [...direct, ...fromFolders].forEach((sel) => {
+    const key = `${sel.localId || ""} ${sel.deckId || ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(sel);
+  });
+  return merged;
+}
+
+// The checked folders themselves. selectedMyDecks() above flattens them away
+// into decks, which is all Export/Load/Categorize need — but Delete also has to
+// remove the folder, so it needs the paths that selection came from.
+function selectedMyFolders() {
+  const host = el.myDecksBody || el.myDecksListTable;
+  return Array.from(host?.querySelectorAll(".my-folder-row-checkbox:checked") || [])
+    .map((checkbox) => checkbox.dataset.folderPath)
+    .filter(Boolean);
+}
+
+function myDeckSelKey(sel) {
+  return `${sel.localId || ""} ${sel.deckId || ""}`;
 }
 
 function updateMyDecksBulkBar() {
   // Query the whole body host, not just the table — tiles live in a sibling grid.
   const host = el.myDecksBody || el.myDecksListTable;
-  const all = host?.querySelectorAll(".my-deck-row-checkbox") || [];
-  const selected = host?.querySelectorAll(".my-deck-row-checkbox:checked") || [];
-  if (el.myDecksSelectedCount) el.myDecksSelectedCount.textContent = String(selected.length);
-  if (el.myDecksBulkActions) el.myDecksBulkActions.hidden = selected.length === 0;
+  const allBoxes = host?.querySelectorAll(".my-deck-row-checkbox, .my-folder-row-checkbox") || [];
+  const checkedBoxes = host?.querySelectorAll(".my-deck-row-checkbox:checked, .my-folder-row-checkbox:checked") || [];
+  // Counts what a bulk action will actually touch — a checked folder stands in
+  // for the decks inside it — rather than the raw number of ticked boxes. The
+  // folder count is spelled out separately because it isn't derivable from the
+  // deck count: an empty folder contributes 0 decks but is still deletable.
+  const deckCount = selectedMyDecks().length;
+  const folderCount = selectedMyFolders().length;
+  if (el.myDecksSelectedCount) {
+    const bits = [];
+    if (folderCount) bits.push(`${folderCount} folder${folderCount === 1 ? "" : "s"}`);
+    bits.push(`${deckCount} deck${deckCount === 1 ? "" : "s"}`);
+    el.myDecksSelectedCount.textContent = folderCount ? bits.join(" · ") : String(deckCount);
+  }
+  if (el.myDecksBulkActions) el.myDecksBulkActions.hidden = checkedBoxes.length === 0;
   if (el.myDecksSelectAllCheckbox) {
-    el.myDecksSelectAllCheckbox.checked = all.length > 0 && selected.length === all.length;
-    el.myDecksSelectAllCheckbox.indeterminate = selected.length > 0 && selected.length < all.length;
+    el.myDecksSelectAllCheckbox.checked = allBoxes.length > 0 && checkedBoxes.length === allBoxes.length;
+    el.myDecksSelectAllCheckbox.indeterminate = checkedBoxes.length > 0 && checkedBoxes.length < allBoxes.length;
   }
 }
 
@@ -3117,6 +3205,22 @@ function createDeckSelectCell({ localId = null, deckId = null, title = "" } = {}
   td.className = "web-deck-select-cell";
   td.appendChild(createDeckSelectControl({ localId, deckId, title }));
   return td;
+}
+
+// Folder counterpart to createDeckSelectControl — same class family (so
+// select-all and the bulk-bar counters see it) plus data-folder-path instead
+// of a deck id, which selectedMyDecks() expands via decksUnderFolder().
+function createFolderSelectControl(path, name = "") {
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "my-folder-row-checkbox web-deck-row-checkbox";
+  checkbox.dataset.folderPath = path;
+  checkbox.setAttribute("aria-label", `Select folder ${name || path}`);
+  // Stop click/dragstart from bubbling to the row/tile's own handlers (enter
+  // folder, start a re-parent drag) — checking the box should only check it.
+  checkbox.addEventListener("click", (e) => e.stopPropagation());
+  checkbox.addEventListener("change", updateMyDecksBulkBar);
+  return checkbox;
 }
 
 // ── Category editing (works for local, synced, and cloud-only decks) ───────
@@ -4240,24 +4344,45 @@ async function categorizeSelectedMyDecks(selections) {
   }
 }
 
-function deleteSelectedMyDecks(selections) {
-  if (!selections.length) return;
+// `folders` are the checked folder paths (see selectedMyFolders). Their decks
+// are already flattened into `selections`; the paths are needed on top of that
+// so the folder itself goes away instead of lingering as an empty "0 decks"
+// shell. An empty folder is a valid delete on its own, hence no deck guard.
+function deleteSelectedMyDecks(selections, folders = []) {
+  if (!selections.length && !folders.length) return;
+
+  const deckPart = `${selections.length} ${selections.length === 1 ? "deck" : "decks"}`;
+  const folderPart = `${folders.length} ${folders.length === 1 ? "folder" : "folders"}`;
+  const what = folders.length
+    ? (selections.length ? `${folderPart} and ${deckPart}` : folderPart)
+    : deckPart;
+
   showConfirmModal(
-    `Delete ${selections.length} selected ${selections.length === 1 ? "deck" : "decks"} from this device and the cloud? This cannot be undone.`,
+    `Delete ${what} from this device and the cloud? This cannot be undone.`,
     async () => {
-      setStatus(`Deleting ${selections.length} decks...`);
+      setStatus(`Deleting ${what}...`);
+      // Snapshot which decks are being removed BEFORE deleting, so a folder is
+      // only forgotten when the delete empties it. Under an active search a
+      // folder keeps decks the filter hid, and those still imply the folder.
+      const deletedKeys = new Set(selections.map(myDeckSelKey));
+      const emptiedByThisDelete = folders.filter((path) =>
+        decksUnderFolder(path).every((entry) => deletedKeys.has(myDeckSelKey(entry.sel)))
+      );
+
       let cloudFailures = 0;
       for (const sel of selections) {
         const { cloudError } = await deleteDeckEverywhere({ localId: sel.localId, deckId: sel.deckId });
         if (cloudError) cloudFailures += 1;
       }
+      emptiedByThisDelete.forEach(forgetFolderTree);
+
       renderMyDecksList();
       if (cloudFailures) {
         showToast("Deleted here — cloud delete will retry on next sync", "info");
       } else {
-        showToast(`Deleted ${selections.length} deck${selections.length === 1 ? "" : "s"} everywhere`, "info");
+        showToast(`Deleted ${what} everywhere`, "info");
       }
-      setStatus("Selected decks deleted.");
+      setStatus(`Deleted ${what}.`);
     },
     { confirmLabel: "Delete All", danger: true }
   );
@@ -4651,12 +4776,12 @@ function decksUnderFolder(path) {
   const out = [];
   (myDecksRendered.local || []).forEach((deck) => {
     if (isCategoryUnder(deck.category, path)) {
-      out.push({ sel: { localId: deck.id, deckId: deck.deckId || null }, category: normalizeDeckCategory(deck.category) });
+      out.push({ sel: { localId: deck.id, deckId: deck.deckId || null }, category: normalizeDeckCategory(deck.category), title: deck.title || "" });
     }
   });
   (myDecksRendered.cloudOnly || []).forEach((deck) => {
     if (isCategoryUnder(deck.category, path)) {
-      out.push({ sel: { localId: null, deckId: String(deck.id) }, category: normalizeDeckCategory(deck.category) });
+      out.push({ sel: { localId: null, deckId: String(deck.id) }, category: normalizeDeckCategory(deck.category), title: deck.title || "" });
     }
   });
   return out;
@@ -4794,6 +4919,7 @@ function buildFolderRow(node, depth, isCollapsed) {
   td.colSpan = 7;
   const wrap = document.createElement("div");
   wrap.className = "deck-folder-wrap";
+  wrap.appendChild(createFolderSelectControl(node.path, node.name));
 
   const twisty = document.createElement("button");
   twisty.type = "button";
@@ -4837,7 +4963,7 @@ function buildFolderRow(node, depth, isCollapsed) {
 
   attachFolderDropTarget(tr, node.path);
   tr.addEventListener("dragstart", (e) => {
-    if (e.target.closest(".deck-folder-action, .deck-folder-twisty")) { e.preventDefault(); return; }
+    if (e.target.closest(".deck-folder-action, .deck-folder-twisty, input")) { e.preventDefault(); return; }
     myDecksDrag = { type: "folder", path: node.path };
     tr.classList.add("dragging");
     e.dataTransfer.effectAllowed = "move";
@@ -4989,6 +5115,20 @@ function buildFolderTile(node) {
   tile.dataset.folderPath = node.path;
   tile.title = "Open folder";
   const total = folderTotalDeckCount(node);
+
+  // Same absolutely-positioned wrapper the deck tiles use (.deck-tile-select),
+  // for identical placement AND because it's what keeps the global
+  // `input { width: 100% }` text-field rule from stretching the checkbox into a
+  // full-width slab — a bare checkbox in the flex row below does exactly that.
+  const selWrap = document.createElement("label");
+  selWrap.className = "deck-tile-select";
+  selWrap.title = "Select folder";
+  selWrap.appendChild(createFolderSelectControl(node.path, node.name));
+  // The whole tile is a click-to-open target; ticking its checkbox must not
+  // also drill into the folder. Needed on the label as well as the checkbox —
+  // a click landing on the label's padding never touches the input itself.
+  selWrap.addEventListener("click", (e) => e.stopPropagation());
+
   const main = document.createElement("div");
   main.className = "folder-tile-main";
   main.innerHTML = `<span class="folder-tile-icon">📁</span><span class="folder-tile-name"></span>`;
@@ -4998,7 +5138,7 @@ function buildFolderTile(node) {
   count.textContent = total === 1 ? "1 deck" : `${total} decks`;
   // A sibling row below the name (not crammed into the same flex row as the
   // icon) — otherwise a long name has almost no width left to wrap into.
-  tile.append(main, count);
+  tile.append(selWrap, main, count);
 
   const enter = () => setMyDecksCwdAndRender(node.path);
   tile.addEventListener("click", enter);
@@ -5007,6 +5147,7 @@ function buildFolderTile(node) {
   attachFolderDropTarget(tile, node.path);
   tile.draggable = true;
   tile.addEventListener("dragstart", (e) => {
+    if (e.target.closest("input")) { e.preventDefault(); return; }
     myDecksDrag = { type: "folder", path: node.path };
     tile.classList.add("dragging");
     e.dataTransfer.effectAllowed = "move";
@@ -5026,6 +5167,7 @@ function buildFolderNavRow(node) {
   td.colSpan = 7;
   const wrap = document.createElement("div");
   wrap.className = "deck-folder-wrap";
+  wrap.appendChild(createFolderSelectControl(node.path, node.name));
   const label = document.createElement("button");
   label.type = "button";
   label.className = "deck-folder-label";
@@ -5042,7 +5184,7 @@ function buildFolderNavRow(node) {
   attachFolderDropTarget(tr, node.path);
   tr.draggable = true;
   tr.addEventListener("dragstart", (e) => {
-    if (e.target.closest("button")) { e.preventDefault(); return; }
+    if (e.target.closest("button, input")) { e.preventDefault(); return; }
     myDecksDrag = { type: "folder", path: node.path };
     tr.classList.add("dragging");
     e.dataTransfer.effectAllowed = "move";
@@ -5327,13 +5469,12 @@ function repaintMyDecks() {
 function paintMyDecks(localDecks, cloudById, { cloudOnly = [], categories = webDeckCategories, scope = "", loading = false } = {}) {
   myDecksCache = { localDecks, cloudById, cloudOnly, categories, scope };
   myDecksRendered = { local: localDecks, cloudOnly };
-  const search = (state.myDecksSearch || "").trim().toLowerCase();
-  const matches = (deck) => !search || String(deck.title || "").toLowerCase().includes(search);
+  const search = myDecksSearchTerm();
   // Sorted by most-recently-accessed first, local and cloud-only decks
   // interleaved on the same timeline — see deckAccessTime().
   const entries = [
-    ...localDecks.filter(matches).map((deck) => ({ deck, kind: "local" })),
-    ...cloudOnly.filter(matches).map((deck) => ({ deck, kind: "cloud" })),
+    ...localDecks.filter(myDeckMatchesSearch).map((deck) => ({ deck, kind: "local" })),
+    ...cloudOnly.filter(myDeckMatchesSearch).map((deck) => ({ deck, kind: "cloud" })),
   ].sort((a, b) => deckAccessTime(b) - deckAccessTime(a));
   const ctx = { cloudById, categories, scope, search, loading, totalDecks: localDecks.length + cloudOnly.length };
   syncMyDecksChrome();
@@ -13372,6 +13513,531 @@ function isJsonName(name) {
   return /\.json$/i.test(normalizedArchiveName(name).split("?")[0]);
 }
 
+function isEpubName(name) {
+  return /\.epub$/i.test(normalizedArchiveName(name).split("?")[0]);
+}
+
+// ── EPUB import: one folder per book, one deck per chapter ─────────────────
+// An EPUB is a zip container (OCF): META-INF/container.xml points at the
+// package document (.opf), whose <manifest> lists every resource and whose
+// <spine> gives the reading order. Chapters are converted to Markdown "as
+// is" via the same Turndown pipeline used for pasted rich text; embedded
+// images are uploaded through the existing ImgBB pipeline first so chapter
+// Markdown can reference hosted URLs instead of in-zip paths.
+
+function epubDirname(path) {
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? "" : path.slice(0, idx);
+}
+
+// True for an href that already points outside the book (a remote image, a
+// data: URI) — it needs no zip lookup and must survive into the markdown as-is.
+function isExternalEpubHref(href) {
+  return /^[a-z][a-z0-9+.-]*:/i.test(String(href || "").trim());
+}
+
+function joinEpubPath(baseDir, relative) {
+  const stack = baseDir ? baseDir.split("/") : [];
+  for (const part of relative.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") stack.pop();
+    else stack.push(part);
+  }
+  return stack.join("/");
+}
+
+// Resolves a relative href against a base directory inside the zip (both EPUB
+// manifest hrefs and in-chapter image srcs are relative like this). Hrefs are
+// URLs, so they arrive percent-encoded ("a%20b.jpg") while the zip entry they
+// name is literal ("a b.jpg") — decode, or every book with a space or a
+// non-ASCII character in a filename silently loses that file. `.raw` keeps the
+// undecoded form for the rare archive whose entry names are encoded too.
+function resolveEpubPath(baseDir, href) {
+  if (!href) return "";
+  const raw = href.split("#")[0].trim();
+  if (!raw || isExternalEpubHref(raw)) return raw;
+  return joinEpubPath(baseDir, normalizedArchiveName(raw));
+}
+
+function resolveEpubPathRaw(baseDir, href) {
+  if (!href) return "";
+  const raw = href.split("#")[0].trim();
+  if (!raw || isExternalEpubHref(raw)) return raw;
+  return joinEpubPath(baseDir, raw);
+}
+
+// zip.file() by resolved path, tolerating either naming convention.
+function epubZipFile(zip, path, rawPath = "") {
+  return zip.file(path) || (rawPath && rawPath !== path ? zip.file(rawPath) : null);
+}
+
+// Finds every element with a given local name, ignoring namespace prefixes —
+// EPUB package documents mix the OPF namespace with prefixed Dublin Core
+// (dc:title) and manifest items sometimes carry no prefix at all, so a plain
+// CSS tag selector on the parsed XML doc isn't reliable across parsers.
+function epubElementsByLocalName(doc, localName) {
+  return Array.from(doc.getElementsByTagName("*")).filter((el) => el.localName === localName);
+}
+
+async function readEpubXml(zip, path, rawPath = "") {
+  const entry = epubZipFile(zip, path, rawPath);
+  if (!entry) throw new Error(`Missing ${path} in EPUB`);
+  const text = await entry.async("text");
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error(`Could not parse ${path}`);
+  return doc;
+}
+
+// Finds the package document (.opf) path from META-INF/container.xml.
+async function parseEpubContainer(zip) {
+  const doc = await readEpubXml(zip, "META-INF/container.xml");
+  const rootfile = epubElementsByLocalName(doc, "rootfile").find((el) => el.hasAttribute("full-path"));
+  const href = rootfile?.getAttribute("full-path");
+  if (!href) throw new Error("EPUB container.xml has no rootfile");
+  return { path: resolveEpubPath("", href), rawPath: resolveEpubPathRaw("", href) };
+}
+
+// Parses the package document → book title, author, manifest
+// (id -> {path, rawPath, mediaType}), and the spine in reading order.
+async function parseEpubPackage(zip, opf) {
+  const doc = await readEpubXml(zip, opf.path, opf.rawPath);
+  const opfDir = epubDirname(opf.path);
+  const opfDirRaw = epubDirname(opf.rawPath);
+
+  const title = epubElementsByLocalName(doc, "title")[0]?.textContent?.trim() || "";
+  const author = epubElementsByLocalName(doc, "creator")[0]?.textContent?.trim() || "";
+
+  const manifest = new Map();
+  epubElementsByLocalName(doc, "item").forEach((item) => {
+    const id = item.getAttribute("id");
+    const href = item.getAttribute("href");
+    const mediaType = item.getAttribute("media-type") || "";
+    if (!id || !href) return;
+    manifest.set(id, {
+      path: resolveEpubPath(opfDir, href),
+      rawPath: resolveEpubPathRaw(opfDirRaw, href),
+      mediaType
+    });
+  });
+
+  const spine = [];
+  epubElementsByLocalName(doc, "itemref").forEach((itemref) => {
+    const idref = itemref.getAttribute("idref");
+    const entry = idref && manifest.get(idref);
+    if (entry) spine.push(entry);
+  });
+
+  return { title, author, manifest, spine };
+}
+
+// Hands control back to the browser so progress-modal updates actually paint
+// between heavy steps — without this, a chain of promises that each resolve
+// near-instantly (a cached zip read, a tiny parse) runs back-to-back as
+// microtasks and the page never gets to repaint, which is what made earlier
+// imports look frozen even though work was genuinely progressing.
+// requestAnimationFrame is the right yield when visible, but it does NOT fire
+// in a background tab — on its own it would hang the whole import the moment
+// the user switched away mid-book, so fall back to a timer when hidden.
+function epubYield() {
+  if (typeof document !== "undefined" && document.hidden) {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+// Uploads every manifest image through the existing optimize+ImgBB pipeline,
+// returning a Map(zip path -> hosted URL). A failed upload just leaves that
+// image out of the map — epubChapterDocToMarkdown drops any <img> it can't
+// resolve rather than failing the whole book.
+async function uploadEpubImages(zip, imageEntries, progress) {
+  const urlMap = new Map();
+  for (let i = 0; i < imageEntries.length; i++) {
+    const { path, rawPath, mediaType } = imageEntries[i];
+    const label = `Uploading images ${i + 1}/${imageEntries.length}…`;
+    setStatus(label);
+    progress?.update(label, i / Math.max(imageEntries.length, 1));
+    await epubYield();
+    if (progress?.cancelled()) return urlMap;
+    const entry = epubZipFile(zip, path, rawPath);
+    if (!entry) continue;
+    try {
+      const blob = await entry.async("blob");
+      const name = path.split("/").pop() || `image-${i}`;
+      const file = new File([blob], name, { type: mediaType || blob.type || "image/jpeg" });
+      const optimized = await optimizeImage(file);
+      const url = await uploadImageToImgbb(optimized);
+      urlMap.set(path, url);
+    } catch (error) {
+      console.warn("EPUB image upload failed, skipping", path, error);
+    }
+  }
+  return urlMap;
+}
+
+// Rewrites embedded image references in a parsed chapter document to their
+// uploaded hosted URLs (or drops the image if it wasn't uploaded), then runs
+// the body through the same htmlToMarkdown() used for pasted rich text.
+function epubChapterDocToMarkdown(doc, chapterPath, imageUrlMap, chapterNumber, totalChapters) {
+  const chapterDir = epubDirname(chapterPath);
+  const body = doc.body || doc.documentElement;
+  if (!body) return null;
+
+  // An href already pointing outside the book (remote URL, data: URI) is
+  // usable as-is and is kept untouched; an in-book one is swapped for its
+  // uploaded URL, or dropped if the upload didn't happen (skipped, failed,
+  // or no ImgBB key) since an in-zip path would render as a broken image.
+  const hostedSrcFor = (href) => {
+    if (!href) return null;
+    if (isExternalEpubHref(href)) return href.trim();
+    return imageUrlMap.get(resolveEpubPath(chapterDir, href)) || null;
+  };
+
+  body.querySelectorAll("img[src]").forEach((img) => {
+    const src = hostedSrcFor(img.getAttribute("src"));
+    if (src) img.setAttribute("src", src);
+    else img.remove();
+  });
+  body.querySelectorAll("image").forEach((image) => {
+    const src = hostedSrcFor(
+      image.getAttributeNS("http://www.w3.org/1999/xlink", "href")
+      || image.getAttribute("xlink:href")
+      || image.getAttribute("href")
+    );
+    if (src) {
+      const replacement = doc.createElement("img");
+      replacement.setAttribute("src", src);
+      image.replaceWith(replacement);
+    } else {
+      image.remove();
+    }
+  });
+
+  const heading = body.querySelector("h1, h2, h3, h4, h5, h6");
+  const rawTitle = (doc.title || heading?.textContent || "").trim().replace(/\s+/g, " ") || `Chapter ${chapterNumber}`;
+  // Numbered so chapters are easy to read in order regardless of which My
+  // Decks view/sort is active — the book's own heading text is kept as-is
+  // after the number rather than replaced, and untouched inside the chapter
+  // body below (original layout stays intact there).
+  const padWidth = String(totalChapters || chapterNumber).length;
+  const title = `${String(chapterNumber).padStart(padWidth, "0")}. ${rawTitle}`;
+
+  // epubMode keeps citation/footnote <sup> markers (and <sub>) instead of
+  // stripping them the way the web-paste path does — see htmlToMarkdown.
+  const markdown = htmlToMarkdown(body.innerHTML, { epubMode: true }).trim();
+  if (!markdown) return null;
+
+  return { title, markdown };
+}
+
+// Converts one spine chapter's XHTML to Markdown. Falls back to HTML parsing
+// if the chapter isn't strict XHTML (common in loosely-authored EPUBs).
+async function epubChapterToMarkdown(zip, spineEntry, imageUrlMap, chapterNumber, totalChapters) {
+  const entry = epubZipFile(zip, spineEntry.path, spineEntry.rawPath);
+  if (!entry) return null;
+  const html = await entry.async("text");
+  const xmlDoc = new DOMParser().parseFromString(html, "application/xhtml+xml");
+  const doc = xmlDoc.querySelector("parsererror")
+    ? new DOMParser().parseFromString(html, "text/html")
+    : xmlDoc;
+  return epubChapterDocToMarkdown(doc, spineEntry.path, imageUrlMap, chapterNumber, totalChapters);
+}
+
+// How many decks already sit in the folder this book would import into.
+// Importing always creates fresh decks, so a second import of the same book
+// silently doubles every chapter — worth warning about before it happens.
+function epubTargetFolderDeckCount(bookTitle) {
+  const sanitized = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
+  const parent = currentMyDecksFolder();
+  const folderPath = normalizeDeckCategory(parent ? `${parent}${FOLDER_SEP}${sanitized}` : sanitized);
+  return decksUnderFolder(folderPath).length;
+}
+
+// Analysis panel shown right after a fast, network-free parse of the EPUB's
+// container.xml + package document — before any image upload or chapter
+// conversion starts, so the user sees book title/author/counts almost
+// instantly instead of a silent wait. Resolves true (Import) / false (Cancel).
+function showEpubPreview({ title, author, chapterCount, imageCount, existingDeckCount = 0 }) {
+  return new Promise((resolve) => {
+    const modal = document.createElement("section");
+    modal.className = "category-choice-modal epub-preview-modal";
+    modal.setAttribute("aria-label", "Import EPUB");
+
+    const shell = document.createElement("div");
+    shell.className = "category-choice-shell epub-preview-shell";
+    shell.innerHTML = `
+      <div class="category-choice-head">
+        <div>
+          <h2 class="epub-preview-title"></h2>
+          <p class="epub-preview-author"></p>
+        </div>
+        <button type="button" data-epub-cancel aria-label="Close">&#215;</button>
+      </div>
+      <div class="epub-preview-stats">
+        <div class="epub-preview-stat"><strong class="epub-preview-chapters"></strong><span>Chapters</span></div>
+        <div class="epub-preview-stat"><strong class="epub-preview-images"></strong><span>Images</span></div>
+      </div>
+      <p class="restore-note">Each chapter becomes its own deck (Notes only, no flashcards) inside a new folder named after the book.</p>
+      <p class="restore-note epub-preview-warning" hidden></p>
+      <div class="category-choice-actions">
+        <button type="button" data-epub-cancel>Cancel</button>
+        <button type="button" class="import-action-primary" data-epub-confirm>Import</button>
+      </div>
+    `;
+
+    // Set via textContent (never innerHTML) so book metadata can't inject markup.
+    shell.querySelector(".epub-preview-title").textContent = title || "Untitled book";
+    shell.querySelector(".epub-preview-author").textContent = author ? `by ${author}` : "";
+    shell.querySelector(".epub-preview-chapters").textContent = String(chapterCount);
+    shell.querySelector(".epub-preview-images").textContent = String(imageCount);
+
+    const warning = shell.querySelector(".epub-preview-warning");
+    if (existingDeckCount > 0) {
+      warning.textContent = `⚠ That folder already holds ${existingDeckCount} deck${existingDeckCount === 1 ? "" : "s"} — importing again adds a second copy of every chapter rather than replacing them.`;
+      warning.hidden = false;
+    }
+    if (imageCount > 0 && !loadImgbbKey()) {
+      const note = document.createElement("p");
+      note.className = "restore-note";
+      note.textContent = "No ImgBB key set yet — you'll be asked for one next, or you can skip it and import the text only.";
+      warning.after(note);
+    }
+
+    const cleanup = (value) => {
+      modal.remove();
+      resolve(value);
+    };
+    shell.querySelectorAll("[data-epub-cancel]").forEach((button) => {
+      button.addEventListener("click", () => cleanup(false));
+    });
+    shell.querySelector("[data-epub-confirm]")?.addEventListener("click", () => cleanup(true));
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) cleanup(false);
+    });
+
+    modal.appendChild(shell);
+    document.body.appendChild(modal);
+    shell.querySelector("[data-epub-confirm]")?.focus();
+  });
+}
+
+// Live progress modal shown once the import actually starts (image uploads +
+// chapter conversion + deck creation) — replaces the earlier silent wait
+// (status-bar text alone, easy to miss behind the My Decks panel) with
+// continuous visible feedback so the import never looks frozen.
+function showEpubProgress(title) {
+  const modal = document.createElement("section");
+  modal.className = "category-choice-modal epub-progress-modal";
+  modal.setAttribute("aria-label", "Importing EPUB");
+
+  const shell = document.createElement("div");
+  shell.className = "category-choice-shell epub-progress-shell";
+  shell.innerHTML = `
+    <div class="category-choice-head">
+      <div>
+        <h2 class="epub-progress-title"></h2>
+        <p class="epub-progress-line">Starting…</p>
+      </div>
+    </div>
+    <div class="epub-progress-bar"><div class="epub-progress-fill"></div></div>
+    <div class="category-choice-actions">
+      <button type="button" data-epub-stop>Cancel</button>
+    </div>
+  `;
+  shell.querySelector(".epub-progress-title").textContent = `Importing “${title}”`;
+
+  modal.appendChild(shell);
+  document.body.appendChild(modal);
+
+  const line = shell.querySelector(".epub-progress-line");
+  const fill = shell.querySelector(".epub-progress-fill");
+  const stopBtn = shell.querySelector("[data-epub-stop]");
+  // A big illustrated book is minutes of uploads; without this the user is
+  // stuck watching it. The loops poll cancelled() between steps and stop at
+  // the next boundary, keeping whatever chapters were already saved.
+  let cancelled = false;
+  stopBtn?.addEventListener("click", () => {
+    cancelled = true;
+    stopBtn.disabled = true;
+    if (line) line.textContent = "Finishing the current step…";
+  });
+
+  return {
+    update(text, fraction) {
+      if (line && !cancelled) line.textContent = text;
+      if (fill && typeof fraction === "number") fill.style.width = `${Math.min(100, Math.round(fraction * 100))}%`;
+    },
+    cancelled() { return cancelled; },
+    close() { modal.remove(); }
+  };
+}
+
+// Uploads images, converts every spine chapter, then saves one deck per
+// chapter into a new folder named after the book. Runs after the ImgBB key
+// is confirmed present (or the book has no images at all).
+async function runEpubImport(zip, pkg, bookTitle, imageEntries) {
+  const progress = showEpubProgress(bookTitle);
+  try {
+    const imageUrlMap = await uploadEpubImages(zip, imageEntries, progress);
+
+    const chapters = [];
+    for (let i = 0; i < pkg.spine.length; i++) {
+      const label = `Converting chapter ${i + 1}/${pkg.spine.length}…`;
+      setStatus(label);
+      progress.update(label, i / Math.max(pkg.spine.length, 1));
+      await epubYield();
+      if (progress.cancelled()) break;
+      try {
+        const chapter = await epubChapterToMarkdown(zip, pkg.spine[i], imageUrlMap, i + 1, pkg.spine.length);
+        if (chapter) chapters.push(chapter);
+      } catch (error) {
+        console.warn("EPUB chapter conversion failed, skipping", pkg.spine[i].path, error);
+      }
+    }
+
+    if (!chapters.length) {
+      const message = progress.cancelled()
+        ? "EPUB import cancelled."
+        : "Could not extract any chapter content from this EPUB.";
+      setStatus(message, progress.cancelled() ? undefined : "error");
+      showToast(message, progress.cancelled() ? "info" : "error");
+      return;
+    }
+
+    const sanitizedTitle = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
+    const parentFolder = currentMyDecksFolder();
+    const folderPath = normalizeDeckCategory(parentFolder ? `${parentFolder}${FOLDER_SEP}${sanitizedTitle}` : sanitizedTitle);
+    addKnownFolder(folderPath);
+
+    // Chapter decks are written directly via saveDeckToLibrary rather than the
+    // single-deck-at-a-time editor flow (createNewDeck etc.) — save/restore the
+    // in-memory working deck around the loop so this doesn't clobber whatever
+    // deck the user had open before starting the import.
+    const savedState = {
+      deckId: state.deckId, localDeckId: state.localDeckId, deckTitle: state.deckTitle,
+      deckCategory: state.deckCategory, notes: state.notes, masterCards: state.masterCards,
+      sourceTitle: state.sourceTitle
+    };
+
+    // My Decks always sorts by recency descending (deckAccessTime), regardless
+    // of view — so chapter 1 gets the newest updatedAt and each later chapter a
+    // second older, which is what puts them back in reading order on screen.
+    const baseTime = Date.now();
+    let saved = 0;
+    let saveFailed = false;
+    for (let i = 0; i < chapters.length; i++) {
+      const label = `Creating chapter decks ${i + 1}/${chapters.length}…`;
+      setStatus(label);
+      progress.update(label, i / Math.max(chapters.length, 1));
+      await epubYield();
+      if (progress.cancelled()) break;
+      state.deckId = null;
+      state.localDeckId = null;
+      state.deckTitle = chapters[i].title;
+      state.deckCategory = folderPath;
+      state.notes = chapters[i].markdown;
+      state.masterCards = [];
+      state.sourceTitle = chapters[i].title;
+      // A book is many decks in one go, so this is the realistic way to hit the
+      // storage quota. saveDeckToLibrary returns null (never throws) on failure
+      // — ignoring that would leave a half-imported book behind a "Done" toast.
+      if (!saveDeckToLibrary({ silent: true, updatedAt: new Date(baseTime - i * 1000).toISOString() })) {
+        saveFailed = true;
+        break;
+      }
+      saved += 1;
+    }
+
+    Object.assign(state, savedState);
+    persistWorkingDeck();
+
+    setMyDecksView("folder");
+    setMyDecksCwd(folderPath);
+    // renderMyDecksList, NOT repaintMyDecks: repaint redraws from the cached
+    // deck set captured before this import, so the new book folder would render
+    // from the known-folder registry alone — visible but claiming "0 decks",
+    // with nothing for a folder selection to act on. Every other path that
+    // changes deck data re-reads the same way.
+    if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
+    else openMyDecksPanel();
+
+    const chapterWord = `chapter${saved === 1 ? "" : "s"}`;
+    if (saveFailed) {
+      const message = lastSaveErrorWasQuota
+        ? `Only ${saved} of ${chapters.length} chapters saved — device storage is full. Delete some decks and re-import.`
+        : `Only ${saved} of ${chapters.length} chapters could be saved.`;
+      progress.update(message, saved / Math.max(chapters.length, 1));
+      setStatus(message, "error");
+      showToast(message, "error");
+      return;
+    }
+
+    const summary = progress.cancelled()
+      ? `Import stopped — kept ${saved} ${chapterWord} of "${bookTitle}"`
+      : `Imported "${bookTitle}" — ${saved} ${chapterWord}`;
+    progress.update(summary, 1);
+    setStatus(`${summary}.`);
+    showToast(summary, progress.cancelled() ? "info" : undefined);
+  } finally {
+    progress.close();
+  }
+}
+
+// Entry point wired to the "Import EPUB" button's file input.
+async function importEpubFile(file) {
+  if (!file) return;
+  if (!window.JSZip) {
+    setStatus("Zip support did not load — cannot read EPUB files.", "error");
+    return;
+  }
+
+  setStatus(`Reading ${file.name}…`);
+  let zip, pkg;
+  try {
+    zip = await JSZip.loadAsync(file);
+    const opf = await parseEpubContainer(zip);
+    pkg = await parseEpubPackage(zip, opf);
+  } catch (error) {
+    console.error("EPUB parse failed", error);
+    setStatus("Could not read this EPUB.", "error");
+    showToast("Could not read this EPUB", "error");
+    return;
+  }
+
+  if (!pkg.spine.length) {
+    setStatus("This EPUB has no readable chapters.", "error");
+    showToast("This EPUB has no readable chapters", "error");
+    return;
+  }
+
+  const bookTitle = pkg.title || file.name.replace(/\.epub$/i, "");
+  const imageEntries = Array.from(pkg.manifest.values()).filter((entry) => entry.mediaType.startsWith("image/"));
+
+  const confirmed = await showEpubPreview({
+    title: bookTitle,
+    author: pkg.author,
+    chapterCount: pkg.spine.length,
+    imageCount: imageEntries.length,
+    existingDeckCount: epubTargetFolderDeckCount(bookTitle)
+  });
+  if (!confirmed) {
+    setStatus("EPUB import cancelled.");
+    return;
+  }
+
+  // Prompt for the key once up front rather than once per image. Cancelling is
+  // a legitimate choice ("just give me the text") — not a reason to withhold
+  // the whole book, so fall through with images skipped rather than aborting.
+  if (imageEntries.length && !loadImgbbKey()) {
+    showImgbbKeyModal(
+      () => runEpubImport(zip, pkg, bookTitle, imageEntries),
+      () => runEpubImport(zip, pkg, bookTitle, [])
+    );
+    return;
+  }
+
+  await runEpubImport(zip, pkg, bookTitle, imageEntries);
+}
+
 async function collectMarkdownFromZip(input, prefix = "", depth = 0) {
   if (depth > 4) return [];
 
@@ -13434,6 +14100,14 @@ async function loadZipFile(file, append = false) {
 
 function loadFile(file, append = false) {
   if (!file) return;
+
+  // Must precede the zip branch: an EPUB *is* a zip, and its "application/
+  // epub+zip" type matches the /zip/i test below — without this it fell into
+  // the markdown-in-a-zip reader and dead-ended on "No Markdown file found".
+  if (isEpubName(file.name) || /epub/i.test(file.type)) {
+    importEpubFile(file);
+    return;
+  }
 
   if (isZipName(file.name) || /zip/i.test(file.type)) {
     loadZipFile(file, append);
@@ -14122,6 +14796,11 @@ function currentMyDecksFolder() {
 }
 el.myDecksNewFolderBtn?.addEventListener("click", () => createFolder(currentMyDecksFolder()));
 el.myDecksNewDeckBtn?.addEventListener("click", () => newDeckInFolder(currentMyDecksFolder()));
+el.myDecksImportEpubInput?.addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  event.target.value = ""; // allow re-importing the same file again
+  if (file) importEpubFile(file);
+});
 
 // View switcher (Grid / Folder / Tree) — pure presentation, repaint from cache.
 el.myDecksViewSwitch?.addEventListener("click", (e) => {
@@ -14173,7 +14852,7 @@ el.myDecksCategoryFilter?.addEventListener("change", () => renderMyDecksList());
 el.myDecksSelectAllCheckbox?.addEventListener("change", (e) => {
   const checked = e.target.checked;
   const host = el.myDecksBody || el.myDecksListTable;
-  host?.querySelectorAll(".my-deck-row-checkbox").forEach((cb) => {
+  host?.querySelectorAll(".my-deck-row-checkbox, .my-folder-row-checkbox").forEach((cb) => {
     cb.checked = checked;
   });
   updateMyDecksBulkBar();
@@ -14190,8 +14869,9 @@ document.getElementById("myDecksBulkCategoryBtn")?.addEventListener("click", () 
 });
 
 document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () => {
-  const selections = selectedMyDecks();
-  if (selections.length) deleteSelectedMyDecks(selections);
+  // Folders are passed alongside the decks (rather than guarding on deck count)
+  // so a checked empty folder is still deletable.
+  deleteSelectedMyDecks(selectedMyDecks(), selectedMyFolders());
 });
 
 {
@@ -15141,8 +15821,12 @@ async function uploadImageToImgbb(file) {
 // instead of stacking duplicate handlers.
 let imgbbModalWired = false;
 let imgbbPendingOnSaved = null;
+// Optional: lets a caller treat "no key" as a survivable branch (the EPUB
+// importer carries on without images) instead of a dead end. Callers that
+// omit it keep the original behaviour — cancel just toasts and stops.
+let imgbbPendingOnCancel = null;
 
-function showImgbbKeyModal(onSaved) {
+function showImgbbKeyModal(onSaved, onCancel) {
   const overlay = document.getElementById("imgbbOverlay");
   const form = document.getElementById("imgbbForm");
   const input = document.getElementById("imgbbKeyInput");
@@ -15151,6 +15835,7 @@ function showImgbbKeyModal(onSaved) {
   if (!overlay || !form || !input) return;
 
   imgbbPendingOnSaved = typeof onSaved === "function" ? onSaved : null;
+  imgbbPendingOnCancel = typeof onCancel === "function" ? onCancel : null;
   errEl.textContent = "";
   input.value = loadImgbbKey();
   overlay.hidden = false;
@@ -15170,13 +15855,17 @@ function showImgbbKeyModal(onSaved) {
     overlay.hidden = true;
     const cb = imgbbPendingOnSaved;
     imgbbPendingOnSaved = null;
+    imgbbPendingOnCancel = null;
     if (cb) cb();
   });
 
   cancelBtn.addEventListener("click", () => {
     overlay.hidden = true;
+    const cb = imgbbPendingOnCancel;
     imgbbPendingOnSaved = null;
-    showToast("Image upload cancelled — no ImgBB key", "info");
+    imgbbPendingOnCancel = null;
+    if (cb) cb();
+    else showToast("Image upload cancelled — no ImgBB key", "info");
   });
 }
 
@@ -15375,29 +16064,47 @@ function htmlToMarkdown(html, options = {}) {
     }
   });
 
-  // Citation/footnote markers (Wikipedia's "[1]", "[a]" etc.) are a <sup> that
-  // wraps a single link to an in-page anchor (e.g. #cite_note-6, or — when
-  // copied from a live page rather than raw HTML — the browser resolves that
-  // to an absolute URL like ".../Albert_Einstein#cite_note-6"). The anchor
-  // target never survives the paste, so keeping them just litters notes with
-  // dead, bracket-clad links scattered through the text — drop the marker and
-  // keep the surrounding prose clean.
-  turndownService.addRule("footnote-reference", {
-    filter: function (node) {
-      if (node.nodeName !== "SUP") return false;
-      const links = node.querySelectorAll("a");
-      if (links.length !== 1) return false;
-      const href = links[0].getAttribute("href") || "";
-      const hashIndex = href.indexOf("#");
-      if (hashIndex === -1) return false;
-      if (href.startsWith("#")) return true;
-      const fragment = href.slice(hashIndex + 1);
-      return /^(cite_note|cite_ref|fn|footnote|note)[-_]/i.test(fragment);
-    },
-    replacement: function () {
-      return "";
-    }
-  });
+  if (options.epubMode) {
+    // EPUB citation/footnote markers point at real in-book footnotes or
+    // endnotes (often on the same page, or their own spine chapter) — unlike
+    // a web paste, the target isn't dead, so keep the marker instead of
+    // stripping it. Rendered via textContent (not the link's markdown) so a
+    // nested markdown link inside a raw <sup> HTML tag never has to survive
+    // the app's Markdown renderer, which isn't guaranteed to re-parse
+    // markdown syntax nested inside inline HTML.
+    turndownService.addRule("epub-sup", {
+      filter: "sup",
+      replacement: (content, node) => `<sup>${node.textContent.trim()}</sup>`
+    });
+    turndownService.addRule("epub-sub", {
+      filter: "sub",
+      replacement: (content, node) => `<sub>${node.textContent.trim()}</sub>`
+    });
+  } else {
+    // Citation/footnote markers (Wikipedia's "[1]", "[a]" etc.) are a <sup> that
+    // wraps a single link to an in-page anchor (e.g. #cite_note-6, or — when
+    // copied from a live page rather than raw HTML — the browser resolves that
+    // to an absolute URL like ".../Albert_Einstein#cite_note-6"). The anchor
+    // target never survives the paste, so keeping them just litters notes with
+    // dead, bracket-clad links scattered through the text — drop the marker and
+    // keep the surrounding prose clean.
+    turndownService.addRule("footnote-reference", {
+      filter: function (node) {
+        if (node.nodeName !== "SUP") return false;
+        const links = node.querySelectorAll("a");
+        if (links.length !== 1) return false;
+        const href = links[0].getAttribute("href") || "";
+        const hashIndex = href.indexOf("#");
+        if (hashIndex === -1) return false;
+        if (href.startsWith("#")) return true;
+        const fragment = href.slice(hashIndex + 1);
+        return /^(cite_note|cite_ref|fn|footnote|note)[-_]/i.test(fragment);
+      },
+      replacement: function () {
+        return "";
+      }
+    });
+  }
 
   // Intercept and ignore MathJax rendering containers, extracting raw text from mjx-copytext
   turndownService.addRule("mathjax-containers", {

@@ -3212,6 +3212,10 @@ svg.nomnoml-light-svg [fill="none"] {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--card));
 }
+.folder-tile:has(.my-folder-row-checkbox:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--card));
+}
 
 .deck-tile-select { position: absolute; top: 8px; right: 8px; margin: 0; cursor: pointer; }
 .deck-tile-title {
@@ -3296,7 +3300,9 @@ svg.nomnoml-light-svg [fill="none"] {
 .deck-tile-overflow-menu button:hover { background: var(--panel-2); }
 
 .folder-tile { cursor: pointer; }
-.folder-tile-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* padding-right keeps a long folder name from running under the corner
+   selection checkbox — same reserve .deck-tile-title makes. */
+.folder-tile-main { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 22px; }
 .folder-tile-icon { font-size: 1.05rem; flex-shrink: 0; }
 .folder-tile-name { font-weight: 800; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
 /* Its own row below the name (see buildFolderTile) — sharing the name's flex
@@ -3570,6 +3576,78 @@ svg.nomnoml-light-svg [fill="none"] {
 .restore-preview-shell .import-action-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* EPUB import — analysis preview + live progress. Both reuse the
+   .category-choice-* modal shell above. */
+.epub-preview-author {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.epub-preview-stats {
+  display: flex;
+  gap: 10px;
+}
+
+.epub-preview-stat {
+  flex: 1 1 0;
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  padding: 10px 8px;
+}
+
+.epub-preview-stat strong {
+  font-size: 1.3rem;
+}
+
+.epub-preview-stat span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.epub-preview-warning {
+  color: var(--text);
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+  border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
+  border-radius: var(--toolbar-button-radius);
+  padding: 8px 10px;
+}
+
+.epub-progress-shell {
+  width: min(420px, 100%);
+}
+
+.epub-progress-shell .category-choice-actions {
+  justify-content: center;
+}
+
+.epub-progress-line {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.epub-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.epub-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.25s ease;
 }
 
 .style-shell {
@@ -7433,12 +7511,23 @@ textarea {
   text-align: center;
 }
 
+/* Every selection checkbox needs an explicit size: the global
+   `input { width: 100% }` rule (meant for text fields) otherwise stretches it
+   into a full-width slab. Tile checkboxes are additionally shrink-wrapped by
+   their absolutely-positioned .deck-tile-select wrapper; the folder row ones
+   sit in a plain flex row, so they also need flex-shrink off. */
 .web-deck-select-cell input[type="checkbox"],
-.web-decks-table th input[type="checkbox"] {
+.web-decks-table th input[type="checkbox"],
+.my-folder-row-checkbox {
   cursor: pointer;
   width: 16px;
   height: 16px;
   accent-color: var(--accent);
+}
+
+.deck-folder-wrap .my-folder-row-checkbox {
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 .web-decks-tools-left {
@@ -8691,8 +8780,13 @@ kbd {
   }
 
   /* Keyed off data-label (not nth-child) so the layout stays correct regardless
-     of the leading checkbox column. */
-  .my-decks-table td.web-deck-select-cell { display: none; }
+     of the leading checkbox column. The Tree/List folder-row checkbox goes with
+     it (table bulk-select is desktop-only) — tile checkboxes stay, matching the
+     grid deck tiles, which also keep theirs on mobile. */
+  .my-decks-table td.web-deck-select-cell,
+  .deck-folder-wrap .my-folder-row-checkbox {
+    display: none;
+  }
 
   .my-decks-table td[data-label="Title"] {
     font-weight: 800;
