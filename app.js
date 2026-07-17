@@ -60,6 +60,7 @@ const state = {
   // My Decks library UI preferences (persisted per device).
   myDecksView: (() => { try { const v = localStorage.getItem("flashcards_mydecks_view_v1"); return ["grid", "folder", "tree"].includes(v) ? v : "folder"; } catch (_) { return "folder"; } })(),
   myDecksDisplay: (() => { try { const v = localStorage.getItem("flashcards_mydecks_display_v1"); return ["tiles", "list"].includes(v) ? v : "tiles"; } catch (_) { return "tiles"; } })(),
+  myDecksSort: (() => { try { const v = localStorage.getItem("flashcards_mydecks_sort_v1"); return ["recent", "title-asc", "title-desc", "updated-desc", "created-desc", "size-desc"].includes(v) ? v : "recent"; } catch (_) { return "recent"; } })(),
   // Always start at Home (root) on app open, even though the current folder
   // is persisted per navigation below — the persisted value is only there so
   // helpers like currentMyDecksFolder() have something to read mid-session.
@@ -710,6 +711,8 @@ function isFolderCollapsed(path) {
 const MYDECKS_VIEW_KEY = "flashcards_mydecks_view_v1";       // grid | folder | tree
 const MYDECKS_DISPLAY_KEY = "flashcards_mydecks_display_v1"; // tiles | list
 const MYDECKS_CWD_KEY = "flashcards_mydecks_cwd_v1";         // Folder-view path
+const MYDECKS_SORT_KEY = "flashcards_mydecks_sort_v1";
+const MYDECKS_SORT_OPTIONS = ["recent", "title-asc", "title-desc", "updated-desc", "created-desc", "size-desc"];
 
 function setMyDecksView(view) {
   if (!["grid", "folder", "tree"].includes(view)) return;
@@ -721,6 +724,12 @@ function setMyDecksDisplay(display) {
   if (!["tiles", "list"].includes(display)) return;
   state.myDecksDisplay = display;
   try { localStorage.setItem(MYDECKS_DISPLAY_KEY, display); } catch (_) {}
+}
+
+function setMyDecksSort(sort) {
+  if (!MYDECKS_SORT_OPTIONS.includes(sort)) return;
+  state.myDecksSort = sort;
+  try { localStorage.setItem(MYDECKS_SORT_KEY, sort); } catch (_) {}
 }
 
 function setMyDecksCwd(path) {
@@ -1529,7 +1538,10 @@ async function upsertCardRows(rows) {
 // library-reconcile sync. Upserts the deck row and diff-upserts its cards from
 // an explicit payload (never touches `state`). Throws on failure.
 // `cards`: [{ id, question, answer, status, category }] in display order.
-async function pushDeckRowsToCloud({ deckId, title, category, notes, currentIndex, cards, isNewDeck, overwrite, now, say = () => {}, silent = true }) {
+// `webCards`: this deck's existing cloud rows if the caller already fetched
+// them (reconcileAllDecks fetches every deck's in one batched request), else
+// null to fetch them here.
+async function pushDeckRowsToCloud({ deckId, title, category, notes, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, say = () => {}, silent = true }) {
   const deckData = {
     id: deckId,
     title,
@@ -1560,14 +1572,19 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
     if (error) throw error;
   } else if (!isNewDeck) {
     say("Syncing... (2/3) Checking for changes");
-    const { data: webCards, error } = await supabaseClient
-      .from("cards")
-      .select("id, question, answer, position, status, category")
-      .eq("deck_id", deckId);
-    if (!error && webCards) {
-      webCardsById = new Map(webCards.map((wc) => [String(wc.id), wc]));
+    let existing = webCards;
+    if (!existing) {
+      const { data, error } = await supabaseClient
+        .from("cards")
+        .select("id, question, answer, position, status, category")
+        .eq("deck_id", deckId);
+      if (error) console.warn("Could not read cloud cards before push", deckId, error);
+      existing = error ? null : data;
+    }
+    if (existing) {
+      webCardsById = new Map(existing.map((wc) => [String(wc.id), wc]));
       const localIds = new Set(cards.map((c) => String(c.id)));
-      const idsToDelete = webCards.filter((wc) => !localIds.has(String(wc.id))).map((wc) => wc.id);
+      const idsToDelete = existing.filter((wc) => !localIds.has(String(wc.id))).map((wc) => wc.id);
       cardsDeleted = idsToDelete.length;
       if (idsToDelete.length > 0) {
         const { error: deleteError } = await supabaseClient
@@ -1694,7 +1711,8 @@ const el = {
   myDecksNewDeckBtn: document.querySelector("#myDecksNewDeckBtn"),
   myDecksTreeToggleAll: document.querySelector("#myDecksTreeToggleAll"),
   myDecksCategoryFilter: document.querySelector("#myDecksCategoryFilter"),
-  myDecksFilterWrap: document.querySelector(".my-decks-filter"),
+  myDecksSort: document.querySelector("#myDecksSort"),
+  myDecksFilterWrap: document.querySelector("#myDecksFolderFilterWrap"),
   myDecksSelectAllCheckbox: document.querySelector("#myDecksSelectAllCheckbox"),
   myDecksBulkActions: document.querySelector("#myDecksBulkActions"),
   myDecksSelectedCount: document.querySelector("#myDecksSelectedCount"),
@@ -4029,6 +4047,7 @@ function upsertRestoredMeta(localId, snapshot, backupDeck) {
     cardCount: (snapshot.cards || []).length,
     hasNotes: Boolean(String(snapshot.notes || "").trim()),
     updatedAt: now,
+    createdAt: existing?.createdAt || now,
     lastSyncedAt: existing ? existing.lastSyncedAt || null : null,
     accessedAt: existing ? existing.accessedAt || null : null,
     deckId: snapshot.deckId || backupDeck.deckId || null
@@ -4585,6 +4604,36 @@ async function fetchCloudDeckList() {
   return data || [];
 }
 
+// Cards for MANY decks in one request, instead of one round trip per deck.
+// On a phone each round trip costs a full RTT, so a 20-deck sync spent most of
+// its time waiting rather than transferring — the per-deck loops now read from
+// the map this returns. Paged because PostgREST caps a response at ~1000 rows
+// (a limit a per-deck query rarely hit but a batched one easily does): keep
+// asking until a short page comes back, or rows would be silently dropped and
+// the sync would read the missing cards as "deleted in the cloud".
+async function fetchCardsForDecks(deckIds, columns = "*") {
+  const byDeck = new Map(deckIds.map((id) => [String(id), []]));
+  if (!deckIds.length) return byDeck;
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabaseClient
+      .from("cards")
+      .select(columns)
+      .in("deck_id", deckIds)
+      .order("deck_id", { ascending: true })
+      .order("position", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const row of rows) {
+      const bucket = byDeck.get(String(row.deck_id));
+      if (bucket) bucket.push(row);
+    }
+    if (rows.length < pageSize) break;
+  }
+  return byDeck;
+}
+
 // Cross-device delete tombstones (see supabase_deck_tombstones.sql). A local
 // tombstone alone only stops THIS device from resurrecting a deck it deleted —
 // another device that hasn't reconciled since still holds a local copy and
@@ -4764,10 +4813,58 @@ function folderMostRecentAccess(node) {
   return max;
 }
 
+// Sort key builders for My Decks — each returns a comparable value for one
+// entry ({ deck, kind }). deckAccessTime() above is the "recent" key; these
+// cover the rest of MYDECKS_SORT_OPTIONS.
+function deckUpdatedTime(entry) {
+  const deck = entry.deck;
+  const raw = entry.kind === "local" ? deck.updatedAt : deck.updated_at;
+  const t = Date.parse(raw || "");
+  return Number.isFinite(t) ? t : 0;
+}
+
+// Local decks only started recording createdAt once this sort existed — a
+// deck saved before that falls back to updatedAt, the closest thing on hand.
+function deckCreatedTime(entry) {
+  const deck = entry.deck;
+  const raw = entry.kind === "local" ? (deck.createdAt || deck.updatedAt) : (deck.created_at || deck.updated_at);
+  const t = Date.parse(raw || "");
+  return Number.isFinite(t) ? t : 0;
+}
+
+function deckSizeValue(entry) {
+  return deckCardInfo(entry.deck, entry.kind).count ?? 0;
+}
+
+function deckTitleValue(entry) {
+  return (entry.deck.title || "Untitled deck").toLowerCase();
+}
+
+function myDecksSortComparator(sort) {
+  switch (sort) {
+    case "title-asc": return (a, b) => deckTitleValue(a).localeCompare(deckTitleValue(b));
+    case "title-desc": return (a, b) => deckTitleValue(b).localeCompare(deckTitleValue(a));
+    case "updated-desc": return (a, b) => deckUpdatedTime(b) - deckUpdatedTime(a);
+    case "created-desc": return (a, b) => deckCreatedTime(b) - deckCreatedTime(a);
+    case "size-desc": return (a, b) => deckSizeValue(b) - deckSizeValue(a);
+    default: return (a, b) => deckAccessTime(b) - deckAccessTime(a);
+  }
+}
+
 function sortedFolderChildren(node) {
-  return Array.from(node.children.values())
-    .sort((a, b) => folderMostRecentAccess(b) - folderMostRecentAccess(a)
-      || a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  const children = Array.from(node.children.values());
+  const sort = state.myDecksSort;
+  const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  if (sort === "title-asc" || sort === "title-desc") {
+    children.sort((a, b) => byName(a, b) * (sort === "title-desc" ? -1 : 1));
+  } else if (sort === "size-desc") {
+    children.sort((a, b) => folderTotalDeckCount(b) - folderTotalDeckCount(a) || byName(a, b));
+  } else {
+    // recent / updated / created all fall back to the same recency proxy —
+    // a folder has no single "updated at" of its own beyond what its decks did.
+    children.sort((a, b) => folderMostRecentAccess(b) - folderMostRecentAccess(a) || byName(a, b));
+  }
+  return children;
 }
 
 // Every visible deck (local + cloud-only) whose category is `path` or nested
@@ -5430,6 +5527,7 @@ function syncMyDecksChrome() {
   const display = view === "tree" ? "list" : state.myDecksDisplay;
   el.myDecksViewSwitch?.querySelectorAll("[data-mydecks-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mydecksView === view)));
   el.myDecksDisplayToggle?.querySelectorAll("[data-mydecks-display]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mydecksDisplay === display)));
+  if (el.myDecksSort && el.myDecksSort.value !== state.myDecksSort) el.myDecksSort.value = state.myDecksSort;
   if (el.myDecksDisplayToggle) el.myDecksDisplayToggle.hidden = (view === "tree");
   if (el.myDecksTreeToggleAll) {
     el.myDecksTreeToggleAll.hidden = (view !== "tree");
@@ -5470,12 +5568,12 @@ function paintMyDecks(localDecks, cloudById, { cloudOnly = [], categories = webD
   myDecksCache = { localDecks, cloudById, cloudOnly, categories, scope };
   myDecksRendered = { local: localDecks, cloudOnly };
   const search = myDecksSearchTerm();
-  // Sorted by most-recently-accessed first, local and cloud-only decks
-  // interleaved on the same timeline — see deckAccessTime().
+  // Sorted per state.myDecksSort (default: most-recently-accessed first),
+  // local and cloud-only decks interleaved on the same timeline.
   const entries = [
     ...localDecks.filter(myDeckMatchesSearch).map((deck) => ({ deck, kind: "local" })),
     ...cloudOnly.filter(myDeckMatchesSearch).map((deck) => ({ deck, kind: "cloud" })),
-  ].sort((a, b) => deckAccessTime(b) - deckAccessTime(a));
+  ].sort(myDecksSortComparator(state.myDecksSort));
   const ctx = { cloudById, categories, scope, search, loading, totalDecks: localDecks.length + cloudOnly.length };
   syncMyDecksChrome();
   if (state.myDecksView === "grid") renderMyDecksGridView(entries, ctx);
@@ -10598,13 +10696,19 @@ function totalSyncStats(deckLog) {
 // Pulls one cloud deck (metadata already in hand) plus its cards into the local
 // library, WITHOUT disturbing the active in-memory deck. Stamps the local copy
 // with the cloud's `updated_at` so they read as in sync afterwards.
-async function pullCloudDeckToLibrary(cloud) {
-  const { data: cards, error } = await supabaseClient
-    .from("cards")
-    .select("*")
-    .eq("deck_id", cloud.id)
-    .order("position", { ascending: true });
-  if (error) throw error;
+// `prefetchedCards`: this deck's cloud rows in position order if the caller
+// already batch-fetched them (see fetchCardsForDecks), else null to fetch here.
+async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
+  let cards = prefetchedCards;
+  if (!cards) {
+    const { data, error } = await supabaseClient
+      .from("cards")
+      .select("*")
+      .eq("deck_id", cloud.id)
+      .order("position", { ascending: true });
+    if (error) throw error;
+    cards = data;
+  }
 
   const snapshot = {
     app: "recall",
@@ -10713,6 +10817,7 @@ async function pullCloudDeckToLibrary(cloud) {
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(snapshot.notes.trim()),
     updatedAt: cloud.updated_at || new Date().toISOString(),
+    createdAt: cloud.created_at || existing?.createdAt || cloud.updated_at || new Date().toISOString(),
     // Distinct from updatedAt (which also bumps on plain local edits) — this
     // specifically means "last confirmed match with the cloud", surfaced in
     // the sync indicator pill.
@@ -10729,7 +10834,7 @@ async function pullCloudDeckToLibrary(cloud) {
 // Pushes one library deck (by its local metadata) to the cloud, WITHOUT
 // disturbing the active in-memory deck. Mints a stable cloud id if the deck has
 // never been synced, then records it locally and aligns the timestamp.
-async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDeck = null } = {}) {
+async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDeck = null, webCards = null } = {}) {
   const raw = localStorage.getItem(LOCAL_DECK_PREFIX + localMeta.id);
   if (!raw) throw new Error("Local deck snapshot missing");
   const snapshot = JSON.parse(raw);
@@ -10757,6 +10862,7 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     isNewDeck,
     overwrite: false,
     now,
+    webCards,
     silent: true
   });
 
@@ -10810,7 +10916,19 @@ async function reconcileAllDecks({ explicit = false } = {}) {
   if (el.syncNowBtn) setButtonLoading(el.syncNowBtn, true, "Syncing…");
   setSyncIndicator("saving");
   updateDeckEmptyStatus();
-  if (explicit) setStatus("Syncing all decks…");
+
+  // Says what the sync is doing RIGHT NOW, not just that it's doing something.
+  // On a slow connection the old single "Syncing all decks…" sat there for the
+  // whole run, so a sync that was working through 12 decks was indistinguishable
+  // from one that had hung. Writes the button text directly rather than calling
+  // setButtonLoading again, which would capture "Syncing…" as the label to
+  // restore and leave the button stuck on it.
+  const progress = (message) => {
+    if (!explicit) return;
+    setStatus(message);
+    if (el.syncNowBtn) el.syncNowBtn.textContent = message;
+  };
+  progress("Checking the cloud…");
 
   // Commit any open card editor into state first. Card edit text lives only in
   // the textarea (there's no live input listener, unlike the notes editor) until
@@ -10879,7 +10997,13 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // so reports no spurious category change.
     const noteCategoriesFlushed = await flushPendingQuickNoteCategories();
 
-    const cloudDecks = await fetchCloudDeckList();
+    // The deck list and the deletion tombstones don't depend on each other, so
+    // fetch them together — serially they cost two full round trips before any
+    // real work could start.
+    const [cloudDecks, remoteDeletedIds] = await Promise.all([
+      fetchCloudDeckList(),
+      fetchDeletedDeckIds()
+    ]);
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudIdSet = new Set(cloudDecks.map((d) => String(d.id)));
 
@@ -10888,7 +11012,6 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // table). Adopt the tombstone and remove the stale local copy now, before
     // the push loop below would otherwise see "no cloud row, so mine must be
     // newer" and re-create it.
-    const remoteDeletedIds = await fetchDeletedDeckIds();
     const remoteDeletedSet = new Set(remoteDeletedIds.map(String));
     for (const deckId of remoteDeletedIds) {
       if (isDeckTombstoned(deckId)) continue;
@@ -10908,6 +11031,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // still holds a copy would re-push it and resurrect the deck. When the row
     // is gone but that shared record is missing, re-assert it here and keep the
     // local tombstone until it lands.
+    const tombstonesToReassert = [];
     for (const tid of Object.keys(readDeckTombstones())) {
       // Deck row still present (or re-pushed by another device) — the pull loop
       // below re-deletes it; keep blocking so it can't be adopted back locally.
@@ -10915,28 +11039,52 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       if (remoteDeletedSet.has(String(tid))) {
         clearDeckTombstone(tid); // fully propagated — safe to forget
       } else {
-        // supabase-js reports failures via the returned `error`, not by
-        // throwing — check it, or a failed write looks like success.
-        const { error: retryError } = await supabaseClient.from("deleted_decks").upsert({ deck_id: tid });
-        if (retryError) console.warn("Retry of cross-device delete tombstone failed", tid, retryError);
+        tombstonesToReassert.push({ deck_id: tid });
       }
+    }
+    if (tombstonesToReassert.length) {
+      // One upsert for every outstanding tombstone rather than a round trip
+      // each. supabase-js reports failures via the returned `error`, not by
+      // throwing — check it, or a failed write looks like success.
+      const { error: retryError } = await supabaseClient.from("deleted_decks").upsert(tombstonesToReassert);
+      if (retryError) console.warn("Retry of cross-device delete tombstones failed", retryError);
     }
 
     // 1) Cloud → local: pull anything missing locally or newer in the cloud.
+    //    Decide the whole list up front so the cards for every deck being
+    //    pulled can be fetched in one request instead of one per deck.
+    const localByDeckId = new Map(
+      readLocalDeckIndex().filter((m) => m.deckId).map((m) => [String(m.deckId), m])
+    );
+    const toPull = [];
+    const tombstonedInCloud = [];
     for (const cloud of cloudDecks) {
       // A deck deleted here but still (or again) present in the cloud — e.g. a
       // race with an in-flight sync, or another device that re-pushed it. Don't
       // pull it back; re-assert the deletion in the cloud instead.
       if (isDeckTombstoned(cloud.id)) {
-        const { error: redeleteError } = await supabaseClient.from("decks").delete().eq("id", cloud.id);
-        if (redeleteError) console.warn("Tombstone re-delete failed", cloud.id, redeleteError);
+        tombstonedInCloud.push(cloud.id);
         continue;
       }
-      const localMeta = readLocalDeckIndex().find((m) => String(m.deckId) === String(cloud.id));
-      const cloudNewer = !localMeta || tsMs(cloud.updated_at) > tsMs(localMeta.updatedAt);
-      if (!cloudNewer) continue;
+      const localMeta = localByDeckId.get(String(cloud.id));
+      if (!localMeta || tsMs(cloud.updated_at) > tsMs(localMeta.updatedAt)) toPull.push(cloud);
+    }
+    if (tombstonedInCloud.length) {
+      const { error: redeleteError } = await supabaseClient.from("decks").delete().in("id", tombstonedInCloud);
+      if (redeleteError) console.warn("Tombstone re-delete failed", tombstonedInCloud, redeleteError);
+    }
+
+    // The download is the batched fetch below — the loop after it only writes to
+    // localStorage and never yields, so a per-deck "downloading 3 of 8" in there
+    // would never get a chance to paint. Say it once, here, where the wait is.
+    if (toPull.length) progress(`Downloading ${toPull.length} deck${toPull.length === 1 ? "" : "s"} from the cloud…`);
+    const pullCardsByDeck = toPull.length
+      ? await fetchCardsForDecks(toPull.map((d) => d.id))
+      : new Map();
+
+    for (const cloud of toPull) {
       try {
-        const res = await pullCloudDeckToLibrary(cloud);
+        const res = await pullCloudDeckToLibrary(cloud, pullCardsByDeck.get(String(cloud.id)) || []);
         if (!isNoOpStats(res.stats)) {
           pulled++;
           deckLog.push({ title: cloud.title || "Untitled deck", direction: "pulled", ...res.stats });
@@ -10957,16 +11105,35 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     }
 
     // 2) Local → cloud: push anything not in the cloud or newer locally.
-    //    Re-read the index because the pull pass may have rewritten it.
+    //    Re-read the index because the pull pass may have rewritten it, and
+    //    again decide the whole list up front so every deck's existing cloud
+    //    rows (which the push diffs against) come back in one request.
+    const toPush = [];
     for (const localMeta of readLocalDeckIndex()) {
       // Never re-upload a deck that was deleted here (a stray local copy that
       // outlived the delete) — that's exactly how a deleted deck comes back.
       if (isDeckTombstoned(localMeta.deckId)) continue;
       const cloud = localMeta.deckId ? cloudById.get(String(localMeta.deckId)) : null;
-      const localNewer = !cloud || tsMs(localMeta.updatedAt) > tsMs(cloud.updated_at);
-      if (!localNewer) continue;
+      if (!cloud || tsMs(localMeta.updatedAt) > tsMs(cloud.updated_at)) toPush.push({ localMeta, cloud });
+    }
+
+    // Only decks that already exist in the cloud have rows to diff against; a
+    // brand-new deck's push writes every card regardless.
+    const pushDiffIds = toPush.filter((e) => e.cloud).map((e) => e.localMeta.deckId);
+    const pushCardsByDeck = pushDiffIds.length
+      ? await fetchCardsForDecks(pushDiffIds, "id, deck_id, question, answer, position, status, category")
+      : new Map();
+
+    let pushIndex = 0;
+    for (const { localMeta, cloud } of toPush) {
+      pushIndex++;
+      progress(`Uploading “${localMeta.title || "Untitled deck"}” (${pushIndex} of ${toPush.length})…`);
       try {
-        const res = await pushLibraryDeckToCloud(localMeta, { cloudExists: Boolean(cloud), cloudDeck: cloud });
+        const res = await pushLibraryDeckToCloud(localMeta, {
+          cloudExists: Boolean(cloud),
+          cloudDeck: cloud,
+          webCards: cloud ? (pushCardsByDeck.get(String(localMeta.deckId)) || []) : null
+        });
         if (!isNoOpStats(res.stats)) {
           pushed++;
           deckLog.push({ title: localMeta.title || "Untitled deck", direction: "pushed", ...res.stats });
@@ -11012,6 +11179,14 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     if (pushed) parts.push(`${pushed} deck${pushed === 1 ? "" : "s"} uploaded to the cloud`);
     const changes = describeSyncStats(totalSyncStats(deckLog), { asTotals: true });
     const detail = changes.length ? ` — ${changes.join(", ")}` : "";
+    // Name the decks that failed. "See console" asked the user to open devtools
+    // to learn WHICH of their decks didn't make it — on a phone, where this app
+    // mostly runs, that's not an option at all.
+    const failedTitles = deckLog.filter((e) => e.direction === "failed").map((e) => e.title);
+    const failedNote = failed
+      ? `${failed} deck${failed === 1 ? "" : "s"} failed: ${failedTitles.slice(0, 2).join(", ")}` +
+        `${failedTitles.length > 2 ? ` and ${failedTitles.length - 2} more` : ""}`
+      : "";
     // "Nothing to sync" was the single most misleading string in the app: it's
     // also what you got right after recategorising a quick note, because that
     // change is written to the cloud the instant you make it, leaving the sync
@@ -11019,11 +11194,11 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     const nothingMoved = alreadyMatched.length
       ? `Already up to date — ${alreadyMatched.length} deck${alreadyMatched.length === 1 ? "" : "s"} checked, ` +
         `everything already matches the cloud (board edits save as you make them)`
-      : "Already up to date — no local or cloud changes since the last sync";
+      : "Already up to date — nothing changed here or in the cloud since the last sync";
     const summary = parts.length
-      ? `Synced — ${parts.join(", ")}${detail}${failed ? ` (${failed} failed — see console)` : ""}`
+      ? `Sync complete — ${parts.join(", ")}${detail}${failed ? `. ${failedNote}` : ""}`
       : failed
-        ? `Sync finished, but ${failed} deck${failed === 1 ? "" : "s"} failed — see console`
+        ? `Sync incomplete — ${failedNote}`
         : nothingMoved;
     if (explicit) {
       setStatus(summary);
@@ -11044,9 +11219,15 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     setSyncIndicator("error");
     localStorage.setItem(LAST_GLOBAL_SYNC_ERROR_KEY, "1");
     if (explicit) {
-      const reason = error?.message ? `: ${error.message}` : "";
-      setStatus(`Sync failed${reason}. Your decks are safe on this device.`, "error");
-      showToast(`Sync failed${reason}`, "error");
+      // A dropped connection mid-sync is by far the most common failure, and
+      // the raw error for it ("Failed to fetch") reads like a bug rather than
+      // "your network went away" — say so in words the user can act on.
+      const offlineNow = !navigator.onLine || /failed to fetch|networkerror|load failed/i.test(error?.message || "");
+      const reason = offlineNow
+        ? "Couldn't reach the cloud — check your connection"
+        : error?.message || "Unknown error";
+      setStatus(`Sync failed — ${reason}. Your decks are safe on this device.`, "error");
+      showToast(`Sync failed — ${reason}`, "error");
     }
   } finally {
     reconcileInFlight = false;
@@ -11229,6 +11410,7 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(String(snapshot.notes || "").trim()),
     updatedAt: resolvedUpdatedAt,
+    createdAt: previousEntry?.createdAt || new Date().toISOString(),
     lastSyncedAt: lastSyncedAt !== undefined ? lastSyncedAt : (previousEntry?.lastSyncedAt || null),
     // Preserved as-is here — only touchLocalDeckAccess (called on a genuine
     // open, not on every autosave) advances this.
@@ -13918,9 +14100,13 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries) {
       sourceTitle: state.sourceTitle
     };
 
-    // My Decks always sorts by recency descending (deckAccessTime), regardless
-    // of view — so chapter 1 gets the newest updatedAt and each later chapter a
-    // second older, which is what puts them back in reading order on screen.
+    // My Decks defaults to sorting by recency descending (deckAccessTime) — so
+    // chapter 1 gets the newest updatedAt/createdAt and each later chapter a
+    // second older, which is what puts them back in reading order on screen
+    // under the default sort (and under "Last updated" / "Date created", which
+    // derive from the same stagger). A user who's switched to title or size
+    // sort will see chapters in that order instead — an accepted tradeoff of
+    // sort being user-selectable now.
     const baseTime = Date.now();
     let saved = 0;
     let saveFailed = false;
@@ -14848,6 +15034,12 @@ el.editDeckCategoryBtn?.addEventListener("click", editCurrentDeckCategory);
 
 // ── My Decks: selection, bulk actions, category filter, export-all ─────────
 el.myDecksCategoryFilter?.addEventListener("change", () => renderMyDecksList());
+
+// Sort order — pure presentation, repaint from cache.
+el.myDecksSort?.addEventListener("change", () => {
+  setMyDecksSort(el.myDecksSort.value);
+  repaintMyDecks();
+});
 
 el.myDecksSelectAllCheckbox?.addEventListener("change", (e) => {
   const checked = e.target.checked;

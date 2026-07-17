@@ -8998,8 +8998,21 @@ kbd {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--notes-padding);
-  padding-bottom: calc(var(--notes-padding) + 8px);
+  overscroll-behavior-y: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  /* Bleeds out to the notes-stage panel's own edges (reclaiming its 14px
+     padding, plus the flex gap up to the header's border) so the scrollable
+     box covers the whole panel below the header — the same trick .card-face
+     already uses by keeping its padding inside its own overflow:auto box.
+     Without this, dragging on that gutter — the side margins, or the strip
+     below the last line, both natural places to grab when trying to scroll —
+     did nothing, because it sat outside the only element that could scroll.
+     The matching padding increase keeps every edge visually identical to
+     before; only the hit region grows. */
+  margin: -10px -14px -14px;
+  padding: calc(var(--notes-padding) + 10px) calc(var(--notes-padding) + 14px) calc(var(--notes-padding) + 14px + 8px) calc(var(--notes-padding) + 14px);
   -webkit-user-select: text;
   user-select: text;
   /* Dedicated Notes typography (Style → Notes), independent of the card faces. */

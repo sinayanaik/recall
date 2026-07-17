@@ -486,6 +486,17 @@
               <input type="search" id="myDecksSearch" placeholder="&#128269; Search decks…" aria-label="Search decks by title" autocomplete="off">
             </div>
             <label class="my-decks-filter">
+              <span>Sort</span>
+              <select id="myDecksSort" aria-label="Sort decks">
+                <option value="recent">Recently opened</option>
+                <option value="title-asc">Title (A–Z)</option>
+                <option value="title-desc">Title (Z–A)</option>
+                <option value="updated-desc">Last updated</option>
+                <option value="created-desc">Date created</option>
+                <option value="size-desc">Card count</option>
+              </select>
+            </label>
+            <label class="my-decks-filter" id="myDecksFolderFilterWrap">
               <span>Folder</span>
               <select id="myDecksCategoryFilter">
                 <option value="">All folders</option>
