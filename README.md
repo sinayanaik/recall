@@ -37,7 +37,7 @@ A static web app for learning something for the first time: write freeform **Stu
 - **Known / Review categorization** — cards can be marked Known or Review and replayed in filtered sessions (All / Review only / Known only / Uncategorized)
 - **Two ways to format** — edit a card's raw Markdown with a rich **edit-mode toolbar** (bold, italic, underline, strikethrough, code, cloze fill-in-the-blanks, fonts, text colours, bullet lists, image insert, clear), *or* select text right in the rendered view and use the **format-in-place toolbar** (B/I/U/S, code, cloze, plus text-colour and highlight split-buttons) with no need to enter edit mode
 - **Cloze fill-in-the-blanks** — hide any span as `{{…}}`; tap a cloze to reveal it, or flip **all** clozes on a card (or in the notes) at once with the 👀/🙈 button
-- **Image paste & upload** — paste, drag-and-drop, or pick any image while editing; it's optimized in-browser (WebP) and uploaded to a free [ImgBB](https://api.imgbb.com/) host, then inserted as Markdown. Public Google Drive share links are auto-embedded so they render directly. In Study Notes, an image on its own line can be **resized by dragging the blue corner grip** (with a live size badge); images stay centered, and writing images separated by `|` on one line renders them **side by side**.
+- **Image paste & upload** — paste, drag-and-drop, or pick any image while editing; it's optimized in-browser (WebP) and uploaded to your own **Supabase Storage** bucket, then inserted as Markdown — no separate key, and images are actually deletable (🗑) since it's your own storage. Public Google Drive share links are auto-embedded so they render directly. In Study Notes, an image on its own line can be **resized by dragging the blue corner grip** (with a live size badge); images stay centered, and writing images separated by `|` on one line renders them **side by side**.
 - **Study Notes per deck** — every deck carries a freeform Markdown notes document (Cards ⇄ Notes toggle in the study view). Study first, then highlight any fact in the rendered notes and tap **+ Make card**: the selection becomes the card's *answer* and you're prompted to frame the *question* that should recall it. Long notes get an auto-generated, collapsible **table of contents** (☰) with scroll-spy and click-to-jump. Notes sync to the cloud with the deck and travel inside Markdown/JSON exports. *(Existing Supabase projects: run `supabase_deck_notes.sql` once in the SQL Editor.)*
 - **Quick Notes** — select any text while editing an answer and save it straight to a dedicated `quick_notes` cloud deck with one click
 - **Toast confirmations** — every cloud action (sync, load, delete, rename, quick note) pops a toast so you always know it worked
@@ -45,7 +45,7 @@ A static web app for learning something for the first time: write freeform **Stu
 - **Automatic two-way cloud sync** — every deck is mirrored to Supabase and back in the background, with **last-write-wins per deck** (by `updated_at`); no manual push/pull, and a **Sync Now** button forces a reconcile on demand. Saving to the device is automatic too
 - **Unified My Decks library with nested folders & three views** — one panel lists every deck (on-device *and* cloud-only), each with a live sync-status badge; load, rename, categorize, export, or delete from here. Switch how you browse with a **view switcher — `Grid · Folder · Tree`** — and a **`▦ Tiles / ☰ List` display toggle**: **Grid** shows every deck flat, **Folder** is a Finder-style drill-down with a breadcrumb (double-click a folder to enter), and **Tree** is the full collapsible hierarchy. Create a deck (**＋ New deck**, opens a blank deck in notes mode filed under the current folder) or a **＋ New folder** right from the toolbar or any folder, and search decks by title. Decks are organized by a `/`-delimited **category path** (e.g. `Math/Calculus/Derivatives`), so legacy flat categories simply become top-level folders — no migration needed. **Drag a deck onto a folder to file it, or drag a whole folder onto another to re-parent it**; rename and delete folders inline (deleting a folder moves its decks up to the parent, never deletes them). Folders start **folded by default** (an Expand/Collapse-all toggle is in Tree view), the view/display/expansion choices persist per device, and folder paths sync across devices inside each deck's `category`. *(On touch devices, use a deck's category menu instead of drag-and-drop; empty folders you create are device-local until a deck lands in them.)* Deletes propagate across devices via durable **delete tombstones**, so a deck removed on one device stays removed everywhere
 - **Multi-user auth with per-user isolation** — email + password login; Row Level Security scopes every deck, card, and tombstone to its owner, so each account sees only its own data. No credentials stored in the source code
-- **Per-project config** — Supabase URL, anon key, and (optional) ImgBB key are entered at first launch and stored in `localStorage`; swap them anytime
+- **Per-project config** — Supabase URL and anon key are entered at first launch and stored in `localStorage`; swap them anytime
 - **In-app Help & Guide** — a built-in walkthrough of every button and workflow
 - **Rich exports** — cards as **Cornell PDF, Standalone HTML, Word (.docx), Markdown, JSON, or SQL**, and study notes as **PDF, Standalone HTML, Word (.docx), or Markdown** — for the current deck, any single deck, a selection, or the whole library from My Decks
 - **Themes** — 10 built-in themes (7 dark, 3 light) with a full style editor for fonts, sizes, spacing, and layout (separate desktop / mobile profiles)
@@ -108,8 +108,9 @@ Everything the app needs is in the `.sql` files shipped in this repo. Open the *
 - `supabase_deck_notes.sql` — adds the per-deck `notes` column (Study Notes)
 - `supabase_deck_tombstones.sql` — adds cross-device delete tombstones
 - `supabase_quick_notes.sql` — adds `cards.category` (per-note subject label) and `decks.meta` (managed category set) for the [Quick Notes board](#quick-notes)
+- `supabase_image_storage.sql` — creates the `images` Storage bucket + RLS policies used for [image upload](#images) (see below)
 
-(A brand-new project created with `supabase_schema.sql` already includes the `category`, `notes`, and `last_accessed_at` columns, so the first two migrations are only for older deployments. `supabase_quick_notes.sql` is always needed for the Quick Notes board's categories, on new and old projects alike.)
+(A brand-new project created with `supabase_schema.sql` already includes the `category`, `notes`, and `last_accessed_at` columns, so the first two migrations are only for older deployments. `supabase_quick_notes.sql` is always needed for the Quick Notes board's categories, on new and old projects alike. `supabase_image_storage.sql` is always needed too, since Storage buckets aren't part of `supabase_schema.sql`.)
 
 ### 3. Create a user account
 
@@ -371,7 +372,7 @@ While editing, a fuller **formatting toolbar** appears above the text. Select a 
 | **Aa** | Font family picker |
 | **🎨** | Text colour (includes "Clear colour") |
 | **-** | Toggle bullet list |
-| **🖼️** | Insert an image — opens a file picker and uploads to ImgBB (see [Images](#images)) |
+| **🖼️** | Insert an image — opens a file picker and uploads to your Supabase project (see [Images](#images)) |
 | **Tx** | Clear all formatting from the selection |
 | **📌** | Save the selection as a Quick Note (answer toolbar only — see below) |
 
@@ -409,16 +410,13 @@ You can add images to any card without hand-writing URLs. While editing, insert 
 - **Drag & drop** — drag an image file from your file manager onto the editor (desktop)
 - **Toolbar 🖼️** — tap the image button to open a file picker; on phones and tablets this offers your **camera or photo library**
 
-Before uploading, the image is **optimized in your browser** — downscaled to a max of 1600px on its longest edge and re-encoded to WebP (quality ~0.82) — which typically shrinks screenshots dramatically. Animated GIFs and SVGs are uploaded untouched, and if the "optimized" version isn't actually smaller the original is kept. The result is uploaded to [ImgBB](https://api.imgbb.com/) — a free, permanent image host — and a Markdown `![](https://i.ibb.co/…)` link is inserted at the cursor.
+Before uploading, the image is **optimized in your browser** — downscaled to a max of 1600px on its longest edge and re-encoded to WebP (quality ~0.82) — which typically shrinks screenshots dramatically. Animated GIFs and SVGs are uploaded untouched, and if the "optimized" version isn't actually smaller the original is kept. The result is uploaded to the `images` bucket in **your own Supabase project** and a Markdown `![](…)` link is inserted at the cursor.
 
-### ImgBB API key
+### No separate image key
 
-Image upload needs a free ImgBB API key:
+Images are stored in the same Supabase project as your decks, so there's no second API key to manage — run `supabase_image_storage.sql` once (see [step 2](#2-create-the-tables-and-policies)) and the sign-in you already use for sync also unlocks uploads. Uploads require a network connection.
 
-1. Create a free account at [api.imgbb.com](https://api.imgbb.com/) and copy your API key.
-2. Enter it in the **ImgBB API key** field on the Supabase setup screen (reachable via **"Change Supabase project"** on the login screen). It's stored in `localStorage`, like the Supabase credentials — never in the source.
-
-If you try to insert an image before setting a key, the app prompts you for it once and remembers it. Uploads require a network connection.
+Hover a rendered image and use its 🗑 button to remove it — since it's your own storage (not a third-party host), this actually deletes the file, not just the reference in your notes.
 
 ### Google Drive images
 
@@ -622,7 +620,7 @@ The service worker **precaches the entire dependency set on first load** — the
 - **Full library offline** — because every cloud deck is mirrored onto the device automatically, **My Decks** works fully offline; you can load, rename, and delete saved decks with no connection.
 - An **Offline** badge appears (bottom-left) whenever you lose connection.
 
-A first-time login still needs the network, and any edits made offline (including deletes) reconcile with the cloud automatically once the connection returns. Remote user content that isn't part of the app itself — images hosted on ImgBB/Google Drive, `Fetch from URL`, and the Jina Reader import — naturally still needs a connection.
+A first-time login still needs the network, and any edits made offline (including deletes) reconcile with the cloud automatically once the connection returns. Remote user content that isn't part of the app itself — images hosted on Supabase Storage/Google Drive, `Fetch from URL`, and the Jina Reader import — naturally still needs a connection.
 
 ---
 
@@ -642,8 +640,8 @@ A first-time login still needs the network, and any edits made offline (includin
 | Database | [Supabase](https://supabase.com/) (Postgres + Auth + per-user RLS) — schema in `supabase_schema.sql`, migrations in the other `supabase_*.sql` files |
 | Auth | Supabase email + password (`signInWithPassword` / `signUp`) |
 | Cloud sync | Automatic two-way reconcile, last-write-wins per deck by `updated_at`; cross-device delete tombstones in `deleted_decks` |
-| Config storage | `localStorage` — Supabase URL, anon key, ImgBB key, and format-toolbar colour defaults never touch the source code |
-| Image hosting | [ImgBB](https://api.imgbb.com/) (browser-side WebP optimization before upload); public Google Drive links rewritten to embeddable form at render time |
+| Config storage | `localStorage` — Supabase URL, anon key, and format-toolbar colour defaults never touch the source code |
+| Image hosting | Supabase Storage, in the user's own project (browser-side WebP optimization before upload, RLS-scoped per-user delete); public Google Drive links rewritten to embeddable form at render time |
 | Offline | Service worker (`sw.js`) + Cache API; full dependency set precached; full deck library mirrored on-device |
 | Deployment | Any static host — GitHub Pages, Netlify, Vercel, local server |
 

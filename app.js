@@ -475,21 +475,6 @@ function clearSupabaseConfig() {
   localStorage.removeItem(SUPABASE_CONFIG_STORAGE_KEY);
 }
 
-// ImgBB API key for image paste/drop/upload. Stored in localStorage like the Supabase
-// config — no hardcoded credentials. The key only permits uploads to the user's ImgBB
-// account (get a free one at https://api.imgbb.com/).
-const IMGBB_KEY_STORAGE_KEY = "flashcards_imgbb_key";
-
-function loadImgbbKey() {
-  return (localStorage.getItem(IMGBB_KEY_STORAGE_KEY) || "").trim();
-}
-
-function saveImgbbKey(key) {
-  const trimmed = (key || "").trim();
-  if (trimmed) localStorage.setItem(IMGBB_KEY_STORAGE_KEY, trimmed);
-  else localStorage.removeItem(IMGBB_KEY_STORAGE_KEY);
-}
-
 let supabaseClient = null;
 // Tracks whether a real user session is active, so background auto-sync only
 // fires for signed-in users (and never tries to push while logged out).
@@ -553,8 +538,6 @@ function showSetupScreen() {
   document.getElementById("loginOverlay").hidden = true;
   document.querySelector(".app-shell").hidden = true;
   document.getElementById("logoutBtn").hidden = true;
-  const imgbbField = document.getElementById("setupImgbbKey");
-  if (imgbbField) imgbbField.value = loadImgbbKey();
 }
 
 function showLoginScreen() {
@@ -9572,6 +9555,73 @@ function commitImageWidth(tokenIndex, subPos, px) {
   rebuildNotesFromTokens(tokens);
 }
 
+// Removes one image occurrence from the notes — the delete-button counterpart
+// to commitImageWidth/commitDeepImageWidth, using the same row/inline/deep/
+// standalone dispatch so removal handles every shape resizing does. `imageRaw`
+// (deep case) strips just that raw slice from its enclosing token, leaving the
+// surrounding list/quote untouched; every other case rewrites or drops the
+// whole token, same as a resize commit would.
+function removeImageAt(tokenIndex, subPos, imageRaw) {
+  const tokens = notesLexTokens();
+  const token = tokens[tokenIndex];
+  if (!token) return;
+
+  if (imageRaw) {
+    const idx = token.raw.indexOf(imageRaw);
+    if (idx === -1) return;
+    const newRaw = token.raw.slice(0, idx) + token.raw.slice(idx + imageRaw.length);
+    tokens[tokenIndex] = { ...token, raw: newRaw };
+    rebuildNotesFromTokens(tokens);
+    return;
+  }
+
+  const entries = findImageTokens(tokens).filter((e) => e.tokenIndex === tokenIndex);
+  const rowEntry = subPos !== null ? entries.find((e) => e.isRow) : null;
+  const inlineEntry = subPos !== null ? entries.find((e) => e.isInline && e.inlinePos === subPos) : null;
+
+  if (rowEntry) {
+    const remaining = rowEntry.images.filter((_, i) => i !== subPos);
+    if (remaining.length >= 2) {
+      const rowHtml = `<div class="notes-img-row">${remaining.map(imgTagHtml).join("")}</div>\n\n`;
+      tokens[tokenIndex] = { type: "html", raw: rowHtml, text: rowHtml, pre: false, block: true };
+    } else if (remaining.length === 1) {
+      const html = imgTagHtml(remaining[0]) + "\n\n";
+      tokens[tokenIndex] = { type: "html", raw: html, text: html, pre: false, block: true };
+    } else {
+      tokens.splice(tokenIndex, 1);
+    }
+  } else if (inlineEntry) {
+    const inline = token.tokens[inlineEntry.inlinePos];
+    if (!inline) return;
+    // Drop just this image's own raw slice. Any double space it leaves behind
+    // in the surrounding prose is harmless (Markdown/HTML collapse runs of
+    // whitespace) — deliberately NOT globally collapsing spaces here, which
+    // would corrupt intentional spacing inside inline code in the paragraph.
+    tokens[tokenIndex] = { ...token, raw: token.raw.replace(inline.raw, "") };
+  } else {
+    tokens.splice(tokenIndex, 1);
+  }
+  rebuildNotesFromTokens(tokens);
+}
+
+// Removes the image from the notes immediately (so the UI never waits on a
+// network round-trip), then best-effort deletes its underlying storage object.
+function removeNotesImage(tokenIndex, subPos, imageRaw, url) {
+  removeImageAt(tokenIndex, subPos, imageRaw);
+  // Only hard-delete the stored file once NO other reference to it survives in
+  // this note — a duplicated image (same URL used twice, or the `![](url)`
+  // markdown copy-pasted) otherwise deletes the file out from under its other
+  // copies, turning them into broken links. This is the deletion ImgBB's plain
+  // public-link API never allowed from inside the app; guarding it keeps that
+  // power from becoming accidental data loss. (A copy pasted into a *different*
+  // deck is still not seen here — checking every deck is too costly — so cross-
+  // deck reuse of the exact same uploaded URL remains a caveat, not the norm
+  // since each upload gets a unique path.)
+  if (url && !(state.notes || "").includes(url)) {
+    deleteSupabaseImage(url);
+  }
+}
+
 // Bottom-right corner-grip resize (the universal affordance): drag out from the
 // corner to grow, in to shrink. Width is what's stored; height is auto, so
 // aspect ratio is preserved for free. A live badge shows the current px width
@@ -9627,21 +9677,36 @@ function beginImageResize(event, shell, img, onCommit) {
   document.addEventListener("pointercancel", onCancel);
 }
 
-// Attaches the blue corner-drag resize grip to an image. `onCommit(widthPx)`
-// persists the final size — the caller supplies the right write path for the
-// image's shape (standalone/row/inline, or nested in a list/quote). This is the
-// only image control: every rendered notes image gets it, so images buried in
-// bullet points are resized in place just like any other, with no intermediate
-// "move to own line" step.
-function attachNotesImageResizeHandle(shell, img, onCommit) {
+// Attaches the blue corner-drag resize grip and a delete button to an image.
+// `onCommit(widthPx)` persists the final size and `onDelete()` removes the
+// image — the caller supplies the right write path for each, matching the
+// image's shape (standalone/row/inline, or nested in a list/quote). These are
+// the only image controls: every rendered notes image gets them, so images
+// buried in bullet points are resized/removed in place just like any other,
+// with no intermediate "move to own line" step.
+function attachNotesImageResizeHandle(shell, img, onCommit, onDelete) {
   shell.querySelector(".notes-img-controls")?.remove();
   shell.querySelector(".notes-img-resize-handle")?.remove();
+  shell.querySelector(".notes-img-delete-btn")?.remove();
   const resizeHandle = document.createElement("div");
   resizeHandle.className = "notes-img-resize-handle";
   resizeHandle.title = "Drag to resize";
   resizeHandle.setAttribute("aria-hidden", "true");
   resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, onCommit));
   shell.appendChild(resizeHandle);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "notes-img-delete-btn";
+  deleteBtn.title = "Remove image";
+  deleteBtn.setAttribute("aria-label", "Remove image");
+  deleteBtn.textContent = "🗑";
+  deleteBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onDelete();
+  });
+  shell.appendChild(deleteBtn);
 }
 
 // Re-attaches the resize grip / promote button after every notes render.
@@ -9699,12 +9764,17 @@ function enhanceNotesImageControls() {
       // its raw slice within the enclosing token's content, keeping it exactly
       // where it sits under the bullet.
       const info = entry.images[0];
-      attachNotesImageResizeHandle(shell, img, (px) =>
-        commitDeepImageWidth(entry.tokenIndex, entry.imageRaw, info, px)
+      attachNotesImageResizeHandle(shell, img,
+        (px) => commitDeepImageWidth(entry.tokenIndex, entry.imageRaw, info, px),
+        () => removeNotesImage(entry.tokenIndex, null, entry.imageRaw, info.url)
       );
     } else {
       const subPos = entry.isRow ? subIndex : (entry.isInline ? entry.inlinePos : null);
-      attachNotesImageResizeHandle(shell, img, (px) => commitImageWidth(entry.tokenIndex, subPos, px));
+      const url = entry.images[entry.isRow ? subIndex : 0]?.url || "";
+      attachNotesImageResizeHandle(shell, img,
+        (px) => commitImageWidth(entry.tokenIndex, subPos, px),
+        () => removeNotesImage(entry.tokenIndex, subPos, null, url)
+      );
     }
   });
 }
@@ -13734,7 +13804,7 @@ function isEpubName(name) {
 // package document (.opf), whose <manifest> lists every resource and whose
 // <spine> gives the reading order. Chapters are converted to Markdown "as
 // is" via the same Turndown pipeline used for pasted rich text; embedded
-// images are uploaded through the existing ImgBB pipeline first so chapter
+// images are uploaded through the existing Supabase Storage pipeline first so chapter
 // Markdown can reference hosted URLs instead of in-zip paths.
 
 function epubDirname(path) {
@@ -13839,7 +13909,115 @@ async function parseEpubPackage(zip, opf) {
     if (entry) spine.push(entry);
   });
 
-  return { title, author, manifest, spine };
+  // Locates the table of contents: an EPUB3 nav document (the manifest item
+  // flagged properties="nav") if present, else the EPUB2 NCX the spine's toc
+  // attribute points at. Either is the authoritative, human-authored source
+  // for chapter titles — far more reliable than sniffing a body heading or a
+  // per-chapter <title>, which many converted/scanned books leave blank or
+  // set to the same placeholder ("Unknown", "Untitled") on every page.
+  let tocPath = "", tocRawPath = "";
+  const navItem = epubElementsByLocalName(doc, "item").find((item) =>
+    (item.getAttribute("properties") || "").split(/\s+/).includes("nav")
+  );
+  if (navItem?.getAttribute("href")) {
+    tocPath = resolveEpubPath(opfDir, navItem.getAttribute("href"));
+    tocRawPath = resolveEpubPathRaw(opfDirRaw, navItem.getAttribute("href"));
+  } else {
+    const tocId = epubElementsByLocalName(doc, "spine")[0]?.getAttribute("toc");
+    const tocEntry = tocId && manifest.get(tocId);
+    if (tocEntry) {
+      tocPath = tocEntry.path;
+      tocRawPath = tocEntry.rawPath;
+    }
+  }
+
+  return { title, author, manifest, spine, tocPath, tocRawPath };
+}
+
+// Reads the EPUB3 nav doc / EPUB2 NCX located above into an ordered list of
+// { path, anchorId, title } entries — one per TOC entry, in book reading
+// order. anchorId is "" for an entry that names an entire spine file (a
+// bare href with no #fragment) and non-empty for one that names a specific
+// point *inside* a shared file (many real books — this NCX included — mix
+// both: a bare entry per "chapter" file, and several anchored entries for
+// finer sub-headings that live inside one physical page alongside other
+// sub-headings). planEpubChapters below is what actually turns this list
+// into chapter boundaries, splitting mid-file where an anchor demands it.
+async function parseEpubToc(zip, pkg) {
+  const entries = [];
+  if (!pkg.tocPath) return entries;
+  let doc;
+  try {
+    doc = await readEpubXml(zip, pkg.tocPath, pkg.tocRawPath);
+  } catch (error) {
+    console.warn("EPUB table of contents could not be parsed, falling back to headings", error);
+    return entries;
+  }
+  const tocDir = epubDirname(pkg.tocPath);
+  const seen = new Set();
+
+  const addEntry = (href, label) => {
+    const text = String(label || "").trim().replace(/\s+/g, " ");
+    if (!href || !text) return;
+    const hashIndex = href.indexOf("#");
+    const anchorId = hashIndex === -1 ? "" : decodeURIComponent(href.slice(hashIndex + 1).trim());
+    const path = resolveEpubPath(tocDir, href);
+    if (!path) return;
+    const key = `${path}#${anchorId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push({ path, anchorId, title: text });
+  };
+
+  // EPUB3 nav: <nav epub:type="toc">…<a href="…">Label</a>…</nav>
+  const navEls = epubElementsByLocalName(doc, "nav");
+  const tocNav = navEls.find((nav) =>
+    (nav.getAttribute("epub:type") || nav.getAttribute("type") || "").includes("toc")
+  ) || navEls[0];
+  if (tocNav) {
+    epubElementsByLocalName(tocNav, "a").forEach((a) => addEntry(a.getAttribute("href"), a.textContent));
+  }
+
+  // EPUB2 NCX: <navPoint><navLabel><text>Label</text></navLabel><content src="…"/></navPoint>
+  epubElementsByLocalName(doc, "navPoint").forEach((navPoint) => {
+    const label = epubElementsByLocalName(navPoint, "text")[0]?.textContent;
+    const src = epubElementsByLocalName(navPoint, "content")[0]?.getAttribute("src");
+    addEntry(src, label);
+  });
+
+  return entries;
+}
+
+// Placeholder text some EPUB-generation tools stamp into every chapter's
+// <head><title> when the real per-page title wasn't preserved — treated as
+// "no title" rather than surfaced verbatim (which is what previously made
+// most chapters of a converted book show up as decks literally named
+// "Unknown").
+const GENERIC_EPUB_TITLE_RE = /^(unknown|untitled|no\s*title|n\/a|null|undefined)$/i;
+function isGenericEpubTitle(text) {
+  return GENERIC_EPUB_TITLE_RE.test(String(text || "").trim());
+}
+
+// Calibre-converted books commonly wrap an entire page's text in <h1> purely
+// as a page-break styling hook, not because it's a real heading — so a body
+// heading (or a stray <title>) longer than any real chapter title would be
+// is discarded rather than trusted, falling through to the next candidate.
+const MAX_EPUB_TITLE_LENGTH = 120;
+function normalizeEpubTitleCandidate(text) {
+  const value = String(text || "").trim().replace(/\s+/g, " ");
+  if (!value || value.length > MAX_EPUB_TITLE_LENGTH || isGenericEpubTitle(value)) return "";
+  return value;
+}
+
+// Shared title-resolution priority used by both the real import and the
+// table-of-contents preview shown before it starts, so the preview never
+// shows a chapter name the actual import wouldn't also produce: the book's
+// own table of contents beats a visible body heading, which beats the
+// chapter file's own <title> (skipped when generic or implausibly long).
+function epubChapterRawTitle(headingText, docTitleText, tocTitle, chapterNumber) {
+  const headingTitle = normalizeEpubTitleCandidate(headingText);
+  const docTitle = normalizeEpubTitleCandidate(docTitleText);
+  return tocTitle || headingTitle || docTitle || `Chapter ${chapterNumber}`;
 }
 
 // Hands control back to the browser so progress-modal updates actually paint
@@ -13857,19 +14035,50 @@ function epubYield() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-// Uploads every manifest image through the existing optimize+ImgBB pipeline,
-// returning a Map(zip path -> hosted URL). A failed upload just leaves that
-// image out of the map — epubChapterDocToMarkdown drops any <img> it can't
-// resolve rather than failing the whole book.
+// One image, retried before being given up on. An illustrated book is
+// hundreds of uploads back-to-back — exactly what trips a storage rate limiter
+// or catches a transient network blip — and unlike a one-off paste the user
+// can just redo, a single silent failure here is a figure permanently missing
+// from the middle of a chapter. So back off and try again rather than
+// dropping the image on the first refusal. Errors that re-trying cannot fix
+// (not signed in, or the request itself being rejected) fail out immediately.
+const EPUB_IMAGE_UPLOAD_ATTEMPTS = 4;
+const EPUB_IMAGE_RETRY_BASE_MS = 600;
+async function uploadEpubImageWithRetry(file) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await uploadImageToSupabase(file);
+    } catch (error) {
+      const worthRetrying = error?.message !== "NOT_SIGNED_IN" && !error?.authFailed;
+      if (!worthRetrying || attempt >= EPUB_IMAGE_UPLOAD_ATTEMPTS) throw error;
+      // 600ms, 1.2s, 2.4s — enough for a per-minute rate limit window to
+      // drain a little between attempts instead of hammering through it and
+      // burning every remaining image in the book.
+      await new Promise((resolve) => setTimeout(resolve, EPUB_IMAGE_RETRY_BASE_MS * 2 ** (attempt - 1)));
+    }
+  }
+}
+
+// Uploads every manifest image through the existing optimize+Supabase Storage
+// pipeline, returning { urlMap: Map(zip path -> hosted URL), failed: [zip path], reason }.
+// An image that still won't upload after retries is left out of the map, and
+// epubContainerToMarkdown then drops that <img> rather than failing the whole
+// book — but the paths and the last failure message come back so the import can
+// tell the user how many figures are missing and *why*, instead of leaving them
+// to notice the gaps themselves and guess. `reason` matters more than the count:
+// every image vanishing is almost always one systemic cause (a lost session,
+// a rate limit), and the message is what makes that fixable.
 async function uploadEpubImages(zip, imageEntries, progress) {
   const urlMap = new Map();
+  const failed = [];
+  let reason = "";
   for (let i = 0; i < imageEntries.length; i++) {
     const { path, rawPath, mediaType } = imageEntries[i];
     const label = `Uploading images ${i + 1}/${imageEntries.length}…`;
     setStatus(label);
     progress?.update(label, i / Math.max(imageEntries.length, 1));
     await epubYield();
-    if (progress?.cancelled()) return urlMap;
+    if (progress?.cancelled()) return { urlMap, failed, reason };
     const entry = epubZipFile(zip, path, rawPath);
     if (!entry) continue;
     try {
@@ -13877,39 +14086,66 @@ async function uploadEpubImages(zip, imageEntries, progress) {
       const name = path.split("/").pop() || `image-${i}`;
       const file = new File([blob], name, { type: mediaType || blob.type || "image/jpeg" });
       const optimized = await optimizeImage(file);
-      const url = await uploadImageToImgbb(optimized);
-      urlMap.set(path, url);
+      urlMap.set(path, await uploadEpubImageWithRetry(optimized));
     } catch (error) {
       console.warn("EPUB image upload failed, skipping", path, error);
+      failed.push(path);
+      reason = error?.message === "NOT_SIGNED_IN" ? "you're not signed in"
+        : error?.message === "OFFLINE" ? "this device is offline"
+        : String(error?.message || "upload failed");
+      // Give up on the whole run only when sign-in itself is the problem —
+      // missing, or rejected by storage's RLS policy. Every remaining upload
+      // would fail identically, and without this a lost session means sitting
+      // through hundreds of doomed uploads before being told none of them
+      // worked. Deliberately NOT triggered by ordinary failures: a rate limit
+      // or a single oversized file must not abandon the rest of the book's
+      // figures.
+      if (error?.message === "NOT_SIGNED_IN" || error?.authFailed) {
+        for (let j = i + 1; j < imageEntries.length; j++) failed.push(imageEntries[j].path);
+        break;
+      }
     }
   }
-  return urlMap;
+  return { urlMap, failed, reason };
 }
 
-// Rewrites embedded image references in a parsed chapter document to their
-// uploaded hosted URLs (or drops the image if it wasn't uploaded), then runs
-// the body through the same htmlToMarkdown() used for pasted rich text.
-function epubChapterDocToMarkdown(doc, chapterPath, imageUrlMap, chapterNumber, totalChapters) {
+// Parses one spine entry's XHTML into a Document. Falls back to HTML
+// parsing if the chapter isn't strict XHTML (common in loosely-authored
+// EPUBs).
+async function epubParseChapterDoc(zip, spineEntry) {
+  const entry = epubZipFile(zip, spineEntry.path, spineEntry.rawPath);
+  if (!entry) return null;
+  const html = await entry.async("text");
+  const xmlDoc = new DOMParser().parseFromString(html, "application/xhtml+xml");
+  return xmlDoc.querySelector("parsererror")
+    ? new DOMParser().parseFromString(html, "text/html")
+    : xmlDoc;
+}
+
+// Rewrites embedded image references within a container element (a whole
+// chapter body, or a Range-extracted fragment of one — see
+// extractEpubRangeMarkdown) to their uploaded hosted URLs (or drops the
+// image if it wasn't uploaded), then runs it through the same
+// htmlToMarkdown() used for pasted rich text.
+function epubContainerToMarkdown(container, doc, chapterPath, imageUrlMap) {
   const chapterDir = epubDirname(chapterPath);
-  const body = doc.body || doc.documentElement;
-  if (!body) return null;
 
   // An href already pointing outside the book (remote URL, data: URI) is
   // usable as-is and is kept untouched; an in-book one is swapped for its
   // uploaded URL, or dropped if the upload didn't happen (skipped, failed,
-  // or no ImgBB key) since an in-zip path would render as a broken image.
+  // or upload rejected) since an in-zip path would render as a broken image.
   const hostedSrcFor = (href) => {
     if (!href) return null;
     if (isExternalEpubHref(href)) return href.trim();
     return imageUrlMap.get(resolveEpubPath(chapterDir, href)) || null;
   };
 
-  body.querySelectorAll("img[src]").forEach((img) => {
+  container.querySelectorAll("img[src]").forEach((img) => {
     const src = hostedSrcFor(img.getAttribute("src"));
     if (src) img.setAttribute("src", src);
     else img.remove();
   });
-  body.querySelectorAll("image").forEach((image) => {
+  container.querySelectorAll("image").forEach((image) => {
     const src = hostedSrcFor(
       image.getAttributeNS("http://www.w3.org/1999/xlink", "href")
       || image.getAttribute("xlink:href")
@@ -13924,34 +14160,232 @@ function epubChapterDocToMarkdown(doc, chapterPath, imageUrlMap, chapterNumber, 
     }
   });
 
-  const heading = body.querySelector("h1, h2, h3, h4, h5, h6");
-  const rawTitle = (doc.title || heading?.textContent || "").trim().replace(/\s+/g, " ") || `Chapter ${chapterNumber}`;
-  // Numbered so chapters are easy to read in order regardless of which My
-  // Decks view/sort is active — the book's own heading text is kept as-is
-  // after the number rather than replaced, and untouched inside the chapter
-  // body below (original layout stays intact there).
-  const padWidth = String(totalChapters || chapterNumber).length;
-  const title = `${String(chapterNumber).padStart(padWidth, "0")}. ${rawTitle}`;
-
   // epubMode keeps citation/footnote <sup> markers (and <sub>) instead of
   // stripping them the way the web-paste path does — see htmlToMarkdown.
-  const markdown = htmlToMarkdown(body.innerHTML, { epubMode: true }).trim();
-  if (!markdown) return null;
-
-  return { title, markdown };
+  return htmlToMarkdown(container.innerHTML, { epubMode: true }).trim();
 }
 
-// Converts one spine chapter's XHTML to Markdown. Falls back to HTML parsing
-// if the chapter isn't strict XHTML (common in loosely-authored EPUBs).
-async function epubChapterToMarkdown(zip, spineEntry, imageUrlMap, chapterNumber, totalChapters) {
-  const entry = epubZipFile(zip, spineEntry.path, spineEntry.rawPath);
-  if (!entry) return null;
-  const html = await entry.async("text");
-  const xmlDoc = new DOMParser().parseFromString(html, "application/xhtml+xml");
-  const doc = xmlDoc.querySelector("parsererror")
-    ? new DOMParser().parseFromString(html, "text/html")
-    : xmlDoc;
-  return epubChapterDocToMarkdown(doc, spineEntry.path, imageUrlMap, chapterNumber, totalChapters);
+// Maps every id in one parsed chapter document to its element, for resolving
+// in-file TOC anchors (href="chapter.html#some-id"). Built by scanning once
+// rather than doing a `[id="…"]` CSS lookup per anchor: ids come straight out
+// of arbitrary book markup and one containing a quote or bracket would break
+// selector syntax, and a single file here can carry dozens of anchors. First
+// id wins, matching how a browser resolves a duplicated id.
+function buildEpubIdMap(doc) {
+  const map = new Map();
+  const all = doc.getElementsByTagName("*");
+  for (let i = 0; i < all.length; i++) {
+    const id = all[i].getAttribute("id");
+    if (id && !map.has(id)) map.set(id, all[i]);
+  }
+  return map;
+}
+
+// Extracts the Markdown for the slice of one chapter document's body that
+// falls between two points — startNode inclusive (or the very start of the
+// body when null) up to endNode exclusive (or the very end when null) —
+// using Range.cloneContents(), which correctly reconstructs any ancestor
+// element straddling the cut (e.g. a <div> that has to be "split" because
+// only its second half belongs in this slice) rather than requiring the
+// split points to land on clean element boundaries. This is what lets a
+// single physical chapter file be divided at its own internal sub-heading
+// anchors — see planEpubChapters / convertEpubChapters.
+function extractEpubRangeMarkdown(doc, body, startNode, endNode, chapterPath, imageUrlMap) {
+  const range = doc.createRange();
+  if (startNode) range.setStartBefore(startNode);
+  else range.setStart(body, 0);
+  if (endNode) range.setEndBefore(endNode);
+  else range.setEnd(body, body.childNodes.length);
+  if (range.collapsed) return "";
+  const container = doc.createElement("div");
+  container.appendChild(range.cloneContents());
+  return epubContainerToMarkdown(container, doc, chapterPath, imageUrlMap);
+}
+
+// Turns the book's table of contents into an ordered list of chapter-start
+// "markers" — { spineIndex, anchorId, title } — spanning the whole book.
+// Two kinds of source, both from parseEpubToc's entries:
+//  - a bare entry (anchorId "") names an entire spine file as one chapter;
+//  - an anchored entry names a point *inside* a spine file that also holds
+//    other content — e.g. one physical page with an unlabeled intro
+//    paragraph followed by several named sub-headings, which is exactly
+//    how this class of Calibre conversion lays a chapter out. Each such
+//    anchor becomes its own chapter boundary rather than being ignored or
+//    merged wholesale into whichever chapter the file's name suggests.
+// If the very first marker doesn't already sit at the top of the very
+// first spine file, a synthetic leading marker (title resolved later via
+// heading fallback) is prepended to cover the front matter a book's TOC
+// often doesn't bother naming (cover, half-title, etc). Falls back to one
+// marker per spine file — title resolved per-file via heading fallback,
+// the pre-TOC behavior — when the book has no usable TOC at all.
+function planEpubChapters(spine, tocEntries) {
+  if (!tocEntries.length) {
+    return spine.map((entry, i) => ({ spineIndex: i, anchorId: "", title: "" }));
+  }
+  const pathToIndex = new Map(spine.map((entry, i) => [entry.path, i]));
+  const markers = [];
+  tocEntries.forEach((e) => {
+    const spineIndex = pathToIndex.get(e.path);
+    if (spineIndex === undefined) return; // TOC points outside the spine (broken/foreign book) — ignore
+    markers.push({ spineIndex, anchorId: e.anchorId, title: e.title });
+  });
+  markers.sort((a, b) => a.spineIndex - b.spineIndex); // stable: preserves TOC order within the same file
+  if (!markers.length || markers[0].spineIndex !== 0 || markers[0].anchorId) {
+    markers.unshift({ spineIndex: 0, anchorId: "", title: "" });
+  }
+  return markers;
+}
+
+// Fills in the title of every marker that doesn't already have one, in
+// place, so the preview list and the decks the import actually creates are
+// guaranteed to read from the same resolved titles rather than each running
+// their own fallback (which previously disagreed: the preview named the
+// leading front-matter chapter from its heading while the import, which had
+// no fallback on that path, called the same deck "Chapter 1"). Markers
+// sourced from the TOC already carry their real title; only a synthetic
+// leading marker — or every marker, for a book with no TOC at all — needs
+// the per-file heading/<title> fallback that costs a zip read.
+async function resolveEpubMarkerTitles(zip, spine, markers) {
+  for (let i = 0; i < markers.length; i++) {
+    if (markers[i].title) continue;
+    try {
+      const doc = await epubParseChapterDoc(zip, spine[markers[i].spineIndex]);
+      const body = doc?.body || doc?.documentElement;
+      const heading = body?.querySelector("h1, h2, h3, h4, h5, h6");
+      markers[i].title = epubChapterRawTitle(heading?.textContent, doc?.title, "", i + 1);
+    } catch (error) {
+      markers[i].title = `Chapter ${i + 1}`;
+    }
+  }
+  return markers;
+}
+
+// The numbered chapter-title lines shown in the preview modal, so the user
+// sees the book's actual table of contents before committing to the import
+// rather than just a chapter count. Titles come from resolveEpubMarkerTitles,
+// the same ones the import itself will use.
+function buildEpubTocPreview(markers) {
+  const padWidth = String(markers.length).length;
+  return markers.map((m, i) => `${String(i + 1).padStart(padWidth, "0")}. ${m.title}`);
+}
+
+// Walks the spine once, cutting each file's body at whichever of its
+// markers resolve to a real in-file anchor (Range-based — see
+// extractEpubRangeMarkdown) and appending each slice's Markdown to whatever
+// chapter is "current" at that point in the book. A file with no markers of
+// its own is entirely a continuation of the chapter already running; a
+// file's content before its own first anchor (when that anchor isn't at the
+// very top) continues the chapter running from before this file, same as a
+// markerless file would. Returns the final {title, markdown} decks, already
+// numbered and with empty ones dropped.
+async function convertEpubChapters(zip, spine, markers, imageUrlMap, progress) {
+  const markersByFile = new Map();
+  markers.forEach((m) => {
+    if (!markersByFile.has(m.spineIndex)) markersByFile.set(m.spineIndex, []);
+    markersByFile.get(m.spineIndex).push(m);
+  });
+
+  const chapters = [];
+  let current = null;
+  const startChapter = (title) => {
+    current = { title: title || `Chapter ${chapters.length + 1}`, parts: [] };
+    chapters.push(current);
+  };
+
+  for (let spineIndex = 0; spineIndex < spine.length; spineIndex++) {
+    // Counted in spine files, not chapters: one file can hold several
+    // chapters (or half of one), so a "chapter i/N" label here would
+    // contradict the chapter count the preview just showed.
+    const label = `Converting page ${spineIndex + 1}/${spine.length}…`;
+    setStatus(label);
+    progress?.update(label, spineIndex / Math.max(spine.length, 1));
+    await epubYield();
+    if (progress?.cancelled()) break;
+    const spineEntry = spine[spineIndex];
+    let doc;
+    try {
+      doc = await epubParseChapterDoc(zip, spineEntry);
+    } catch (error) {
+      console.warn("EPUB chapter parse failed, skipping", spineEntry.path, error);
+      continue;
+    }
+    const body = doc?.body || doc?.documentElement;
+    if (!body) continue;
+
+    const fileMarkers = markersByFile.get(spineIndex) || [];
+    const positions = [];
+    if (fileMarkers.length) {
+      const idMap = fileMarkers.some((m) => m.anchorId) ? buildEpubIdMap(doc) : null;
+      const seenNodes = new Set();
+      fileMarkers.forEach((m) => {
+        if (!m.anchorId) { positions.push({ marker: m, node: null }); return; }
+        const node = idMap.get(m.anchorId);
+        // Anchors that don't resolve to a real element inside this file's
+        // body, and two anchors landing on the same element, are dropped
+        // rather than allowed to cut the body at a nonsense point: either
+        // would produce an empty or backwards Range below and silently eat
+        // the text around it.
+        if (!node || !body.contains(node) || seenNodes.has(node)) return;
+        seenNodes.add(node);
+        positions.push({ marker: m, node });
+      });
+      // A TOC's listed order isn't guaranteed to match the order its anchors
+      // physically appear in the file. Cutting at points taken out of
+      // document order would build backwards Ranges, which collapse to
+      // nothing and drop that chapter's text, so sort by real document
+      // position. The bare (whole-file) marker, if any, always leads.
+      positions.sort((a, b) => {
+        if (!a.node) return -1;
+        if (!b.node) return 1;
+        return a.node.compareDocumentPosition(b.node) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+    }
+
+    if (!positions.length) {
+      // Nothing usable targets this file specifically: it's either a pure
+      // continuation page, or (only possible for spine index 0) a book with
+      // no TOC at all reaching its per-file fallback.
+      const markdown = epubContainerToMarkdown(body, doc, spineEntry.path, imageUrlMap);
+      if (markdown) {
+        // No chapter is running yet only if every file before this one
+        // failed to parse — the plan always puts a marker on spine index 0.
+        if (!current) {
+          const heading = body.querySelector("h1, h2, h3, h4, h5, h6");
+          startChapter(epubChapterRawTitle(heading?.textContent, doc.title, "", chapters.length + 1));
+        }
+        current.parts.push(markdown);
+      }
+      continue;
+    }
+
+    try {
+      if (positions[0].node) {
+        const leading = extractEpubRangeMarkdown(doc, body, null, positions[0].node, spineEntry.path, imageUrlMap);
+        if (leading && current) current.parts.push(leading);
+      }
+      for (let i = 0; i < positions.length; i++) {
+        const startNode = positions[i].node;
+        const endNode = positions[i + 1]?.node || null;
+        startChapter(positions[i].marker.title);
+        const segment = extractEpubRangeMarkdown(doc, body, startNode, endNode, spineEntry.path, imageUrlMap);
+        if (segment) current.parts.push(segment);
+      }
+    } catch (error) {
+      console.warn("EPUB chapter split failed for this file, its remaining content may be missing", spineEntry.path, error);
+    }
+  }
+
+  // Chapters that produced nothing at all (an image-only cover page when
+  // images were skipped, a bare divider heading) are dropped rather than
+  // saved as blank decks — and the numbering is applied only after that, so
+  // what lands in My Decks is always a gapless 01..N rather than starting at
+  // "02" with a hole where the dropped chapter would have been.
+  const kept = chapters.filter((c) => c.parts.length);
+  const padWidth = String(kept.length).length;
+  return kept.map((c, i) => ({
+    title: `${String(i + 1).padStart(padWidth, "0")}. ${c.title}`,
+    markdown: c.parts.join("\n\n")
+  }));
 }
 
 // How many decks already sit in the folder this book would import into.
@@ -13967,8 +14401,9 @@ function epubTargetFolderDeckCount(bookTitle) {
 // Analysis panel shown right after a fast, network-free parse of the EPUB's
 // container.xml + package document — before any image upload or chapter
 // conversion starts, so the user sees book title/author/counts almost
-// instantly instead of a silent wait. Resolves true (Import) / false (Cancel).
-function showEpubPreview({ title, author, chapterCount, imageCount, existingDeckCount = 0 }) {
+// instantly instead of a silent wait. Resolves { mode: "chapters" | "book" }
+// (Import) or null (Cancel).
+function showEpubPreview({ title, author, chapterCount, imageCount, existingDeckCount = 0, chaptersPromise }) {
   return new Promise((resolve) => {
     const modal = document.createElement("section");
     modal.className = "category-choice-modal epub-preview-modal";
@@ -13988,7 +14423,27 @@ function showEpubPreview({ title, author, chapterCount, imageCount, existingDeck
         <div class="epub-preview-stat"><strong class="epub-preview-chapters"></strong><span>Chapters</span></div>
         <div class="epub-preview-stat"><strong class="epub-preview-images"></strong><span>Images</span></div>
       </div>
-      <p class="restore-note">Each chapter becomes its own deck (Notes only, no flashcards) inside a new folder named after the book.</p>
+      <div class="epub-preview-mode" role="radiogroup" aria-label="Import as">
+        <label class="epub-preview-mode-option">
+          <input type="radio" name="epub-import-mode" value="chapters" checked>
+          <span>
+            <strong>Separate deck per chapter</strong>
+            <small>One deck per chapter (notes only), inside a new folder named after the book.</small>
+          </span>
+        </label>
+        <label class="epub-preview-mode-option">
+          <input type="radio" name="epub-import-mode" value="book">
+          <span>
+            <strong>Single deck for the whole book</strong>
+            <small>All chapters combined into one deck's notes, with chapter titles kept as headings.</small>
+          </span>
+        </label>
+      </div>
+      <div class="epub-preview-toc">
+        <p class="epub-preview-toc-label">Table of contents</p>
+        <p class="epub-preview-toc-loading">Reading chapter titles…</p>
+        <ol class="epub-preview-toc-list" hidden></ol>
+      </div>
       <p class="restore-note epub-preview-warning" hidden></p>
       <div class="category-choice-actions">
         <button type="button" data-epub-cancel>Cancel</button>
@@ -14002,28 +14457,61 @@ function showEpubPreview({ title, author, chapterCount, imageCount, existingDeck
     shell.querySelector(".epub-preview-chapters").textContent = String(chapterCount);
     shell.querySelector(".epub-preview-images").textContent = String(imageCount);
 
+    // The stat tiles above render instantly (they only need container.xml +
+    // the package document); the full per-chapter title list takes an extra
+    // local pass over the zip, so it streams in a beat later behind a
+    // loading line rather than delaying the whole modal's appearance.
+    if (chaptersPromise) {
+      chaptersPromise.then((lines) => {
+        if (!modal.isConnected) return;
+        const loading = shell.querySelector(".epub-preview-toc-loading");
+        const list = shell.querySelector(".epub-preview-toc-list");
+        if (!lines.length) {
+          if (loading) loading.textContent = "No table of contents found.";
+          return;
+        }
+        loading?.remove();
+        if (list) {
+          list.hidden = false;
+          lines.forEach((line) => {
+            const li = document.createElement("li");
+            li.className = "epub-preview-toc-item";
+            li.title = line;
+            li.textContent = line;
+            list.appendChild(li);
+          });
+        }
+      }).catch(() => {
+        const loading = shell.querySelector(".epub-preview-toc-loading");
+        if (loading) loading.textContent = "Could not read chapter titles.";
+      });
+    }
+
+    // The "folder already holds N decks" warning only applies to the
+    // per-chapter mode (the whole-book mode saves one deck, no folder), so
+    // it toggles with the mode choice rather than being fixed at open time.
     const warning = shell.querySelector(".epub-preview-warning");
+    const modeInputs = shell.querySelectorAll('input[name="epub-import-mode"]');
+    const selectedMode = () => shell.querySelector('input[name="epub-import-mode"]:checked')?.value || "chapters";
+    const updateWarningVisibility = () => {
+      warning.hidden = !(selectedMode() === "chapters" && existingDeckCount > 0);
+    };
     if (existingDeckCount > 0) {
       warning.textContent = `⚠ That folder already holds ${existingDeckCount} deck${existingDeckCount === 1 ? "" : "s"} — importing again adds a second copy of every chapter rather than replacing them.`;
-      warning.hidden = false;
     }
-    if (imageCount > 0 && !loadImgbbKey()) {
-      const note = document.createElement("p");
-      note.className = "restore-note";
-      note.textContent = "No ImgBB key set yet — you'll be asked for one next, or you can skip it and import the text only.";
-      warning.after(note);
-    }
+    modeInputs.forEach((input) => input.addEventListener("change", updateWarningVisibility));
+    updateWarningVisibility();
 
     const cleanup = (value) => {
       modal.remove();
       resolve(value);
     };
     shell.querySelectorAll("[data-epub-cancel]").forEach((button) => {
-      button.addEventListener("click", () => cleanup(false));
+      button.addEventListener("click", () => cleanup(null));
     });
-    shell.querySelector("[data-epub-confirm]")?.addEventListener("click", () => cleanup(true));
+    shell.querySelector("[data-epub-confirm]")?.addEventListener("click", () => cleanup({ mode: selectedMode() }));
     modal.addEventListener("click", (event) => {
-      if (event.target === modal) cleanup(false);
+      if (event.target === modal) cleanup(null);
     });
 
     modal.appendChild(shell);
@@ -14084,27 +14572,13 @@ function showEpubProgress(title) {
 }
 
 // Uploads images, converts every spine chapter, then saves one deck per
-// chapter into a new folder named after the book. Runs after the ImgBB key
-// is confirmed present (or the book has no images at all).
-async function runEpubImport(zip, pkg, bookTitle, imageEntries) {
+// chapter into a new folder named after the book.
+async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = "chapters") {
   const progress = showEpubProgress(bookTitle);
   try {
-    const imageUrlMap = await uploadEpubImages(zip, imageEntries, progress);
-
-    const chapters = [];
-    for (let i = 0; i < pkg.spine.length; i++) {
-      const label = `Converting chapter ${i + 1}/${pkg.spine.length}…`;
-      setStatus(label);
-      progress.update(label, i / Math.max(pkg.spine.length, 1));
-      await epubYield();
-      if (progress.cancelled()) break;
-      try {
-        const chapter = await epubChapterToMarkdown(zip, pkg.spine[i], imageUrlMap, i + 1, pkg.spine.length);
-        if (chapter) chapters.push(chapter);
-      } catch (error) {
-        console.warn("EPUB chapter conversion failed, skipping", pkg.spine[i].path, error);
-      }
-    }
+    const { urlMap: imageUrlMap, failed: failedImages, reason: imageFailReason } =
+      await uploadEpubImages(zip, imageEntries, progress);
+    const chapters = await convertEpubChapters(zip, pkg.spine, markers, imageUrlMap, progress);
 
     if (!chapters.length) {
       const message = progress.cancelled()
@@ -14115,52 +14589,75 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries) {
       return;
     }
 
-    const sanitizedTitle = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
-    const parentFolder = currentMyDecksFolder();
-    const folderPath = normalizeDeckCategory(parentFolder ? `${parentFolder}${FOLDER_SEP}${sanitizedTitle}` : sanitizedTitle);
-    addKnownFolder(folderPath);
-
     // Chapter decks are written directly via saveDeckToLibrary rather than the
     // single-deck-at-a-time editor flow (createNewDeck etc.) — save/restore the
-    // in-memory working deck around the loop so this doesn't clobber whatever
-    // deck the user had open before starting the import.
+    // in-memory working deck around the save(s) so this doesn't clobber
+    // whatever deck the user had open before starting the import.
     const savedState = {
       deckId: state.deckId, localDeckId: state.localDeckId, deckTitle: state.deckTitle,
       deckCategory: state.deckCategory, notes: state.notes, masterCards: state.masterCards,
       sourceTitle: state.sourceTitle
     };
 
-    // My Decks defaults to sorting by recency descending (deckAccessTime) — so
-    // chapter 1 gets the newest updatedAt/createdAt and each later chapter a
-    // second older, which is what puts them back in reading order on screen
-    // under the default sort (and under "Last updated" / "Date created", which
-    // derive from the same stagger). A user who's switched to title or size
-    // sort will see chapters in that order instead — an accepted tradeoff of
-    // sort being user-selectable now.
-    const baseTime = Date.now();
+    const sanitizedTitle = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
+    const parentFolder = currentMyDecksFolder();
+    let folderPath;
     let saved = 0;
     let saveFailed = false;
-    for (let i = 0; i < chapters.length; i++) {
-      const label = `Creating chapter decks ${i + 1}/${chapters.length}…`;
-      setStatus(label);
-      progress.update(label, i / Math.max(chapters.length, 1));
-      await epubYield();
-      if (progress.cancelled()) break;
+
+    if (mode === "book") {
+      // Whole-book mode: one deck, no book-named folder — each chapter's
+      // title survives as a "##" heading inside the single note, so the
+      // existing in-note table of contents still gives chapter-by-chapter
+      // navigation without creating a deck per chapter.
+      folderPath = parentFolder;
+      const combinedMarkdown = chapters.map((c) => `## ${c.title}\n\n${c.markdown}`).join("\n\n---\n\n");
+      setStatus(`Saving "${bookTitle}"…`);
+      progress.update(`Saving "${bookTitle}"…`, 0.9);
       state.deckId = null;
       state.localDeckId = null;
-      state.deckTitle = chapters[i].title;
+      state.deckTitle = sanitizedTitle;
       state.deckCategory = folderPath;
-      state.notes = chapters[i].markdown;
+      state.notes = combinedMarkdown;
       state.masterCards = [];
-      state.sourceTitle = chapters[i].title;
-      // A book is many decks in one go, so this is the realistic way to hit the
-      // storage quota. saveDeckToLibrary returns null (never throws) on failure
-      // — ignoring that would leave a half-imported book behind a "Done" toast.
-      if (!saveDeckToLibrary({ silent: true, updatedAt: new Date(baseTime - i * 1000).toISOString() })) {
-        saveFailed = true;
-        break;
+      state.sourceTitle = sanitizedTitle;
+      if (saveDeckToLibrary({ silent: true })) saved = 1;
+      else saveFailed = true;
+    } else {
+      folderPath = normalizeDeckCategory(parentFolder ? `${parentFolder}${FOLDER_SEP}${sanitizedTitle}` : sanitizedTitle);
+      addKnownFolder(folderPath);
+
+      // My Decks defaults to sorting by recency descending (deckAccessTime) —
+      // so chapter 1 gets the newest updatedAt/createdAt and each later
+      // chapter a second older, which is what puts them back in reading
+      // order on screen under the default sort (and under "Last updated" /
+      // "Date created", which derive from the same stagger). A user who's
+      // switched to title or size sort will see chapters in that order
+      // instead — an accepted tradeoff of sort being user-selectable now.
+      const baseTime = Date.now();
+      for (let i = 0; i < chapters.length; i++) {
+        const label = `Creating chapter decks ${i + 1}/${chapters.length}…`;
+        setStatus(label);
+        progress.update(label, i / Math.max(chapters.length, 1));
+        await epubYield();
+        if (progress.cancelled()) break;
+        state.deckId = null;
+        state.localDeckId = null;
+        state.deckTitle = chapters[i].title;
+        state.deckCategory = folderPath;
+        state.notes = chapters[i].markdown;
+        state.masterCards = [];
+        state.sourceTitle = chapters[i].title;
+        // A book is many decks in one go, so this is the realistic way to hit
+        // the storage quota. saveDeckToLibrary returns null (never throws) on
+        // failure — ignoring that would leave a half-imported book behind a
+        // "Done" toast.
+        if (!saveDeckToLibrary({ silent: true, updatedAt: new Date(baseTime - i * 1000).toISOString() })) {
+          saveFailed = true;
+          break;
+        }
+        saved += 1;
       }
-      saved += 1;
     }
 
     Object.assign(state, savedState);
@@ -14176,23 +14673,42 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries) {
     if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
     else openMyDecksPanel();
 
-    const chapterWord = `chapter${saved === 1 ? "" : "s"}`;
     if (saveFailed) {
-      const message = lastSaveErrorWasQuota
-        ? `Only ${saved} of ${chapters.length} chapters saved — device storage is full. Delete some decks and re-import.`
-        : `Only ${saved} of ${chapters.length} chapters could be saved.`;
-      progress.update(message, saved / Math.max(chapters.length, 1));
+      const message = mode === "book"
+        ? (lastSaveErrorWasQuota ? "Could not save — device storage is full." : "Could not save this deck.")
+        : lastSaveErrorWasQuota
+          ? `Only ${saved} of ${chapters.length} chapters saved — device storage is full. Delete some decks and re-import.`
+          : `Only ${saved} of ${chapters.length} chapters could be saved.`;
+      progress.update(message, saved / Math.max(mode === "book" ? 1 : chapters.length, 1));
       setStatus(message, "error");
       showToast(message, "error");
       return;
     }
 
-    const summary = progress.cancelled()
-      ? `Import stopped — kept ${saved} ${chapterWord} of "${bookTitle}"`
-      : `Imported "${bookTitle}" — ${saved} ${chapterWord}`;
+    const chapterWord = `chapter${saved === 1 ? "" : "s"}`;
+    const bookChapterWord = `chapter${chapters.length === 1 ? "" : "s"}`;
+    const summary = mode === "book"
+      ? (progress.cancelled()
+          ? `Import stopped — saved "${bookTitle}" with ${chapters.length} ${bookChapterWord} converted so far`
+          : `Imported "${bookTitle}" as one deck (${chapters.length} ${bookChapterWord})`)
+      : progress.cancelled()
+        ? `Import stopped — kept ${saved} ${chapterWord} of "${bookTitle}"`
+        : `Imported "${bookTitle}" — ${saved} ${chapterWord}`;
     progress.update(summary, 1);
     setStatus(`${summary}.`);
-    showToast(summary, progress.cancelled() ? "info" : undefined);
+    // An image that never made it into the notes is silent data loss — the
+    // book still imports and the toast would otherwise claim a clean run,
+    // leaving the reader to find the holes themselves. Said out loud, with
+    // the cause, since "0 of 218 images" is only actionable once you know why.
+    const imageNote = failedImages.length
+      ? `${failedImages.length} of ${imageEntries.length} image${failedImages.length === 1 ? "" : "s"} could not be uploaded${imageFailReason ? ` (${imageFailReason})` : ""} and are missing from the notes.`
+      : "";
+    if (imageNote) {
+      setStatus(`${summary}. ${imageNote}`, "error");
+      showToast(`${summary} — ${imageNote}`, "error");
+    } else {
+      showToast(summary, progress.cancelled() ? "info" : undefined);
+    }
   } finally {
     progress.close();
   }
@@ -14228,30 +14744,39 @@ async function importEpubFile(file) {
   const bookTitle = pkg.title || file.name.replace(/\.epub$/i, "");
   const imageEntries = Array.from(pkg.manifest.values()).filter((entry) => entry.mediaType.startsWith("image/"));
 
-  const confirmed = await showEpubPreview({
+  // Computed once up front and reused by both the preview and the real
+  // import. markers — not the raw spine — is the real source of truth for
+  // "how many decks will this book become": see planEpubChapters for why a
+  // spine file and a resulting chapter deck aren't always one-to-one.
+  // Resolving the titles can need a zip read per marker, so it stays off the
+  // modal's critical path behind a loading line and the stat tiles still
+  // appear as fast as before.
+  const tocEntries = await parseEpubToc(zip, pkg);
+  const markers = planEpubChapters(pkg.spine, tocEntries);
+  const tocPreviewPromise = resolveEpubMarkerTitles(zip, pkg.spine, markers).then(buildEpubTocPreview);
+
+  const choice = await showEpubPreview({
     title: bookTitle,
     author: pkg.author,
-    chapterCount: pkg.spine.length,
+    chapterCount: markers.length,
     imageCount: imageEntries.length,
-    existingDeckCount: epubTargetFolderDeckCount(bookTitle)
+    existingDeckCount: epubTargetFolderDeckCount(bookTitle),
+    chaptersPromise: tocPreviewPromise
   });
-  if (!confirmed) {
+  if (!choice) {
     setStatus("EPUB import cancelled.");
     return;
   }
+  const mode = choice.mode === "book" ? "book" : "chapters";
 
-  // Prompt for the key once up front rather than once per image. Cancelling is
-  // a legitimate choice ("just give me the text") — not a reason to withhold
-  // the whole book, so fall through with images skipped rather than aborting.
-  if (imageEntries.length && !loadImgbbKey()) {
-    showImgbbKeyModal(
-      () => runEpubImport(zip, pkg, bookTitle, imageEntries),
-      () => runEpubImport(zip, pkg, bookTitle, [])
-    );
-    return;
-  }
+  // resolveEpubMarkerTitles fills the markers in place, and Import is
+  // clickable before it finishes — so settle it here or a fast click would
+  // hand runEpubImport half-untitled markers and name those decks
+  // "Chapter N". Already-resolved by now in every practical case; a failure
+  // is non-fatal (the titles it couldn't read just keep their fallbacks).
+  await tocPreviewPromise.catch(() => {});
 
-  await runEpubImport(zip, pkg, bookTitle, imageEntries);
+  await runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode);
 }
 
 async function collectMarkdownFromZip(input, prefix = "", depth = 0) {
@@ -14936,8 +15461,6 @@ document.getElementById("setupForm")?.addEventListener("submit", (e) => {
   }
 
   saveSupabaseConfig(url, key);
-  const imgbbKey = document.getElementById("setupImgbbKey")?.value || "";
-  saveImgbbKey(imgbbKey);
   initSupabaseClient();
   setupAuthListener();
   showLoginScreen();
@@ -15928,7 +16451,7 @@ if (helpModal) {
   });
 }
 
-// ----- Image upload (ImgBB) -----------------------------------------------
+// ----- Image upload (Supabase Storage) -------------------------------------
 // Insert `text` at the textarea's caret and fire an input event so card state saves.
 // `atPos` overrides the live caret — needed for the toolbar image button, where the
 // file picker blurs the textarea and resets its selection before insertion.
@@ -16018,83 +16541,77 @@ function optimizeImage(file) {
   });
 }
 
-// Upload an image File/Blob to ImgBB, returning the permanent direct URL (i.ibb.co/…).
-async function uploadImageToImgbb(file) {
-  const key = loadImgbbKey();
-  if (!key) throw new Error("NO_KEY");
-  if (!navigator.onLine) throw new Error("OFFLINE");
-  const form = new FormData();
-  form.append("image", file);
-  const res = await fetch(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(key)}`, {
-    method: "POST",
-    body: form
-  });
-  const json = await res.json().catch(() => null);
-  if (!json?.success || !json?.data?.url) {
-    throw new Error(json?.error?.message || "Upload failed");
+// Storage bucket for uploaded images (see supabase_image_storage.sql). Public
+// read so a rendered `![](url)` works with no signed-in context; writes are
+// scoped per-user by RLS, keyed on the user.id folder prefix used below.
+const IMAGE_BUCKET = "images";
+
+// Extension for the stored object's filename. Superset of IMAGE_MIME_EXT (which
+// only ever sees optimized webp/jpeg/png blobs) so GIF/SVG — passed through
+// un-optimized — get a real extension instead of ".img". Purely cosmetic:
+// Storage serves the content-type set at upload, not one inferred from the name.
+const IMAGE_STORAGE_EXT = {
+  "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
+  "image/gif": "gif", "image/svg+xml": "svg"
+};
+
+// Resolves a Supabase public-storage URL back to its object path within
+// IMAGE_BUCKET, or null if `url` isn't one of ours (a legacy ImgBB/Drive/
+// external link) — the signal deleteSupabaseImage uses to know whether
+// there's anything it can actually delete.
+function supabaseImagePathFromUrl(url) {
+  if (!supabaseClient || !url) return null;
+  const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("");
+  const prefix = data?.publicUrl || "";
+  if (!prefix || !url.startsWith(prefix)) return null;
+  return url.slice(prefix.length).replace(/^\/+/, "");
+}
+
+// Best-effort delete of an uploaded image's underlying storage object. A no-op
+// for URLs we didn't host (nothing to delete) or once the reference is already
+// gone — this only ever runs after the note-side removal already succeeded, so
+// a failure here is logged, not surfaced, rather than undoing that removal.
+async function deleteSupabaseImage(url) {
+  const path = supabaseImagePathFromUrl(url);
+  if (!path) return;
+  try {
+    const { error } = await supabaseClient.storage.from(IMAGE_BUCKET).remove([path]);
+    if (error) console.warn("Could not delete image from storage", error);
+  } catch (error) {
+    console.warn("Could not delete image from storage", error);
   }
-  return json.data.url;
 }
 
-// Show the in-app ImgBB key modal (a real overlay — unlike window.prompt it survives
-// switching windows to copy the key). On save it stores the key and runs the pending
-// callback. Listeners are wired once; the callback is kept in module scope so calling
-// this again (e.g. a second image before a key is set) just replaces the callback
-// instead of stacking duplicate handlers.
-let imgbbModalWired = false;
-let imgbbPendingOnSaved = null;
-// Optional: lets a caller treat "no key" as a survivable branch (the EPUB
-// importer carries on without images) instead of a dead end. Callers that
-// omit it keep the original behaviour — cancel just toasts and stops.
-let imgbbPendingOnCancel = null;
-
-function showImgbbKeyModal(onSaved, onCancel) {
-  const overlay = document.getElementById("imgbbOverlay");
-  const form = document.getElementById("imgbbForm");
-  const input = document.getElementById("imgbbKeyInput");
-  const errEl = document.getElementById("imgbbError");
-  const cancelBtn = document.getElementById("imgbbCancelBtn");
-  if (!overlay || !form || !input) return;
-
-  imgbbPendingOnSaved = typeof onSaved === "function" ? onSaved : null;
-  imgbbPendingOnCancel = typeof onCancel === "function" ? onCancel : null;
-  errEl.textContent = "";
-  input.value = loadImgbbKey();
-  overlay.hidden = false;
-  input.focus();
-
-  if (imgbbModalWired) return;
-  imgbbModalWired = true;
-
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const key = input.value.trim();
-    if (key.length < 20) {
-      errEl.textContent = "That key looks too short — paste the full ImgBB API key.";
-      return;
-    }
-    saveImgbbKey(key);
-    overlay.hidden = true;
-    const cb = imgbbPendingOnSaved;
-    imgbbPendingOnSaved = null;
-    imgbbPendingOnCancel = null;
-    if (cb) cb();
+// Upload an image File/Blob to the signed-in user's own Supabase Storage
+// bucket, returning its permanent public URL. Unlike ImgBB there's no separate
+// API key to manage — the same login that unlocks sync also unlocks uploads,
+// and because it's the user's own project, the image can later be deleted too
+// (deleteSupabaseImage), which ImgBB's plain public-link API never allowed.
+async function uploadImageToSupabase(file) {
+  if (!navigator.onLine) throw new Error("OFFLINE");
+  if (!supabaseClient || !isSignedIn) throw new Error("NOT_SIGNED_IN");
+  // Read the id from the cached session (no network) rather than getUser()
+  // (a round-trip per call) — a bulk EPUB import is hundreds of uploads
+  // back-to-back, and one auth request each would dominate the import time.
+  const session = await getCachedSession();
+  const userId = session?.user?.id;
+  if (!userId) throw new Error("NOT_SIGNED_IN");
+  const ext = IMAGE_STORAGE_EXT[file.type] || "img";
+  const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`;
+  const { error } = await supabaseClient.storage.from(IMAGE_BUCKET).upload(path, file, {
+    contentType: file.type || "application/octet-stream",
+    upsert: false
   });
-
-  cancelBtn.addEventListener("click", () => {
-    overlay.hidden = true;
-    const cb = imgbbPendingOnCancel;
-    imgbbPendingOnSaved = null;
-    imgbbPendingOnCancel = null;
-    if (cb) cb();
-    else showToast("Image upload cancelled — no ImgBB key", "info");
-  });
-}
-
-// Prompt the user for an ImgBB key, save it, then retry the upload for `file`.
-// `atPos` is threaded through so the retry still lands at the original caret.
-function promptForImgbbKeyThenRetry(textarea, file, atPos) {
-  showImgbbKeyModal(() => insertImageUpload(textarea, file, atPos));
+  if (error) {
+    const err = new Error(error.message || "Upload failed");
+    // An RLS rejection is permanent for this session the same way a bad ImgBB
+    // key was — retrying identically-forbidden uploads would just burn through
+    // the rest of an EPUB import's images for nothing.
+    err.authFailed = /permission|policy|not.*authoriz|row-level security/i.test(error.message || "");
+    throw err;
+  }
+  const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
 }
 
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.
@@ -16113,17 +16630,17 @@ async function insertImageUpload(textarea, file, atPos) {
   showToast("Optimizing image…", "info");
   try {
     const optimized = await optimizeImage(file);
-    const url = await uploadImageToImgbb(optimized);
+    const url = await uploadImageToSupabase(optimized);
     replaceInTextarea(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
   } catch (err) {
     replaceInTextarea(textarea, uploadToken, "");
-    if (err.message === "NO_KEY") {
-      promptForImgbbKeyThenRetry(textarea, file, atPos);
-    } else if (err.message === "OFFLINE") {
+    if (err.message === "OFFLINE") {
       showToast("Can't upload image while offline", "error");
+    } else if (err.message === "NOT_SIGNED_IN") {
+      showToast("Sign in to upload images", "error");
     } else {
-      console.error("ImgBB upload failed", err);
+      console.error("Image upload failed", err);
       showToast("Image upload failed", "error");
     }
   }
@@ -16377,7 +16894,7 @@ document.addEventListener("paste", (event) => {
   const clipboardData = event.clipboardData || window.clipboardData;
   if (!clipboardData) return;
 
-  // Image on the clipboard (screenshot, copied image) → upload to ImgBB and insert markdown.
+  // Image on the clipboard (screenshot, copied image) → upload to Supabase Storage and insert markdown.
   const imageFile = firstImageFile(clipboardData);
   if (imageFile) {
     event.preventDefault();
@@ -16414,7 +16931,7 @@ document.addEventListener("paste", (event) => {
   target.dispatchEvent(new Event("input", { bubbles: true }));
 });
 
-// Drag & drop an image file onto a card editor textarea → upload to ImgBB and insert markdown.
+// Drag & drop an image file onto a card editor textarea → upload to Supabase Storage and insert markdown.
 // dragover must preventDefault on textareas so the drop event fires.
 document.addEventListener("dragover", (event) => {
   if (event.target.tagName === "TEXTAREA" && dragContainsImage(event.dataTransfer)) {
@@ -16492,7 +17009,7 @@ function createToolbarHtml(options = {}) {
     </div>
 
     <button type="button" data-action="bullet" title="Toggle Bullet List">-</button>
-    <button type="button" data-action="insert-image" title="Insert image (upload to ImgBB)">🖼️</button>
+    <button type="button" data-action="insert-image" title="Insert image (upload to Supabase Storage)">🖼️</button>
     <button type="button" data-action="clear-all" title="Clear Formatting">Tx</button>${quickNoteBtn}
   `;
 }
@@ -16926,7 +17443,7 @@ function handleToolbarClick(event) {
     return;
   }
 
-  // Insert image: open a file picker, then upload each chosen image to ImgBB and
+  // Insert image: open a file picker, then upload each chosen image to Supabase Storage and
   // insert markdown at the caret this toolbar's textarea had before the picker opened.
   if (button.dataset.action === "insert-image") {
     openImagePicker(textarea, start);

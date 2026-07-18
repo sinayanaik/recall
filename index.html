@@ -652,7 +652,7 @@
               <tr><td><kbd>Aa</kbd></td><td>Font family picker</td></tr>
               <tr><td><kbd>🎨</kbd></td><td>Text colour (with “Clear colour”)</td></tr>
               <tr><td><kbd>-</kbd></td><td>Toggle bullet list</td></tr>
-              <tr><td><kbd>🖼️</kbd></td><td>Insert an image (opens a file picker, uploads to ImgBB)</td></tr>
+              <tr><td><kbd>🖼️</kbd></td><td>Insert an image (opens a file picker, uploads to your Supabase project)</td></tr>
               <tr><td><kbd>Tx</kbd></td><td>Clear all formatting from the selection</td></tr>
             </table>
             <h4 class="help-subsection-title">Images 🖼️</h4>
@@ -662,7 +662,7 @@
               <li><strong>Drag &amp; drop</strong> — drag an image file onto the editor <em>(desktop)</em></li>
               <li><strong>Toolbar 🖼️</strong> — tap the image button to open your file picker. <em>On phones and tablets this offers your camera or photo library</em></li>
             </ul>
-            <p>Each image is <strong>optimized in your browser</strong> (downscaled to 1600px max and re-encoded to WebP) before being uploaded to <a href="https://api.imgbb.com/" target="_blank" rel="noopener noreferrer">ImgBB</a> (a free image host); an <code>![](…)</code> link is then inserted automatically. Set your free ImgBB API key on the Supabase setup screen (<strong>Change Supabase project</strong>) — the first time you insert an image without one, you'll be prompted for it. Images need a connection to upload.</p>
+            <p>Each image is <strong>optimized in your browser</strong> (downscaled to 1600px max and re-encoded to WebP) before being uploaded to your own <strong>Supabase Storage</strong> bucket; an <code>![](…)</code> link is then inserted automatically. No separate key to set up — the same sign-in that unlocks sync unlocks image uploads. Images need a connection to upload. Hover a rendered image and use its <strong>🗑</strong> button to remove it from the note — since it's your own storage, that also deletes the file for good, unlike the old ImgBB host.</p>
             <p><strong>Google Drive links</strong> just work: paste a public share link like <code>![](https://drive.google.com/file/d/FILE_ID/view)</code> and it renders directly — no need to convert it first.</p>
           </section>
 
@@ -840,31 +840,9 @@ What year was the Eiffel Tower built?
             <label for="setupKey">Anon / Public Key</label>
             <input id="setupKey" type="text" placeholder="your-anon-key" autocomplete="off" required />
           </div>
-          <p class="setup-hint">Find these in Supabase Dashboard &rarr; Project Settings &rarr; API</p>
-          <div class="login-field">
-            <label for="setupImgbbKey">ImgBB API key <span style="opacity:.7">(optional — for image paste)</span></label>
-            <input id="setupImgbbKey" type="text" placeholder="your-imgbb-api-key" autocomplete="off" />
-          </div>
-          <p class="setup-hint">Free key at <a href="https://api.imgbb.com/" target="_blank" rel="noopener noreferrer">api.imgbb.com</a> &rarr; used to upload pasted/dropped images. Can add later.</p>
+          <p class="setup-hint">Find these in Supabase Dashboard &rarr; Project Settings &rarr; API. Run <code>supabase_schema.sql</code> and <code>supabase_image_storage.sql</code> in the SQL Editor first — the latter enables image upload.</p>
           <p id="setupError" class="login-error" aria-live="polite"></p>
           <button id="setupSubmitBtn" class="login-btn-primary" type="submit">Connect</button>
-        </form>
-      </div>
-    </div>
-
-    <div id="imgbbOverlay" class="login-overlay" hidden>
-      <div class="login-card">
-        <h1 class="login-title">Add images</h1>
-        <p class="setup-subtitle">Enter your free ImgBB API key</p>
-        <form id="imgbbForm" novalidate>
-          <div class="login-field">
-            <label for="imgbbKeyInput">ImgBB API key</label>
-            <input id="imgbbKeyInput" type="text" placeholder="your-imgbb-api-key" autocomplete="off" required />
-          </div>
-          <p class="setup-hint">Get a free key at <a href="https://api.imgbb.com/" target="_blank" rel="noopener noreferrer">api.imgbb.com</a> &rarr; sign in &rarr; <strong>Add API key</strong>. It's stored only on this device and used to upload pasted images.</p>
-          <p id="imgbbError" class="login-error" aria-live="polite"></p>
-          <button id="imgbbSaveBtn" class="login-btn-primary" type="submit">Save &amp; upload</button>
-          <button id="imgbbCancelBtn" class="login-btn-secondary" type="button">Cancel</button>
         </form>
       </div>
     </div>
