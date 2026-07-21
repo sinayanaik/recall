@@ -1502,18 +1502,40 @@ function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
   modal.hidden = false;
 }
 
+// How long any single cloud read/write is allowed to hang before we give up.
+// A Supabase call over a dropped/stalled connection otherwise never settles,
+// wedging sync (reconcileInFlight never resets) or an EPUB import (whose
+// Cancel only polls between steps, not during a hung await).
+const CLOUD_TIMEOUT_MS = 20000;
+
+// Reject a hangable network promise after `ms` so a stalled connection fails
+// cleanly instead of hanging forever. The message carries "load failed" so it
+// classifies as offline through the existing detection regex (see the reconcile
+// catch) and the user sees "Couldn't reach the cloud" rather than a spinner
+// that never stops. The underlying request may still complete server-side; we
+// only wrap idempotent upserts/reads/uploads, so a late success is harmless.
+function withTimeout(promise, ms = CLOUD_TIMEOUT_MS, label = "") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Load failed — request timed out${label ? ` (${label})` : ""}`));
+    }, ms);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+
 // Upsert one chunk of card rows, retrying without `category` if the database
 // hasn't run supabase_quick_notes.sql yet (no cards.category column). Mirrors
 // the deck-level `notes` fallback: never lose card edits over a missing
 // optional column.
 async function upsertCardRows(rows) {
   if (!rows.length) return;
-  const { error } = await supabaseClient.from("cards").upsert(rows);
+  const { error } = await withTimeout(supabaseClient.from("cards").upsert(rows), CLOUD_TIMEOUT_MS, "save cards");
   if (!error) return;
   if (!String(error.message || "").includes("category")) throw error;
   console.warn("cards.category column missing — run supabase_quick_notes.sql to sync quick-note categories");
   const stripped = rows.map(({ category: _omit, ...rest }) => rest);
-  const { error: retryError } = await supabaseClient.from("cards").upsert(stripped);
+  const { error: retryError } = await withTimeout(supabaseClient.from("cards").upsert(stripped), CLOUD_TIMEOUT_MS, "save cards");
   if (retryError) throw retryError;
 }
 
@@ -1535,12 +1557,20 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
     last_accessed_at: now
   };
 
-  let { error: deckError } = await supabaseClient.from("decks").upsert(deckData);
+  // Crash-safe ordering: write the deck row FIRST (a new deck's row must exist
+  // to satisfy the cards.deck_id foreign key) but with a stale `updated_at`, so
+  // an interrupted push leaves the deck looking un-synced and retriable rather
+  // than "current" with missing cards. The real `now` timestamp is stamped last
+  // (deckBumpData below), only after every card chunk has landed.
+  const PENDING_TS = new Date(0).toISOString();
+  const deckDataPending = { ...deckData, updated_at: PENDING_TS };
+
+  let { error: deckError } = await withTimeout(supabaseClient.from("decks").upsert(deckDataPending), CLOUD_TIMEOUT_MS, "save deck");
   if (deckError && String(deckError.message || "").includes("notes")) {
     // Database hasn't run supabase_deck_notes.sql yet — sync everything else so
     // the user doesn't lose card changes, but warn about notes.
-    const { notes: _omit, ...deckDataWithoutNotes } = deckData;
-    ({ error: deckError } = await supabaseClient.from("decks").upsert(deckDataWithoutNotes));
+    const { notes: _omit, ...deckDataWithoutNotes } = deckDataPending;
+    ({ error: deckError } = await withTimeout(supabaseClient.from("decks").upsert(deckDataWithoutNotes), CLOUD_TIMEOUT_MS, "save deck"));
     if (!deckError && String(notes || "").trim() && !silent) {
       showToast("Notes not synced — run supabase_deck_notes.sql in Supabase", "error");
     }
@@ -1551,16 +1581,20 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   let cardsDeleted = 0;
   if (overwrite) {
     say("Syncing... (2/3) Replacing existing web cards");
-    const { error } = await supabaseClient.from("cards").delete().eq("deck_id", deckId);
+    const { error } = await withTimeout(supabaseClient.from("cards").delete().eq("deck_id", deckId), CLOUD_TIMEOUT_MS, "replace cards");
     if (error) throw error;
   } else if (!isNewDeck) {
     say("Syncing... (2/3) Checking for changes");
     let existing = webCards;
     if (!existing) {
-      const { data, error } = await supabaseClient
-        .from("cards")
-        .select("id, question, answer, position, status, category")
-        .eq("deck_id", deckId);
+      const { data, error } = await withTimeout(
+        supabaseClient
+          .from("cards")
+          .select("id, question, answer, position, status, category")
+          .eq("deck_id", deckId),
+        CLOUD_TIMEOUT_MS,
+        "read cards"
+      );
       if (error) console.warn("Could not read cloud cards before push", deckId, error);
       existing = error ? null : data;
     }
@@ -1570,8 +1604,11 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
       const idsToDelete = existing.filter((wc) => !localIds.has(String(wc.id))).map((wc) => wc.id);
       cardsDeleted = idsToDelete.length;
       if (idsToDelete.length > 0) {
-        const { error: deleteError } = await supabaseClient
-          .from("cards").delete().eq("deck_id", deckId).in("id", idsToDelete);
+        const { error: deleteError } = await withTimeout(
+          supabaseClient.from("cards").delete().eq("deck_id", deckId).in("id", idsToDelete),
+          CLOUD_TIMEOUT_MS,
+          "prune cards"
+        );
         if (deleteError) throw deleteError;
       }
     }
@@ -1618,6 +1655,19 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   for (let i = 0; i < cardsData.length; i += chunkSize) {
     await upsertCardRows(cardsData.slice(i, i + chunkSize));
   }
+
+  // Every card is in — NOW advance the deck's `updated_at` (and last-accessed)
+  // to the real timestamp. This is the last write of the push, so a crash any
+  // time before here leaves the deck stamped at PENDING_TS and therefore
+  // re-pushed on the next sync, never falsely current. The caller marks the
+  // local deck's lastSyncedAt only after this whole function resolves, and it
+  // throws on any failure above, so a partial push is never marked synced.
+  const { error: bumpError } = await withTimeout(
+    supabaseClient.from("decks").update({ updated_at: now, last_accessed_at: now }).eq("id", deckId),
+    CLOUD_TIMEOUT_MS,
+    "finalize deck"
+  );
+  if (bumpError) throw bumpError;
 
   pushStats.cardsDeleted = cardsDeleted;
   return pushStats;
@@ -4578,11 +4628,15 @@ function buildCloudDeckRow(deck, categories = webDeckCategories) {
 }
 
 async function fetchCloudDeckList() {
-  const { data, error } = await supabaseClient
-    .from("decks")
-    .select("*, cards(count)")
-    .order("last_accessed_at", { ascending: false, nullsFirst: false })
-    .order("updated_at", { ascending: false });
+  const { data, error } = await withTimeout(
+    supabaseClient
+      .from("decks")
+      .select("*, cards(count)")
+      .order("last_accessed_at", { ascending: false, nullsFirst: false })
+      .order("updated_at", { ascending: false }),
+    CLOUD_TIMEOUT_MS,
+    "read deck list"
+  );
   if (error) throw error;
   return data || [];
 }
@@ -4599,13 +4653,17 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
   if (!deckIds.length) return byDeck;
   const pageSize = 1000;
   for (let from = 0; ; from += pageSize) {
-    const { data, error } = await supabaseClient
-      .from("cards")
-      .select(columns)
-      .in("deck_id", deckIds)
-      .order("deck_id", { ascending: true })
-      .order("position", { ascending: true })
-      .range(from, from + pageSize - 1);
+    const { data, error } = await withTimeout(
+      supabaseClient
+        .from("cards")
+        .select(columns)
+        .in("deck_id", deckIds)
+        .order("deck_id", { ascending: true })
+        .order("position", { ascending: true })
+        .range(from, from + pageSize - 1),
+      CLOUD_TIMEOUT_MS,
+      "download cards"
+    );
     if (error) throw error;
     const rows = data || [];
     for (const row of rows) {
@@ -4626,7 +4684,7 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
 // old local-only behavior rather than breaking sync.
 async function fetchDeletedDeckIds() {
   try {
-    const { data, error } = await supabaseClient.from("deleted_decks").select("deck_id");
+    const { data, error } = await withTimeout(supabaseClient.from("deleted_decks").select("deck_id"), CLOUD_TIMEOUT_MS, "read tombstones");
     if (error) throw error;
     return (data || []).map((row) => String(row.deck_id));
   } catch (error) {
@@ -14269,6 +14327,101 @@ function buildEpubTocPreview(markers) {
   return markers.map((m, i) => `${String(i + 1).padStart(padWidth, "0")}. ${m.title}`);
 }
 
+// ── EPUB content preview (local, before any upload) ───────────────────────
+// The preview must show the exact notes the import will save WITHOUT uploading
+// anything — so it reuses convertEpubChapters (the very converter the real
+// import runs) but hands it this resolver in place of the hosted-URL image map.
+// Every in-book image path that exists in the manifest resolves to an inert
+// same-document fragment marker ("#epub-img=<zip path>") instead of a hosted
+// URL: truthy, so epubContainerToMarkdown KEEPS the <img> exactly as the real
+// import would (it drops only images whose lookup is falsy), and it fetches
+// nothing. showEpubPreview swaps each marker for a real object URL lazily, only
+// when its chapter is expanded (hydrateEpubPreviewImages), and revokes them all
+// when the modal closes — so a preview the user cancels uploads and leaks
+// nothing.
+const EPUB_PREVIEW_IMG_PREFIX = "epub-img=";
+
+function makeEpubPreviewImageResolver(imageEntries) {
+  const paths = new Set(imageEntries.map((entry) => entry.path));
+  return {
+    get(path) {
+      if (!paths.has(path)) return null;
+      // encodeURIComponent leaves ()' unescaped, and a bare "(" or ")" in a
+      // markdown image URL truncates the link — encode those too so the marker
+      // survives the html→markdown→html round trip intact.
+      const encoded = encodeURIComponent(path).replace(/[()]/g, (c) => "%" + c.charCodeAt(0).toString(16));
+      return `#${EPUB_PREVIEW_IMG_PREFIX}${encoded}`;
+    }
+  };
+}
+
+// Converts every chapter to Markdown locally for the preview — byte-identical
+// to what the real import saves (same convertEpubChapters, same markers) except
+// image srcs are the inert markers above rather than hosted URLs. No network,
+// no image decode. Returns [{ title, markdown }], the same shape the import
+// uses. progress is null: convertEpubChapters treats a missing progress as
+// "no modal / never cancelled", so it runs to completion in the background.
+async function convertEpubChaptersForPreview(zip, spine, markers, imageEntries) {
+  const resolver = makeEpubPreviewImageResolver(imageEntries);
+  const chapters = await convertEpubChapters(zip, spine, markers, resolver, null);
+  // A marker image with an EMPTY alt renders as "![](#epub-img=…)", whose
+  // "[](#…)" tail collides with the notes renderer's footnote-backref cleanup
+  // (normalizeCitations strips "[<whitespace>](#…)") — it eats the image and
+  // leaves a stray "!". Books that wrap art in <svg><image> (Kindle covers,
+  // full-page illustrations) produce exactly these alt-less images. Give every
+  // empty/whitespace-alt marker a non-empty alt so it survives the pipeline and
+  // renders as a real image. Preview-only: the hosted import is unaffected.
+  const emptyAltMarker = new RegExp(`!\\[\\s*\\]\\((#${EPUB_PREVIEW_IMG_PREFIX}[^)]*)\\)`, "g");
+  return chapters.map((chapter) => ({
+    ...chapter,
+    markdown: (chapter.markdown || "").replace(emptyAltMarker, "![image]($1)")
+  }));
+}
+
+// Renders one chapter's cached preview Markdown into `body` using the same
+// pipeline the notes view uses (markdownToSafeHtml + enhanceRenderedMarkdown),
+// then hydrates its inert image markers into real object URLs read straight
+// from the zip. The markers are stripped of their src BEFORE enhancement so the
+// browser never tries to fetch "#epub-img=…" as an image (which would flash a
+// broken-image icon); the real src is set only once its blob is decoded.
+// `cache` = { urls: Map(path -> objectURL), created: [objectURL] } is shared
+// across the whole modal so an image shown in two chapters decodes once, and
+// every created URL is tracked for revocation on close.
+async function renderEpubPreviewChapter(body, markdown, zip, cache) {
+  body.innerHTML = markdownToSafeHtml(markdown || "");
+  const pending = [];
+  body.querySelectorAll(`img[src^="#${EPUB_PREVIEW_IMG_PREFIX}"]`).forEach((img) => {
+    const marker = img.getAttribute("src").slice(1 + EPUB_PREVIEW_IMG_PREFIX.length);
+    let path;
+    try { path = decodeURIComponent(marker); } catch { path = marker; }
+    img.removeAttribute("src");
+    img.dataset.epubPreviewPath = path;
+    pending.push(img);
+  });
+  await enhanceRenderedMarkdown(body);
+  await hydrateEpubPreviewImages(pending, zip, cache);
+}
+
+async function hydrateEpubPreviewImages(imgs, zip, cache) {
+  for (const img of imgs) {
+    const path = img.dataset.epubPreviewPath;
+    if (!path) continue;
+    if (cache.urls.has(path)) { img.src = cache.urls.get(path); continue; }
+    try {
+      const entry = zip.file(path);
+      if (!entry) { img.remove(); continue; }
+      const blob = await entry.async("blob");
+      const url = URL.createObjectURL(blob);
+      cache.urls.set(path, url);
+      cache.created.push(url);
+      img.src = url;
+    } catch (error) {
+      console.warn("EPUB preview image could not be shown", path, error);
+      img.remove();
+    }
+  }
+}
+
 // Walks the spine once, cutting each file's body at whichever of its
 // markers resolve to a real in-file anchor (Range-based — see
 // extractEpubRangeMarkdown) and appending each slice's Markdown to whatever
@@ -14403,7 +14556,7 @@ function epubTargetFolderDeckCount(bookTitle) {
 // conversion starts, so the user sees book title/author/counts almost
 // instantly instead of a silent wait. Resolves { mode: "chapters" | "book" }
 // (Import) or null (Cancel).
-function showEpubPreview({ title, author, chapterCount, imageCount, existingDeckCount = 0, chaptersPromise }) {
+function showEpubPreview({ title, author, chapterCount, imageCount, existingDeckCount = 0, chaptersPromise, previewChaptersPromise, zip }) {
   return new Promise((resolve) => {
     const modal = document.createElement("section");
     modal.className = "category-choice-modal epub-preview-modal";
@@ -14440,7 +14593,7 @@ function showEpubPreview({ title, author, chapterCount, imageCount, existingDeck
         </label>
       </div>
       <div class="epub-preview-toc">
-        <p class="epub-preview-toc-label">Table of contents</p>
+        <p class="epub-preview-toc-label">Chapter preview — tap a chapter to read the note</p>
         <p class="epub-preview-toc-loading">Reading chapter titles…</p>
         <ol class="epub-preview-toc-list" hidden></ol>
       </div>
@@ -14457,33 +14610,111 @@ function showEpubPreview({ title, author, chapterCount, imageCount, existingDeck
     shell.querySelector(".epub-preview-chapters").textContent = String(chapterCount);
     shell.querySelector(".epub-preview-images").textContent = String(imageCount);
 
-    // The stat tiles above render instantly (they only need container.xml +
-    // the package document); the full per-chapter title list takes an extra
-    // local pass over the zip, so it streams in a beat later behind a
-    // loading line rather than delaying the whole modal's appearance.
+    // Every object URL created to show a preview image is tracked here and
+    // revoked in cleanup(), so nothing is committed to the notes and no
+    // blob: handle leaks whether the user confirms or cancels.
+    const cache = { urls: new Map(), created: [] };
+    const tocLoading = shell.querySelector(".epub-preview-toc-loading");
+    const tocList = shell.querySelector(".epub-preview-toc-list");
+
+    // Fast pass: the plain chapter-title list needs only a light local walk
+    // over the zip, so it streams in first (behind a loading line) to give
+    // the modal visible structure. These rows are replaced in place by the
+    // expandable content rows below as soon as the real conversion lands.
     if (chaptersPromise) {
       chaptersPromise.then((lines) => {
-        if (!modal.isConnected) return;
-        const loading = shell.querySelector(".epub-preview-toc-loading");
-        const list = shell.querySelector(".epub-preview-toc-list");
+        if (!modal.isConnected || tocList.childElementCount) return;
         if (!lines.length) {
-          if (loading) loading.textContent = "No table of contents found.";
+          if (tocLoading) tocLoading.textContent = "No table of contents found.";
           return;
         }
-        loading?.remove();
-        if (list) {
-          list.hidden = false;
-          lines.forEach((line) => {
-            const li = document.createElement("li");
-            li.className = "epub-preview-toc-item";
-            li.title = line;
-            li.textContent = line;
-            list.appendChild(li);
-          });
-        }
+        if (tocLoading) tocLoading.textContent = "Rendering preview…";
+        tocList.hidden = false;
+        lines.forEach((line) => {
+          const li = document.createElement("li");
+          li.className = "epub-preview-toc-item";
+          li.title = line;
+          li.textContent = line;
+          tocList.appendChild(li);
+        });
       }).catch(() => {
-        const loading = shell.querySelector(".epub-preview-toc-loading");
-        if (loading) loading.textContent = "Could not read chapter titles.";
+        if (tocLoading && !tocList.childElementCount) tocLoading.textContent = "Could not read chapter titles.";
+      });
+    }
+
+    // Authoritative pass: the real converted chapters (same keep/drop as the
+    // actual import). Rebuild the list as expandable rows whose bodies render
+    // the true note — images included — lazily on first expand. Nothing here
+    // touches the network; images are decoded from the local zip on demand.
+    const buildPreviewChapterRow = (chapter, index) => {
+      const li = document.createElement("li");
+      li.className = "epub-preview-chapter";
+
+      const header = document.createElement("button");
+      header.type = "button";
+      header.className = "epub-preview-chapter-toggle";
+      header.setAttribute("aria-expanded", "false");
+
+      const name = document.createElement("span");
+      name.className = "epub-preview-chapter-name";
+      name.textContent = chapter.title || `Chapter ${index + 1}`;
+      name.title = name.textContent;
+
+      const chevron = document.createElement("span");
+      chevron.className = "epub-preview-chapter-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = "▸";
+
+      header.append(name, chevron);
+
+      const body = document.createElement("div");
+      body.className = "epub-preview-chapter-body";
+      body.hidden = true;
+
+      let rendered = false;
+      header.addEventListener("click", async () => {
+        const open = header.getAttribute("aria-expanded") === "true";
+        if (open) {
+          header.setAttribute("aria-expanded", "false");
+          body.hidden = true;
+          return;
+        }
+        header.setAttribute("aria-expanded", "true");
+        body.hidden = false;
+        if (rendered) return;
+        rendered = true;
+        body.innerHTML = '<p class="epub-preview-chapter-loading">Rendering…</p>';
+        try {
+          await renderEpubPreviewChapter(body, chapter.markdown, zip, cache);
+        } catch (error) {
+          console.warn("EPUB preview chapter render failed", error);
+          rendered = false;
+          body.innerHTML = '<p class="epub-preview-chapter-loading">Could not render this chapter.</p>';
+        }
+      });
+
+      li.append(header, body);
+      return li;
+    };
+
+    if (previewChaptersPromise) {
+      previewChaptersPromise.then((chapters) => {
+        if (!modal.isConnected) return;
+        if (!chapters || !chapters.length) {
+          if (tocLoading) tocLoading.textContent = "No previewable content found.";
+          tocList.hidden = true;
+          tocList.replaceChildren();
+          return;
+        }
+        tocLoading?.remove();
+        tocList.hidden = false;
+        tocList.replaceChildren();
+        chapters.forEach((chapter, index) => {
+          tocList.appendChild(buildPreviewChapterRow(chapter, index));
+        });
+      }).catch((error) => {
+        console.warn("EPUB content preview failed", error);
+        if (tocLoading) tocLoading.textContent = "Could not render chapter preview.";
       });
     }
 
@@ -14503,6 +14734,14 @@ function showEpubPreview({ title, author, chapterCount, imageCount, existingDeck
     updateWarningVisibility();
 
     const cleanup = (value) => {
+      // Revoke every preview blob URL so nothing leaks once the modal closes
+      // (cancel or hand-off to import). The real import re-fetches/re-uploads
+      // from the zip, so these preview-only URLs are never referenced again.
+      cache.created.forEach((url) => {
+        try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
+      });
+      cache.created.length = 0;
+      cache.urls.clear();
       modal.remove();
       resolve(value);
     };
@@ -14753,7 +14992,15 @@ async function importEpubFile(file) {
   // appear as fast as before.
   const tocEntries = await parseEpubToc(zip, pkg);
   const markers = planEpubChapters(pkg.spine, tocEntries);
-  const tocPreviewPromise = resolveEpubMarkerTitles(zip, pkg.spine, markers).then(buildEpubTocPreview);
+  const titlesPromise = resolveEpubMarkerTitles(zip, pkg.spine, markers);
+  const tocPreviewPromise = titlesPromise.then(buildEpubTocPreview);
+  // The full per-chapter note content, converted locally (no upload) so the
+  // user can read the actual notes before committing. Chained after the titles
+  // resolve so each converted chapter carries its real name, and kept off the
+  // modal's critical path — the stat tiles/TOC still show instantly while this
+  // renders in the background behind a "Rendering preview…" line.
+  const previewChaptersPromise = titlesPromise
+    .then(() => convertEpubChaptersForPreview(zip, pkg.spine, markers, imageEntries));
 
   const choice = await showEpubPreview({
     title: bookTitle,
@@ -14761,7 +15008,9 @@ async function importEpubFile(file) {
     chapterCount: markers.length,
     imageCount: imageEntries.length,
     existingDeckCount: epubTargetFolderDeckCount(bookTitle),
-    chaptersPromise: tocPreviewPromise
+    chaptersPromise: tocPreviewPromise,
+    previewChaptersPromise,
+    zip
   });
   if (!choice) {
     setStatus("EPUB import cancelled.");
@@ -16598,10 +16847,14 @@ async function uploadImageToSupabase(file) {
   if (!userId) throw new Error("NOT_SIGNED_IN");
   const ext = IMAGE_STORAGE_EXT[file.type] || "img";
   const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`;
-  const { error } = await supabaseClient.storage.from(IMAGE_BUCKET).upload(path, file, {
-    contentType: file.type || "application/octet-stream",
-    upsert: false
-  });
+  const { error } = await withTimeout(
+    supabaseClient.storage.from(IMAGE_BUCKET).upload(path, file, {
+      contentType: file.type || "application/octet-stream",
+      upsert: false
+    }),
+    CLOUD_TIMEOUT_MS,
+    "upload image"
+  );
   if (error) {
     const err = new Error(error.message || "Upload failed");
     // An RLS rejection is permanent for this session the same way a bad ImgBB
