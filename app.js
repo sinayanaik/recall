@@ -1292,8 +1292,8 @@ async function loadWebDeck(deckId) {
 
   try {
     const [deckResult, cardsResult] = await Promise.all([
-      supabaseClient.from("decks").select("*").eq("id", deckId).single(),
-      supabaseClient.from("cards").select("*").eq("deck_id", deckId).order("position", { ascending: true })
+      withTimeout(supabaseClient.from("decks").select("*").eq("id", deckId).single(), CLOUD_TIMEOUT_MS, "load deck"),
+      withTimeout(supabaseClient.from("cards").select("*").eq("deck_id", deckId).order("position", { ascending: true }), CLOUD_TIMEOUT_MS, "load cards")
     ]);
 
     const { data: deckData, error: deckError } = deckResult;
@@ -11204,7 +11204,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       // One upsert for every outstanding tombstone rather than a round trip
       // each. supabase-js reports failures via the returned `error`, not by
       // throwing — check it, or a failed write looks like success.
-      const { error: retryError } = await supabaseClient.from("deleted_decks").upsert(tombstonesToReassert);
+      const { error: retryError } = await withTimeout(supabaseClient.from("deleted_decks").upsert(tombstonesToReassert), CLOUD_TIMEOUT_MS, "reassert tombstones");
       if (retryError) console.warn("Retry of cross-device delete tombstones failed", retryError);
     }
 
@@ -11228,7 +11228,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       if (!localMeta || tsMs(cloud.updated_at) > tsMs(localMeta.updatedAt)) toPull.push(cloud);
     }
     if (tombstonedInCloud.length) {
-      const { error: redeleteError } = await supabaseClient.from("decks").delete().in("id", tombstonedInCloud);
+      const { error: redeleteError } = await withTimeout(supabaseClient.from("decks").delete().in("id", tombstonedInCloud), CLOUD_TIMEOUT_MS, "re-delete decks");
       if (redeleteError) console.warn("Tombstone re-delete failed", tombstonedInCloud, redeleteError);
     }
 
@@ -11742,9 +11742,9 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
     // supabase-js reports failures via the returned `error`, not by throwing.
     // A failed write here is retried by reconcileAllDecks while the local
     // tombstone persists, so the deletion still eventually propagates.
-    const { error: tombstoneError } = await supabaseClient.from("deleted_decks").upsert({ deck_id: deckId });
+    const { error: tombstoneError } = await withTimeout(supabaseClient.from("deleted_decks").upsert({ deck_id: deckId }), CLOUD_TIMEOUT_MS, "record delete tombstone");
     if (tombstoneError) console.warn("Could not record cross-device delete tombstone", tombstoneError);
-    const { error } = await supabaseClient.from("decks").delete().eq("id", deckId);
+    const { error } = await withTimeout(supabaseClient.from("decks").delete().eq("id", deckId), CLOUD_TIMEOUT_MS, "delete deck");
     cloudError = error || null;
   }
   return { cloudError };
@@ -14102,17 +14102,40 @@ function epubYield() {
 // (not signed in, or the request itself being rejected) fail out immediately.
 const EPUB_IMAGE_UPLOAD_ATTEMPTS = 4;
 const EPUB_IMAGE_RETRY_BASE_MS = 600;
-async function uploadEpubImageWithRetry(file) {
+
+// A sleep that ends early the moment the import is cancelled, instead of making
+// the user wait out the full backoff. On a low network every upload attempt
+// already burns the full CLOUD_TIMEOUT_MS before failing, so an un-abortable
+// backoff on top of that is exactly what made Cancel feel unresponsive there.
+function cancellableDelay(ms, progress) {
+  return new Promise((resolve) => {
+    const step = 150;
+    let waited = 0;
+    const tick = () => {
+      if (progress?.cancelled() || waited >= ms) return resolve();
+      waited += step;
+      setTimeout(tick, Math.min(step, ms - waited + step));
+    };
+    tick();
+  });
+}
+
+async function uploadEpubImageWithRetry(file, progress) {
   for (let attempt = 1; ; attempt++) {
     try {
       return await uploadImageToSupabase(file);
     } catch (error) {
       const worthRetrying = error?.message !== "NOT_SIGNED_IN" && !error?.authFailed;
       if (!worthRetrying || attempt >= EPUB_IMAGE_UPLOAD_ATTEMPTS) throw error;
+      // Cancelled mid-run — stop retrying immediately rather than sitting
+      // through more doomed attempts the user has already backed out of.
+      if (progress?.cancelled()) throw error;
       // 600ms, 1.2s, 2.4s — enough for a per-minute rate limit window to
       // drain a little between attempts instead of hammering through it and
-      // burning every remaining image in the book.
-      await new Promise((resolve) => setTimeout(resolve, EPUB_IMAGE_RETRY_BASE_MS * 2 ** (attempt - 1)));
+      // burning every remaining image in the book. Abortable so a cancel
+      // during the wait takes effect at once.
+      await cancellableDelay(EPUB_IMAGE_RETRY_BASE_MS * 2 ** (attempt - 1), progress);
+      if (progress?.cancelled()) throw error;
     }
   }
 }
@@ -14144,8 +14167,12 @@ async function uploadEpubImages(zip, imageEntries, progress) {
       const name = path.split("/").pop() || `image-${i}`;
       const file = new File([blob], name, { type: mediaType || blob.type || "image/jpeg" });
       const optimized = await optimizeImage(file);
-      urlMap.set(path, await uploadEpubImageWithRetry(optimized));
+      urlMap.set(path, await uploadEpubImageWithRetry(optimized, progress));
     } catch (error) {
+      // Cancelled mid-upload (uploadEpubImageWithRetry bails out of its backoff
+      // on cancel): stop the run without counting this image as a real failure —
+      // the user chose to stop, it isn't missing data to warn them about.
+      if (progress?.cancelled()) return { urlMap, failed, reason };
       console.warn("EPUB image upload failed, skipping", path, error);
       failed.push(path);
       reason = error?.message === "NOT_SIGNED_IN" ? "you're not signed in"
