@@ -41,6 +41,18 @@
           <button class="tool-button" id="importBtn" type="button">&#8679; Import from File</button>
           <button class="tool-button" id="myDecksBtn" type="button" title="All your decks — saved on this device and synced to the cloud automatically">&#128218; My Decks</button>
           <button class="tool-button" id="syncNowBtn" type="button" title="Sync all decks with the cloud now (two-way, keeps the newest of each)">&#8635; Sync Now</button>
+          <div class="autosync-field" title="Automatically run Sync Now on a timer, so you don't have to click it">
+            <label class="autosync-label" for="autoSyncSelect">&#8635; Auto-sync</label>
+            <select class="autosync-select" id="autoSyncSelect" aria-label="Auto-sync interval">
+              <option value="0">Off</option>
+              <option value="1">Every 1 min</option>
+              <option value="2">Every 2 min</option>
+              <option value="5">Every 5 min</option>
+              <option value="10">Every 10 min</option>
+              <option value="15">Every 15 min</option>
+              <option value="30">Every 30 min</option>
+            </select>
+          </div>
 
           <span class="drawer-section-label">Study</span>
           <button class="tool-button" id="allCardsBtn" type="button">&#8801; Browse All Cards</button>
@@ -200,6 +212,7 @@
               <div class="edit-toolbar" id="notesEditToolbar" hidden></div>
               <div class="render-toolbar" id="notesRenderToolbar" data-render-target="notes" aria-label="Format the selected notes text"></div>
               <button class="edit-card-btn cloze-toggle-icon" id="clozeToggleNotesBtn" type="button" aria-pressed="false" title="Reveal all fill-in-the-blank clozes" aria-label="Reveal or hide all clozes in these notes"><span class="cloze-toggle-glyph">&#128064;</span></button>
+              <button class="edit-card-btn" id="clozeReviewBtn" type="button" title="Cloze review — every fill-in-the-blank in this deck" aria-label="Open cloze review">&#127919;</button>
               <button class="edit-card-btn" id="makeCardFromNotesBtn" type="button" title="Make a flashcard from the selected notes text" aria-label="Make a flashcard from the selected notes text">&#10133;</button>
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
             </div>
@@ -216,7 +229,10 @@
             </nav>
             <textarea class="edit-textarea notes-edit" id="notesEdit" hidden spellcheck="false" placeholder="Write your notes here…"></textarea>
           </div>
-          <button class="notes-make-card-btn" id="makeCardFromSelectionBtn" type="button" hidden>&#43; Make card</button>
+          <div class="selection-float" id="selectionFloat" hidden>
+            <button class="selection-float-btn" id="makeCardFromSelectionBtn" type="button" title="Make a card from the selection" aria-label="Make a card from the selection">&#43;</button>
+            <button class="selection-float-btn is-cloze" id="makeClozeFromSelectionBtn" type="button" title="Hide the selection as a cloze" aria-label="Hide the selection as a cloze">[&hellip;]</button>
+          </div>
 
           <div class="controls" aria-label="Card actions">
             <button class="review" id="reviewBtn" type="button" title="Review" aria-label="Mark card for review" data-shortcut="Review (R)"><span aria-hidden="true">❌</span><span>Review</span></button>
@@ -432,6 +448,22 @@
           <button id="applyStyleBtn" type="button">Apply</button>
           <button id="syncUpBtn" type="button">Sync Up</button>
         </div>
+      </div>
+    </section>
+
+    <section class="cloze-panel" id="clozePanel" hidden aria-label="Cloze review">
+      <div class="cloze-shell">
+        <div class="cloze-head">
+          <div>
+            <h1>Cloze Review</h1>
+            <p id="clozeReviewSummary">Every fill-in-the-blank in this deck</p>
+          </div>
+          <div class="cloze-head-actions">
+            <button class="cloze-bulk-btn" id="clozeBulkBtn" type="button" aria-pressed="false" title="Reveal or hide every cloze in this list">&#128064; Reveal all</button>
+            <button class="icon-button" id="closeClozeBtn" type="button" aria-label="Close cloze review">&#215;</button>
+          </div>
+        </div>
+        <div class="cloze-body" id="clozeReviewBody"></div>
       </div>
     </section>
 

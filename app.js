@@ -1732,6 +1732,7 @@ const el = {
   importBtn: document.querySelector("#importBtn"),
   myDecksBtn: document.querySelector("#myDecksBtn"),
   syncNowBtn: document.querySelector("#syncNowBtn"),
+  autoSyncSelect: document.querySelector("#autoSyncSelect"),
   myDecksPanel: document.querySelector("#myDecksPanel"),
   myDecksListTable: document.querySelector("#myDecksListTable"),
   myDecksBody: document.querySelector("#myDecksBody"),
@@ -1809,6 +1810,12 @@ const el = {
   resetBtn: document.querySelector("#resetBtn"),
   clozeToggleBtn: document.querySelector("#clozeToggleBtn"),
   clozeToggleNotesBtn: document.querySelector("#clozeToggleNotesBtn"),
+  clozeReviewBtn: document.querySelector("#clozeReviewBtn"),
+  clozePanel: document.querySelector("#clozePanel"),
+  closeClozeBtn: document.querySelector("#closeClozeBtn"),
+  clozeBulkBtn: document.querySelector("#clozeBulkBtn"),
+  clozeReviewBody: document.querySelector("#clozeReviewBody"),
+  clozeReviewSummary: document.querySelector("#clozeReviewSummary"),
   questionRenderToolbar: document.querySelector("#questionRenderToolbar"),
   answerRenderToolbar: document.querySelector("#answerRenderToolbar"),
   notesRenderToolbar: document.querySelector("#notesRenderToolbar"),
@@ -1884,6 +1891,8 @@ const el = {
   notesEditToolbar: document.querySelector("#notesEditToolbar"),
   editNotesBtn: document.querySelector("#editNotesBtn"),
   makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
+  makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),
+  selectionFloat: document.querySelector("#selectionFloat"),
   makeCardFromNotesBtn: document.querySelector("#makeCardFromNotesBtn"),
   makeCardFromQuestionBtn: document.querySelector("#makeCardFromQuestionBtn"),
   makeCardFromAnswerBtn: document.querySelector("#makeCardFromAnswerBtn"),
@@ -8302,9 +8311,8 @@ function activeRenderedTarget() {
 let notesSelectionTimer = null;
 
 function hideNotesSelectionButton() {
-  if (!el.makeCardFromSelectionBtn) return;
-  el.makeCardFromSelectionBtn.hidden = true;
-  el.makeCardFromSelectionBtn.dataset.selectionText = "";
+  if (el.selectionFloat) el.selectionFloat.hidden = true;
+  if (el.makeCardFromSelectionBtn) el.makeCardFromSelectionBtn.dataset.selectionText = "";
 }
 
 // The live selection's range, but only when it's a real selection inside the
@@ -8482,8 +8490,11 @@ function pinSelectionButtonToBottom(button) {
 }
 
 function positionNotesSelectionButton() {
-  const button = el.makeCardFromSelectionBtn;
-  if (!button) return;
+  // `button` is the floater CONTAINER (positioning + show/hide operate on it);
+  // `cardBtn` is the "make card" button that carries the captured selection.
+  const button = el.selectionFloat;
+  const cardBtn = el.makeCardFromSelectionBtn;
+  if (!button || !cardBtn) return;
   const mobile = Boolean(styleMobileMedia?.matches);
   if (!mobile) button.classList.remove("is-pinned-bottom");
 
@@ -8495,13 +8506,13 @@ function positionNotesSelectionButton() {
       hideNotesSelectionButton();
       return;
     }
-    button.dataset.selectionText = text;
+    cardBtn.dataset.selectionText = text;
     const words = text.split(/\s+/).filter(Boolean).length;
     const imageMatches = text.match(/!\[[^\]]*\]\([^)]*\)/g) || [];
     const parts = [];
     if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
     if (imageMatches.length) parts.push(imageMatches.length === 1 ? "1 image" : `${imageMatches.length} images`);
-    button.textContent = `+ Make card · ${parts.join(" + ")}`;
+    cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
     button.hidden = false;
     if (mobile) return pinSelectionButtonToBottom(button);
     // Track the actual selection (same approach as the rendered-view branch
@@ -8536,13 +8547,14 @@ function positionNotesSelectionButton() {
   }
   // Capture the selection as markdown now: tapping the button may dissolve
   // the selection before the click handler runs.
-  button.dataset.selectionText = notesSelectionMarkdown(range, renderedTarget);
-  // Show how much is being captured, so the selection size is obvious.
+  cardBtn.dataset.selectionText = notesSelectionMarkdown(range, renderedTarget);
+  // Reflect how much is being captured in the tooltip (the button itself is
+  // icon-only now, so the count lives on hover/long-press instead of inline).
   const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
   const parts = [];
   if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
   if (imageCount) parts.push(imageCount === 1 ? "1 image" : `${imageCount} images`);
-  button.textContent = `+ Make card · ${parts.join(" + ")}`;
+  cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
   button.hidden = false;
   if (mobile) return pinSelectionButtonToBottom(button);
   const rect = range.getBoundingClientRect();
@@ -8907,6 +8919,41 @@ el.makeCardFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   hideNotesSelectionButton();
   window.getSelection()?.removeAllRanges();
   createCardFromNotesSelection(text, anchor);
+});
+
+// Wrap the raw-editor (textarea) selection in {{ }} — the edit-mode counterpart
+// to makeClozeFromSelection (which works on a rendered-view selection).
+function clozeTextareaSelection(target) {
+  const ta = target?.edit;
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  if (start === end) return;
+  const result = toggleWrapPair(ta.value, start, end, "{{", "}}");
+  ta.value = ta.value.slice(0, result.rangeStart) + result.text + ta.value.slice(result.rangeEnd);
+  const caret = result.rangeStart + result.text.length;
+  ta.setSelectionRange(caret, caret);
+  ta.focus();
+  // Persist through the editor's own input path (updates state.notes for notes;
+  // card faces commit on blur/next commit, same as any other raw edit).
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  showToast(result.text.startsWith("{{") ? "Cloze added" : "Cloze removed");
+}
+
+// The floater's cloze button: hide the selection as a fill-in-the-blank, in
+// place. Works whether the selection is in a rendered view or the raw editor.
+el.makeClozeFromSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const rendered = activeRenderedTarget();
+  if (rendered) {
+    makeClozeFromSelection(renderTargetConfig(rendered.name));
+    hideNotesSelectionButton();
+    return;
+  }
+  const editing = activeEditingTarget();
+  if (editing) clozeTextareaSelection(editing);
+  hideNotesSelectionButton();
 });
 
 [el.notesView, el.questionView, el.answerView].forEach((view) => {
@@ -15800,6 +15847,59 @@ el.myDecksBtn?.addEventListener("click", () => {
 el.syncNowBtn?.addEventListener("click", () => {
   reconcileAllDecks({ explicit: true });
 });
+
+// ── User-defined auto-sync ──────────────────────────────────────────────────
+// Runs the same two-way reconcile as "Sync Now" on a timer the user picks, so
+// they don't have to click it. Device-local (each device sets its own cadence);
+// the interval callback is a no-op when signed out/offline, and reconcileAllDecks
+// already guards against overlapping runs (reconcileInFlight), so ticks that land
+// during a slow sync are harmless.
+const AUTOSYNC_KEY = "recall_autosync_minutes";
+const AUTOSYNC_ALLOWED = new Set([0, 1, 2, 5, 10, 15, 30]);
+let autoSyncTimer = null;
+
+function getAutoSyncMinutes() {
+  let v = 0;
+  try {
+    v = parseInt(localStorage.getItem(AUTOSYNC_KEY) || "0", 10);
+  } catch (_) {
+    v = 0;
+  }
+  return AUTOSYNC_ALLOWED.has(v) ? v : 0;
+}
+
+function applyAutoSyncInterval() {
+  const mins = getAutoSyncMinutes();
+  if (el.autoSyncSelect) el.autoSyncSelect.value = String(mins);
+  if (autoSyncTimer) {
+    clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+  if (!mins) return;
+  autoSyncTimer = setInterval(() => {
+    if (!supabaseClient || !isSignedIn || !navigator.onLine) return;
+    reconcileAllDecks({ explicit: false });
+  }, mins * 60 * 1000);
+}
+
+function setAutoSyncMinutes(mins) {
+  const clean = AUTOSYNC_ALLOWED.has(mins) ? mins : 0;
+  try {
+    localStorage.setItem(AUTOSYNC_KEY, String(clean));
+  } catch (_) {
+    /* storage unavailable (private mode) — timer still applies for this session */
+  }
+  applyAutoSyncInterval();
+  showToast(clean ? `Auto-sync on — every ${clean} min${clean === 1 ? "" : "s"}` : "Auto-sync off", "info");
+}
+
+el.autoSyncSelect?.addEventListener("change", (e) => {
+  setAutoSyncMinutes(parseInt(e.target.value, 10) || 0);
+});
+
+// Reflect the saved cadence in the dropdown and start the timer on boot. The
+// timer's ticks self-gate on sign-in/online, so it's safe to arm before login.
+applyAutoSyncInterval();
 el.closeMyDecksBtn?.addEventListener("click", closeMyDecksPanel);
 el.myDecksRefreshBtn?.addEventListener("click", () => renderMyDecksList());
 
@@ -17369,6 +17469,273 @@ document.addEventListener("keydown", (e) => {
   if (!cloze) return;
   e.preventDefault();
   cloze.classList.toggle("is-revealed");
+});
+
+// ── Cloze Review panel ──────────────────────────────────────────────────────
+// A deck-wide list of every {{cloze}} — across the Study Notes document and each
+// card's Question/Answer — showing one sentence of context on either side, with
+// tap-to-reveal reusing the normal .cloze span behaviour. Also offers a
+// "quick-cloze a whole column" tool for the tables in the notes document.
+
+const CLOZE_SCAN_RE = /\{\{([\s\S]+?)\}\}/g;
+
+// Break text into display "units": split on sentence terminators followed by
+// whitespace AND on newlines, so a heading, list item or table row each become
+// their own unit (they carry no sentence punctuation of their own).
+function clozeSplitUnits(text) {
+  return String(text)
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// A lone table row / heading / list item isn't valid standalone markdown, so
+// normalise it to readable inline text before rendering the context snippet.
+function clozeCleanUnit(unit) {
+  let s = String(unit).trim();
+  if (s.includes("|") && /\|/.test(s.replace(/^\||\|$/g, ""))) {
+    s = s
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .join(" · ");
+  }
+  return s
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^>\s+/, "")
+    .replace(/^[-*+]\s+/, "")
+    .replace(/^\d+\.\s+/, "")
+    .trim();
+}
+
+// Build {prev, cur, next} context around one cloze occurrence. `cur` keeps the
+// {{…}} braces so it renders as a live redaction span; neighbours are plain.
+function clozeContextParts(source, start, end) {
+  const MARK = "";
+  const inner = source.slice(start + 2, end - 2);
+  // Drop table delimiter rows (|---|---|) so a cloze inside a table gets the
+  // header row as its "before" context instead of a row of dashes.
+  const marked = (source.slice(0, start) + MARK + source.slice(end))
+    .split("\n")
+    .filter((ln) => !/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(ln))
+    .join("\n");
+  const units = clozeSplitUnits(marked);
+  const idx = units.findIndex((u) => u.includes(MARK));
+  const curRaw = (idx >= 0 ? units[idx] : MARK).replace(MARK, "{{" + inner + "}}");
+  return {
+    prev: idx > 0 ? clozeCleanUnit(units[idx - 1]) : "",
+    cur: clozeCleanUnit(curRaw),
+    next: idx >= 0 && idx < units.length - 1 ? clozeCleanUnit(units[idx + 1]) : "",
+  };
+}
+
+// Gather clozes from every source in the deck, grouped by where they live.
+function collectDeckClozes() {
+  const groups = [];
+  const pushGroup = (label, source) => {
+    const items = [];
+    // A sentence with several clozes yields the SAME context snippet for each
+    // (every blank in that sentence is already shown), so collapse duplicates —
+    // list each sentence once instead of once per cloze.
+    const seen = new Set();
+    CLOZE_SCAN_RE.lastIndex = 0;
+    let m;
+    while ((m = CLOZE_SCAN_RE.exec(source))) {
+      const parts = clozeContextParts(source, m.index, m.index + m[0].length);
+      const key = `${parts.prev}${parts.cur}${parts.next}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(parts);
+    }
+    if (items.length) groups.push({ label, items });
+  };
+  pushGroup("Study Notes", state.notes || "");
+  (state.masterCards || []).forEach((card, i) => {
+    pushGroup(`Card ${i + 1} · Question`, card.question || "");
+    pushGroup(`Card ${i + 1} · Answer`, card.answer || "");
+  });
+  return groups;
+}
+
+// Split a markdown table row into trimmed cell strings (drops the outer pipes).
+function clozeSplitTableRow(line) {
+  return String(line)
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.trim());
+}
+
+// Find GitHub-style tables in the notes source: a header row, a |---|---| delim
+// row, then consecutive pipe rows. Returns header labels + data-row line indices.
+function parseNotesTables(source) {
+  const lines = String(source).split("\n");
+  const tables = [];
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!lines[i].includes("|")) continue;
+    const delim = lines[i + 1];
+    if (!/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(delim)) continue;
+    const headers = clozeSplitTableRow(lines[i]);
+    const rowLines = [];
+    let j = i + 2;
+    while (j < lines.length && lines[j].includes("|") && lines[j].trim() !== "") {
+      rowLines.push(j);
+      j++;
+    }
+    tables.push({ headers, rowLines });
+    i = j - 1;
+  }
+  return tables;
+}
+
+// Wrap every data cell in one column of one notes table as its own {{cloze}}.
+function clozeNotesTableColumn(tableIndex, colIndex) {
+  const lines = (state.notes || "").split("\n");
+  const table = parseNotesTables(state.notes || "")[tableIndex];
+  if (!table) return;
+  let changed = 0;
+  table.rowLines.forEach((lineNo) => {
+    const cells = clozeSplitTableRow(lines[lineNo]);
+    if (colIndex >= cells.length) return;
+    const bare = cells[colIndex].trim();
+    if (!bare || /^\{\{[\s\S]*\}\}$/.test(bare)) return; // empty or already clozed
+    cells[colIndex] = "{{" + bare + "}}";
+    lines[lineNo] = "| " + cells.join(" | ") + " |";
+    changed++;
+  });
+  if (!changed) {
+    showToast("Those cells are already clozed", "info");
+    return;
+  }
+  state.notes = lines.join("\n");
+  if (el.notesEdit) el.notesEdit.value = state.notes;
+  scheduleDeckAutosave();
+  renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
+  showToast(`Clozed ${changed} cell${changed === 1 ? "" : "s"}`);
+  renderClozePanel();
+}
+
+function clozeContextNode(markdown, isSide) {
+  const node = document.createElement("div");
+  node.className = "cloze-ctx" + (isSide ? " is-side" : "");
+  node.innerHTML = markdownToSafeHtml(markdown);
+  return node;
+}
+
+function renderClozePanel() {
+  const body = el.clozeReviewBody;
+  if (!body) return;
+  body.innerHTML = "";
+  const groups = collectDeckClozes();
+  const tables = parseNotesTables(state.notes || "");
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+
+  if (el.clozeReviewSummary) {
+    el.clozeReviewSummary.textContent =
+      total === 0 ? "No clozes yet" : `${total} cloze${total === 1 ? "" : "s"} across this deck`;
+  }
+
+  if (tables.length) {
+    const sec = document.createElement("section");
+    sec.className = "cloze-tables";
+    const h = document.createElement("h2");
+    h.textContent = "Quick-cloze a notes table column";
+    sec.appendChild(h);
+    tables.forEach((table, ti) => {
+      const row = document.createElement("div");
+      row.className = "cloze-table-row";
+      const name = document.createElement("span");
+      name.className = "cloze-table-name";
+      name.textContent = table.headers.filter(Boolean).slice(0, 3).join(" · ") || `Table ${ti + 1}`;
+      const select = document.createElement("select");
+      table.headers.forEach((hd, ci) => {
+        const opt = document.createElement("option");
+        opt.value = String(ci);
+        opt.textContent = hd || `Column ${ci + 1}`;
+        select.appendChild(opt);
+      });
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cloze-table-cloze-btn";
+      btn.textContent = "Cloze column";
+      btn.addEventListener("click", () => clozeNotesTableColumn(ti, Number(select.value)));
+      row.append(name, select, btn);
+      sec.appendChild(row);
+    });
+    body.appendChild(sec);
+  }
+
+  if (total === 0 && !tables.length) {
+    const p = document.createElement("p");
+    p.className = "cloze-empty";
+    p.textContent =
+      "No fill-in-the-blank clozes in this deck yet. Select text in your notes or a card and press […] to hide it as a cloze.";
+    body.appendChild(p);
+    resetClozePanelBulk();
+    return;
+  }
+
+  groups.forEach((group) => {
+    const sec = document.createElement("section");
+    sec.className = "cloze-group";
+    const h = document.createElement("h2");
+    h.textContent = `${group.label} — ${group.items.length}`;
+    sec.appendChild(h);
+    group.items.forEach((it) => {
+      const item = document.createElement("div");
+      item.className = "cloze-item";
+      if (it.prev) item.appendChild(clozeContextNode(it.prev, true));
+      item.appendChild(clozeContextNode(it.cur, false));
+      if (it.next) item.appendChild(clozeContextNode(it.next, true));
+      sec.appendChild(item);
+    });
+    body.appendChild(sec);
+  });
+
+  resetClozePanelBulk();
+}
+
+// The bulk button is a plain toggle (its own aria-pressed is the source of
+// truth), separate from the per-view "flip all clozes" header buttons.
+function resetClozePanelBulk() {
+  if (!el.clozeBulkBtn) return;
+  el.clozeBulkBtn.setAttribute("aria-pressed", "false");
+  el.clozeBulkBtn.textContent = "👀 Reveal all";
+}
+
+function toggleClozePanelAll() {
+  if (!el.clozeBulkBtn || !el.clozeReviewBody) return;
+  const reveal = el.clozeBulkBtn.getAttribute("aria-pressed") !== "true";
+  el.clozeReviewBody.querySelectorAll(".cloze").forEach((c) => c.classList.toggle("is-revealed", reveal));
+  el.clozeBulkBtn.setAttribute("aria-pressed", reveal ? "true" : "false");
+  el.clozeBulkBtn.textContent = reveal ? "🙈 Hide all" : "👀 Reveal all";
+}
+
+function openClozePanel() {
+  if (!el.clozePanel) return;
+  commitNotesEditIfActive();
+  lockPageScroll();
+  renderClozePanel();
+  el.clozePanel.hidden = false;
+}
+
+function closeClozePanel() {
+  if (!el.clozePanel || el.clozePanel.hidden) return;
+  el.clozePanel.hidden = true;
+  unlockPageScroll();
+}
+
+el.clozeReviewBtn?.addEventListener("click", openClozePanel);
+el.closeClozeBtn?.addEventListener("click", closeClozePanel);
+el.clozeBulkBtn?.addEventListener("click", toggleClozePanelAll);
+el.clozePanel?.addEventListener("click", (e) => {
+  if (e.target === el.clozePanel) closeClozePanel();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && el.clozePanel && !el.clozePanel.hidden) closeClozePanel();
 });
 
 // Syntax highlighting backdrop creator for textareas

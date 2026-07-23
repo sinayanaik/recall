@@ -55,10 +55,13 @@
   --answer-font-family: var(--app-font-family);
   --content-font-size: 18px;
   --content-line-height: 1.58;
-  /* Comfortable reading measure for question/answer text — kept narrower
-     than the card itself on wide screens so long lines stay readable even
-     though the card's frame now spans most of the panel width. */
+  /* Comfortable reading measure for question text — kept narrower than the card
+     itself on wide screens so long lines stay readable even though the card's
+     frame now spans most of the panel width. */
   --question-answer-measure: 46em;
+  /* The answer face uses the full card width by default (set a length like 46em
+     to re-impose a reading measure). Tables and wide blocks need the room. */
+  --answer-measure: none;
   --raw-markdown-font-size: 16px;
   --answer-font-size: 23px;
   --answer-line-height: 1.58;
@@ -87,6 +90,18 @@
   --card-max-height: 74vh;
   --card-mobile-max-height: 74dvh;
   --card-border-width: 1px;
+  /* Card-header sizing — one place to tune every card's header row: the study
+     card face-header, the All-Cards skim rows, and the Quick-Notes cards. The
+     status/category indicator and the edit/action controls all resolve to these
+     tokens so they stay uniform across surfaces. Mobile shrinks them from a
+     single override in the 720px block. */
+  --card-hdr-gap: 8px;              /* gap between header items */
+  --card-hdr-mb: 8px;              /* space below the header row */
+  --card-hdr-indicator-h: 24px;     /* status/category pill height */
+  --card-hdr-indicator-fs: 0.68rem; /* pill text size */
+  --card-hdr-indicator-pad: 0 9px;  /* pill horizontal padding */
+  --card-hdr-btn: 30px;             /* square action-button size */
+  --card-hdr-btn-fs: 0.9rem;        /* action-button glyph size */
   --card-radius: 14px;
   --card-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
   --toolbar-gap: 8px;
@@ -145,7 +160,6 @@
   font-family: var(--app-font-family);
 }
 
-:root[data-theme="light"],
 :root[data-theme="light-paper"] {
   color-scheme: light;
 }
@@ -192,7 +206,6 @@
   --print-shadow: 0 20px 70px rgba(25, 32, 52, 0.16);
 }
 
-:root[data-theme="dark"],
 :root[data-theme="dark-amoled"] {
   color-scheme: dark;
   --bg: #000000;
@@ -272,7 +285,7 @@
   --known: #2fd36b;
   --danger: #ff7777;
   --accent-contrast: #05110e;
-  --bg-wash: rgba(183, 121, 31, 0.09);
+  --bg-wash: rgba(85, 214, 191, 0.09);
   --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.42);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
 }
@@ -314,7 +327,7 @@
   --known: #50d08a;
   --danger: #ff8080;
   --accent-contrast: #07101f;
-  --bg-wash: rgba(245, 180, 80, 0.08);
+  --bg-wash: rgba(138, 180, 255, 0.08);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
   --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
 }
@@ -335,7 +348,7 @@
   --known: #66ca85;
   --danger: #ff8585;
   --accent-contrast: #151006;
-  --bg-wash: rgba(102, 202, 133, 0.07);
+  --bg-wash: rgba(225, 184, 107, 0.07);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
   --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
 }
@@ -422,9 +435,9 @@ button:disabled {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
-  gap: 2px;
+  gap: 1px;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.72rem;
   overflow: hidden;
 }
 
@@ -435,7 +448,7 @@ button:disabled {
   /* Top-align so the pencil sits by the first line when the title wraps. */
   align-items: flex-start;
   flex-wrap: nowrap;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -449,9 +462,9 @@ button:disabled {
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
-  line-height: 1.25;
+  line-height: 1.16;
   color: color-mix(in srgb, var(--accent) 72%, var(--muted));
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 850;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -473,9 +486,27 @@ button:disabled {
   /* Wrap the meta chips onto a second line on narrow widths instead of
      clipping the sync status — keeps the row structured and responsive. */
   flex-wrap: wrap;
-  gap: 4px 5px;
+  gap: 2px 5px;
   min-width: 0;
   white-space: nowrap;
+}
+
+/* Compact the desktop deck header chrome: the edit pencils and category pill
+   (not the text) are what set each row's height, so trimming them to 20px —
+   matching the mobile treatment — shortens the header without shrinking or
+   cropping any label. Scoped to .deck-meta so the shared .web-deck-rename /
+   My-Decks buttons keep their size. min-width:721px keeps it desktop-only. */
+@media (min-width: 721px) {
+  .deck-meta .deck-title-edit {
+    width: 20px;
+    height: 20px;
+    min-height: 20px;
+    font-size: 0.62rem;
+  }
+  .deck-meta .deck-category {
+    min-height: 20px;
+    padding: 0 8px;
+  }
 }
 
 .deck-meta-sep {
@@ -535,14 +566,14 @@ button:disabled {
 
 .deck-category {
   display: inline-grid;
-  min-height: 24px;
+  min-height: var(--card-hdr-indicator-h);
   align-items: center;
   border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--line));
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent-strong);
-  padding: 0 9px;
-  font-size: 0.68rem;
+  padding: var(--card-hdr-indicator-pad);
+  font-size: var(--card-hdr-indicator-fs);
   font-weight: 950;
   line-height: 1;
   max-width: min(260px, 80vw);
@@ -954,9 +985,50 @@ button:disabled {
 /* ── Drawer: every tool-button fills full width, left-aligned ── */
 .toolbar > .tool-button,
 .toolbar > .menu-wrap,
-.toolbar > .drawer-section-label {
+.toolbar > .drawer-section-label,
+.toolbar > .autosync-field {
   width: 100%;
   flex-shrink: 0;
+}
+
+/* Auto-sync interval picker — a drawer row (label + select) that matches the
+   tool-button rows around it, so it reads as part of the same menu. */
+.autosync-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 46px;
+  padding: 8px 20px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 25%, transparent);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.autosync-label {
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.autosync-select {
+  min-width: 0;
+  max-width: 55%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius, 8px);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.autosync-select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
 }
 
 .toolbar .tool-button {
@@ -1948,7 +2020,7 @@ button:disabled {
 
 .card-answer .rendered {
   width: 100%;
-  max-width: var(--question-answer-measure);
+  max-width: var(--answer-measure);
   margin-inline: auto;
   font-family: var(--answer-font-family);
   font-size: var(--answer-font-size);
@@ -2234,7 +2306,14 @@ button:disabled {
   width: 100%;
   max-width: 100%;
   border-collapse: collapse;
-  table-layout: fixed;
+  /* Content-proportional columns: a "Category" column stays narrow while a
+     long "What it does" column gets the room, instead of every column being
+     forced to an equal 1/N slice (which broke long headers character-by-
+     character). Overflow-wide tables scroll horizontally in their face. */
+  table-layout: auto;
+  /* Tables read denser than answer prose (which can be 23px) — pin cells to the
+     base content size so a wide multi-column table stays legible. */
+  font-size: var(--content-font-size);
   text-align: left;
 }
 
@@ -2242,7 +2321,7 @@ button:disabled {
 .rendered td {
   border: 1px solid var(--line);
   padding: 8px 10px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   word-break: normal;
   hyphens: auto;
   line-height: 1.42;
@@ -3384,6 +3463,206 @@ svg.nomnoml-light-svg [fill="none"] {
   overflow: hidden;
   padding: 18px;
   touch-action: none;
+}
+
+/* ── Cloze Review panel ─────────────────────────────────────────────────────
+   A deck-wide list of every {{cloze}} (notes + card faces) with a sentence of
+   context on either side, plus a "quick-cloze a table column" tool. Mirrors the
+   style-panel overlay shell; reserves safe-area insets so it clears the notch. */
+.cloze-panel {
+  position: fixed;
+  z-index: 115;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  padding: calc(18px + var(--safe-top)) calc(18px + var(--safe-right)) calc(18px + var(--safe-bottom)) calc(18px + var(--safe-left));
+  touch-action: none;
+}
+
+.cloze-shell {
+  display: grid;
+  width: min(880px, 100%);
+  max-height: min(90vh, 760px);
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: var(--modal-radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  touch-action: auto;
+}
+
+.cloze-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px;
+}
+
+.cloze-head h1 {
+  margin: 0;
+  font-size: 1.12rem;
+  letter-spacing: 0;
+}
+
+.cloze-head p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.cloze-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.cloze-bulk-btn {
+  min-height: var(--card-hdr-btn);
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cloze-bulk-btn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.cloze-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cloze-empty {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+/* Quick-cloze a table column */
+.cloze-tables {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.cloze-tables h2,
+.cloze-group h2 {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.cloze-table-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cloze-table-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.86rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloze-table-row select {
+  height: var(--input-height, 40px);
+  min-height: 34px;
+  max-width: 55%;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius, 8px);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.cloze-table-cloze-btn {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cloze-table-cloze-btn:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* Cloze list */
+.cloze-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cloze-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--panel-2) 45%, transparent);
+}
+
+.cloze-item .cloze-ctx {
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.cloze-item .cloze-ctx.is-side {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.cloze-item .cloze-ctx :is(p, h1, h2, h3, h4, h5, h6) {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  border: 0;
+  padding: 0;
+  color: inherit;
 }
 
 .category-choice-modal {
@@ -4720,20 +4999,20 @@ textarea {
 }
 
 .all-card-status-label {
-  min-height: 24px;
-  font-size: 0.64rem;
+  min-height: var(--card-hdr-indicator-h);
+  font-size: var(--card-hdr-indicator-fs);
 }
 
 .all-card-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 7px;
+  gap: var(--card-hdr-gap);
 }
 
 .all-card-actions button {
   cursor: pointer;
-  min-height: 30px;
+  min-height: var(--card-hdr-btn);
   border: 1px solid var(--line);
   border-radius: 999px;
   background: transparent;
@@ -4952,19 +5231,19 @@ textarea {
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--card-hdr-gap);
 }
 
 .cornell-status {
   display: inline-grid;
-  min-height: 26px;
+  min-height: var(--card-hdr-indicator-h);
   align-items: center;
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 0 10px;
+  padding: var(--card-hdr-indicator-pad);
   background: color-mix(in srgb, var(--panel-2) 78%, transparent);
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: var(--card-hdr-indicator-fs);
   font-weight: 950;
   text-transform: uppercase;
   white-space: nowrap;
@@ -5586,11 +5865,27 @@ textarea {
 }
 
 @media (max-width: 720px) {
+  /* Compact every card header from one place on phones: the study card
+     face-header, the All-Cards skim rows and the Quick-Notes cards all read
+     these tokens, so shrinking them here reclaims vertical space for content
+     without touching each surface's rules individually. */
+  :root {
+    --card-hdr-gap: 6px;
+    --card-hdr-mb: 6px;
+    --card-hdr-indicator-h: 20px;
+    --card-hdr-indicator-fs: 0.6rem;
+    --card-hdr-indicator-pad: 0 7px;
+    --card-hdr-btn: 26px;
+    --card-hdr-btn-fs: 0.8rem;
+  }
+
   .app-shell {
     width: min(var(--app-mobile-width), 100vw);
     max-width: 100vw;
-    height: 100dvh;
-    min-height: 100dvh;
+    /* Honour the "App height %" slider on mobile too (dvh-based). Default 100
+       keeps today's full-height behaviour. */
+    height: var(--app-mobile-height);
+    min-height: var(--app-mobile-height);
     overflow: hidden;
     padding: 6px;
   }
@@ -5700,7 +5995,10 @@ textarea {
     width: var(--card-mobile-width);
     max-width: 100%;
     height: 100%;
-    max-height: none;
+    /* Cap the card at the user's "Card max height %" slider (dvh so it tracks the
+       real, toolbar-adjusted viewport). .deck centers it, so a sub-100% value
+       gives the content vertical breathing room instead of full-bleed. */
+    max-height: var(--card-mobile-max-height);
     min-height: 0;
     border-radius: var(--card-radius);
   }
@@ -6605,8 +6903,8 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
+  gap: var(--card-hdr-gap);
+  margin-bottom: var(--card-hdr-mb);
 }
 
 .face-header .face-label {
@@ -6628,14 +6926,14 @@ textarea {
 .card-status-badge,
 .all-card-status-label {
   display: inline-flex;
-  min-height: 24px;
+  min-height: var(--card-hdr-indicator-h);
   align-items: center;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: color-mix(in srgb, var(--panel-2) 70%, transparent);
   color: var(--muted);
-  padding: 0 9px;
-  font-size: 0.68rem;
+  padding: var(--card-hdr-indicator-pad);
+  font-size: var(--card-hdr-indicator-fs);
   font-weight: 900;
   line-height: 1;
   text-transform: uppercase;
@@ -6660,16 +6958,16 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  min-height: 30px;
+  width: var(--card-hdr-btn);
+  height: var(--card-hdr-btn);
+  min-height: var(--card-hdr-btn);
   border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent));
   border-radius: var(--toolbar-button-radius);
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 84%, transparent), color-mix(in srgb, var(--panel) 86%, transparent));
   color: var(--muted);
   padding: 0;
-  font-size: 0.9rem;
+  font-size: var(--card-hdr-btn-fs);
   line-height: 1;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent),
@@ -6721,8 +7019,8 @@ textarea {
 
 .edit-toggle-pill {
   width: 58px;
-  min-height: 30px;
-  height: 30px;
+  min-height: var(--card-hdr-btn);
+  height: var(--card-hdr-btn);
   padding: 3px;
   gap: 0;
   border-radius: 999px;
@@ -9086,31 +9384,32 @@ kbd {
 
 .quiz-panel .view-mode-toggle:not([hidden]) {
   display: grid;
-  width: min(340px, 100%);
-  margin: 0 auto 8px;
+  width: min(240px, 100%);
+  margin: 0 auto 6px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
   border: 1px solid var(--line);
   border-radius: var(--toolbar-button-radius);
   background: color-mix(in srgb, var(--panel) 72%, transparent);
-  padding: 4px;
+  padding: 3px;
   box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 7%, transparent);
 }
 
 .view-mode-toggle button {
   display: inline-flex;
   min-width: 0;
-  min-height: 32px;
+  min-height: 26px;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   border: 1px solid transparent;
   border-radius: calc(var(--toolbar-button-radius) - 2px);
   background: transparent;
   color: var(--muted);
-  padding: 0 8px;
-  font-size: 0.74rem;
+  padding: 0 6px;
+  font-size: 0.66rem;
   font-weight: 900;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
   cursor: pointer;
 }
@@ -9246,36 +9545,61 @@ kbd {
   min-height: 0;
 }
 
-.notes-make-card-btn {
+/* Floating selection toolbar: compact, icon-only buttons (Make card + Cloze)
+   that appear next to a live text selection in the notes or a card face. Icon
+   only so it stays small and unobtrusive on both desktop and mobile. */
+.selection-float {
   position: fixed;
   /* Below every panel/modal (100-240) so an open confirm/help/category dialog
-     isn't left with this floating pill still visible and clickable on top of
-     it — was 620, higher than any modal in the app. */
+     isn't left with this floater still visible and clickable on top of it. */
   z-index: 90;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  padding: 8px 14px;
-  font-size: 0.8rem;
-  font-weight: 800;
-  cursor: pointer;
-  box-shadow: 0 8px 26px color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--panel) 90%, var(--accent));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
   touch-action: manipulation;
 }
 
-.notes-make-card-btn:active {
-  scale: 0.96;
+.selection-float-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 0.95rem;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 
-/* Mobile: pinned to a fixed, thumb-reachable spot instead of tracking the
-   selection's own on-screen position — see pinSelectionButtonToBottom() in
-   app.js for why. `translate` (not the `transform` shorthand) so it composes
-   with the :active press-scale above instead of overwriting it. */
-.notes-make-card-btn.is-pinned-bottom {
+/* The cloze button reads as secondary — a quiet neutral pill next to the solid
+   accent "make card" one, so the primary action stays obvious. */
+.selection-float-btn.is-cloze {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+  font-size: 0.82rem;
+  letter-spacing: -0.04em;
+}
+
+.selection-float-btn:active {
+  scale: 0.94;
+}
+
+/* Mobile: the whole floater pins to a fixed, thumb-reachable spot instead of
+   tracking the selection's on-screen position — see pinSelectionButtonToBottom()
+   in app.js. `translate` (not the `transform` shorthand) so it composes with the
+   button :active press-scale instead of overwriting it. */
+.selection-float.is-pinned-bottom {
   left: 50%;
   bottom: calc(16px + var(--safe-bottom));
   translate: -50% 0;
@@ -9986,14 +10310,14 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: var(--card-hdr-gap);
+  margin-bottom: var(--card-hdr-mb);
 }
 
 .qn-card-time {
   flex: none;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: var(--card-hdr-indicator-fs);
   font-weight: 800;
   white-space: nowrap;
 }
@@ -10031,6 +10355,7 @@ kbd {
   align-items: center;
   gap: 6px;
   max-width: 100%;
+  min-height: var(--card-hdr-indicator-h);
   /* Flex items refuse to shrink below min-content by default, which keeps the
      ellipsis from ever engaging on a long category name. */
   min-width: 0;
@@ -10038,8 +10363,8 @@ kbd {
   border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  padding: 2px 8px;
-  font-size: 0.71rem;
+  padding: var(--card-hdr-indicator-pad);
+  font-size: var(--card-hdr-indicator-fs);
   font-weight: 800;
   line-height: 1.4;
   cursor: pointer;
