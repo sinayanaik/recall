@@ -1,4 +1,4 @@
-const CACHE_NAME = "recall-v20260725-7";
+const CACHE_NAME = "recall-v20260725-9";
 
 // Uploaded images live in the user's own Supabase Storage bucket, on a
 // different origin from both the app and the CDN — so nothing here used to

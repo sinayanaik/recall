@@ -59,7 +59,7 @@ const state = {
   viewMode: "cards",
   // My Decks library UI preferences (persisted per device).
   myDecksView: (() => { try { const v = localStorage.getItem("flashcards_mydecks_view_v1"); return ["grid", "folder", "tree"].includes(v) ? v : "folder"; } catch (_) { return "folder"; } })(),
-  myDecksDisplay: (() => { try { const v = localStorage.getItem("flashcards_mydecks_display_v1"); return ["tiles", "list"].includes(v) ? v : "tiles"; } catch (_) { return "tiles"; } })(),
+  myDecksDisplay: (() => { try { const v = localStorage.getItem("flashcards_mydecks_display_v1"); return ["tiles", "list"].includes(v) ? v : "list"; } catch (_) { return "list"; } })(),
   myDecksSort: (() => { try { const v = localStorage.getItem("flashcards_mydecks_sort_v1"); return ["recent", "title-asc", "title-desc", "updated-desc", "created-desc", "size-desc"].includes(v) ? v : "recent"; } catch (_) { return "recent"; } })(),
   // Always start at Home (root) on app open, even though the current folder
   // is persisted per navigation below — the persisted value is only there so
@@ -998,7 +998,7 @@ async function applyWebDeckCategory(deckId, category) {
 }
 
 function closeWebDeckExportMenus(exceptMenu = null) {
-  document.querySelectorAll(".web-deck-export-menu, .web-decks-global-export-menu, .bulk-export-menu").forEach((menu) => {
+  document.querySelectorAll(".web-deck-export-menu, .bulk-export-menu").forEach((menu) => {
     if (menu !== exceptMenu) {
       menu.hidden = true;
       const trigger = menu.previousElementSibling;
@@ -2029,6 +2029,9 @@ const el = {
   myDecksSelectAllCheckbox: document.querySelector("#myDecksSelectAllCheckbox"),
   myDecksBulkActions: document.querySelector("#myDecksBulkActions"),
   myDecksSelectedCount: document.querySelector("#myDecksSelectedCount"),
+  myDecksCount: document.querySelector("#myDecksCount"),
+  myDecksMoreBtn: document.querySelector("#myDecksMoreBtn"),
+  myDecksMoreMenu: document.querySelector("#myDecksMoreMenu"),
   closeMyDecksBtn: document.querySelector("#closeMyDecksBtn"),
   myDecksRefreshBtn: document.querySelector("#myDecksRefreshBtn"),
   myDecksNewFolderBtn: document.querySelector("#myDecksNewFolderBtn"),
@@ -3004,6 +3007,10 @@ function closeTopmostOverlay() {
   if (document.querySelector(".qn-cat-menu")) { closeQnCatMenu(); return; }
   if (el.qnCatModal && !el.qnCatModal.hidden) { closeQnCatModal(); return; }
   if (el.quickNotesBoard && !el.quickNotesBoard.hidden) { closeQuickNotesBoard(); return; }
+  // My Decks: same innermost-first rule. Escape over an open "⋯" menu — the
+  // toolbar's or a deck row's — should dismiss that menu, not the whole library.
+  if (el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden) { closeMyDecksMoreMenu(); return; }
+  if (el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")) { closeAllDeckTileMenus(); return; }
   el.exportMenu.hidden = true;
   if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
   closeDiagramModal();
@@ -3441,6 +3448,21 @@ function formatLocalDeckSavedDate(iso) {
   const datePart = date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const timePart = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return `${datePart}, ${timePart}`;
+}
+
+// A phone row can't spare 120px for "Jul 25, 2026, 10:11 PM". The compact form
+// rides along on the cell as data-short and the ≤720px CSS swaps to it, so the
+// full timestamp is still what's rendered (and read out) at every other width.
+function formatLocalDeckSavedDateShort(iso) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  const days = Math.floor((Date.now() - date.getTime()) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "1d ago";
+  if (days < 30) return `${days}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
 }
 
 function myDecksEmptyRow(message) {
@@ -4599,7 +4621,13 @@ function createDeckExportControl(sel, deckTitle, { compact = false } = {}) {
   button.setAttribute("aria-expanded", "false");
   button.title = "Export deck";
   button.setAttribute("aria-label", `Export ${deckTitle || "Untitled"}`);
-  button.textContent = compact ? "⬇" : "Export";
+  button.innerHTML = mdIcon("download");
+  if (!compact) {
+    const label = document.createElement("span");
+    label.className = "md-btn-label";
+    label.textContent = "Export";
+    button.append(label);
+  }
 
   const menu = document.createElement("div");
   menu.className = "web-deck-export-menu";
@@ -4817,11 +4845,83 @@ function loadDeckEntry(deck, kind) {
   }
 }
 
+// ── My Decks icon set ───────────────────────────────────────────────────────
+// Hand-drawn on the same 24×24 grid, stroke weight and currentColor contract as
+// CLOZE_SVG_ATTRS, so one visual language runs through the whole app. Emoji were
+// used here before; they render at a different size, weight and colour on every
+// platform, and can't pick up the accent colour of a pressed segmented button.
+//
+// Defined once, in JS, even though most of these live on static buttons in
+// index.html — those carry `data-md-icon="<name>"` and are filled in by
+// hydrateMyDecksIcons() below, so a path is never written down twice.
+const MD_SVG_ATTRS =
+  'class="md-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+
+const MD_DOT = (cx, cy, r = 1.6) => `<circle cx="${cx}" cy="${cy}" r="${r}" fill="currentColor" stroke="none"/>`;
+
+const MD_ICONS = {
+  // Views: every deck at once · one folder at a time · the whole hierarchy
+  grid: `<rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>`,
+  folder: `<path d="M3 6.6A1.6 1.6 0 0 1 4.6 5h4.1l2 2.6h8.7A1.6 1.6 0 0 1 21 9.2v8.8a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 18Z"/>`,
+  tree: `<rect x="2.5" y="1.8" width="10" height="4.2" rx="1.4"/><path d="M5.2 6v10.6a2 2 0 0 0 2 2h3.6M5.2 10.9h5.6"/><rect x="12" y="8.4" width="9.5" height="5" rx="1.4"/><rect x="12" y="16.2" width="9.5" height="5" rx="1.4"/>`,
+  // Display: side-by-side cards · a dotted list
+  tiles: `<rect x="2.6" y="4.4" width="8.4" height="15.2" rx="1.7"/><rect x="13" y="4.4" width="8.4" height="15.2" rx="1.7"/>`,
+  list: `<path d="M8.5 6h12.5M8.5 12h12.5M8.5 18h12.5"/>${MD_DOT(4, 6, 1.4)}${MD_DOT(4, 12, 1.4)}${MD_DOT(4, 18, 1.4)}`,
+  // Create
+  newDeck: `<rect x="3" y="4.5" width="18" height="15" rx="2.2"/><path d="M12 9.2v6M9 12.2h6"/>`,
+  newFolder: `<path d="M3 6.6A1.6 1.6 0 0 1 4.6 5h4.1l2 2.6h8.7A1.6 1.6 0 0 1 21 9.2v8.8a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 18Z"/><path d="M12 11.6v4.8M9.6 14h4.8"/>`,
+  // Import / export / sync
+  book: `<path d="M12 6.9a3 3 0 0 0-2.4-1.4H4v12h5.6A2.7 2.7 0 0 1 12 19Z"/><path d="M12 6.9a3 3 0 0 1 2.4-1.4H20v12h-5.6A2.7 2.7 0 0 0 12 19Z"/>`,
+  refresh: `<path d="M20.4 12a8.4 8.4 0 1 1-2.5-6"/><path d="M20.6 3.6v5.6H15"/>`,
+  download: `<path d="M12 3.4v11.2M7.6 10.4 12 14.8l4.4-4.4"/><path d="M4 16.6v2.8A1.6 1.6 0 0 0 5.6 21h12.8a1.6 1.6 0 0 0 1.6-1.6v-2.8"/>`,
+  upload: `<path d="M12 15.2V4M7.6 8.4 12 4l4.4 4.4"/><path d="M4 16.6v2.8A1.6 1.6 0 0 0 5.6 21h12.8a1.6 1.6 0 0 0 1.6-1.6v-2.8"/>`,
+  cloud: `<path d="M7.2 18.6a4.3 4.3 0 0 1-.5-8.5 5.7 5.7 0 0 1 10.9-1.3 3.95 3.95 0 0 1 .6 9.8Z"/>`,
+  // "All decks" — the root drop target that files a deck out of every folder
+  home: `<path d="M3.6 10.2 12 3.4l8.4 6.8v9a1.6 1.6 0 0 1-1.6 1.6H5.2a1.6 1.6 0 0 1-1.6-1.6Z"/><path d="M9.4 20.8v-6.4h5.2v6.4"/>`,
+  // Row + menu actions
+  more: `${MD_DOT(5, 12)}${MD_DOT(12, 12)}${MD_DOT(19, 12)}`,
+  play: `<path d="M7.6 4.9 19 12 7.6 19.1Z" fill="currentColor"/>`,
+  pencil: `<path d="M4 20.6 4.9 16 16.3 4.6a1.9 1.9 0 0 1 2.7 0l1.4 1.4a1.9 1.9 0 0 1 0 2.7L9 20.1Z"/><path d="m15 6.6 3.4 3.4"/>`,
+  trash: `<path d="M4 6.4h16M9.6 6.4V4.7a1.3 1.3 0 0 1 1.3-1.3h2.2a1.3 1.3 0 0 1 1.3 1.3v1.7"/><path d="m6.6 6.4.9 13.3a1.5 1.5 0 0 0 1.5 1.4h6a1.5 1.5 0 0 0 1.5-1.4l.9-13.3"/><path d="M10.2 10.4v6.8M13.8 10.4v6.8"/>`,
+  // Tree expand / collapse — arrows apart, arrows together
+  expand: `<path d="m8 9.6 4-4 4 4M8 14.4l4 4 4-4"/>`,
+  collapse: `<path d="m8 6.4 4 4 4-4M8 17.6l4-4 4 4"/>`,
+  // Chevron: the folder twisty. CSS rotates it 90° when the folder is open.
+  chevron: `<path d="m9.5 5.5 6.5 6.5-6.5 6.5"/>`,
+  close: `<path d="m6 6 12 12M18 6 6 18"/>`,
+  search: `<circle cx="10.6" cy="10.6" r="6.6"/><path d="m15.4 15.4 4.6 4.6"/>`,
+  sort: `<path d="M4 6.4h11M4 12h7.5M4 17.6h4"/><path d="M18.2 7.8v9.4M15.2 14.2l3 3 3-3"/>`,
+};
+
+// Renders one icon as an <svg> string. Unknown names render nothing rather than
+// throwing, so a typo degrades to a text-only button instead of a blank panel.
+function mdIcon(name) {
+  const body = MD_ICONS[name];
+  return body ? `<svg ${MD_SVG_ATTRS}>${body}</svg>` : "";
+}
+
+// Fills in every static `data-md-icon` button in index.html. The icon is
+// *prepended* so an existing text label stays put as the button's second child.
+function hydrateMyDecksIcons(root = document) {
+  root.querySelectorAll("[data-md-icon]").forEach((node) => {
+    if (node.querySelector("svg.md-ico")) return; // already hydrated
+    node.insertAdjacentHTML("afterbegin", mdIcon(node.dataset.mdIcon));
+  });
+}
+
+// Tile actions carry an icon plus a label the phone layout drops, so a tile
+// stays usable at the ~130px track width two columns leave on a 360px screen.
 function buildDeckLoadButton(deck, kind) {
   const loadBtn = document.createElement("button");
   loadBtn.type = "button";
   loadBtn.className = "bulk-action-btn bulk-load";
-  loadBtn.textContent = "Load";
+  loadBtn.innerHTML = mdIcon("play");
+  const label = document.createElement("span");
+  label.className = "md-btn-label";
+  label.textContent = "Load";
+  loadBtn.append(label);
+  loadBtn.title = "Load deck";
+  loadBtn.setAttribute("aria-label", `Load ${deck.title || "deck"}`);
   loadBtn.addEventListener("click", () => loadDeckEntry(deck, kind));
   return loadBtn;
 }
@@ -4866,28 +4966,43 @@ function buildDeckDeleteButton(deck, kind) {
 
 // A compact icon button for the My Decks list actions. Icon-only (with a tooltip
 // and aria-label) so the whole row stays tight and never overflows.
+// `icon` is an <svg> string from mdIcon() — every caller passes one of our own
+// constants, so there is no untrusted markup reaching innerHTML here.
 function iconActionButton(icon, label, cls, deck, handler) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = `bulk-action-btn icon-action ${cls}`;
-  b.textContent = icon;
+  b.innerHTML = icon;
   b.title = label;
   b.setAttribute("aria-label", `${label} ${deck.title || "deck"}`);
   b.addEventListener("click", handler);
   return b;
 }
 
-// The Load / Export / Rename / Delete cluster for list rows — self-explanatory
-// icons (▶ open · ⬇ export · ✎ rename · 🗑 delete) with tooltips + aria-labels.
+// The action cluster for list rows — self-explanatory icons with tooltips and
+// aria-labels: play (load) · download (export) · pencil (rename) · trash (delete).
+//
+// Rename and Delete are also reachable from the "⋯" menu appended last. That
+// looks like duplication, but it is what lets one row markup serve both widths:
+// CSS hides the two inline icons below 720px (where four icons plus the meta
+// line don't fit a phone row) and hides "⋯" above it. Building both up front
+// keeps the row correct across a resize without any JS media-query plumbing.
 function buildDeckActions(deck, kind) {
   const sel = deckSelOf(deck, kind);
   const wrap = document.createElement("div");
   wrap.className = "my-deck-actions";
+  const rename = iconActionButton(mdIcon("pencil"), "Rename", "bulk-category", deck, () => renameMyDeck(sel, deck.title || ""));
+  const del = iconActionButton(mdIcon("trash"), "Delete", "bulk-delete", deck, () => deleteDeckEntry(deck, kind));
+  rename.classList.add("md-row-wide-only");
+  del.classList.add("md-row-wide-only");
+  const overflow = buildDeckOverflowMenu(deck, kind, sel);
+  overflow.classList.add("md-row-narrow-only");
   wrap.append(
-    iconActionButton("▶", "Load", "bulk-load", deck, () => loadDeckEntry(deck, kind)),
+    iconActionButton(mdIcon("play"), "Load", "bulk-load", deck, () => loadDeckEntry(deck, kind)),
     createDeckExportControl(sel, deck.title, { compact: true }),
-    iconActionButton("✎", "Rename", "bulk-category", deck, () => renameMyDeck(sel, deck.title || "")),
-    iconActionButton("🗑", "Delete", "bulk-delete", deck, () => deleteDeckEntry(deck, kind)),
+    rename,
+    del,
+    overflow,
   );
   return wrap;
 }
@@ -4895,8 +5010,29 @@ function buildDeckActions(deck, kind) {
 // One row for a deck stored in the on-device library. `cloudById` (Map or null)
 // drives the Sync column — null renders a tentative state before the cloud
 // fetch resolves.
+// The Cards cell: a bare number, plus an optional "has notes" marker after it.
+function deckCardCountSpan(count) {
+  const span = document.createElement("span");
+  span.className = "deck-card-count-n";
+  span.textContent = String(count ?? "—");
+  return span;
+}
+
+function deckNotesMarker() {
+  const span = document.createElement("span");
+  span.className = "deck-has-notes";
+  span.textContent = "📝";
+  span.title = "This deck has study notes";
+  return span;
+}
+
 function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategories) {
   const tr = document.createElement("tr");
+  // Tagged here rather than in decorateDeckRow, which only the Tree renderer
+  // calls — Grid and Folder view go through renderDeckRowInto and were leaving
+  // their rows unclassed, so every `tr.my-deck-row` rule (row hover, the drag
+  // cursor, the whole phone layout) silently skipped the default view.
+  tr.classList.add("my-deck-row");
   if (deck.id === state.localDeckId) tr.classList.add("is-current-local-deck");
   const sel = deckSelOf(deck, "local");
   const { count, hasNotes } = deckCardInfo(deck, "local");
@@ -4911,11 +5047,18 @@ function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategorie
 
   const tdCount = document.createElement("td");
   tdCount.dataset.label = "Cards";
-  tdCount.textContent = String(count ?? "—") + (hasNotes ? " 📝" : "");
-  if (hasNotes) tdCount.title = "This deck has study notes";
+  // The number lives in its own span so the phone layout can append " cards"
+  // to it via ::after and still leave the notes marker last, rather than
+  // rendering "24 📝 cards".
+  tdCount.append(deckCardCountSpan(count));
+  if (hasNotes) {
+    tdCount.append(deckNotesMarker());
+    tdCount.title = "This deck has study notes";
+  }
 
   const tdSaved = document.createElement("td");
   tdSaved.dataset.label = "Saved";
+  tdSaved.dataset.short = formatLocalDeckSavedDateShort(deck.updatedAt);
   tdSaved.textContent = formatLocalDeckSavedDate(deck.updatedAt);
 
   const tdActions = document.createElement("td");
@@ -4933,7 +5076,7 @@ function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategorie
 // One row for a deck that only exists in the cloud (not yet on this device).
 function buildCloudDeckRow(deck, categories = webDeckCategories) {
   const tr = document.createElement("tr");
-  tr.classList.add("is-cloud-only-deck");
+  tr.classList.add("my-deck-row", "is-cloud-only-deck");
   const sel = deckSelOf(deck, "cloud");
   const { count, hasNotes } = deckCardInfo(deck, "cloud");
 
@@ -4947,7 +5090,8 @@ function buildCloudDeckRow(deck, categories = webDeckCategories) {
 
   const tdCount = document.createElement("td");
   tdCount.dataset.label = "Cards";
-  tdCount.textContent = String(count ?? "—") + (hasNotes ? " 📝" : "");
+  tdCount.append(deckCardCountSpan(count));
+  if (hasNotes) tdCount.append(deckNotesMarker());
 
   const tdSaved = document.createElement("td");
   tdSaved.dataset.label = "Saved";
@@ -4959,7 +5103,9 @@ function buildCloudDeckRow(deck, categories = webDeckCategories) {
   const tdSync = document.createElement("td");
   tdSync.dataset.label = "Sync";
   tdSync.classList.add("my-deck-sync", status.cls);
-  tdSync.textContent = status.label;
+  const syncPill = document.createElement("span");
+  syncPill.textContent = status.label;
+  tdSync.append(syncPill);
   tdSync.title = status.title;
 
   const tdActions = document.createElement("td");
@@ -5105,40 +5251,40 @@ async function fetchDeletedDeckIds() {
 // cloud-only badge (a deck not yet on this device).
 function deckSyncStatus(deck, cloudById, cloudOnly = false) {
   if (cloudOnly) {
-    return { label: "☁ Cloud only", cls: "sync-cloud-only", title: "In the cloud but not on this device yet — Load to pull it down." };
+    return { label: "Cloud only", cls: "sync-cloud-only", title: "In the cloud but not on this device yet — Load to pull it down." };
   }
   const canCloud = Boolean(supabaseClient && isSignedIn);
   let label, cls, title;
   if (!canCloud) {
-    label = "💾 On device"; cls = "sync-local";
+    label = "On device"; cls = "sync-local";
     title = "Saved on this device. Sign in to back it up to the cloud.";
   } else if (!navigator.onLine || !cloudById) {
     if (!deck.deckId) {
-      label = "⬆ Pending"; cls = "sync-pending";
+      label = "Pending"; cls = "sync-pending";
       title = "Not uploaded yet — will sync once you're back online.";
     } else {
-      label = "📴 Offline"; cls = "sync-local";
+      label = "Offline"; cls = "sync-local";
       title = "Can't reach the cloud right now — will re-check when you're online.";
     }
   } else if (!deck.deckId) {
-    label = "⬆ Pending"; cls = "sync-pending";
+    label = "Pending"; cls = "sync-pending";
     title = "Not uploaded yet — will upload on the next sync.";
   } else {
     const cloud = cloudById.get(String(deck.deckId));
     if (!cloud) {
-      label = "⬆ Pending"; cls = "sync-pending";
+      label = "Pending"; cls = "sync-pending";
       title = "Not in the cloud yet — will upload on the next sync.";
     } else {
       const localMs = tsMs(deck.updatedAt);
       const cloudMs = tsMs(cloud.updated_at);
       if (localMs > cloudMs) {
-        label = "⬆ Pending"; cls = "sync-pending";
+        label = "Pending"; cls = "sync-pending";
         title = "Edited here since the last sync — will upload on the next sync.";
       } else if (cloudMs > localMs) {
-        label = "⬇ Update"; cls = "sync-behind";
+        label = "Update"; cls = "sync-behind";
         title = "A newer copy is in the cloud — will download on the next sync.";
       } else {
-        label = "✅ Synced"; cls = "sync-ok";
+        label = "Synced"; cls = "sync-ok";
         title = "In sync with the cloud.";
       }
     }
@@ -5151,7 +5297,12 @@ function deckSyncStatusCell(deck, cloudById) {
   const td = document.createElement("td");
   td.dataset.label = "Sync";
   td.classList.add("my-deck-sync", cls);
-  td.textContent = label;
+  // The label lives in an inner span so the pill can be a shrink-wrapped
+  // inline-flex box; a <td> stretches to its column and would tint the whole
+  // cell instead of drawing a badge.
+  const pill = document.createElement("span");
+  pill.textContent = label;
+  td.append(pill);
   td.title = title;
   return td;
 }
@@ -5465,37 +5616,31 @@ function buildFolderRow(node, depth, isCollapsed) {
   twisty.type = "button";
   twisty.className = "deck-folder-twisty";
   twisty.setAttribute("aria-label", isCollapsed ? "Expand folder" : "Collapse folder");
-  twisty.textContent = isCollapsed ? "▶" : "▼";
+  // One chevron for both states — CSS rotates it 90° when open, so the change
+  // reads as a movement rather than as two unrelated glyphs swapping places.
+  twisty.setAttribute("aria-expanded", String(!isCollapsed));
+  twisty.innerHTML = mdIcon("chevron");
   twisty.addEventListener("click", () => toggleFolderCollapsed(node.path));
 
   const label = document.createElement("button");
   label.type = "button";
   label.className = "deck-folder-label";
-  label.innerHTML = `<span class="deck-folder-icon">📁</span><span class="deck-folder-name"></span>`;
+  label.innerHTML = `<span class="deck-folder-icon">${mdIcon("folder")}</span><span class="deck-folder-name"></span>`;
   label.querySelector(".deck-folder-name").textContent = node.name;
   label.addEventListener("click", () => toggleFolderCollapsed(node.path));
 
   const total = folderTotalDeckCount(node);
   const count = document.createElement("span");
   count.className = "deck-folder-count";
+  // data-count is the bare number; the phone layout swaps to it, because
+  // "12 decks" costs a third of the room the folder's own name needs.
+  count.dataset.count = String(total);
   count.textContent = total === 1 ? "1 deck" : `${total} decks`;
 
-  const actions = document.createElement("div");
-  actions.className = "deck-folder-actions";
-  const mkBtn = (text, title, handler) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "deck-folder-action";
-    b.textContent = text;
-    b.title = title;
-    b.addEventListener("click", handler);
-    return b;
-  };
-  actions.append(
-    mkBtn("+", "New subfolder", () => createFolder(node.path)),
-    mkBtn("Rename", "Rename folder", () => renameFolder(node.path)),
-    mkBtn("Delete", "Delete folder", () => deleteFolder(node.path)),
-  );
+  // Shared with the Folder-view nav rows, so a folder offers the same four
+  // actions wherever it appears. (Tree rows used to build their own three-button
+  // cluster and were missing "New deck in this folder" entirely.)
+  const actions = buildFolderActionCluster(node.path);
 
   wrap.append(twisty, label, count, actions);
   td.append(wrap);
@@ -5520,7 +5665,7 @@ function buildRootDropRow() {
   tr.className = "deck-folder-row deck-root-row";
   const td = document.createElement("td");
   td.colSpan = 7;
-  td.innerHTML = `<div class="deck-folder-wrap"><span class="deck-folder-icon">🏠</span><span class="deck-folder-name">All decks</span><span class="deck-root-hint">drop here to remove from a folder</span></div>`;
+  td.innerHTML = `<div class="deck-folder-wrap"><span class="deck-folder-icon">${mdIcon("home")}</span><span class="deck-folder-name">All decks</span><span class="deck-root-hint">drop here to remove from a folder</span></div>`;
   tr.append(td);
   attachFolderDropTarget(tr, "");
   return tr;
@@ -5542,9 +5687,9 @@ function makeDeckDraggable(el, sel, deck) {
   el.addEventListener("dragend", () => { el.classList.remove("dragging"); myDecksDrag = null; clearFolderDropHighlights(); });
 }
 
-// Table-row variant: adds the tree indent + row class, then shared drag behaviour.
+// Table-row variant: adds the tree indent (the row class comes from the row
+// builders), then shared drag behaviour.
 function decorateDeckRow(tr, sel, deck, indentLevel) {
-  tr.classList.add("my-deck-row");
   tr.style.setProperty("--folder-depth", String(indentLevel));
   makeDeckDraggable(tr, sel, deck);
 }
@@ -5600,17 +5745,18 @@ function renderMyDecksBreadcrumb() {
   if (!nav) return;
   nav.innerHTML = "";
   const cwd = state.myDecksCwd;
-  const mk = (label, path, isCurrent) => {
+  const mk = (label, path, isCurrent, icon) => {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "breadcrumb-crumb";
-    b.textContent = label;
+    if (icon) b.innerHTML = mdIcon(icon);
+    b.append(label);
     if (isCurrent) b.setAttribute("aria-current", "true");
     b.addEventListener("click", () => setMyDecksCwdAndRender(path));
     attachFolderDropTarget(b, path); // drop a deck/folder on a crumb to move it here
     return b;
   };
-  nav.appendChild(mk("🏠 All", "", cwd === ""));
+  nav.appendChild(mk("All decks", "", cwd === "", "home"));
   let acc = "";
   const segs = folderSegments(cwd);
   segs.forEach((seg, i) => {
@@ -5627,20 +5773,27 @@ function renderMyDecksBreadcrumb() {
 function buildFolderActionCluster(path) {
   const wrap = document.createElement("div");
   wrap.className = "deck-folder-actions";
-  const mk = (text, title, handler) => {
+  // Icon + label, so the phone layout can drop to icons alone and keep all four
+  // actions on the folder's own line instead of wrapping them onto a second.
+  const mk = (icon, text, title, handler) => {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "deck-folder-action";
-    b.textContent = text;
+    b.innerHTML = mdIcon(icon);
+    const label = document.createElement("span");
+    label.className = "md-btn-label";
+    label.textContent = text;
+    b.append(label);
     b.title = title;
+    b.setAttribute("aria-label", title);
     b.addEventListener("click", (e) => { e.stopPropagation(); handler(); });
     return b;
   };
   wrap.append(
-    mk("＋ Deck", "New deck in this folder", () => newDeckInFolder(path)),
-    mk("＋ Folder", "New subfolder", () => createFolder(path)),
-    mk("Rename", "Rename folder", () => renameFolder(path)),
-    mk("Delete", "Delete folder", () => deleteFolder(path)),
+    mk("newDeck", "Deck", "New deck in this folder", () => newDeckInFolder(path)),
+    mk("newFolder", "Folder", "New subfolder", () => createFolder(path)),
+    mk("pencil", "Rename", "Rename folder", () => renameFolder(path)),
+    mk("trash", "Delete", "Delete folder", () => deleteFolder(path)),
   );
   return wrap;
 }
@@ -5671,7 +5824,7 @@ function buildFolderTile(node) {
 
   const main = document.createElement("div");
   main.className = "folder-tile-main";
-  main.innerHTML = `<span class="folder-tile-icon">📁</span><span class="folder-tile-name"></span>`;
+  main.innerHTML = `<span class="folder-tile-icon">${mdIcon("folder")}</span><span class="folder-tile-name"></span>`;
   main.querySelector(".folder-tile-name").textContent = node.name;
   const count = document.createElement("span");
   count.className = "folder-tile-count";
@@ -5711,12 +5864,15 @@ function buildFolderNavRow(node) {
   const label = document.createElement("button");
   label.type = "button";
   label.className = "deck-folder-label";
-  label.innerHTML = `<span class="deck-folder-icon">📁</span><span class="deck-folder-name"></span>`;
+  label.innerHTML = `<span class="deck-folder-icon">${mdIcon("folder")}</span><span class="deck-folder-name"></span>`;
   label.querySelector(".deck-folder-name").textContent = node.name;
   label.addEventListener("click", () => setMyDecksCwdAndRender(node.path));
   const total = folderTotalDeckCount(node);
   const count = document.createElement("span");
   count.className = "deck-folder-count";
+  // data-count is the bare number; the phone layout swaps to it, because
+  // "12 decks" costs a third of the room the folder's own name needs.
+  count.dataset.count = String(total);
   count.textContent = total === 1 ? "1 deck" : `${total} decks`;
   wrap.append(label, count, buildFolderActionCluster(node.path));
   td.append(wrap);
@@ -5734,9 +5890,71 @@ function buildFolderNavRow(node) {
   return tr;
 }
 
-// Closes any open deck-tile overflow menus (one-at-a-time behaviour).
+// The per-deck "⋯" menu (Rename / Move to folder / Delete), shared by grid tiles
+// and — below 720px, where the row has no space for four inline icons — list
+// rows. One implementation so both surfaces offer exactly the same actions.
+function buildDeckOverflowMenu(deck, kind, sel) {
+  const overflow = document.createElement("div");
+  overflow.className = "deck-tile-overflow";
+
+  const ovBtn = document.createElement("button");
+  ovBtn.type = "button";
+  ovBtn.className = "deck-tile-overflow-btn";
+  ovBtn.setAttribute("aria-haspopup", "true");
+  ovBtn.setAttribute("aria-expanded", "false");
+  ovBtn.title = "More actions";
+  ovBtn.setAttribute("aria-label", `More actions for ${deck.title || "deck"}`);
+  ovBtn.innerHTML = mdIcon("more");
+
+  const menu = document.createElement("div");
+  menu.className = "deck-tile-overflow-menu";
+  menu.hidden = true;
+  const mkItem = (text, handler) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.addEventListener("click", () => { menu.hidden = true; ovBtn.setAttribute("aria-expanded", "false"); handler(); });
+    return b;
+  };
+  menu.append(
+    mkItem("Rename", () => renameMyDeck(sel, deck.title || "")),
+    mkItem("Move to folder…", () => moveDeckViaMenu(deck, kind)),
+    mkItem("Delete", () => buildDeckDeleteButton(deck, kind).click()),
+  );
+
+  ovBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.hidden;
+    closeAllDeckTileMenus(menu);
+    menu.hidden = !willOpen;
+    ovBtn.setAttribute("aria-expanded", String(willOpen));
+    if (willOpen) {
+      // The grid/table this button lives in scrolls, and the menu can otherwise
+      // be clipped by that scroll container near the bottom of the list —
+      // promote it to a viewport-fixed position computed from the button.
+      const r = ovBtn.getBoundingClientRect();
+      menu.style.position = "fixed";
+      menu.style.right = "auto"; // the default CSS anchors with `right: 0`, which
+      // would otherwise stretch the box once `left` is also set explicitly below.
+      menu.style.left = "0px";
+      menu.style.top = "0px";
+      const menuW = menu.offsetWidth;
+      const menuH = menu.offsetHeight;
+      menu.style.left = `${Math.max(4, Math.min(r.right - menuW, window.innerWidth - menuW - 4))}px`;
+      menu.style.top = (r.bottom + menuH + 4 > window.innerHeight)
+        ? `${r.top - menuH - 4}px`
+        : `${r.bottom + 4}px`;
+    }
+  });
+
+  overflow.append(ovBtn, menu);
+  return overflow;
+}
+
+// Closes any open deck overflow menus (one-at-a-time behaviour). Scoped to the
+// whole panel body, not just the tile grid — list rows carry the same menu now.
 function closeAllDeckTileMenus(except) {
-  el.myDecksGrid?.querySelectorAll(".deck-tile-overflow-menu:not([hidden])").forEach((menu) => {
+  (el.myDecksBody || document).querySelectorAll(".deck-tile-overflow-menu:not([hidden])").forEach((menu) => {
     if (menu !== except) {
       menu.hidden = true;
       menu.style.position = "";
@@ -5793,57 +6011,7 @@ function buildDeckTile(entry, ctx) {
   actions.className = "deck-tile-actions";
   actions.append(buildDeckLoadButton(deck, kind), createDeckExportControl(sel, deck.title));
 
-  // Overflow (⋯): Rename / Move to folder / Delete
-  const overflow = document.createElement("div");
-  overflow.className = "deck-tile-overflow";
-  const ovBtn = document.createElement("button");
-  ovBtn.type = "button";
-  ovBtn.className = "deck-tile-overflow-btn";
-  ovBtn.setAttribute("aria-haspopup", "true");
-  ovBtn.setAttribute("aria-expanded", "false");
-  ovBtn.title = "More actions";
-  ovBtn.textContent = "⋯";
-  const menu = document.createElement("div");
-  menu.className = "deck-tile-overflow-menu";
-  menu.hidden = true;
-  const mkItem = (text, handler) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = text;
-    b.addEventListener("click", () => { menu.hidden = true; ovBtn.setAttribute("aria-expanded", "false"); handler(); });
-    return b;
-  };
-  menu.append(
-    mkItem("Rename", () => renameMyDeck(sel, deck.title || "")),
-    mkItem("Move to folder…", () => moveDeckViaMenu(deck, kind)),
-    mkItem("Delete", () => buildDeckDeleteButton(deck, kind).click()),
-  );
-  ovBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const willOpen = menu.hidden;
-    closeAllDeckTileMenus(menu);
-    menu.hidden = !willOpen;
-    ovBtn.setAttribute("aria-expanded", String(willOpen));
-    if (willOpen) {
-      // The grid this tile lives in scrolls, and the menu can otherwise be
-      // clipped by that scroll container near the bottom of the list —
-      // promote it to a viewport-fixed position computed from the button.
-      const r = ovBtn.getBoundingClientRect();
-      menu.style.position = "fixed";
-      menu.style.right = "auto"; // the default CSS anchors with `right: 0`, which
-      // would otherwise stretch the box once `left` is also set explicitly below.
-      menu.style.left = "0px";
-      menu.style.top = "0px";
-      const menuW = menu.offsetWidth;
-      const menuH = menu.offsetHeight;
-      menu.style.left = `${Math.min(r.right - menuW, window.innerWidth - menuW - 4)}px`;
-      menu.style.top = (r.bottom + menuH + 4 > window.innerHeight)
-        ? `${r.top - menuH - 4}px`
-        : `${r.bottom + 4}px`;
-    }
-  });
-  overflow.append(ovBtn, menu);
-  actions.append(overflow);
+  actions.append(buildDeckOverflowMenu(deck, kind, sel));
 
   tile.append(selWrap, title, chip, meta, actions);
 
@@ -5976,7 +6144,13 @@ function syncMyDecksChrome() {
     el.myDecksTreeToggleAll.hidden = (view !== "tree");
     if (view === "tree") {
       const allOpen = allFoldersExpanded();
-      el.myDecksTreeToggleAll.textContent = allOpen ? "⊟ Collapse all" : "⊞ Expand all";
+      // Rewrite the label span and swap the icon in place — assigning
+      // textContent on the button itself would take its <svg> with it.
+      const labelEl = el.myDecksTreeToggleAll.querySelector("span");
+      if (labelEl) labelEl.textContent = allOpen ? "Collapse all" : "Expand all";
+      el.myDecksTreeToggleAll.dataset.mdIcon = allOpen ? "collapse" : "expand";
+      el.myDecksTreeToggleAll.querySelector("svg.md-ico")?.remove();
+      hydrateMyDecksIcons(el.myDecksTreeToggleAll.parentElement || document);
       el.myDecksTreeToggleAll.dataset.expandAll = allOpen ? "0" : "1";
     }
   }
@@ -6018,6 +6192,12 @@ function paintMyDecks(localDecks, cloudById, { cloudOnly = [], categories = webD
     ...cloudOnly.filter(myDeckMatchesSearch).map((deck) => ({ deck, kind: "cloud" })),
   ].sort(myDecksSortComparator(state.myDecksSort));
   const ctx = { cloudById, categories, scope, search, loading, totalDecks: localDecks.length + cloudOnly.length };
+  // The header count replaces the descriptive paragraph that used to sit there:
+  // same vertical space, but it says something that changes.
+  if (el.myDecksCount) {
+    el.myDecksCount.textContent = ctx.totalDecks === 1 ? "1 deck" : `${ctx.totalDecks} decks`;
+    el.myDecksCount.hidden = false;
+  }
   syncMyDecksChrome();
   if (state.myDecksView === "grid") renderMyDecksGridView(entries, ctx);
   else if (state.myDecksView === "folder") renderMyDecksFolderView(entries, ctx);
@@ -16843,8 +17023,36 @@ el.autoSyncSelect?.addEventListener("change", (e) => {
 // Reflect the saved cadence in the dropdown and start the timer on boot. The
 // timer's ticks self-gate on sign-in/online, so it's safe to arm before login.
 applyAutoSyncInterval();
+// Every static [data-md-icon] button gets its SVG once, at startup.
+hydrateMyDecksIcons();
+
 el.closeMyDecksBtn?.addEventListener("click", closeMyDecksPanel);
-el.myDecksRefreshBtn?.addEventListener("click", () => renderMyDecksList());
+el.myDecksRefreshBtn?.addEventListener("click", () => { closeMyDecksMoreMenu(); renderMyDecksList(); });
+
+// ── The toolbar's "⋯" menu ──────────────────────────────────────────────────
+// Holds Refresh, Expand all, Import EPUB, Restore and every Export All format,
+// so the toolbar itself stays a single row at any width.
+function closeMyDecksMoreMenu() {
+  if (!el.myDecksMoreMenu || el.myDecksMoreMenu.hidden) return;
+  el.myDecksMoreMenu.hidden = true;
+  el.myDecksMoreBtn?.setAttribute("aria-expanded", "false");
+}
+
+function toggleMyDecksMoreMenu() {
+  if (!el.myDecksMoreMenu) return;
+  const willOpen = el.myDecksMoreMenu.hidden;
+  el.myDecksMoreMenu.hidden = !willOpen;
+  el.myDecksMoreBtn?.setAttribute("aria-expanded", String(willOpen));
+}
+
+el.myDecksMoreBtn?.addEventListener("click", (e) => { e.stopPropagation(); toggleMyDecksMoreMenu(); });
+document.getElementById("myDecksMoreCloseBtn")?.addEventListener("click", closeMyDecksMoreMenu);
+// The EPUB picker is a <label> whose click opens the file dialog; close the menu
+// alongside it so the sheet isn't still sitting there behind the OS dialog.
+document.getElementById("myDecksImportEpubBtn")?.addEventListener("click", () => closeMyDecksMoreMenu());
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".my-decks-more")) closeMyDecksMoreMenu();
+});
 
 // The folder new decks/folders are created under: the cwd in Folder view, else the
 // scope-filter value (root when neither is set).
@@ -16879,6 +17087,7 @@ el.myDecksDisplayToggle?.addEventListener("click", (e) => {
 // Expand-all / Collapse-all (Tree view)
 el.myDecksTreeToggleAll?.addEventListener("click", () => {
   setAllFoldersExpanded(el.myDecksTreeToggleAll.dataset.expandAll === "1");
+  closeMyDecksMoreMenu();
 });
 
 // Title search (debounced) — filters the cached set, no refetch.
@@ -16893,9 +17102,8 @@ el.myDecksSearch?.addEventListener("input", (e) => {
 document.addEventListener("click", (e) => {
   if (!e.target.closest(".deck-tile-overflow")) closeAllDeckTileMenus();
 });
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeAllDeckTileMenus();
-});
+// Escape is handled by closeTopmostOverlay(), which peels these menus back
+// before the panel itself — a listener here would close both at once.
 el.closeImportBtn.addEventListener("click", closeImportPanel);
 el.closeImportSelectorBtn.addEventListener("click", closeImportSelectorPanel);
 el.importSelectorCancelBtn.addEventListener("click", closeImportSelectorPanel);
@@ -16960,34 +17168,24 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
     });
   }
 
-  const exportAllBtn = document.getElementById("myDecksExportAllBtn");
-  const exportAllMenu = document.getElementById("myDecksExportAllMenu");
-  if (exportAllBtn && exportAllMenu) {
-    exportAllBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const shouldOpen = exportAllMenu.hidden;
-      closeWebDeckExportMenus(exportAllMenu);
-      exportAllMenu.hidden = !shouldOpen;
-      exportAllBtn.setAttribute("aria-expanded", String(shouldOpen));
-    });
-    exportAllMenu.addEventListener("click", (event) => {
-      const button = event.target.closest("[data-export-all]");
-      if (!button) return;
-      event.stopPropagation();
-      exportAllMenu.hidden = true;
-      exportAllBtn.setAttribute("aria-expanded", "false");
-      if (button.dataset.exportAll === "backup") {
-        exportLibraryBackupZip();
-      } else {
-        exportAllMyDecks(button.dataset.exportAll);
-      }
-    });
-  }
+  // Export All no longer has a button of its own — its formats are a group
+  // inside the "⋯" menu, so picking one closes that menu instead.
+  el.myDecksMoreMenu?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-export-all]");
+    if (!button) return;
+    event.stopPropagation();
+    closeMyDecksMoreMenu();
+    if (button.dataset.exportAll === "backup") {
+      exportLibraryBackupZip();
+    } else {
+      exportAllMyDecks(button.dataset.exportAll);
+    }
+  });
 
   const restoreBtn = document.getElementById("myDecksRestoreBtn");
   const restoreInput = document.getElementById("restoreFileInput");
   if (restoreBtn && restoreInput) {
-    restoreBtn.addEventListener("click", () => restoreInput.click());
+    restoreBtn.addEventListener("click", () => { closeMyDecksMoreMenu(); restoreInput.click(); });
     restoreInput.addEventListener("change", async () => {
       const file = restoreInput.files && restoreInput.files[0];
       restoreInput.value = ""; // allow re-selecting the same file later
@@ -17393,9 +17591,8 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest(".theme-select")) {
     setThemeMenuOpen(false);
   }
-  if (!event.target.closest(".web-deck-export-wrap, .web-decks-global-export, .bulk-export-dropdown")) {
+  if (!event.target.closest(".web-deck-export-wrap, .bulk-export-dropdown")) {
     closeWebDeckExportMenus();
-    document.getElementById("myDecksExportAllBtn")?.setAttribute("aria-expanded", "false");
     document.getElementById("myDecksBulkExportBtn")?.setAttribute("aria-expanded", "false");
   }
   if (!event.target.closest(".menu-wrap")) {

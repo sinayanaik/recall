@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260725-7">
+    <link rel="stylesheet" href="styles.css?v=20260725-9">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -491,54 +491,67 @@
     <section class="web-decks-panel" id="myDecksPanel" hidden aria-label="My Decks">
       <div class="web-decks-shell">
         <div class="web-decks-head">
-          <div>
+          <div class="web-decks-head-main">
             <h1>My Decks</h1>
-            <p>Every deck you study lives here — saved on this device and synced to the cloud automatically.</p>
+            <span class="web-decks-count" id="myDecksCount" hidden></span>
+            <p class="web-decks-head-sub">Saved on this device and synced to the cloud automatically.</p>
           </div>
-          <button class="icon-button" id="closeMyDecksBtn" type="button" aria-label="Close my decks panel">&#215;</button>
+          <button class="icon-button" id="closeMyDecksBtn" type="button" data-md-icon="close" aria-label="Close my decks panel"></button>
         </div>
         <div class="web-decks-tools">
           <div class="web-decks-tools-row web-decks-tools-primary">
             <div class="my-decks-viewswitch" id="myDecksViewSwitch" role="group" aria-label="Library view">
-              <button type="button" data-mydecks-view="grid" aria-pressed="false" title="Grid — every deck at once">&#9638; Grid</button>
-              <button type="button" data-mydecks-view="folder" aria-pressed="true" title="Folder — browse one level at a time">&#128193; Folder</button>
-              <button type="button" data-mydecks-view="tree" aria-pressed="false" title="Tree — the full nested hierarchy">&#127793; Tree</button>
+              <button type="button" data-mydecks-view="grid" data-md-icon="grid" aria-pressed="false" title="Grid — every deck at once"><span class="md-btn-label">Grid</span></button>
+              <button type="button" data-mydecks-view="folder" data-md-icon="folder" aria-pressed="true" title="Folder — browse one level at a time"><span class="md-btn-label">Folder</span></button>
+              <button type="button" data-mydecks-view="tree" data-md-icon="tree" aria-pressed="false" title="Tree — the full nested hierarchy"><span class="md-btn-label">Tree</span></button>
             </div>
             <div class="web-decks-tools-primary-right">
               <div class="my-decks-display-toggle" id="myDecksDisplayToggle" role="group" aria-label="Deck display">
-                <button type="button" data-mydecks-display="tiles" aria-pressed="true" title="Show decks as tiles">&#9638; Tiles</button>
-                <button type="button" data-mydecks-display="list" aria-pressed="false" title="Show decks as a list">&#9776; List</button>
+                <button type="button" data-mydecks-display="tiles" data-md-icon="tiles" aria-pressed="true" title="Show decks as tiles"><span class="md-btn-label">Tiles</span></button>
+                <button type="button" data-mydecks-display="list" data-md-icon="list" aria-pressed="false" title="Show decks as a list"><span class="md-btn-label">List</span></button>
               </div>
-              <button class="web-decks-refresh" id="myDecksTreeToggleAll" type="button" title="Expand or collapse all folders" hidden>&#8645; Expand all</button>
-              <button class="web-decks-refresh web-decks-primary-btn" id="myDecksNewDeckBtn" type="button" title="Create a new deck in the current folder">&#43; New deck</button>
-              <button class="web-decks-refresh" id="myDecksNewFolderBtn" type="button" title="Create a new folder">&#128193; New folder</button>
-              <label class="web-decks-refresh file-pick" id="myDecksImportEpubBtn" title="Import an EPUB book as one folder with a deck per chapter">
-                <input id="myDecksImportEpubInput" type="file" accept=".epub,application/epub+zip" hidden>
-                <span>&#128214; Import EPUB</span>
-              </label>
-              <button class="web-decks-refresh" id="myDecksRefreshBtn" type="button">&#8635; Refresh</button>
-              <div class="web-decks-global-export">
-                <button id="myDecksExportAllBtn" type="button" aria-haspopup="true" aria-expanded="false">Export All</button>
-                <div class="web-decks-global-export-menu" id="myDecksExportAllMenu" hidden>
-                  <button type="button" data-export-all="pdf">Cornell PDF</button>
-                  <button type="button" data-export-all="html">Standalone HTML</button>
-                  <button type="button" data-export-all="doc">Word (.docx)</button>
-                  <button type="button" data-export-all="markdown">Markdown</button>
-                  <button type="button" data-export-all="json">JSON</button>
-                  <button type="button" data-export-all="sql">SQL</button>
-                  <button type="button" data-export-all="backup">Backup (.zip — all decks + notes)</button>
+              <button class="web-decks-refresh web-decks-primary-btn" id="myDecksNewDeckBtn" type="button" data-md-icon="newDeck" title="Create a new deck in the current folder"><span class="md-btn-label">New deck</span></button>
+              <button class="web-decks-refresh" id="myDecksNewFolderBtn" type="button" data-md-icon="newFolder" title="Create a new folder"><span class="md-btn-label">New folder</span></button>
+              <!-- Everything else lives behind one "⋯" so the toolbar is a single
+                   row at every width. Ids are unchanged, so the existing
+                   listeners (and syncMyDecksChrome's hidden/label handling for
+                   Expand all) keep working from inside the menu. -->
+              <div class="my-decks-more">
+                <button class="web-decks-refresh my-decks-more-btn" id="myDecksMoreBtn" type="button" data-md-icon="more" aria-haspopup="true" aria-expanded="false" aria-label="More library actions" title="More actions"></button>
+                <div class="my-decks-more-menu" id="myDecksMoreMenu" role="menu" hidden>
+                  <div class="md-menu-head">
+                    <span>Library</span>
+                    <button type="button" class="md-menu-close" id="myDecksMoreCloseBtn" data-md-icon="close" aria-label="Close menu"></button>
+                  </div>
+                  <button class="md-menu-item" id="myDecksRefreshBtn" type="button" data-md-icon="refresh"><span>Refresh</span></button>
+                  <button class="md-menu-item" id="myDecksTreeToggleAll" type="button" data-md-icon="expand" title="Expand or collapse all folders" hidden><span>Expand all</span></button>
+                  <div class="md-menu-group">Import</div>
+                  <label class="md-menu-item file-pick" id="myDecksImportEpubBtn" data-md-icon="book" title="Import an EPUB book as one folder with a deck per chapter">
+                    <input id="myDecksImportEpubInput" type="file" accept=".epub,application/epub+zip" hidden>
+                    <span>Import EPUB</span>
+                  </label>
+                  <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore decks &amp; notes from a backup archive (.zip or .json)"><span>Restore backup</span></button>
+                  <input id="restoreFileInput" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden>
+                  <div class="md-menu-group">Export all decks</div>
+                  <div id="myDecksExportAllMenu">
+                    <button class="md-menu-item" type="button" data-export-all="pdf"><span>Cornell PDF</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="html"><span>Standalone HTML</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="doc"><span>Word (.docx)</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="markdown"><span>Markdown</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="json"><span>JSON</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="sql"><span>SQL</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="backup"><span>Backup (.zip — all decks + notes)</span></button>
+                  </div>
                 </div>
               </div>
-              <button class="web-decks-refresh" id="myDecksRestoreBtn" type="button" title="Restore decks & notes from a backup archive (.zip or .json)">&#10554; Restore</button>
-              <input id="restoreFileInput" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden>
             </div>
           </div>
           <div class="web-decks-tools-row web-decks-tools-secondary">
             <nav class="my-decks-breadcrumb" id="myDecksBreadcrumb" aria-label="Folder path" hidden></nav>
-            <div class="my-decks-search">
-              <input type="search" id="myDecksSearch" placeholder="&#128269; Search decks…" aria-label="Search decks by title" autocomplete="off">
+            <div class="my-decks-search" data-md-icon="search">
+              <input type="search" id="myDecksSearch" placeholder="Search decks…" aria-label="Search decks by title" autocomplete="off">
             </div>
-            <label class="my-decks-filter">
+            <label class="my-decks-filter" data-md-icon="sort">
               <span>Sort</span>
               <select id="myDecksSort" aria-label="Sort decks">
                 <option value="recent">Recently opened</option>
@@ -549,31 +562,12 @@
                 <option value="size-desc">Card count</option>
               </select>
             </label>
-            <label class="my-decks-filter" id="myDecksFolderFilterWrap">
+            <label class="my-decks-filter" id="myDecksFolderFilterWrap" data-md-icon="folder">
               <span>Folder</span>
               <select id="myDecksCategoryFilter">
                 <option value="">All folders</option>
               </select>
             </label>
-            <div class="web-decks-bulk-actions" id="myDecksBulkActions" hidden>
-              <span class="bulk-title">Selected (<strong id="myDecksSelectedCount">0</strong>)</span>
-              <div class="bulk-buttons">
-                <button id="myDecksBulkLoadBtn" class="bulk-action-btn bulk-load" type="button">Load</button>
-                <button id="myDecksBulkCategoryBtn" class="bulk-action-btn bulk-category" type="button">Categorize</button>
-                <div class="bulk-export-dropdown">
-                  <button id="myDecksBulkExportBtn" class="bulk-action-btn bulk-export" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
-                  <div class="bulk-export-menu" id="myDecksBulkExportMenu" hidden>
-                    <button type="button" data-bulk-export="pdf">Cornell PDF</button>
-                    <button type="button" data-bulk-export="html">Standalone HTML</button>
-                    <button type="button" data-bulk-export="doc">Word (.docx)</button>
-                    <button type="button" data-bulk-export="markdown">Markdown</button>
-                    <button type="button" data-bulk-export="json">JSON</button>
-                    <button type="button" data-bulk-export="sql">SQL</button>
-                  </div>
-                </div>
-                <button id="myDecksBulkDeleteBtn" class="bulk-action-btn bulk-delete" type="button">Delete</button>
-              </div>
-            </div>
           </div>
         </div>
         <div class="web-decks-body" id="myDecksBody">
@@ -605,6 +599,28 @@
             </table>
           </div>
           <div class="my-decks-grid" id="myDecksGrid" hidden></div>
+        </div>
+        <!-- The shell's fourth grid row. Anchored below the list rather than
+             inside the toolbar, where it used to appear and disappear between
+             the filters and push the whole list down on every selection. -->
+        <div class="web-decks-bulk-actions" id="myDecksBulkActions" hidden>
+          <span class="bulk-title">Selected (<strong id="myDecksSelectedCount">0</strong>)</span>
+          <div class="bulk-buttons">
+            <button id="myDecksBulkLoadBtn" class="bulk-action-btn bulk-load" type="button">Load</button>
+            <button id="myDecksBulkCategoryBtn" class="bulk-action-btn bulk-category" type="button">Categorize</button>
+            <div class="bulk-export-dropdown">
+              <button id="myDecksBulkExportBtn" class="bulk-action-btn bulk-export" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
+              <div class="bulk-export-menu" id="myDecksBulkExportMenu" hidden>
+                <button type="button" data-bulk-export="pdf">Cornell PDF</button>
+                <button type="button" data-bulk-export="html">Standalone HTML</button>
+                <button type="button" data-bulk-export="doc">Word (.docx)</button>
+                <button type="button" data-bulk-export="markdown">Markdown</button>
+                <button type="button" data-bulk-export="json">JSON</button>
+                <button type="button" data-bulk-export="sql">SQL</button>
+              </div>
+            </div>
+            <button id="myDecksBulkDeleteBtn" class="bulk-action-btn bulk-delete" type="button">Delete</button>
+          </div>
         </div>
       </div>
     </section>
