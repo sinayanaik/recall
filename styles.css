@@ -112,6 +112,12 @@
   --panel-corner-radius: 14px;
   --quiz-panel-padding: var(--panel-padding);
   --quiz-panel-radius: var(--panel-corner-radius);
+  /* The notes panel's own inner padding and header/body gap. Tokens rather than
+     literals because .notes-rendered cancels both with negative margins to make
+     its scroll box reach the panel edges — hard-coded, the two drifted apart the
+     moment either was tuned (e.g. the tighter mobile values below). */
+  --notes-stage-pad: 14px;
+  --notes-stage-gap: 10px;
   --side-panel-min-width: 180px;
   --side-panel-width-percent: 16;
   --side-panel-width: 16%;
@@ -1956,12 +1962,6 @@ button:disabled {
 .cloze:focus-visible {
   outline: 2px solid var(--accent-strong);
   outline-offset: 1px;
-}
-/* The Reveal-clozes glyph flips 👀 (reveal) ⇄ 🙈 (hide) — deliberately not the
-   single 👁 used by the edit/rendered toggle, so the two don't look alike. */
-.cloze-toggle-glyph {
-  font-style: normal;
-  line-height: 1;
 }
 /* Active state for the Reveal-clozes buttons (deck utility row + notes) when
    every cloze in the view is currently shown. */
@@ -7589,15 +7589,150 @@ textarea {
 .render-toolbar button.render-quick-note.quick-note-saved {
   background-color: color-mix(in srgb, var(--known) 35%, var(--panel));
 }
-.render-toolbar .make-cloze-btn {
+/* ── The cloze family: three shapes, one idea ───────────────────────────
+   Now that all three sit side by side in the notes header, "related" is what
+   the group divider says — so the glyphs are free to be told apart instead.
+   Bracketed [ … ] [A] [?] gave three near-identical silhouettes; these are a
+   struck-through letter, a plain letter, and a question mark.
+
+     A̶  hide THIS selection   — a redaction bar drawn across the letter
+     A   reveal every answer   — flips to a bare blank while revealed
+     ?   quiz me on them all
+
+   The bars are drawn, not typed: ▄/▬/█ render at wildly different weights and
+   baselines across platforms, and these two have to stay distinguishable from
+   each other at 26px. */
+.render-toolbar .make-cloze-btn,
+.edit-toolbar .make-cloze-btn,
+.cloze-make-icon,
+.cloze-toggle-icon,
+.cloze-review-icon {
+  /* On the buttons, not the inner artwork — every path/rect inside is drawn in
+     currentColor, and colouring one of the three at a different level left it
+     inheriting .edit-card-btn's muted grey while its siblings were accent. */
   color: var(--accent-strong);
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-weight: 700;
-  letter-spacing: -0.02em;
 }
 
-/* Split colour / highlight control: main applies the current default, the side
-   button shows that default as a swatch and opens the palette to change it. */
+.cz-ico {
+  display: block;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+/* The slash only exists while the answers are showing, so the eye reads as
+   "reveal" when they're hidden and "hide again" when they're not. */
+.cz-slash {
+  display: none;
+}
+
+.cloze-toggle-icon[aria-pressed="true"] .cz-slash,
+#clozeToggleBtn[aria-pressed="true"] .cz-slash {
+  display: inline;
+}
+
+/* The floating selection pill is a bigger touch target than the header icons. */
+.selection-float-btn .cz-ico {
+  width: 17px;
+  height: 17px;
+}
+
+/* Row 1's other five icons. These MUST stay after .edit-card-btn: they are all
+   single-class selectors, so the later rule wins, and while they lived earlier
+   in the file .edit-card-btn's own color/background/font-size silently beat
+   every one of them — the + rendered muted grey and the pin lost its tint. */
+.cloze-make-icon,
+.cloze-toggle-icon,
+.cloze-review-icon,
+.notes-make-card,
+.notes-quick-note {
+  font-size: calc(var(--card-hdr-btn-fs) * 1.02);
+}
+
+/* Capture group: + creates a card, 📌 files the selection away. Accent-tinted
+   like the pin already is everywhere else, so the pair reads as one group. */
+.notes-make-card {
+  color: var(--accent-strong);
+  font-size: calc(var(--card-hdr-btn-fs) * 1.35);
+  font-weight: 700;
+}
+
+.notes-quick-note {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.notes-quick-note.quick-note-saved {
+  background: color-mix(in srgb, var(--known) 35%, var(--panel));
+}
+
+/* Group separator inside the selection strip: style it · colour it · capture it.
+   Not .edit-toolbar-divider — that one is display:none below 600px, which is
+   exactly where the grouping is needed most. */
+.render-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 2px;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+/* Make-card: the one creative act in a strip of transforms, so it gets the
+   accent treatment the pin already has. */
+.render-toolbar button.render-make-card {
+  color: var(--accent-strong);
+  font-size: 1rem;
+  font-weight: 800;
+}
+.render-toolbar button.render-make-card:hover {
+  background-color: color-mix(in srgb, var(--accent) 22%, var(--panel));
+}
+
+/* An "A" wearing the colour it applies — the standard word-processor idiom,
+   and self-explanatory in a way 🎨/🖍️ never were (a palette says "colour
+   something", not "colour the text this colour"). */
+.render-glyph {
+  display: block;
+  font-weight: 800;
+  line-height: 1;
+}
+.render-underbar {
+  display: block;
+  width: 11px;
+  height: 3px;
+  margin-top: 2px;
+  border-radius: 1px;
+  background: var(--accent-strong);
+}
+.render-glyph-hl {
+  min-width: 13px;
+  padding: 1px 2px;
+  border-radius: 2px;
+  /* The highlight palette is all pale tints, so the letter has to go dark to
+     stay legible on top of whichever one is current. */
+  color: #14181c;
+  background: #fde68a;
+}
+.render-split-main:has(.render-underbar),
+.edit-toolbar .toolbar-dropdown-toggle:has(.render-underbar) {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+/* The raw-editor's colour control opens a palette rather than applying a
+   remembered default, so its bar is a plain accent mark — but it shares the
+   glyph so the row doesn't change vocabulary when you tap ✎ (the edit toolbar
+   replaces the render toolbar in the very same slot). */
+.edit-toolbar .toolbar-dropdown-toggle .render-underbar {
+  background: var(--accent-strong);
+}
+
+/* Split colour / highlight control: main applies the current default and shows
+   it, the side button opens the palette to change it. */
 .render-split {
   position: relative;
   display: inline-flex;
@@ -7615,14 +7750,9 @@ textarea {
   gap: 2px;
   border-left: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
 }
-.render-swatch {
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  display: inline-block;
-  background: var(--accent-strong);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 25%, transparent);
-}
+/* The side button is now just the caret — the main button's own A already shows
+   the current colour, so a second swatch here was duplicate information taking
+   up ~14px in the narrowest row in the app. */
 .render-caret {
   font-size: 0.6rem;
   opacity: 0.7;
@@ -7694,15 +7824,9 @@ textarea {
   gap: 4px;
   flex: 0 0 auto;
 }
-/* The three notes action icons (reveal-all, make-card, edit) keep their size
-   and stay clustered at the right end of the row. */
+/* The notes action icons keep their size and stay clustered at the right end. */
 .notes-head > .edit-card-btn {
   flex: 0 0 auto;
-}
-/* Grow no longer needed on the make-card button — the render strip claims the
-   free space, so drop the old auto-margin that would fight it. */
-.notes-head #makeCardFromNotesBtn {
-  margin-left: 0;
 }
 
 /* Keep the rendered-view toolbar on a single row on narrow screens by tightening
@@ -7722,17 +7846,66 @@ textarea {
     flex-wrap: wrap;
     row-gap: 6px;
   }
+  /* Row 1 now carries eight controls (☰ · three cloze · + 📌 · pill ⤢). At the
+     inherited 8px gap that measured over the 360px box; the icons themselves
+     are already at their touch-target floor, so the space between them is what
+     gives. */
+  .notes-mode .notes-head {
+    gap: 3px;
+  }
+
   .notes-mode .notes-head > .render-toolbar {
     order: 2;
     flex: 1 0 100%;
     width: 100%;
     overflow-x: visible;
+    /* Pure formatting now, and nothing to align with on either side — centring
+       reads as a deliberate strip rather than a left-over left-aligned run. */
+    justify-content: center;
+    /* Safety net. overflow-x:visible alone doesn't rescue an overflowing strip —
+       .quiz-panel is overflow:hidden on mobile, so anything past the edge is
+       simply gone, with no scrollbar to hint at it. Adding + and two dividers
+       here put 📌 9px over at 360px and it vanished. Wrapping turns any future
+       overflow into a visible second line instead of a missing button. */
+    flex-wrap: wrap;
+    row-gap: 3px;
   }
-  /* The toolbar left the top row, so push the reveal/make-card/edit cluster to
-     the right edge of it. */
-  .notes-mode .notes-head > .cloze-toggle-icon {
-    margin-left: auto;
+  /* Claw back that width first, so the wrap above stays a fallback rather than
+     the normal state: the ▾ side buttons and the group rules don't need desktop
+     breathing room. */
+  .notes-mode .notes-head > .render-toolbar .render-split-side {
+    padding: 0 2px;
   }
+  .notes-mode .notes-head > .render-toolbar .render-divider {
+    margin-left: 1px;
+    margin-right: 1px;
+  }
+  /* The raw-edit toolbar swaps into the same slot, so it needs the same
+     treatment — left inline it shared row 1 with ☰, shoved the [A] [?] and mode
+     clusters onto a THIRD row, and still scrolled its last buttons (📌) out of
+     reach. Same order value as the render toolbar above: only ever one of the
+     two is visible, so they can't collide. */
+  .notes-mode .notes-head > .edit-toolbar:not([hidden]) {
+    order: 2;
+    flex: 1 0 100%;
+    width: 100%;
+    /* Wrap, don't scroll. Its 13 mobile buttons measured 365px against a 306px
+       box at 360px, putting 📌 59px past the right edge with nothing to say so —
+       the same "the buttons look missing" trap the render toolbar hit. Tighter
+       spacing first, so most phones still get a single row. */
+    flex-wrap: wrap;
+    /* Centred to match the render toolbar it swaps places with — the two occupy
+       the same slot, so a different alignment reads as the row jumping. */
+    justify-content: center;
+    overflow-x: visible;
+    gap: 2px;
+  }
+  .notes-mode .notes-head > .edit-toolbar > button,
+  .notes-mode .notes-head > .edit-toolbar .toolbar-dropdown-toggle {
+    padding: 0 4px;
+  }
+  /* The toolbar left the top row; .notes-head-divider.is-lead carries the
+     auto-margin that pushes the cloze + mode clusters to the right edge of it. */
   .render-btn {
     min-width: 22px;
     padding: 0 5px;
@@ -7748,12 +7921,22 @@ textarea {
     padding: 0 3px;
     gap: 1px;
   }
-  .render-swatch {
-    width: 10px;
-    height: 10px;
-  }
   .render-caret {
     font-size: 0.55rem;
+  }
+  /* The A-plus-bar glyphs shrink with the row rather than being dropped — they
+     ARE the label here, unlike the old emoji which the swatch made redundant. */
+  .render-underbar {
+    width: 9px;
+    height: 2px;
+    margin-top: 1px;
+  }
+  .render-glyph-hl {
+    min-width: 11px;
+    padding: 1px;
+  }
+  .render-divider {
+    margin: 4px 1px;
   }
 }
 
@@ -9443,14 +9626,14 @@ kbd {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--notes-stage-gap);
   min-height: 0;
   min-width: 0;
   border: var(--card-border-width, 1px) solid var(--line);
   border-radius: var(--card-radius, 14px);
   background: var(--card);
   box-shadow: var(--card-shadow);
-  padding: 14px;
+  padding: var(--notes-stage-pad);
 }
 
 .notes-head {
@@ -9462,14 +9645,23 @@ kbd {
   border-bottom: 1px solid var(--line);
   padding-bottom: 8px;
 }
-#makeCardFromNotesBtn {
-  margin-left: auto;
+/* Hairline group separators. The header is three clusters — navigate (☰),
+   the cloze family ([A] [?]), and mode (✎|👁, ⤢) — and without a mark between
+   them a six-icon run reads as one undifferentiated strip. */
+.notes-head-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 3px 1px;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--line) 85%, transparent);
 }
 
-/* Once the toolbar claims the auto margin (editing), the make-card button
-   just needs its normal gap from the toolbar, not another shove right. */
-.notes-head .edit-toolbar:not([hidden]) ~ #makeCardFromNotesBtn {
-  margin-left: 0;
+/* The lead divider carries the auto-margin that pushes the two right-hand
+   clusters to the edge. It used to sit on the make-card button; that button has
+   moved to the selection strip, and putting it on the first icon instead would
+   strand this divider on the far side of the gap. */
+.notes-head-divider.is-lead {
+  margin-left: auto;
 }
 
 /* Raw-edit toolbar, in the Notes header specifically: match the rendered-view
@@ -9507,8 +9699,8 @@ kbd {
   overscroll-behavior-x: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
-  /* Bleeds out to the notes-stage panel's own edges (reclaiming its 14px
-     padding, plus the flex gap up to the header's border) so the scrollable
+  /* Bleeds out to the notes-stage panel's own edges (reclaiming its
+     --notes-stage-pad, plus the flex gap up to the header's border) so the scrollable
      box covers the whole panel below the header — the same trick .card-face
      already uses by keeping its padding inside its own overflow:auto box.
      Without this, dragging on that gutter — the side margins, or the strip
@@ -9516,8 +9708,8 @@ kbd {
      did nothing, because it sat outside the only element that could scroll.
      The matching padding increase keeps every edge visually identical to
      before; only the hit region grows. */
-  margin: -10px -14px -14px;
-  padding: calc(var(--notes-padding) + 10px) calc(var(--notes-padding) + 14px) calc(var(--notes-padding) + 14px + 8px) calc(var(--notes-padding) + 14px);
+  margin: calc(-1 * var(--notes-stage-gap)) calc(-1 * var(--notes-stage-pad)) calc(-1 * var(--notes-stage-pad));
+  padding: calc(var(--notes-padding) + var(--notes-stage-gap)) calc(var(--notes-padding) + var(--notes-stage-pad)) calc(var(--notes-padding) + var(--notes-stage-pad) + 8px) calc(var(--notes-padding) + var(--notes-stage-pad));
   -webkit-user-select: text;
   user-select: text;
   /* Dedicated Notes typography (Style → Notes), independent of the card faces. */
@@ -9587,8 +9779,6 @@ kbd {
 .selection-float-btn.is-cloze {
   background: color-mix(in srgb, var(--panel-2) 82%, transparent);
   color: var(--accent);
-  font-size: 0.82rem;
-  letter-spacing: -0.04em;
 }
 
 /* Quick-note pin — secondary like the cloze button (the accent "make card" pill
@@ -9996,6 +10186,139 @@ kbd {
   .notes-toc-close {
     width: 30px;
     height: 30px;
+  }
+}
+
+/* ── Reading room: giving the phone screen back to the notes/cards ──────
+   On a phone the fixed chrome above the content — appbar (title + category +
+   score + sync), the Cards/Notes toggle, and the notes panel's own header —
+   measured 207px of a 757px viewport, so barely 70% of the screen was the
+   thing you actually came to read. Three layers of relief, in order of how
+   little they ask of the user:
+
+   1. Tighter tokens (below) — the notes panel's padding/gap and the toggle's
+      own box, trimmed on mobile only.
+   2. Auto-hide (`body.chrome-collapsed`) — scrolling down through notes or a
+      card face folds the appbar and the toggle away; a small scroll back up
+      brings them straight back, exactly like a mobile browser's URL bar.
+   3. The ⤢ focus button in the notes header — pins that collapsed state so it
+      never springs back while you read a long note.
+
+   Layers 2 and 3 set the same class, so they can't disagree about the layout;
+   app.js just decides when it's on. */
+
+/* Focus button: hidden by default, revealed by the mobile block below. Both
+   rules are a bare class, so this one has to be authored FIRST or it would win
+   the tie and the button would never appear. Pinned-on reads as an engaged
+   toggle, matching the edit pill so the notes header has one visual language
+   for "this mode is on". */
+.focus-mode-btn {
+  display: none;
+}
+
+.focus-mode-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  :root {
+    --notes-stage-pad: 9px;
+    --notes-stage-gap: 7px;
+  }
+
+  /* The toggle is two words in a box — it doesn't need desktop's padding. */
+  .quiz-panel .view-mode-toggle:not([hidden]) {
+    margin-bottom: 4px;
+    padding: 2px;
+  }
+
+  .view-mode-toggle button {
+    min-height: 24px;
+  }
+
+  .notes-head {
+    padding-bottom: 6px;
+  }
+
+  .notes-mode .notes-head {
+    row-gap: 4px;
+  }
+
+  /* Drop the "Study Notes" caption on phones. It says nothing the NOTES half of
+     the Cards/Notes toggle directly above it doesn't already say — and it was
+     costing ~100px of the top row, enough that adding the ⤢ button pushed that
+     row to wrap into a THIRD line, making the header taller than before. */
+  .notes-mode .notes-head > .face-label-row {
+    display: none;
+  }
+
+  /* Both collapsing elements animate on the same curve so the header and the
+     toggle read as one panel folding away, not two things moving. max-height
+     (not height) because the appbar's natural height depends on how many lines
+     the deck title wraps to — there is no fixed value to animate from.
+     Gated on .chrome-ready (set one frame after boot): focus mode is
+     remembered across sessions, and without the gate every launch would open
+     with the header up and visibly fold it away. */
+  .appbar,
+  .quiz-panel .view-mode-toggle:not([hidden]) {
+    max-height: 300px;
+  }
+
+  body.chrome-ready .appbar,
+  body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]) {
+    transition:
+      max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+      opacity 0.16s linear,
+      margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+      padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+      transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Collapsed: the appbar is zero-height and inert, so the study area starts at
+     the top of the shell. The :not(:has(…)) guard is load-bearing — the side
+     drawer is a *descendant* of .appbar, and while opacity:0 doesn't clip a
+     position:fixed child, it does still fade it to invisible. Opening the menu
+     therefore has to un-collapse the appbar, or the drawer opens blank. */
+  body.chrome-collapsed .app-shell {
+    gap: 0;
+  }
+
+  body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .appbar {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-6px);
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .quiz-panel .view-mode-toggle:not([hidden]) {
+    max-height: 0;
+    margin-bottom: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  /* Focus button: mobile only — on desktop there is no chrome pressure worth a
+     dedicated control, and the class it toggles only does anything in here.
+     This rule must stay AFTER the `display: none` default below is *authored*
+     — it isn't; the default is declared before the media query precisely so
+     that this one wins on equal specificity. */
+  .focus-mode-btn {
+    display: inline-grid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.chrome-ready .appbar,
+  body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden])  {
+    transition: none;
   }
 }
 

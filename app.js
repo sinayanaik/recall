@@ -1348,6 +1348,7 @@ async function loadWebDeck(deckId) {
     if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
     refreshSyncIndicatorBaseline();
     refreshNavBack(); // arrived — now the button knows where "here" is
+    resetChromeAutoHide(); // a new deck starts at the top, header showing
   } catch (error) {
     setStatus("Failed to load deck from web.", "error");
     showToast("Couldn't load deck", "error");
@@ -1890,13 +1891,11 @@ const el = {
   notesEdit: document.querySelector("#notesEdit"),
   notesEditToolbar: document.querySelector("#notesEditToolbar"),
   editNotesBtn: document.querySelector("#editNotesBtn"),
+  focusModeBtn: document.querySelector("#focusModeBtn"),
   makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
   makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),
   pinQuickNoteFromSelectionBtn: document.querySelector("#pinQuickNoteFromSelectionBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
-  makeCardFromNotesBtn: document.querySelector("#makeCardFromNotesBtn"),
-  makeCardFromQuestionBtn: document.querySelector("#makeCardFromQuestionBtn"),
-  makeCardFromAnswerBtn: document.querySelector("#makeCardFromAnswerBtn"),
   frameCardModal: document.querySelector("#frameCardModal"),
   frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
@@ -7978,6 +7977,8 @@ function setViewMode(mode) {
     button.classList.toggle("is-active", button.dataset.viewMode === next);
   });
   hideNotesSelectionButton();
+  // Switching views is navigation, not reading — start with the header visible.
+  if (changed) resetChromeAutoHide();
   if (notesActive) {
     renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
     if (!state.notes.trim()) enterNotesEditing();
@@ -8003,6 +8004,151 @@ el.viewModeToggle?.addEventListener("click", (event) => {
 });
 
 el.notesBtn?.addEventListener("click", () => setViewMode("notes"));
+
+// ── Reading room: collapsing the phone chrome ───────────────────────
+// On a phone the appbar (deck title, category, score, sync) plus the
+// Cards/Notes toggle ate 103px of a 757px viewport before a single word of
+// the note. Both fold away together via `body.chrome-collapsed`, driven two
+// ways that share one piece of state so they can never disagree:
+//
+//   • auto — scrolling down through the notes or a card face hides them; a
+//     nudge back up (or reaching the top) brings them back, like a mobile
+//     browser's URL bar. Costs the user nothing.
+//   • pinned — the ⤢ button in the notes header keeps them hidden, so a long
+//     note isn't interrupted by chrome reappearing every time you scroll up
+//     to re-read a paragraph.
+//
+// Only the auto layer listens to scrolling; pinning short-circuits it, which
+// is what makes "pinned" mean pinned.
+const FOCUS_MODE_KEY = "recall:focusMode";
+const CHROME_MOBILE_QUERY = "(max-width: 720px)";
+const CHROME_HIDE_DELTA = 10; // px of downward travel before folding away
+const CHROME_SHOW_DELTA = 28; // px back up before it returns — deliberately
+                              // larger, so overscroll bounce and the odd
+                              // thumb wobble don't flap the header
+const CHROME_TOP_ZONE = 24; // within this much of the top, always show
+const CHROME_SETTLE_MS = 320; // matches the CSS collapse transition
+
+let chromeFocusPinned = false;
+try {
+  chromeFocusPinned = localStorage.getItem(FOCUS_MODE_KEY) === "1";
+} catch (_) {
+  chromeFocusPinned = false;
+}
+let chromeAutoHidden = false;
+let chromeAnchorEl = null;
+let chromeAnchorTop = 0;
+let chromeScrollFrame = 0;
+let chromeSettleUntil = 0;
+
+function isMobileChrome() {
+  return window.matchMedia(CHROME_MOBILE_QUERY).matches;
+}
+
+function applyChromeCollapse() {
+  const collapsed = isMobileChrome() && (chromeFocusPinned || chromeAutoHidden);
+  const changed = document.body.classList.contains("chrome-collapsed") !== collapsed;
+  document.body.classList.toggle("chrome-collapsed", collapsed);
+  // Collapsing makes the notes viewport taller, which can clamp scrollTop when
+  // you're near the bottom — that clamp fires a scroll event that looks like a
+  // big upward flick and would immediately un-collapse (then re-collapse, then
+  // …). Ignore scrolling until the transition has settled.
+  if (changed) chromeSettleUntil = performance.now() + CHROME_SETTLE_MS;
+  if (el.focusModeBtn) {
+    el.focusModeBtn.setAttribute("aria-pressed", chromeFocusPinned ? "true" : "false");
+    el.focusModeBtn.textContent = chromeFocusPinned ? "⤡" : "⤢";
+    el.focusModeBtn.title = chromeFocusPinned
+      ? "Focus mode on — tap to bring the header back"
+      : "Focus mode — keep the header hidden while you read";
+  }
+}
+
+// Called when the user navigates rather than reads (deck load, Cards⇄Notes):
+// arriving somewhere new should start from the top, with the header visible.
+function resetChromeAutoHide() {
+  chromeAutoHidden = false;
+  chromeAnchorEl = null;
+  chromeAnchorTop = 0;
+  applyChromeCollapse();
+}
+
+function trackChromeScroll(target) {
+  const top = target.scrollTop;
+  if (chromeAnchorEl !== target) {
+    chromeAnchorEl = target;
+    chromeAnchorTop = top;
+    return;
+  }
+  if (performance.now() < chromeSettleUntil) {
+    chromeAnchorTop = top;
+    return;
+  }
+  if (top <= CHROME_TOP_ZONE) {
+    chromeAnchorTop = top;
+    if (chromeAutoHidden) {
+      chromeAutoHidden = false;
+      applyChromeCollapse();
+    }
+    return;
+  }
+  const delta = top - chromeAnchorTop;
+  if (delta > CHROME_HIDE_DELTA) {
+    chromeAnchorTop = top;
+    if (!chromeAutoHidden) {
+      chromeAutoHidden = true;
+      applyChromeCollapse();
+    }
+  } else if (delta < -CHROME_SHOW_DELTA) {
+    chromeAnchorTop = top;
+    if (chromeAutoHidden) {
+      chromeAutoHidden = false;
+      applyChromeCollapse();
+    }
+  }
+}
+
+// Capture phase on document, because `scroll` doesn't bubble: this one listener
+// covers every scroller in the study area (rendered notes, the raw-notes
+// textarea, both card faces) without each needing to be wired up — and stays
+// correct when a new one is added. Scoped to .study-layout so the full-screen
+// overlays (All Cards, Quick Notes board), which cover the appbar anyway, don't
+// leave the chrome collapsed behind them.
+document.addEventListener(
+  "scroll",
+  (event) => {
+    if (chromeFocusPinned || !isMobileChrome()) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".study-layout")) return;
+    if (chromeScrollFrame) return;
+    chromeScrollFrame = requestAnimationFrame(() => {
+      chromeScrollFrame = 0;
+      trackChromeScroll(target);
+    });
+  },
+  true,
+);
+
+el.focusModeBtn?.addEventListener("click", () => {
+  chromeFocusPinned = !chromeFocusPinned;
+  try {
+    localStorage.setItem(FOCUS_MODE_KEY, chromeFocusPinned ? "1" : "0");
+  } catch (_) {
+    /* private mode — the toggle still works for this session */
+  }
+  // Leaving focus mode should actually show the header, even mid-scroll.
+  if (!chromeFocusPinned) chromeAutoHidden = false;
+  applyChromeCollapse();
+});
+
+// Rotating to landscape (or resizing a desktop window down) crosses the mobile
+// breakpoint; the class is meaningless above it, so re-evaluate.
+window.matchMedia(CHROME_MOBILE_QUERY).addEventListener("change", applyChromeCollapse);
+
+// Restore a remembered focus-mode pin before the first paint, then arm the CSS
+// transitions a frame later — otherwise every launch in focus mode would open
+// with the header up and visibly fold it away.
+applyChromeCollapse();
+requestAnimationFrame(() => document.body.classList.add("chrome-ready"));
 
 // ── Notes table of contents ────────────────────────────────────────
 // The rendered notes carry no navigation of their own; long study notes
@@ -8981,25 +9127,11 @@ el.pinQuickNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   view?.addEventListener("scroll", hideNotesSelectionButtonUnlessPinned, { passive: true });
 });
 
-// Persistent alternative to the floating pill (which only appears while a
-// selection is live) — sits in each face's header and works from whatever
-// text is currently selected there, rendered or raw, when tapped.
-function wireMakeCardButton(button, label) {
-  button?.addEventListener("click", () => {
-    const text = currentNotesSelectionMarkdown();
-    if (!text) {
-      setStatus(`Select some text in ${label} first, then tap this to turn it into a card.`, "error");
-      return;
-    }
-    const anchor = captureNotesAnchor();
-    hideNotesSelectionButton();
-    window.getSelection()?.removeAllRanges();
-    createCardFromNotesSelection(text, anchor);
-  });
-}
-wireMakeCardButton(el.makeCardFromNotesBtn, "your notes");
-wireMakeCardButton(el.makeCardFromQuestionBtn, "the question");
-wireMakeCardButton(el.makeCardFromAnswerBtn, "the answer");
+// The persistent "make a card" control (the floating pill only exists while a
+// selection is live) used to be a ➕ in each face header, beside the mode
+// toggles it had nothing to do with. It now lives in the selection strip with
+// the other selection tools — see the `make-card` action in
+// handleRenderToolbarAction (rendered view) and the edit-toolbar handler (raw).
 
 // ── Make a cloze from a rendered-view text selection ───────────────────────
 // Clozes ({{…}}) can be authored in the raw editor, but it's far quicker to
@@ -9228,6 +9360,12 @@ const renderFormatDefaults = {
   highlight: localStorage.getItem("recall:renderHighlightDefault") || RENDER_HIGHLIGHT_COLORS[0].value,
 };
 
+// The split button's face IS the preview: an "A" wearing the colour it will
+// apply (an underline bar for text colour, a filled block for highlight), the
+// convention every word processor uses. That replaced a 🎨/🖍️ emoji plus a
+// separate swatch chip on the ▾ side — two things saying the same thing, in a
+// row where width is scarce. `data-render-swatch` stays on whichever element
+// carries the colour, so refreshRenderSwatches() keeps working untouched.
 function renderSplitControlHtml(prop, glyph, label, swatches) {
   const items = swatches
     .map(
@@ -9238,7 +9376,7 @@ function renderSplitControlHtml(prop, glyph, label, swatches) {
   return `
     <span class="render-split" data-render-split="${prop}">
       <button type="button" class="render-btn render-split-main" data-render-action="${prop}-apply" title="Apply ${label} (current default)">${glyph}</button>
-      <button type="button" class="render-btn render-split-side" data-render-action="${prop}-menu" title="Choose ${label}" aria-haspopup="true" aria-expanded="false"><span class="render-swatch" data-render-swatch="${prop}"></span><span class="render-caret" aria-hidden="true">▾</span></button>
+      <button type="button" class="render-btn render-split-side" data-render-action="${prop}-menu" title="Choose ${label}" aria-haspopup="true" aria-expanded="false"><span class="render-caret" aria-hidden="true">▾</span></button>
       <div class="render-color-menu" data-render-menu="${prop}" hidden>
         ${items}
         <button type="button" class="render-swatch-clear" data-render-color="clear" data-render-prop="${prop}" title="Remove ${label}">Clear</button>
@@ -9246,18 +9384,55 @@ function renderSplitControlHtml(prop, glyph, label, swatches) {
     </span>`;
 }
 
-function createRenderToolbarHtml() {
+// ── The three cloze icons ──────────────────────────────────────────────
+// Drawn, not typed. Every lettered attempt (👀/🎯, then [ … ]/[A]/[?], then
+// A̶/A/?) failed the same way: the three actions are DIFFERENT, so glyphs that
+// differ by one character read as three copies of one button. Each of these
+// depicts what its button does.
+//
+//   MAKE   a line of text whose middle is replaced by a solid block, + a plus
+//   LIST   three such lines stacked — every blank in the deck, as a list
+//   TOGGLE an eye; a slash crosses it once the answers are showing
+//
+// Shared by every surface that offers the action (notes header, card faces,
+// the floating selection pill, the raw-edit toolbars) so one mark means one
+// thing app-wide.
+const CLOZE_SVG_ATTRS =
+  'class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"';
+
+const CLOZE_MAKE_ICON = `<svg ${CLOZE_SVG_ATTRS}><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg>`;
+
+const CLOZE_LIST_ICON = `<svg ${CLOZE_SVG_ATTRS}><path d="M2.5 5.5h4"/><rect x="9" y="3.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 12h4"/><rect x="9" y="10" width="9" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 18.5h4"/><rect x="9" y="16.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/></svg>`;
+
+const CLOZE_TOGGLE_ICON = `<svg ${CLOZE_SVG_ATTRS} stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg>`;
+
+const RENDER_COLOR_GLYPH =
+  '<span class="render-glyph">A</span><span class="render-underbar" data-render-swatch="color"></span>';
+const RENDER_HIGHLIGHT_GLYPH =
+  '<span class="render-glyph render-glyph-hl" data-render-swatch="highlight">A</span>';
+
+// Formatting, plus (on the card faces) a capture group. The NOTES surface passes
+// { actions: false }: its cloze / make-card / pin buttons live up in the notes
+// header instead, where they sit beside the other two cloze controls and stay
+// put when you switch to raw-edit mode. A card face has no such header row, so
+// it keeps them here.
+function createRenderToolbarHtml({ actions = true } = {}) {
+  const captureGroup = actions
+    ? `
+    <span class="render-divider" aria-hidden="true"></span>
+    <button type="button" class="render-btn render-make-card" data-render-action="make-card" title="Make a flashcard from the selection">+</button>
+    <button type="button" class="render-btn make-cloze-btn" data-render-action="cloze" title="Cloze — hide the selection as a fill-in-the-blank">${CLOZE_MAKE_ICON}</button>
+    <button type="button" class="render-btn render-quick-note" data-render-action="quick-note" title="Save selection to the quick_notes deck">📌</button>`
+    : "";
   return `
     <button type="button" class="render-btn" data-render-action="bold" title="Bold"><b>B</b></button>
     <button type="button" class="render-btn" data-render-action="italic" title="Italic"><i>I</i></button>
     <button type="button" class="render-btn" data-render-action="underline" title="Underline"><u>U</u></button>
     <button type="button" class="render-btn" data-render-action="strikethrough" title="Strikethrough"><s>S</s></button>
     <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
-    ${renderSplitControlHtml("color", "🎨", "text colour", RENDER_TEXT_COLORS)}
-    ${renderSplitControlHtml("highlight", "🖍️", "highlight", RENDER_HIGHLIGHT_COLORS)}
-    <button type="button" class="render-btn make-cloze-btn" data-render-action="cloze" title="Cloze — hide the selection as a fill-in-the-blank">[&hellip;]</button>
-    <span class="edit-toolbar-divider" aria-hidden="true"></span>
-    <button type="button" class="render-btn render-quick-note" data-render-action="quick-note" title="Save selection to the quick_notes deck">📌</button>`;
+    <span class="render-divider" aria-hidden="true"></span>
+    ${renderSplitControlHtml("color", RENDER_COLOR_GLYPH, "text colour", RENDER_TEXT_COLORS)}
+    ${renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", RENDER_HIGHLIGHT_COLORS)}${captureGroup}`;
 }
 
 // Paint the little swatch on each split-button's side control to the current
@@ -9272,9 +9447,11 @@ function refreshRenderSwatches() {
 }
 
 function initRenderToolbars() {
-  [el.questionRenderToolbar, el.answerRenderToolbar, el.notesRenderToolbar].forEach((tb) => {
+  [el.questionRenderToolbar, el.answerRenderToolbar].forEach((tb) => {
     if (tb) tb.innerHTML = createRenderToolbarHtml();
   });
+  // Notes: formatting only — the capture/cloze actions are in the notes header.
+  if (el.notesRenderToolbar) el.notesRenderToolbar.innerHTML = createRenderToolbarHtml({ actions: false });
   refreshRenderSwatches();
 }
 if (document.readyState === "loading") {
@@ -9396,12 +9573,56 @@ function handleRenderToolbarAction(btn, toolbar) {
   if (action === "color-apply") return applyRenderColor(config, "color", renderFormatDefaults.color);
   if (action === "highlight-apply") return applyRenderColor(config, "highlight", renderFormatDefaults.highlight);
 
+  // The three selection actions below live in the notes HEADER, which stays put
+  // when you tap ✎ — so unlike the formatting controls (whose whole toolbar is
+  // swapped out while raw-editing) they have to handle the textarea case too, or
+  // they'd sit there looking available and do nothing. Same dual path the
+  // floating selection pill uses: rendered view first, raw editor as fallback.
+  const editing = config.isEditing?.() ? activeEditingTarget() : null;
+
   // Cloze reuses its dedicated driver (toggle + "already"/"removed" toasts).
-  if (action === "cloze") return makeClozeFromSelection(config);
+  if (action === "cloze") {
+    if (editing) return clozeTextareaSelection(editing);
+    return makeClozeFromSelection(config);
+  }
+
+  // Turn the selection into a flashcard. captureNotesAnchor (not the deck-tagged
+  // captureSourceAnchor the pin below uses) because this card lands in the deck
+  // we're already in — there's no other deck to navigate back from.
+  if (action === "make-card") {
+    if (editing) {
+      const raw = editing.edit.value.slice(editing.edit.selectionStart, editing.edit.selectionEnd);
+      if (!raw.trim()) {
+        setStatus(`Select some text in the ${config.label} first, then tap + to turn it into a card.`, "error");
+        return;
+      }
+      createCardFromNotesSelection(raw, captureNotesAnchor());
+      return;
+    }
+    const sel = renderedSelectionStrings(config.view);
+    if (!sel) {
+      setStatus(`Select some text in the ${config.label} first, then tap + to turn it into a card.`, "error");
+      return;
+    }
+    const anchor = captureNotesAnchor();
+    hideNotesSelectionButton();
+    window.getSelection()?.removeAllRanges();
+    createCardFromNotesSelection(sel.asMarkdown || sel.asText, anchor);
+    return;
+  }
 
   // Save the selection as a new card (question) in the quick_notes deck —
   // same destination and behaviour as the raw-editor toolbar's 📌 button.
   if (action === "quick-note") {
+    if (editing) {
+      const raw = editing.edit.value.slice(editing.edit.selectionStart, editing.edit.selectionEnd);
+      if (!raw.trim()) {
+        setStatus(`Select some text in the ${config.label} first, then tap 📌 to save it to quick_notes.`, "error");
+        return;
+      }
+      saveQuickNote(raw, btn, captureSourceAnchor());
+      return;
+    }
     const sel = renderedSelectionStrings(config.view);
     if (!sel) {
       setStatus(`Select some text in the ${config.label} first, then tap 📌 to save it to quick_notes.`, "error");
@@ -9419,12 +9640,18 @@ function handleRenderToolbarAction(btn, toolbar) {
 }
 
 // pointerdown (not click) so preventDefault preserves the live selection.
+// Host is any [data-render-target] ancestor rather than .render-toolbar
+// specifically: the notes header carries the target too, so its cloze /
+// make-card / pin buttons route through this same handler without needing a
+// second, near-identical listener. Nearest ancestor wins, so a button inside
+// the render toolbar still resolves to the toolbar (which owns the colour menus).
 document.addEventListener("pointerdown", (event) => {
-  const btn = event.target.closest(".render-toolbar [data-render-action], .render-toolbar [data-render-color]");
-  if (btn) {
+  const btn = event.target.closest("[data-render-action], [data-render-color]");
+  const host = btn?.closest("[data-render-target]");
+  if (btn && host) {
     event.preventDefault();
     event.stopPropagation();
-    handleRenderToolbarAction(btn, btn.closest(".render-toolbar"));
+    handleRenderToolbarAction(btn, host);
     return;
   }
   // A pointer down anywhere outside an open split control dismisses its menu.
@@ -11666,6 +11893,7 @@ function loadDeckFromLibrary(id) {
     persistWorkingDeck();
     refreshSyncIndicatorBaseline();
     refreshNavBack(); // arrived — now the button knows where "here" is
+    resetChromeAutoHide(); // a new deck starts at the top, header showing
     return true;
   } catch (error) {
     console.warn("Could not load saved deck", error);
@@ -17413,19 +17641,28 @@ document.addEventListener("drop", (event) => {
 
 // Dynamic HTML template for the inline edit toolbar.
 // Pass { quickNote: true } to append the "save selection to quick_notes" button.
+// The + / quick-note pair mirrors the rendered-view render-toolbar's capture
+// group: this toolbar REPLACES that one while raw-editing, so anything only
+// present there would silently disappear the moment you tapped ✎.
 function createToolbarHtml(options = {}) {
   const quickNoteBtn = options.quickNote
     ? `
     <span class="edit-toolbar-divider" aria-hidden="true"></span>
+    <button type="button" data-action="make-card" class="toolbar-make-card" title="Make a flashcard from the selection">+</button>
     <button type="button" data-action="quick-note" class="toolbar-quick-note" title="Save selection to the quick_notes deck">📌</button>`
     : "";
+  // The notes header owns cloze/capture and stays visible while raw-editing, so
+  // repeating them here would show each action twice in the same header.
+  const clozeBtn = options.cloze === false
+    ? ""
+    : `
+    <button type="button" data-action="cloze" class="make-cloze-btn" title="Cloze — hide selection as a fill-in-the-blank (tap the card to reveal)">${CLOZE_MAKE_ICON}</button>`;
   return `
     <button type="button" data-action="bold" title="Bold"><b>B</b></button>
     <button type="button" data-action="italic" title="Italic"><i>I</i></button>
     <button type="button" data-action="underline" title="Underline"><u>U</u></button>
     <button type="button" data-action="strikethrough" title="Strikethrough"><span style="text-decoration: line-through;">S</span></button>
-    <button type="button" data-action="code" title="Code Block"><code>&lt;/&gt;</code></button>
-    <button type="button" data-action="cloze" title="Cloze — hide selection as a fill-in-the-blank (tap the card to reveal)">[&hellip;]</button>
+    <button type="button" data-action="code" title="Code Block"><code>&lt;/&gt;</code></button>${clozeBtn}
 
     <div class="toolbar-dropdown">
       <button type="button" class="toolbar-dropdown-toggle" title="Font Family">Aa</button>
@@ -17450,7 +17687,7 @@ function createToolbarHtml(options = {}) {
     </div>
 
     <div class="toolbar-dropdown">
-      <button type="button" class="toolbar-dropdown-toggle" title="Text Color">🎨</button>
+      <button type="button" class="toolbar-dropdown-toggle" title="Text Color"><span class="render-glyph">A</span><span class="render-underbar"></span></button>
       <div class="toolbar-dropdown-content color-menu">
         <button type="button" data-color="#ef4444" style="--btn-bg: #ef4444;" title="Red"></button>
         <button type="button" data-color="#f97316" style="--btn-bg: #f97316;" title="Orange"></button>
@@ -17482,8 +17719,10 @@ function initToolbars() {
   const aToolbar = el.answerEditToolbar;
   if (aToolbar) aToolbar.innerHTML = createToolbarHtml({ quickNote: true });
 
+  // Notes: no capture group and no cloze — the notes header carries all three
+  // and, unlike this toolbar, doesn't disappear when you leave raw-edit mode.
   const nToolbar = el.notesEditToolbar;
-  if (nToolbar) nToolbar.innerHTML = createToolbarHtml({ quickNote: true });
+  if (nToolbar) nToolbar.innerHTML = createToolbarHtml({ quickNote: false, cloze: false });
 
   if (el.questionEdit) enableSyntaxHighlighting(el.questionEdit);
   if (el.answerEdit) enableSyntaxHighlighting(el.answerEdit);
@@ -17522,8 +17761,10 @@ function setClozeButtonState(button, revealed) {
   button.setAttribute("aria-pressed", revealed ? "true" : "false");
   const label = button.querySelector(".cloze-toggle-label");
   if (label) label.textContent = revealed ? "Hide clozes" : "Reveal clozes";
-  const glyph = button.querySelector(".cloze-toggle-glyph");
-  if (glyph) glyph.textContent = revealed ? "🙈" : "👀";
+  // The glyph itself is drawn in CSS off aria-pressed (an "A" you can reveal,
+  // becoming the bare blank you'd go back to) rather than swapped here — block
+  // characters render at wildly different weights across platforms, and this
+  // button now sits next to two other cloze controls it must stay distinct from.
   button.title = revealed ? "Hide all clozes on this card" : "Reveal all clozes on this card";
 }
 
@@ -17783,7 +18024,7 @@ function renderClozePanel() {
 function resetClozePanelBulk() {
   if (!el.clozeBulkBtn) return;
   el.clozeBulkBtn.setAttribute("aria-pressed", "false");
-  el.clozeBulkBtn.textContent = "👀 Reveal all";
+  el.clozeBulkBtn.textContent = "[A] Reveal all";
 }
 
 function toggleClozePanelAll() {
@@ -17791,7 +18032,7 @@ function toggleClozePanelAll() {
   const reveal = el.clozeBulkBtn.getAttribute("aria-pressed") !== "true";
   el.clozeReviewBody.querySelectorAll(".cloze").forEach((c) => c.classList.toggle("is-revealed", reveal));
   el.clozeBulkBtn.setAttribute("aria-pressed", reveal ? "true" : "false");
-  el.clozeBulkBtn.textContent = reveal ? "🙈 Hide all" : "👀 Reveal all";
+  el.clozeBulkBtn.textContent = reveal ? "[_] Hide all" : "[A] Reveal all";
 }
 
 function openClozePanel() {
@@ -18167,6 +18408,22 @@ function handleToolbarClick(event) {
       d.classList.remove("is-open");
     });
     saveQuickNote(selectedText, button, anchor);
+    return;
+  }
+
+  // Make a flashcard from the raw-editor selection. The textarea gives exact
+  // offsets, so captureNotesAnchor's editing branch resolves the source spot
+  // precisely — no fuzzy re-find needed.
+  if (button.dataset.action === "make-card") {
+    if (!selectedText.trim()) {
+      setStatus("Select some text first, then tap + to turn it into a card.", "error");
+      return;
+    }
+    const anchor = captureNotesAnchor();
+    document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach((d) => {
+      d.classList.remove("is-open");
+    });
+    createCardFromNotesSelection(selectedText, anchor);
     return;
   }
 

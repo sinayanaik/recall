@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260725-1">
+    <link rel="stylesheet" href="styles.css?v=20260725-6">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -176,7 +176,6 @@
                   <div class="face-header-actions">
                     <button class="edit-card-btn go-to-notes-btn" id="goToNotesBtn" type="button" title="Go to this card's source in the notes" aria-label="Go to this card's source in the notes" hidden>&#128196;</button>
                     <button class="edit-card-btn" id="deleteCardBtn" type="button" title="Delete card" aria-label="Delete card" style="color: #ff4a4a;">&#128465;</button>
-                    <button class="edit-card-btn" id="makeCardFromQuestionBtn" type="button" title="Make a flashcard from the selected question text" aria-label="Make a flashcard from the selected question text">&#10133;</button>
                     <button class="edit-card-btn edit-toggle-pill" id="editQuestionBtn" type="button" title="Edit question" aria-label="Edit question"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
                   </div>
                 </div>
@@ -192,7 +191,6 @@
                   <div class="edit-toolbar" id="answerEditToolbar" hidden></div>
                   <div class="render-toolbar" id="answerRenderToolbar" data-render-target="answer" aria-label="Format the selected answer text"></div>
                   <div class="face-header-actions">
-                    <button class="edit-card-btn" id="makeCardFromAnswerBtn" type="button" title="Make a flashcard from the selected answer text" aria-label="Make a flashcard from the selected answer text">&#10133;</button>
                     <button class="edit-card-btn edit-toggle-pill" id="editAnswerBtn" type="button" title="Edit answer" aria-label="Edit answer"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
                   </div>
                 </div>
@@ -204,17 +202,39 @@
           </div>
 
           <div class="notes-stage" id="notesStage" hidden>
-            <div class="notes-head">
+            <!-- data-render-target lets the cloze / make-card / pin buttons below
+                 share the render-toolbar's pointerdown handler even though they
+                 sit outside it. Nearest ancestor wins, so the toolbar's own
+                 buttons still resolve to the toolbar. -->
+            <div class="notes-head" data-render-target="notes">
               <button class="notes-toc-toggle" id="notesTocBtn" type="button" title="Table of contents" aria-label="Table of contents" aria-expanded="false" aria-controls="notesTocDrawer"><span class="notes-toc-bars" aria-hidden="true"></span></button>
               <div class="face-label-row">
                 <span class="face-label">Study Notes</span>
               </div>
               <div class="edit-toolbar" id="notesEditToolbar" hidden></div>
               <div class="render-toolbar" id="notesRenderToolbar" data-render-target="notes" aria-label="Format the selected notes text"></div>
-              <button class="edit-card-btn cloze-toggle-icon" id="clozeToggleNotesBtn" type="button" aria-pressed="false" title="Reveal all fill-in-the-blank clozes" aria-label="Reveal or hide all clozes in these notes"><span class="cloze-toggle-glyph">&#128064;</span></button>
-              <button class="edit-card-btn" id="clozeReviewBtn" type="button" title="Cloze review — every fill-in-the-blank in this deck" aria-label="Open cloze review">&#127919;</button>
-              <button class="edit-card-btn" id="makeCardFromNotesBtn" type="button" title="Make a flashcard from the selected notes text" aria-label="Make a flashcard from the selected notes text">&#10133;</button>
+              <!-- Three groups, separated by hairlines. Everything in this row
+                   survives the switch into raw-edit mode; the row below it (the
+                   render toolbar) is swapped out for the edit toolbar, which is
+                   why the selection tools live down there and these don't.
+
+                   Group 2 — the cloze family. [A] reveals the blanks, [?] quizzes
+                   them, and [ … ] in the strip below makes one, so the three read
+                   as a set wherever they sit. -->
+              <span class="notes-head-divider is-lead" aria-hidden="true"></span>
+              <button class="edit-card-btn cloze-make-icon" data-render-action="cloze" type="button" title="Make a cloze — hide the selected text as a fill-in-the-blank" aria-label="Make a cloze from the selection"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg></button>
+              <button class="edit-card-btn cloze-toggle-icon" id="clozeToggleNotesBtn" type="button" aria-pressed="false" title="Show or hide every answer in these notes" aria-label="Reveal or hide all clozes in these notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg></button>
+              <button class="edit-card-btn cloze-review-icon" id="clozeReviewBtn" type="button" title="List every fill-in-the-blank in this deck" aria-label="List all clozes in this deck"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 5.5h4"/><rect x="9" y="3.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 12h4"/><rect x="9" y="10" width="9" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 18.5h4"/><rect x="9" y="16.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/></svg></button>
+              <span class="notes-head-divider" aria-hidden="true"></span>
+              <button class="edit-card-btn notes-make-card" data-render-action="make-card" type="button" title="Make a flashcard from the selection" aria-label="Make a flashcard from the selection">+</button>
+              <button class="edit-card-btn notes-quick-note" data-render-action="quick-note" type="button" title="Pin the selection to Quick Notes" aria-label="Pin the selection to Quick Notes">&#128204;</button>
+              <span class="notes-head-divider" aria-hidden="true"></span>
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
+              <!-- Phone-only. Scrolling already folds the appbar + Cards/Notes
+                   toggle away on its own; this pins that state so a long note
+                   keeps the whole screen instead of the chrome springing back
+                   the moment you nudge upward. -->
+              <button class="edit-card-btn focus-mode-btn" id="focusModeBtn" type="button" aria-pressed="false" title="Focus mode — keep the header hidden while you read" aria-label="Toggle focus mode">&#10530;</button>
             </div>
             <div class="rendered notes-rendered" id="notesView"></div>
             <nav class="notes-toc-drawer" id="notesTocDrawer" hidden aria-label="Notes table of contents">
@@ -231,7 +251,7 @@
           </div>
           <div class="selection-float" id="selectionFloat" hidden>
             <button class="selection-float-btn" id="makeCardFromSelectionBtn" type="button" title="Make a card from the selection" aria-label="Make a card from the selection">&#43;</button>
-            <button class="selection-float-btn is-cloze" id="makeClozeFromSelectionBtn" type="button" title="Hide the selection as a cloze" aria-label="Hide the selection as a cloze">[&hellip;]</button>
+            <button class="selection-float-btn is-cloze" id="makeClozeFromSelectionBtn" type="button" title="Hide the selection as a cloze" aria-label="Hide the selection as a cloze"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg></button>
             <button class="selection-float-btn is-quick-note" id="pinQuickNoteFromSelectionBtn" type="button" title="Pin the selection to quick_notes" aria-label="Pin the selection to quick_notes">&#128204;</button>
           </div>
 
@@ -250,7 +270,7 @@
               <span aria-hidden="true">&#8635;</span><span>Restart</span>
             </button>
             <button id="clozeToggleBtn" type="button" aria-pressed="false" title="Reveal all fill-in-the-blank clozes" aria-label="Reveal or hide all clozes on this card">
-              <span aria-hidden="true" class="cloze-toggle-glyph">&#128064;</span><span class="cloze-toggle-label">Reveal clozes</span>
+              <svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg><span class="cloze-toggle-label">Reveal clozes</span>
             </button>
           </div>
           <div class="replay-actions" aria-label="Replay options">
@@ -460,7 +480,7 @@
             <p id="clozeReviewSummary">Every fill-in-the-blank in this deck</p>
           </div>
           <div class="cloze-head-actions">
-            <button class="cloze-bulk-btn" id="clozeBulkBtn" type="button" aria-pressed="false" title="Reveal or hide every cloze in this list">&#128064; Reveal all</button>
+            <button class="cloze-bulk-btn" id="clozeBulkBtn" type="button" aria-pressed="false" title="Reveal or hide every cloze in this list">[A] Reveal all</button>
             <button class="icon-button" id="closeClozeBtn" type="button" aria-label="Close cloze review">&#215;</button>
           </div>
         </div>
@@ -625,6 +645,7 @@
               <li><strong>Write notes first</strong> — full Markdown: headings, math, diagrams, code, pasted images</li>
               <li><strong>Highlight → + Make card</strong> — select any fact (text, images, math) in the rendered notes; the floating button shows how much is captured. Tap it to preview the selection as the card's <em>answer</em> and frame the <em>question</em> that should bring it to mind (Ctrl+Enter to add)</li>
               <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
+              <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the deck title bar and Cards/Notes toggle fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
             </ul>
           </section>
 
@@ -680,10 +701,10 @@
             <table class="help-table">
               <tr><td><kbd>B</kbd> <kbd>I</kbd> <kbd>U</kbd> <kbd>S</kbd></td><td>Bold, Italic, Underline, Strikethrough</td></tr>
               <tr><td><kbd>&lt;/&gt;</kbd></td><td>Inline code</td></tr>
-              <tr><td><kbd>[…]</kbd></td><td>Cloze — hide the selection as a fill-in-the-blank. In the editor it wraps the selection in <code>{{ }}</code>; in the rendered card or notes, select some text and tap the <kbd>[…]</kbd> button to cloze it in place (tap again on the same text to un-cloze). Tap a cloze on the card to reveal it, or use the <strong>&#128064; Reveal clozes</strong> button to flip them all at once (press again to hide them all; you can still tap any single one)</td></tr>
-              <tr><td><kbd>B I U</kbd></td><td>Format-in-place toolbar — the row above each rendered card face and the notes preview formats the <em>selected</em> text without entering edit mode: bold, italic, underline, strikethrough, code, cloze, plus a text-colour and a highlight <strong>split button</strong>. Click the paint/marker button to apply the current default colour in one tap; click its ▾ side (which shows the current colour) to pick a different one — your pick becomes the new default</td></tr>
+              <tr><td><kbd>[…]</kbd></td><td>Cloze — hide the selection as a fill-in-the-blank. In the editor it wraps the selection in <code>{{ }}</code>; in the rendered card or notes, select some text and tap the <kbd>[…]</kbd> button to cloze it in place (tap again on the same text to un-cloze). Tap a cloze on the card to reveal it, or use the <strong>Reveal clozes</strong> button to flip them all at once (tap again to hide them; you can still tap any single one). In the <strong>notes header</strong> all three cloze tools sit together as one group, each drawn as what it does: a line of text with a solid blank in it and a <strong>+</strong> makes a cloze from your selection; an <strong>eye</strong> shows every answer at once (it gains a slash while they are showing, so tapping hides them again); and <strong>three stacked rows</strong> open <strong>Cloze Review</strong> — a list of every blank in the deck</td></tr>
+              <tr><td><kbd>B I U</kbd></td><td>Format-in-place toolbar — formats the <em>selected</em> text without entering edit mode. In the <strong>notes</strong> it is the centred bottom row and holds formatting only (style, then colour); everything that <em>captures</em> a selection — cloze, <kbd>+</kbd> make a card, <kbd>📌</kbd> pin — lives in the header row above it, grouped, and stays put when you switch to editing. On a <strong>card face</strong> there is no header row, so that strip carries the capture buttons at its right end</td></tr>
               <tr><td><kbd>Aa</kbd></td><td>Font family picker</td></tr>
-              <tr><td><kbd>🎨</kbd></td><td>Text colour (with “Clear colour”)</td></tr>
+              <tr><td><kbd>A</kbd> <em>(underlined)</em></td><td>Text colour — the letter wears the colour it will apply. Tap it to use that colour in one tap; tap the ▾ beside it to pick another, which becomes the new default. The highlighter is the same idea with the colour behind the letter</td></tr>
               <tr><td><kbd>-</kbd></td><td>Toggle bullet list</td></tr>
               <tr><td><kbd>🖼️</kbd></td><td>Insert an image (opens a file picker, uploads to your Supabase project)</td></tr>
               <tr><td><kbd>Tx</kbd></td><td>Clear all formatting from the selection</td></tr>
@@ -916,6 +937,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260725-1"></script>
+    <script src="app.js?v=20260725-6"></script>
   </body>
 </html>
