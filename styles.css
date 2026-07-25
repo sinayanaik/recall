@@ -9591,6 +9591,22 @@ kbd {
   letter-spacing: -0.04em;
 }
 
+/* Quick-note pin — secondary like the cloze button (the accent "make card" pill
+   stays the sole primary action), with the 📌 glyph sized to sit level with it. */
+.selection-float-btn.is-quick-note {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+/* Brief confirmation flash after a successful pin (button may be hidden with the
+   floater by then — harmless; the toast is the primary feedback). */
+.selection-float-btn.is-quick-note.quick-note-saved {
+  background: color-mix(in srgb, var(--accent) 65%, var(--panel-2));
+  color: var(--accent-contrast, #fff);
+}
+
 .selection-float-btn:active {
   scale: 0.94;
 }

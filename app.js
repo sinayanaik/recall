@@ -1892,6 +1892,7 @@ const el = {
   editNotesBtn: document.querySelector("#editNotesBtn"),
   makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
   makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),
+  pinQuickNoteFromSelectionBtn: document.querySelector("#pinQuickNoteFromSelectionBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
   makeCardFromNotesBtn: document.querySelector("#makeCardFromNotesBtn"),
   makeCardFromQuestionBtn: document.querySelector("#makeCardFromQuestionBtn"),
@@ -7880,8 +7881,8 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // return the character offset of the seam between them. `allowNewline` lets the
 // gap and fuzzified whitespace cross line breaks — essential inside fenced code
 // blocks, whose raw markdown keeps the newlines the click snippet spans.
-function matchSnippetInNotes(before, after, allowNewline) {
-  if (!before && !after) return null;
+function matchSnippetInSource(source, before, after, allowNewline) {
+  if (!source || (!before && !after)) return null;
   // Lazy bounded gap absorbs stripped markdown syntax (a link's
   // `](https://example.com)` tail is full of letters/digits, so a gap of only
   // non-alphanumerics can't skip it). For prose the gap excludes newlines so a
@@ -7897,7 +7898,7 @@ function matchSnippetInNotes(before, after, allowNewline) {
     ? `(${fuzzify(before)})${gap}(${fuzzify(after)})`
     : `(${fuzzify(before || after)})`;
   try {
-    const match = new RegExp(pattern).exec(state.notes);
+    const match = new RegExp(pattern).exec(source);
     if (!match) return null;
     return before ? match.index + match[1].length : match.index;
   } catch (_) {
@@ -7905,19 +7906,23 @@ function matchSnippetInNotes(before, after, allowNewline) {
   }
 }
 
-function findRawOffsetForRenderedPoint(clientX, clientY) {
+// `root` is the rendered container (notes view, or a card's question/answer
+// `.rendered`) and `source` its raw markdown — the mapping is identical for
+// both, so notes and cards share this one resolver.
+function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
+  if (!root) return null;
   const caret = caretFromPoint(clientX, clientY);
   // Widgets (rendered code fences, cloze/math, images) can swallow the caret or
   // sit outside a text block — fall back to the element under the pointer so the
-  // block lookup below can still land us in the right region of the raw notes.
-  const anchorNode = caret && el.notesView?.contains(caret.node)
+  // block lookup below can still land us in the right region of the raw source.
+  const anchorNode = caret && root.contains(caret.node)
     ? caret.node
     : document.elementFromPoint(clientX, clientY);
-  if (!anchorNode || !el.notesView?.contains(anchorNode)) return null;
+  if (!anchorNode || !root.contains(anchorNode)) return null;
 
   const startEl = anchorNode.nodeType === Node.TEXT_NODE ? anchorNode.parentElement : anchorNode;
   const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR);
-  if (!block || !el.notesView.contains(block)) return null;
+  if (!block || !root.contains(block)) return null;
 
   // Code fences render verbatim, so their raw markdown keeps the exact newlines
   // and punctuation the click snippet spans — match across lines for those.
@@ -7925,21 +7930,21 @@ function findRawOffsetForRenderedPoint(clientX, clientY) {
   const blockText = block.textContent || "";
 
   // Precise hit: match the text on both sides of the exact click point.
-  const localOffset = caret && el.notesView.contains(caret.node)
+  const localOffset = caret && root.contains(caret.node)
     ? textOffsetWithin(block, caret.node, caret.offset)
     : null;
   if (localOffset != null) {
     const before = blockText.slice(Math.max(0, localOffset - 24), localOffset).trim();
     const after = blockText.slice(localOffset, localOffset + 24).trim();
-    const hit = matchSnippetInNotes(before, after, isCode);
+    const hit = matchSnippetInSource(source, before, after, isCode);
     if (hit != null) return hit;
   }
 
   // Fallback: we know which block was clicked but not the precise seam (widget,
   // failed fuzzy match, …). Land at the start of that block rather than leaving
-  // the caret to snap to the very end of the notes.
+  // the caret to snap to the very end of the source.
   const blockStart = blockText.replace(/^\s+/, "").slice(0, 40).trim();
-  return matchSnippetInNotes(blockStart, "", isCode);
+  return matchSnippetInSource(source, blockStart, "", isCode);
 }
 
 // setSelectionRange alone doesn't reliably re-scroll a long textarea in every
@@ -7954,7 +7959,7 @@ function scrollTextareaToOffset(textarea, pos) {
 el.notesView?.addEventListener("click", (event) => {
   if (event.detail !== 3 || isNotesEditing()) return;
   if (event.target.closest("button, a")) return;
-  enterNotesEditing(findRawOffsetForRenderedPoint(event.clientX, event.clientY));
+  enterNotesEditing(findRawOffsetForRenderedPoint(el.notesView, state.notes, event.clientX, event.clientY));
 });
 
 function setViewMode(mode) {
@@ -8954,6 +8959,22 @@ el.makeClozeFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   const editing = activeEditingTarget();
   if (editing) clozeTextareaSelection(editing);
   hideNotesSelectionButton();
+});
+
+// The floater's quick-note button: pin the selection to the quick_notes deck —
+// same destination as the render-toolbar 📌 and the raw-editor toolbar button.
+el.pinQuickNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
+  // preventDefault keeps the selection alive so we can read its markdown + anchor.
+  event.preventDefault();
+  event.stopPropagation();
+  const text = currentNotesSelectionMarkdown();
+  // Capture the source location (deck + note offset) while the selection is
+  // still live, so the pinned card can offer a "Go to notes" jump back.
+  const anchor = captureSourceAnchor();
+  const button = el.pinQuickNoteFromSelectionBtn;
+  hideNotesSelectionButton();
+  window.getSelection()?.removeAllRanges();
+  saveQuickNote(text, button, anchor);
 });
 
 [el.notesView, el.questionView, el.answerView].forEach((view) => {
@@ -15407,7 +15428,10 @@ function resetCardDrag() {
 }
 
 function updateSwipe(clientX, clientY, event) {
-  if (event?.pointerType === "mouse" && hasCardTextSelection()) {
+  // Never hijack an active text selection — for either mouse-drag or touch
+  // (finger dragging the selection handles). preventDefault() on the move
+  // event would otherwise cancel the browser's native selection.
+  if (hasCardTextSelection()) {
     if (state.dragCaptured && typeof state.dragPointerId === "number") {
       el.card.releasePointerCapture?.(state.dragPointerId);
     }
@@ -15510,6 +15534,10 @@ function finishSwipe() {
 function handlePointerDown(event) {
   if (!currentCardCanMove() || isCardActionTarget(event.target)) return;
   if (isHorizontalScrollTarget(event.target)) return;
+  // Touch/pen: an active selection means the user is dragging a selection
+  // handle — don't start a swipe. (Mouse keeps its mid-drag guard in updateSwipe
+  // so a lingering selection never blocks starting a fresh drag.)
+  if (event.pointerType !== "mouse" && hasCardTextSelection()) return;
   dismissSwipeHint();
   beginSwipe(event.clientX, event.clientY, event.pointerId, event.pointerType);
 }
@@ -15539,6 +15567,9 @@ function touchPoint(event) {
 function handleTouchStart(event) {
   if (!currentCardCanMove() || isCardActionTarget(event.target)) return;
   if (isHorizontalScrollTarget(event.target)) return;
+  // A selection is already up (e.g. dragging a selection handle after a
+  // long-press) — leave the gesture to the browser instead of starting a swipe.
+  if (hasCardTextSelection()) return;
   const point = touchPoint(event);
   if (!point) return;
   beginSwipe(point.clientX, point.clientY, "touch", "touch");
@@ -16198,6 +16229,35 @@ el.allCardsFilter?.addEventListener("click", (event) => {
   if (btn) setAllCardsFilter(btn.dataset.filter);
 });
 el.closeAllCardsBtn.addEventListener("click", closeAllCardsPanel);
+// ── Triple-click a rendered card → open its editor, caret at that spot ──────
+// Mirrors the notes triple-click-to-edit, reusing findRawOffsetForRenderedPoint.
+// A single click on the rendered area flips the card, so we defer that flip and
+// cancel it once a multi-click is under way — otherwise the first click of the
+// triple would flip the card and the third would land on the wrong side.
+let allCardFlipTimer = 0;
+
+function clearAllCardFlipTimer() {
+  if (allCardFlipTimer) {
+    clearTimeout(allCardFlipTimer);
+    allCardFlipTimer = 0;
+  }
+}
+
+function tripleClickAllCardToEditor(item, rendered, clientX, clientY) {
+  const card = allCardById(item.dataset.cardId);
+  if (!card) return;
+  const side = rendered.closest(".all-card-answer") ? "answer" : "question";
+  const source = side === "answer" ? card.answer : card.question;
+  const offset = findRawOffsetForRenderedPoint(rendered, source, clientX, clientY);
+  openAllCardEditor(item, side);
+  const textarea = item.querySelector(".all-card-editor [data-all-edit-value]");
+  if (!textarea) return;
+  const pos = offset != null ? Math.max(0, Math.min(offset, textarea.value.length)) : 0;
+  textarea.focus();
+  textarea.setSelectionRange(pos, pos);
+  scrollTextareaToOffset(textarea, pos);
+}
+
 el.allCardsList.addEventListener("click", (event) => {
   const gotoButton = event.target.closest("[data-all-goto]");
   if (gotoButton) {
@@ -16237,6 +16297,26 @@ el.allCardsList.addEventListener("click", (event) => {
 
   const item = event.target.closest(".all-card");
   if (item && event.target.closest("a, button, textarea, .cloze") === null) {
+    const rendered = event.target.closest(".all-card-question .rendered, .all-card-answer .rendered");
+    if (rendered && !item.classList.contains("is-editing")) {
+      if (event.detail >= 3) {
+        // Triple-click: cancel the pending flip and jump into the raw editor.
+        clearAllCardFlipTimer();
+        tripleClickAllCardToEditor(item, rendered, event.clientX, event.clientY);
+      } else if (event.detail === 1) {
+        // Lone click flips, but only after a short grace period so a triple-click
+        // (detail 2/3, below) can cancel it first.
+        clearAllCardFlipTimer();
+        allCardFlipTimer = setTimeout(() => {
+          allCardFlipTimer = 0;
+          flipAllCard(item);
+        }, 250);
+      } else {
+        // detail === 2: part of a multi-click; drop the pending flip and wait.
+        clearAllCardFlipTimer();
+      }
+      return;
+    }
     flipAllCard(item);
   }
 });
