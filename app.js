@@ -488,12 +488,6 @@ function initSupabaseClient() {
   return true;
 }
 
-async function getCurrentUser() {
-  if (!supabaseClient) return null;
-  const { data } = await supabaseClient.auth.getUser();
-  return data?.user ?? null;
-}
-
 // Reads the session straight from local storage — no network — so a user who
 // has signed in at least once can keep using the app while offline.
 async function getCachedSession() {
@@ -1292,8 +1286,8 @@ async function loadWebDeck(deckId) {
 
   try {
     const [deckResult, cardsResult] = await Promise.all([
-      withTimeout(supabaseClient.from("decks").select("*").eq("id", deckId).single(), CLOUD_TIMEOUT_MS, "load deck"),
-      withTimeout(supabaseClient.from("cards").select("*").eq("deck_id", deckId).order("position", { ascending: true }), CLOUD_TIMEOUT_MS, "load cards")
+      withTimeout(abortable((signal) => supabaseClient.from("decks").select("*").eq("id", deckId).single().abortSignal(signal)), CLOUD_TIMEOUT_MS, "load deck"),
+      withTimeout(abortable((signal) => supabaseClient.from("cards").select("*").eq("deck_id", deckId).order("position", { ascending: true }).abortSignal(signal)), CLOUD_TIMEOUT_MS, "load cards")
     ]);
 
     const { data: deckData, error: deckError } = deckResult;
@@ -1344,7 +1338,7 @@ async function loadWebDeck(deckId) {
     // its timestamps to the cloud copy so it reads as already in-sync — otherwise
     // it would look "newer" and trigger a redundant re-push on the next reconcile.
     state.localDeckId = null;
-    const mirroredMeta = saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at });
+    const mirroredMeta = saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
     if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
     refreshSyncIndicatorBaseline();
     refreshNavBack(); // arrived — now the button knows where "here" is
@@ -1451,6 +1445,142 @@ function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true
   return changes;
 }
 
+// ── Per-card sync bookkeeping ───────────────────────────────────────────────
+// Deck-level last-write-wins used to be the whole conflict story: a pull
+// replaced the local snapshot wholesale, so every card this device had changed
+// while offline was destroyed — silently, unrecoverably — the moment another
+// device touched the same deck afterwards. Two device-local fields on each
+// snapshot card are what let the pull MERGE instead of overwrite:
+//
+//   dirty     — changed here and not yet confirmed present in the cloud
+//   updatedAt — when this device last changed it
+//
+// Together they encode the sync base without storing a second full snapshot per
+// deck (localStorage is already the binding constraint here — see
+// isQuotaExceededError / deckAutosaveStorageFailed). Neither field is ever sent
+// to the cloud; they describe this device's relationship to it.
+//
+// Snapshots written by older builds carry neither: a missing `dirty` reads as
+// false and a missing `updatedAt` falls back to the deck's own timestamp, which
+// reduces the merge to exactly the old take-the-cloud behaviour for decks that
+// predate this change.
+
+// The fields that make a card materially different — i.e. the ones worth
+// pushing. Deliberately excludes position (tracked by the deck's card order)
+// and noteAnchor (device-local; the cards table has no column for it).
+function cardSyncSignature(card) {
+  return [
+    normalizeSyncText(card?.question),
+    normalizeSyncText(card?.answer),
+    normalizeCardStatus(card?.status),
+    card?.category || ""
+  ].join("␟");
+}
+
+function cardIsDirty(card) {
+  return Boolean(card && card.dirty);
+}
+
+// A card's local edit time, falling back to the deck's timestamp for snapshots
+// written before per-card stamps existed.
+function cardUpdatedMs(card, fallbackIso) {
+  return tsMs(card?.updatedAt || fallbackIso);
+}
+
+// Stamps dirty/updatedAt onto a freshly built snapshot by diffing it against the
+// copy it is about to replace. Called from saveDeckToLibrary — the one choke
+// point every local deck edit passes through. A card whose content is unchanged
+// keeps its previous flags, so a card still waiting to be pushed stays dirty
+// across any number of unrelated saves. `synced` is for the one case where the
+// snapshot is known to match the cloud already (mirroring a just-loaded web
+// deck): everything is clean, and nothing gets re-pushed for no reason.
+function stampCardSyncState(snapshot, previousSnapshot, stampIso, { synced = false } = {}) {
+  const previousById = new Map(
+    (previousSnapshot?.cards || []).map((card) => [String(card.id), card])
+  );
+  for (const card of snapshot.cards || []) {
+    if (synced) {
+      card.dirty = false;
+      card.updatedAt = stampIso;
+      continue;
+    }
+    const previous = previousById.get(String(card.id));
+    if (previous && cardSyncSignature(previous) === cardSyncSignature(card)) {
+      card.dirty = cardIsDirty(previous);
+      card.updatedAt = previous.updatedAt || stampIso;
+    } else {
+      card.dirty = true;
+      card.updatedAt = stampIso;
+    }
+  }
+  return snapshot;
+}
+
+// Merge one deck's incoming cloud rows into the copy this device already holds,
+// card by card, instead of replacing the list:
+//
+//   local only, dirty         → keep   (added here, never pushed)
+//   local only, clean         → drop   (it reached the cloud once, so the cloud
+//                                       no longer having it IS a deletion)
+//   in both, local dirty AND
+//     strictly newer          → keep local
+//   in both, otherwise        → take cloud (and it is clean from now on)
+//   cloud only                → add
+//
+// Result order follows the cloud's row order (already sorted by `position`),
+// with kept local-only cards appended in their existing relative order — they
+// have no cloud position to slot into yet. `keptLocal` is what tells the caller
+// this deck still owes the cloud a push after the pull.
+function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbackIso) {
+  const localCards = Array.isArray(oldSnapshot?.cards) ? oldSnapshot.cards : [];
+  const localById = new Map(localCards.map((card) => [String(card.id), card]));
+  const merged = [];
+  const seenLocalIds = new Set();
+  let keptLocal = 0;
+
+  for (const row of cloudCards || []) {
+    const id = String(row.id || "");
+    if (!id) continue;
+    const local = localById.get(id);
+    const fromCloud = {
+      id,
+      question: row.question,
+      answer: row.answer,
+      status: normalizeCardStatus(row.status),
+      category: row.category ? String(row.category) : null,
+      dirty: false,
+      updatedAt: row.updated_at || deckFallbackIso
+    };
+    if (local) {
+      seenLocalIds.add(id);
+      if (cardIsDirty(local) && cardUpdatedMs(local, deckFallbackIso) > tsMs(row.updated_at || deckFallbackIso)) {
+        keptLocal += 1;
+        merged.push({ ...local, id });
+        continue;
+      }
+      // noteAnchor is a device-local link (the cloud `cards` table has no column
+      // for it), so an incoming row never carries one. Re-attach what this
+      // device already had, or every pull permanently breaks the quick-note
+      // "jump to where this was pinned" button.
+      if (local.noteAnchor) fromCloud.noteAnchor = local.noteAnchor;
+    }
+    merged.push(fromCloud);
+  }
+
+  for (const card of localCards) {
+    const id = String(card.id || "");
+    if (!id || seenLocalIds.has(id)) continue;
+    // Clean and cloud-less means it was synced once and deleted elsewhere —
+    // dropping it is the whole point of a two-way mirror. Only unpushed work
+    // survives a cloud that has never heard of it.
+    if (!cardIsDirty(card)) continue;
+    keptLocal += 1;
+    merged.push({ ...card, id });
+  }
+
+  return { cards: merged, keptLocal };
+}
+
 // Shared HTML for a sync report — every deck reconcileAllDecks() touched,
 // what direction it went, and exactly what changed (cards added/updated/
 // deleted, notes). Used both by the explicit-sync modal and the inline
@@ -1469,9 +1599,15 @@ function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {
       </li>`;
     }
     const dirLabel = entry.direction === "pulled" ? "⬇ Downloaded from cloud" : "⬆ Uploaded to cloud";
+    // A replaced notes body is the one thing sync can still overwrite, so it
+    // gets an actual way out rather than only a line of prose saying it happened.
+    const recover = entry.notesConflicted && entry.localId
+      ? `<button type="button" class="sync-report-recover" data-recover-notes="${escapeHtml(entry.localId)}">Restore my notes</button>`
+      : "";
     return `<li class="sync-report-row">
       <strong>${escapeHtml(entry.title)}</strong> — ${dirLabel}
       <div class="sync-report-detail">${describeCounts(entry)}</div>
+      ${recover}
     </li>`;
   }).join("");
 
@@ -1479,6 +1615,58 @@ function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {
     <p class="sync-report-summary">${pulled} deck${pulled === 1 ? "" : "s"} downloaded, ${pushed} deck${pushed === 1 ? "" : "s"} uploaded${failed ? `, ${failed} failed` : ""}</p>
     <ul class="sync-report-list">${rows}</ul>
   `;
+}
+
+// Put back the deck-notes body a pull replaced. The stash holds the copy this
+// device had; restoring appends it below the incoming text under a marker
+// rather than replacing it, so neither version is lost and the user can edit
+// the two together. Bumps updatedAt so the merged result is what gets pushed.
+function restoreStashedNotes(localId) {
+  let stash;
+  try {
+    stash = JSON.parse(localStorage.getItem(LOCAL_DECK_PREFIX + localId + NOTES_CONFLICT_SUFFIX) || "null");
+  } catch {
+    stash = null;
+  }
+  if (!stash || !String(stash.notes || "").trim()) {
+    showToast("Nothing left to restore", "info");
+    return false;
+  }
+
+  let snapshot;
+  try {
+    snapshot = JSON.parse(localStorage.getItem(LOCAL_DECK_PREFIX + localId) || "null");
+  } catch {
+    snapshot = null;
+  }
+  if (!snapshot) {
+    showToast("That deck is no longer on this device", "error");
+    return false;
+  }
+
+  const when = stash.savedAt ? new Date(stash.savedAt).toLocaleString() : "an earlier sync";
+  const marker = `\n\n---\n\n## Your notes from before ${when}\n\n${stash.notes}\n`;
+  snapshot.notes = String(snapshot.notes || "") + marker;
+  const now = new Date().toISOString();
+  try {
+    localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
+  } catch (error) {
+    console.warn("Could not restore the stashed notes", error);
+    showToast("Couldn't restore — device storage is full", "error");
+    return false;
+  }
+  const index = readLocalDeckIndex();
+  const entry = index.find((m) => m.id === localId);
+  if (entry) {
+    entry.updatedAt = now;
+    entry.hasNotes = true;
+    writeLocalDeckIndex(index);
+  }
+  localStorage.removeItem(LOCAL_DECK_PREFIX + localId + NOTES_CONFLICT_SUFFIX);
+  // Reflect it immediately if that deck is the one on screen.
+  if (state.localDeckId === localId) loadDeckFromLibrary(localId);
+  showToast("Your notes were added back at the end of the deck's notes", "success");
+  return true;
 }
 
 // Post-sync report modal for an EXPLICIT "Sync Now" click only — background
@@ -1500,6 +1688,12 @@ function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
   if (cancelBtn) cancelBtn.textContent = "Close";
 
   content.innerHTML = buildSyncReportHtml(deckLog, { pulled, pushed, failed });
+  // Delegated so the buttons keep working across re-renders of the report.
+  content.onclick = (event) => {
+    const button = event.target.closest("[data-recover-notes]");
+    if (!button) return;
+    if (restoreStashedNotes(button.dataset.recoverNotes)) button.remove();
+  };
   modal.hidden = false;
 }
 
@@ -1508,6 +1702,10 @@ function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
 // wedging sync (reconcileInFlight never resets) or an EPUB import (whose
 // Cancel only polls between steps, not during a hung await).
 const CLOUD_TIMEOUT_MS = 20000;
+
+// Where withTimeout looks for the AbortController belonging to a request (see
+// abortable() below).
+const CLOUD_ABORT = Symbol("cloudAbort");
 
 // Reject a hangable network promise after `ms` so a stalled connection fails
 // cleanly instead of hanging forever. The message carries "load failed" so it
@@ -1519,10 +1717,80 @@ function withTimeout(promise, ms = CLOUD_TIMEOUT_MS, label = "") {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
+      // supabase-js query builders are thenable and expose .abortSignal(), but
+      // by the time we get here the request is already in flight — so cancel it
+      // through the AbortController the caller attached, if any. Racing a timer
+      // alone left the connection open and consuming one of the browser's very
+      // few per-host sockets, which on a flaky mobile link is what turned one
+      // stalled request into a whole sync crawling behind it.
+      try { promise?.[CLOUD_ABORT]?.abort(); } catch (_) { /* already settled */ }
       reject(new Error(`Load failed — request timed out${label ? ` (${label})` : ""}`));
     }, ms);
   });
   return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+
+// Wrap a supabase-js query so a withTimeout on it actually cancels the request
+// instead of just giving up on the answer. Kept separate from withTimeout
+// because not every awaitable it wraps is a query builder — Storage uploads,
+// for one, take no signal in supabase-js v2.
+function abortable(buildQuery) {
+  const controller = new AbortController();
+  const query = buildQuery(controller.signal);
+  try { query[CLOUD_ABORT] = controller; } catch (_) { /* frozen thenable */ }
+  return query;
+}
+
+// Is this the network giving out, as opposed to the server saying no? Only the
+// former is worth retrying — replaying an RLS rejection or a schema error just
+// burns time and ends in the same place. Matches the same shapes the reconcile
+// catch already classifies as "offline".
+function isTransientCloudError(error) {
+  const message = String(error?.message || error || "");
+  if (/failed to fetch|networkerror|load failed|timed out|aborted/i.test(message)) return true;
+  // PostgREST/PostgreSQL surface real refusals with a code; those are final.
+  return !error?.code && /network|connection|socket|econn|timeout/i.test(message);
+}
+
+// Retry an IDEMPOTENT cloud operation through a transient network failure.
+// Every call site is a select, an upsert, or a delete-by-id — replaying any of
+// them lands in the same final state, which is what makes this safe. A single
+// dropped packet used to mark a whole deck "failed" for the run and leave the
+// user to notice and re-sync by hand.
+async function withRetry(operation, { tries = 2, baseMs = 500, label = "" } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt === tries - 1 || !isTransientCloudError(error)) throw error;
+      // Don't sit through a backoff for a connection that's simply gone.
+      if (!navigator.onLine) throw error;
+      console.warn(`Retrying ${label || "cloud request"} after a transient failure`, error);
+      await new Promise((resolve) => setTimeout(resolve, baseMs * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+// Run `worker` over `items` with at most `limit` in flight. Pushing decks one
+// at a time meant a 20-deck sync paid 60+ sequential round trips — on a phone,
+// almost all of it spent waiting rather than transferring. Results come back in
+// input order. `worker` must never throw: each call site wraps its own body so
+// one deck's failure is recorded and the rest continue.
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = new Array(Math.min(limit, items.length)).fill(null).map(async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 // Upsert one chunk of card rows, retrying without `category` if the database
@@ -1531,12 +1799,19 @@ function withTimeout(promise, ms = CLOUD_TIMEOUT_MS, label = "") {
 // optional column.
 async function upsertCardRows(rows) {
   if (!rows.length) return;
-  const { error } = await withTimeout(supabaseClient.from("cards").upsert(rows), CLOUD_TIMEOUT_MS, "save cards");
+  // Retried on a transient network failure: an upsert of the same rows lands in
+  // the same state, so replaying it is safe, and one dropped packet mid-sync
+  // used to fail the whole deck.
+  const upsert = (payload, label) => withRetry(
+    () => withTimeout(abortable((signal) => supabaseClient.from("cards").upsert(payload).abortSignal(signal)), CLOUD_TIMEOUT_MS, label),
+    { label }
+  );
+  const { error } = await upsert(rows, "save cards");
   if (!error) return;
   if (!String(error.message || "").includes("category")) throw error;
   console.warn("cards.category column missing — run supabase_quick_notes.sql to sync quick-note categories");
   const stripped = rows.map(({ category: _omit, ...rest }) => rest);
-  const { error: retryError } = await withTimeout(supabaseClient.from("cards").upsert(stripped), CLOUD_TIMEOUT_MS, "save cards");
+  const { error: retryError } = await upsert(stripped, "save cards");
   if (retryError) throw retryError;
 }
 
@@ -1566,12 +1841,15 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   const PENDING_TS = new Date(0).toISOString();
   const deckDataPending = { ...deckData, updated_at: PENDING_TS };
 
-  let { error: deckError } = await withTimeout(supabaseClient.from("decks").upsert(deckDataPending), CLOUD_TIMEOUT_MS, "save deck");
+  let { error: deckError } = await withRetry(
+    () => withTimeout(abortable((signal) => supabaseClient.from("decks").upsert(deckDataPending).abortSignal(signal)), CLOUD_TIMEOUT_MS, "save deck"),
+    { label: "save deck" }
+  );
   if (deckError && String(deckError.message || "").includes("notes")) {
     // Database hasn't run supabase_deck_notes.sql yet — sync everything else so
     // the user doesn't lose card changes, but warn about notes.
     const { notes: _omit, ...deckDataWithoutNotes } = deckDataPending;
-    ({ error: deckError } = await withTimeout(supabaseClient.from("decks").upsert(deckDataWithoutNotes), CLOUD_TIMEOUT_MS, "save deck"));
+    ({ error: deckError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").upsert(deckDataWithoutNotes).abortSignal(signal)), CLOUD_TIMEOUT_MS, "save deck"));
     if (!deckError && String(notes || "").trim() && !silent) {
       showToast("Notes not synced — run supabase_deck_notes.sql in Supabase", "error");
     }
@@ -1582,7 +1860,7 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   let cardsDeleted = 0;
   if (overwrite) {
     say("Syncing... (2/3) Replacing existing web cards");
-    const { error } = await withTimeout(supabaseClient.from("cards").delete().eq("deck_id", deckId), CLOUD_TIMEOUT_MS, "replace cards");
+    const { error } = await withTimeout(abortable((signal) => supabaseClient.from("cards").delete().eq("deck_id", deckId).abortSignal(signal)), CLOUD_TIMEOUT_MS, "replace cards");
     if (error) throw error;
   } else if (!isNewDeck) {
     say("Syncing... (2/3) Checking for changes");
@@ -2812,6 +3090,64 @@ async function loadStyleFromWeb(force = false) {
   }
 }
 
+// A style upload that couldn't reach the cloud, held until the next reconcile.
+// Without this, tapping "Sync style" offline was a flat "Failed to sync style.
+// Create the app_style_settings table first." — a wrong diagnosis and a dead
+// end, when the settings were sitting perfectly safe on the device.
+const PENDING_STYLE_KEY = "recall:pendingStyleSync";
+
+function queuePendingStyleSync(settings) {
+  try {
+    localStorage.setItem(PENDING_STYLE_KEY, JSON.stringify({ settings, savedAt: new Date().toISOString() }));
+  } catch (_) { /* storage full — the style is still applied locally */ }
+}
+
+function clearPendingStyleSync() {
+  try { localStorage.removeItem(PENDING_STYLE_KEY); } catch (_) {}
+}
+
+// The cloud write, shared by the button and the reconcile replay. Returns
+// "synced" | "offline" | "failed" rather than throwing, so both callers can say
+// something accurate about where the style ended up.
+async function writeStyleToCloud(settings) {
+  if (!supabaseClient || !navigator.onLine) return "offline";
+  try {
+    const { error } = await withTimeout(
+      supabaseClient.from("app_style_settings").upsert({
+        id: "global",
+        settings,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "id" }),
+      CLOUD_TIMEOUT_MS,
+      "sync style"
+    );
+    if (error) throw error;
+    return "synced";
+  } catch (error) {
+    console.warn("Failed to sync style", error);
+    // A dropped connection is not a missing table — telling the user to go
+    // create one is what made this failure so misleading.
+    if (/failed to fetch|networkerror|load failed/i.test(error?.message || "")) return "offline";
+    return error?.code === "42501" ? "denied" : "failed";
+  }
+}
+
+// Deliver a style upload queued while offline. Called from reconcileAllDecks.
+async function flushPendingStyleSync() {
+  let pending;
+  try {
+    pending = JSON.parse(localStorage.getItem(PENDING_STYLE_KEY) || "null");
+  } catch {
+    pending = null;
+  }
+  if (!pending?.settings) return false;
+  const outcome = await writeStyleToCloud(pending.settings);
+  // "denied" is an RLS misconfiguration — permanent for this project, so
+  // replaying it on every sync forever would accomplish nothing.
+  if (outcome === "synced" || outcome === "denied") clearPendingStyleSync();
+  return outcome === "synced";
+}
+
 async function syncStyleToWeb() {
   if (!supabaseClient) {
     setStyleStatus("Supabase unavailable");
@@ -2827,31 +3163,29 @@ async function syncStyleToWeb() {
   const settings = styleProfilesPayload();
   syncBtn.disabled = true;
   setStyleStatus("Syncing style...");
-  try {
-    const { error } = await supabaseClient
-      .from("app_style_settings")
-      .upsert({
-        id: "global",
-        settings,
-        updated_at: new Date().toISOString()
-      }, { onConflict: "id" });
+  const outcome = await writeStyleToCloud(settings);
+  syncBtn.disabled = false;
 
-    if (error) throw error;
+  if (outcome === "synced") {
+    clearPendingStyleSync();
     state.styleTouched = false;
     setStyleStatus("Style synced");
     setStatus("Style synced to web.");
-  } catch (error) {
-    console.error("Failed to sync style", error);
-    setStyleStatus("Sync failed");
-    setStatus(
-      error?.code === "42501"
-        ? "Failed to sync style — its RLS policy doesn't match id: \"global\". Re-run supabase_style_settings.sql (or the app_style_settings section of supabase_schema.sql)."
-        : "Failed to sync style. Create the app_style_settings table first.",
-      "error"
-    );
-  } finally {
-    syncBtn.disabled = false;
+    return;
   }
+  if (outcome === "offline") {
+    queuePendingStyleSync(settings);
+    setStyleStatus("Style saved — syncs when online");
+    setStatus("Offline — your style is saved on this device and will sync automatically.");
+    return;
+  }
+  setStyleStatus("Sync failed");
+  setStatus(
+    outcome === "denied"
+      ? "Failed to sync style — its RLS policy doesn't match id: \"global\". Re-run supabase_style_settings.sql (or the app_style_settings section of supabase_schema.sql)."
+      : "Failed to sync style. Create the app_style_settings table first.",
+    "error"
+  );
 }
 
 function setStatus(message, type = "info") {
@@ -4638,16 +4972,59 @@ function buildCloudDeckRow(deck, categories = webDeckCategories) {
 
 async function fetchCloudDeckList() {
   const { data, error } = await withTimeout(
-    supabaseClient
+    abortable((signal) => supabaseClient
       .from("decks")
       .select("*, cards(count)")
       .order("last_accessed_at", { ascending: false, nullsFirst: false })
-      .order("updated_at", { ascending: false }),
+      .order("updated_at", { ascending: false })
+      .abortSignal(signal)),
     CLOUD_TIMEOUT_MS,
     "read deck list"
   );
   if (error) throw error;
   return data || [];
+}
+
+// Just enough of every deck to decide which way it needs to sync. The full
+// fetchCloudDeckList above pulls `select("*, cards(count)")` — which means every
+// deck's ENTIRE notes markdown plus a per-deck aggregate over the whole cards
+// table, on every sync, purely to compare two timestamps. For a library of
+// EPUB-imported decks that's megabytes of transfer before any real work starts.
+// The columns here are the ones the decision loops actually read; the bodies
+// come back in fetchCloudDeckRows, for the handful of decks that need them.
+const DECK_INDEX_COLUMNS = "id, title, category, updated_at, last_accessed_at, created_at, current_card_index";
+
+async function fetchCloudDeckIndex() {
+  const { data, error } = await withTimeout(
+    abortable((signal) => supabaseClient
+      .from("decks")
+      .select(DECK_INDEX_COLUMNS)
+      .order("updated_at", { ascending: false })
+      .abortSignal(signal)),
+    CLOUD_TIMEOUT_MS,
+    "read deck index"
+  );
+  if (error) throw error;
+  return data || [];
+}
+
+// Full rows (notes + meta included) for a specific set of decks — the ones a
+// sync has decided to pull or push. Returns a Map keyed by deck id.
+async function fetchCloudDeckRows(deckIds) {
+  const byId = new Map();
+  if (!deckIds.length) return byId;
+  const { data, error } = await withTimeout(
+    abortable((signal) => supabaseClient
+      .from("decks")
+      .select("*")
+      .in("id", deckIds)
+      .abortSignal(signal)),
+    CLOUD_TIMEOUT_MS,
+    "read deck bodies"
+  );
+  if (error) throw error;
+  for (const row of data || []) byId.set(String(row.id), row);
+  return byId;
 }
 
 // Cards for MANY decks in one request, instead of one round trip per deck.
@@ -4663,13 +5040,14 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
   const pageSize = 1000;
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await withTimeout(
-      supabaseClient
+      abortable((signal) => supabaseClient
         .from("cards")
         .select(columns)
         .in("deck_id", deckIds)
         .order("deck_id", { ascending: true })
         .order("position", { ascending: true })
-        .range(from, from + pageSize - 1),
+        .range(from, from + pageSize - 1)
+        .abortSignal(signal)),
       CLOUD_TIMEOUT_MS,
       "download cards"
     );
@@ -4693,9 +5071,24 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
 // old local-only behavior rather than breaking sync.
 async function fetchDeletedDeckIds() {
   try {
-    const { data, error } = await withTimeout(supabaseClient.from("deleted_decks").select("deck_id"), CLOUD_TIMEOUT_MS, "read tombstones");
-    if (error) throw error;
-    return (data || []).map((row) => String(row.deck_id));
+    // Paged for the same reason fetchCardsForDecks is: PostgREST caps a response
+    // at ~1000 rows, and tombstones are never pruned from the shared table. Past
+    // that cap the truncated list silently omits deletions — and a deck whose
+    // tombstone is missing is a deck another device happily resurrects.
+    const ids = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await withTimeout(
+        abortable((signal) => supabaseClient.from("deleted_decks").select("deck_id").range(from, from + pageSize - 1).abortSignal(signal)),
+        CLOUD_TIMEOUT_MS,
+        "read tombstones"
+      );
+      if (error) throw error;
+      const rows = data || [];
+      for (const row of rows) ids.push(String(row.deck_id));
+      if (rows.length < pageSize) break;
+    }
+    return ids;
   } catch (error) {
     console.warn("Could not fetch deck-deletion tombstones (run supabase_deck_tombstones.sql?)", error);
     return [];
@@ -6505,7 +6898,17 @@ function markdownToSafeHtml(markdown) {
   const html = marked.parse(prepared);
   return DOMPurify.sanitize(html, {
     ADD_TAGS: ["foreignObject", "font", "u", "del", "kbd"],
-    ADD_ATTR: ["target", "rel", "class", "data-tex", "data-diagram", "style", "color", "face", "tabindex", "role", "aria-label"]
+    ADD_ATTR: ["target", "rel", "class", "data-tex", "data-diagram", "style", "color", "face", "tabindex", "role", "aria-label"],
+    // DOMPurify's default URI allowlist would strip `recall-img:` and a
+    // not-yet-uploaded image would render as a broken <img> with no src. This
+    // is DOMPurify's default expression with exactly one scheme added — nothing
+    // else is widened. In particular `data:` is deliberately NOT here: DOMPurify
+    // already permits data: URIs on <img> and friends through its own
+    // DATA_URI_TAGS path, and listing it here would additionally allow
+    // `data:text/html` in an href, which is a script-execution vector.
+    // recall-img: resolves only to a blob this app itself put in IndexedDB
+    // (see hydrateLocalImages) and can't reference anything remote.
+    ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|recall-img):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
   });
 }
 
@@ -6731,6 +7134,10 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   if (container === el.notesView) displayMarkdown = promoteNotesHeadings(displayMarkdown);
   container.innerHTML = markdownToSafeHtml(displayMarkdown);
   await enhanceRenderedMarkdown(container);
+  // Images still waiting to upload live in IndexedDB behind a recall-img: URL,
+  // which no browser can load directly — swap in a blob URL so they're visible
+  // straight away rather than only after they eventually reach the cloud.
+  await hydrateLocalImages(container);
   if (container === el.notesView) {
     enhanceNotesImageControls();
     buildNotesToc();
@@ -10837,6 +11244,11 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
 // ---------------------------------------------------------------------------
 const LOCAL_DECKS_INDEX_KEY = "flashcards_local_decks_index_v1";
 const LOCAL_DECK_PREFIX = "flashcards_local_deck_v1:";
+// Suffix for the sibling key holding a deck-notes body that a pull replaced
+// while this device had unsynced edits of its own. Deck notes are free markdown
+// and stay last-write-wins (the per-card merge can't help there), so the losing
+// text is stashed here rather than destroyed. See pullCloudDeckToLibrary.
+const NOTES_CONFLICT_SUFFIX = ":notes-conflict";
 // Timestamp of the last reconcile that completed without throwing (whether or
 // not it found anything to change) — survives reloads so the startup screen
 // can say "last checked Xm ago" even before the next reconcile finishes.
@@ -11015,6 +11427,14 @@ function renderWelcomeSyncReport() {
   }
   const { deckLog, pulled, pushed, failed } = lastStartupSyncReport;
   node.innerHTML = `<p class="deck-empty-sync-report-title">Startup Sync Report</p>${buildSyncReportHtml(deckLog, { pulled, pushed, failed })}`;
+  // The report can carry a "Restore my notes" button; a background sync's
+  // report is the one the user is most likely to be looking at, so it has to
+  // work here too, not only in the explicit-sync modal.
+  node.onclick = (event) => {
+    const button = event.target.closest("[data-recover-notes]");
+    if (!button) return;
+    if (restoreStashedNotes(button.dataset.recoverNotes)) button.remove();
+  };
   node.hidden = false;
 }
 
@@ -11079,17 +11499,25 @@ function emptySyncStats() {
     cardsMoved: 0,       // reordered within the deck
     statusChanges: 0,    // known / review / unsorted
     categoryChanges: 0,  // a card's quick-note subject label
+    // Cards a pull kept because this device had changed them and the cloud copy
+    // was older — the merge's whole reason to exist. Reported so a conflict is
+    // visible rather than something the user has to notice by its absence.
+    cardsKeptLocal: 0,
     notesChanged: false,
     titleChanged: false,
     deckCategoryChanged: false,
-    noteCategoriesChanged: false  // the deck's category DEFINITIONS (decks.meta)
+    noteCategoriesChanged: false,  // the deck's category DEFINITIONS (decks.meta)
+    // A pull replaced deck notes this device had also edited. Notes are free
+    // markdown and can't be merged card-wise, so the losing copy is stashed
+    // (see NOTES_CONFLICT_SUFFIX) and flagged here.
+    notesConflicted: false
   };
 }
 
 // The counted stats (summed across decks), as opposed to the deck-level
 // booleans below them, which are counted as "how many decks".
-const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges"];
-const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged"];
+const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal"];
+const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted"];
 
 // Human phrases for a diff, most consequential first. Returns an array so
 // callers can join, count, or truncate it. With `asTotals`, the deck-level
@@ -11103,6 +11531,7 @@ function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   if (stats.statusChanges) parts.push(`${plural(stats.statusChanges, "card", "cards")} restacked (known/review)`);
   if (stats.cardsMoved) parts.push(`${plural(stats.cardsMoved, "card", "cards")} reordered`);
   if (stats.categoryChanges) parts.push(`${plural(stats.categoryChanges, "note", "notes")} recategorised`);
+  if (stats.cardsKeptLocal) parts.push(`${plural(stats.cardsKeptLocal, "card", "cards")} kept from this device (newer than the cloud)`);
   const flag = (value, label) => {
     if (!value) return;
     parts.push(asTotals && value > 1 ? `${label} on ${value} decks` : label);
@@ -11111,6 +11540,7 @@ function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   flag(stats.titleChanged, "deck renamed");
   flag(stats.deckCategoryChanged, "deck category changed");
   flag(stats.noteCategoriesChanged, "note categories added/renamed/removed");
+  flag(stats.notesConflicted, "your notes edit was replaced by a newer one (a copy was kept)");
   return parts;
 }
 
@@ -11163,6 +11593,37 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     cards = data;
   }
 
+  const existing = readLocalDeckIndex().find((m) => String(m.deckId) === String(cloud.id));
+  // Derived from cloud.id rather than a random generateLocalDeckId() when no
+  // local entry exists yet: this "find existing, else create" isn't atomic
+  // (read the index, then write it back), so two overlapping reconciles for
+  // the SAME cloud deck — most commonly two tabs of the app open at once,
+  // each with its own independent in-memory reconcile guard — can both miss
+  // seeing each other's in-progress write and each mint a DIFFERENT random
+  // id. Whichever's index write lands last "wins"; the other's snapshot is
+  // never referenced by the index again and leaks in localStorage forever.
+  // A deterministic id means both racing calls converge on the same key —
+  // one just overwrites the other with equivalent data, no orphan created.
+  const localId = existing?.id || `ld_cloud_${cloud.id}`;
+
+  // Read whatever this device already holds BEFORE building the new snapshot —
+  // it's both the merge base and the diff base for the sync report. A corrupt
+  // snapshot must not abort the pull: it degrades to "everything is new", which
+  // is exactly right when the old copy is unreadable anyway.
+  const oldRaw = existing ? localStorage.getItem(LOCAL_DECK_PREFIX + localId) : null;
+  let oldSnapshot = null;
+  try {
+    oldSnapshot = oldRaw ? JSON.parse(oldRaw) : null;
+  } catch {
+    oldSnapshot = null;
+  }
+
+  const cloudIso = cloud.updated_at || new Date().toISOString();
+  // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this
+  // device changed and hasn't pushed yet survive the pull instead of being
+  // silently destroyed by the cloud copy.
+  const { cards: mergedCards, keptLocal } = mergeCloudCardsIntoSnapshot(oldSnapshot, cards, cloudIso);
+
   const snapshot = {
     app: "recall",
     version: 1,
@@ -11178,67 +11639,49 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     // it left every pulled note pointing at categories this device no longer
     // knew the name or colour of.
     meta: cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {},
-    cards: (cards || []).map((c, i) => ({
-      id: String(c.id || `${i}-${String(c.question || "").slice(0, 32)}`),
-      question: c.question,
-      answer: c.answer,
-      status: normalizeCardStatus(c.status),
-      category: c.category ? String(c.category) : null
-    }))
+    cards: mergedCards,
+    localDeckId: localId
   };
 
-  const existing = readLocalDeckIndex().find((m) => String(m.deckId) === String(cloud.id));
-  // Derived from cloud.id rather than a random generateLocalDeckId() when no
-  // local entry exists yet: this "find existing, else create" isn't atomic
-  // (read the index, then write it back), so two overlapping reconciles for
-  // the SAME cloud deck — most commonly two tabs of the app open at once,
-  // each with its own independent in-memory reconcile guard — can both miss
-  // seeing each other's in-progress write and each mint a DIFFERENT random
-  // id. Whichever's index write lands last "wins"; the other's snapshot is
-  // never referenced by the index again and leaks in localStorage forever.
-  // A deterministic id means both racing calls converge on the same key —
-  // one just overwrites the other with equivalent data, no orphan created.
-  const localId = existing?.id || `ld_cloud_${cloud.id}`;
-  snapshot.localDeckId = localId;
-
-  // Diff against whatever was on this device before we overwrite it below,
-  // for the detailed sync report — a brand-new-to-this-device deck just
-  // reports its total card count instead of an add/edit/delete breakdown.
-  let stats;
-  const oldRaw = existing ? localStorage.getItem(LOCAL_DECK_PREFIX + localId) : null;
-  let oldSnapshot = null;
-  // A corrupt snapshot must not abort the pull — it's about to be overwritten
-  // with fresh cloud data anyway; only the report's diff falls back to "all new".
-  try {
-    oldSnapshot = oldRaw ? JSON.parse(oldRaw) : null;
-  } catch {
-    oldSnapshot = null;
-  }
-  if (oldSnapshot) {
-    // noteAnchor is a device-local link (the cloud `cards` table has no column
-    // for it), so the incoming rows never carry one. Re-attach the anchors this
-    // device already had, or every pull would permanently break the quick-note
-    // "jump to where this was pinned" button.
-    const oldAnchorById = new Map(
-      (oldSnapshot.cards || [])
-        .filter((c) => c && c.noteAnchor)
-        .map((c) => [String(c.id), c.noteAnchor])
-    );
-    if (oldAnchorById.size) {
-      for (const card of snapshot.cards) {
-        const anchor = oldAnchorById.get(String(card.id));
-        if (anchor) card.noteAnchor = anchor;
+  // Deck notes are free markdown, so the card-level merge has nothing to say
+  // about them and they stay last-write-wins. But losing an edit outright is
+  // what this whole change exists to stop: if this device changed the notes
+  // since its last confirmed sync and the cloud's copy differs, keep the losing
+  // text under a sibling key so it's recoverable, and flag it in the report.
+  let notesConflicted = false;
+  if (oldSnapshot && syncTextChanged(oldSnapshot.notes || "", snapshot.notes)) {
+    const localNotesEdited = tsMs(existing?.updatedAt) > tsMs(existing?.lastSyncedAt);
+    if (localNotesEdited && String(oldSnapshot.notes || "").trim()) {
+      notesConflicted = true;
+      try {
+        localStorage.setItem(LOCAL_DECK_PREFIX + localId + NOTES_CONFLICT_SUFFIX, JSON.stringify({
+          savedAt: new Date().toISOString(),
+          deckTitle: oldSnapshot.deckTitle || "",
+          notes: oldSnapshot.notes || ""
+        }));
+      } catch (error) {
+        // Out of quota is not a reason to abandon the pull — the flag below
+        // still tells the user their copy was replaced.
+        console.warn("Could not stash the replaced notes copy", error);
       }
     }
+  }
 
+  // Diff the merged result against whatever was on this device before, for the
+  // detailed sync report — a brand-new-to-this-device deck just reports its
+  // total card count instead of an add/edit/delete breakdown.
+  let stats;
+  if (oldSnapshot) {
     const oldStatusById = Object.fromEntries((oldSnapshot.cards || []).map((c) => [String(c.id), c.status]));
     // calculateSyncDiff(local, web) reports "added" as local-only and
-    // "deleted" as web-only. Here "local"=old snapshot (the stale/outgoing
-    // side) and "web"=new cloud data (the incoming side), so from the
-    // pull's point of view those two are swapped: web-only cards are what
-    // just arrived (added), and local-only cards are what's now gone
-    // (deleted from this device's copy).
-    const diff = calculateSyncDiff(oldSnapshot.cards || [], cards || [], oldStatusById, { fuzzy: false });
+    // "deleted" as web-only. Here "local"=old snapshot (the outgoing side) and
+    // "web"=the merged result (what this device now holds), so from the pull's
+    // point of view those two are swapped: merged-only cards are what just
+    // arrived, and old-only cards are what's now gone. `position` is supplied
+    // because the merged cards carry none of their own — the array order IS
+    // the position, and without it no reorder would ever be reported.
+    const mergedForDiff = mergedCards.map((card, index) => ({ ...card, position: index }));
+    const diff = calculateSyncDiff(oldSnapshot.cards || [], mergedForDiff, oldStatusById, { fuzzy: false });
     // calculateSyncDiff already separates edits from restacks, moves and
     // recategorisations — keep them apart rather than summing them into one
     // "updated" count the report can't explain.
@@ -11250,7 +11693,9 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
       cardsMoved: diff.moved,
       statusChanges: diff.statusChanges,
       categoryChanges: diff.categoryChanges,
+      cardsKeptLocal: keptLocal,
       notesChanged: syncTextChanged(oldSnapshot.notes || "", snapshot.notes),
+      notesConflicted,
       titleChanged: syncTextChanged(oldSnapshot.deckTitle || "", snapshot.deckTitle || ""),
       deckCategoryChanged: normalizeDeckCategory(oldSnapshot.deckCategory) !== normalizeDeckCategory(snapshot.deckCategory),
       // The quick-note category DEFINITIONS live in decks.meta, so a rename or
@@ -11269,18 +11714,26 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     category: snapshot.deckCategory,
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(snapshot.notes.trim()),
-    updatedAt: cloud.updated_at || new Date().toISOString(),
-    createdAt: cloud.created_at || existing?.createdAt || cloud.updated_at || new Date().toISOString(),
+    // Normally the cloud's timestamp, so the two read as in sync. But when the
+    // merge KEPT local cards, this deck still owes the cloud a push — stamping
+    // it with the cloud's time would make the push pass skip it and those
+    // rescued cards would sit here forever, never reaching the other devices.
+    updatedAt: keptLocal ? new Date().toISOString() : cloudIso,
+    createdAt: cloud.created_at || existing?.createdAt || cloudIso,
     // Distinct from updatedAt (which also bumps on plain local edits) — this
     // specifically means "last confirmed match with the cloud", surfaced in
     // the sync indicator pill.
-    lastSyncedAt: cloud.updated_at || new Date().toISOString(),
+    lastSyncedAt: cloudIso,
     // Take whichever "last opened" is more recent — this device's own record,
     // or the cloud's (another device may have opened it more recently).
     accessedAt: laterIsoTimestamp(existing?.accessedAt, cloud.last_accessed_at),
     deckId: String(cloud.id),
   };
   writeLocalDeckIndex([meta, ...readLocalDeckIndex().filter((m) => m.id !== localId)]);
+  // A deck pulled on wifi should be fully readable on the train — including its
+  // images, which live on the Storage origin and are otherwise only cached once
+  // they've actually been displayed.
+  warmDeckImageCache(snapshot);
   return { localId, meta, stats };
 }
 
@@ -11303,15 +11756,21 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
   const now = new Date().toISOString();
   const title = snapshot.deckTitle || "Untitled Deck";
   const deckCategory = normalizeDeckCategory(snapshot.deckCategory);
+  // What we're about to put in the cloud, captured before the await so the
+  // write-back below can tell "still the same card" from "edited during the
+  // push" without trusting the snapshot object we're holding.
+  const pushedCards = (snapshot.cards || []).map((c) => ({
+    id: c.id, question: c.question, answer: c.answer, status: normalizeCardStatus(c.status), category: c.category || null
+  }));
+  const pushedSignatureById = new Map(pushedCards.map((c) => [String(c.id), cardSyncSignature(c)]));
+
   const pushStats = await pushDeckRowsToCloud({
     deckId,
     title,
     category: deckCategory,
     notes: snapshot.notes || "",
     currentIndex: snapshot.current,
-    cards: (snapshot.cards || []).map((c) => ({
-      id: c.id, question: c.question, answer: c.answer, status: normalizeCardStatus(c.status), category: c.category || null
-    })),
+    cards: pushedCards,
     isNewDeck,
     overwrite: false,
     now,
@@ -11319,14 +11778,48 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     silent: true
   });
 
-  snapshot.deckId = deckId;
-  localStorage.setItem(LOCAL_DECK_PREFIX + localMeta.id, JSON.stringify(snapshot));
+  // Re-read rather than writing back the copy captured before the push. The
+  // push is a multi-second network round trip and the user keeps editing during
+  // it; persisting the stale in-memory snapshot silently discarded every edit
+  // made in that window. Patch only what the push actually establishes.
+  let liveSnapshot = snapshot;
+  try {
+    const freshRaw = localStorage.getItem(LOCAL_DECK_PREFIX + localMeta.id);
+    if (freshRaw) liveSnapshot = JSON.parse(freshRaw);
+  } catch (error) {
+    console.warn("Could not re-read deck snapshot after push", error);
+  }
+  liveSnapshot.deckId = deckId;
+  // The cloud now holds exactly `pushedCards`, so every card still matching what
+  // we sent is confirmed clean. A card whose signature changed mid-push stays
+  // dirty and gets picked up by the next sync — that's the point of re-reading.
+  let stillDirty = false;
+  for (const card of liveSnapshot.cards || []) {
+    const pushedSignature = pushedSignatureById.get(String(card.id));
+    if (pushedSignature !== undefined && pushedSignature === cardSyncSignature(card)) {
+      card.dirty = false;
+    } else if (cardIsDirty(card)) {
+      stillDirty = true;
+    }
+  }
+  localStorage.setItem(LOCAL_DECK_PREFIX + localMeta.id, JSON.stringify(liveSnapshot));
+
   const index = readLocalDeckIndex();
   const entry = index.find((m) => m.id === localMeta.id);
   if (entry) {
     entry.deckId = deckId;
-    entry.updatedAt = now;
+    // Only claim "this deck now matches the cloud" if nothing changed while the
+    // push was in flight. `localMeta.updatedAt` is the value the sync decided to
+    // push from, so an entry that still carries it saw no edit in between.
+    // Overwriting a newer stamp with `now` would make an in-flight edit read as
+    // already synced, and it would never be pushed at all.
+    const untouchedDuringPush = entry.updatedAt === localMeta.updatedAt;
+    if (!stillDirty && untouchedDuringPush) entry.updatedAt = now;
     entry.lastSyncedAt = now;
+    // The push wrote every card in the snapshot, so the count is authoritative
+    // — and a quick note pinned into a stub deck would otherwise keep the 0 it
+    // was created with.
+    entry.cardCount = (liveSnapshot.cards || []).length;
     writeLocalDeckIndex(index);
   }
   // If we just pushed the active deck (first sync), adopt its new cloud id.
@@ -11350,6 +11843,11 @@ let reconcileInFlight = false;
 // left to show — rendered inline on the welcome screen, never as a modal.
 let lastStartupSyncReport = null;
 
+// The promise of the sync currently running, so an explicit "Sync Now" that
+// lands during a background sync can wait for it and then run, instead of
+// hitting the in-flight guard and silently doing nothing at all.
+let reconcilePromise = null;
+
 // The full bidirectional sync. Pulls every cloud deck that's missing locally or
 // newer in the cloud; pushes every local deck that's new or newer locally.
 async function reconcileAllDecks({ explicit = false } = {}) {
@@ -11363,8 +11861,23 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     updateDeckEmptyStatus();
     return;
   }
-  if (reconcileInFlight) return;
+  if (reconcileInFlight) {
+    // A background sync was already running. Tapping the button used to return
+    // right here, before any UI feedback at all — so the button didn't even
+    // flicker and the sync looked broken. Wait for the run in progress, then do
+    // the user's one, which is the only way to be sure it covers edits made
+    // since that run started reading.
+    if (!explicit) return;
+    showToast("Sync already running — finishing that first", "info");
+    try {
+      await reconcilePromise;
+    } catch (_) { /* its own handler already reported it */ }
+    if (reconcileInFlight) return; // a third caller beat us to the re-run
+    return reconcileAllDecks({ explicit });
+  }
   reconcileInFlight = true;
+  let settleReconcile;
+  reconcilePromise = new Promise((resolve) => { settleReconcile = resolve; });
 
   if (el.syncNowBtn) setButtonLoading(el.syncNowBtn, true, "Syncing…");
   setSyncIndicator("saving");
@@ -11442,21 +11955,66 @@ async function reconcileAllDecks({ explicit = false } = {}) {
   const deckLog = [];
 
   try {
-    // Deliver any category edit that couldn't reach the cloud when it was made,
-    // BEFORE reading the deck list. Order is the whole point: the pull below
-    // overwrites the local snapshot's meta with the cloud's copy, so flushing
-    // afterwards would be racing the very thing that erases the edit. Flushing
-    // first also means the pull reads a cloud that already agrees with us, and
-    // so reports no spurious category change.
+    // Deliver every queued decks.meta edit — quick-note categories and source
+    // anchors — BEFORE reading the deck list. Order is the whole point: the pull
+    // below replaces the local snapshot's meta with the cloud's copy, so
+    // flushing afterwards would be racing the very thing that erases the edit.
+    // Flushing first also means the pull reads a cloud that already agrees with
+    // us, and so reports no spurious category change. Sequential, not parallel:
+    // both read-merge-write the same JSON blob (serialiseQuickNoteMetaWrite
+    // enforces it anyway, but pretending they're independent here would be
+    // misleading).
     const noteCategoriesFlushed = await flushPendingQuickNoteCategories();
+    const noteAnchorsFlushed = await flushPendingQuickNoteAnchors();
+    // Independent of the deck data and of the meta blob, so these don't need to
+    // hold up the deck list — just don't let a failure sink the whole sync.
+    const styleFlush = flushPendingStyleSync().catch((error) => {
+      console.warn("Could not deliver the queued style", error);
+      return false;
+    });
+    // Images queued while offline. Awaited BEFORE the deck list is read: each
+    // upload rewrites its recall-img: placeholder in the owning deck's snapshot
+    // and bumps that deck's updatedAt, and the push pass below is what carries
+    // the rewritten markdown up. Flushing later would miss this run entirely.
+    let imagesUploaded = 0;
+    try {
+      imagesUploaded = await flushPendingImageUploads();
+      if (imagesUploaded) {
+        progress(`Uploaded ${imagesUploaded} queued image${imagesUploaded === 1 ? "" : "s"}…`);
+        // The rewrite touched state as well as the snapshots, so repaint — the
+        // on-screen copy is otherwise still pointing at the blob placeholder.
+        showCard();
+        if (el.notesView) renderMarkdown(el.notesView, state.notes, true);
+      }
+    } catch (error) {
+      console.warn("Could not deliver queued images", error);
+    }
 
-    // The deck list and the deletion tombstones don't depend on each other, so
+    // The deck index and the deletion tombstones don't depend on each other, so
     // fetch them together — serially they cost two full round trips before any
-    // real work could start.
-    const [cloudDecks, remoteDeletedIds] = await Promise.all([
-      fetchCloudDeckList(),
-      fetchDeletedDeckIds()
-    ]);
+    // real work could start. The INDEX, not the full list: this pass only
+    // compares timestamps, and pulling every deck's notes body to do that was
+    // the single largest thing a sync transferred (see fetchCloudDeckIndex).
+    // This pair is also the reachability probe. navigator.onLine only reports
+    // whether there's a network interface, so on a phone it reads `true` on a
+    // dead cell or behind a captive portal — and the sync would then grind
+    // through a 20-second timeout per deck before giving up. If the very first
+    // request can't get out, treat the cloud as unreachable and stop here.
+    let cloudDecks, remoteDeletedIds;
+    try {
+      [cloudDecks, remoteDeletedIds] = await Promise.all([
+        withRetry(() => fetchCloudDeckIndex(), { label: "deck index" }),
+        withRetry(() => fetchDeletedDeckIds(), { label: "tombstones" })
+      ]);
+    } catch (error) {
+      if (!isTransientCloudError(error)) throw error;
+      setSyncIndicator("offline");
+      if (explicit) {
+        setStatus("Couldn't reach the cloud — your decks are safe on this device.", "error");
+        showToast("Couldn't reach the cloud — check your connection", "error");
+      }
+      return;
+    }
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudIdSet = new Set(cloudDecks.map((d) => String(d.id)));
 
@@ -11499,7 +12057,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       // One upsert for every outstanding tombstone rather than a round trip
       // each. supabase-js reports failures via the returned `error`, not by
       // throwing — check it, or a failed write looks like success.
-      const { error: retryError } = await withTimeout(supabaseClient.from("deleted_decks").upsert(tombstonesToReassert), CLOUD_TIMEOUT_MS, "reassert tombstones");
+      const { error: retryError } = await withTimeout(abortable((signal) => supabaseClient.from("deleted_decks").upsert(tombstonesToReassert).abortSignal(signal)), CLOUD_TIMEOUT_MS, "reassert tombstones");
       if (retryError) console.warn("Retry of cross-device delete tombstones failed", retryError);
     }
 
@@ -11520,10 +12078,38 @@ async function reconcileAllDecks({ explicit = false } = {}) {
         continue;
       }
       const localMeta = localByDeckId.get(String(cloud.id));
-      if (!localMeta || tsMs(cloud.updated_at) > tsMs(localMeta.updatedAt)) toPull.push(cloud);
+      if (!localMeta) {
+        toPull.push(cloud);
+        continue;
+      }
+      // Never pushed and never pulled, yet the cloud already has this id. The
+      // local copy is a stub someone started here (a quick note pinned on a
+      // device that had never synced quick_notes, say) — pushing it FIRST would
+      // treat its handful of cards as the complete deck and prune every cloud
+      // card missing from it. Pull-and-merge first; the merge keeps the local
+      // additions, bumps updatedAt, and the push pass below then sends the union.
+      if (!localMeta.lastSyncedAt) {
+        toPull.push(cloud);
+        continue;
+      }
+      if (tsMs(cloud.updated_at) > tsMs(localMeta.updatedAt)) toPull.push(cloud);
     }
     if (tombstonedInCloud.length) {
-      const { error: redeleteError } = await withTimeout(supabaseClient.from("decks").delete().in("id", tombstonedInCloud), CLOUD_TIMEOUT_MS, "re-delete decks");
+      // Record the durable cross-device tombstones BEFORE deleting the rows,
+      // and for every id — not just the ones the loop above found missing from
+      // the cloud. A deck deleted while offline reaches this branch with its
+      // row still present and no deleted_decks entry, so skipping the write
+      // here left a whole sync cycle in which another device holding a copy
+      // would see a live-looking deck and push it straight back.
+      const missingRecords = tombstonedInCloud
+        .filter((id) => !remoteDeletedSet.has(String(id)))
+        .map((id) => ({ deck_id: id }));
+      if (missingRecords.length) {
+        const { error: recordError } = await withTimeout(abortable((signal) => supabaseClient.from("deleted_decks").upsert(missingRecords).abortSignal(signal)), CLOUD_TIMEOUT_MS, "record delete tombstones");
+        if (recordError) console.warn("Could not record cross-device delete tombstones", recordError);
+        else for (const row of missingRecords) remoteDeletedSet.add(String(row.deck_id));
+      }
+      const { error: redeleteError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().in("id", tombstonedInCloud).abortSignal(signal)), CLOUD_TIMEOUT_MS, "re-delete decks");
       if (redeleteError) console.warn("Tombstone re-delete failed", tombstonedInCloud, redeleteError);
     }
 
@@ -11531,16 +12117,27 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // localStorage and never yields, so a per-deck "downloading 3 of 8" in there
     // would never get a chance to paint. Say it once, here, where the wait is.
     if (toPull.length) progress(`Downloading ${toPull.length} deck${toPull.length === 1 ? "" : "s"} from the cloud…`);
-    const pullCardsByDeck = toPull.length
-      ? await fetchCardsForDecks(toPull.map((d) => d.id))
-      : new Map();
+    // Cards and deck BODIES together: the index rows above carry no notes or
+    // meta, and the pull needs both. Two requests in parallel, for only the
+    // decks actually being pulled, instead of every deck's notes up front.
+    const [pullCardsByDeck, pullBodyById] = toPull.length
+      ? await Promise.all([
+          withRetry(() => fetchCardsForDecks(toPull.map((d) => d.id)), { label: "deck cards" }),
+          withRetry(() => fetchCloudDeckRows(toPull.map((d) => d.id)), { label: "deck bodies" })
+        ])
+      : [new Map(), new Map()];
 
-    for (const cloud of toPull) {
+    for (const indexRow of toPull) {
+      // Prefer the full row; fall back to the index row so a deck deleted
+      // between the two requests still pulls what we know rather than throwing.
+      const cloud = pullBodyById.get(String(indexRow.id)) || indexRow;
       try {
         const res = await pullCloudDeckToLibrary(cloud, pullCardsByDeck.get(String(cloud.id)) || []);
         if (!isNoOpStats(res.stats)) {
           pulled++;
-          deckLog.push({ title: cloud.title || "Untitled deck", direction: "pulled", ...res.stats });
+          // localId rides along so the report's "Restore my notes" button knows
+          // which deck's stash to put back.
+          deckLog.push({ title: cloud.title || "Untitled deck", direction: "pulled", localId: res.localId, ...res.stats });
           // Only reload the on-screen deck when the pull actually changed its
           // content. A no-op pull (cloud read "newer" purely from a timestamp
           // artifact, with identical cards/notes) must NOT reload — doing so
@@ -11571,20 +12168,33 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     }
 
     // Only decks that already exist in the cloud have rows to diff against; a
-    // brand-new deck's push writes every card regardless.
+    // brand-new deck's push writes every card regardless. Bodies are fetched
+    // alongside the cards because pushLibraryDeckToCloud compares against
+    // cloudDeck.notes/title/category to report what changed — the slim index
+    // rows have no notes, so without this every push would claim "notes edited".
     const pushDiffIds = toPush.filter((e) => e.cloud).map((e) => e.localMeta.deckId);
-    const pushCardsByDeck = pushDiffIds.length
-      ? await fetchCardsForDecks(pushDiffIds, "id, deck_id, question, answer, position, status, category")
-      : new Map();
+    const [pushCardsByDeck, pushBodyById] = pushDiffIds.length
+      ? await Promise.all([
+          withRetry(() => fetchCardsForDecks(pushDiffIds, "id, deck_id, question, answer, position, status, category"), { label: "push diff cards" }),
+          withRetry(() => fetchCloudDeckRows(pushDiffIds), { label: "push diff bodies" })
+        ])
+      : [new Map(), new Map()];
 
-    let pushIndex = 0;
-    for (const { localMeta, cloud } of toPush) {
-      pushIndex++;
-      progress(`Uploading “${localMeta.title || "Untitled deck"}” (${pushIndex} of ${toPush.length})…`);
+    // Bounded concurrency, not one deck at a time. Each push is ≥3 sequential
+    // round trips, so a 20-deck sync used to spend almost all of its wall clock
+    // waiting on a phone's latency rather than transferring anything. Three at a
+    // time keeps well inside the browser's per-host connection limit while
+    // cutting the total wait by roughly the same factor.
+    //
+    // Safe to parallelise because the read-modify-write of the shared deck index
+    // inside pushLibraryDeckToCloud contains no `await` between its read and its
+    // write, so it is atomic under JS's single thread. Do not add one.
+    let pushDone = 0;
+    await mapWithConcurrency(toPush, 3, async ({ localMeta, cloud }) => {
       try {
         const res = await pushLibraryDeckToCloud(localMeta, {
           cloudExists: Boolean(cloud),
-          cloudDeck: cloud,
+          cloudDeck: pushBodyById.get(String(localMeta.deckId)) || cloud,
           webCards: cloud ? (pushCardsByDeck.get(String(localMeta.deckId)) || []) : null
         });
         if (!isNoOpStats(res.stats)) {
@@ -11598,18 +12208,30 @@ async function reconcileAllDecks({ explicit = false } = {}) {
         deckLog.push({ title: localMeta.title || "Untitled deck", direction: "failed", error: e?.message || String(e) });
         console.warn("Reconcile push failed", localMeta.id, e);
       }
-    }
+      // Counted as decks finish rather than as they start — with three in flight
+      // a "3 of 12" that meant "started" would race ahead of what's actually done.
+      pushDone++;
+      progress(`Uploading decks… (${pushDone} of ${toPush.length})`);
+    });
 
-    // A flushed category edit is real sync work and has to show up in the
-    // report. Fold it into the quick_notes deck's own row if the loops above
-    // already logged one, so a single deck never appears twice.
-    if (noteCategoriesFlushed) {
+    // A flushed meta edit (categories or source anchors) is real sync work and
+    // has to show up in the report. Fold it into the quick_notes deck's own row
+    // if the loops above already logged one, so a single deck never appears
+    // twice. Anchors have no stat of their own — they're invisible plumbing
+    // behind the "Go to notes" button — so they only get a row when nothing
+    // else about the deck moved, purely so the sync doesn't claim it did
+    // nothing.
+    if (await styleFlush) setStyleStatus("Style synced");
+
+    if (noteCategoriesFlushed || noteAnchorsFlushed) {
       const row = deckLog.find((e) => e.direction !== "failed" && e.title === QUICK_NOTES_DECK_TITLE);
       if (row) {
-        row.noteCategoriesChanged = true;
-      } else {
+        if (noteCategoriesFlushed) row.noteCategoriesChanged = true;
+      } else if (noteCategoriesFlushed) {
         deckLog.push({ title: QUICK_NOTES_DECK_TITLE, direction: "pushed", ...emptySyncStats(), noteCategoriesChanged: true });
         pushed++;
+      } else {
+        alreadyMatched.push(QUICK_NOTES_DECK_TITLE);
       }
     }
 
@@ -11630,6 +12252,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     const parts = [];
     if (pulled) parts.push(`${pulled} deck${pulled === 1 ? "" : "s"} downloaded from the cloud`);
     if (pushed) parts.push(`${pushed} deck${pushed === 1 ? "" : "s"} uploaded to the cloud`);
+    if (imagesUploaded) parts.push(`${imagesUploaded} image${imagesUploaded === 1 ? "" : "s"} uploaded`);
     const changes = describeSyncStats(totalSyncStats(deckLog), { asTotals: true });
     const detail = changes.length ? ` — ${changes.join(", ")}` : "";
     // Name the decks that failed. "See console" asked the user to open devtools
@@ -11684,6 +12307,11 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     }
   } finally {
     reconcileInFlight = false;
+    // Release anyone waiting on this run before they re-run. Resolved, never
+    // rejected — the catch above has already reported whatever went wrong, and
+    // an unhandled rejection here would be noise on top of it.
+    if (settleReconcile) settleReconcile();
+    reconcilePromise = null;
     if (el.syncNowBtn) setButtonLoading(el.syncNowBtn, false);
     updateDeckEmptyStatus();
   }
@@ -11723,7 +12351,10 @@ function appendCardToLocalLibraryDeck(deckId, card, now) {
     if (!raw) return;
     const snapshot = JSON.parse(raw);
     snapshot.cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
-    snapshot.cards.push(card);
+    // Written straight into the snapshot, so it never passes through
+    // saveDeckToLibrary's stamping — mark it here or the next pull would treat
+    // this brand-new card as "clean and absent from the cloud" and delete it.
+    snapshot.cards.push({ ...card, dirty: true, updatedAt: resolvedNow });
     localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
   } catch (error) {
     console.warn("Could not append card to local deck snapshot", error);
@@ -11786,12 +12417,12 @@ function listLocalDecks() {
 // cloud and overwrite a genuinely newer cloud edit on the next reconcile.
 function deckContentSignature(snapshot) {
   if (!snapshot) return "";
-  const cards = (snapshot.cards || []).map((c) => [
-    String(c.id),
-    normalizeSyncText(c.question),
-    normalizeSyncText(c.answer),
-    normalizeCardStatus(c.status),
-  ].join("␟"));
+  // Per-card fields come from cardSyncSignature so "what counts as a card edit"
+  // is defined in exactly one place. `category` used to be missing here, which
+  // meant a card recategorisation never bumped the deck's updatedAt and so was
+  // never pushed — it only reached the cloud because setQuickNoteCardCategory
+  // bumped the index entry by hand.
+  const cards = (snapshot.cards || []).map((c) => `${String(c.id)}␟${cardSyncSignature(c)}`);
   return JSON.stringify({
     title: normalizeSyncText(snapshot.deckTitle),
     category: normalizeDeckCategory(snapshot.deckCategory),
@@ -11805,7 +12436,10 @@ function deckContentSignature(snapshot) {
 // rather than creating a duplicate. Returns the stored metadata, or null on failure.
 // `updatedAt` may be overridden to align the local copy's timestamp with the
 // cloud's after a successful push (so two-way reconcile sees them in sync).
-function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined } = {}) {
+// `synced: true` means the snapshot being saved is known to already match the
+// cloud (mirroring a deck just loaded from the web), so its cards are stamped
+// clean instead of dirty and the next reconcile has nothing to re-push.
+function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false } = {}) {
   if (!state.masterCards.length && !state.notes.trim()) {
     if (!silent) setStatus("Add some cards or notes before saving a deck.", "error");
     return null;
@@ -11830,6 +12464,23 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
   } catch { previousSnapshot = null; }
   if (!snapshot.deckId) snapshot.deckId = previousSnapshot?.deckId || previousEntry?.deckId || null;
 
+  // Only advance updatedAt when the content actually changed (or on an explicit
+  // caller-supplied timestamp, e.g. aligning to the cloud after a push). A pure
+  // navigation/position save keeps the deck's existing updatedAt so it stays in
+  // sync with the cloud instead of falsely winning last-write-wins.
+  const nowIso = new Date().toISOString();
+  const contentChanged = !previousSnapshot
+    || deckContentSignature(previousSnapshot) !== deckContentSignature(snapshot);
+  const resolvedUpdatedAt = updatedAt
+    || (contentChanged ? nowIso : (previousEntry?.updatedAt || nowIso));
+
+  // Mark exactly the cards this save changed, so a later pull can tell "I edited
+  // this and haven't pushed it" apart from "this is just what the cloud gave me"
+  // and merge instead of overwrite. Must run AFTER contentChanged is computed —
+  // it mutates snapshot.cards, and deckContentSignature ignores these fields but
+  // there's no reason to depend on that.
+  stampCardSyncState(snapshot, previousSnapshot, updatedAt || nowIso, { synced });
+
   try {
     localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
     lastSaveErrorWasQuota = false;
@@ -11846,15 +12497,6 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
     }
     return null;
   }
-
-  // Only advance updatedAt when the content actually changed (or on an explicit
-  // caller-supplied timestamp, e.g. aligning to the cloud after a push). A pure
-  // navigation/position save keeps the deck's existing updatedAt so it stays in
-  // sync with the cloud instead of falsely winning last-write-wins.
-  const contentChanged = !previousSnapshot
-    || deckContentSignature(previousSnapshot) !== deckContentSignature(snapshot);
-  const resolvedUpdatedAt = updatedAt
-    || (contentChanged ? new Date().toISOString() : (previousEntry?.updatedAt || new Date().toISOString()));
 
   const meta = {
     id: localId,
@@ -11904,6 +12546,9 @@ function loadDeckFromLibrary(id) {
 
 function deleteDeckFromLibrary(id) {
   localStorage.removeItem(LOCAL_DECK_PREFIX + id);
+  // The deck is gone, so its stashed notes conflict has nothing left to be
+  // recovered into — and leaving it behind would keep eating quota invisibly.
+  localStorage.removeItem(LOCAL_DECK_PREFIX + id + NOTES_CONFLICT_SUFFIX);
   writeLocalDeckIndex(readLocalDeckIndex().filter((entry) => entry.id !== id));
   if (state.localDeckId === id) state.localDeckId = null;
   // Deleting a deck is the natural "free up space" action after a quota
@@ -11930,7 +12575,12 @@ function pruneOrphanedDeckSnapshots() {
   let removed = 0;
   for (const key of Object.keys(localStorage)) {
     if (!key.startsWith(LOCAL_DECK_PREFIX)) continue;
-    const id = key.slice(LOCAL_DECK_PREFIX.length);
+    let id = key.slice(LOCAL_DECK_PREFIX.length);
+    // A stashed notes conflict is a sibling key on the same prefix, so it has
+    // to be resolved back to its owning deck id — otherwise this sweep would
+    // read it as an orphan and throw away the one copy of the user's replaced
+    // notes on the very next boot.
+    if (id.endsWith(NOTES_CONFLICT_SUFFIX)) id = id.slice(0, -NOTES_CONFLICT_SUFFIX.length);
     if (!validIds.has(id)) {
       localStorage.removeItem(key);
       removed++;
@@ -12038,9 +12688,9 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
     // supabase-js reports failures via the returned `error`, not by throwing.
     // A failed write here is retried by reconcileAllDecks while the local
     // tombstone persists, so the deletion still eventually propagates.
-    const { error: tombstoneError } = await withTimeout(supabaseClient.from("deleted_decks").upsert({ deck_id: deckId }), CLOUD_TIMEOUT_MS, "record delete tombstone");
+    const { error: tombstoneError } = await withTimeout(abortable((signal) => supabaseClient.from("deleted_decks").upsert({ deck_id: deckId }).abortSignal(signal)), CLOUD_TIMEOUT_MS, "record delete tombstone");
     if (tombstoneError) console.warn("Could not record cross-device delete tombstone", tombstoneError);
-    const { error } = await withTimeout(supabaseClient.from("decks").delete().eq("id", deckId), CLOUD_TIMEOUT_MS, "delete deck");
+    const { error } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().eq("id", deckId).abortSignal(signal)), CLOUD_TIMEOUT_MS, "delete deck");
     cloudError = error || null;
   }
   return { cloudError };
@@ -15935,6 +16585,40 @@ function handleDiagramPointerEnd(event) {
   }
 }
 
+// Every Supabase Storage image URL referenced by a deck's markdown. Used to
+// pre-cache a pulled deck's images so it reads offline later — the service
+// worker's cache-first rule only covers images it has already SEEN, which means
+// only the ones that happened to be on screen while online.
+const SUPABASE_IMAGE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.supabase\.co\/storage\/v1\/object\/public\/[^\s)"'<>]+/gi;
+
+function collectDeckImageUrls(snapshot) {
+  const seen = new Set();
+  const scan = (text) => {
+    for (const match of String(text || "").matchAll(SUPABASE_IMAGE_URL_PATTERN)) seen.add(match[0]);
+  };
+  scan(snapshot?.notes);
+  for (const card of snapshot?.cards || []) {
+    scan(card.question);
+    scan(card.answer);
+  }
+  return Array.from(seen);
+}
+
+// Hand a deck's image URLs to the service worker to warm its image cache.
+// Fire-and-forget: this is an optimisation, and a controller that isn't ready
+// yet (first load, before the SW has claimed the page) just means the images
+// get cached the normal way — on first view, while online.
+function warmDeckImageCache(snapshot) {
+  if (!("serviceWorker" in navigator) || !navigator.serviceWorker.controller) return;
+  const urls = collectDeckImageUrls(snapshot);
+  if (!urls.length) return;
+  try {
+    navigator.serviceWorker.controller.postMessage({ type: "cache-images", urls });
+  } catch (error) {
+    console.warn("Could not warm the image cache", error);
+  }
+}
+
 let serviceWorkerRegistered = false;
 
 function registerServiceWorker() {
@@ -16890,9 +17574,34 @@ function flushWorkingDeck() {
   // the library, and the next reconcile wouldn't even know it happened.
   saveDeckToLibrary({ silent: true });
 }
-window.addEventListener("pagehide", flushWorkingDeck);
+window.addEventListener("pagehide", () => {
+  flushWorkingDeck();
+  // Blob URLs for still-queued images are per-document; releasing them here
+  // keeps a long-lived PWA session from accumulating them across navigations.
+  revokeLocalImageUrls();
+});
+
+// How long the app has to have been in the background before returning to it is
+// worth a sync. Short enough that picking the phone back up gets fresh data;
+// long enough that flicking between apps doesn't fire one every few seconds.
+const FOREGROUND_SYNC_IDLE_MS = 60000;
+let lastHiddenAt = 0;
+
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") flushWorkingDeck();
+  if (document.visibilityState === "hidden") {
+    lastHiddenAt = Date.now();
+    flushWorkingDeck();
+    return;
+  }
+  // Coming back to a backgrounded PWA used to show whatever was on screen when
+  // you left it until the next auto-sync tick (off by default) — so on a phone,
+  // where the app is backgrounded constantly, edits from another device could
+  // sit unseen indefinitely. reconcileAllDecks self-gates on sign-in and
+  // connectivity and dedupes overlapping runs, so this is safe to just call.
+  if (!lastHiddenAt || Date.now() - lastHiddenAt < FOREGROUND_SYNC_IDLE_MS) return;
+  lastHiddenAt = 0;
+  if (!isSignedIn || !navigator.onLine) return;
+  reconcileAllDecks({ explicit: false });
 });
 
 // Surface connectivity so it's obvious cloud actions are paused while offline.
@@ -17311,27 +18020,221 @@ async function uploadImageToSupabase(file) {
 // too (findImageTokens' `isInline` case), not a "move to its own line" step.
 // `atPos` (optional) forces the placeholder to the caret captured before the file
 // picker opened; without it the current caret is used (paste/drop already have focus).
+// ── Offline image outbox ─────────────────────────────────────────────────────
+// An image picked while offline used to be thrown away with "Can't upload image
+// while offline" — the placeholder was deleted from the markdown and the file
+// was gone. Now the blob is parked in IndexedDB (localStorage can't hold binary
+// without a ~33% base64 tax on an already-tight quota), the markdown gets a
+// `recall-img:<token>` placeholder that renders from the local blob, and the
+// next reconcile uploads it and rewrites the placeholder to the real URL.
+const IMAGE_OUTBOX_DB = "recall-outbox";
+const IMAGE_OUTBOX_STORE = "images";
+// The scheme used in markdown for a not-yet-uploaded image. Deliberately not a
+// bare `blob:` URL: those die with the page, and the markdown outlives it.
+const LOCAL_IMAGE_SCHEME = "recall-img:";
+
+function openImageOutbox() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error("IndexedDB unavailable"));
+    const request = indexedDB.open(IMAGE_OUTBOX_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(IMAGE_OUTBOX_STORE)) {
+        db.createObjectStore(IMAGE_OUTBOX_STORE, { keyPath: "token" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function imageOutboxRequest(mode, run) {
+  return openImageOutbox().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(IMAGE_OUTBOX_STORE, mode);
+    const request = run(tx.objectStore(IMAGE_OUTBOX_STORE));
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+  }));
+}
+
+const putOutboxImage = (entry) => imageOutboxRequest("readwrite", (store) => store.put(entry));
+const getOutboxImage = (token) => imageOutboxRequest("readonly", (store) => store.get(token));
+const allOutboxImages = () => imageOutboxRequest("readonly", (store) => store.getAll());
+const deleteOutboxImage = (token) => imageOutboxRequest("readwrite", (store) => store.delete(token));
+
+// Object URLs minted for queued images, so they can be revoked rather than
+// leaked. Keyed by token, since the same image may render many times.
+const localImageObjectUrls = new Map();
+
+// Resolve `recall-img:<token>` to a displayable blob URL. Returns null when the
+// token is gone (already uploaded, or the outbox was cleared), which the caller
+// treats as a missing image rather than an error.
+async function resolveLocalImageUrl(token) {
+  if (localImageObjectUrls.has(token)) return localImageObjectUrls.get(token);
+  try {
+    const entry = await getOutboxImage(token);
+    if (!entry?.blob) return null;
+    const url = URL.createObjectURL(entry.blob);
+    localImageObjectUrls.set(token, url);
+    return url;
+  } catch (error) {
+    console.warn("Could not read the queued image", error);
+    return null;
+  }
+}
+
+function revokeLocalImageUrls() {
+  for (const url of localImageObjectUrls.values()) URL.revokeObjectURL(url);
+  localImageObjectUrls.clear();
+}
+
+// Swap every recall-img: placeholder in the DOM for its blob URL. Called after
+// a render, since markdown-to-HTML leaves the custom scheme untouched.
+async function hydrateLocalImages(root = document) {
+  const nodes = root.querySelectorAll?.(`img[src^="${LOCAL_IMAGE_SCHEME}"]`);
+  if (!nodes || !nodes.length) return;
+  for (const node of nodes) {
+    const token = node.getAttribute("src").slice(LOCAL_IMAGE_SCHEME.length);
+    const url = await resolveLocalImageUrl(token);
+    if (url) {
+      node.src = url;
+      node.dataset.pendingUpload = "1";
+      node.title = "Waiting to upload — will sync when you're back online";
+    }
+  }
+}
+
+// Upload everything the outbox is holding and rewrite the markdown that points
+// at it. Called from reconcileAllDecks. Returns how many images landed.
+async function flushPendingImageUploads() {
+  if (!supabaseClient || !isSignedIn || !navigator.onLine) return 0;
+  let queued;
+  try {
+    queued = await allOutboxImages();
+  } catch (error) {
+    console.warn("Could not read the image outbox", error);
+    return 0;
+  }
+  if (!queued?.length) return 0;
+
+  let uploaded = 0;
+  for (const entry of queued) {
+    let url;
+    try {
+      url = await uploadImageToSupabase(entry.blob);
+    } catch (error) {
+      // A permanent rejection (RLS) would fail identically forever, and holding
+      // the blob would re-attempt it on every single sync. Anything else is
+      // worth keeping for the next try.
+      if (error?.authFailed) {
+        console.warn("Dropping a queued image the server refuses", error);
+        await deleteOutboxImage(entry.token).catch(() => {});
+      }
+      continue;
+    }
+    rewriteLocalImageReferences(entry.token, url);
+    await deleteOutboxImage(entry.token).catch(() => {});
+    const objectUrl = localImageObjectUrls.get(entry.token);
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+      localImageObjectUrls.delete(entry.token);
+    }
+    uploaded++;
+  }
+  return uploaded;
+}
+
+// Point every copy of a placeholder at the real URL: the live editor and state
+// (so the change is visible now) and every stored snapshot (so it survives, and
+// so the deck's own updatedAt bump carries it to the cloud).
+function rewriteLocalImageReferences(token, url) {
+  const placeholder = LOCAL_IMAGE_SCHEME + token;
+  const swap = (text) => String(text || "").split(placeholder).join(url);
+  const touched = (text) => String(text || "").includes(placeholder);
+
+  if (touched(state.notes)) state.notes = swap(state.notes);
+  for (const list of [state.masterCards, state.cards]) {
+    for (const card of list || []) {
+      if (touched(card.question)) card.question = swap(card.question);
+      if (touched(card.answer)) card.answer = swap(card.answer);
+    }
+  }
+
+  const now = new Date().toISOString();
+  for (const meta of readLocalDeckIndex()) {
+    let raw;
+    try {
+      raw = localStorage.getItem(LOCAL_DECK_PREFIX + meta.id);
+    } catch { continue; }
+    if (!raw || !raw.includes(placeholder)) continue;
+    let snapshot;
+    try {
+      snapshot = JSON.parse(raw);
+    } catch { continue; }
+    snapshot.notes = swap(snapshot.notes);
+    for (const card of snapshot.cards || []) {
+      if (touched(card.question) || touched(card.answer)) {
+        card.question = swap(card.question);
+        card.answer = swap(card.answer);
+        // The card's text genuinely changed, so it owes the cloud a push.
+        card.dirty = true;
+        card.updatedAt = now;
+      }
+    }
+    try {
+      localStorage.setItem(LOCAL_DECK_PREFIX + meta.id, JSON.stringify(snapshot));
+    } catch (error) {
+      console.warn("Could not rewrite an uploaded image reference", error);
+      continue;
+    }
+    const index = readLocalDeckIndex();
+    const entry = index.find((m) => m.id === meta.id);
+    if (entry) {
+      entry.updatedAt = now;
+      writeLocalDeckIndex(index);
+    }
+  }
+}
+
 async function insertImageUpload(textarea, file, atPos) {
   if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
   const uploadToken = `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
   insertAtCursor(textarea, uploadToken, atPos);
   showToast("Optimizing image…", "info");
+  let optimized = file;
   try {
-    const optimized = await optimizeImage(file);
+    optimized = await optimizeImage(file);
     const url = await uploadImageToSupabase(optimized);
     replaceInTextarea(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
+    return;
   } catch (err) {
-    replaceInTextarea(textarea, uploadToken, "");
-    if (err.message === "OFFLINE") {
-      showToast("Can't upload image while offline", "error");
-    } else if (err.message === "NOT_SIGNED_IN") {
-      showToast("Sign in to upload images", "error");
-    } else {
-      console.error("Image upload failed", err);
-      showToast("Image upload failed", "error");
+    if (err.message !== "OFFLINE") {
+      replaceInTextarea(textarea, uploadToken, "");
+      if (err.message === "NOT_SIGNED_IN") {
+        showToast("Sign in to upload images", "error");
+      } else {
+        console.error("Image upload failed", err);
+        showToast("Image upload failed", "error");
+      }
+      return;
     }
   }
+
+  // Offline: park the blob and leave a placeholder that renders from it, rather
+  // than discarding the image the user just chose.
+  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  try {
+    await putOutboxImage({ token, blob: optimized, savedAt: new Date().toISOString() });
+  } catch (error) {
+    console.warn("Could not queue the image for upload", error);
+    replaceInTextarea(textarea, uploadToken, "");
+    showToast("Can't upload image while offline", "error");
+    return;
+  }
+  replaceInTextarea(textarea, uploadToken, `![](${LOCAL_IMAGE_SCHEME}${token})`);
+  showToast("Image saved here — uploads when you're back online", "info");
 }
 
 // Detect an image in a DataTransfer during `dragover`, where getAsFile() is still
@@ -18600,6 +19503,65 @@ function readLocalSnapshotByDeckId(deckId) {
   } catch { return null; }
 }
 
+// The local quick_notes snapshot, creating an empty one if this device has none
+// yet. Every quick-note write is local-first now, so there has to be somewhere
+// on this device for it to land — a device that has opened the board (which
+// reads the cloud directly) but never run a reconcile would otherwise have no
+// snapshot at all, and the write would vanish.
+//
+// The local id is derived from the cloud id for the same reason
+// pullCloudDeckToLibrary derives its own: "find existing, else create" isn't
+// atomic across tabs, and a deterministic id makes concurrent creators converge
+// instead of leaving an orphan snapshot behind.
+function ensureLocalQuickNotesSnapshot() {
+  const deckId = getQuickNotesDeckId();
+  if (!deckId) return null;
+  const existing = readLocalSnapshotByDeckId(deckId);
+  if (existing) return existing;
+
+  const localId = readLocalDeckIndex().find((e) => e.deckId === deckId)?.id || `ld_cloud_${deckId}`;
+  const now = new Date().toISOString();
+  const snapshot = {
+    app: "recall",
+    version: 1,
+    exportedAt: now,
+    deckTitle: QUICK_NOTES_DECK_TITLE,
+    deckCategory: defaultDeckCategory,
+    notes: "",
+    sourceTitle: QUICK_NOTES_DECK_TITLE,
+    importTitleHint: QUICK_NOTES_DECK_TITLE,
+    deckId,
+    current: 0,
+    meta: state.quickNoteCategories?.length ? { quickNoteCategories: state.quickNoteCategories } : {},
+    cards: [],
+    localDeckId: localId
+  };
+  try {
+    localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
+  } catch (error) {
+    console.warn("Could not create the local quick_notes snapshot", error);
+    return null;
+  }
+  // A brand-new local deck with no cloud counterpart yet reads as "newer than
+  // the cloud", which is what makes the next reconcile push it — including
+  // creating the decks row, so ensureQuickNotesDeck is no longer needed on the
+  // write path.
+  const index = readLocalDeckIndex().filter((e) => e.id !== localId);
+  writeLocalDeckIndex([{
+    id: localId,
+    title: QUICK_NOTES_DECK_TITLE,
+    category: defaultDeckCategory,
+    cardCount: 0,
+    hasNotes: false,
+    updatedAt: now,
+    createdAt: now,
+    lastSyncedAt: null,
+    accessedAt: now,
+    deckId
+  }, ...index]);
+  return { localId, snapshot };
+}
+
 // ── Category edits are OPERATIONS, not list replacements ─────────
 // Saving the whole list is what makes two devices fight: A's list is a snapshot
 // of what A could see, so writing it says "these are ALL the categories that
@@ -18653,30 +19615,21 @@ function applyCategoryOpsToList(list, ops) {
   return normalizeQuickNoteCategories(out);
 }
 
-// Apply category edits everywhere: local state + cache + snapshot mirror, then
-// the cloud (merged, never replaced). Anything that can't reach the cloud is
-// queued as ops and replayed by the next sync.
+// Apply category edits locally — state + cache + snapshot mirror — and QUEUE
+// them for the cloud. The cloud write no longer happens here: a rename or a
+// recolour used to cost a read-merge-write round trip the moment you made it,
+// which offline did nothing at all. The queue is delivered by the next
+// reconcile, batched with every other pending change.
 //
-// Returns WHY it ended where it did — "synced" | "offline" | "no-column" |
-// "failed" — so the caller can tell the user. Every one of these outcomes used
-// to be a silent console.warn returning undefined, which is how a category that
-// only ever existed on one device still looked saved.
-async function applyQuickNoteCategoryOps(ops) {
-  // Apply locally first so the board reacts immediately, online or not. The
-  // cloud write below may widen this with other devices' categories.
+// Queuing the OPS (not the resulting list) is what lets the eventual replay
+// merge with whatever other devices did in the meantime — see the header above
+// categoryUpsertOp.
+//
+// Returns "queued" so callers can tell the user where the edit landed.
+function applyQuickNoteCategoryOps(ops) {
   adoptQuickNoteCategories(applyCategoryOpsToList(state.quickNoteCategories, ops));
-
-  const deckId = getQuickNotesDeckId();
-  const outcome = await serialiseQuickNoteMetaWrite(() => writeQuickNoteCategoryOpsToCloud(deckId, ops));
-  // Anything that didn't land is remembered and retried by the next sync. The
-  // local snapshot alone was never enough: reconcile's push doesn't carry meta
-  // (only the pull does), so nothing on this device would ever have delivered
-  // it, and the next cloud-newer pull would overwrite the mirror and lose the
-  // edit outright. Queuing the OPS (not the resulting list) is what lets the
-  // replay merge with whatever other devices did in the meantime.
-  if (outcome === "synced") clearPendingQuickNoteCategories();
-  else queuePendingQuickNoteCategoryOps(deckId, ops);
-  return outcome;
+  queuePendingQuickNoteCategoryOps(getQuickNotesDeckId(), ops);
+  return "queued";
 }
 
 // The cloud half of applyQuickNoteCategoryOps. Always call it through
@@ -18787,9 +19740,9 @@ function clearPendingQuickNoteCategories() {
   try { localStorage.removeItem(PENDING_QN_CATEGORIES_KEY); } catch (_) {}
 }
 
-// Deliver a category edit that couldn't reach the cloud when it was made.
-// Returns true only when something was actually delivered, so the sync report
-// can say so. Safe to call on every sync: it's a no-op with nothing pending.
+// Deliver queued category edits. Returns true only when something actually
+// landed, so the sync report can say so. Safe to call on every sync: it's a
+// no-op with nothing pending.
 async function flushPendingQuickNoteCategories() {
   const pending = readPendingQuickNoteCategories();
   if (!pending) return false;
@@ -18801,13 +19754,15 @@ async function flushPendingQuickNoteCategories() {
     clearPendingQuickNoteCategories();
     return false;
   }
-  // Clear first: applyQuickNoteCategoryOps re-queues on failure, and leaving the
-  // old entry in place would make it append these ops to themselves and replay
-  // each one twice on the next attempt.
-  clearPendingQuickNoteCategories();
-  // Goes back through applyQuickNoteCategoryOps so a still-failing write is
-  // re-queued rather than dropped, and the local mirrors stay in step.
-  return (await applyQuickNoteCategoryOps(pending.ops)) === "synced";
+  const outcome = await serialiseQuickNoteMetaWrite(
+    () => writeQuickNoteCategoryOpsToCloud(deckId, pending.ops)
+  );
+  // Only a confirmed write clears the queue. "no-column" is a permanent failure
+  // for this database (the migration hasn't been run) but is still cleared —
+  // replaying it forever on every sync would never succeed and the local copy
+  // is already correct.
+  if (outcome === "synced" || outcome === "no-column") clearPendingQuickNoteCategories();
+  return outcome === "synced";
 }
 
 // ── Quick-note source anchors ────────────────────────────────────
@@ -18871,16 +19826,84 @@ function serialiseQuickNoteMetaWrite(task) {
   return qnMetaWriteChain;
 }
 
-function saveQuickNoteAnchors(patch, options) {
-  return serialiseQuickNoteMetaWrite(() => writeQuickNoteAnchors(patch, options));
+// ── Pending anchor writes ────────────────────────────────────────
+// Anchors are queued rather than written when they're made, for the same two
+// reasons the categories are: a pin shouldn't cost a read-merge-write round trip
+// of its own, and offline the write simply vanished. The queue holds a PATCH
+// ({ [cardId]: anchor }) plus an optional prune set — never the resolved map,
+// which would say "these are all the anchors that exist" and delete whatever
+// another device pinned while this one was offline.
+const PENDING_QN_ANCHORS_KEY = "recall:pendingQuickNoteAnchors";
+
+function readPendingQuickNoteAnchors() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PENDING_QN_ANCHORS_KEY) || "null");
+    if (!raw || typeof raw !== "object") return null;
+    const patch = raw.patch && typeof raw.patch === "object" ? raw.patch : {};
+    const keepIds = Array.isArray(raw.keepIds) ? raw.keepIds.map(String) : null;
+    if (!Object.keys(patch).length && !keepIds) return null;
+    return { deckId: String(raw.deckId || ""), patch, keepIds };
+  } catch {
+    return null;
+  }
 }
 
-async function writeQuickNoteAnchors(patch, { keepIds = null } = {}) {
+// Merges into whatever is already queued — several pins between two syncs must
+// all be delivered, not just the last one.
+function queuePendingQuickNoteAnchors(patch, { keepIds = null } = {}) {
+  const deckId = getQuickNotesDeckId() || "";
+  const existing = readPendingQuickNoteAnchors();
+  const sameDeck = existing && existing.deckId === deckId;
+  const merged = { ...(sameDeck ? existing.patch : {}), ...(patch || {}) };
+  // A prune is a statement about the whole bag, so the newest one wins outright
+  // rather than intersecting with an older, staler view of what still exists.
+  let keep = keepIds ? Array.from(keepIds).map(String) : (sameDeck ? existing.keepIds : null);
+  if (!Object.keys(merged).length && !keep) return;
+  try {
+    localStorage.setItem(PENDING_QN_ANCHORS_KEY, JSON.stringify({
+      deckId, patch: merged, keepIds: keep, savedAt: new Date().toISOString()
+    }));
+  } catch (_) { /* storage full — the anchor is still on the card locally */ }
+}
+
+function clearPendingQuickNoteAnchors() {
+  try { localStorage.removeItem(PENDING_QN_ANCHORS_KEY); } catch (_) {}
+}
+
+// Kept as the queueing entry point so every existing caller keeps working — it
+// just no longer touches the network.
+function saveQuickNoteAnchors(patch, options) {
+  queuePendingQuickNoteAnchors(patch, options);
+}
+
+// Deliver queued anchors. Called from reconcileAllDecks (before the pull, so the
+// cloud already agrees with us by the time it's read back). Returns true only
+// when something actually landed, so the sync report can say so.
+async function flushPendingQuickNoteAnchors() {
+  const pending = readPendingQuickNoteAnchors();
+  if (!pending) return false;
   const deckId = getQuickNotesDeckId();
-  if (!deckId) return;
+  if (!deckId) return false;
+  // Queued against a different account's deck — not ours to deliver.
+  if (pending.deckId && pending.deckId !== deckId) {
+    clearPendingQuickNoteAnchors();
+    return false;
+  }
+  const keepIds = pending.keepIds ? new Set(pending.keepIds) : null;
+  const delivered = await serialiseQuickNoteMetaWrite(
+    () => writeQuickNoteAnchors(deckId, pending.patch, { keepIds })
+  );
+  if (delivered) clearPendingQuickNoteAnchors();
+  return delivered;
+}
+
+// The cloud half. Always call through serialiseQuickNoteMetaWrite — decks.meta
+// is one JSON blob and every writer read-merge-writes the whole of it.
+async function writeQuickNoteAnchors(deckId, patch, { keepIds = null } = {}) {
+  if (!deckId) return false;
   const hasPatch = patch && Object.keys(patch).length;
-  if (!hasPatch && !keepIds) return;
-  if (!supabaseClient || !isSignedIn || !navigator.onLine) return;
+  if (!hasPatch && !keepIds) return false;
+  if (!supabaseClient || !isSignedIn || !navigator.onLine) return false;
   try {
     const { data: existing } = await supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle();
     const base = existing?.meta && typeof existing.meta === "object" ? existing.meta : {};
@@ -18889,10 +19912,23 @@ async function writeQuickNoteAnchors(patch, { keepIds = null } = {}) {
       anchors = Object.fromEntries(Object.entries(anchors).filter(([id]) => keepIds.has(String(id))));
     }
     const meta = { ...base, noteAnchors: anchors };
-    const { error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId);
+    // `.select()` because an UPDATE matching no row is not an error — it just
+    // does nothing, which is exactly what happens on an account whose
+    // quick_notes deck row doesn't exist yet. Same trap the category writer hit.
+    let { data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id");
     if (error) throw error;
+    if (!updated || !updated.length) {
+      const userId = cachedUserId();
+      if (!userId) return false;
+      await ensureQuickNotesDeck(userId);
+      ({ data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id"));
+      if (error) throw error;
+      if (!updated || !updated.length) return false;
+    }
+    return true;
   } catch (error) {
     console.warn("Could not sync quick-note source anchors to cloud", error);
+    return false;
   }
 }
 
@@ -18989,29 +20025,62 @@ async function resolveMissingQuickNoteSources() {
   saveQuickNoteAnchors(patch);
 }
 
-// Assign (or clear, when categoryId is falsy) a card's subject category. Writes
-// the cloud cards row + the local snapshot + bumps updatedAt so reconcile sees
-// the change. Returns true on a best-effort local success.
-async function setQuickNoteCardCategory(cardId, categoryId) {
+// Assign (or clear, when categoryId is falsy) a card's subject category.
+// Local-only: patches the snapshot, marks the card dirty, and bumps updatedAt
+// so the next reconcile carries it up with everything else. It used to fire an
+// immediate `cards` UPDATE per tap, which on a phone meant a round trip for
+// every chip you touched — and did nothing at all offline.
+function setQuickNoteCardCategory(cardId, categoryId) {
   if (!cardId) return false;
   const value = categoryId ? String(categoryId) : null;
   const now = new Date().toISOString();
-  const deckId = getQuickNotesDeckId();
 
-  // Local snapshot patch (source of truth for offline + reconcile).
-  const local = readLocalSnapshotByDeckId(deckId);
+  // Local snapshot patch — the only write there is now, and the source of truth
+  // the next reconcile pushes from.
+  const local = ensureLocalQuickNotesSnapshot();
+  let patched = false;
   if (local && Array.isArray(local.snapshot.cards)) {
-    const card = local.snapshot.cards.find((c) => String(c.id) === String(cardId));
+    let card = local.snapshot.cards.find((c) => String(c.id) === String(cardId));
+    if (!card) {
+      // The board reads the cloud directly, so it can show a note this device
+      // has never pulled. Adopt it into the snapshot rather than dropping the
+      // edit — with the write no longer going straight to the cloud, "not in
+      // the local copy" would otherwise mean "silently ignored".
+      const fromBoard = qnBoard.cards.find((c) => String(c.id) === String(cardId));
+      if (fromBoard) {
+        card = {
+          id: String(fromBoard.id),
+          question: fromBoard.question || "",
+          answer: fromBoard.answer || "",
+          status: normalizeCardStatus(fromBoard.status),
+          category: fromBoard.category || null,
+          ...(fromBoard.noteAnchor ? { noteAnchor: fromBoard.noteAnchor } : {})
+        };
+        local.snapshot.cards.push(card);
+      }
+    }
     if (card) {
+      patched = true;
       card.category = value;
       card.updatedAt = now;
+      // Written straight into the snapshot rather than through
+      // saveDeckToLibrary, so the dirty flag has to be set by hand — without it
+      // the next pull would take the cloud's older category back.
+      card.dirty = true;
       local.snapshot.updatedAt = now;
       try {
         localStorage.setItem(LOCAL_DECK_PREFIX + local.localId, JSON.stringify(local.snapshot));
-      } catch (_) {}
+      } catch (error) {
+        console.warn("Could not save the quick-note category change", error);
+        patched = false;
+      }
       const index = readLocalDeckIndex();
       const entry = index.find((e) => e.id === local.localId);
-      if (entry) { entry.updatedAt = now; writeLocalDeckIndex(index); }
+      if (entry) {
+        entry.updatedAt = now;
+        entry.cardCount = local.snapshot.cards.length;
+        writeLocalDeckIndex(index);
+      }
     }
   }
 
@@ -19028,18 +20097,7 @@ async function setQuickNoteCardCategory(cardId, categoryId) {
     }
   }
 
-  if (!supabaseClient || !isSignedIn || !navigator.onLine) return true;
-  try {
-    const { error } = await supabaseClient
-      .from("cards")
-      .update({ category: value, updated_at: now })
-      .eq("id", cardId);
-    if (error) throw error;
-  } catch (error) {
-    console.warn("Could not sync quick-note card category to cloud", error);
-    return false;
-  }
-  return true;
+  return patched;
 }
 
 // ── Quick Notes board (dedicated skim surface) ───────────────────
@@ -19104,27 +20162,37 @@ async function loadQuickNotesData() {
 
   if (supabaseClient && isSignedIn && navigator.onLine && deckId) {
     try {
-      // Deliver a pending offline category edit BEFORE the read below, because
-      // that read treats the cloud row as authoritative. Reading first would
-      // show the pre-offline categories, and the next edit from the board would
-      // then write that stale list back and clear the pending record — losing
-      // the offline edit permanently. Same ordering rule as reconcileAllDecks.
+      // Deliver pending offline meta edits BEFORE the read below, because that
+      // read treats the cloud row as authoritative. Reading first would show the
+      // pre-offline categories, and the next edit from the board would then
+      // write that stale list back and clear the pending record — losing the
+      // offline edit permanently. Same ordering rule as reconcileAllDecks.
       await flushPendingQuickNoteCategories();
+      await flushPendingQuickNoteAnchors();
 
       const [deckRes, cardsRes] = await Promise.all([
         supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle(),
-        supabaseClient.from("cards").select("id, question, answer, category, updated_at").eq("deck_id", deckId).order("position", { ascending: true })
+        supabaseClient.from("cards").select("id, question, answer, status, category, updated_at").eq("deck_id", deckId).order("position", { ascending: true })
       ]);
       const cloudAnchors = deckRes.data && !deckRes.error ? noteAnchorsFromMeta(deckRes.data.meta) : {};
       if (!cardsRes.error && Array.isArray(cardsRes.data)) {
-        cards = cardsRes.data.map((c) => ({
+        // Merged, not replaced. Pins are local writes now, so a note made since
+        // the last sync exists only on this device — reading the cloud straight
+        // into the board would make it disappear the moment you opened the
+        // board, which is exactly the bug the pull-side merge exists to stop.
+        const { cards: mergedCards } = mergeCloudCardsIntoSnapshot(
+          local?.snapshot || { cards: localCards },
+          cardsRes.data,
+          new Date().toISOString()
+        );
+        cards = mergedCards.map((c) => ({
           id: String(c.id),
           question: String(c.question || ""),
           answer: String(c.answer || ""),
           category: c.category || null,
           // Cloud anchor first (works on every device), local snapshot second.
-          noteAnchor: cloudAnchors[String(c.id)] || anchorById.get(String(c.id)) || null,
-          updatedAt: c.updated_at || null
+          noteAnchor: cloudAnchors[String(c.id)] || c.noteAnchor || anchorById.get(String(c.id)) || null,
+          updatedAt: c.updatedAt || null
         }));
       }
       // The cloud deck row is authoritative whenever we could read it —
@@ -19493,20 +20561,16 @@ async function assignQuickNoteCategory(cardId, categoryId) {
   if (card) card.category = categoryId || null;
   closeQnCatMenu();
   renderQuickNotesBoard();
-  // This write goes straight to the cloud, so say so — otherwise the only
-  // feedback you ever get is a later sync reporting "nothing to sync", which
-  // reads as "your change was lost". The return value matters: it's false when
-  // the cloud write failed, and that used to be swallowed entirely, leaving the
-  // board showing a category that exists on no other device.
+  // A local write now — it rides the next sync rather than costing a round trip
+  // per tap. Still say where it landed: silence here used to read as "your
+  // change was lost" when a later sync reported "nothing to sync".
   const cat = categoryId ? findQuickNoteCategory(categoryId) : null;
   const label = cat ? `“${cat.name}”` : "Uncategorized";
-  const ok = await setQuickNoteCardCategory(cardId, categoryId || null);
+  const ok = setQuickNoteCardCategory(cardId, categoryId || null);
   if (!ok) {
-    showToast(`Set to ${label} on this device — could not reach the cloud, will sync later`, "error");
-  } else if (!supabaseClient || !isSignedIn || !navigator.onLine) {
-    showToast(`Set to ${label} — saved on this device, will sync when you're back online`, "info");
+    showToast(`Could not set ${label} — this note isn't saved on this device`, "error");
   } else {
-    showToast(`Set to ${label} — saved and synced`, "success");
+    showToast(`Set to ${label} — saved here, syncs with everything else`, "success");
   }
 }
 
@@ -19569,17 +20633,11 @@ function closeQnCatModal() {
 
 // `what` names the edit that was just made ("Added “Vocabulary”"), so the toast
 // reports the specific action rather than a generic "saved".
-async function commitQuickNoteCategoryOps(ops, what = "Categories updated") {
-  const outcome = await applyQuickNoteCategoryOps(ops);
+function commitQuickNoteCategoryOps(ops, what = "Categories updated") {
+  applyQuickNoteCategoryOps(ops);
   renderQnCatModal();
   renderQuickNotesBoard();
-  const message = {
-    synced: `${what} — saved and synced`,
-    offline: `${what} — saved on this device, will sync when you're back online`,
-    "no-column": `${what} — saved on this device only. Run supabase_quick_notes.sql in Supabase to sync categories`,
-    failed: `${what} — saved on this device, but the cloud update failed`
-  }[outcome] || `${what} — saved`;
-  showToast(message, outcome === "synced" ? "success" : outcome === "offline" ? "info" : "error");
+  showToast(`${what} — saved here, syncs with everything else`, "success");
 }
 
 async function addQuickNoteCategory() {
@@ -19628,7 +20686,10 @@ function deleteQuickNoteCategory(id) {
   }, { confirmLabel: "Delete", danger: true });
 }
 
-// Ensure the quick_notes web deck exists for the current user, returning its id.
+// Ensure the quick_notes web deck ROW exists for the current user, returning
+// its id. No longer on the pin path — a pin is a pure local write now, and the
+// reconcile push creates this row as a side effect of upserting the deck. Still
+// used by the meta writers, which UPDATE a row that has to already exist.
 async function ensureQuickNotesDeck(userId) {
   const deckId = `quick-notes-${userId}`;
 
@@ -19656,81 +20717,63 @@ async function ensureQuickNotesDeck(userId) {
 }
 
 // Save the selected text as a new card (text becomes the question, answer left
-// blank to fill in later) appended to the quick_notes web deck.
-async function saveQuickNote(rawText, button, sourceAnchor = null) {
+// blank to fill in later) appended to the quick_notes deck.
+//
+// Entirely local. Pinning used to cost five sequential Supabase round trips —
+// deck lookup, deck insert, card count, card insert, deck bump — plus a sixth
+// read-merge-write for the source anchor, all before the toast appeared. On a
+// phone that's most of a second per pin, and offline it simply failed, losing
+// the selection. Now it's a localStorage write, and the whole batch of pins
+// goes up with everything else on the next reconcile.
+function saveQuickNote(rawText, button, sourceAnchor = null) {
   const text = String(rawText || "").trim();
   if (!text) {
     setStatus("Select some text first to save a quick note.", "error");
     return;
   }
 
-  if (!supabaseClient) {
-    setStatus("Connect to Supabase and sign in to save quick notes.", "error");
+  // cachedUserId reads the marker ensureLocalLibraryOwner wrote at sign-in, so
+  // this stays synchronous and works offline — getCurrentUser() was a network
+  // round trip that made pinning impossible with no connection.
+  if (!cachedUserId()) {
+    setStatus("Sign in to save quick notes.", "error");
+    showToast("Sign in to save quick notes", "error");
     return;
   }
 
-  const user = await getCurrentUser();
-  if (!user) {
-    setStatus("Sign in to save quick notes to the cloud.", "error");
-    return;
-  }
-
-  if (button) button.disabled = true;
-  setStatus("Saving quick note…");
-
-  try {
-    const deckId = await ensureQuickNotesDeck(user.id);
-
-    const { count, error: countError } = await supabaseClient
-      .from("cards")
-      .select("id", { count: "exact", head: true })
-      .eq("deck_id", deckId);
-    if (countError) throw countError;
-
-    const now = new Date().toISOString();
-    const cardId = `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const { error: cardError } = await supabaseClient
-      .from("cards")
-      .insert({
-        id: cardId,
-        deck_id: deckId,
-        question: text,
-        answer: "",
-        position: count || 0,
-        status: null,
-        updated_at: now
-      });
-    if (cardError) throw cardError;
-
-    // Bump the deck so it surfaces as recently used in My Decks.
-    await supabaseClient
-      .from("decks")
-      .update({ updated_at: now, last_accessed_at: now })
-      .eq("id", deckId);
-
-    // Attach the source location (deck + note offset) so the quick_notes card
-    // offers a "Go to notes" jump back to where it was pinned from. Written to
-    // the deck's cloud meta bag as well as the local snapshot: the snapshot
-    // alone is silently dropped whenever this device has no local copy of the
-    // quick_notes deck, which is what detached these links before.
-    const anchor = trimNoteAnchor(sourceAnchor);
-    const quickCard = { id: cardId, question: text, answer: "", status: null, category: null };
-    if (anchor) quickCard.noteAnchor = anchor;
-    appendCardToLocalLibraryDeck(deckId, quickCard, now);
-    if (anchor) await saveQuickNoteAnchors({ [cardId]: anchor });
-
-    setStatus("Saved to quick_notes.");
-    showToast("Saved to quick_notes");
-    if (button) {
-      button.classList.add("quick-note-saved");
-      setTimeout(() => button.classList.remove("quick-note-saved"), 1200);
-    }
-  } catch (error) {
-    setStatus("Failed to save quick note.", "error");
+  const local = ensureLocalQuickNotesSnapshot();
+  if (!local) {
+    setStatus("Could not save quick note — device storage is unavailable.", "error");
     showToast("Couldn't save quick note", "error");
-    console.error(error);
-  } finally {
-    if (button) button.disabled = false;
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const cardId = `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // The source location (deck + note offset) behind the card's "Go to notes"
+  // jump. Kept on the card locally AND queued for the deck's cloud meta bag —
+  // the cards table has no column for it, so the queue is the only way it
+  // reaches another device.
+  const anchor = trimNoteAnchor(sourceAnchor);
+  const quickCard = { id: cardId, question: text, answer: "", status: null, category: null };
+  if (anchor) quickCard.noteAnchor = anchor;
+
+  appendCardToLocalLibraryDeck(local.snapshot.deckId, quickCard, now);
+  if (anchor) queuePendingQuickNoteAnchors({ [cardId]: anchor });
+
+  // Mirror into the open board so a pin shows up without a reload.
+  if (Array.isArray(qnBoard.cards)) {
+    qnBoard.cards.unshift({
+      id: cardId, question: text, answer: "", category: null,
+      noteAnchor: anchor || null, updatedAt: now
+    });
+  }
+
+  setStatus("Saved to quick_notes.");
+  showToast(navigator.onLine ? "Saved to quick_notes" : "Saved to quick_notes — syncs when you're back online");
+  if (button) {
+    button.classList.add("quick-note-saved");
+    setTimeout(() => button.classList.remove("quick-note-saved"), 1200);
   }
 }
 

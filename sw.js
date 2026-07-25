@@ -1,10 +1,38 @@
-const CACHE_NAME = "recall-v20260725-6";
+const CACHE_NAME = "recall-v20260725-7";
+
+// Uploaded images live in the user's own Supabase Storage bucket, on a
+// different origin from both the app and the CDN — so nothing here used to
+// intercept them and EVERY image in EVERY deck was a broken icon offline.
+// They get their own cache, deliberately NOT versioned with CACHE_NAME: an app
+// update must not throw away a library's worth of images that would then have
+// to be re-downloaded (and are unavailable offline until they are). The
+// activate sweep below spares it by name for the same reason.
+const IMAGE_CACHE_NAME = "recall-images-v1";
+
+// Objects are written at immutable, randomly-named paths (see
+// uploadImageToSupabase), so a cache hit is always correct and there is no
+// revalidation to do. Keep a ceiling anyway — an image-heavy EPUB import is
+// hundreds of uploads and this would otherwise grow without limit. Cache
+// entries are appended in fetch order, so the oldest keys are the coldest.
+const IMAGE_CACHE_LIMIT = 400;
+
+function isSupabaseImageUrl(url) {
+  return url.hostname.endsWith(".supabase.co")
+    && url.pathname.includes("/storage/v1/object/public/");
+}
+
+async function trimImageCache() {
+  const cache = await caches.open(IMAGE_CACHE_NAME);
+  const keys = await cache.keys();
+  if (keys.length <= IMAGE_CACHE_LIMIT) return;
+  await Promise.all(keys.slice(0, keys.length - IMAGE_CACHE_LIMIT).map((key) => cache.delete(key)));
+}
 
 // Same-origin app shell — cached atomically on install (must all succeed).
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260725-6",
-  "./app.js?v=20260725-6",
+  "./styles.css?v=20260725-7",
+  "./app.js?v=20260725-7",
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
@@ -106,8 +134,38 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.map((key) => key === CACHE_NAME ? null : caches.delete(key))))
+      // IMAGE_CACHE_NAME is spared: it holds the user's own uploaded images,
+      // which are expensive to re-fetch and simply unavailable offline once
+      // dropped. Deleting every non-CACHE_NAME key would wipe it on every
+      // single app update.
+      .then((keys) => Promise.all(
+        keys
+          .filter((key) => key !== CACHE_NAME && key !== IMAGE_CACHE_NAME)
+          .map((key) => caches.delete(key))
+      ))
+      .then(() => trimImageCache())
       .then(() => self.clients.claim())
+  );
+});
+
+// The page asks for a deck's images to be pre-cached right after pulling it, so
+// a deck synced on wifi is readable offline later — not just the images that
+// happened to be on screen while online. Best-effort and chunked: a broken or
+// deleted URL must not abort the rest.
+self.addEventListener("message", (event) => {
+  const urls = event.data && event.data.type === "cache-images" ? event.data.urls : null;
+  if (!Array.isArray(urls) || !urls.length) return;
+  event.waitUntil(
+    caches.open(IMAGE_CACHE_NAME).then(async (cache) => {
+      for (const url of urls.slice(0, IMAGE_CACHE_LIMIT)) {
+        try {
+          if (await cache.match(url)) continue;
+          const response = await fetch(url, { mode: "cors" });
+          if (response.ok) await cache.put(url, response);
+        } catch (_) { /* offline or gone — nothing to warm */ }
+      }
+      await trimImageCache();
+    })
   );
 });
 
@@ -118,11 +176,34 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   const isSameOrigin = url.origin === self.location.origin;
   const isCdnAsset = url.hostname === "cdn.jsdelivr.net";
+  const isImage = !isSameOrigin && isSupabaseImageUrl(url);
 
   // Never intercept the service worker itself
   if (url.pathname.endsWith("/sw.js")) return;
 
-  if (!isSameOrigin && !isCdnAsset) return;
+  if (!isSameOrigin && !isCdnAsset && !isImage) return;
+
+  if (isImage) {
+    // Cache-first, in the image cache. The path is immutable, so a hit needs no
+    // revalidation — and cache-first is what makes the image render at all with
+    // no connection. A miss falls through to the network and stores a copy.
+    // Never let a failed fetch reject: an <img> that 404s should show as a
+    // broken image, not take the request down with an uncaught error.
+    event.respondWith(
+      caches.open(IMAGE_CACHE_NAME).then((cache) =>
+        cache.match(request).then((cached) => {
+          if (cached) return cached;
+          return fetch(request)
+            .then((response) => {
+              if (response.ok) cache.put(request, response.clone()).then(trimImageCache).catch(() => {});
+              return response;
+            })
+            .catch(() => cached || Response.error());
+        })
+      )
+    );
+    return;
+  }
 
   if (isCdnAsset) {
     // CDN assets (scripts, KaTeX CSS/fonts, Prism grammars): cache-first. They

@@ -1485,6 +1485,24 @@ button:disabled {
   font-weight: 400;
 }
 
+/* Only appears when a pull replaced deck notes this device had also edited —
+   the one case sync can still overwrite, so it gets a real way out. */
+.sync-report-recover {
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #4a9eff) 55%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent, #4a9eff) 14%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.sync-report-recover:hover {
+  background: color-mix(in srgb, var(--accent, #4a9eff) 24%, transparent);
+}
+
 .sync-modal-btn {
   min-width: 80px;
 }
