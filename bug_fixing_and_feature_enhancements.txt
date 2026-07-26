@@ -1,0 +1,7 @@
+1. the image features that are available in the notes editor is not present in cards editor such as resize, delete etc
+2. if the copied image is gif then respect the gif in storage
+3. the triple tab to go to that specific location from rendered to raw is not working in the cards
+4. whenever i am changing from flipping cards ine view to another side automatically it is becoming rendered which is annoyinh respect the raw or rendered toggle that i have set
+5. import options there is no option for import inside the folder nvigations , i think in my decks along with new deck , new folder there should be option to import files too inside that very location
+6. the sync indicator is not very informative , is should display how much time left to next sync too compactly  Also i dont think it cntinuously runs it only runs for the first time and then sleeps . 
+7. the text selection in mobile is not stable.

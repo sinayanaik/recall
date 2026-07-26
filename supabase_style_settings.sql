@@ -62,11 +62,14 @@ DROP POLICY IF EXISTS "Anyone can delete app style settings" ON app_style_settin
 DROP POLICY IF EXISTS "Signed-in users manage app style settings" ON app_style_settings;
 DROP POLICY IF EXISTS "Users manage own app style settings" ON app_style_settings;
 
+-- auth.uid() is wrapped in a scalar subquery so the planner evaluates it once
+-- per statement (an InitPlan) instead of once per row. Must stay identical to
+-- the policy in supabase_schema.sql, or whichever file ran last wins.
 CREATE POLICY "Users manage own app style settings"
   ON app_style_settings
   FOR ALL TO authenticated
-  USING (id = auth.uid()::text OR id = 'global')
-  WITH CHECK (id = auth.uid()::text);
+  USING (id = (select auth.uid())::text OR id = 'global')
+  WITH CHECK (id = (select auth.uid())::text);
 
 WITH style_defaults AS (
   SELECT $style_defaults$

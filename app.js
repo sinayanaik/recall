@@ -1964,7 +1964,7 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 // Upsert one chunk of card rows, retrying without `category` if the database
-// hasn't run supabase_quick_notes.sql yet (no cards.category column). Mirrors
+// hasn't run supabase_setup.sql yet (no cards.category column). Mirrors
 // the deck-level `notes` fallback: never lose card edits over a missing
 // optional column.
 async function upsertCardRows(rows) {
@@ -1979,7 +1979,7 @@ async function upsertCardRows(rows) {
   const { error } = await upsert(rows, "save cards");
   if (!error) return;
   if (!String(error.message || "").includes("category")) throw error;
-  console.warn("cards.category column missing — run supabase_quick_notes.sql to sync quick-note categories");
+  console.warn("cards.category column missing — run supabase_setup.sql to sync quick-note categories");
   const stripped = rows.map(({ category: _omit, ...rest }) => rest);
   const { error: retryError } = await upsert(stripped, "save cards");
   if (retryError) throw retryError;
@@ -2016,12 +2016,12 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
     { label: "save deck" }
   );
   if (deckError && String(deckError.message || "").includes("notes")) {
-    // Database hasn't run supabase_deck_notes.sql yet — sync everything else so
+    // Database hasn't run supabase_setup.sql yet — sync everything else so
     // the user doesn't lose card changes, but warn about notes.
     const { notes: _omit, ...deckDataWithoutNotes } = deckDataPending;
     ({ error: deckError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").upsert(deckDataWithoutNotes).abortSignal(signal)), CLOUD_TIMEOUT_MS, "save deck"));
     if (!deckError && String(notes || "").trim() && !silent) {
-      showToast("Notes not synced — run supabase_deck_notes.sql in Supabase", "error");
+      showToast("Notes not synced — run supabase_setup.sql in Supabase", "error");
     }
   }
   if (deckError) throw deckError;
@@ -2133,7 +2133,10 @@ const swipeConfig = {
   flickDistance: 34,
   flickVelocity: 0.42,
   resistance: 0.74,
-  maxPreviewOffset: 128
+  maxPreviewOffset: 128,
+  // A finger that has rested this long without travelling is pressing, not
+  // swiping — Android's long-press selection is about to fire. See updateSwipe.
+  longPressGraceMs: 340
 };
 
 let allCardsRenderId = 0;
@@ -2153,6 +2156,9 @@ let allCardsFilter = localStorage.getItem("recall:allCardsFilter") || "all";
 if (!ALL_CARDS_FILTERS.has(allCardsFilter)) allCardsFilter = "all";
 const pdfPrintStyleId = "pdfPrintStyle";
 let liveQuestionFitFrame = 0;
+// A question refit that was skipped because text was selected (see
+// fitLiveQuestion), owed as soon as the selection is released.
+let questionFitDeferredBySelection = false;
 let markdownTableFitFrame = 0;
 let pasteImportAppend = false;
 let pastePreviewSource = "";
@@ -2205,6 +2211,8 @@ const el = {
   closeMyDecksBtn: document.querySelector("#closeMyDecksBtn"),
   myDecksRefreshBtn: document.querySelector("#myDecksRefreshBtn"),
   myDecksNewFolderBtn: document.querySelector("#myDecksNewFolderBtn"),
+  myDecksImportBtn: document.querySelector("#myDecksImportBtn"),
+  myDecksImportInput: document.querySelector("#myDecksImportInput"),
   myDecksImportEpubInput: document.querySelector("#myDecksImportEpubInput"),
   closeImportBtn: document.querySelector("#closeImportBtn"),
   importPanel: document.querySelector("#importPanel"),
@@ -3406,7 +3414,7 @@ async function syncStyleToWeb() {
   setStyleStatus("Sync failed");
   setStatus(
     outcome === "denied"
-      ? "Failed to sync style — the app_style_settings RLS policy doesn't allow your own row. Re-run supabase_style_settings.sql (or the app_style_settings section of supabase_schema.sql)."
+      ? "Failed to sync style — the app_style_settings RLS policy doesn't allow your own row. Re-run supabase_setup.sql in Supabase."
       : "Failed to sync style. Create the app_style_settings table first.",
     "error"
   );
@@ -5219,6 +5227,10 @@ const MD_ICONS = {
   newDeck: `<rect x="3" y="4.5" width="18" height="15" rx="2.2"/><path d="M12 9.2v6M9 12.2h6"/>`,
   newFolder: `<path d="M3 6.6A1.6 1.6 0 0 1 4.6 5h4.1l2 2.6h8.7A1.6 1.6 0 0 1 21 9.2v8.8a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 18Z"/><path d="M12 11.6v4.8M9.6 14h4.8"/>`,
   // Import / export / sync
+  // A deck with an arrow landing inside it — "put a file in here". Deliberately
+  // not `upload`/`download`, which both read as moving data in or out of the
+  // app as a whole rather than into one folder.
+  importDeck: `<rect x="3" y="4.5" width="18" height="15" rx="2.2"/><path d="M12 7.4v6.4M9.2 11l2.8 2.8L14.8 11"/>`,
   book: `<path d="M12 6.9a3 3 0 0 0-2.4-1.4H4v12h5.6A2.7 2.7 0 0 1 12 19Z"/><path d="M12 6.9a3 3 0 0 1 2.4-1.4H20v12h-5.6A2.7 2.7 0 0 0 12 19Z"/>`,
   refresh: `<path d="M20.4 12a8.4 8.4 0 1 1-2.5-6"/><path d="M20.6 3.6v5.6H15"/>`,
   download: `<path d="M12 3.4v11.2M7.6 10.4 12 14.8l4.4-4.4"/><path d="M4 16.6v2.8A1.6 1.6 0 0 0 5.6 21h12.8a1.6 1.6 0 0 0 1.6-1.6v-2.8"/>`,
@@ -5569,7 +5581,7 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
   return byDeck;
 }
 
-// Cross-device delete tombstones (see supabase_deck_tombstones.sql). A local
+// Cross-device delete tombstones (see supabase_setup.sql, section 3). A local
 // tombstone alone only stops THIS device from resurrecting a deck it deleted —
 // another device that hasn't reconciled since still holds a local copy and
 // will push it right back. This durable, shared list is what lets that other
@@ -5616,7 +5628,7 @@ async function fetchDeletedDeckIds() {
     return ids;
   } catch (error) {
     deckTombstoneTableMissing = isMissingRelationError(error);
-    console.warn("Could not fetch deck-deletion tombstones (run supabase_deck_tombstones.sql?)", error);
+    console.warn("Could not fetch deck-deletion tombstones (run supabase_setup.sql?)", error);
     return [];
   }
 }
@@ -6153,7 +6165,7 @@ function renderMyDecksBreadcrumb() {
 function buildFolderActionCluster(path) {
   const wrap = document.createElement("div");
   wrap.className = "deck-folder-actions";
-  // Icon + label, so the phone layout can drop to icons alone and keep all four
+  // Icon + label, so the phone layout can drop to icons alone and keep all five
   // actions on the folder's own line instead of wrapping them onto a second.
   const mk = (icon, text, title, handler) => {
     const b = document.createElement("button");
@@ -6172,6 +6184,7 @@ function buildFolderActionCluster(path) {
   wrap.append(
     mk("newDeck", "Deck", "New deck in this folder", () => newDeckInFolder(path)),
     mk("newFolder", "Folder", "New subfolder", () => createFolder(path)),
+    mk("importDeck", "Import", "Import a deck file into this folder", () => importIntoFolder(path)),
     mk("pencil", "Rename", "Rename folder", () => renameFolder(path)),
     mk("trash", "Delete", "Delete folder", () => deleteFolder(path)),
   );
@@ -7721,10 +7734,13 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   // which no browser can load directly — swap in a blob URL so they're visible
   // straight away rather than only after they eventually reach the cloud.
   await hydrateLocalImages(container);
-  if (container === el.notesView) {
-    enhanceNotesImageControls();
-    buildNotesToc();
-  }
+  // Notes AND both card faces are editable surfaces, so all three get the
+  // resize/delete grips. Every other caller of renderMarkdown (All Cards, the
+  // print root, the paste preview, the Quick Notes board) renders read-only and
+  // imageSurfaceForView returns null for it.
+  const surface = imageSurfaceForView(container);
+  if (surface) enhanceSurfaceImageControls(surface);
+  if (container === el.notesView) buildNotesToc();
 }
 
 function markdownTableColumnCount(table) {
@@ -9035,6 +9051,25 @@ function isMobileChrome() {
   return window.matchMedia(CHROME_MOBILE_QUERY).matches;
 }
 
+// Any live (non-collapsed) selection in the study area — a rendered surface or
+// one of the raw-edit textareas. Broader than hasCardTextSelection(), which is
+// specifically about whether the card's own swipe/flip gestures should stand
+// down; this one is about not moving the layout out from under a selection.
+function hasStudyTextSelection() {
+  const active = document.activeElement;
+  if (active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")
+      && typeof active.selectionStart === "number"
+      && active.selectionStart !== active.selectionEnd) {
+    return true;
+  }
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  const node = selection.anchorNode || selection.focusNode;
+  if (!node) return false;
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return Boolean(element?.closest?.(".study-layout"));
+}
+
 function applyChromeCollapse() {
   const collapsed = isMobileChrome() && (chromeFocusPinned || chromeAutoHidden);
   const changed = document.body.classList.contains("chrome-collapsed") !== collapsed;
@@ -9064,6 +9099,17 @@ function resetChromeAutoHide() {
 
 function trackChromeScroll(target) {
   const top = target.scrollTop;
+  // Never fold or unfold the chrome while text is selected. Extending a
+  // selection past the visible edge means dragging a handle until the surface
+  // auto-scrolls — and collapsing the appbar mid-drag changes the viewport
+  // height underneath the selection, which is what made the handles jump and the
+  // selection collapse on a phone. The anchor is still advanced so the first
+  // real scroll after the selection is dropped doesn't read as one huge jump.
+  if (hasStudyTextSelection()) {
+    chromeAnchorEl = target;
+    chromeAnchorTop = top;
+    return;
+  }
   if (chromeAnchorEl !== target) {
     chromeAnchorEl = target;
     chromeAnchorTop = top;
@@ -10029,6 +10075,12 @@ function jumpToNoteForCurrentCard() {
 
 document.addEventListener("selectionchange", scheduleNotesSelectionCheck);
 
+// Pay back a question refit that fitLiveQuestion skipped to avoid reflowing text
+// out from under a live selection.
+document.addEventListener("selectionchange", () => {
+  if (questionFitDeferredBySelection && !hasStudyTextSelection()) scheduleLiveQuestionFit();
+});
+
 // On mobile the button is pinned to a fixed spot at the bottom of the screen
 // (see pinSelectionButtonToBottom) rather than tracking the selection's own
 // position, precisely so that scrolling — the normal way to extend a
@@ -10667,8 +10719,38 @@ document.addEventListener("pointerdown", (event) => {
 // since extracting it means splicing its enclosing token, not just swapping
 // an inline slice. Images are always centered.
 
-function notesLexTokens() {
-  return marked.lexer(state.notes || "");
+// ── Which surfaces carry editable images ───────────────────────────────────
+// The resize/delete grips started out as a notes-only feature, reading and
+// rewriting state.notes directly. A card face is the same problem with a
+// different backing string, so everything below takes an "image surface"
+// instead: the render target (renderTargetConfig already knows how to read,
+// write and re-render each one) plus the element the width badge measures its
+// percentage against. One implementation, three surfaces — notes, question,
+// answer — so an image pasted into a card is resized and deleted exactly the
+// way one pasted into the notes is.
+const IMAGE_SURFACE_NAMES = ["notes", "question", "answer"];
+
+function imageSurfaceFor(name) {
+  const target = renderTargetConfig(name);
+  if (!target.view) return null;
+  return { name, ...target };
+}
+
+// The surface that owns a rendered container, or null if it isn't one of the
+// three (the All Cards list, a print root, the paste preview, …) — those render
+// read-only and get no grips.
+function imageSurfaceForView(view) {
+  if (!view) return null;
+  const name = IMAGE_SURFACE_NAMES.find((n) => renderTargetConfig(n).view === view);
+  return name ? imageSurfaceFor(name) : null;
+}
+
+function lexMarkdownTokens(source) {
+  return marked.lexer(source || "");
+}
+
+function surfaceLexTokens(surface) {
+  return lexMarkdownTokens(surface?.getSource?.() || "");
 }
 
 function parseImgTagFromHtml(html) {
@@ -10700,7 +10782,7 @@ function imgTagHtml({ url, alt = "", widthPx = null }) {
 // swaps its raw slice inside the enclosing token without pulling it out.
 // Legacy side-by-side rows (`.notes-img-row`, no longer creatable) are still
 // detected so their images stay resizable and the DOM↔token mapping in
-// enhanceNotesImageControls stays aligned.
+// enhanceSurfaceImageControls stays aligned.
 // A paragraph written as `![](a) | ![](b) | …` (images separated by "|") is a
 // side-by-side row: returns the ordered image infos, or null if the paragraph
 // is anything else. Mirrors renderImageRows so the controls treat what renders
@@ -10829,9 +10911,9 @@ function collectImagesDeep(token, results) {
 // instead of being promoted to its own line. On the next resize the slice is
 // the <img> tag itself (collectImagesDeep re-detects it and reads back the
 // width), so repeated drags keep working.
-function commitDeepImageWidth(tokenIndex, imageRaw, info, px) {
+function commitDeepImageWidth(surface, tokenIndex, imageRaw, info, px) {
   const widthPx = Math.min(2000, Math.max(20, Math.round(px)));
-  const tokens = notesLexTokens();
+  const tokens = surfaceLexTokens(surface);
   const token = tokens[tokenIndex];
   if (!token) return;
   const idx = token.raw.indexOf(imageRaw);
@@ -10839,23 +10921,24 @@ function commitDeepImageWidth(tokenIndex, imageRaw, info, px) {
   const newImgRaw = imgTagHtml({ ...info, widthPx });
   const newRaw = token.raw.slice(0, idx) + newImgRaw + token.raw.slice(idx + imageRaw.length);
   tokens[tokenIndex] = { ...token, raw: newRaw };
-  rebuildNotesFromTokens(tokens);
+  rebuildSurfaceFromTokens(surface, tokens);
 }
 
-// Rebuilds state.notes from a (possibly mutated) token array, keeps the raw
-// editor in sync if it's open, re-renders, and autosaves — the single write
-// path every resize/promote commit goes through. Every token is normalized to
-// end in a blank line so blocks stay safely separated after a splice; "space"
-// tokens (marked's blank-line gaps) are dropped since each kept token already
-// gets its own trailing blank line.
-function rebuildNotesFromTokens(tokens) {
-  state.notes = tokens
+// Rebuilds a surface's markdown from a (possibly mutated) token array, writes it
+// back through the surface's own setter (which keeps the raw editor / master card
+// list in sync), re-renders, and autosaves — the single write path every resize
+// and delete commit goes through. Every token is normalized to end in a blank
+// line so blocks stay safely separated after a splice; "space" tokens (marked's
+// blank-line gaps) are dropped since each kept token already gets its own
+// trailing blank line.
+function rebuildSurfaceFromTokens(surface, tokens) {
+  const next = tokens
     .filter((t) => t.type !== "space")
     .map((t) => t.raw.replace(/\n*$/, "\n\n"))
     .join("")
     .replace(/\n+$/, "\n");
-  if (isNotesEditing()) el.notesEdit.value = state.notes;
-  renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
+  surface.setSource(next);
+  surface.rerender();
   scheduleDeckAutosave();
 }
 
@@ -10869,9 +10952,9 @@ function rebuildNotesFromTokens(tokens) {
 // a per-image width); it renders identically. Resizing an inline image
 // replaces just its own raw slice within the shared paragraph, in place —
 // the surrounding text is left untouched, no promotion/extraction needed.
-function commitImageWidth(tokenIndex, subPos, px) {
+function commitImageWidth(surface, tokenIndex, subPos, px) {
   const widthPx = Math.min(2000, Math.max(20, Math.round(px)));
-  const tokens = notesLexTokens();
+  const tokens = surfaceLexTokens(surface);
   const token = tokens[tokenIndex];
   if (!token) return;
   const entries = findImageTokens(tokens).filter((e) => e.tokenIndex === tokenIndex);
@@ -10895,17 +10978,17 @@ function commitImageWidth(tokenIndex, subPos, px) {
     const html = imgTagHtml({ ...entry.images[0], widthPx }) + "\n\n";
     tokens[tokenIndex] = { type: "html", raw: html, text: html, pre: false, block: true };
   }
-  rebuildNotesFromTokens(tokens);
+  rebuildSurfaceFromTokens(surface, tokens);
 }
 
-// Removes one image occurrence from the notes — the delete-button counterpart
+// Removes one image occurrence from the surface — the delete-button counterpart
 // to commitImageWidth/commitDeepImageWidth, using the same row/inline/deep/
 // standalone dispatch so removal handles every shape resizing does. `imageRaw`
 // (deep case) strips just that raw slice from its enclosing token, leaving the
 // surrounding list/quote untouched; every other case rewrites or drops the
 // whole token, same as a resize commit would.
-function removeImageAt(tokenIndex, subPos, imageRaw) {
-  const tokens = notesLexTokens();
+function removeImageAt(surface, tokenIndex, subPos, imageRaw) {
+  const tokens = surfaceLexTokens(surface);
   const token = tokens[tokenIndex];
   if (!token) return;
 
@@ -10914,7 +10997,7 @@ function removeImageAt(tokenIndex, subPos, imageRaw) {
     if (idx === -1) return;
     const newRaw = token.raw.slice(0, idx) + token.raw.slice(idx + imageRaw.length);
     tokens[tokenIndex] = { ...token, raw: newRaw };
-    rebuildNotesFromTokens(tokens);
+    rebuildSurfaceFromTokens(surface, tokens);
     return;
   }
 
@@ -10944,15 +11027,29 @@ function removeImageAt(tokenIndex, subPos, imageRaw) {
   } else {
     tokens.splice(tokenIndex, 1);
   }
-  rebuildNotesFromTokens(tokens);
+  rebuildSurfaceFromTokens(surface, tokens);
 }
 
-// Removes the image from the notes immediately (so the UI never waits on a
+// True while ANY text in the open deck still points at `url` — the notes or
+// either side of any card. Deleting an image from a card face has to check the
+// whole deck, not just that face: the same upload is routinely pasted into the
+// notes and then captured into a card, and hard-deleting the storage object
+// because one of those copies went away turns every other one into a broken
+// link.
+function deckStillReferencesImage(url) {
+  if (!url) return true;
+  if ((state.notes || "").includes(url)) return true;
+  return state.masterCards.some(
+    (card) => String(card.question || "").includes(url) || String(card.answer || "").includes(url)
+  );
+}
+
+// Removes the image from its surface immediately (so the UI never waits on a
 // network round-trip), then best-effort deletes its underlying storage object.
-function removeNotesImage(tokenIndex, subPos, imageRaw, url) {
-  removeImageAt(tokenIndex, subPos, imageRaw);
+function removeSurfaceImage(surface, tokenIndex, subPos, imageRaw, url) {
+  removeImageAt(surface, tokenIndex, subPos, imageRaw);
   // Only hard-delete the stored file once NO other reference to it survives in
-  // this note — a duplicated image (same URL used twice, or the `![](url)`
+  // this deck — a duplicated image (same URL used twice, or the `![](url)`
   // markdown copy-pasted) otherwise deletes the file out from under its other
   // copies, turning them into broken links. This is the deletion ImgBB's plain
   // public-link API never allowed from inside the app; guarding it keeps that
@@ -10960,7 +11057,7 @@ function removeNotesImage(tokenIndex, subPos, imageRaw, url) {
   // deck is still not seen here — checking every deck is too costly — so cross-
   // deck reuse of the exact same uploaded URL remains a caveat, not the norm
   // since each upload gets a unique path.)
-  if (url && !(state.notes || "").includes(url)) {
+  if (url && !deckStillReferencesImage(url)) {
     deleteSupabaseImage(url);
   }
 }
@@ -10968,14 +11065,14 @@ function removeNotesImage(tokenIndex, subPos, imageRaw, url) {
 // Bottom-right corner-grip resize (the universal affordance): drag out from the
 // corner to grow, in to shrink. Width is what's stored; height is auto, so
 // aspect ratio is preserved for free. A live badge shows the current px width
-// and its share of the notes column so sizing isn't guesswork.
-function beginImageResize(event, shell, img, onCommit) {
+// and its share of the surface's own column so sizing isn't guesswork.
+function beginImageResize(event, shell, img, onCommit, refEl) {
   event.preventDefault();
   event.stopPropagation();
   shell.setPointerCapture?.(event.pointerId);
   const startX = event.clientX;
   const startWidth = img.getBoundingClientRect().width || shell.getBoundingClientRect().width;
-  const refWidth = el.notesView?.clientWidth || 600;
+  const refWidth = refEl?.clientWidth || el.notesView?.clientWidth || 600;
   let widthPx = Math.round(startWidth);
 
   const badge = document.createElement("div");
@@ -11024,10 +11121,10 @@ function beginImageResize(event, shell, img, onCommit) {
 // `onCommit(widthPx)` persists the final size and `onDelete()` removes the
 // image — the caller supplies the right write path for each, matching the
 // image's shape (standalone/row/inline, or nested in a list/quote). These are
-// the only image controls: every rendered notes image gets them, so images
-// buried in bullet points are resized/removed in place just like any other,
-// with no intermediate "move to own line" step.
-function attachNotesImageResizeHandle(shell, img, onCommit, onDelete) {
+// the only image controls: every rendered image on an editable surface gets
+// them, so images buried in bullet points are resized/removed in place just
+// like any other, with no intermediate "move to own line" step.
+function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl) {
   shell.querySelector(".notes-img-controls")?.remove();
   shell.querySelector(".notes-img-resize-handle")?.remove();
   shell.querySelector(".notes-img-delete-btn")?.remove();
@@ -11035,7 +11132,7 @@ function attachNotesImageResizeHandle(shell, img, onCommit, onDelete) {
   resizeHandle.className = "notes-img-resize-handle";
   resizeHandle.title = "Drag to resize";
   resizeHandle.setAttribute("aria-hidden", "true");
-  resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, onCommit));
+  resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, onCommit, refEl));
   shell.appendChild(resizeHandle);
 
   const deleteBtn = document.createElement("button");
@@ -11052,7 +11149,8 @@ function attachNotesImageResizeHandle(shell, img, onCommit, onDelete) {
   shell.appendChild(deleteBtn);
 }
 
-// Re-attaches the resize grip / promote button after every notes render.
+// Re-attaches the resize grip / delete button after every render of an editable
+// surface (the notes view or either card face).
 //
 // Rendering wraps EVERY <img> in a .diagram-shell (addDiagramZoomControl), but
 // findImageTokens only classifies the images it can map back to a resizable /
@@ -11067,11 +11165,12 @@ function attachNotesImageResizeHandle(shell, img, onCommit, onDelete) {
 // check and is simply skipped (keeping only its Zoom pill) rather than consuming
 // a control slot. src is compared through normalizeImageUrl so a Drive link whose
 // rendered src was already rewritten still matches its raw markdown href.
-function enhanceNotesImageControls() {
-  if (!el.notesView) return;
-  const tokens = notesLexTokens();
+function enhanceSurfaceImageControls(surface) {
+  const view = surface?.view;
+  if (!view) return;
+  const tokens = surfaceLexTokens(surface);
   const imageTokens = findImageTokens(tokens);
-  const shells = Array.from(el.notesView.querySelectorAll(".diagram-shell")).filter((s) => s.querySelector("img"));
+  const shells = Array.from(view.querySelectorAll(".diagram-shell")).filter((s) => s.querySelector("img"));
 
   // One slot per classified image, in document order, carrying its owning entry.
   const slots = [];
@@ -11108,15 +11207,17 @@ function enhanceNotesImageControls() {
       // where it sits under the bullet.
       const info = entry.images[0];
       attachNotesImageResizeHandle(shell, img,
-        (px) => commitDeepImageWidth(entry.tokenIndex, entry.imageRaw, info, px),
-        () => removeNotesImage(entry.tokenIndex, null, entry.imageRaw, info.url)
+        (px) => commitDeepImageWidth(surface, entry.tokenIndex, entry.imageRaw, info, px),
+        () => removeSurfaceImage(surface, entry.tokenIndex, null, entry.imageRaw, info.url),
+        view
       );
     } else {
       const subPos = entry.isRow ? subIndex : (entry.isInline ? entry.inlinePos : null);
       const url = entry.images[entry.isRow ? subIndex : 0]?.url || "";
       attachNotesImageResizeHandle(shell, img,
-        (px) => commitImageWidth(entry.tokenIndex, subPos, px),
-        () => removeNotesImage(entry.tokenIndex, subPos, null, url)
+        (px) => commitImageWidth(surface, entry.tokenIndex, subPos, px),
+        () => removeSurfaceImage(surface, entry.tokenIndex, subPos, null, url),
+        view
       );
     }
   });
@@ -11240,6 +11341,10 @@ function buildDeckSummaryHtml() {
 async function showCard(direction = 0) {
   hideNotesSelectionButton();
   scheduleDeckAutosave();
+  // A raw/rendered choice belongs to the card it was made on — arriving at a
+  // different card (navigate, shuffle, replay, deck load) starts rendered again
+  // rather than dropping you into a textarea on every card.
+  cardRawModePreferred = false;
   const token = state.transitionToken;
   state.previewCard = null;
   state.flipped = false;
@@ -11392,6 +11497,29 @@ function detectDecksInMarkdown(markdown) {
 let currentDetectedDecks = [];
 let currentImportTitleHint = "";
 
+// ── Importing into a specific folder ────────────────────────────────────────
+// My Decks can create a deck or a subfolder in whatever folder you're looking
+// at, but importing always dropped the deck in "Uncategorized" and left you to
+// move it — so the folder an import is aimed at is recorded here.
+//
+// Deliberately a module-level value rather than a parameter threaded through
+// loadFile → loadZipFile → buildCards, because a Markdown file containing
+// several decks breaks that chain across a user interaction (the deck-selector
+// panel), exactly the way currentImportTitleHint above already has to be held
+// here for the same reason. Every import entry point sets it — to a folder for
+// the My Decks buttons, to null for the ordinary Import panel — so a stale
+// value can't leak from one import into the next.
+let pendingImportFolder = null;
+
+// The category a freshly imported deck should land in, consuming the pending
+// folder so it applies to exactly one import.
+function importTargetCategory(fallback = defaultDeckCategory) {
+  const pending = pendingImportFolder;
+  pendingImportFolder = null;
+  if (pending == null) return fallback;
+  return normalizeDeckCategory(pending);
+}
+
 function showImportDecksSelector(decks, titleHint) {
   currentDetectedDecks = decks;
   currentImportTitleHint = titleHint;
@@ -11467,10 +11595,10 @@ async function loadSelectedImportDecks() {
 
   if (selectedDecks.length === 1) {
     state.deckTitle = selectedDecks[0].title || currentImportTitleHint || "Imported Deck";
-    state.deckCategory = selectedDecks[0].category || defaultDeckCategory;
+    state.deckCategory = importTargetCategory(selectedDecks[0].category || defaultDeckCategory);
   } else {
     state.deckTitle = `Combined: ${selectedDecks.map(d => d.title || "Untitled").join(", ")}`.slice(0, 80);
-    state.deckCategory = defaultDeckCategory;
+    state.deckCategory = importTargetCategory();
   }
   state.sourceTitle = state.deckTitle;
   state.notes = selectedDecks
@@ -11514,7 +11642,7 @@ function buildCards(titleHint = state.importTitleHint || "", append = false) {
     state.localDeckId = null;
     resetStudyDeck(state.masterCards);
     state.deckTitle = hasContent ? importTitle || inferDeckTitle(source, titleHint) : "";
-    state.deckCategory = defaultDeckCategory;
+    state.deckCategory = importTargetCategory();
     state.sourceTitle = hasContent ? importTitle || state.deckTitle : "";
     state.notes = extractedNotes;
     setViewMode("cards");
@@ -11540,6 +11668,7 @@ function flipCard() {
   if (!state.previewCard && !state.cards[state.current]) return;
   state.flipped = !state.flipped;
   el.card.classList.toggle("is-flipped", state.flipped);
+  applyCardRawModePreference();
 }
 
 function navigateCard(direction, animationDirection = direction) {
@@ -11806,7 +11935,11 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     applyDeckMetaCategories(payload.meta, payload.deckId, payload.deckTitle);
     state.current = Math.min(Math.max(Number(payload.current) || 0, 0), cards.length);
     state.deckTitle = String(payload.deckTitle || "").trim() || humanizeSourceTitle(titleHint);
-    state.deckCategory = normalizeDeckCategory(payload.deckCategory || payload.category);
+    // Importing a JSON snapshot INTO a folder overrides the category the
+    // snapshot itself carries — the folder you aimed the import at is the more
+    // recent, more explicit instruction. importTargetCategory is a no-op (it
+    // returns the fallback) for every other caller, including loadDeckFromLibrary.
+    state.deckCategory = importTargetCategory(normalizeDeckCategory(payload.deckCategory || payload.category));
     state.deckId = payload.deckId || null;
     // Detach from any previously-loaded library entry. loadDeckFromLibrary sets
     // the correct localDeckId immediately after this returns; every other caller
@@ -11944,10 +12077,67 @@ function formatRelativeTime(iso) {
   return `${diffDay}d ago`;
 }
 
+// ── The pill's countdown to the next auto-sync ─────────────────────────────
+// The pill said whether a sync had happened but nothing about whether another
+// one was coming, which made an armed auto-sync indistinguishable from one
+// that had quietly stopped. It now carries "↻ 4m" / "↻ 45s" / "↻ off".
+//
+// The countdown lives in its own child node so the once-a-second tick rewrites
+// only that, instead of rebuilding the whole label — which would mean parsing
+// the local deck index out of localStorage every second for the relative
+// last-synced time.
+let syncCountdownEl = null;
+
+// Rounds UP above a minute, the way a countdown should: with 117s left this says
+// "2m", not the "1m" a floor would give a full minute too early.
+function formatSyncCountdown(ms) {
+  const secs = Math.max(0, Math.round(ms / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.ceil(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.ceil(mins / 60)}h`;
+}
+
+// The suffix text, or "" when there's nothing worth saying (signed out, no deck,
+// mid-sync — "next in 4m" while it's actually syncing is just noise).
+function syncCountdownText() {
+  if (!supabaseClient || !isSignedIn || !hasActiveDeck()) return "";
+  const mins = getAutoSyncMinutes();
+  if (!mins) return "↻ off";
+  if (reconcileInFlight) return "";
+  if (!navigator.onLine) return "↻ paused";
+  return `↻ ${formatSyncCountdown(autoSyncNextAt - Date.now())}`;
+}
+
+function renderSyncCountdown() {
+  const node = el.syncIndicator;
+  if (!node) return;
+  const text = syncCountdownText();
+  const mins = getAutoSyncMinutes();
+  node.title = mins
+    ? `Auto-sync every ${mins} min${mins === 1 ? "" : "s"}${text ? ` — ${text.replace("↻ ", "")} to the next one` : ""}`
+    : "Auto-sync is off — use Sync Now, or pick an interval in the menu";
+  // `!node.textContent` means the pill itself is empty (no deck): nothing to
+  // hang a countdown off, and an orphan "↻ 4m" on its own would be nonsense.
+  if (!text || !node.textContent) {
+    syncCountdownEl?.remove();
+    syncCountdownEl = null;
+    return;
+  }
+  if (!syncCountdownEl || syncCountdownEl.parentNode !== node) {
+    syncCountdownEl = document.createElement("span");
+    syncCountdownEl.className = "sync-countdown";
+    node.appendChild(syncCountdownEl);
+  }
+  if (syncCountdownEl.textContent !== text) syncCountdownEl.textContent = text;
+}
+
 // Reflects the auto-save / cloud-sync lifecycle in the deck-meta pill.
 function setSyncIndicator(stateName) {
   const node = el.syncIndicator;
   if (!node) return;
+  // textContent below drops the countdown child, so it's re-appended at the end.
+  syncCountdownEl = null;
   if (!hasActiveDeck()) {
     node.textContent = "";
     node.dataset.state = "idle";
@@ -11969,6 +12159,7 @@ function setSyncIndicator(stateName) {
     if (relative) text += ` · ${relative}`;
   }
   node.textContent = text;
+  renderSyncCountdown();
 }
 
 // Sets the resting state of the pill (used after a deck loads, when there are no
@@ -12690,7 +12881,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // the deck reappears everywhere. The user can't diagnose that from the app,
     // so say it — once per explicit sync, with the fix.
     if (deckTombstoneTableMissing && explicit) {
-      showToast("Deck deletions can't sync — run supabase_deck_tombstones.sql in Supabase", "error");
+      showToast("Deck deletions can't sync — run supabase_setup.sql in Supabase", "error");
     }
 
     // Cross-device delete: a deck this device never tombstoned locally, but
@@ -12723,7 +12914,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     //
     // The shared deleted_decks table was supposed to prevent this, but it only
     // works if every delete's write to it succeeded — offline, a timeout, or a
-    // project that never ran supabase_deck_tombstones.sql all leave no record,
+    // project that never ran supabase_setup.sql all leave no record,
     // and then nothing stops the resurrection. This rule needs no shared state
     // at all: it reads the deletion out of the cloud's own deck list. Safe only
     // because fetchCloudDeckIndex is paged and throws rather than returning a
@@ -13053,6 +13244,11 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     reconcilePromise = null;
     if (el.syncNowBtn) setButtonLoading(el.syncNowBtn, false);
     updateDeckEmptyStatus();
+    // The next auto-sync is a full interval from the end of THIS one, whoever
+    // started it — so an explicit Sync Now isn't followed seconds later by a
+    // scheduled one, and the pill's countdown always reads from the last sync
+    // that actually happened.
+    rearmAutoSync();
   }
 }
 
@@ -13264,6 +13460,10 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
 }
 
 function loadDeckFromLibrary(id) {
+  // Opening a saved deck is never an import, so it must not adopt a folder left
+  // over from an "Import here" whose file picker was dismissed — that would
+  // silently refile an existing deck.
+  pendingImportFolder = null;
   try {
     const raw = localStorage.getItem(LOCAL_DECK_PREFIX + id);
     if (!raw) {
@@ -13490,7 +13690,7 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
   if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
     // Record the durable cross-device tombstone FIRST — it's the signal every
     // other device relies on to not re-push its still-held copy (see
-    // supabase_deck_tombstones.sql). Writing it before the row delete is
+    // supabase_setup.sql). Writing it before the row delete is
     // strictly safer: if the delete below fails, a device that adopts this
     // tombstone re-deletes the row (see the pull loop in reconcileAllDecks),
     // whereas the reverse order can delete the row but leave no record — and a
@@ -13604,6 +13804,19 @@ function fitLiveQuestion() {
   const node = el.questionView;
   const face = node?.closest(".card-question");
   if (!node) return;
+
+  // Refitting means clearing and re-measuring the font size, which reflows every
+  // line of the question. Doing that while text is selected drops the selection
+  // (or leaves its handles somewhere the text no longer is), and `resize` fires
+  // constantly on a phone — the URL bar alone triggers it as the surface
+  // auto-scrolls under a selection drag. Defer instead; the next render or
+  // resize refits, and selectionchange below refits as soon as the selection is
+  // released.
+  if (hasStudyTextSelection()) {
+    questionFitDeferredBySelection = true;
+    return;
+  }
+  questionFitDeferredBySelection = false;
 
   node.style.fontSize = "";
   node.style.transform = "";
@@ -15584,6 +15797,7 @@ async function fetchUrl() {
     }
 
     setStatus("Fetched source. Building cards...");
+    pendingImportFolder = null; // a URL import isn't aimed at a My Decks folder
     buildCards(url);
   } catch (error) {
     setStatus("Could not fetch this URL. If it is private Notion content, export Markdown or paste the page content.", "error");
@@ -16598,7 +16812,7 @@ function showEpubProgress(title) {
 
 // Uploads images, converts every spine chapter, then saves one deck per
 // chapter into a new folder named after the book.
-async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = "chapters") {
+async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = "chapters", folderPath = null) {
   const progress = showEpubProgress(bookTitle);
   try {
     const { urlMap: imageUrlMap, failed: failedImages, reason: imageFailReason } =
@@ -16625,7 +16839,9 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
     };
 
     const sanitizedTitle = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
-    const parentFolder = currentMyDecksFolder();
+    // An explicit target (a folder's own "Import here" button) wins; otherwise
+    // the book lands where My Decks is currently looking, as it always has.
+    const parentFolder = folderPath != null ? folderPath : currentMyDecksFolder();
     let folderPath;
     let saved = 0;
     let saveFailed = false;
@@ -16740,7 +16956,7 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
 }
 
 // Entry point wired to the "Import EPUB" button's file input.
-async function importEpubFile(file) {
+async function importEpubFile(file, folderPath = null) {
   if (!file) return;
   if (!window.JSZip) {
     setStatus("Zip support did not load — cannot read EPUB files.", "error");
@@ -16811,7 +17027,7 @@ async function importEpubFile(file) {
   // is non-fatal (the titles it couldn't read just keep their fallbacks).
   await tocPreviewPromise.catch(() => {});
 
-  await runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode);
+  await runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode, folderPath);
 }
 
 async function collectMarkdownFromZip(input, prefix = "", depth = 0) {
@@ -16874,14 +17090,20 @@ async function loadZipFile(file, append = false) {
   }
 }
 
-function loadFile(file, append = false) {
+// `folderPath` files the imported deck under that folder (the My Decks "Import
+// here" buttons); null — every ordinary import — files it under the default
+// category and clears any folder left pending by an earlier, dismissed picker.
+function loadFile(file, append = false, folderPath = null) {
   if (!file) return;
+  pendingImportFolder = folderPath;
 
   // Must precede the zip branch: an EPUB *is* a zip, and its "application/
   // epub+zip" type matches the /zip/i test below — without this it fell into
   // the markdown-in-a-zip reader and dead-ended on "No Markdown file found".
   if (isEpubName(file.name) || /epub/i.test(file.type)) {
-    importEpubFile(file);
+    // An EPUB becomes a whole folder of chapter decks, so it takes the target
+    // folder directly rather than through the single-deck category path.
+    importEpubFile(file, folderPath);
     return;
   }
 
@@ -16916,6 +17138,7 @@ function loadFile(file, append = false) {
 }
 
 function loadSample() {
+  pendingImportFolder = null; // not aimed at a My Decks folder
   el.sourceInput.value = sampleMarkdown;
   state.importTitleHint = "Sample flashcards";
   setStatus("Sample loaded.");
@@ -17028,6 +17251,7 @@ async function importPastedMarkdown() {
     : "";
   state.importTitleHint = titleHint;
   setStatus(pasteImportAppend ? "Importing pasted cards..." : "Importing pasted deck...");
+  pendingImportFolder = null; // a pasted import isn't aimed at a My Decks folder
   const builtCount = buildCards(titleHint, pasteImportAppend);
   if (builtCount) closePasteEditor(true);
 }
@@ -17043,8 +17267,12 @@ function closestElement(target, selector) {
   return null;
 }
 
+// `.notes-img-resize-handle` is a bare <div> (it has to be, so its pointerdown
+// can start a drag without a button's own activation behaviour getting in the
+// way), so it needs naming here explicitly or dragging an image's corner on a
+// card face would also flip the card.
 function isCardActionTarget(target) {
-  return Boolean(closestElement(target, "a, button, input, textarea, .cloze, .render-toolbar"));
+  return Boolean(closestElement(target, "a, button, input, textarea, .cloze, .render-toolbar, .notes-img-resize-handle"));
 }
 
 function isHorizontallyScrollable(node) {
@@ -17140,6 +17368,22 @@ function updateSwipe(clientX, clientY, event) {
   const absX = Math.abs(dx);
   const absY = Math.abs(dy);
   state.dragMoved = state.dragMoved || absX > 6 || absY > 6;
+
+  // A touch that has dwelled this long without going anywhere is a long-press:
+  // the browser is about to hand back a text selection, and the preventDefault()
+  // further down cancels a pending one. The hasCardTextSelection() guard at the
+  // top of this function can't help, because it only becomes true once the
+  // selection already EXISTS — by which point the swipe has been running for a
+  // frame or two and eaten the gesture. This is the fix for text selection on a
+  // phone being unreliable: press, pause, then drag now always selects, and only
+  // a touch that moves promptly is treated as a swipe.
+  if (!state.dragging
+      && !state.dragMoved
+      && state.dragPointerType !== "mouse"
+      && time - state.dragStartTime > swipeConfig.longPressGraceMs) {
+    resetCardDrag();
+    return;
+  }
 
   if (!state.dragging) {
     const hasHorizontalIntent = absX >= swipeConfig.intentDistance && absX >= absY * swipeConfig.intentRatio;
@@ -17604,7 +17848,10 @@ document.getElementById("cancelSyncBtn")?.addEventListener("click", () => {
   el.syncModal.hidden = true;
 });
 
-el.parseBtn.addEventListener("click", () => buildCards());
+el.parseBtn.addEventListener("click", () => {
+  pendingImportFolder = null; // the Import panel's own Build button, not a folder's
+  buildCards();
+});
 el.sampleBtn.addEventListener("click", loadSample);
 el.fetchBtn.addEventListener("click", fetchUrl);
 el.urlInput.addEventListener("keydown", (event) => {
@@ -17621,14 +17868,31 @@ el.syncNowBtn?.addEventListener("click", () => {
 });
 
 // ── User-defined auto-sync ──────────────────────────────────────────────────
-// Runs the same two-way reconcile as "Sync Now" on a timer the user picks, so
-// they don't have to click it. Device-local (each device sets its own cadence);
-// the interval callback is a no-op when signed out/offline, and reconcileAllDecks
-// already guards against overlapping runs (reconcileInFlight), so ticks that land
-// during a slow sync are harmless.
+// Runs the same two-way reconcile as "Sync Now" on a cadence the user picks, so
+// they don't have to click it. Device-local (each device sets its own).
+//
+// This used to be a bare setInterval(mins × 60s), which is why auto-sync looked
+// like it ran once and then went to sleep:
+//
+//   • A backgrounded tab has its timers throttled hard (on mobile, often frozen
+//     outright), so a 5-minute interval on a phone fires nowhere near every 5
+//     minutes — and nothing caught up when the tab came back.
+//   • A tick that landed while signed out or offline was dropped entirely, and
+//     the next one was a full interval away. Coming back online meant waiting.
+//   • An explicit Sync Now didn't reset the interval, so a sync could fire
+//     seconds after the user had just synced by hand.
+//
+// So the schedule is a DEADLINE (autoSyncNextAt) rather than an interval, and a
+// 1-second ticker compares it against the clock. Wall-clock time can't be
+// throttled away: however long the tab was frozen, the first tick after it wakes
+// sees the deadline is past and syncs. The same ticker paints the pill's
+// countdown, and every completed sync — background or explicit — re-arms the
+// deadline from when it actually finished.
 const AUTOSYNC_KEY = "recall_autosync_minutes";
 const AUTOSYNC_ALLOWED = new Set([0, 1, 2, 5, 10, 15, 30]);
-let autoSyncTimer = null;
+const AUTOSYNC_TICK_MS = 1000;
+let autoSyncTicker = null;
+let autoSyncNextAt = Infinity;
 
 function getAutoSyncMinutes() {
   let v = 0;
@@ -17640,19 +17904,46 @@ function getAutoSyncMinutes() {
   return AUTOSYNC_ALLOWED.has(v) ? v : 0;
 }
 
+// Push the next auto-sync a full interval out from now. Called when the cadence
+// changes and after every sync completes, so "next in 5m" always means five
+// minutes since the last one actually ran, not since some fixed grid.
+function rearmAutoSync() {
+  const mins = getAutoSyncMinutes();
+  autoSyncNextAt = mins ? Date.now() + mins * 60 * 1000 : Infinity;
+  renderSyncCountdown();
+}
+
+function autoSyncTick() {
+  renderSyncCountdown();
+  if (!getAutoSyncMinutes()) return;
+  if (Date.now() < autoSyncNextAt) return;
+  // Not syncable right now (signed out, offline, or a sync already running).
+  // Leave the deadline in the past so the very next tick that CAN sync does,
+  // instead of silently forfeiting this cycle and waiting a whole interval.
+  if (!supabaseClient || !isSignedIn || !navigator.onLine || reconcileInFlight) return;
+  // reconcileAllDecks re-arms in its finally block; do it here too so a rejected
+  // promise (it handles its own errors, but be safe) can't wedge the loop into
+  // firing on every single tick.
+  rearmAutoSync();
+  reconcileAllDecks({ explicit: false });
+}
+
 function applyAutoSyncInterval() {
   const mins = getAutoSyncMinutes();
   if (el.autoSyncSelect) el.autoSyncSelect.value = String(mins);
-  if (autoSyncTimer) {
-    clearInterval(autoSyncTimer);
-    autoSyncTimer = null;
-  }
-  if (!mins) return;
-  autoSyncTimer = setInterval(() => {
-    if (!supabaseClient || !isSignedIn || !navigator.onLine) return;
-    reconcileAllDecks({ explicit: false });
-  }, mins * 60 * 1000);
+  rearmAutoSync();
+  // One ticker for the life of the page: it also drives the countdown, which is
+  // wanted even with auto-sync off (it's what says "off").
+  if (!autoSyncTicker) autoSyncTicker = setInterval(autoSyncTick, AUTOSYNC_TICK_MS);
 }
+
+// Coming back from a frozen tab or a dead connection: check the deadline
+// immediately rather than waiting up to a second (and, more importantly, make
+// sure a tab that was throttled for an hour syncs the moment it's looked at).
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) autoSyncTick();
+});
+window.addEventListener("online", autoSyncTick);
 
 function setAutoSyncMinutes(mins) {
   const clean = AUTOSYNC_ALLOWED.has(mins) ? mins : 0;
@@ -17711,6 +18002,46 @@ function currentMyDecksFolder() {
 }
 el.myDecksNewFolderBtn?.addEventListener("click", () => createFolder(currentMyDecksFolder()));
 el.myDecksNewDeckBtn?.addEventListener("click", () => newDeckInFolder(currentMyDecksFolder()));
+
+// ── Import into a folder ────────────────────────────────────────────────────
+// The third way to put something in the folder you're looking at, alongside New
+// deck and New folder — previously every import landed in Uncategorized no
+// matter where you started it from, leaving you to drag the deck back. One
+// shared <input type="file"> serves both the toolbar button and every folder
+// row's own Import button; this records which folder opened it, since the change
+// event can't tell them apart.
+let myDecksImportFolder = "";
+
+function importIntoFolder(folderPath = "") {
+  const input = el.myDecksImportInput;
+  if (!input) return;
+  myDecksImportFolder = folderPath || "";
+  closeMyDecksMoreMenu();
+  input.value = ""; // re-picking the same file must still fire `change`
+  input.click();
+}
+
+el.myDecksImportBtn?.addEventListener("click", () => importIntoFolder(currentMyDecksFolder()));
+
+el.myDecksImportInput?.addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  const folder = myDecksImportFolder;
+  // An EPUB becomes a whole folder of chapter decks and re-renders My Decks
+  // itself when it's done, so it stays open; everything else becomes the working
+  // deck, which means leaving the library the way New deck does.
+  const isEpub = isEpubName(file.name) || /epub/i.test(file.type);
+  if (!isEpub) closeMyDecksPanel();
+  loadFile(file, false, folder);
+});
+
+// A dismissed picker must not leave a folder armed for whatever import happens
+// next. (loadFile and loadDeckFromLibrary both reset it too — this is just the
+// earliest place to notice.)
+el.myDecksImportInput?.addEventListener("cancel", () => {
+  pendingImportFolder = null;
+});
 el.myDecksImportEpubInput?.addEventListener("change", (event) => {
   const file = event.target.files[0];
   event.target.value = ""; // allow re-importing the same file again
@@ -18168,11 +18499,48 @@ el.card.addEventListener("click", (event) => {
     replayDeck(replayBtn.dataset.replay);
     return;
   }
+  // Checked BEFORE the text-selection guard below: a triple-click has already
+  // selected the paragraph by the time this fires, so that guard was swallowing
+  // the third click and the gesture never reached the editor at all.
+  const rendered = event.target.closest?.("#questionView, #answerView");
+  if (rendered && event.detail >= 3 && !isCardActionTarget(event.target)) {
+    tripleClickCardToEditor(rendered, event.clientX, event.clientY);
+    return;
+  }
   if (hasCardTextSelection()) return;
   const isDrag = Math.abs(state.dragCurrentX - state.dragStartX) >= 8 || Math.abs(state.dragCurrentY - state.dragStartY) >= 8;
   if (isDrag || isCardActionTarget(event.target)) return;
   flipCard();
 });
+
+// ── Triple-click a rendered card face → raw editor, caret at that spot ──────
+// The notes view and the All Cards list both have this; the study card didn't,
+// so there was no way to jump from a spot in the rendered card to the same spot
+// in its markdown. Reuses findRawOffsetForRenderedPoint, exactly as the other
+// two do.
+//
+// Unlike All Cards, the flip is NOT deferred while we wait to see whether a
+// second and third click follow: a quarter-second of nothing after tapping the
+// card would be far worse than the flicker three fast clicks cause, and flipping
+// is the card's main gesture. The clicked side is recovered afterwards instead —
+// clicks 1 and 2 cancel out, so the face under the pointer on click 3 is the one
+// the user started on, and the card is flipped back to it before its editor
+// opens.
+function tripleClickCardToEditor(view, clientX, clientY) {
+  const card = state.cards[state.current];
+  if (!card || view.hidden) return;
+  const side = view === el.answerView ? "answer" : "question";
+  const offset = findRawOffsetForRenderedPoint(view, side === "answer" ? card.answer : card.question, clientX, clientY);
+  const shouldBeFlipped = side === "answer";
+  if (state.flipped !== shouldBeFlipped) {
+    state.flipped = shouldBeFlipped;
+    el.card.classList.toggle("is-flipped", state.flipped);
+  }
+  // Clears the browser's own triple-click word/paragraph selection, which would
+  // otherwise sit behind the editor and make hasCardTextSelection() true.
+  window.getSelection()?.removeAllRanges();
+  toggleEditMode(side, { cursorOffset: offset });
+}
 el.card.addEventListener("pointerdown", handlePointerDown);
 el.card.addEventListener("pointermove", handlePointerMove);
 el.card.addEventListener("pointerup", handlePointerUp);
@@ -18517,7 +18885,43 @@ function commitEditIfActive() {
   return committed;
 }
 
-function toggleEditMode(side) {
+// Whether the user has explicitly asked to see the card as raw markdown. Every
+// flip used to drop back to the rendered view, so editing both sides of a card
+// meant re-tapping ✎ after each flip. Only the EXPLICIT toggles (the ✎ buttons,
+// Ctrl+E, triple-click) write this — never the blur-driven commit, which is
+// exactly what tapping the card to flip triggers on the way out of the side you
+// were editing, and which would otherwise clear the preference every time.
+// Reset in showCard, so arriving at a different card always starts rendered.
+let cardRawModePreferred = false;
+
+// Carries that choice across a flip: the newly-shown side opens in whichever
+// mode was last chosen instead of always resetting to rendered.
+function applyCardRawModePreference() {
+  if (!state.cards[state.current]) return;
+  const shownSide = state.flipped ? "answer" : "question";
+  const hiddenSide = state.flipped ? "question" : "answer";
+  const viewFor = (side) => (side === "answer" ? el.answerView : el.questionView);
+
+  // Commit the side we just turned away from. Tapping the card to flip normally
+  // blurs its textarea and the blur handler does this, but a flip from anywhere
+  // that doesn't move focus (Ctrl+E, a swipe, the nav buttons) would otherwise
+  // leave that editor open behind the now-hidden face — so it reappeared, still
+  // open, the next time the card was flipped back.
+  if (viewFor(hiddenSide)?.hidden) toggleEditMode(hiddenSide, { remember: false });
+
+  if (!cardRawModePreferred) return;
+  const view = viewFor(shownSide);
+  if (!view || view.hidden) return; // already raw on this side
+  toggleEditMode(shownSide, { remember: false });
+}
+
+// `cursorOffset` (raw-markdown character index) places the caret there instead
+// of at the start of the text — used by the triple-click handler so switching to
+// raw mode doesn't lose your place, the same way enterNotesEditing does it.
+// `remember: false` opts out of updating cardRawModePreferred, for the toggles
+// that are a side effect of something else (a blur, a flip) rather than a
+// deliberate choice.
+function toggleEditMode(side, { cursorOffset = null, remember = true } = {}) {
   const isQuestion = side === 'question';
   const btn = isQuestion ? el.editQuestionBtn : el.editAnswerBtn;
   const view = isQuestion ? el.questionView : el.answerView;
@@ -18530,6 +18934,7 @@ function toggleEditMode(side) {
 
   const isEditing = view.hidden;
   hideNotesSelectionButton();
+  if (remember) cardRawModePreferred = !isEditing;
 
   if (!isEditing) {
     view.hidden = true;
@@ -18542,6 +18947,15 @@ function toggleEditMode(side) {
       btn.title = 'Back to preview';
     }
     edit.dispatchEvent(new Event("input", { bubbles: true }));
+    edit.focus();
+    // Assigning .value leaves the caret at the very end in most browsers, so
+    // always place it explicitly — a matched offset when we have one, otherwise
+    // the top of the text. Never let a failed match silently dump you at the end.
+    const pos = cursorOffset != null
+      ? Math.max(0, Math.min(cursorOffset, edit.value.length))
+      : 0;
+    edit.setSelectionRange(pos, pos);
+    scrollTextareaToOffset(edit, pos);
   } else {
     const typed = edit.value.trim();
     // A card with no question is dropped by loadDeckSnapshot on the next deck
@@ -18615,13 +19029,16 @@ el.answerEdit.addEventListener('click', (e) => e.stopPropagation());
 let imagePickerActive = false;
 
 // Auto-save when focus leaves the textarea (blur), unless focus moved to the edit button (which handles its own toggle)
+// remember:false — a blur is not a decision to go back to the rendered view. It
+// fires when you tap the card to flip it, and clearing the raw/rendered
+// preference there is precisely what made every flip snap back to rendered.
 el.questionEdit.addEventListener('blur', (e) => {
   if (imagePickerActive) return;
-  if (!el.questionEdit.hidden && e.relatedTarget !== el.editQuestionBtn) toggleEditMode('question');
+  if (!el.questionEdit.hidden && e.relatedTarget !== el.editQuestionBtn) toggleEditMode('question', { remember: false });
 });
 el.answerEdit.addEventListener('blur', (e) => {
   if (imagePickerActive) return;
-  if (!el.answerEdit.hidden && e.relatedTarget !== el.editAnswerBtn) toggleEditMode('answer');
+  if (!el.answerEdit.hidden && e.relatedTarget !== el.editAnswerBtn) toggleEditMode('answer', { remember: false });
 });
 
 
@@ -18805,7 +19222,7 @@ function optimizeImage(file) {
   });
 }
 
-// Storage bucket for uploaded images (see supabase_image_storage.sql). Public
+// Storage bucket for uploaded images (see supabase_setup.sql, section 7). Public
 // read so a rendered `![](url)` works with no signed-in context; writes are
 // scoped per-user by RLS, keyed on the user.id folder prefix used below.
 const IMAGE_BUCKET = "images";
@@ -18909,7 +19326,7 @@ async function cacheUploadedImageOffline(url, blob) {
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.
 // Dropped in wherever the caret is — no surrounding blank-line padding needed:
 // every rendered <img> gets wrapped in a block-level .diagram-shell (see
-// enhanceNotesImageControls below), so it always lands on its own visual row
+// enhanceSurfaceImageControls below), so it always lands on its own visual row
 // regardless of whether it shares a markdown paragraph with other text. That
 // same paragraph-sharing case gets the corner-drag resize grip immediately
 // too (findImageTokens' `isInline` case), not a "move to its own line" step.
@@ -19130,6 +19547,77 @@ async function insertImageUpload(textarea, file, atPos) {
   }
   replaceInTextarea(textarea, uploadToken, `![](${LOCAL_IMAGE_SCHEME}${token})`);
   showToast("Image saved here — uploads when you're back online", "info");
+}
+
+// ── Keeping a pasted GIF animated ──────────────────────────────────────────
+// Copying an animated GIF from a web page puts a FLATTENED still on the
+// clipboard — Chrome rasterises whichever frame was showing and hands it over as
+// image/png — so pasting one stored a motionless picture, no matter that
+// optimizeImage and IMAGE_STORAGE_EXT both already handle image/gif correctly.
+// The animation is still reachable: the same clipboard/drag carries a text/html
+// fragment (or a text/uri-list) pointing at the original file, so when that
+// points at a GIF we fetch the real bytes and store those instead.
+//
+// Best-effort throughout: a host that serves no CORS headers, a URL that turns
+// out not to be a GIF after all, or an offline device all fall back to the
+// flattened frame rather than losing the paste.
+
+// A GIF URL carried alongside the flattened bitmap, or null. DOMParser (not
+// innerHTML) so parsing the fragment can't kick off a load of every image in it.
+function gifSourceUrlFromTransfer(dataTransfer) {
+  const looksLikeGif = (url) => /^https?:/i.test(url) && /\.gif(\?|#|$)/i.test(url);
+  let html = "";
+  try {
+    html = dataTransfer?.getData?.("text/html") || "";
+  } catch (_) { /* some transfer types are unreadable outside their own event */ }
+  if (html) {
+    try {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const imgs = doc.querySelectorAll("img");
+      // More than one image means the paste is a chunk of a page, not a single
+      // copied image — the markdown converter handles that case, not this one.
+      if (imgs.length === 1) {
+        const src = imgs[0].getAttribute("src") || "";
+        if (looksLikeGif(src)) return src;
+      }
+    } catch (_) { /* malformed fragment — fall through to the uri-list */ }
+  }
+  let uriList = "";
+  try {
+    uriList = dataTransfer?.getData?.("text/uri-list") || "";
+  } catch (_) { /* as above */ }
+  const uri = uriList.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith("#"));
+  return uri && looksLikeGif(uri) ? uri : null;
+}
+
+async function fetchGifFile(url) {
+  if (!navigator.onLine) return null;
+  try {
+    const response = await fetch(url, { mode: "cors", credentials: "omit" });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    // The URL ended in .gif; trust what came back over what it was named.
+    if (blob.type !== "image/gif" || !blob.size) return null;
+    const name = (url.split("/").pop() || "image.gif").split(/[?#]/)[0] || "image.gif";
+    return new File([blob], name, { type: "image/gif" });
+  } catch (_) {
+    return null;
+  }
+}
+
+// Insert an image that arrived by paste or drop. Identical to insertImageUpload
+// except that a clipboard-flattened GIF is swapped back for the real animated
+// file first. Both `gifUrl` and `atPos` are captured by the CALLER while the
+// event is still live, because a DataTransfer can't be read after its handler
+// returns and the caret may move while the GIF is being fetched.
+async function insertTransferImage(textarea, file, gifUrl, atPos) {
+  let toUpload = file;
+  if (gifUrl) {
+    showToast("Fetching the original GIF…", "info");
+    toUpload = (await fetchGifFile(gifUrl)) || file;
+    if (toUpload === file) showToast("Couldn't fetch the animated GIF — kept the still frame", "info");
+  }
+  insertImageUpload(textarea, toUpload, atPos);
 }
 
 // Detect an image in a DataTransfer during `dragover`, where getAsFile() is still
@@ -19384,7 +19872,12 @@ document.addEventListener("paste", (event) => {
   const imageFile = firstImageFile(clipboardData);
   if (imageFile) {
     event.preventDefault();
-    insertImageUpload(target, imageFile);
+    // Read the caret and the clipboard's GIF hint synchronously: the event's
+    // clipboardData is unreadable once the handler returns, and resolving a GIF
+    // is async, so both have to be captured before awaiting anything.
+    const atPos = target.selectionStart;
+    const gifUrl = imageFile.type === "image/gif" ? null : gifSourceUrlFromTransfer(clipboardData);
+    insertTransferImage(target, imageFile, gifUrl, atPos);
     return;
   }
 
@@ -19433,8 +19926,12 @@ document.addEventListener("drop", (event) => {
   // Prevent the browser from navigating away to open the dropped file.
   event.preventDefault();
   const imageFile = firstImageFile(event.dataTransfer);
-  if (imageFile) insertImageUpload(event.target, imageFile);
-  else showToast("Only image files can be dropped here", "info");
+  if (imageFile) {
+    // Same GIF-flattening problem as paste: dragging an animated GIF out of a
+    // page hands over a still, with the original's URL alongside it.
+    const gifUrl = imageFile.type === "image/gif" ? null : gifSourceUrlFromTransfer(event.dataTransfer);
+    insertTransferImage(event.target, imageFile, gifUrl, event.target.selectionStart);
+  } else showToast("Only image files can be dropped here", "info");
 });
 
 // Dynamic HTML template for the inline edit toolbar.
@@ -20543,9 +21040,9 @@ async function writeQuickNoteCategoryOpsToCloud(deckId, ops) {
     const meta = { ...base, quickNoteCategories: merged };
     let { data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id");
     if (error && String(error.message || "").includes("meta")) {
-      // Database hasn't run supabase_quick_notes.sql — categories still work
+      // Database hasn't run supabase_setup.sql — categories still work
       // locally; just can't sync until the column exists.
-      console.warn("decks.meta column missing — quick-note categories are local-only until you run supabase_quick_notes.sql");
+      console.warn("decks.meta column missing — quick-note categories are local-only until you run supabase_setup.sql");
       return "no-column";
     }
     if (error) throw error;

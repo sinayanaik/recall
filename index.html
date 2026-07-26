@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260726-11">
+    <link rel="stylesheet" href="styles.css?v=20260726-13">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -512,6 +512,12 @@
               </div>
               <button class="web-decks-refresh web-decks-primary-btn" id="myDecksNewDeckBtn" type="button" data-md-icon="newDeck" title="Create a new deck in the current folder"><span class="md-btn-label">New deck</span></button>
               <button class="web-decks-refresh" id="myDecksNewFolderBtn" type="button" data-md-icon="newFolder" title="Create a new folder"><span class="md-btn-label">New folder</span></button>
+              <!-- Import sits beside New deck / New folder because it's the third
+                   way to put something in the folder you're looking at. The
+                   picker below is shared with every folder row's own Import
+                   button; myDecksImportFolder records which one opened it. -->
+              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import a deck file (.md, .txt, .json, .zip, .epub) into the current folder"><span class="md-btn-label">Import</span></button>
+              <input id="myDecksImportInput" type="file" accept=".md,.markdown,.txt,.json,.zip,.epub,text/markdown,text/plain,application/json,application/zip,application/epub+zip" hidden>
               <!-- Everything else lives behind one "⋯" so the toolbar is a single
                    row at every width. Ids are unchanged, so the existing
                    listeners (and syncMyDecksChrome's hidden/label handling for
@@ -910,7 +916,7 @@ What year was the Eiffel Tower built?
             <label for="setupKey">Anon / Public Key</label>
             <input id="setupKey" type="text" placeholder="your-anon-key" autocomplete="off" required />
           </div>
-          <p class="setup-hint">Find these in Supabase Dashboard &rarr; Project Settings &rarr; API. Run <code>supabase_schema.sql</code> and <code>supabase_image_storage.sql</code> in the SQL Editor first — the latter enables image upload.</p>
+          <p class="setup-hint">Find these in Supabase Dashboard &rarr; Project Settings &rarr; API. Run <code>supabase_setup.sql</code> in the SQL Editor first — one file, creates everything including image upload.</p>
           <p id="setupError" class="login-error" aria-live="polite"></p>
           <button id="setupSubmitBtn" class="login-btn-primary" type="submit">Connect</button>
         </form>
@@ -953,6 +959,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260726-11"></script>
+    <script src="app.js?v=20260726-13"></script>
   </body>
 </html>

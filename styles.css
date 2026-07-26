@@ -548,6 +548,21 @@ button:disabled {
   display: none;
 }
 
+/* "↻ 4m" — time to the next auto-sync, appended by renderSyncCountdown(). Held
+   apart from the status words by a separator so the pill reads as two facts
+   ("Synced · 2m ago" and "when the next one is"), and set in a dimmer weight so
+   the ticking number never out-shouts the status itself. The tabular figures
+   stop the pill resizing every second as digits change width. */
+.sync-countdown {
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  color: var(--muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
 .sync-indicator[data-state="saved"] { color: var(--muted); }
 .sync-indicator[data-state="syncing"] { color: var(--accent); }
 .sync-indicator[data-state="synced"] { color: var(--known); }
@@ -2483,25 +2498,36 @@ svg.nomnoml-light-svg [fill="none"] {
   font-weight: 900;
 }
 
-/* ── Editable images in rendered Notes: corner-drag resize ──────────────────
-   Scoped to #notesView (and #printRoot for export) so cards/diagrams keep the
-   forced full-width fill above untouched. A more specific selector out-ranks
+/* ── Editable images: corner-drag resize ────────────────────────────────────
+   Scoped to the three editable surfaces — the notes view and both card faces —
+   plus #printRoot for export, so generated diagrams elsewhere keep the forced
+   full-width fill above untouched. A more specific selector out-ranks
    .diagram-shell img's !important rule rather than fighting it. */
 #notesView .diagram-shell img.has-custom-size,
+#questionView .diagram-shell img.has-custom-size,
+#answerView .diagram-shell img.has-custom-size,
 #printRoot .diagram-shell img.has-custom-size {
   width: var(--notes-img-w) !important;
   max-width: var(--notes-img-w) !important;
 }
 
 /* An untouched (never resized) image shouldn't fill the whole panel width —
-   cap it and let the shell hug the image. */
+   cap it and let the shell hug the image.
+   NOTE: notes/print only, deliberately NOT the card faces. A card question is
+   auto-sized by fitLiveQuestion, which measures the image as fixed content and
+   scales the TEXT around it; hugging the image narrows the grid column and drove
+   the question font down to a few pixels. Card images therefore keep the
+   full-width default they have always had — resizing one still works, because
+   .has-custom-size above outranks it. */
 #notesView .diagram-shell img:not(.has-custom-size),
 #printRoot .diagram-shell img:not(.has-custom-size) {
   width: auto !important;
   max-width: min(420px, 100%) !important;
 }
 
-/* Images in Notes are always centered in the column. */
+/* Images in Notes are always centered in the column. (Card faces already centre
+   theirs via .diagram-shell img's `margin: 0 auto`, and must keep a full-width
+   shell — see the note above.) */
 #notesView .diagram-shell {
   width: fit-content;
   max-width: 100%;
@@ -2510,11 +2536,15 @@ svg.nomnoml-light-svg [fill="none"] {
 
 /* Let the grip / size badge escape the shell's overflow:auto clip while
    actively resizing. */
-#notesView .diagram-shell.is-resizing {
+#notesView .diagram-shell.is-resizing,
+#questionView .diagram-shell.is-resizing,
+#answerView .diagram-shell.is-resizing {
   overflow: visible;
 }
 
-#notesView .diagram-shell img {
+#notesView .diagram-shell img,
+#questionView .diagram-shell img,
+#answerView .diagram-shell img {
   -webkit-user-drag: none;
   user-select: none;
 }
@@ -2556,14 +2586,20 @@ svg.nomnoml-light-svg [fill="none"] {
 }
 
 #notesView .diagram-shell:hover .notes-img-resize-handle,
-#notesView .diagram-shell.is-resizing .notes-img-resize-handle {
+#notesView .diagram-shell.is-resizing .notes-img-resize-handle,
+#questionView .diagram-shell:hover .notes-img-resize-handle,
+#questionView .diagram-shell.is-resizing .notes-img-resize-handle,
+#answerView .diagram-shell:hover .notes-img-resize-handle,
+#answerView .diagram-shell.is-resizing .notes-img-resize-handle {
   transform: scale(1.08);
 }
 
 /* The "Zoom" pill also lives at the bottom-right of a diagram-shell; on an
-   editable notes image that's where the resize grip sits, so move the pill to
-   the bottom-left to avoid overlap. */
-#notesView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
+   editable image that's where the resize grip sits, so move the pill to the
+   bottom-left to avoid overlap. */
+#notesView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom,
+#questionView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom,
+#answerView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
   float: left;
   left: 0;
   right: auto;
