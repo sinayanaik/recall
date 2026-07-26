@@ -4349,14 +4349,19 @@ function mergeBackupMeta(localMeta, backupMeta) {
 // Coerce any deck shape we might read from an archive — a per-deck backup file,
 // a legacy deckPayloadSnapshot, or a normalizeWebDeckPayload deck+cards bundle —
 // into the single shape planRestore/applyRestore work with.
-function normalizeBackupDeck(raw) {
+// `fallbackCategory` is the folder the file itself sat in inside the archive.
+// It only applies when the deck carries no category of its own, which is what
+// lets an unstructured zip — deck files someone dropped into folders by hand —
+// come back organised into folders of those names instead of one flat pile.
+function normalizeBackupDeck(raw, fallbackCategory = "") {
   if (!raw || typeof raw !== "object") return null;
   const cards = Array.isArray(raw.cards) ? raw.cards : [];
   const title = raw.deckTitle || raw.title || (raw.deck && raw.deck.title) || "Untitled deck";
+  const ownCategory = raw.deckCategory || raw.category || (raw.deck && raw.deck.category) || "";
   return {
     deckId: raw.deckId || raw.deck_id || (raw.deck && raw.deck.id) || null,
     title: String(title),
-    category: normalizeDeckCategory(raw.deckCategory || raw.category || (raw.deck && raw.deck.category)),
+    category: normalizeDeckCategory(ownCategory || fallbackCategory),
     notes: String(raw.notes || (raw.deck && raw.deck.notes) || ""),
     // Carried through so a restore puts the quick-note category NAMES and
     // COLOURS back, not just the per-card ids that point at them — without it
@@ -4377,17 +4382,122 @@ function normalizeBackupDeck(raw) {
   };
 }
 
-async function collectBackupPayloads() {
+async function collectBackupPayloads(progress = null) {
   const selections = await allMyDeckSelections();
   const payloads = [];
   for (const sel of selections) {
+    if (progress?.cancelled()) break;
     try {
       payloads.push(await myDeckPayload(sel));
     } catch (error) {
       console.warn("Skipping unavailable deck in backup", sel, error);
     }
+    progress?.update(`Reading decks ${payloads.length}/${selections.length}…`, payloads.length / Math.max(selections.length, 1));
+    progress?.setStat("decks", payloads.length);
   }
   return payloads;
+}
+
+// ── Live backup panel ──────────────────────────────────────────────────────
+// A backup used to be one click followed by a long silence: the only sign of
+// life was the status bar, which sits behind the My Decks panel the click came
+// from. Packing images made that wait much longer (every picture is read, and
+// the whole archive is then compressed), so it reads as frozen. This gives the
+// job a face — what it's doing right now, a bar, and running counts that become
+// the finished archive's stats — plus a way out while it's still working.
+function showBackupProgress(title = "Backing up your library") {
+  const modal = document.createElement("section");
+  modal.className = "category-choice-modal backup-progress-modal";
+  modal.setAttribute("aria-label", title);
+
+  const shell = document.createElement("div");
+  shell.className = "category-choice-shell backup-progress-shell";
+  shell.innerHTML = `
+    <div class="category-choice-head">
+      <div>
+        <h2 class="backup-progress-title"></h2>
+        <p class="backup-progress-line" role="status" aria-live="polite">Starting…</p>
+      </div>
+    </div>
+    <div class="job-progress-track is-indeterminate"><div class="job-progress-fill"></div></div>
+    <div class="epub-preview-stats">
+      <div class="epub-preview-stat"><strong data-backup-stat="decks">0</strong><span>Decks</span></div>
+      <div class="epub-preview-stat"><strong data-backup-stat="cards">0</strong><span>Cards</span></div>
+      <div class="epub-preview-stat"><strong data-backup-stat="images">0</strong><span>Images</span></div>
+      <div class="epub-preview-stat"><strong data-backup-stat="size">—</strong><span>Size</span></div>
+    </div>
+    <p class="backup-progress-note"></p>
+    <div class="category-choice-actions">
+      <button type="button" data-backup-cancel>Cancel</button>
+    </div>
+  `;
+  shell.querySelector(".backup-progress-title").textContent = title;
+  modal.appendChild(shell);
+  document.body.appendChild(modal);
+
+  const line = shell.querySelector(".backup-progress-line");
+  const track = shell.querySelector(".job-progress-track");
+  const fill = shell.querySelector(".job-progress-fill");
+  const note = shell.querySelector(".backup-progress-note");
+  const button = shell.querySelector("[data-backup-cancel]");
+
+  let cancelled = false;
+  let finished = false;
+  button.addEventListener("click", () => {
+    if (finished) {
+      modal.remove();
+      return;
+    }
+    cancelled = true;
+    button.disabled = true;
+    if (line) line.textContent = "Stopping…";
+  });
+
+  return {
+    // `fraction` null/undefined keeps the bar in its indeterminate sweep, which
+    // is honest about steps whose total isn't known yet.
+    update(text, fraction) {
+      if (cancelled && !finished) return;
+      if (text) line.textContent = text;
+      if (typeof fraction === "number") {
+        track.classList.remove("is-indeterminate");
+        fill.style.width = `${Math.min(100, Math.max(0, Math.round(fraction * 100)))}%`;
+      } else {
+        track.classList.add("is-indeterminate");
+      }
+    },
+    setStat(key, value) {
+      const cell = shell.querySelector(`[data-backup-stat="${key}"]`);
+      if (cell) cell.textContent = String(value);
+    },
+    note(text, warning = false) {
+      note.textContent = text || "";
+      note.classList.toggle("is-warning", Boolean(text) && warning);
+    },
+    cancelled() { return cancelled; },
+    // Leaves the panel up with the finished archive's numbers — the point of the
+    // whole thing is to be able to see what was saved — and turns the escape
+    // hatch into the way to dismiss it.
+    finish(text, { warning = "" } = {}) {
+      finished = true;
+      line.textContent = text;
+      track.classList.remove("is-indeterminate");
+      fill.style.width = "100%";
+      if (warning) this.note(warning, true);
+      button.disabled = false;
+      button.textContent = "Done";
+      button.classList.add("import-action-primary");
+      button.focus();
+    },
+    close() { modal.remove(); }
+  };
+}
+
+function formatBackupSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
 // ── Images travel INSIDE the backup ────────────────────────────────────────
@@ -4406,6 +4516,10 @@ async function collectBackupPayloads() {
 const BACKUP_ASSET_DIR = "assets";
 const BACKUP_ASSET_INDEX = `${BACKUP_ASSET_DIR}/index.json`;
 const BACKUP_ASSET_SCHEMA = "recall-backup-assets";
+// Per-image ceiling when the bytes have to come off the network. Generous
+// enough for a slow phone on a big screenshot, short enough that a dead host
+// can't hold the whole backup hostage.
+const BACKUP_ASSET_FETCH_TIMEOUT_MS = 20000;
 
 // Every image reference in a deck's text: markdown `![alt](url)` (optional
 // `<...>` wrapping and a trailing "title") and raw `<img src=…>`, which the
@@ -4469,16 +4583,23 @@ async function readBackupAssetBlob(ref) {
   } catch (error) {
     console.warn("Could not read a cached image for the backup", ref, error);
   }
+  // A host that accepts the connection and then never answers would otherwise
+  // park one of the fetch workers forever, and the whole backup with it — the
+  // failure mode that looks exactly like the app having frozen.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), BACKUP_ASSET_FETCH_TIMEOUT_MS);
   try {
     // Storage serves public objects with permissive CORS; a third-party host
     // (an old ImgBB/Drive link) may not, in which case this throws and the
     // image is reported as missing rather than failing the backup.
-    const response = await fetch(ref, { mode: "cors", credentials: "omit" });
+    const response = await fetch(ref, { mode: "cors", credentials: "omit", signal: abort.signal });
     if (!response.ok) return null;
     const blob = await response.blob();
     return blob.size ? blob : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -4486,6 +4607,55 @@ const BACKUP_ASSET_EXT_BY_TYPE = {
   "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
   "image/gif": "gif", "image/svg+xml": "svg", "image/avif": "avif", "image/bmp": "bmp"
 };
+
+// ── The archive mirrors the library's own shape ────────────────────────────
+// A flat `decks/*.json` bag is fine for a machine and useless for a person: a
+// 200-deck backup was an unbrowsable wall of files, with no sign of the folder
+// tree those decks actually live in. Deck files are now written under their
+// folder path, and every image is filed beside the deck that uses it, in a
+// folder named the same way the Storage bucket names it:
+//
+//   decks/Science/Cell Biology/Mitosis-a1b2c3.json
+//   assets/Mitosis--a1b2c3/0001-spindle.webp
+//
+// This is also what lets an UNSTRUCTURED archive come back organised: restore
+// reads the folder path back out of the zip when a deck file carries no
+// category of its own (backupCategoryFromArchivePath), so a hand-made zip of
+// deck files in folders lands in exactly those folders here.
+const BACKUP_DECK_DIR = "decks";
+
+// One path segment, safe in a zip and still readable — slugifyFileName keeps
+// spaces and capitals (unlike storageFolderSlug) and only strips what a
+// filesystem would choke on, so `Science/Chapter 1` survives the round trip
+// exactly as typed.
+function backupPathSegment(value, fallback) {
+  return slugifyFileName(String(value || "").trim(), fallback).replace(/^\.+/, "").trim() || fallback;
+}
+
+// `decks/<folder path>/` for one deck, honouring the deck's category tree.
+function backupDeckFolderPath(category) {
+  const segments = folderSegments(normalizeDeckCategory(category)).map((segment) => backupPathSegment(segment, "Folder"));
+  return [BACKUP_DECK_DIR, ...segments].join("/");
+}
+
+// The deck's own asset folder, named exactly the way its Storage bucket folder
+// is (`<slug>--<id>`), so what you see in the zip matches what you see in the
+// bucket.
+function backupAssetFolderPath(title, id) {
+  return `${BACKUP_ASSET_DIR}/${backupPathSegment(title, "Deck")}--${id}`;
+}
+
+// Read a deck's folder path back out of the archive: everything between the
+// `decks/` root (wherever it sits — some zip tools nest the whole archive one
+// level deeper) and the file itself. Returns "" when the file is at the root,
+// which leaves the deck's own category (or the default) in charge.
+function backupCategoryFromArchivePath(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  parts.pop(); // the file itself
+  const root = parts.findIndex((part) => part.toLowerCase() === BACKUP_DECK_DIR);
+  const folders = root >= 0 ? parts.slice(root + 1) : parts;
+  return folderSegments(folders.join(FOLDER_SEP)).join(FOLDER_SEP);
+}
 
 // A readable, unique filename for one packed image. The original basename is
 // kept where there is one (a book figure stays recognisable inside the zip),
@@ -4504,12 +4674,21 @@ function backupAssetName(ref, blob, index, usedNames) {
   return name;
 }
 
-// Pack every image the given deck snapshots reference into `assets/`, writing
-// the reference→file index alongside. Best-effort per image: one unreachable
-// url is recorded in the index's `missing` list (so a restore can say what it
-// couldn't bring) and never aborts the backup.
-async function packBackupAssets(zip, snapshots, onProgress) {
-  const refs = Array.from(snapshots.reduce((set, snapshot) => collectBackupImageRefs(snapshot, set), new Set()));
+// Pack every image the decks reference into `assets/<deck>--<id>/`, writing the
+// reference→file index alongside. `entries` is one {snapshot, assetFolder} per
+// deck, in library order, so each image lands in the folder of the first deck
+// that uses it (a picture shared by two decks is stored once, not twice).
+// Best-effort per image: one unreachable url is recorded in the index's
+// `missing` list (so a restore can say what it couldn't bring) and never aborts
+// the backup.
+async function packBackupAssets(zip, entries, onProgress, isCancelled = () => false) {
+  const folderByRef = new Map();
+  entries.forEach((entry) => {
+    for (const ref of collectBackupImageRefs(entry.snapshot)) {
+      if (!folderByRef.has(ref)) folderByRef.set(ref, entry.assetFolder);
+    }
+  });
+  const refs = Array.from(folderByRef.keys());
   if (!refs.length) return { assets: [], missing: [] };
 
   let done = 0;
@@ -4518,14 +4697,15 @@ async function packBackupAssets(zip, snapshots, onProgress) {
   // are latency-bound, but an unbounded fan-out over a few hundred images would
   // stall the browser's connection pool.
   const blobs = await mapWithConcurrency(refs, 5, async (ref) => {
+    if (isCancelled()) return null;
     const blob = await readBackupAssetBlob(ref);
     done += 1;
     onProgress?.(done, refs.length);
     return blob;
   });
 
-  const folder = zip.folder(BACKUP_ASSET_DIR);
-  const usedNames = new Set();
+  // Names are unique per folder, so two decks can both hold a `0001-fig.webp`.
+  const usedNames = new Map();
   const assets = [];
   const missing = [];
   refs.forEach((ref, i) => {
@@ -4534,10 +4714,14 @@ async function packBackupAssets(zip, snapshots, onProgress) {
       missing.push(ref);
       return;
     }
-    const name = backupAssetName(ref, blob, assets.length, usedNames);
-    folder.file(name, blob);
+    const folder = folderByRef.get(ref) || BACKUP_ASSET_DIR;
+    if (!usedNames.has(folder)) usedNames.set(folder, new Set());
+    const names = usedNames.get(folder);
+    const name = backupAssetName(ref, blob, names.size, names);
+    const path = `${folder}/${name}`;
+    zip.file(path, blob);
     assets.push({
-      file: `${BACKUP_ASSET_DIR}/${name}`,
+      file: path,
       url: ref,
       type: blob.type || "application/octet-stream",
       bytes: blob.size
@@ -4547,7 +4731,8 @@ async function packBackupAssets(zip, snapshots, onProgress) {
   zip.file(BACKUP_ASSET_INDEX, `${JSON.stringify({
     schema: BACKUP_ASSET_SCHEMA,
     version: 1,
-    note: "Maps each image reference used in decks/*.json to its packed file. "
+    note: "Maps each image reference used in decks/**.json to its packed file. "
+      + "Files are grouped per deck, named the way that deck's Storage folder is. "
       + "Restore re-homes these into the restoring device's own storage.",
     assets,
     missing
@@ -4555,37 +4740,72 @@ async function packBackupAssets(zip, snapshots, onProgress) {
   return { assets, missing };
 }
 
-async function exportLibraryBackupZip({ fileBaseName, includeImages = true } = {}) {
+async function exportLibraryBackupZip({
+  fileBaseName,
+  includeImages = true,
+  // The panel is the whole point of the click; `showPanel:false` exists for the
+  // callers that already own the screen (nothing does today except tests).
+  showPanel = true,
+  panelTitle = "Backing up your library",
+  // The safety backup taken before a restore is a step INSIDE another job, so
+  // its panel gets out of the way on success instead of waiting to be dismissed.
+  autoClosePanel = false
+} = {}) {
   if (!window.JSZip) {
     setStatus("Backup needs the zip library, which failed to load.", "error");
     return false;
   }
-  const payloads = await collectBackupPayloads();
+  const progress = showPanel ? showBackupProgress(panelTitle) : null;
+  try {
+    return await runLibraryBackup({ fileBaseName, includeImages, progress, autoClosePanel });
+  } catch (error) {
+    console.error("Backup failed", error);
+    setStatus(`Backup failed: ${error && error.message ? error.message : "unknown error"}`, "error");
+    showToast("Backup failed", "error");
+    progress?.finish("Backup failed.", { warning: String(error && error.message || "Something went wrong.") });
+    return false;
+  }
+}
+
+async function runLibraryBackup({ fileBaseName, includeImages, progress, autoClosePanel = false }) {
+  progress?.update("Reading your decks…");
+  const payloads = await collectBackupPayloads(progress);
+  if (progress?.cancelled()) {
+    progress.close();
+    setStatus("Backup cancelled.");
+    return false;
+  }
   if (!payloads.length) {
     setStatus("No decks to back up.", "error");
+    progress?.finish("No decks to back up.", { warning: "This device has no decks saved yet." });
     return false;
   }
 
   const zip = new JSZip();
-  const decksFolder = zip.folder("decks");
   const now = new Date();
   const manifestDecks = [];
-  const usedNames = new Set();
-  const snapshots = [];
+  const usedPaths = new Set();
+  const entries = [];
+  const folders = new Set();
 
   payloads.forEach((payload) => {
     const snapshot = deckPayloadSnapshot(payload);
-    snapshots.push(snapshot);
     const idPart = String(payload.deck.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16)
       || Math.random().toString(36).slice(2, 8);
-    const base = `${slugifyFileName(payload.deck.title || "deck") || "deck"}-${idPart}`;
-    let name = `${base}.json`;
+    // Filed under the deck's own folder path, so unzipping the backup gives you
+    // the same tree you see in My Decks.
+    const category = normalizeDeckCategory(payload.deck.category);
+    const dir = backupDeckFolderPath(category);
+    folders.add(category);
+    const base = `${backupPathSegment(payload.deck.title, "Deck")}-${idPart}`;
+    let path = `${dir}/${base}.json`;
     let n = 2;
-    while (usedNames.has(name)) name = `${base}-${n++}.json`;
-    usedNames.add(name);
-    decksFolder.file(name, `${JSON.stringify(snapshot, null, 2)}\n`);
+    while (usedPaths.has(path)) path = `${dir}/${base}-${n++}.json`;
+    usedPaths.add(path);
+    zip.file(path, `${JSON.stringify(snapshot, null, 2)}\n`);
+    entries.push({ snapshot, assetFolder: backupAssetFolderPath(payload.deck.title, idPart) });
     manifestDecks.push({
-      file: `decks/${name}`,
+      file: path,
       deckId: payload.deck.id || null,
       title: payload.deck.title || "Untitled deck",
       category: payload.deck.category || "",
@@ -4595,12 +4815,27 @@ async function exportLibraryBackupZip({ fileBaseName, includeImages = true } = {
     });
   });
 
+  const cardTotal = payloads.reduce((n, payload) => n + payload.cards.length, 0);
+  progress?.setStat("decks", payloads.length);
+  progress?.setStat("cards", cardTotal);
+
   const deckLabel = `${payloads.length} deck${payloads.length === 1 ? "" : "s"}`;
   let packed = { assets: [], missing: [] };
   if (includeImages) {
-    packed = await packBackupAssets(zip, snapshots, (done, total) => {
+    progress?.update("Looking for images…");
+    packed = await packBackupAssets(zip, entries, (done, total) => {
+      // The slow phase, and the one people most need to see moving: each image
+      // is read from the offline cache or fetched back from storage.
       setStatus(`Packing images ${done}/${total}…`);
-    });
+      progress?.update(`Packing images ${done}/${total}…`, done / Math.max(total, 1));
+      progress?.setStat("images", done);
+    }, () => Boolean(progress?.cancelled()));
+    if (progress?.cancelled()) {
+      progress.close();
+      setStatus("Backup cancelled.");
+      return false;
+    }
+    progress?.setStat("images", packed.assets.length);
   }
 
   const manifest = {
@@ -4614,6 +4849,9 @@ async function exportLibraryBackupZip({ fileBaseName, includeImages = true } = {
     // no images at all.
     assetCount: packed.assets.length,
     assetsMissing: packed.missing.length,
+    // The folder tree these decks came from, so the archive documents the
+    // library's shape even where a folder holds no decks of its own.
+    folders: Array.from(folders).sort(),
     decks: manifestDecks
   };
   zip.file("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
@@ -4622,13 +4860,20 @@ async function exportLibraryBackupZip({ fileBaseName, includeImages = true } = {
     "",
     `Created: ${now.toISOString()}`,
     `Decks:   ${payloads.length}`,
+    `Folders: ${folders.size}`,
     `Images:  ${packed.assets.length}${packed.missing.length ? ` (${packed.missing.length} unreachable, not packed)` : ""}`,
     "",
     "Layout:",
-    "  manifest.json     index of every deck in this archive",
-    "  decks/*.json      one file per deck (cards, statuses, notes, category)",
-    "  assets/           the actual image files the decks reference",
-    "  assets/index.json maps each image reference to its file in assets/",
+    "  manifest.json          index of every deck, folder and image",
+    "  decks/<folder>/*.json  one file per deck, inside its own folder path",
+    "  assets/<deck>--<id>/   that deck's images, as real files",
+    "  assets/index.json      maps each image reference to its packed file",
+    "",
+    "The zip mirrors the library: the folders under decks/ are the folders in",
+    "My Decks, and each deck's images sit in a folder named the same way its",
+    "cloud Storage folder is. Restoring puts all of it back — decks into those",
+    "folders, images into this device's own storage. A hand-made zip works too:",
+    "deck files dropped into folders are restored into folders of those names.",
     "",
     "The images are real files in here, not links — this archive stands on its",
     "own. Restoring it on another device (or another person's) copies those",
@@ -4645,12 +4890,18 @@ async function exportLibraryBackupZip({ fileBaseName, includeImages = true } = {
   ].join("\n"));
 
   setStatus(`Compressing backup (${deckLabel}${packed.assets.length ? `, ${packed.assets.length} images` : ""})…`);
+  progress?.update("Compressing the archive…", 0);
   const blob = await zip.generateAsync({
     type: "blob",
     compression: "DEFLATE",
     compressionOptions: { level: 6 }
+  }, (meta) => {
+    // JSZip reports real percentage here, which is what keeps the bar moving
+    // through what is otherwise the longest opaque step of a big backup.
+    progress?.update(`Compressing the archive… ${Math.round(meta.percent)}%`, meta.percent / 100);
   });
   const name = `${fileBaseName || `recall-backup-${backupTimestamp(now)}`}.zip`;
+  progress?.setStat("size", formatBackupSize(blob.size));
   downloadBlob(blob, name);
   const imageNote = packed.assets.length
     ? ` with ${packed.assets.length} image${packed.assets.length === 1 ? "" : "s"}`
@@ -4659,19 +4910,29 @@ async function exportLibraryBackupZip({ fileBaseName, includeImages = true } = {
     ? ` ${packed.missing.length} image${packed.missing.length === 1 ? " was" : "s were"} unreachable and could not be packed.`
     : "";
   setStatus(`Backed up ${deckLabel}${imageNote} to ${name}.${missingNote}`, packed.missing.length ? "error" : "info");
+  if (autoClosePanel && !packed.missing.length) {
+    progress?.close();
+  } else {
+    progress?.finish(`Saved ${name}`, {
+      warning: packed.missing.length
+        ? `${packed.missing.length} image${packed.missing.length === 1 ? "" : "s"} could not be reached and ${packed.missing.length === 1 ? "is" : "are"} not in this archive. Everything else is.`
+        : ""
+    });
+  }
+  if (!packed.missing.length) showToast("Backup saved", "success");
   return true;
 }
 
 // A parsed JSON node is either a multi-deck bundle ({decks:[...]}) or a single
 // deck snapshot — normalise both into `out`.
-function expandBackupBundleInto(parsed, out) {
+function expandBackupBundleInto(parsed, out, fallbackCategory = "") {
   if (parsed && Array.isArray(parsed.decks)) {
     parsed.decks.forEach((deck) => {
-      const normalized = normalizeBackupDeck(deck);
+      const normalized = normalizeBackupDeck(deck, fallbackCategory);
       if (normalized) out.push(normalized);
     });
   } else {
-    const normalized = normalizeBackupDeck(parsed);
+    const normalized = normalizeBackupDeck(parsed, fallbackCategory);
     if (normalized) out.push(normalized);
   }
 }
@@ -4707,6 +4968,22 @@ async function readBackupAssets(zip) {
   return assets;
 }
 
+// Zip noise no archive reader should look at: macOS resource forks, Finder
+// metadata, and the dotfiles a few zip tools sprinkle around.
+function isArchiveJunkPath(path) {
+  return /(^|\/)(__MACOSX\/|\.DS_Store$|Thumbs\.db$|\._)/i.test(path);
+}
+
+// Does this JSON look like a deck rather than some unrelated file that happened
+// to be in the zip? Only consulted for unstructured archives, where anything
+// could be sitting next to the deck files.
+function looksLikeBackupDeckJson(parsed) {
+  if (!parsed || typeof parsed !== "object") return false;
+  if (Array.isArray(parsed.decks)) return true;
+  if (Array.isArray(parsed.cards)) return true;
+  return Boolean(parsed.deck && typeof parsed.deck === "object" && Array.isArray(parsed.cards));
+}
+
 async function readBackupArchive(file) {
   const name = String(file.name || "").toLowerCase();
   const looksZip = /\.zip$/.test(name)
@@ -4717,14 +4994,25 @@ async function readBackupArchive(file) {
   if (looksZip) {
     if (!window.JSZip) throw new Error("the zip library failed to load, so this .zip can't be read");
     const zip = await JSZip.loadAsync(file);
-    let deckPaths = Object.keys(zip.files).filter((path) => /^decks\/.+\.json$/i.test(path) && !zip.files[path].dir);
+    const files = Object.keys(zip.files).filter((path) => !zip.files[path].dir && !isArchiveJunkPath(path));
+    // Our own archives (and anything shaped like them): every .json under a
+    // decks/ root, at any depth — the depth IS the folder path.
+    let deckPaths = files.filter((path) => /(^|\/)decks\/.+\.json$/i.test(path));
+    let strict = true;
     if (!deckPaths.length) {
-      // No decks/ folder: accept any root .json (a zipped single/bundle export).
-      deckPaths = Object.keys(zip.files).filter((path) => /\.json$/i.test(path) && !path.includes("/") && !/manifest\.json$/i.test(path));
+      // An unstructured zip: deck files someone dropped in, loose or in folders
+      // of their own naming. Take every .json that reads like a deck, wherever
+      // it sits, and let its folder become the deck's folder.
+      deckPaths = files.filter((path) => /\.json$/i.test(path)
+        && !/(^|\/)manifest\.json$/i.test(path)
+        && !/(^|\/)assets\//i.test(path));
+      strict = false;
     }
     for (const path of deckPaths) {
       try {
-        expandBackupBundleInto(JSON.parse(await zip.files[path].async("string")), decks);
+        const parsed = JSON.parse(await zip.files[path].async("string"));
+        if (!strict && !looksLikeBackupDeckJson(parsed)) continue;
+        expandBackupBundleInto(parsed, decks, backupCategoryFromArchivePath(path));
       } catch (error) {
         console.warn("Skipping unreadable deck file in archive", path, error);
       }
@@ -5185,7 +5473,7 @@ function showRestorePreview(report) {
       }
       return `<li class="restore-row ${cls}">`
         + `<span class="restore-badge">${badge}</span>`
-        + `<span class="restore-title"></span>`
+        + `<span class="restore-name"><span class="restore-title"></span><span class="restore-folder"></span></span>`
         + `<span class="restore-detail">${escapeHtml(detail)}</span>`
         + `</li>`;
     }).join("");
@@ -5212,8 +5500,16 @@ function showRestorePreview(report) {
 
     // Titles set via textContent (never innerHTML) so deck names can't inject markup.
     const titleSpans = shell.querySelectorAll(".restore-title");
+    const folderSpans = shell.querySelectorAll(".restore-folder");
     report.decks.forEach((entry, i) => {
       if (titleSpans[i]) titleSpans[i].textContent = entry.title || "Untitled deck";
+      // Where the deck will live. Worth showing: for an archive with no folder
+      // information of its own this is the folder the restore INFERRED, and the
+      // preview is the place to notice it before anything is written.
+      if (folderSpans[i]) {
+        const folder = normalizeDeckCategory(entry.localMeta?.category || entry.backupDeck?.category);
+        folderSpans[i].textContent = folder === defaultDeckCategory ? "" : folder.split(FOLDER_SEP).join(" / ");
+      }
     });
 
     const cleanup = (value) => {
@@ -5237,7 +5533,11 @@ function showRestorePreview(report) {
 async function applyRestore(report, { autoBackup = true } = {}) {
   if (autoBackup) {
     try {
-      await exportLibraryBackupZip({ fileBaseName: `recall-backup-before-restore-${backupTimestamp()}` });
+      await exportLibraryBackupZip({
+        fileBaseName: `recall-backup-before-restore-${backupTimestamp()}`,
+        panelTitle: "Saving a safety backup first",
+        autoClosePanel: true
+      });
     } catch (error) {
       console.warn("Pre-restore safety backup failed (continuing)", error);
     }
@@ -5320,16 +5620,33 @@ async function applyRestore(report, { autoBackup = true } = {}) {
 }
 
 async function runRestoreFlow(file) {
+  // Unzipping a library-sized archive (images included) takes long enough that
+  // a silent wait reads as a dead click, same as the backup did. The panel goes
+  // away as soon as there's a preview to show.
+  const progress = showBackupProgress("Reading backup");
   try {
     setStatus("Reading backup…");
+    progress.update("Opening the archive…");
+    progress.setStat("size", formatBackupSize(file.size));
     const { decks: backupDecks, assets } = await readBackupArchive(file);
+    progress.setStat("decks", backupDecks.length);
+    progress.setStat("cards", backupDecks.reduce((n, deck) => n + deck.cards.length, 0));
+    progress.setStat("images", assets.size);
+    if (progress.cancelled()) {
+      progress.close();
+      setStatus("Restore cancelled.");
+      return;
+    }
     // Images are re-homed BEFORE the diff: a foreign backup's references get
     // rewritten to local placeholders, and the preview then compares (and the
     // apply then writes) exactly the text the decks will end up with.
+    progress.update("Checking this backup's images…");
     const assetPlan = await planBackupAssetAdoption(backupDecks, assets);
     applyBackupAssetRewrites(backupDecks, assetPlan.rewrites);
+    progress.update("Comparing against your decks…");
     const report = planRestore(backupDecks);
     report.assetPlan = assetPlan;
+    progress.close();
     const confirmed = await showRestorePreview(report);
     if (!confirmed) {
       setStatus("Restore cancelled.");
@@ -5341,6 +5658,8 @@ async function runRestoreFlow(file) {
     console.error("Restore failed", error);
     setStatus(`Restore failed: ${error && error.message ? error.message : "unreadable backup"}`, "error");
     showToast("Restore failed", "error");
+  } finally {
+    progress.close();
   }
 }
 
@@ -17167,7 +17486,7 @@ function showEpubProgress(title) {
         <p class="epub-progress-line">Starting…</p>
       </div>
     </div>
-    <div class="epub-progress-bar"><div class="epub-progress-fill"></div></div>
+    <div class="job-progress-track"><div class="job-progress-fill"></div></div>
     <div class="category-choice-actions">
       <button type="button" data-epub-stop>Cancel</button>
     </div>
@@ -17178,7 +17497,7 @@ function showEpubProgress(title) {
   document.body.appendChild(modal);
 
   const line = shell.querySelector(".epub-progress-line");
-  const fill = shell.querySelector(".epub-progress-fill");
+  const fill = shell.querySelector(".job-progress-fill");
   const stopBtn = shell.querySelector("[data-epub-stop]");
   // A big illustrated book is minutes of uploads; without this the user is
   // stuck watching it. The loops poll cancelled() between steps and stop at

@@ -682,6 +682,16 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 - Supabase gives you database backups on paid plans; on the free tier, use **My Decks → ⋯ → Export All → Backup (.zip)** for a full copy of every deck and note.
 - That same zip restores through **My Decks → ⋯ → Restore backup**. Restore is *additive* — it merges, never wipes.
 - **The images are inside the zip**, not linked from it: every picture a deck references is packed into `assets/`, with `assets/index.json` mapping each original URL to its file. So the archive works for someone who has no access to your Supabase project at all — restoring it copies those files onto their device and, if they have their own project, uploads them there on the next sync. Images already belonging to the project the restoring device is configured against keep their URLs (nothing is duplicated); they are just seeded into the offline cache. Older archives with no `assets/` folder still restore exactly as before.
+- **The archive mirrors your library**, so it's browsable outside the app and restores back into the same shape:
+
+  ```
+  manifest.json                              every deck, folder and image
+  decks/Science/Cell Biology/Mitosis-a1.json one file per deck, inside its folder path
+  assets/Mitosis--a1/0001-spindle.webp       that deck's images, named like its Storage folder
+  assets/index.json                          image reference → packed file
+  ```
+
+  Restoring puts decks back into those folders and files each restored image into this device's own `decks/{slug}--{id}` Storage folder. **A hand-made zip works too**: drop deck `.json` files into folders of your own naming and restore reads the folder path as the deck's folder (a deck that carries its own category keeps it). Files at the root land in *Uncategorized*, and `__MACOSX/`, `.DS_Store` and non-deck JSON are ignored. The restore preview names the folder each deck will land in before anything is written.
 
 **Storage limits.** The free tier's 500 MB database is far more than text decks will ever need; the 1 GB storage quota is the one to watch if you paste a lot of images. Uploads are downscaled to 1600 px and re-encoded as WebP in the browser first, so typical screenshots land well under 100 KB — but GIFs and SVGs are passed through untouched to keep them animated/vector.
 
