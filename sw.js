@@ -1,4 +1,4 @@
-const CACHE_NAME = "recall-v20260725-9";
+const CACHE_NAME = "recall-v20260725-10";
 
 // Uploaded images live in the user's own Supabase Storage bucket, on a
 // different origin from both the app and the CDN — so nothing here used to
@@ -29,10 +29,16 @@ async function trimImageCache() {
 }
 
 // Same-origin app shell — cached atomically on install (must all succeed).
+//
+// The ?v= strings MUST match index.html's <link>/<script> exactly: the cache is
+// keyed by full URL, so a stale one here precaches a file the page never asks
+// for and leaves the real one to be picked up (or not) by the network-first
+// handler below. styles.css drifted to -7 while index.html moved to -9 and the
+// precached copy was dead weight for the whole of that release.
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260725-7",
-  "./app.js?v=20260725-7",
+  "./styles.css?v=20260725-10",
+  "./app.js?v=20260725-10",
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
@@ -228,7 +234,11 @@ self.addEventListener("fetch", (event) => {
               }
               return response;
             })
-            .catch(() => cached);
+            // `cached` is necessarily undefined here (this is the miss path),
+            // and respondWith resolving to undefined is a hard TypeError rather
+            // than a failed request — hand back a real network error so the
+            // <script>/<link> simply fails to load.
+            .catch(() => Response.error());
         })
       )
     );

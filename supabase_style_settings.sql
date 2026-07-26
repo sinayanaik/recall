@@ -1,6 +1,8 @@
 -- Run this in Supabase SQL Editor if your existing project already has decks/cards.
 --
--- This stores one global Aa style document.
+-- This stores one Aa style document PER USER (row id = the user's auth id), plus
+-- a legacy shared row id = 'global' that new accounts inherit until they sync a
+-- style of their own. See the policy block below.
 -- It deliberately excludes colors. Theme colors stay in CSS; Aa controls focus on layout,
 -- readable px-based font sizes, spacing, radius, and percent-based widths/heights.
 -- Re-running this file is safe: it fills missing defaults while preserving existing custom values.
@@ -43,53 +45,28 @@ CREATE TRIGGER set_app_style_settings_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION set_app_style_settings_updated_at();
 
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public'
-      AND tablename = 'app_style_settings'
-      AND policyname = 'Anyone can read app style settings'
-  ) THEN
-    CREATE POLICY "Anyone can read app style settings"
-      ON app_style_settings FOR SELECT
-      USING (true);
-  END IF;
+-- One style row PER USER, keyed on the user's auth id (the app writes
+-- styleSettingsRowId(), which is auth.uid()).
+--
+-- This table predates auth and originally held a single row, id = 'global', with
+-- wide-open "Anyone can …" policies — not even restricted TO authenticated. On a
+-- deployment with more than one account that meant whoever synced last silently
+-- overwrote everyone else's fonts, sizes and layout, and an anonymous visitor
+-- could read or rewrite the lot. The old policies are dropped here; the legacy
+-- 'global' row itself is KEPT and stays readable, so an account that has never
+-- synced a style of its own still inherits whatever the deployment had.
+DROP POLICY IF EXISTS "Anyone can read app style settings" ON app_style_settings;
+DROP POLICY IF EXISTS "Anyone can insert app style settings" ON app_style_settings;
+DROP POLICY IF EXISTS "Anyone can update app style settings" ON app_style_settings;
+DROP POLICY IF EXISTS "Anyone can delete app style settings" ON app_style_settings;
+DROP POLICY IF EXISTS "Signed-in users manage app style settings" ON app_style_settings;
+DROP POLICY IF EXISTS "Users manage own app style settings" ON app_style_settings;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public'
-      AND tablename = 'app_style_settings'
-      AND policyname = 'Anyone can insert app style settings'
-  ) THEN
-    CREATE POLICY "Anyone can insert app style settings"
-      ON app_style_settings FOR INSERT
-      WITH CHECK (true);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public'
-      AND tablename = 'app_style_settings'
-      AND policyname = 'Anyone can update app style settings'
-  ) THEN
-    CREATE POLICY "Anyone can update app style settings"
-      ON app_style_settings FOR UPDATE
-      USING (true)
-      WITH CHECK (true);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public'
-      AND tablename = 'app_style_settings'
-      AND policyname = 'Anyone can delete app style settings'
-  ) THEN
-    CREATE POLICY "Anyone can delete app style settings"
-      ON app_style_settings FOR DELETE
-      USING (true);
-  END IF;
-END $$;
+CREATE POLICY "Users manage own app style settings"
+  ON app_style_settings
+  FOR ALL TO authenticated
+  USING (id = auth.uid()::text OR id = 'global')
+  WITH CHECK (id = auth.uid()::text);
 
 WITH style_defaults AS (
   SELECT $style_defaults$
@@ -195,6 +172,6 @@ SET settings = EXCLUDED.settings || COALESCE((
 ), '{}'::jsonb);
 
 COMMENT ON TABLE app_style_settings IS
-  'One-row global Aa style settings for layout, px font sizes, spacing, radius, and percent dimensions. Colors are intentionally not included.';
+  'Per-user Aa style settings (row id = auth.uid(), plus a legacy shared ''global'' row new accounts inherit) for layout, px font sizes, spacing, radius, and percent dimensions. Colors are intentionally not included.';
 COMMENT ON COLUMN app_style_settings.settings IS
   'Flat JSON object. Keys match Aa controls and are applied as CSS variables by app.js.';

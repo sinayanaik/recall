@@ -2824,6 +2824,14 @@ function lockPageScroll() {
 
 function unlockPageScroll() {
   if (!document.documentElement.classList.contains("modal-scroll-lock")) return;
+  // Something else is STILL on screen (a rename prompt opened from My Decks, a
+  // delete confirm over the style panel, …). lockPageScroll is a no-op when the
+  // lock is already held, so the inner overlay never took a lock of its own —
+  // releasing one here would hand the page back its scroll (and jump it to the
+  // pre-lock offset) while the outer panel is still covering it. Leave the
+  // release to whichever overlay closes last. Every close path hides its own
+  // element BEFORE calling this, so anyModalOpen() never sees the caller.
+  if (anyModalOpen()) return;
   const scrollY = state.stylePanelScrollY || 0;
   document.documentElement.classList.remove("modal-scroll-lock");
   document.body.classList.remove("modal-scroll-lock");
@@ -2848,6 +2856,10 @@ function anyModalOpen() {
     (el.allCardsPanel && !el.allCardsPanel.hidden) ||
     (el.quickNotesBoard && !el.quickNotesBoard.hidden) ||
     (el.qnCatModal && !el.qnCatModal.hidden) ||
+    // The Cloze Review panel takes a scroll lock like the rest, so it has to be
+    // listed here too — unlockPageScroll consults this to decide whether the
+    // lock still has an owner.
+    (el.clozePanel && !el.clozePanel.hidden) ||
     (el.importPanel && el.importPanel.classList.contains("is-open"))
   );
 }
@@ -2993,37 +3005,50 @@ function restoreDeckPosition(location) {
   if (location.viewMode) setViewMode(location.viewMode);
 }
 
-// Closes whichever modal/panel/overlay is currently open, reusing each one's
-// own Cancel/Close control so its cleanup (unbinding onclick handlers, etc.)
-// runs exactly as it would from a real click — then releases the scroll lock.
-// Used by the global Escape handler, which previously only closed a subset of
-// these (exportMenu/deckMenu/diagramModal/allCardsPanel/stylePanel/
-// importPanel) while unconditionally unlocking scroll — so e.g.
-// a confirm/help/prompt dialog was left stuck open with the page scrollable
-// behind it.
+// The global Escape handler. Closes the single frontmost overlay, reusing that
+// one's own Cancel/Close control so its cleanup (unbinding onclick handlers,
+// releasing the scroll lock) runs exactly as it would from a real click.
 function closeTopmostOverlay() {
-  // Quick Notes: peel back its layers innermost-first so one Escape doesn't
-  // dismiss the whole board when only a popover/modal is open.
+  // ONE layer per press, innermost first — the name is the contract. This used
+  // to fall through every branch and close the lot, so a single Escape aimed at
+  // a confirm dialog also took My Decks, the style panel, the import panel and
+  // the diagram modal with it.
+  //
+  // Order is the visual stack: transient popovers, then dialogs (which always
+  // sit above a panel), then the panels themselves.
+
+  // Popovers.
   if (document.querySelector(".qn-cat-menu")) { closeQnCatMenu(); return; }
-  if (el.qnCatModal && !el.qnCatModal.hidden) { closeQnCatModal(); return; }
-  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) { closeQuickNotesBoard(); return; }
-  // My Decks: same innermost-first rule. Escape over an open "⋯" menu — the
-  // toolbar's or a deck row's — should dismiss that menu, not the whole library.
   if (el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden) { closeMyDecksMoreMenu(); return; }
   if (el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")) { closeAllDeckTileMenus(); return; }
-  el.exportMenu.hidden = true;
-  if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
-  closeDiagramModal();
-  closeAllCardsPanel();
-  closeStylePanel();
-  closeImportPanel();
-  if (el.myDecksPanel && !el.myDecksPanel.hidden) closeMyDecksPanel();
-  if (el.importSelectorPanel && !el.importSelectorPanel.hidden) closeImportSelectorPanel();
-  if (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) closeHelpModal();
-  if (el.confirmModal && !el.confirmModal.hidden) el.confirmModalCancelBtn?.click();
-  if (el.promptModal && !el.promptModal.hidden) el.promptModalCancelBtn?.click();
-  if (el.frameCardModal && !el.frameCardModal.hidden) el.frameCardCancelBtn?.click();
-  if (el.syncModal && !el.syncModal.hidden) el.syncModal.hidden = true;
+  if (document.querySelector(".web-deck-export-menu:not([hidden]), .bulk-export-menu:not([hidden])")) {
+    closeWebDeckExportMenus();
+    return;
+  }
+  if (el.exportMenu && !el.exportMenu.hidden) { el.exportMenu.hidden = true; return; }
+  if (el.exportNotesMenu && !el.exportNotesMenu.hidden) { el.exportNotesMenu.hidden = true; return; }
+
+  // Dialogs. Routed through each one's own Cancel/Close control so its cleanup
+  // (unbinding onclick handlers, releasing the scroll lock) runs exactly as it
+  // would from a real click.
+  if (el.confirmModal && !el.confirmModal.hidden) { el.confirmModalCancelBtn?.click(); return; }
+  if (el.promptModal && !el.promptModal.hidden) { el.promptModalCancelBtn?.click(); return; }
+  if (el.frameCardModal && !el.frameCardModal.hidden) { el.frameCardCancelBtn?.click(); return; }
+  if (el.qnCatModal && !el.qnCatModal.hidden) { closeQnCatModal(); return; }
+  if (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) { closeHelpModal(); return; }
+  if (el.syncModal && !el.syncModal.hidden) { el.syncModal.hidden = true; return; }
+  if (el.diagramModal && !el.diagramModal.hidden) { closeDiagramModal(); return; }
+  if (el.importSelectorPanel && !el.importSelectorPanel.hidden) { closeImportSelectorPanel(); return; }
+
+  // Full-surface panels.
+  if (el.clozePanel && !el.clozePanel.hidden) { closeClozePanel(); return; }
+  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) { closeQuickNotesBoard(); return; }
+  if (el.allCardsPanel && !el.allCardsPanel.hidden) { closeAllCardsPanel(); return; }
+  if (el.stylePanel && !el.stylePanel.hidden) { closeStylePanel(); return; }
+  if (el.myDecksPanel && !el.myDecksPanel.hidden) { closeMyDecksPanel(); return; }
+  if (el.importPanel && el.importPanel.classList.contains("is-open")) { closeImportPanel(); return; }
+
+  // Nothing left open: make sure a scroll lock didn't outlive its owner.
   unlockPageScroll();
 }
 
@@ -3058,6 +3083,19 @@ function handleStyleEnvironmentChange() {
   }
 }
 
+// Which app_style_settings row belongs to this user. The table predates auth and
+// held ONE row, id "global", that every account on a deployment read and wrote —
+// so a second user signing in silently overwrote the first's fonts/sizes/layout.
+// Styles are now per-account, keyed on the user id, with "global" kept as a
+// read-only legacy fallback so an existing deployment's shared style is still
+// what a user sees until they save their own. Signed out (no cached id) there's
+// nothing to scope to, so the legacy row is all there is.
+const LEGACY_STYLE_ROW_ID = "global";
+
+function styleSettingsRowId() {
+  return cachedUserId() || LEGACY_STYLE_ROW_ID;
+}
+
 async function loadStyleFromWeb(force = false) {
   if (!supabaseClient) {
     setStyleStatus("Local style");
@@ -3066,13 +3104,19 @@ async function loadStyleFromWeb(force = false) {
 
   setStyleStatus("Loading synced style...");
   try {
-    const { data, error } = await supabaseClient
+    const rowId = styleSettingsRowId();
+    // Both rows in one request; this user's own wins, the legacy shared row is
+    // the fallback for an account that has never synced a style of its own.
+    const wanted = rowId === LEGACY_STYLE_ROW_ID ? [LEGACY_STYLE_ROW_ID] : [rowId, LEGACY_STYLE_ROW_ID];
+    const { data: rows, error } = await supabaseClient
       .from("app_style_settings")
-      .select("settings, updated_at")
-      .eq("id", "global")
-      .maybeSingle();
+      .select("id, settings, updated_at")
+      .in("id", wanted);
 
     if (error) throw error;
+    const data = (rows || []).find((row) => row.id === rowId)
+      || (rows || []).find((row) => row.id === LEGACY_STYLE_ROW_ID)
+      || null;
     if (!hasMeaningfulStyleSettings(data?.settings)) {
       setStyleStatus("No synced style yet");
       return;
@@ -3121,7 +3165,10 @@ async function writeStyleToCloud(settings) {
   try {
     const { error } = await withTimeout(
       supabaseClient.from("app_style_settings").upsert({
-        id: "global",
+        // This user's own row (see styleSettingsRowId) — never the legacy
+        // shared "global" one, which writing would push onto every other
+        // account on the deployment.
+        id: styleSettingsRowId(),
         settings,
         updated_at: new Date().toISOString()
       }, { onConflict: "id" }),
@@ -3189,7 +3236,7 @@ async function syncStyleToWeb() {
   setStyleStatus("Sync failed");
   setStatus(
     outcome === "denied"
-      ? "Failed to sync style — its RLS policy doesn't match id: \"global\". Re-run supabase_style_settings.sql (or the app_style_settings section of supabase_schema.sql)."
+      ? "Failed to sync style — the app_style_settings RLS policy doesn't allow your own row. Re-run supabase_style_settings.sql (or the app_style_settings section of supabase_schema.sql)."
       : "Failed to sync style. Create the app_style_settings table first.",
     "error"
   );
@@ -3486,17 +3533,28 @@ function localDeckPayload(localId) {
       title: snapshot.deckTitle || meta.title || "Untitled",
       category: snapshot.deckCategory || meta.category,
       notes: snapshot.notes || "",
+      // The deck-level bag — the quick_notes managed category set, plus the
+      // pinned-from source anchors. myDeckPayload PREFERS this local path, so
+      // dropping it here is what made every backup/export write `meta: {}` and
+      // lose the names and colours each note's label resolves against.
+      meta: snapshot.meta,
       current_card_index: snapshot.current || 0,
-      created_at: null,
+      created_at: meta.createdAt || null,
       updated_at: meta.updatedAt || null,
-      last_accessed_at: meta.updatedAt || null
+      last_accessed_at: meta.accessedAt || meta.updatedAt || null
     }, (snapshot.cards || []).map((card, index) => ({
       id: card.id,
       deck_id: snapshot.deckId || localId,
       question: card.question,
       answer: card.answer,
       position: index,
-      status: card.status
+      status: card.status,
+      // Quick-note subject label — same reason as `meta` above. Without it a
+      // backup restores every note as Uncategorized, and an exported .sql
+      // (whose UPDATE sets category = EXCLUDED.category) would clear the
+      // labels outright if it were ever run against a live database.
+      category: card.category || null,
+      updated_at: card.updatedAt || null
     })));
   } catch (error) {
     console.warn("Could not read local deck snapshot", localId, error);
@@ -3555,7 +3613,7 @@ function selectedMyDecks() {
   const seen = new Set();
   const merged = [];
   [...direct, ...fromFolders].forEach((sel) => {
-    const key = `${sel.localId || ""} ${sel.deckId || ""}`;
+    const key = `${sel.localId || ""}\u0000${sel.deckId || ""}`;
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(sel);
@@ -4071,6 +4129,42 @@ function backupTimestamp(date = new Date()) {
     + `_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
 }
 
+// The deck-level meta bag, whatever shape it arrived in (a parsed object, a JSON
+// string from a hand-edited archive, or missing entirely).
+function normalizeBackupMeta(raw) {
+  let bag = raw;
+  if (typeof bag === "string") {
+    try { bag = JSON.parse(bag); } catch { bag = null; }
+  }
+  return bag && typeof bag === "object" && !Array.isArray(bag) ? bag : {};
+}
+
+// Restore is ADDITIVE, so a deck's meta bag merges rather than replaces: a
+// quick-note category the backup still knows about but this device has lost is
+// added back, every local one is kept, and local wins on a conflicting id (same
+// newest-wins-but-never-delete rule the cards follow). Sibling keys — the pinned
+// -from source anchors above all — are unioned the same way.
+function mergeBackupMeta(localMeta, backupMeta) {
+  const local = normalizeBackupMeta(localMeta);
+  const backup = normalizeBackupMeta(backupMeta);
+  const merged = { ...backup, ...local };
+
+  const localCats = quickNoteCategoriesFromMeta(local);
+  const backupCats = quickNoteCategoriesFromMeta(backup);
+  if (localCats.length || backupCats.length) {
+    const byId = new Map(localCats.map((cat) => [cat.id, cat]));
+    for (const cat of backupCats) if (!byId.has(cat.id)) byId.set(cat.id, cat);
+    merged.quickNoteCategories = Array.from(byId.values());
+  }
+
+  const localAnchors = noteAnchorsFromMeta(local);
+  const backupAnchors = noteAnchorsFromMeta(backup);
+  if (Object.keys(localAnchors).length || Object.keys(backupAnchors).length) {
+    merged.noteAnchors = { ...backupAnchors, ...localAnchors };
+  }
+  return merged;
+}
+
 // Coerce any deck shape we might read from an archive — a per-deck backup file,
 // a legacy deckPayloadSnapshot, or a normalizeWebDeckPayload deck+cards bundle —
 // into the single shape planRestore/applyRestore work with.
@@ -4083,6 +4177,11 @@ function normalizeBackupDeck(raw) {
     title: String(title),
     category: normalizeDeckCategory(raw.deckCategory || raw.category || (raw.deck && raw.deck.category)),
     notes: String(raw.notes || (raw.deck && raw.deck.notes) || ""),
+    // Carried through so a restore puts the quick-note category NAMES and
+    // COLOURS back, not just the per-card ids that point at them — without it
+    // every restored note resolved its label against a category that no longer
+    // existed and showed up as Uncategorized.
+    meta: normalizeBackupMeta(raw.meta || (raw.deck && raw.deck.meta)),
     current: Number.isFinite(Number(raw.current)) ? Number(raw.current) : 0,
     updatedAt: raw.updatedAt || raw.updated_at || raw.exportedAt || null,
     cards: cards.map((card, index) => ({
@@ -4090,6 +4189,8 @@ function normalizeBackupDeck(raw) {
       question: String(card.question || ""),
       answer: String(card.answer || ""),
       status: normalizeCardStatus(card.status),
+      // Quick-note subject label (see `meta` above).
+      category: card.category ? String(card.category) : null,
       ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
     }))
   };
@@ -4291,6 +4392,10 @@ function planRestore(backupDecks) {
         syncTextChanged(local.question, backupCard.question)
         || syncTextChanged(local.answer, backupCard.answer)
         || normalizeCardStatus(local.status) !== normalizeCardStatus(backupCard.status)
+        // A quick-note label move is a real difference; without this a backup
+        // that only recategorised notes was previewed (and applied) as
+        // "unchanged", so the labels never came back.
+        || (local.category || null) !== (backupCard.category || null)
       ) {
         differing += 1;
       }
@@ -4299,6 +4404,12 @@ function planRestore(backupDecks) {
 
     const localNotes = (localSnapshot && localSnapshot.notes) || "";
     const notesDiffer = syncTextChanged(localNotes, backupDeck.notes);
+    // The category DEFINITIONS live on the deck's meta bag, so a backup that
+    // still knows a category this device has lost is a restorable change even
+    // when not one card differs. Merged the same way applyRestore will, so the
+    // preview can never promise something the apply won't do.
+    const localMetaBag = (localSnapshot && localSnapshot.meta) || {};
+    const metaRestored = quickNoteCategoriesDiffer(mergeBackupMeta(localMetaBag, backupDeck.meta), localMetaBag);
 
     // What will actually be written, given the direction.
     const overwritten = backupNewer ? differing : 0;   // matched cards replaced by backup
@@ -4307,10 +4418,11 @@ function planRestore(backupDecks) {
     const notesHeldLocal = notesDiffer && !backupNewer;
 
     // A write happens only if a card is added, an existing card is overwritten,
-    // or the notes are replaced. Differences we deliberately keep local are NOT
-    // changes, so a deck where the backup is older with only conflicting edits
-    // (and nothing to add) is correctly "unchanged".
-    if (!backupOnly && !overwritten && !notesUpdated) {
+    // the notes are replaced, or a lost quick-note category comes back.
+    // Differences we deliberately keep local are NOT changes, so a deck where
+    // the backup is older with only conflicting edits (and nothing to add) is
+    // correctly "unchanged".
+    if (!backupOnly && !overwritten && !notesUpdated && !metaRestored) {
       decks.push({ title: backupDeck.title, status: "unchanged", localId: localMeta.id, localMeta, localSnapshot, backupDeck, backupNewer, counts: {} });
       totals.unchanged += 1;
       return;
@@ -4330,7 +4442,8 @@ function planRestore(backupDecks) {
         heldLocal,
         kept: localOnly,
         notesUpdated: notesUpdated ? 1 : 0,
-        notesHeldLocal: notesHeldLocal ? 1 : 0
+        notesHeldLocal: notesHeldLocal ? 1 : 0,
+        metaRestored: metaRestored ? 1 : 0
       }
     });
     totals.cardsAdded += backupOnly;
@@ -4340,6 +4453,21 @@ function planRestore(backupDecks) {
   });
 
   return { decks, totals };
+}
+
+// Short, stable, order-sensitive fingerprint of a backup deck's own content.
+// Deterministic, so re-running the same restore keeps updating the same local
+// entry instead of duplicating it — but distinct for two different decks that
+// merely share a title.
+function backupDeckFingerprint(backupDeck) {
+  const source = [
+    normalizeDeckCategory(backupDeck.category),
+    String(backupDeck.notes || "").slice(0, 200),
+    ...(backupDeck.cards || []).slice(0, 40).map((card) => `${card.id}|${String(card.question || "").slice(0, 60)}`)
+  ].join("\u0000");
+  let hash = 5381;
+  for (let i = 0; i < source.length; i += 1) hash = ((hash * 33) ^ source.charCodeAt(i)) >>> 0;
+  return hash.toString(36);
 }
 
 // Stable local id for a restored deck so re-running a restore updates in place
@@ -4352,14 +4480,21 @@ function deterministicRestoreLocalId(backupDeck) {
     if (existing) return existing.id;
     return `ld_restore_${String(backupDeck.deckId).replace(/[^A-Za-z0-9_-]/g, "")}`;
   }
-  return `ld_restore_${slugifyFileName(backupDeck.title || "deck") || "deck"}`;
+  // Two decks in one archive can share a title AND carry no deck id (older
+  // exports), in which case a title-only key made the second silently overwrite
+  // the first — one of them just vanished from the restore. The fingerprint is
+  // what keeps them apart.
+  const slug = (slugifyFileName(backupDeck.title || "deck") || "deck").replace(/[^A-Za-z0-9_-]/g, "");
+  return `ld_restore_${slug || "deck"}_${backupDeckFingerprint(backupDeck)}`;
 }
 
 function backupDeckToSnapshot(backupDeck, localId) {
+  const now = new Date().toISOString();
+  const meta = normalizeBackupMeta(backupDeck.meta);
   return {
     app: "recall",
     version: 1,
-    exportedAt: new Date().toISOString(),
+    exportedAt: now,
     deckTitle: backupDeck.title || "",
     deckCategory: normalizeDeckCategory(backupDeck.category),
     notes: backupDeck.notes || "",
@@ -4368,11 +4503,22 @@ function backupDeckToSnapshot(backupDeck, localId) {
     deckId: backupDeck.deckId || null,
     current: backupDeck.current || 0,
     localDeckId: localId,
+    // Quick-note category definitions + source anchors, so restored notes can
+    // resolve their labels instead of all reading as Uncategorized.
+    ...(Object.keys(meta).length ? { meta } : {}),
     cards: backupDeck.cards.map((card) => ({
       id: card.id,
       question: card.question,
       answer: card.answer,
       status: normalizeCardStatus(card.status),
+      category: card.category || null,
+      // Restored cards owe the cloud a push. Without `dirty`, the pull-side
+      // merge (mergeCloudCardsIntoSnapshot) reads a local-only clean card as
+      // "this reached the cloud once, so the cloud not having it IS a deletion"
+      // and drops it — deleting exactly the cards the restore just brought
+      // back, on the very next sync.
+      dirty: true,
+      updatedAt: now,
       ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
     }))
   };
@@ -4384,6 +4530,7 @@ function backupDeckToSnapshot(backupDeck, localId) {
 // copy is kept. Local-only cards are never dropped in either direction.
 function mergeDeckSnapshots(localSnapshot, backupDeck, backupNewer) {
   const local = localSnapshot || {};
+  const now = new Date().toISOString();
   const cards = Array.isArray(local.cards) ? local.cards.slice() : [];
   const indexById = new Map(cards.map((card, i) => [String(card.id), i]));
   let added = 0;
@@ -4397,12 +4544,18 @@ function mergeDeckSnapshots(localSnapshot, backupDeck, backupNewer) {
       const current = cards[i];
       const changed = syncTextChanged(current.question, backupCard.question)
         || syncTextChanged(current.answer, backupCard.answer)
-        || normalizeCardStatus(current.status) !== normalizeCardStatus(backupCard.status);
+        || normalizeCardStatus(current.status) !== normalizeCardStatus(backupCard.status)
+        || (current.category || null) !== (backupCard.category || null);
       cards[i] = {
         ...current,
         question: backupCard.question,
         answer: backupCard.answer,
         status: normalizeCardStatus(backupCard.status),
+        // Quick-note subject label follows the same newest-wins rule as the text.
+        category: backupCard.category || null,
+        // Only a card the backup actually CHANGED owes the cloud a push; one the
+        // restore left byte-identical keeps whatever sync flags it already had.
+        ...(changed ? { dirty: true, updatedAt: now } : {}),
         ...(backupCard.noteAnchor ? { noteAnchor: backupCard.noteAnchor } : {})
       };
       if (changed) updated += 1;
@@ -4412,6 +4565,11 @@ function mergeDeckSnapshots(localSnapshot, backupDeck, backupNewer) {
         question: backupCard.question,
         answer: backupCard.answer,
         status: normalizeCardStatus(backupCard.status),
+        category: backupCard.category || null,
+        // See backupDeckToSnapshot: a clean local-only card is dropped by the
+        // next pull as "deleted in the cloud", which would undo the restore.
+        dirty: true,
+        updatedAt: now,
         ...(backupCard.noteAnchor ? { noteAnchor: backupCard.noteAnchor } : {})
       });
       added += 1;
@@ -4422,13 +4580,16 @@ function mergeDeckSnapshots(localSnapshot, backupDeck, backupNewer) {
     ...local,
     app: "recall",
     version: 1,
-    exportedAt: new Date().toISOString(),
+    exportedAt: now,
     deckTitle: local.deckTitle || backupDeck.title || "",
     deckCategory: local.deckCategory || normalizeDeckCategory(backupDeck.category),
     notes: backupNewer && syncTextChanged(local.notes || "", backupDeck.notes || "")
       ? (backupDeck.notes || "")
       : (local.notes || ""),
     deckId: local.deckId || backupDeck.deckId || null,
+    // Additive union — a quick-note category the backup remembers and this
+    // device has lost comes back, and nothing local is dropped.
+    meta: mergeBackupMeta(local.meta, backupDeck.meta),
     cards
   };
   return { snapshot, added, updated };
@@ -4492,6 +4653,7 @@ function showRestorePreview(report) {
         if (c.kept) bits.push(`${c.kept} local kept`);
         if (c.notesUpdated) bits.push("notes updated");
         if (c.notesHeldLocal) bits.push("notes differ (local newer, kept)");
+        if (c.metaRestored) bits.push("note categories restored");
         detail = bits.join(" · ") || "changes";
       }
       return `<li class="restore-row ${cls}">`
@@ -4557,6 +4719,7 @@ async function applyRestore(report, { autoBackup = true } = {}) {
   let mergedDecks = 0;
   let cardsAdded = 0;
   let cardsUpdated = 0;
+  const restoredDeckIds = [];
 
   report.decks.forEach((entry) => {
     try {
@@ -4565,12 +4728,14 @@ async function applyRestore(report, { autoBackup = true } = {}) {
         const snapshot = backupDeckToSnapshot(entry.backupDeck, localId);
         localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
         upsertRestoredMeta(localId, snapshot, entry.backupDeck);
+        if (snapshot.deckId) restoredDeckIds.push(String(snapshot.deckId));
         addedDecks += 1;
         cardsAdded += entry.backupDeck.cards.length;
       } else if (entry.status === "conflict") {
         const merged = mergeDeckSnapshots(entry.localSnapshot, entry.backupDeck, entry.backupNewer);
         localStorage.setItem(LOCAL_DECK_PREFIX + entry.localId, JSON.stringify(merged.snapshot));
         upsertRestoredMeta(entry.localId, merged.snapshot, entry.backupDeck);
+        if (merged.snapshot.deckId) restoredDeckIds.push(String(merged.snapshot.deckId));
         mergedDecks += 1;
         cardsAdded += merged.added;
         cardsUpdated += merged.updated;
@@ -4579,6 +4744,16 @@ async function applyRestore(report, { autoBackup = true } = {}) {
       console.warn("Failed to restore deck", entry.title, error);
     }
   });
+
+  // Restoring a deck is an explicit statement that it should exist again, so
+  // retire its delete tombstones. Without this, a deck that had been deleted
+  // came back only to be destroyed a sync or two later: the push pass skips a
+  // tombstoned deck, then the tombstone-adoption pass deletes the local copy
+  // outright. Queued (not written inline) so a restore performed offline still
+  // takes effect — reconcileAllDecks drains the queue before it reads the
+  // tombstone list.
+  queuePendingUntombstones(restoredDeckIds);
+  await flushPendingUntombstones();
 
   await renderMyDecksList();
 
@@ -6723,8 +6898,15 @@ function uncategorizedCards() {
   return state.masterCards.filter((card) => !state.statusById[card.id]);
 }
 
+// Clears every per-card map that belongs to the deck being replaced. Only ever
+// reached from resetStudyDeck's !keepStatuses path, i.e. a genuine deck change —
+// each loader assigns the incoming deck's own maps immediately afterwards.
 function resetResults() {
   state.statusById = {};
+  // The quick-note label map is deck-scoped exactly like statusById. Left
+  // behind, a combined/imported/new deck inherits the previous deck's labels
+  // and the next autosave writes them back out as if they were its own.
+  state.categoryById = {};
   state.previewCard = null;
   state.results = {
     known: [],
@@ -6734,19 +6916,29 @@ function resetResults() {
   state.review = 0;
 }
 
-function resetStudyDeck(cards = state.masterCards) {
+// Resets the study SESSION: original order, back to the first card, nothing
+// flipped or previewed. `keepStatuses` decides whether the deck's Known/Review
+// marks survive it — they are real user data, not session state, so anything
+// that is merely restarting the CURRENT deck must pass true. Every deck-LOAD
+// caller leaves it false: those want a clean statusById and assign the incoming
+// deck's own immediately afterwards.
+function resetStudyDeck(cards = state.masterCards, { keepStatuses = false } = {}) {
   state.transitionToken += 1;
   state.cards = cards.slice();
   state.current = 0;
   state.previewCard = null;
   state.flipped = false;
-  resetResults();
+  if (keepStatuses) syncResults();
+  else resetResults();
   resetCardUndoHistory();
 }
 
 
+// Coerces first: callers pass deck titles, statuses and error messages straight
+// through, any of which can be undefined on a partial record — and a throw here
+// takes down whichever list/report was being built around it.
 function escapeHtml(value) {
-  return value
+  return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -7210,11 +7402,17 @@ async function enhanceRenderedMarkdown(container) {
     }
   });
 
+  // Safety net for delimiters that reached the DOM without going through
+  // protectMath. Deliberately WITHOUT a bare "$" pair: protectMath has already
+  // converted every real $…$ / $$…$$ span into a .math-* node above, using
+  // CommonMark-ish rules (no whitespace just inside the delimiters). What is
+  // left is text protectMath examined and declined — overwhelmingly two dollar
+  // AMOUNTS on one line, e.g. "$5 for one and $10 for two", which this pass
+  // would otherwise swallow and render as math.
   renderMathInElement(container, {
     delimiters: [
       { left: "\\[", right: "\\]", display: true },
-      { left: "\\(", right: "\\)", display: false },
-      { left: "$", right: "$", display: false }
+      { left: "\\(", right: "\\)", display: false }
     ],
     throwOnError: false
   });
@@ -11202,9 +11400,16 @@ function shuffleCards() {
   showCard();
 }
 
+// The toolbar's ⟳ Restart. A SESSION reset — back to the first card in the
+// deck's own order — and nothing more. It must NOT clear the Known/Review
+// marks: showCard() below schedules an autosave, so a wipe here is written to
+// the library within 400ms and pushed to the cloud (and every other device) by
+// the next reconcile, with no confirmation and no undo. The deck-summary's
+// "↺ Restart All" goes through replayDeck("all"), which has always preserved
+// them — the two restarts used to disagree about what "restart" means.
 function resetQuiz() {
   commitEditIfActive();
-  resetStudyDeck(state.masterCards);
+  resetStudyDeck(state.masterCards, { keepStatuses: true });
   setStatus("Studying all cards.");
   showCard();
 }
@@ -12146,6 +12351,11 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // misleading).
     const noteCategoriesFlushed = await flushPendingQuickNoteCategories();
     const noteAnchorsFlushed = await flushPendingQuickNoteAnchors();
+    // Retire the delete tombstones of any deck a restore explicitly brought
+    // back. Ordering is load-bearing: this MUST land before the tombstone list
+    // is read below, or the passes that act on it would re-delete the very deck
+    // the user just restored. See flushPendingUntombstones.
+    await flushPendingUntombstones();
     // Independent of the deck data and of the meta blob, so these don't need to
     // hold up the deck list — just don't let a failure sink the whole sync.
     const styleFlush = flushPendingStyleSync().catch((error) => {
@@ -12801,6 +13011,74 @@ function clearDeckTombstone(deckId) {
     delete map[String(deckId)];
     writeDeckTombstones(map);
   }
+}
+
+// ── Un-deleting a deck (restore from backup) ────────────────────────────────
+// A tombstone is designed to be permanent, and rows in the shared deleted_decks
+// table are never pruned — which is exactly right for a deletion and exactly
+// wrong for a restore. Bringing a deleted deck back therefore used to fail in a
+// way that looked like the restore had worked: sync 1 saw the shared record,
+// dropped the local tombstone as "fully propagated" and re-pushed the deck;
+// sync 2 read that same still-present shared record, re-adopted the tombstone
+// and deleted the local copy for good.
+//
+// Retiring the tombstone means clearing BOTH records, and clearing them in the
+// right order: dropping only the local one lets the reassert pass re-create the
+// shared one, and dropping only the shared one lets the local one re-delete the
+// deck. So the shared row goes first, and the local tombstone is only forgotten
+// once that has actually landed. If the cloud is unreachable the ids stay
+// queued and both records stay put — the deck survives locally, it just doesn't
+// sync until the queue drains.
+//
+// Caveat: this retires the tombstones THIS device holds. Another device that
+// independently deleted the same deck still holds its own local tombstone and
+// will re-delete the deck when it next syncs — a genuine conflict (one device
+// says restore, the other says delete) that no local record can settle.
+const PENDING_UNTOMBSTONE_KEY = "recall:pendingUntombstone";
+
+function readPendingUntombstones() {
+  try {
+    const list = JSON.parse(localStorage.getItem(PENDING_UNTOMBSTONE_KEY) || "[]");
+    return Array.isArray(list) ? list.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function queuePendingUntombstones(deckIds) {
+  const ids = (deckIds || []).map(String).filter(Boolean);
+  if (!ids.length) return;
+  const merged = Array.from(new Set([...readPendingUntombstones(), ...ids]));
+  try { localStorage.setItem(PENDING_UNTOMBSTONE_KEY, JSON.stringify(merged)); } catch (_) {}
+}
+
+function clearPendingUntombstones() {
+  try { localStorage.removeItem(PENDING_UNTOMBSTONE_KEY); } catch (_) {}
+}
+
+// Returns how many ids were retired. Called from reconcileAllDecks BEFORE the
+// deck index and tombstone list are read, so the un-delete is already in place
+// by the time the passes that act on tombstones run.
+async function flushPendingUntombstones() {
+  const ids = readPendingUntombstones();
+  if (!ids.length) return 0;
+  if (!supabaseClient || !isSignedIn || !navigator.onLine) return 0;
+  try {
+    const { error } = await withTimeout(
+      abortable((signal) => supabaseClient.from("deleted_decks").delete().in("deck_id", ids).abortSignal(signal)),
+      CLOUD_TIMEOUT_MS,
+      "clear delete tombstones"
+    );
+    if (error) throw error;
+  } catch (error) {
+    // Keep the queue: replaying a delete-by-id is idempotent, and until it
+    // lands the local tombstone has to stay too (see the ordering note above).
+    console.warn("Could not retire the delete tombstones for restored decks", error);
+    return 0;
+  }
+  ids.forEach(clearDeckTombstone);
+  clearPendingUntombstones();
+  return ids.length;
 }
 
 // Clear the currently-open deck back to the empty home screen and cancel any
@@ -13753,7 +14031,7 @@ function escapeXml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;")
-    .replace(/[ --]/g, "");
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
 }
 
 function hex6(value, fallback) {
@@ -17838,12 +18116,21 @@ function commitEditIfActive() {
     committed = true;
     if (card) {
       const newValue = edit.value.trim();
-      if (side === "question") card.question = newValue;
-      else card.answer = newValue;
-      const masterIndex = state.masterCards.findIndex(c => c.id === card.id);
-      if (masterIndex > -1) {
-        if (side === "question") state.masterCards[masterIndex].question = newValue;
-        else state.masterCards[masterIndex].answer = newValue;
+      // A card with no question is dropped outright by loadDeckSnapshot on the
+      // next deck load, so committing a blank one destroys the card — and the
+      // next push then deletes it from the cloud too. Discard the empty edit and
+      // keep what was there. (A blank ANSWER is legitimate: every quick_notes
+      // pin is front-only, which is why only the question is guarded.)
+      if (side === "question" && !newValue) {
+        setStatus("Question cannot be empty — kept the previous text.", "error");
+      } else {
+        if (side === "question") card.question = newValue;
+        else card.answer = newValue;
+        const masterIndex = state.masterCards.findIndex(c => c.id === card.id);
+        if (masterIndex > -1) {
+          if (side === "question") state.masterCards[masterIndex].question = newValue;
+          else state.masterCards[masterIndex].answer = newValue;
+        }
       }
     }
     view.hidden = false;
@@ -17885,17 +18172,28 @@ function toggleEditMode(side) {
     }
     edit.dispatchEvent(new Event("input", { bubbles: true }));
   } else {
-    const newValue = edit.value.trim();
-    if (isQuestion) {
-      currentCard.question = newValue;
-    } else {
-      currentCard.answer = newValue;
-    }
+    const typed = edit.value.trim();
+    // A card with no question is dropped by loadDeckSnapshot on the next deck
+    // load, so committing a blank one silently destroys the card — and the next
+    // push deletes it from the cloud too. This path also runs on BLUR, so it
+    // discards the empty edit and keeps the existing question rather than
+    // refusing to close and trapping focus in the textarea. (A blank ANSWER is
+    // legitimate: every quick_notes pin is front-only.)
+    const rejected = isQuestion && !typed;
+    const newValue = rejected ? currentCard.question : typed;
 
-    const masterIndex = state.masterCards.findIndex(c => c.id === currentCard.id);
-    if (masterIndex > -1) {
-      if (isQuestion) state.masterCards[masterIndex].question = newValue;
-      else state.masterCards[masterIndex].answer = newValue;
+    if (!rejected) {
+      if (isQuestion) {
+        currentCard.question = newValue;
+      } else {
+        currentCard.answer = newValue;
+      }
+
+      const masterIndex = state.masterCards.findIndex(c => c.id === currentCard.id);
+      if (masterIndex > -1) {
+        if (isQuestion) state.masterCards[masterIndex].question = newValue;
+        else state.masterCards[masterIndex].answer = newValue;
+      }
     }
 
     view.hidden = false;
@@ -17910,6 +18208,11 @@ function toggleEditMode(side) {
     renderMarkdown(view, newValue, true).then(() => {
       if (isQuestion) scheduleLiveQuestionFit();
     });
+
+    if (rejected) {
+      setStatus("Question cannot be empty — kept the previous text.", "error");
+      return;
+    }
 
     scheduleDeckAutosave();
     setStatus(state.deckId ? "Card updated locally. Sync to update the web deck." : "Card updated.");
@@ -18934,7 +19237,7 @@ function clozeCleanUnit(unit) {
 // Build {prev, cur, next} context around one cloze occurrence. `cur` keeps the
 // {{…}} braces so it renders as a live redaction span; neighbours are plain.
 function clozeContextParts(source, start, end) {
-  const MARK = "";
+  const MARK = "\ue000";
   const inner = source.slice(start + 2, end - 2);
   // Drop table delimiter rows (|---|---|) so a cloze inside a table gets the
   // header row as its "before" context instead of a row of dashes.
@@ -18965,7 +19268,7 @@ function collectDeckClozes() {
     let m;
     while ((m = CLOZE_SCAN_RE.exec(source))) {
       const parts = clozeContextParts(source, m.index, m.index + m[0].length);
-      const key = `${parts.prev}${parts.cur}${parts.next}`;
+      const key = `${parts.prev}\u0001${parts.cur}\u0001${parts.next}`;
       if (seen.has(key)) continue;
       seen.add(key);
       items.push(parts);
