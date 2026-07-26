@@ -80,17 +80,14 @@ Nothing else in the dashboard needs configuring yet — Auth is enabled by defau
 
 ## Step 3 — Run the setup SQL
 
-Open **SQL Editor → New query**, paste in the whole of **`supabase_setup.sql`** from this repo, and click **Run**.
+In your project, open **SQL Editor → New query**. Copy **everything** in the block below, paste it in, and click **Run**.
 
-That one file is everything: all four tables, every column, the indexes the sync depends on, all Row Level Security policies, and the `images` storage bucket with its policies. You do not need to run anything else.
+This is the only SQL you need — one run creates all four tables, every column, the indexes the sync depends on, all Row Level Security policies, and the `images` storage bucket with its policies. The same thing also ships in this repo as **`supabase_setup.sql`** if you'd rather copy from the file; the two are identical.
 
 > [!TIP]
-> **It's safe to re-run, and safe on a project that already holds decks.** Every statement is guarded or additive, so the same file is also the upgrade path — re-run it after pulling a new version of Recall.
+> **It's safe to re-run, and safe on a project that already holds decks.** Every statement is guarded or additive, so this is also the upgrade path — run it again after pulling a new version of Recall.
 >
 > Expect a wall of `NOTICE: … already exists, skipping`. That is what success looks like. Only a line beginning **`ERROR`** is a failure.
-
-<details>
-<summary><strong>Show the SQL inline</strong> (identical to <code>supabase_setup.sql</code> — copy from here if you're reading this on GitHub)</summary>
 
 ```sql
 -- ============================================================================
@@ -522,8 +519,6 @@ COMMENT ON TABLE deleted_decks IS 'Durable cross-device delete tombstones. Never
 COMMENT ON TABLE app_style_settings IS 'Per-user layout/typography settings (row id = auth.uid()), plus a legacy shared ''global'' row that accounts with no style of their own inherit. Colours are deliberately not included — themes live in CSS.';
 ```
 
-</details>
-
 ---
 
 ## Step 4 — Let accounts sign in
@@ -616,8 +611,7 @@ Then hard-reload the app (or close every tab) so the service worker picks up the
 
 **Why re-running matters after an update.** The schema tracks the app. The per-card sync merge needs `cards.updated_at`; the Quick Notes board needs `cards.category` and `decks.meta`; folders need `decks.category`; and the current file adds indexes the sync path depends on — in particular `cards (deck_id, position)`, without which every card download *and* every deck's card count on the My Decks list is a sequential scan of the whole `cards` table, because Postgres does not index a foreign key column for you.
 
-<details>
-<summary><strong>The one case that needs a manual step: a deployment older than authentication</strong></summary>
+### The one case that needs a manual step: a deployment older than authentication
 
 On a project that predates auth, `decks` has no `user_id`, and the rows already in it have no owner. RLS then hides them from every account, so the app shows an empty library while the data sits there untouched.
 
@@ -627,7 +621,7 @@ The SQL can't guess who they belong to, so it adds the column, leaves it nullabl
 NOTICE:  decks.user_id left nullable: 12 row(s) have no owner and are hidden by RLS.
 ```
 
-Find your uuid under **Authentication → Users**, claim the rows, then re-run the file so the column is tightened to `NOT NULL`:
+Find your uuid under **Authentication → Users**, claim the rows, then re-run the setup SQL so the column is tightened to `NOT NULL`:
 
 ```sql
 UPDATE decks SET user_id = '<your-auth-user-uuid>' WHERE user_id IS NULL;
@@ -635,16 +629,11 @@ UPDATE decks SET user_id = '<your-auth-user-uuid>' WHERE user_id IS NULL;
 
 Cards need nothing — they inherit ownership through their deck.
 
-</details>
-
-<details>
-<summary><strong>The older per-feature SQL files</strong></summary>
+### The older per-feature SQL files
 
 `supabase_schema.sql`, `supabase_image_storage.sql`, `supabase_deck_categories.sql`, `supabase_deck_notes.sql`, `supabase_deck_tombstones.sql`, `supabase_quick_notes.sql` and `supabase_style_settings.sql` still ship, so that anyone following older setup notes or an older copy of this README still finds what they reference. **You don't need any of them** — `supabase_setup.sql` is their union, and running one afterwards is a no-op.
 
 The one thing not folded in is the 40-odd seeded layout defaults in `supabase_style_settings.sql`, which pre-fill the shared `global` style row. That's cosmetic and optional: without it the app uses its own built-in defaults.
-
-</details>
 
 ---
 
