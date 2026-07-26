@@ -1465,6 +1465,83 @@ function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true
 // reduces the merge to exactly the old take-the-cloud behaviour for decks that
 // predate this change.
 
+// ── Per-card delete tombstones ──────────────────────────────────────────────
+// `dirty` alone cannot express "I deleted this card": a deleted card leaves no
+// object behind to carry a flag. That gap is what let deletions un-happen. The
+// push is authoritative (pushDeckRowsToCloud prunes every cloud card missing
+// from the snapshot it sends), and the direction is chosen per deck purely by
+// timestamp — so a device holding a stale copy of a deck it has ALSO edited
+// takes the push branch, never pulls, and re-upserts the card another device
+// deleted. The card then comes back on every device on their next pull.
+//
+// So each snapshot carries `deletedCardIds` — { cardId: iso } — the ids this
+// device deleted. Two rules use it:
+//   push : a cloud card absent locally is pruned only if it is tombstoned here.
+//          Otherwise it was ADDED on another device, and pruning it would be
+//          the same bug pointing the other way.
+//   pull : a cloud row that is tombstoned here is not re-adopted; the deck is
+//          marked as owing a push so the deletion is re-asserted in the cloud.
+// A tombstone is retired as soon as the cloud is observed not to have that id —
+// the deletion has propagated and nothing can resurrect it (a device still
+// holding the card clean drops it under the clean-and-absent rule). The age cap
+// is only a backstop for a device that never syncs again.
+const CARD_TOMBSTONE_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
+const CARD_TOMBSTONE_MAX = 2000;
+
+// Always a fresh plain object, so callers can mutate it without touching the
+// snapshot they read it from.
+function readCardTombstones(snapshot) {
+  const raw = snapshot?.deletedCardIds;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [id, iso] of Object.entries(raw)) {
+    if (id) out[String(id)] = typeof iso === "string" ? iso : new Date(0).toISOString();
+  }
+  return out;
+}
+
+// Age + count cap, so a deck that is edited for years can't grow an unbounded
+// tombstone map inside a snapshot that has to fit in localStorage. Oldest go
+// first when over the count cap.
+function pruneCardTombstones(map) {
+  const cutoff = Date.now() - CARD_TOMBSTONE_MAX_AGE_MS;
+  let entries = Object.entries(map).filter(([, iso]) => tsMs(iso) >= cutoff);
+  if (entries.length > CARD_TOMBSTONE_MAX) {
+    entries.sort((a, b) => tsMs(b[1]) - tsMs(a[1]));
+    entries = entries.slice(0, CARD_TOMBSTONE_MAX);
+  }
+  return Object.fromEntries(entries);
+}
+
+// The invariant every writer has to keep: a card that is PRESENT is not
+// deleted. Snapshot paths that add cards by hand (a restore, a quick note
+// pinned into another deck) must call this, or a re-created id would keep a
+// tombstone that quietly blocks it from ever syncing again.
+function dropTombstonesForLiveCards(snapshot) {
+  const map = readCardTombstones(snapshot);
+  if (!Object.keys(map).length) return snapshot;
+  for (const card of snapshot.cards || []) delete map[String(card.id)];
+  if (Object.keys(map).length) snapshot.deletedCardIds = map;
+  else delete snapshot.deletedCardIds;
+  return snapshot;
+}
+
+// Carries a deck's tombstones across a save: ids that were in the copy being
+// replaced but aren't in the new one were just deleted here; ids that are back
+// (an undo, or a re-import of the same card id) retire their tombstone, because
+// the user's most recent action is the one that counts.
+function recordDeletedCardIds(snapshot, previousSnapshot, stampIso) {
+  const map = readCardTombstones(previousSnapshot);
+  const liveIds = new Set((snapshot.cards || []).map((card) => String(card.id)));
+  for (const card of previousSnapshot?.cards || []) {
+    const id = String(card.id || "");
+    if (id && !liveIds.has(id)) map[id] = stampIso;
+  }
+  const pruned = pruneCardTombstones(map);
+  snapshot.deletedCardIds = pruned;
+  return dropTombstonesForLiveCards(snapshot);
+}
+
 // The fields that make a card materially different — i.e. the ones worth
 // pushing. Deliberately excludes position (tracked by the deck's card order)
 // and noteAnchor (device-local; the cards table has no column for it).
@@ -1530,17 +1607,30 @@ function stampCardSyncState(snapshot, previousSnapshot, stampIso, { synced = fal
 // Result order follows the cloud's row order (already sorted by `position`),
 // with kept local-only cards appended in their existing relative order — they
 // have no cloud position to slot into yet. `keptLocal` is what tells the caller
-// this deck still owes the cloud a push after the pull.
+// this deck still owes the cloud a push after the pull, and so is
+// `blockedResurrections` — a cloud row this device has tombstoned is skipped
+// here and has to be re-deleted in the cloud by the following push.
 function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbackIso) {
   const localCards = Array.isArray(oldSnapshot?.cards) ? oldSnapshot.cards : [];
   const localById = new Map(localCards.map((card) => [String(card.id), card]));
+  const tombstones = readCardTombstones(oldSnapshot);
   const merged = [];
   const seenLocalIds = new Set();
+  const cloudIds = new Set();
   let keptLocal = 0;
+  let blockedResurrections = 0;
 
   for (const row of cloudCards || []) {
     const id = String(row.id || "");
     if (!id) continue;
+    cloudIds.add(id);
+    // Deleted here, still in the cloud — another device re-pushed it, or our own
+    // delete hasn't been pushed yet. Either way, adopting it back is exactly the
+    // resurrection this tombstone exists to stop.
+    if (tombstones[id]) {
+      blockedResurrections += 1;
+      continue;
+    }
     const local = localById.get(id);
     const fromCloud = {
       id,
@@ -1578,7 +1668,83 @@ function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbackIso) {
     merged.push({ ...card, id });
   }
 
-  return { cards: merged, keptLocal };
+  // Retire the tombstones the cloud has already honoured. Keeping them past
+  // that point would block a card the user later re-creates with the same id
+  // (a restore from backup, say) from ever syncing again.
+  const deletedCardIds = pruneCardTombstones(
+    Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudIds.has(id)))
+  );
+
+  return { cards: merged, keptLocal, blockedResurrections, deletedCardIds };
+}
+
+// The push side of the same story. `pushLibraryDeckToCloud` sends the local card
+// list and pushDeckRowsToCloud deletes every cloud row missing from it — which is
+// only correct if the local list is a superset of "what the cloud has, minus what
+// I deleted". This makes it one, using the deck's cloud rows (already fetched for
+// the push diff) as the reference:
+//
+//   local, in cloud            → push
+//   local only, dirty          → push   (added/edited here, cloud hasn't seen it)
+//   local only, clean          → DROP   (it reached the cloud once and is gone
+//                                        from it now — deleted on another device)
+//   cloud only, tombstoned here → omit  (deleted here; the push prunes it)
+//   cloud only, not tombstoned  → adopt (added on another device since our last
+//                                        pull; pushing without it would delete
+//                                        someone else's new card)
+//
+// Adopted rows are appended rather than slotted in at their cloud position: the
+// push restamps positions from array order anyway, and appending keeps this
+// device's own ordering intact.
+function reconcileCardsBeforePush(snapshot, cloudCards) {
+  const localCards = Array.isArray(snapshot?.cards) ? snapshot.cards : [];
+  const tombstones = readCardTombstones(snapshot);
+  const cloudById = new Map((cloudCards || []).map((row) => [String(row.id), row]));
+  const localIds = new Set(localCards.map((card) => String(card.id)));
+
+  // Dropping a clean local-only card only means "deleted elsewhere" if this
+  // snapshot actually carries per-card sync state. A snapshot written by a build
+  // that predates it has no `dirty` anywhere, so every card would read as clean
+  // and a legitimately-unpushed card would be destroyed instead of uploaded.
+  // Keep everything in that case; the push itself writes the fields back, so a
+  // deck is legacy for exactly one sync.
+  const hasCardSyncState = localCards.some((card) => card.dirty !== undefined || card.updatedAt);
+
+  const cards = [];
+  let dropped = 0;
+  for (const card of localCards) {
+    const id = String(card.id || "");
+    if (!id) continue;
+    if (hasCardSyncState && !cloudById.has(id) && !cardIsDirty(card)) {
+      dropped += 1;
+      continue;
+    }
+    cards.push(card);
+  }
+
+  let adopted = 0;
+  for (const row of cloudCards || []) {
+    const id = String(row.id || "");
+    if (!id || localIds.has(id) || tombstones[id]) continue;
+    adopted += 1;
+    cards.push({
+      id,
+      question: row.question,
+      answer: row.answer,
+      status: normalizeCardStatus(row.status),
+      category: row.category ? String(row.category) : null,
+      dirty: false,
+      updatedAt: row.updated_at || new Date().toISOString()
+    });
+  }
+
+  // Same retirement rule as the pull: a tombstone whose card is no longer in the
+  // cloud has done its job.
+  const deletedCardIds = pruneCardTombstones(
+    Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudById.has(id)))
+  );
+
+  return { cards, dropped, adopted, deletedCardIds };
 }
 
 // Shared HTML for a sync report — every deck reconcileAllDecks() touched,
@@ -4733,6 +4899,9 @@ async function applyRestore(report, { autoBackup = true } = {}) {
         cardsAdded += entry.backupDeck.cards.length;
       } else if (entry.status === "conflict") {
         const merged = mergeDeckSnapshots(entry.localSnapshot, entry.backupDeck, entry.backupNewer);
+        // A restore is an explicit "this should exist again" for cards too, not
+        // just decks — retire the tombstone of anything the backup brought back.
+        dropTombstonesForLiveCards(merged.snapshot);
         localStorage.setItem(LOCAL_DECK_PREFIX + entry.localId, JSON.stringify(merged.snapshot));
         upsertRestoredMeta(entry.localId, merged.snapshot, entry.backupDeck);
         if (merged.snapshot.deckId) restoredDeckIds.push(String(merged.snapshot.deckId));
@@ -5389,7 +5558,24 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
 // will push it right back. This durable, shared list is what lets that other
 // device learn "this deck was deleted elsewhere" before it re-pushes.
 // Best-effort: an unmigrated project (table doesn't exist yet) degrades to the
-// old local-only behavior rather than breaking sync.
+// old local-only behavior rather than breaking sync — but says so, see below.
+//
+// Set when the deleted_decks table doesn't exist. Cross-device deck deletion is
+// then impossible: every device holding a copy of a deck deleted elsewhere
+// re-pushes it on its next sync, forever. That used to be a console warning
+// nobody sees on a phone; reconcileAllDecks now surfaces it.
+let deckTombstoneTableMissing = false;
+
+// PostgREST reports an unknown table as 42P01 ("undefined_table"), sometimes as
+// a bare message. Distinguished from a transient failure because the remedy is
+// a migration, not a retry.
+function isMissingRelationError(error) {
+  if (!error) return false;
+  if (String(error.code || "") === "42P01") return true;
+  const message = String(error.message || error).toLowerCase();
+  return message.includes("does not exist") || message.includes("could not find the table");
+}
+
 async function fetchDeletedDeckIds() {
   try {
     // Paged for the same reason fetchCardsForDecks is: PostgREST caps a response
@@ -5409,8 +5595,10 @@ async function fetchDeletedDeckIds() {
       for (const row of rows) ids.push(String(row.deck_id));
       if (rows.length < pageSize) break;
     }
+    deckTombstoneTableMissing = false;
     return ids;
   } catch (error) {
+    deckTombstoneTableMissing = isMissingRelationError(error);
     console.warn("Could not fetch deck-deletion tombstones (run supabase_deck_tombstones.sql?)", error);
     return [];
   }
@@ -11888,6 +12076,12 @@ function emptySyncStats() {
     // was older — the merge's whole reason to exist. Reported so a conflict is
     // visible rather than something the user has to notice by its absence.
     cardsKeptLocal: 0,
+    // The push side of the same conflict: cards another device deleted (so this
+    // device dropped its stale copy instead of re-uploading it) and cards
+    // another device added (so this device adopted them instead of pruning
+    // them). See reconcileCardsBeforePush.
+    cardsRemovedHere: 0,
+    cardsAdoptedHere: 0,
     notesChanged: false,
     titleChanged: false,
     deckCategoryChanged: false,
@@ -11901,7 +12095,7 @@ function emptySyncStats() {
 
 // The counted stats (summed across decks), as opposed to the deck-level
 // booleans below them, which are counted as "how many decks".
-const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal"];
+const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere"];
 const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted"];
 
 // Human phrases for a diff, most consequential first. Returns an array so
@@ -11917,6 +12111,8 @@ function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   if (stats.cardsMoved) parts.push(`${plural(stats.cardsMoved, "card", "cards")} reordered`);
   if (stats.categoryChanges) parts.push(`${plural(stats.categoryChanges, "note", "notes")} recategorised`);
   if (stats.cardsKeptLocal) parts.push(`${plural(stats.cardsKeptLocal, "card", "cards")} kept from this device (newer than the cloud)`);
+  if (stats.cardsRemovedHere) parts.push(`${plural(stats.cardsRemovedHere, "card", "cards")} removed here (deleted on another device)`);
+  if (stats.cardsAdoptedHere) parts.push(`${plural(stats.cardsAdoptedHere, "card", "cards")} picked up here (added on another device)`);
   const flag = (value, label) => {
     if (!value) return;
     parts.push(asTotals && value > 1 ? `${label} on ${value} decks` : label);
@@ -12007,7 +12203,8 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
   // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this
   // device changed and hasn't pushed yet survive the pull instead of being
   // silently destroyed by the cloud copy.
-  const { cards: mergedCards, keptLocal } = mergeCloudCardsIntoSnapshot(oldSnapshot, cards, cloudIso);
+  const { cards: mergedCards, keptLocal, blockedResurrections, deletedCardIds } =
+    mergeCloudCardsIntoSnapshot(oldSnapshot, cards, cloudIso);
 
   const snapshot = {
     app: "recall",
@@ -12027,6 +12224,9 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     cards: mergedCards,
     localDeckId: localId
   };
+  // Deletions this device made and the cloud hasn't honoured yet. Dropping them
+  // here would let the very next pull adopt the cards straight back.
+  if (Object.keys(deletedCardIds).length) snapshot.deletedCardIds = deletedCardIds;
 
   // Deck notes are free markdown, so the card-level merge has nothing to say
   // about them and they stay last-write-wins. But losing an edit outright is
@@ -12103,7 +12303,9 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     // merge KEPT local cards, this deck still owes the cloud a push — stamping
     // it with the cloud's time would make the push pass skip it and those
     // rescued cards would sit here forever, never reaching the other devices.
-    updatedAt: keptLocal ? new Date().toISOString() : cloudIso,
+    // Same for a blocked resurrection: the cloud still holds a card this device
+    // deleted, and only a push will remove it there.
+    updatedAt: (keptLocal || blockedResurrections) ? new Date().toISOString() : cloudIso,
     createdAt: cloud.created_at || existing?.createdAt || cloudIso,
     // Distinct from updatedAt (which also bumps on plain local edits) — this
     // specifically means "last confirmed match with the cloud", surfaced in
@@ -12141,6 +12343,45 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
   const now = new Date().toISOString();
   const title = snapshot.deckTitle || "Untitled Deck";
   const deckCategory = normalizeDeckCategory(snapshot.deckCategory);
+
+  // Reconcile against the deck's actual cloud rows BEFORE sending anything. The
+  // push is authoritative — it prunes every cloud card missing from what we send
+  // — but the copy we hold may be stale, and a stale copy pushed as-is both
+  // resurrects cards other devices deleted and deletes cards they added. The
+  // reconcile is only possible when we genuinely know the cloud's card list:
+  // `webCards` is null for a deck the cloud doesn't have yet (nothing to
+  // reconcile against) and fetchCardsForDecks throws rather than returning a
+  // partial list, so an array here is always complete. See
+  // reconcileCardsBeforePush.
+  let cardsRemovedHere = 0;
+  let cardsAdoptedHere = 0;
+  // Ids this push is about to delete from the cloud on a tombstone's say-so.
+  // Once the push lands they've served their purpose and are retired below.
+  let tombstonesBeingPruned = [];
+  if (cloudExists && Array.isArray(webCards)) {
+    const reconciled = reconcileCardsBeforePush(snapshot, webCards);
+    cardsRemovedHere = reconciled.dropped;
+    cardsAdoptedHere = reconciled.adopted;
+    tombstonesBeingPruned = Object.keys(reconciled.deletedCardIds);
+    const tombstonesRetired = Object.keys(readCardTombstones(snapshot)).length !== tombstonesBeingPruned.length;
+    snapshot.cards = reconciled.cards;
+    if (tombstonesBeingPruned.length) snapshot.deletedCardIds = reconciled.deletedCardIds;
+    else delete snapshot.deletedCardIds;
+    // Persist it now, not after the push: the merged list is the truth about
+    // this device from this moment on, and a push that fails halfway must not
+    // leave the resurrections it was about to re-upload sitting in the snapshot.
+    // Only when something actually moved, though — most syncs change nothing
+    // here, and rewriting every deck's snapshot on every sync is pure quota
+    // churn on the device where quota is already the binding constraint.
+    if (cardsRemovedHere || cardsAdoptedHere || tombstonesRetired) {
+      try {
+        localStorage.setItem(LOCAL_DECK_PREFIX + localMeta.id, JSON.stringify(snapshot));
+      } catch (error) {
+        console.warn("Could not save the pre-push card merge", error);
+      }
+    }
+  }
+
   // What we're about to put in the cloud, captured before the await so the
   // write-back below can tell "still the same card" from "edited during the
   // push" without trusting the snapshot object we're holding.
@@ -12187,6 +12428,13 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
       stillDirty = true;
     }
   }
+  // The push deleted these rows from the cloud, so the tombstones that asked for
+  // it are spent. Retired one id at a time, off the RE-READ map: a card deleted
+  // while this push was in flight has its own fresh tombstone that must survive.
+  if (tombstonesBeingPruned.length && liveSnapshot.deletedCardIds) {
+    for (const id of tombstonesBeingPruned) delete liveSnapshot.deletedCardIds[id];
+    if (!Object.keys(liveSnapshot.deletedCardIds).length) delete liveSnapshot.deletedCardIds;
+  }
   localStorage.setItem(LOCAL_DECK_PREFIX + localMeta.id, JSON.stringify(liveSnapshot));
 
   const index = readLocalDeckIndex();
@@ -12213,6 +12461,10 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
   // otherwise go unreported — a rename or a notes edit on its own looked
   // identical to "nothing happened".
   const stats = { ...pushStats };
+  // What the pre-push reconcile changed on THIS device, as opposed to in the
+  // cloud — a deletion or an addition made on another device, landing here.
+  stats.cardsRemovedHere = cardsRemovedHere;
+  stats.cardsAdoptedHere = cardsAdoptedHere;
   if (isNewDeck) {
     stats.notesChanged = Boolean(String(snapshot.notes || "").trim());
   } else {
@@ -12220,7 +12472,10 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     stats.titleChanged = syncTextChanged(title, cloudDeck?.title || "");
     stats.deckCategoryChanged = normalizeDeckCategory(cloudDeck?.category) !== deckCategory;
   }
-  return { now, stats };
+  // `localCardsChanged` tells the caller the on-device card list moved under the
+  // user's feet, so an open deck has to be reloaded to show it (the same reason
+  // a pull reloads the active deck).
+  return { now, stats, localId: localMeta.id, localCardsChanged: cardsRemovedHere > 0 || cardsAdoptedHere > 0 };
 }
 
 let reconcileInFlight = false;
@@ -12408,6 +12663,14 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudIdSet = new Set(cloudDecks.map((d) => String(d.id)));
 
+    // Without the tombstone table, deleting a deck is a one-device-only event:
+    // every other device still holding it pushes it back on its next sync and
+    // the deck reappears everywhere. The user can't diagnose that from the app,
+    // so say it — once per explicit sync, with the fix.
+    if (deckTombstoneTableMissing && explicit) {
+      showToast("Deck deletions can't sync — run supabase_deck_tombstones.sql in Supabase", "error");
+    }
+
     // Cross-device delete: a deck this device never tombstoned locally, but
     // that another device deleted (and recorded in the shared deleted_decks
     // table). Adopt the tombstone and remove the stale local copy now, before
@@ -12593,6 +12856,13 @@ async function reconcileAllDecks({ explicit = false } = {}) {
         } else {
           alreadyMatched.push(localMeta.title || "Untitled deck");
         }
+        // The pre-push merge rewrote this deck's card list on this device. If
+        // it's the deck on screen, the in-memory copy is now the stale one — and
+        // the next autosave would write it straight back, undoing the merge. Same
+        // reload a pull does, for the same reason.
+        if (res.localCardsChanged && state.localDeckId && res.localId === state.localDeckId) {
+          activePulledLocalId = res.localId;
+        }
       } catch (e) {
         failed++;
         deckLog.push({ title: localMeta.title || "Untitled deck", direction: "failed", error: e?.message || String(e) });
@@ -12745,6 +13015,7 @@ function appendCardToLocalLibraryDeck(deckId, card, now) {
     // saveDeckToLibrary's stamping — mark it here or the next pull would treat
     // this brand-new card as "clean and absent from the cloud" and delete it.
     snapshot.cards.push({ ...card, dirty: true, updatedAt: resolvedNow });
+    dropTombstonesForLiveCards(snapshot);
     localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
   } catch (error) {
     console.warn("Could not append card to local deck snapshot", error);
@@ -12870,6 +13141,11 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
   // it mutates snapshot.cards, and deckContentSignature ignores these fields but
   // there's no reason to depend on that.
   stampCardSyncState(snapshot, previousSnapshot, updatedAt || nowIso, { synced });
+  // Every local card deletion funnels through here (the delete handlers mutate
+  // state and let the autosave persist it), so this diff is where a deletion
+  // becomes a durable fact rather than just an absence the next push can't
+  // distinguish from "never had it". See recordDeletedCardIds.
+  recordDeletedCardIds(snapshot, previousSnapshot, updatedAt || nowIso);
 
   try {
     localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
