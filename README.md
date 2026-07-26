@@ -693,22 +693,9 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
   Restoring puts decks back into those folders and files each restored image into this device's own `decks/{slug}--{id}` Storage folder. **A hand-made zip works too**: drop deck `.json` files into folders of your own naming and restore reads the folder path as the deck's folder (a deck that carries its own category keeps it). Files at the root land in *Uncategorized*, and `__MACOSX/`, `.DS_Store` and non-deck JSON are ignored. The restore preview names the folder each deck will land in before anything is written.
 
-**Starting over.** Wipes every table and every storage bucket, for all users, without dropping anything — tables, columns, indexes, RLS policies, triggers, buckets and accounts all survive, so the app keeps working from empty. Back up first (**My Decks → ⋯ → Export All → Backup (.zip)**); this is not undoable.
+**Starting over.** Use **☰ → Storage & Data** in the app. It shows what the account is holding — decks, cards and delete records in the database, every file in the `images` bucket (grouped by folder, with the unused ones singled out), and what this device keeps locally — and empties any of it: unused images, all images, all cloud decks and cards, this device's copy, or everything at once. Nothing is dropped: tables, columns, indexes, RLS policies, buckets and your account all survive, so the app keeps working and simply starts from empty.
 
-```sql
-BEGIN;
-
--- Every deck, card and tombstone, plus synced fonts/sizes/layout.
--- (cards is listed alongside decks because it references it.)
-TRUNCATE TABLE cards, decks, deleted_decks, app_style_settings;
-
--- Every uploaded file, in every bucket. The buckets themselves stay.
-DELETE FROM storage.objects;
-
-COMMIT;
-```
-
-Two things this does not reach: the files behind those storage rows are only reclaimed by emptying the bucket from **Dashboard → Storage**, and each device keeps its own copy of the library — clear the site's data in the browser (DevTools → Application → Clear site data) to reset a device as well.
+Do the storage half here rather than in SQL — Supabase blocks it outright (`ERROR: 42501: Direct deletion from storage tables is not allowed. Use the Storage API instead.`), because rows deleted that way would leave the files themselves orphaned. The panel goes through the Storage API, so the files actually go. Take a backup first (**My Decks → ⋯ → Export All → Backup (.zip)**) — none of it is undoable, and a cloud wipe propagates: every device that had synced those decks drops its copy on its next sync.
 
 **Storage limits.** The free tier's 500 MB database is far more than text decks will ever need; the 1 GB storage quota is the one to watch if you paste a lot of images. Uploads are downscaled to 1600 px and re-encoded as WebP in the browser first, so typical screenshots land well under 100 KB — but GIFs and SVGs are passed through untouched to keep them animated/vector.
 

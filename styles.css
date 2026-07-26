@@ -3864,6 +3864,251 @@ svg.nomnoml-light-svg [fill="none"] {
    A deck-wide list of every {{cloze}} (notes + card faces) with a sentence of
    context on either side, plus a "quick-cloze a table column" tool. Mirrors the
    style-panel overlay shell; reserves safe-area insets so it clears the notch. */
+/* ── Storage & Data panel ─────────────────────────────────────────────────
+   Same shell geometry as the Cloze panel (fixed overlay, safe-area padding,
+   scrolling body) — see .cloze-panel below, which this deliberately mirrors. */
+.storage-panel {
+  position: fixed;
+  z-index: 115;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  padding: calc(18px + var(--safe-top)) calc(18px + var(--safe-right)) calc(18px + var(--safe-bottom)) calc(18px + var(--safe-left));
+}
+
+.storage-shell {
+  display: grid;
+  width: min(720px, 100%);
+  max-height: min(90vh, 820px);
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: var(--modal-radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.storage-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px;
+}
+
+.storage-head h1 {
+  margin: 0;
+  font-size: 1.12rem;
+  letter-spacing: 0;
+}
+
+.storage-head p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.storage-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.storage-refresh {
+  min-height: var(--card-hdr-btn);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.storage-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.storage-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--panel-corner-radius, 14px);
+  background: var(--panel-2);
+  padding: 14px;
+}
+
+.storage-card.is-danger {
+  border-color: color-mix(in srgb, #ef4444 40%, var(--line));
+}
+
+.storage-card h2 {
+  margin: 0;
+  font-size: 0.96rem;
+}
+
+.storage-sub {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.storage-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.storage-stat {
+  flex: 1 1 30%;
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel);
+  padding: 10px 8px;
+}
+
+.storage-stat strong {
+  font-size: 1.15rem;
+}
+
+.storage-stat span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.storage-stat.is-warn {
+  border-color: color-mix(in srgb, #f59e0b 50%, var(--line));
+}
+
+.storage-stat.is-warn strong {
+  color: #f59e0b;
+}
+
+.storage-groups {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  max-height: 210px;
+  overflow-y: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.storage-groups li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  padding: 5px 2px;
+  font-size: 0.78rem;
+}
+
+.storage-group-name {
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-group-count,
+.storage-group-size {
+  color: var(--muted);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.storage-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.storage-note.is-warning {
+  color: var(--text);
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+  border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
+  border-radius: var(--toolbar-button-radius);
+  padding: 8px 10px;
+}
+
+.storage-busy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.storage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.storage-action {
+  flex: 1 1 46%;
+  min-height: var(--action-button-height, 40px);
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.storage-action:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.storage-action.is-danger {
+  border-color: color-mix(in srgb, #ef4444 45%, var(--line));
+  color: #ef4444;
+}
+
+.storage-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.storage-timestamp {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+@media (max-width: 560px) {
+  .storage-stat { flex: 1 1 44%; }
+  .storage-action { flex: 1 1 100%; }
+}
+
 .cloze-panel {
   position: fixed;
   z-index: 115;

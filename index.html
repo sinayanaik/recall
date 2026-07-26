@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260726-16">
+    <link rel="stylesheet" href="styles.css?v=20260727-01">
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -81,6 +81,7 @@
 
           <span class="drawer-section-label">App</span>
           <button class="tool-button" id="styleBtn" type="button" title="Edit style" aria-label="Edit style">&#9711; Themes</button>
+          <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — decks, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
           <button class="tool-button" id="logoutBtn" type="button" title="Sign out" hidden>&#8594; Sign Out</button>
         </div>
@@ -469,6 +470,26 @@
           <button id="applyStyleBtn" type="button">Apply</button>
           <button id="syncUpBtn" type="button">Sync Up</button>
         </div>
+      </div>
+    </section>
+
+    <!-- Storage & Data. Supabase blocks deleting storage objects straight from
+         SQL (storage.protect_delete), so bucket cleanup has to go through the
+         Storage API — which means it belongs in the app, next to the numbers
+         that tell you what is worth cleaning. -->
+    <section class="storage-panel" id="storagePanel" hidden aria-label="Storage and data">
+      <div class="storage-shell">
+        <div class="storage-head">
+          <div>
+            <h1>Storage &amp; Data</h1>
+            <p id="storageHeadSub">What your account is storing, and how to clear it.</p>
+          </div>
+          <div class="storage-head-actions">
+            <button class="storage-refresh" id="storageRefreshBtn" type="button" title="Recount everything">&#8635; Refresh</button>
+            <button class="icon-button" id="closeStorageBtn" type="button" aria-label="Close storage panel">&#215;</button>
+          </div>
+        </div>
+        <div class="storage-body" id="storageBody"></div>
       </div>
     </section>
 
@@ -959,6 +980,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260726-16"></script>
+    <script src="app.js?v=20260727-01"></script>
   </body>
 </html>
