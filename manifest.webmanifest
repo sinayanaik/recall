@@ -1,14 +1,20 @@
 {
-  "name": "Markdown Flashcards",
-  "short_name": "Flashcards",
-  "description": "Study Markdown flashcard decks with known and review stacks.",
+  "id": "./",
+  "name": "Recall",
+  "short_name": "Recall",
+  "description": "Markdown flashcards and notes that work fully offline — study, edit and import with no connection, then sync when you are back.",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "background_color": "#0d1110",
   "theme_color": "#0d1110",
   "categories": ["education", "productivity"],
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
   "icons": [
     {
       "src": "icons/icon-192.png",

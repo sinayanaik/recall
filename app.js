@@ -1764,7 +1764,11 @@ function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {
         <div class="sync-report-detail">${escapeHtml(entry.error || "Unknown error")}</div>
       </li>`;
     }
-    const dirLabel = entry.direction === "pulled" ? "⬇ Downloaded from cloud" : "⬆ Uploaded to cloud";
+    const dirLabel = entry.direction === "pulled"
+      ? "⬇ Downloaded from cloud"
+      : entry.direction === "removed"
+        ? "🗑 Removed from this device"
+        : "⬆ Uploaded to cloud";
     // A replaced notes body is the one thing sync can still overwrite, so it
     // gets an actual way out rather than only a line of prose saying it happened.
     const recover = entry.notesConflicted && entry.localId
@@ -5484,18 +5488,31 @@ async function fetchCloudDeckList() {
 // come back in fetchCloudDeckRows, for the handful of decks that need them.
 const DECK_INDEX_COLUMNS = "id, title, category, updated_at, last_accessed_at, created_at, current_card_index";
 
+// PAGED, and that is now load-bearing rather than tidy: reconcile treats a deck
+// missing from this list as deleted in the cloud (see the deletion-adoption pass
+// in reconcileAllDecks). PostgREST caps a response at ~1000 rows, so an unpaged
+// read would silently present every deck past the cap as deleted and take the
+// local copies with it. Keep asking until a short page comes back.
 async function fetchCloudDeckIndex() {
-  const { data, error } = await withTimeout(
-    abortable((signal) => supabaseClient
-      .from("decks")
-      .select(DECK_INDEX_COLUMNS)
-      .order("updated_at", { ascending: false })
-      .abortSignal(signal)),
-    CLOUD_TIMEOUT_MS,
-    "read deck index"
-  );
-  if (error) throw error;
-  return data || [];
+  const rows = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await withTimeout(
+      abortable((signal) => supabaseClient
+        .from("decks")
+        .select(DECK_INDEX_COLUMNS)
+        .order("updated_at", { ascending: false })
+        .range(from, from + pageSize - 1)
+        .abortSignal(signal)),
+      CLOUD_TIMEOUT_MS,
+      "read deck index"
+    );
+    if (error) throw error;
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
 }
 
 // Full rows (notes + meta included) for a specific set of decks — the ones a
@@ -12089,14 +12106,18 @@ function emptySyncStats() {
     // A pull replaced deck notes this device had also edited. Notes are free
     // markdown and can't be merged card-wise, so the losing copy is stashed
     // (see NOTES_CONFLICT_SUFFIX) and flagged here.
-    notesConflicted: false
+    notesConflicted: false,
+    // The whole deck was deleted on another device, so this device dropped its
+    // copy instead of re-uploading it. A deck-level flag, not a card count —
+    // there is no card detail to report once the deck is gone.
+    deckRemovedHere: false
   };
 }
 
 // The counted stats (summed across decks), as opposed to the deck-level
 // booleans below them, which are counted as "how many decks".
 const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere"];
-const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted"];
+const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "deckRemovedHere"];
 
 // Human phrases for a diff, most consequential first. Returns an array so
 // callers can join, count, or truncate it. With `asTotals`, the deck-level
@@ -12122,6 +12143,7 @@ function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   flag(stats.deckCategoryChanged, "deck category changed");
   flag(stats.noteCategoriesChanged, "note categories added/renamed/removed");
   flag(stats.notesConflicted, "your notes edit was replaced by a newer one (a copy was kept)");
+  flag(stats.deckRemovedHere, "removed here (deleted on another device)");
   return parts;
 }
 
@@ -12688,6 +12710,57 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       }
     }
 
+    // The same rule the card merge uses, at deck level: a deck this device has
+    // CONFIRMED in the cloud at least once (deckId + lastSyncedAt) and that is
+    // no longer there was deleted on another device. Absence is the deletion.
+    //
+    // Without this, the push pass below reads "no cloud row" as "brand new here"
+    // and uploads it again, which is a loop, not a one-off: the deleting device
+    // still holds its local tombstone, sees the row it deleted back in the
+    // cloud, and deletes it again — so the two devices trade the same decks
+    // forever, each reporting a perfectly successful sync. That is exactly what
+    // a 130-vs-78 deck count with "Synced" on both screens looks like.
+    //
+    // The shared deleted_decks table was supposed to prevent this, but it only
+    // works if every delete's write to it succeeded — offline, a timeout, or a
+    // project that never ran supabase_deck_tombstones.sql all leave no record,
+    // and then nothing stops the resurrection. This rule needs no shared state
+    // at all: it reads the deletion out of the cloud's own deck list. Safe only
+    // because fetchCloudDeckIndex is paged and throws rather than returning a
+    // partial list — a truncated read here would delete a library.
+    const adoptedDeletions = [];
+    for (const localMeta of readLocalDeckIndex()) {
+      if (!localMeta.deckId) continue;                          // local-only: push it, don't delete it
+      if (!localMeta.lastSyncedAt) continue;                    // never confirmed in the cloud
+      if (cloudIdSet.has(String(localMeta.deckId))) continue;   // still there
+      if (isDeckTombstoned(localMeta.deckId)) continue;         // handled by the pass above
+      adoptedDeletions.push({ title: localMeta.title || "Untitled deck", deckId: String(localMeta.deckId) });
+      // Tombstone locally too, so a row that reappears (another device mid-cycle)
+      // is re-deleted rather than adopted back.
+      tombstoneDeck(localMeta.deckId);
+      const wasActive = state.deckId && String(state.deckId) === String(localMeta.deckId);
+      deleteDeckFromLibrary(localMeta.id);
+      if (wasActive) resetActiveDeckAfterDelete();
+    }
+    if (adoptedDeletions.length) {
+      // Best-effort shared record, so devices that haven't synced since learn it
+      // from the table instead of re-deriving it. Failure is fine — the rule
+      // above doesn't depend on it.
+      const records = adoptedDeletions
+        .filter((entry) => !remoteDeletedSet.has(entry.deckId))
+        .map((entry) => ({ deck_id: entry.deckId }));
+      if (records.length) {
+        const { error: recordError } = await withTimeout(abortable((signal) => supabaseClient.from("deleted_decks").upsert(records).abortSignal(signal)), CLOUD_TIMEOUT_MS, "record adopted deletions");
+        if (recordError) console.warn("Could not record adopted deck deletions", recordError);
+        else for (const row of records) remoteDeletedSet.add(String(row.deck_id));
+      }
+      // Named in the report rather than counted silently — 52 decks vanishing is
+      // the correct outcome here, but it must never be a surprise.
+      for (const entry of adoptedDeletions) {
+        deckLog.push({ title: entry.title, direction: "removed", ...emptySyncStats(), deckRemovedHere: true });
+      }
+    }
+
     // Reconcile local tombstones against the cloud. A tombstone may only be
     // forgotten once the deck row is gone AND its durable cross-device record
     // (deleted_decks) is in place. Pruning on "row is gone" alone is unsafe:
@@ -12912,6 +12985,12 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     const parts = [];
     if (pulled) parts.push(`${pulled} deck${pulled === 1 ? "" : "s"} downloaded from the cloud`);
     if (pushed) parts.push(`${pushed} deck${pushed === 1 ? "" : "s"} uploaded to the cloud`);
+    // Deliberately its own clause rather than folded into the change detail:
+    // decks disappearing from this device is the one sync outcome the user most
+    // needs to see stated plainly.
+    if (adoptedDeletions.length) {
+      parts.push(`${adoptedDeletions.length} deck${adoptedDeletions.length === 1 ? "" : "s"} removed here (deleted on another device)`);
+    }
     if (imagesUploaded) parts.push(`${imagesUploaded} image${imagesUploaded === 1 ? "" : "s"} uploaded`);
     const changes = describeSyncStats(totalSyncStats(deckLog), { asTotals: true });
     const detail = changes.length ? ` — ${changes.join(", ")}` : "";
@@ -17362,10 +17441,26 @@ function registerServiceWorker() {
   if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
 
   serviceWorkerRegistered = true;
+  // Ask the worker to re-fetch any offline asset its install failed to get.
+  // The install's third-party precache is best-effort, so a first run on a bad
+  // connection leaves the app permanently missing libraries offline — no
+  // markdown, no formulas, no export — and nothing retried, because the cache
+  // is only rebuilt when the worker's version changes. Sent once the worker is
+  // in control, and again whenever the connection comes back, which is exactly
+  // when the gap can be filled.
+  const requestOfflineCacheRepair = () => {
+    navigator.serviceWorker.ready
+      .then((registration) => registration.active?.postMessage({ type: "repair-offline-cache" }))
+      .catch(() => { /* no worker yet — the next online event tries again */ });
+  };
+
   const register = () => {
-    navigator.serviceWorker.register("./sw.js").catch((error) => {
-      console.warn("Service worker registration failed", error);
-    });
+    navigator.serviceWorker.register("./sw.js")
+      .then(requestOfflineCacheRepair)
+      .catch((error) => {
+        console.warn("Service worker registration failed", error);
+      });
+    window.addEventListener("online", requestOfflineCacheRepair);
   };
   // Register after `load` to avoid competing with first-paint fetches — but if
   // the page has already finished loading (this runs from the async auth/boot
@@ -18784,7 +18879,31 @@ async function uploadImageToSupabase(file) {
     throw err;
   }
   const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path);
+  await cacheUploadedImageOffline(data.publicUrl, file);
   return data.publicUrl;
+}
+
+// The service worker's image cache is populated by FETCHING images — which
+// means an image the user just added was the one image guaranteed to be missing
+// from it: the markdown now points at a public URL, but the only copy that ever
+// existed on this device was the file they picked, and it was uploaded, never
+// downloaded. Going offline right after adding an image showed it as broken.
+// We already hold the bytes, so write them straight into the same cache the
+// worker reads (same name as sw.js's IMAGE_CACHE_NAME — it is deliberately not
+// versioned, so this survives app updates). Best-effort: a failure here costs a
+// re-download later, nothing more.
+const OFFLINE_IMAGE_CACHE = "recall-images-v1";
+
+async function cacheUploadedImageOffline(url, blob) {
+  if (!url || !blob || typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open(OFFLINE_IMAGE_CACHE);
+    await cache.put(url, new Response(blob, {
+      headers: { "Content-Type": blob.type || "application/octet-stream" }
+    }));
+  } catch (error) {
+    console.warn("Could not pre-cache the uploaded image for offline use", error);
+  }
 }
 
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.

@@ -1,4 +1,17 @@
-const CACHE_NAME = "recall-v20260725-10";
+const CACHE_NAME = "recall-v20260726-11";
+
+// How long a same-origin request may stall before the cached copy is served
+// instead. The failure this exists for is NOT being offline — that fails fast
+// and always fell back correctly. It's a network that is up but answers
+// nothing: a dead cell, a captive portal, hotel wifi. There, `fetch` neither
+// resolves nor rejects for tens of seconds, and a network-first handler with no
+// timeout hangs the whole app on a launch it could have served from cache in
+// 200ms. Measured against a server that accepts and never answers, with all 91
+// assets already precached: the app never painted at all (still waiting past
+// 140s); with this, it is fully loaded in 2.7s. The network response still
+// lands — it just updates the cache in the background instead of holding the
+// page hostage.
+const NETWORK_TIMEOUT_MS = 2500;
 
 // Uploaded images live in the user's own Supabase Storage bucket, on a
 // different origin from both the app and the CDN — so nothing here used to
@@ -37,8 +50,8 @@ async function trimImageCache() {
 // precached copy was dead weight for the whole of that release.
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260725-10",
-  "./app.js?v=20260725-10",
+  "./styles.css?v=20260726-11",
+  "./app.js?v=20260726-11",
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
@@ -123,6 +136,23 @@ async function cacheCdnAsset(cache, url) {
   await cache.put(url, clean);
 }
 
+// Re-fetch only the CDN assets that aren't in the cache. The install's precache
+// is deliberately best-effort (Promise.allSettled), which means an install that
+// ran on a bad connection leaves permanent holes — and a hole in this list is a
+// library that is simply absent offline: no markdown rendering, no formulas, no
+// export. Nothing ever went back for them, because the cache is only rebuilt
+// when CACHE_NAME changes. This is that repair pass. Returns how many landed.
+async function repairCdnCache() {
+  const cache = await caches.open(CACHE_NAME);
+  const missing = [];
+  for (const url of CDN_ASSETS) {
+    if (!(await cache.match(url))) missing.push(url);
+  }
+  if (!missing.length) return 0;
+  const results = await Promise.allSettled(missing.map((url) => cacheCdnAsset(cache, url)));
+  return results.filter((r) => r.status === "fulfilled").length;
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
@@ -130,7 +160,8 @@ self.addEventListener("install", (event) => {
         // App shell is same-origin and must all cache — fail install if not.
         await cache.addAll(APP_SHELL);
         // CDN assets are best-effort: one flaky/unavailable file must not abort
-        // the whole install and leave the app with no cache at all.
+        // the whole install and leave the app with no cache at all. What that
+        // drops, repairCdnCache picks up later.
         await Promise.allSettled(CDN_ASSETS.map((url) => cacheCdnAsset(cache, url)));
       })
       .then(() => self.skipWaiting())
@@ -159,6 +190,17 @@ self.addEventListener("activate", (event) => {
 // happened to be on screen while online. Best-effort and chunked: a broken or
 // deleted URL must not abort the rest.
 self.addEventListener("message", (event) => {
+  // The page asks for this when it comes back online (see registerServiceWorker),
+  // because that's the moment a hole left by a bad install can actually be
+  // filled. Cheap when there's nothing to do: a cache.match per asset, no
+  // network at all.
+  if (event.data && event.data.type === "repair-offline-cache") {
+    event.waitUntil(repairCdnCache().then((count) => {
+      if (count) console.info(`[sw] refetched ${count} offline asset(s) that were missing`);
+    }).catch(() => {}));
+    return;
+  }
+
   const urls = event.data && event.data.type === "cache-images" ? event.data.urls : null;
   if (!Array.isArray(urls) || !urls.length) return;
   event.waitUntil(
@@ -245,25 +287,105 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // All same-origin assets (HTML, app.js, styles.css, etc.): network-first.
-  // Always fetch the latest from the server; only fall back to cache when offline.
-  event.respondWith(
-    fetch(request)
-      .then((response) => {
-        if (response.status === 200) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-        }
-        return response;
-      })
-      .catch(() =>
-        caches.match(request).then((cached) => {
-          if (cached) return cached;
-          // Offline navigation to a URL variant that was never cached verbatim
-          // (e.g. /index.html when only "./" is precached) still gets the shell.
-          if (request.mode === "navigate") return caches.match("./");
-          return undefined;
-        })
-      )
-  );
+  // Same-origin assets that carry a release stamp (app.js?v=…, styles.css?v=…)
+  // or are precached and only ever change with a release (icons, manifest,
+  // favicon): cache-first. Their URL changes when their content does — that is
+  // the entire point of the ?v= convention — so a hit can never be stale, and
+  // going to the network first only means the app's two largest files sit
+  // behind whatever the connection is doing. This is what makes a launch on a
+  // bad connection as fast as a launch offline instead of NETWORK_TIMEOUT_MS
+  // slower. Only the HTML, which has no version in its URL, still needs to ask.
+  if (isVersionedAsset(url)) {
+    event.respondWith(cacheFirstSameOrigin(event, request));
+    return;
+  }
+
+  // Everything else same-origin (the navigation/HTML above all): network-first,
+  // but only for as long as the network is actually answering. See
+  // NETWORK_TIMEOUT_MS — past that, the cached copy wins and the request keeps
+  // running in the background purely to refresh the cache for next time.
+  event.respondWith(sameOriginNetworkFirst(event, request));
 });
+
+// Content-addressed by URL, so a cache hit is always the right answer.
+function isVersionedAsset(url) {
+  if (url.searchParams.has("v")) return true;
+  return /\/(icons\/[^/]+\.png|fevicon\.png|manifest\.webmanifest)$/.test(url.pathname);
+}
+
+async function cacheFirstSameOrigin(event, request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+
+  // Miss: a release whose ?v= this cache predates, or an install that never
+  // finished. Fetch and keep it — but on a bounded wait, because hanging here
+  // would reintroduce the exact stall this file exists to prevent, just one
+  // release later.
+  const network = fetch(request).then(async (response) => {
+    if (response && response.status === 200) {
+      const copy = response.clone();
+      try { await cache.put(request, copy); } catch (_) { /* quota */ }
+    }
+    return response;
+  });
+  event.waitUntil(network.catch(() => {}));
+
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS));
+  const winner = await Promise.race([network.catch(() => null), timeout]);
+  if (winner && winner.ok) return winner;
+
+  // Last resort: the same path from a previous release (ignoreSearch drops the
+  // ?v=). An app one version behind is a working app; a hung fetch is not.
+  return (await cache.match(request, { ignoreSearch: true })) || (winner || Response.error());
+}
+
+async function sameOriginNetworkFirst(event, request) {
+  const cache = await caches.open(CACHE_NAME);
+
+  // What we'd serve if the network doesn't come through — resolved UP FRONT,
+  // because the decision to wait indefinitely can only be made once we know
+  // there is genuinely nothing to fall back to. The second half matters more
+  // than it looks: a navigation to /index.html is not cached under that URL
+  // (only "./" is precached, and a first load has nothing else), so treating
+  // "no exact match" as "no fallback" left the one request the whole app waits
+  // on with no timeout at all — measured hanging past 140s on a stalled
+  // network, which is exactly the failure this file is meant to prevent.
+  const cached = (await cache.match(request))
+    || (request.mode === "navigate" ? await cache.match("./") : undefined);
+
+  // Kept as a bare promise (never awaited on the fast path) so a stalled
+  // response can still populate the cache after we've already replied. The
+  // cache write is awaited INSIDE it, and the whole thing is handed to
+  // waitUntil right here — waitUntil throws InvalidStateError once the
+  // respondWith promise has settled, so a background continuation cannot
+  // register its own, and the refresh would be dropped the moment the timeout
+  // path won (i.e. exactly when it matters).
+  const network = fetch(request).then(async (response) => {
+    if (response && response.status === 200) {
+      const copy = response.clone();
+      try { await cache.put(request, copy); } catch (_) { /* quota, or evicted */ }
+    }
+    return response;
+  });
+  event.waitUntil(network.catch(() => {}));
+
+  if (!cached) {
+    // Genuinely nothing to fall back to (a first visit, or an asset this build
+    // never precached) — the network is the only answer there is, so wait for
+    // it however long it takes rather than failing the load outright.
+    try {
+      return await network;
+    } catch (_) {
+      return Response.error();
+    }
+  }
+
+  // Give the network a head start, then stop waiting. A rejected fetch (genuinely
+  // offline) resolves the race immediately with null, so being offline still
+  // costs nothing.
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS));
+  const winner = await Promise.race([network.catch(() => null), timeout]);
+  // A 5xx/404 from a half-working server is worse than the copy we already have.
+  return winner && winner.ok ? winner : cached;
+}
