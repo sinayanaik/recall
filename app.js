@@ -4285,7 +4285,10 @@ async function exportAllMyDecks(format) {
 // ══════════════════════════════════════════════════════════════════════════
 
 const BACKUP_SCHEMA = "recall-backup";
-const BACKUP_VERSION = 1;
+// 2: images are packed into assets/ as real files (see packBackupAssets).
+// Purely informational — nothing reads it to decide how to restore, so v1 and v2
+// archives are both readable by both builds.
+const BACKUP_VERSION = 2;
 
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -4387,7 +4390,172 @@ async function collectBackupPayloads() {
   return payloads;
 }
 
-async function exportLibraryBackupZip({ fileBaseName } = {}) {
+// ── Images travel INSIDE the backup ────────────────────────────────────────
+// A deck's markdown only ever holds an image REFERENCE — a public Supabase
+// Storage URL, or a `recall-img:<token>` placeholder for one still queued
+// offline. A backup of just that text is only as portable as those references
+// are: hand the zip to someone else (or to yourself after the bucket is gone)
+// and every picture is a dead link, because the bytes only ever lived in the
+// original owner's project.
+//
+// So the archive carries the bytes too: `assets/index.json` maps each original
+// reference to a file in `assets/`, and restore re-homes them (see
+// planBackupAssetAdoption). Deck JSON keeps the ORIGINAL urls untouched, which
+// is what keeps a new backup readable by an older build and makes restoring
+// your own backup into your own project a no-op.
+const BACKUP_ASSET_DIR = "assets";
+const BACKUP_ASSET_INDEX = `${BACKUP_ASSET_DIR}/index.json`;
+const BACKUP_ASSET_SCHEMA = "recall-backup-assets";
+
+// Every image reference in a deck's text: markdown `![alt](url)` (optional
+// `<...>` wrapping and a trailing "title") and raw `<img src=…>`, which the
+// notes renderer accepts just as readily.
+const BACKUP_IMAGE_REF_RE = new RegExp(
+  "!\\[[^\\]]*\\]\\(\\s*<?([^)\\s<>\"']+)"
+  + "|<img\\b[^>]*?\\bsrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+  "gi"
+);
+
+// Refs whose bytes we can actually pack. `data:` images are already inline in
+// the markdown, and in-page `blob:`/anchor urls are meaningless in an archive.
+function isPackableImageRef(ref) {
+  if (!ref) return false;
+  if (ref.startsWith(LOCAL_IMAGE_SCHEME)) return true;
+  return /^https?:\/\//i.test(ref);
+}
+
+function collectBackupImageRefs(snapshot, into = new Set()) {
+  const scan = (text) => {
+    for (const match of String(text || "").matchAll(BACKUP_IMAGE_REF_RE)) {
+      const ref = decodeImageRefEntities(match[1] || match[2] || match[3] || match[4] || "");
+      if (isPackableImageRef(ref)) into.add(ref);
+    }
+  };
+  scan(snapshot?.notes);
+  for (const card of snapshot?.cards || []) {
+    scan(card.question);
+    scan(card.answer);
+  }
+  return into;
+}
+
+// A `<img src="…&amp;x=1">` in stored HTML holds entity-escaped text; the fetch
+// (and the later find-and-replace) both need the real url.
+function decodeImageRefEntities(ref) {
+  return String(ref).replace(/&amp;/gi, "&").trim();
+}
+
+// The bytes behind one reference, or null if they can't be reached. Tries the
+// offline image cache before the network: it holds exactly what the app renders,
+// costs nothing, and means a backup taken offline still carries its pictures.
+async function readBackupAssetBlob(ref) {
+  if (ref.startsWith(LOCAL_IMAGE_SCHEME)) {
+    try {
+      const entry = await getOutboxImage(ref.slice(LOCAL_IMAGE_SCHEME.length));
+      return entry?.blob || null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    if (typeof caches !== "undefined") {
+      const cache = await caches.open(OFFLINE_IMAGE_CACHE);
+      const hit = await cache.match(ref);
+      if (hit && hit.ok) {
+        const blob = await hit.blob();
+        if (blob.size) return blob;
+      }
+    }
+  } catch (error) {
+    console.warn("Could not read a cached image for the backup", ref, error);
+  }
+  try {
+    // Storage serves public objects with permissive CORS; a third-party host
+    // (an old ImgBB/Drive link) may not, in which case this throws and the
+    // image is reported as missing rather than failing the backup.
+    const response = await fetch(ref, { mode: "cors", credentials: "omit" });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return blob.size ? blob : null;
+  } catch {
+    return null;
+  }
+}
+
+const BACKUP_ASSET_EXT_BY_TYPE = {
+  "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
+  "image/gif": "gif", "image/svg+xml": "svg", "image/avif": "avif", "image/bmp": "bmp"
+};
+
+// A readable, unique filename for one packed image. The original basename is
+// kept where there is one (a book figure stays recognisable inside the zip),
+// behind an index that guarantees uniqueness without a second pass.
+function backupAssetName(ref, blob, index, usedNames) {
+  const fromUrl = ref.startsWith(LOCAL_IMAGE_SCHEME)
+    ? "queued-image"
+    : decodeURIComponent((ref.split("?")[0].split("#")[0].split("/").pop() || "image"));
+  const stem = slugifyFileName(fromUrl.replace(/\.[^.]+$/, ""), "image") || "image";
+  const ext = BACKUP_ASSET_EXT_BY_TYPE[blob.type]
+    || (/\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(ref)?.[1] || "img").toLowerCase();
+  let name = `${String(index + 1).padStart(4, "0")}-${stem}.${ext}`;
+  let n = 2;
+  while (usedNames.has(name)) name = `${String(index + 1).padStart(4, "0")}-${stem}-${n++}.${ext}`;
+  usedNames.add(name);
+  return name;
+}
+
+// Pack every image the given deck snapshots reference into `assets/`, writing
+// the reference→file index alongside. Best-effort per image: one unreachable
+// url is recorded in the index's `missing` list (so a restore can say what it
+// couldn't bring) and never aborts the backup.
+async function packBackupAssets(zip, snapshots, onProgress) {
+  const refs = Array.from(snapshots.reduce((set, snapshot) => collectBackupImageRefs(snapshot, set), new Set()));
+  if (!refs.length) return { assets: [], missing: [] };
+
+  let done = 0;
+  onProgress?.(0, refs.length);
+  // A handful at a time: these are mostly cache hits, and the ones that aren't
+  // are latency-bound, but an unbounded fan-out over a few hundred images would
+  // stall the browser's connection pool.
+  const blobs = await mapWithConcurrency(refs, 5, async (ref) => {
+    const blob = await readBackupAssetBlob(ref);
+    done += 1;
+    onProgress?.(done, refs.length);
+    return blob;
+  });
+
+  const folder = zip.folder(BACKUP_ASSET_DIR);
+  const usedNames = new Set();
+  const assets = [];
+  const missing = [];
+  refs.forEach((ref, i) => {
+    const blob = blobs[i];
+    if (!blob) {
+      missing.push(ref);
+      return;
+    }
+    const name = backupAssetName(ref, blob, assets.length, usedNames);
+    folder.file(name, blob);
+    assets.push({
+      file: `${BACKUP_ASSET_DIR}/${name}`,
+      url: ref,
+      type: blob.type || "application/octet-stream",
+      bytes: blob.size
+    });
+  });
+
+  zip.file(BACKUP_ASSET_INDEX, `${JSON.stringify({
+    schema: BACKUP_ASSET_SCHEMA,
+    version: 1,
+    note: "Maps each image reference used in decks/*.json to its packed file. "
+      + "Restore re-homes these into the restoring device's own storage.",
+    assets,
+    missing
+  }, null, 2)}\n`);
+  return { assets, missing };
+}
+
+async function exportLibraryBackupZip({ fileBaseName, includeImages = true } = {}) {
   if (!window.JSZip) {
     setStatus("Backup needs the zip library, which failed to load.", "error");
     return false;
@@ -4403,9 +4571,11 @@ async function exportLibraryBackupZip({ fileBaseName } = {}) {
   const now = new Date();
   const manifestDecks = [];
   const usedNames = new Set();
+  const snapshots = [];
 
   payloads.forEach((payload) => {
     const snapshot = deckPayloadSnapshot(payload);
+    snapshots.push(snapshot);
     const idPart = String(payload.deck.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16)
       || Math.random().toString(36).slice(2, 8);
     const base = `${slugifyFileName(payload.deck.title || "deck") || "deck"}-${idPart}`;
@@ -4425,12 +4595,25 @@ async function exportLibraryBackupZip({ fileBaseName } = {}) {
     });
   });
 
+  const deckLabel = `${payloads.length} deck${payloads.length === 1 ? "" : "s"}`;
+  let packed = { assets: [], missing: [] };
+  if (includeImages) {
+    packed = await packBackupAssets(zip, snapshots, (done, total) => {
+      setStatus(`Packing images ${done}/${total}…`);
+    });
+  }
+
   const manifest = {
     schema: BACKUP_SCHEMA,
     version: BACKUP_VERSION,
     app: "recall",
     exportedAt: now.toISOString(),
     deckCount: payloads.length,
+    // Image bytes live in assets/ (see assets/index.json). Counted here so a
+    // restore knows whether an archive predates image packing or genuinely had
+    // no images at all.
+    assetCount: packed.assets.length,
+    assetsMissing: packed.missing.length,
     decks: manifestDecks
   };
   zip.file("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
@@ -4439,10 +4622,19 @@ async function exportLibraryBackupZip({ fileBaseName } = {}) {
     "",
     `Created: ${now.toISOString()}`,
     `Decks:   ${payloads.length}`,
+    `Images:  ${packed.assets.length}${packed.missing.length ? ` (${packed.missing.length} unreachable, not packed)` : ""}`,
     "",
     "Layout:",
-    "  manifest.json   index of every deck in this archive",
-    "  decks/*.json    one file per deck (cards, statuses, notes, category)",
+    "  manifest.json     index of every deck in this archive",
+    "  decks/*.json      one file per deck (cards, statuses, notes, category)",
+    "  assets/           the actual image files the decks reference",
+    "  assets/index.json maps each image reference to its file in assets/",
+    "",
+    "The images are real files in here, not links — this archive stands on its",
+    "own. Restoring it on another device (or another person's) copies those",
+    "files onto that device and, if it has its own cloud project, re-uploads",
+    "them there on the next sync. Nothing depends on the original owner's",
+    "storage staying reachable.",
     "",
     "Restore from the app: Import panel -> Restore from backup (or the My Decks",
     "toolbar). Restore compares every deck, card and note against your current",
@@ -4452,6 +4644,7 @@ async function exportLibraryBackupZip({ fileBaseName } = {}) {
     ""
   ].join("\n"));
 
+  setStatus(`Compressing backup (${deckLabel}${packed.assets.length ? `, ${packed.assets.length} images` : ""})…`);
   const blob = await zip.generateAsync({
     type: "blob",
     compression: "DEFLATE",
@@ -4459,7 +4652,13 @@ async function exportLibraryBackupZip({ fileBaseName } = {}) {
   });
   const name = `${fileBaseName || `recall-backup-${backupTimestamp(now)}`}.zip`;
   downloadBlob(blob, name);
-  setStatus(`Backed up ${payloads.length} deck${payloads.length === 1 ? "" : "s"} to ${name}.`);
+  const imageNote = packed.assets.length
+    ? ` with ${packed.assets.length} image${packed.assets.length === 1 ? "" : "s"}`
+    : "";
+  const missingNote = packed.missing.length
+    ? ` ${packed.missing.length} image${packed.missing.length === 1 ? " was" : "s were"} unreachable and could not be packed.`
+    : "";
+  setStatus(`Backed up ${deckLabel}${imageNote} to ${name}.${missingNote}`, packed.missing.length ? "error" : "info");
   return true;
 }
 
@@ -4475,6 +4674,37 @@ function expandBackupBundleInto(parsed, out) {
     const normalized = normalizeBackupDeck(parsed);
     if (normalized) out.push(normalized);
   }
+}
+
+// Read `assets/index.json` and pull each packed image out of the zip, returning
+// Map(original reference -> Blob). An archive from before image packing (or one
+// whose index is unreadable) just yields an empty map and restores exactly as
+// it always did.
+async function readBackupAssets(zip) {
+  const assets = new Map();
+  const indexEntry = zip.files[BACKUP_ASSET_INDEX]
+    || zip.files[Object.keys(zip.files).find((path) => path.toLowerCase() === BACKUP_ASSET_INDEX) || ""];
+  if (!indexEntry) return assets;
+  let index;
+  try {
+    index = JSON.parse(await indexEntry.async("string"));
+  } catch (error) {
+    console.warn("Backup asset index is unreadable — restoring text only", error);
+    return assets;
+  }
+  for (const entry of Array.isArray(index?.assets) ? index.assets : []) {
+    const file = entry && zip.files[entry.file];
+    if (!entry?.url || !file || file.dir) continue;
+    try {
+      const raw = await file.async("blob");
+      // JSZip hands back an octet-stream blob; re-wrap with the recorded type so
+      // the image renders (and later uploads) as the right content type.
+      assets.set(String(entry.url), entry.type ? new Blob([raw], { type: entry.type }) : raw);
+    } catch (error) {
+      console.warn("Could not read a packed image from the archive", entry.file, error);
+    }
+  }
+  return assets;
 }
 
 async function readBackupArchive(file) {
@@ -4500,13 +4730,122 @@ async function readBackupArchive(file) {
       }
     }
     if (!decks.length) throw new Error("no decks found in this archive");
-    return decks;
+    return { decks, assets: await readBackupAssets(zip) };
   }
 
-  // Plain JSON export (single snapshot or {decks:[...]} bundle).
+  // Plain JSON export (single snapshot or {decks:[...]} bundle) — text only,
+  // there is nowhere in a bare .json for image bytes to live.
   expandBackupBundleInto(JSON.parse(await file.text()), decks);
   if (!decks.length) throw new Error("no decks found in this file");
-  return decks;
+  return { decks, assets: new Map() };
+}
+
+// ── Re-homing a backup's images ────────────────────────────────────────────
+// An image reference that came out of the archive is only usable here if it
+// points into the storage project THIS device is configured against — the same
+// project's bucket is public, so the url resolves for any of its users, and the
+// object already exists (re-uploading it would just duplicate it). Anything
+// else — a friend's project, a dead project, a queued `recall-img:` placeholder
+// from the other device's outbox — is adopted: the bytes go into this device's
+// own image outbox and the markdown is rewritten to the local placeholder, so
+// the image shows immediately and flushPendingImageUploads later re-uploads it
+// into this user's own storage and rewrites the reference to the new url.
+//
+// Planned without writing anything (restore shows a preview first, and a
+// cancelled restore must leave no trace); commitBackupAssets does the writes.
+async function planBackupAssetAdoption(decks, assets) {
+  const plan = { keep: [], adopt: [], rewrites: new Map(), missing: 0 };
+  if (!assets || !assets.size) return plan;
+
+  // Which deck first mentions a reference, so an adopted image is filed under
+  // that deck's folder when it uploads instead of landing in unfiled/.
+  const folderByRef = new Map();
+  decks.forEach((deck) => {
+    const refs = collectBackupImageRefs(deck);
+    for (const ref of refs) {
+      if (!folderByRef.has(ref) && assets.has(ref)) {
+        const slug = storageFolderSlug(deck.title, "untitled-deck");
+        folderByRef.set(ref, `decks/${slug}--${deterministicRestoreLocalId(deck)}`);
+      }
+    }
+  });
+
+  for (const [ref, blob] of assets) {
+    if (!blob) {
+      plan.missing += 1;
+      continue;
+    }
+    if (!ref.startsWith(LOCAL_IMAGE_SCHEME) && supabaseImagePathFromUrl(ref)) {
+      // Ours already: keep the url, but seed the offline cache so the restored
+      // deck reads on a plane instead of only once it has been online again.
+      plan.keep.push({ ref, blob });
+      continue;
+    }
+    // Restoring this device's own backup, taken while an image was still queued
+    // for upload: the token is still in the outbox, so leave the reference
+    // alone rather than parking a second copy of the same pending image.
+    if (ref.startsWith(LOCAL_IMAGE_SCHEME) && await outboxHasToken(ref.slice(LOCAL_IMAGE_SCHEME.length))) {
+      continue;
+    }
+    const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+    plan.adopt.push({ ref, blob, token, folder: folderByRef.get(ref) || null });
+    plan.rewrites.set(ref, LOCAL_IMAGE_SCHEME + token);
+  }
+  return plan;
+}
+
+// Point every image reference the plan adopted at its new local placeholder,
+// in the BACKUP decks — before planRestore reads them, so the preview diffs and
+// the snapshots that get written both carry the rewritten text.
+function applyBackupAssetRewrites(decks, rewrites) {
+  if (!rewrites.size) return;
+  // One alternation over every reference rather than a pass per reference: a
+  // book-sized deck is thousands of card faces, and a library restore can carry
+  // hundreds of images.
+  const pattern = new RegExp(Array.from(rewrites.keys()).map(escapeRegExp).join("|"), "g");
+  const swap = (text) => String(text || "").replace(pattern, (match) => rewrites.get(match) || match);
+  decks.forEach((deck) => {
+    deck.notes = swap(deck.notes);
+    (deck.cards || []).forEach((card) => {
+      card.question = swap(card.question);
+      card.answer = swap(card.answer);
+    });
+  });
+}
+
+// The writes planBackupAssetAdoption deliberately deferred. Best-effort per
+// image: one that can't be stored leaves a placeholder that renders as missing,
+// which is no worse than the dead link it replaced.
+async function commitBackupAssets(plan, onProgress) {
+  if (!plan) return { kept: 0, adopted: 0, failed: 0 };
+  let kept = 0;
+  let adopted = 0;
+  let failed = 0;
+  const total = plan.keep.length + plan.adopt.length;
+  let done = 0;
+  const tick = () => onProgress?.(++done, total);
+
+  for (const item of plan.keep) {
+    await cacheUploadedImageOffline(item.ref, item.blob);
+    kept += 1;
+    tick();
+  }
+  for (const item of plan.adopt) {
+    try {
+      await putOutboxImage({
+        token: item.token,
+        blob: item.blob,
+        folder: item.folder,
+        savedAt: new Date().toISOString()
+      });
+      adopted += 1;
+    } catch (error) {
+      console.warn("Could not store a restored image on this device", item.ref, error);
+      failed += 1;
+    }
+    tick();
+  }
+  return { kept, adopted, failed };
 }
 
 // Match a backup deck to a local library entry: cloud/deck id first, then a
@@ -4810,6 +5149,16 @@ function showRestorePreview(report) {
     if (total.unchanged) summaryBits.push(`${total.unchanged} unchanged`);
     const willChange = total.newDecks || total.cardsAdded || total.cardsUpdated || total.notesUpdated;
 
+    // Images are the part of a restore that isn't visible in a card count, and
+    // the part people most expect to be missing — say plainly what happens to
+    // them: the archive's own copies are stored on this device, and the ones
+    // that came from someone else's storage get re-uploaded to yours.
+    const plan = report.assetPlan;
+    const imageBits = [];
+    if (plan?.keep.length) imageBits.push(`${plan.keep.length} already in your storage (saved for offline use)`);
+    if (plan?.adopt.length) imageBits.push(`${plan.adopt.length} copied from the archive onto this device, then uploaded to your own storage`);
+    const imageNote = imageBits.length ? `Images: ${imageBits.join(" · ")}.` : "";
+
     const rowsHtml = report.decks.map((entry) => {
       let badge = "MERGE";
       let cls = "is-conflict";
@@ -4853,6 +5202,7 @@ function showRestorePreview(report) {
       </div>
       <ul class="restore-deck-list">${rowsHtml}</ul>
       <p class="restore-summary">${escapeHtml(summaryBits.join(" · ") || "No changes to apply.")}</p>
+      ${imageNote ? `<p class="restore-summary">${escapeHtml(imageNote)}</p>` : ""}
       <p class="restore-note">A full backup of your current decks is saved first, so this is reversible. Local-only decks and cards are never deleted.</p>
       <div class="category-choice-actions">
         <button type="button" data-restore-cancel>Cancel</button>
@@ -4892,6 +5242,12 @@ async function applyRestore(report, { autoBackup = true } = {}) {
       console.warn("Pre-restore safety backup failed (continuing)", error);
     }
   }
+
+  // Store the archive's images on this device first, so every deck written
+  // below already has its pictures behind it.
+  const assetResult = await commitBackupAssets(report.assetPlan, (done, total) => {
+    setStatus(`Restoring images ${done}/${total}…`);
+  });
 
   let addedDecks = 0;
   let mergedDecks = 0;
@@ -4936,6 +5292,19 @@ async function applyRestore(report, { autoBackup = true } = {}) {
   queuePendingUntombstones(restoredDeckIds);
   await flushPendingUntombstones();
 
+  // Adopted images render from the local outbox straight away; pushing them to
+  // this user's own storage now (rather than waiting for the next sync) is what
+  // makes them survive onto their other devices. Best-effort — offline or
+  // signed out, the outbox holds them and the next reconcile picks them up.
+  if (assetResult.adopted) {
+    try {
+      const uploaded = await flushPendingImageUploads();
+      if (uploaded) setStatus(`Uploaded ${uploaded} restored image${uploaded === 1 ? "" : "s"} to your storage…`);
+    } catch (error) {
+      console.warn("Restored images will upload on the next sync", error);
+    }
+  }
+
   await renderMyDecksList();
 
   const parts = [];
@@ -4943,6 +5312,9 @@ async function applyRestore(report, { autoBackup = true } = {}) {
   if (mergedDecks) parts.push(`${mergedDecks} merged`);
   if (cardsAdded) parts.push(`${cardsAdded} card${cardsAdded === 1 ? "" : "s"} restored`);
   if (cardsUpdated) parts.push(`${cardsUpdated} updated`);
+  const images = assetResult.kept + assetResult.adopted;
+  if (images) parts.push(`${images} image${images === 1 ? "" : "s"} restored`);
+  if (assetResult.failed) parts.push(`${assetResult.failed} image${assetResult.failed === 1 ? "" : "s"} could not be stored`);
   setStatus(`Restore complete — ${parts.length ? parts.join(", ") : "no changes"}.`);
   showToast("Restore complete", "success");
 }
@@ -4950,8 +5322,14 @@ async function applyRestore(report, { autoBackup = true } = {}) {
 async function runRestoreFlow(file) {
   try {
     setStatus("Reading backup…");
-    const backupDecks = await readBackupArchive(file);
+    const { decks: backupDecks, assets } = await readBackupArchive(file);
+    // Images are re-homed BEFORE the diff: a foreign backup's references get
+    // rewritten to local placeholders, and the preview then compares (and the
+    // apply then writes) exactly the text the decks will end up with.
+    const assetPlan = await planBackupAssetAdoption(backupDecks, assets);
+    applyBackupAssetRewrites(backupDecks, assetPlan.rewrites);
     const report = planRestore(backupDecks);
+    report.assetPlan = assetPlan;
     const confirmed = await showRestorePreview(report);
     if (!confirmed) {
       setStatus("Restore cancelled.");
@@ -19493,6 +19871,17 @@ const putOutboxImage = (entry) => imageOutboxRequest("readwrite", (store) => sto
 const getOutboxImage = (token) => imageOutboxRequest("readonly", (store) => store.get(token));
 const allOutboxImages = () => imageOutboxRequest("readonly", (store) => store.getAll());
 const deleteOutboxImage = (token) => imageOutboxRequest("readwrite", (store) => store.delete(token));
+
+// Whether an image is still parked under this token. Used by restore to leave a
+// `recall-img:` reference alone when this device's outbox already holds it,
+// instead of parking (and later uploading) a second copy of the same image.
+async function outboxHasToken(token) {
+  try {
+    return Boolean(await getOutboxImage(token));
+  } catch {
+    return false;
+  }
+}
 
 // Object URLs minted for queued images, so they can be revoked rather than
 // leaked. Keyed by token, since the same image may render many times.
