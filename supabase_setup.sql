@@ -333,52 +333,66 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('images', 'images', true)
 ON CONFLICT (id) DO NOTHING;
 
+-- Dropped and recreated by name, exactly like the table policies in section 6 —
+-- NOT skipped when already present. An earlier version of this section guarded
+-- each policy with `IF NOT EXISTS … THEN CREATE`, which quietly made re-running
+-- this file a no-op for anyone whose project had already been set up: a project
+-- that ran the older supabase_image_storage.sql kept that file's bare
+-- `auth.uid()` bodies forever, so the InitPlan hoisting explained in section 6
+-- never reached the one workload that needs it most — an EPUB import inserts a
+-- storage object per figure, hundreds in a row, and a bare auth.uid() in the
+-- INSERT policy is re-evaluated for every one of them.
+--
+-- Policies are not data: dropping and recreating them loses nothing, and the
+-- whole block is one statement, so the tables are never left uncovered.
 DO $$
 BEGIN
   -- A signed-in user may write only into a folder named after their own uid
   -- (app.js prefixes every upload path with auth.uid()), so one account's
   -- session can never write into — or, via the delete policy, remove from —
   -- another account's images.
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'storage' AND tablename = 'objects'
-      AND policyname = 'Authenticated users can upload their own images'
-  ) THEN
-    CREATE POLICY "Authenticated users can upload their own images"
-      ON storage.objects FOR INSERT
-      TO authenticated
-      WITH CHECK (
-        bucket_id = 'images'
-        AND (storage.foldername(name))[1] = (select auth.uid())::text
-      );
-  END IF;
+  --
+  -- Only the FIRST path segment is checked, which is what lets app.js file
+  -- uploads into per-source subfolders underneath it:
+  --   {uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp   (EPUB import)
+  --   {uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp   (paste/drop)
+  --   {uid}/unfiled/{ts}-{rand}.webp                            (no owner yet)
+  -- No policy change is needed for that nesting, and objects still sitting at
+  -- the old flat {uid}/{ts}-{rand}.ext remain readable and deletable.
+  DROP POLICY IF EXISTS "Authenticated users can upload their own images" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated users can delete their own images" ON storage.objects;
+  DROP POLICY IF EXISTS "Anyone can view images" ON storage.objects;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'storage' AND tablename = 'objects'
-      AND policyname = 'Authenticated users can delete their own images'
-  ) THEN
-    CREATE POLICY "Authenticated users can delete their own images"
-      ON storage.objects FOR DELETE
-      TO authenticated
-      USING (
-        bucket_id = 'images'
-        AND (storage.foldername(name))[1] = (select auth.uid())::text
-      );
-  END IF;
+  CREATE POLICY "Authenticated users can upload their own images"
+    ON storage.objects FOR INSERT
+    TO authenticated
+    WITH CHECK (
+      bucket_id = 'images'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
+
+  CREATE POLICY "Authenticated users can delete their own images"
+    ON storage.objects FOR DELETE
+    TO authenticated
+    USING (
+      bucket_id = 'images'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
 
   -- Images are embedded as plain public URLs directly in the markdown, so read
   -- access has to be open: there is no signed-in context when a card is later
   -- rendered from a synced copy on another device, or from the offline cache.
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'storage' AND tablename = 'objects'
-      AND policyname = 'Anyone can view images'
-  ) THEN
-    CREATE POLICY "Anyone can view images"
-      ON storage.objects FOR SELECT
-      USING (bucket_id = 'images');
-  END IF;
+  CREATE POLICY "Anyone can view images"
+    ON storage.objects FOR SELECT
+    USING (bucket_id = 'images');
+EXCEPTION
+  -- Some projects don't let the SQL Editor's role alter storage.objects. The
+  -- EXCEPTION block is a subtransaction, so the DROPs above roll back with it
+  -- and the existing policies are left exactly as they were — a project that
+  -- can't be upgraded keeps working instead of ending up with no policies and
+  -- no image uploads at all.
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'Storage policies left unchanged: this role may not alter storage.objects. Existing policies (if any) still apply; otherwise add them under Dashboard → Storage → Policies.';
 END $$;
 
 

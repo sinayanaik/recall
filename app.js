@@ -16093,10 +16093,10 @@ function cancellableDelay(ms, progress) {
   });
 }
 
-async function uploadEpubImageWithRetry(file, progress) {
+async function uploadEpubImageWithRetry(file, progress, destination = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await uploadImageToSupabase(file);
+      return await uploadImageToSupabase(file, destination);
     } catch (error) {
       const worthRetrying = error?.message !== "NOT_SIGNED_IN" && !error?.authFailed;
       if (!worthRetrying || attempt >= EPUB_IMAGE_UPLOAD_ATTEMPTS) throw error;
@@ -16122,7 +16122,10 @@ async function uploadEpubImageWithRetry(file, progress) {
 // to notice the gaps themselves and guess. `reason` matters more than the count:
 // every image vanishing is almost always one systemic cause (a lost session,
 // a rate limit), and the message is what makes that fixable.
-async function uploadEpubImages(zip, imageEntries, progress) {
+// `folder` is this import run's own bucket folder — every figure in the book
+// lands there and nowhere else, so the whole run can be inspected or removed as
+// one unit.
+async function uploadEpubImages(zip, imageEntries, progress, folder = null) {
   const urlMap = new Map();
   const failed = [];
   let reason = "";
@@ -16140,7 +16143,16 @@ async function uploadEpubImages(zip, imageEntries, progress) {
       const name = path.split("/").pop() || `image-${i}`;
       const file = new File([blob], name, { type: mediaType || blob.type || "image/jpeg" });
       const optimized = await optimizeImage(file);
-      urlMap.set(path, await uploadEpubImageWithRetry(optimized, progress));
+      // Keep the book's own filename so a figure is identifiable in the bucket,
+      // behind a zero-padded index. The index both preserves the book's image
+      // order in an alphabetically-sorted listing and guarantees uniqueness
+      // within the folder — EPUBs routinely reuse a basename across
+      // subdirectories (images/fig1.png and cover/fig1.png), and upsert is off,
+      // so unprefixed names would collide and lose figures.
+      const storageName = `${String(i + 1).padStart(4, "0")}-${storageFolderSlug(
+        name.replace(/\.[^.]+$/, ""), "image"
+      )}`;
+      urlMap.set(path, await uploadEpubImageWithRetry(optimized, progress, { folder, name: storageName }));
     } catch (error) {
       // Cancelled mid-upload (uploadEpubImageWithRetry bails out of its backoff
       // on cancel): stop the run without counting this image as a real failure —
@@ -16814,9 +16826,17 @@ function showEpubProgress(title) {
 // chapter into a new folder named after the book.
 async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = "chapters", folderPath = null) {
   const progress = showEpubProgress(bookTitle);
+  // Hoisted out of the try so the catch below can put the user's own working
+  // deck back even if the import blows up partway through the save loop.
+  let savedState = null;
   try {
+    // One bucket folder per import RUN, not per book title: importing the same
+    // book twice must not have the second run's figures overwrite or interleave
+    // with the first's, and abandoning a bad import has to be one folder to
+    // delete. storageGroupId is what makes each run distinct.
+    const imageFolder = `books/${storageFolderSlug(bookTitle, "book")}--${storageGroupId()}`;
     const { urlMap: imageUrlMap, failed: failedImages, reason: imageFailReason } =
-      await uploadEpubImages(zip, imageEntries, progress);
+      await uploadEpubImages(zip, imageEntries, progress, imageFolder);
     const chapters = await convertEpubChapters(zip, pkg.spine, markers, imageUrlMap, progress);
 
     if (!chapters.length) {
@@ -16832,7 +16852,7 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
     // single-deck-at-a-time editor flow (createNewDeck etc.) — save/restore the
     // in-memory working deck around the save(s) so this doesn't clobber
     // whatever deck the user had open before starting the import.
-    const savedState = {
+    savedState = {
       deckId: state.deckId, localDeckId: state.localDeckId, deckTitle: state.deckTitle,
       deckCategory: state.deckCategory, notes: state.notes, masterCards: state.masterCards,
       sourceTitle: state.sourceTitle
@@ -16841,8 +16861,14 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
     const sanitizedTitle = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
     // An explicit target (a folder's own "Import here" button) wins; otherwise
     // the book lands where My Decks is currently looking, as it always has.
+    // NOTE: deliberately NOT named folderPath. A `let folderPath` here is
+    // block-scoped to this try, so it shadows the parameter for the whole
+    // block — and the parentFolder line above then reads it before its
+    // declaration, throwing a TDZ ReferenceError on every single import
+    // (after the images had already been uploaded, so the book's figures
+    // landed in the bucket and no deck was ever written).
     const parentFolder = folderPath != null ? folderPath : currentMyDecksFolder();
-    let folderPath;
+    let targetFolder;
     let saved = 0;
     let saveFailed = false;
 
@@ -16851,22 +16877,22 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
       // title survives as a "##" heading inside the single note, so the
       // existing in-note table of contents still gives chapter-by-chapter
       // navigation without creating a deck per chapter.
-      folderPath = parentFolder;
+      targetFolder = parentFolder;
       const combinedMarkdown = chapters.map((c) => `## ${c.title}\n\n${c.markdown}`).join("\n\n---\n\n");
       setStatus(`Saving "${bookTitle}"…`);
       progress.update(`Saving "${bookTitle}"…`, 0.9);
       state.deckId = null;
       state.localDeckId = null;
       state.deckTitle = sanitizedTitle;
-      state.deckCategory = folderPath;
+      state.deckCategory = targetFolder;
       state.notes = combinedMarkdown;
       state.masterCards = [];
       state.sourceTitle = sanitizedTitle;
       if (saveDeckToLibrary({ silent: true })) saved = 1;
       else saveFailed = true;
     } else {
-      folderPath = normalizeDeckCategory(parentFolder ? `${parentFolder}${FOLDER_SEP}${sanitizedTitle}` : sanitizedTitle);
-      addKnownFolder(folderPath);
+      targetFolder = normalizeDeckCategory(parentFolder ? `${parentFolder}${FOLDER_SEP}${sanitizedTitle}` : sanitizedTitle);
+      addKnownFolder(targetFolder);
 
       // My Decks defaults to sorting by recency descending (deckAccessTime) —
       // so chapter 1 gets the newest updatedAt/createdAt and each later
@@ -16885,7 +16911,7 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
         state.deckId = null;
         state.localDeckId = null;
         state.deckTitle = chapters[i].title;
-        state.deckCategory = folderPath;
+        state.deckCategory = targetFolder;
         state.notes = chapters[i].markdown;
         state.masterCards = [];
         state.sourceTitle = chapters[i].title;
@@ -16905,7 +16931,7 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
     persistWorkingDeck();
 
     setMyDecksView("folder");
-    setMyDecksCwd(folderPath);
+    setMyDecksCwd(targetFolder);
     // renderMyDecksList, NOT repaintMyDecks: repaint redraws from the cached
     // deck set captured before this import, so the new book folder would render
     // from the known-folder registry alone — visible but claiming "0 decks",
@@ -16950,9 +16976,34 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
     } else {
       showToast(summary, progress.cancelled() ? "info" : undefined);
     }
+  } catch (error) {
+    // Without this, any bug in here left the images sitting in the bucket, the
+    // progress modal closing on its own, and NO deck and NO explanation — the
+    // only visible error was whatever unrelated toast happened to fire next
+    // (typically the autosave's "device storage full"), which sent debugging
+    // in exactly the wrong direction. Always name the real cause.
+    console.error("EPUB import failed", error);
+    if (savedState) {
+      Object.assign(state, savedState);
+      persistWorkingDeck();
+    }
+    const message = `Could not import "${bookTitle}" — ${error?.message || error?.name || "unexpected error"}`;
+    setStatus(message, "error");
+    showToast(message, "error");
   } finally {
     progress.close();
   }
+}
+
+// Both entry points below call importEpubFile without awaiting it, so anything
+// that throws outside runEpubImport's own catch (the TOC/plan/preview stage)
+// would otherwise become a console-only unhandled rejection with nothing on
+// screen. Every EPUB failure must say so out loud.
+function reportEpubImportCrash(error) {
+  console.error("EPUB import failed", error);
+  const message = `Could not import this EPUB — ${error?.message || error?.name || "unexpected error"}`;
+  setStatus(message, "error");
+  showToast(message, "error");
 }
 
 // Entry point wired to the "Import EPUB" button's file input.
@@ -17103,7 +17154,7 @@ function loadFile(file, append = false, folderPath = null) {
   if (isEpubName(file.name) || /epub/i.test(file.type)) {
     // An EPUB becomes a whole folder of chapter decks, so it takes the target
     // folder directly rather than through the single-deck category path.
-    importEpubFile(file, folderPath);
+    importEpubFile(file, folderPath).catch(reportEpubImportCrash);
     return;
   }
 
@@ -18045,7 +18096,7 @@ el.myDecksImportInput?.addEventListener("cancel", () => {
 el.myDecksImportEpubInput?.addEventListener("change", (event) => {
   const file = event.target.files[0];
   event.target.value = ""; // allow re-importing the same file again
-  if (file) importEpubFile(file);
+  if (file) importEpubFile(file).catch(reportEpubImportCrash);
 });
 
 // View switcher (Grid / Folder / Tree) — pure presentation, repaint from cache.
@@ -19236,6 +19287,63 @@ const IMAGE_STORAGE_EXT = {
   "image/gif": "gif", "image/svg+xml": "svg"
 };
 
+// ── Where an uploaded image lands in the bucket ────────────────────────────
+// Everything used to go straight into one flat `{uid}/` folder with a
+// timestamp-random filename, which made a bucket of thousands of images
+// impossible to read: you couldn't tell which book or deck any object came
+// from, and you couldn't clear out one import without picking objects off
+// one at a time. Uploads are now filed as:
+//
+//   {uid}/books/{book-slug}--{importId}/{NNN}-{original-name}.{ext}
+//   {uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.{ext}
+//   {uid}/unfiled/{ts}-{rand}.{ext}
+//
+// The `--{id}` suffix is what makes each folder unique: two imports of the
+// same book, or two same-titled decks, never share a folder, so one can be
+// deleted without touching the other. It's a suffix (not a prefix) so a
+// rename-tolerant lookup can still find every folder belonging to one deck by
+// matching on the id, while the human-readable slug stays in front where it's
+// useful in the Storage browser.
+//
+// Only NEW uploads are affected. Images already in notes are absolute URLs and
+// keep working wherever they sit — supabaseImagePathFromUrl below reads a path
+// of any depth, so deleting an old flat-path image still works too.
+const UNFILED_IMAGE_FOLDER = "unfiled";
+const MAX_STORAGE_SLUG_LENGTH = 48;
+
+// One path segment, safe for a Storage object key and readable in the Storage
+// browser: lowercase a-z0-9 and dashes only. Storage accepts more than this,
+// but spaces and non-ASCII turn into percent-escapes in every URL and log line
+// that mentions the object, which defeats the point of naming the folder.
+function storageFolderSlug(value, fallback = "untitled") {
+  const slug = String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "") // strip accents left by NFKD
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, MAX_STORAGE_SLUG_LENGTH)
+    .replace(/-+$/, "");
+  return slug || fallback;
+}
+
+// Short, collision-resistant id for one upload group (one EPUB import run).
+// Timestamp-first so folders sort chronologically in the Storage browser.
+function storageGroupId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// Folder for images pasted/dropped into a deck's notes. Keyed on the deck's
+// local id, which is stable for the deck's whole life, so every image a deck
+// accumulates stays together. Returns null before the deck has ever been saved
+// (no id to key on yet) — those go to `unfiled/`.
+function deckImageFolder() {
+  const localId = state.localDeckId;
+  if (!localId) return null;
+  const slug = storageFolderSlug(state.deckTitle || state.sourceTitle, "untitled-deck");
+  return `decks/${slug}--${localId}`;
+}
+
 // Resolves a Supabase public-storage URL back to its object path within
 // IMAGE_BUCKET, or null if `url` isn't one of ours (a legacy ImgBB/Drive/
 // external link) — the signal deleteSupabaseImage uses to know whether
@@ -19268,7 +19376,13 @@ async function deleteSupabaseImage(url) {
 // API key to manage — the same login that unlocks sync also unlocks uploads,
 // and because it's the user's own project, the image can later be deleted too
 // (deleteSupabaseImage), which ImgBB's plain public-link API never allowed.
-async function uploadImageToSupabase(file) {
+//
+// `folder` is the per-book / per-deck subfolder the object is filed under (see
+// the path scheme above); null means "no known owner" and lands in unfiled/.
+// `name` is an optional extension-less basename — the EPUB importer passes the
+// book's own image filename so a figure is recognisable in the bucket instead
+// of being another anonymous timestamp.
+async function uploadImageToSupabase(file, { folder = null, name = null } = {}) {
   if (!navigator.onLine) throw new Error("OFFLINE");
   if (!supabaseClient || !isSignedIn) throw new Error("NOT_SIGNED_IN");
   // Read the id from the cached session (no network) rather than getUser()
@@ -19278,7 +19392,12 @@ async function uploadImageToSupabase(file) {
   const userId = session?.user?.id;
   if (!userId) throw new Error("NOT_SIGNED_IN");
   const ext = IMAGE_STORAGE_EXT[file.type] || "img";
-  const path = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.${ext}`;
+  // The first segment stays the raw auth.uid() — the storage RLS policies match
+  // on (storage.foldername(name))[1], so anything else here is rejected. Deeper
+  // segments are unconstrained, which is why this nesting needs no SQL change.
+  const dir = `${userId}/${folder || UNFILED_IMAGE_FOLDER}`;
+  const base = name || `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const path = `${dir}/${base}.${ext}`;
   const { error } = await withTimeout(
     supabaseClient.storage.from(IMAGE_BUCKET).upload(path, file, {
       contentType: file.type || "application/octet-stream",
@@ -19434,7 +19553,7 @@ async function flushPendingImageUploads() {
   for (const entry of queued) {
     let url;
     try {
-      url = await uploadImageToSupabase(entry.blob);
+      url = await uploadImageToSupabase(entry.blob, { folder: entry.folder || null });
     } catch (error) {
       // A permanent rejection (RLS) would fail identically forever, and holding
       // the blob would re-attempt it on every single sync. Anything else is
@@ -19515,9 +19634,12 @@ async function insertImageUpload(textarea, file, atPos) {
   insertAtCursor(textarea, uploadToken, atPos);
   showToast("Optimizing image…", "info");
   let optimized = file;
+  // Resolved before the await so the image is filed under the deck the user
+  // actually pasted into, even if they switch decks while it uploads.
+  const folder = deckImageFolder();
   try {
     optimized = await optimizeImage(file);
-    const url = await uploadImageToSupabase(optimized);
+    const url = await uploadImageToSupabase(optimized, { folder });
     replaceInTextarea(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
     return;
@@ -19538,7 +19660,11 @@ async function insertImageUpload(textarea, file, atPos) {
   // than discarding the image the user just chose.
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   try {
-    await putOutboxImage({ token, blob: optimized, savedAt: new Date().toISOString() });
+    // `folder` rides along so a queued image still lands beside the rest of its
+    // deck's images when it finally uploads, however many decks the user has
+    // opened in between. Entries queued before this existed have no folder and
+    // fall back to unfiled/.
+    await putOutboxImage({ token, blob: optimized, folder, savedAt: new Date().toISOString() });
   } catch (error) {
     console.warn("Could not queue the image for upload", error);
     replaceInTextarea(textarea, uploadToken, "");

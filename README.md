@@ -425,52 +425,66 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('images', 'images', true)
 ON CONFLICT (id) DO NOTHING;
 
+-- Dropped and recreated by name, exactly like the table policies in section 6 —
+-- NOT skipped when already present. An earlier version of this section guarded
+-- each policy with `IF NOT EXISTS … THEN CREATE`, which quietly made re-running
+-- this file a no-op for anyone whose project had already been set up: a project
+-- that ran the older supabase_image_storage.sql kept that file's bare
+-- `auth.uid()` bodies forever, so the InitPlan hoisting explained in section 6
+-- never reached the one workload that needs it most — an EPUB import inserts a
+-- storage object per figure, hundreds in a row, and a bare auth.uid() in the
+-- INSERT policy is re-evaluated for every one of them.
+--
+-- Policies are not data: dropping and recreating them loses nothing, and the
+-- whole block is one statement, so the tables are never left uncovered.
 DO $$
 BEGIN
   -- A signed-in user may write only into a folder named after their own uid
   -- (app.js prefixes every upload path with auth.uid()), so one account's
   -- session can never write into — or, via the delete policy, remove from —
   -- another account's images.
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'storage' AND tablename = 'objects'
-      AND policyname = 'Authenticated users can upload their own images'
-  ) THEN
-    CREATE POLICY "Authenticated users can upload their own images"
-      ON storage.objects FOR INSERT
-      TO authenticated
-      WITH CHECK (
-        bucket_id = 'images'
-        AND (storage.foldername(name))[1] = (select auth.uid())::text
-      );
-  END IF;
+  --
+  -- Only the FIRST path segment is checked, which is what lets app.js file
+  -- uploads into per-source subfolders underneath it:
+  --   {uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp   (EPUB import)
+  --   {uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp   (paste/drop)
+  --   {uid}/unfiled/{ts}-{rand}.webp                            (no owner yet)
+  -- No policy change is needed for that nesting, and objects still sitting at
+  -- the old flat {uid}/{ts}-{rand}.ext remain readable and deletable.
+  DROP POLICY IF EXISTS "Authenticated users can upload their own images" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated users can delete their own images" ON storage.objects;
+  DROP POLICY IF EXISTS "Anyone can view images" ON storage.objects;
 
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'storage' AND tablename = 'objects'
-      AND policyname = 'Authenticated users can delete their own images'
-  ) THEN
-    CREATE POLICY "Authenticated users can delete their own images"
-      ON storage.objects FOR DELETE
-      TO authenticated
-      USING (
-        bucket_id = 'images'
-        AND (storage.foldername(name))[1] = (select auth.uid())::text
-      );
-  END IF;
+  CREATE POLICY "Authenticated users can upload their own images"
+    ON storage.objects FOR INSERT
+    TO authenticated
+    WITH CHECK (
+      bucket_id = 'images'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
+
+  CREATE POLICY "Authenticated users can delete their own images"
+    ON storage.objects FOR DELETE
+    TO authenticated
+    USING (
+      bucket_id = 'images'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
 
   -- Images are embedded as plain public URLs directly in the markdown, so read
   -- access has to be open: there is no signed-in context when a card is later
   -- rendered from a synced copy on another device, or from the offline cache.
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'storage' AND tablename = 'objects'
-      AND policyname = 'Anyone can view images'
-  ) THEN
-    CREATE POLICY "Anyone can view images"
-      ON storage.objects FOR SELECT
-      USING (bucket_id = 'images');
-  END IF;
+  CREATE POLICY "Anyone can view images"
+    ON storage.objects FOR SELECT
+    USING (bucket_id = 'images');
+EXCEPTION
+  -- Some projects don't let the SQL Editor's role alter storage.objects. The
+  -- EXCEPTION block is a subtransaction, so the DROPs above roll back with it
+  -- and the existing policies are left exactly as they were — a project that
+  -- can't be upgraded keeps working instead of ending up with no policies and
+  -- no image uploads at all.
+  WHEN insufficient_privilege THEN
+    RAISE NOTICE 'Storage policies left unchanged: this role may not alter storage.objects. Existing policies (if any) still apply; otherwise add them under Dashboard → Storage → Policies.';
 END $$;
 
 
@@ -611,6 +625,12 @@ Then hard-reload the app (or close every tab) so the service worker picks up the
 
 **Why re-running matters after an update.** The schema tracks the app. The per-card sync merge needs `cards.updated_at`; the Quick Notes board needs `cards.category` and `decks.meta`; folders need `decks.category`; and the current file adds indexes the sync path depends on — in particular `cards (deck_id, position)`, without which every card download *and* every deck's card count on the My Decks list is a sequential scan of the whole `cards` table, because Postgres does not index a foreign key column for you.
 
+**Per-source image folders need no SQL at all.** Uploads are filed into `{uid}/books/…`, `{uid}/decks/…` and `{uid}/unfiled/…` subfolders rather than one flat `{uid}/` folder, and the three storage policies work unchanged: each matches `(storage.foldername(name))[1]`, which is the *first* path segment — [`storage.foldername()` returns every folder a file belongs to](https://supabase.com/docs/guides/storage/schema/helper-functions), so `public/subfolder/avatar.png` gives `['public','subfolder']` and `[1]` is `public`. A deeper key like `{uid}/books/my-book--k3f9/0001-fig1.webp` still presents the uid as segment 1 and is accepted; the segments beneath it are unconstrained by design.
+
+So there is nothing to migrate for the folders themselves, and **nothing about the storage policies should be loosened to accommodate the nesting** — widening the `WITH CHECK` to allow paths whose first segment isn't the uid is exactly what would let one account write into another's images. Images already sitting at the old flat `{uid}/{timestamp}-{random}.ext` keep rendering and stay deletable too, because the app resolves a stored object's path from its URL at any depth.
+
+**Re-running is still worth it for the storage policies.** Section 7 now drops and recreates its three policies by name, the way section 6 has always done for the table policies, instead of skipping them when they already exist. That guard made re-running a no-op for every project that was already set up — so a project that had run the older `supabase_image_storage.sql` kept that file's bare `auth.uid()` policy bodies indefinitely and never picked up the `(select auth.uid())` form, which Postgres hoists into an InitPlan and evaluates once per statement rather than once per row. An EPUB import is where that bites: it inserts one storage object per figure, hundreds in a row, each one re-running `auth.uid()` under the old bodies. Policies aren't data, so recreating them loses nothing, and if the role running the file isn't allowed to alter `storage.objects`, the whole block rolls back to whatever was already there and prints a `NOTICE` — an upgrade that can't be applied leaves image uploads working rather than stripping their policies.
+
 ### The one case that needs a manual step: a deployment older than authentication
 
 On a project that predates auth, `decks` has no `user_id`, and the rows already in it have no owner. RLS then hides them from every account, so the app shows an empty library while the data sits there untouched.
@@ -678,6 +698,16 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 | `app_style_settings` | Layout and typography, one row per user | Keyed on the user's auth uid, plus a legacy shared `global` row used as a fallback |
 
 Plus four indexes (`decks (user_id, updated_at DESC)`, `decks (user_id, last_accessed_at DESC)`, `cards (deck_id, position)`, `deleted_decks (user_id)`), four RLS policies, and the public `images` Storage bucket with three policies — upload and delete confined to each user's own folder, read open to all.
+
+Inside that per-user folder, uploads are filed by where they came from, so a bucket holding thousands of figures is still readable and one source's images can be cleared out as a unit:
+
+| Path | Source |
+| --- | --- |
+| `{uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp` | EPUB import — one folder per import **run**, keeping the book's own image filenames |
+| `{uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp` | Image pasted or dropped into a deck's notes |
+| `{uid}/unfiled/{ts}-{rand}.webp` | No owning deck yet (pasted before the deck's first save) |
+
+The `--{id}` suffix is what makes each folder unique: two imports of the same book, or two decks sharing a title, never share a folder. Because the id comes last, renaming a deck starts a new folder but every folder for that deck is still findable by its `localDeckId`. Only the RLS-checked first segment has to be the auth uid, so this nesting needs no policy change, and images already stored flat at `{uid}/{ts}-{rand}.ext` stay readable and deletable.
 
 Two deliberate omissions, both explained in comments in the file: there is **no `updated_at` trigger** on `decks` or `cards` (the app writes an epoch sentinel during a push so an interrupted sync is retriable, and a trigger would overwrite it), and `cards` carries **no `user_id`** (ownership derives from the parent deck, so a deck can't leave its cards behind).
 

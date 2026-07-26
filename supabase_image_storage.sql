@@ -13,6 +13,14 @@ ON CONFLICT (id) DO NOTHING;
 -- Signed-in users may upload only into a folder named after their own user id
 -- (app.js prefixes every upload path with auth.uid()), so one user's session can
 -- never write into — or, via the delete policy below, remove — another user's images.
+--
+-- Only the FIRST path segment is checked, which is what lets app.js file uploads
+-- into per-source subfolders underneath it:
+--   {uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp   (EPUB import)
+--   {uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp   (paste/drop)
+--   {uid}/unfiled/{ts}-{rand}.webp                            (no owner yet)
+-- The nesting therefore needs no policy change, and objects still sitting at the
+-- old flat {uid}/{ts}-{rand}.ext remain readable and deletable.
 DO $$
 BEGIN
   IF NOT EXISTS (
