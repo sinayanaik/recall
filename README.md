@@ -693,65 +693,22 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
   Restoring puts decks back into those folders and files each restored image into this device's own `decks/{slug}--{id}` Storage folder. **A hand-made zip works too**: drop deck `.json` files into folders of your own naming and restore reads the folder path as the deck's folder (a deck that carries its own category keeps it). Files at the root land in *Uncategorized*, and `__MACOSX/`, `.DS_Store` and non-deck JSON are ignored. The restore preview names the folder each deck will land in before anything is written.
 
-**Starting over — emptying the data without dropping anything.** Sometimes you want a clean slate but not a rebuild: no `DROP TABLE`, no re-running `supabase_setup.sql`, no re-creating policies. These statements delete *rows only*. Tables, columns, indexes, RLS policies, triggers, the `images` bucket and its policies, and every user account all survive, so the app keeps working and simply starts filling up again.
-
-> **Take a backup first** (**My Decks → ⋯ → Export All → Backup (.zip)**) — this is not undoable, and the .zip is what puts everything back, images included.
->
-> **This propagates to your devices.** A deck a device has confirmed in the cloud at least once, and that is then missing from it, is treated as deleted: the device removes its local copy on the next sync. That is what makes this a real reset rather than a round trip. The exception is a deck that has *never* reached the cloud (no cloud id yet) — that one is pushed up instead, so a device holding unsynced work will re-populate the project with it. Sync every device before you wipe, or clear the device too (below).
-
-Paste into **Supabase → SQL Editor**. Everything, for every account on the project:
+**Starting over.** Wipes every table and every storage bucket, for all users, without dropping anything — tables, columns, indexes, RLS policies, triggers, buckets and accounts all survive, so the app keeps working from empty. Back up first (**My Decks → ⋯ → Export All → Backup (.zip)**); this is not undoable.
 
 ```sql
 BEGIN;
--- cards is truncated in the same statement as decks because it references it
-TRUNCATE TABLE cards, decks, deleted_decks;
--- Optional — also forget synced fonts/sizes/layout. The app falls back to its
--- built-in defaults and re-creates the row on the next style sync.
--- TRUNCATE TABLE app_style_settings;
+
+-- Every deck, card and tombstone, plus synced fonts/sizes/layout.
+-- (cards is listed alongside decks because it references it.)
+TRUNCATE TABLE cards, decks, deleted_decks, app_style_settings;
+
+-- Every uploaded file, in every bucket. The buckets themselves stay.
+DELETE FROM storage.objects;
+
 COMMIT;
 ```
 
-Just one account, on a project several people share:
-
-```sql
--- Find the uid first:
-SELECT id, email FROM auth.users ORDER BY created_at;
-
-BEGIN;
--- Cards go with their decks (cards.deck_id is ON DELETE CASCADE).
-DELETE FROM decks              WHERE user_id = 'PASTE-UID-HERE';
-DELETE FROM deleted_decks      WHERE user_id = 'PASTE-UID-HERE';
-DELETE FROM app_style_settings WHERE id      = 'PASTE-UID-HERE';  -- optional
-COMMIT;
-```
-
-The uploaded images are separate — they live in Storage, not in a table:
-
-```sql
--- Empty the bucket from Dashboard → Storage → images (select all → delete) so
--- the files themselves are freed. SQL alone removes only the object ROWS and
--- leaves the underlying files orphaned in the storage backend, still counting
--- against your quota.
-DELETE FROM storage.objects WHERE bucket_id = 'images';
-
--- One user's images only (app.js files every upload under {uid}/…):
-DELETE FROM storage.objects
-WHERE bucket_id = 'images' AND (storage.foldername(name))[1] = 'PASTE-UID-HERE';
-```
-
-Check what's left:
-
-```sql
-SELECT 'decks' AS what, COUNT(*) FROM decks
-UNION ALL SELECT 'cards',              COUNT(*) FROM cards
-UNION ALL SELECT 'deleted_decks',      COUNT(*) FROM deleted_decks
-UNION ALL SELECT 'app_style_settings', COUNT(*) FROM app_style_settings
-UNION ALL SELECT 'images',             COUNT(*) FROM storage.objects WHERE bucket_id = 'images';
-```
-
-**Clearing a device too.** The cloud is only half the library — each device keeps its own copy. In the browser: DevTools → **Application → Storage → Clear site data** (on a phone, the site's "Delete data" in browser settings). That drops the deck index (`flashcards_local_decks_index_v1`), every deck snapshot (`flashcards_local_deck_v1:*`), the queued-image outbox (IndexedDB `recall-outbox`), and the offline caches (`recall-v…`, `recall-images-v1`). It also clears `flashcards_supabase_config` and your session — so have the project URL and anon key ready to re-enter, and sign in again afterwards.
-
-After all this, restoring a backup works normally: a restore explicitly retires the delete tombstones for anything it brings back, so the decks come home instead of being deleted again on the next sync.
+Two things this does not reach: the files behind those storage rows are only reclaimed by emptying the bucket from **Dashboard → Storage**, and each device keeps its own copy of the library — clear the site's data in the browser (DevTools → Application → Clear site data) to reset a device as well.
 
 **Storage limits.** The free tier's 500 MB database is far more than text decks will ever need; the 1 GB storage quota is the one to watch if you paste a lot of images. Uploads are downscaled to 1600 px and re-encoded as WebP in the browser first, so typical screenshots land well under 100 KB — but GIFs and SVGs are passed through untouched to keep them animated/vector.
 
