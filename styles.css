@@ -2498,6 +2498,52 @@ svg.nomnoml-light-svg [fill="none"] {
   font-weight: 900;
 }
 
+/* A diagram whose drawing is still queued (it's below the fold in a long note —
+   see runNearViewportAndDefer) holds its place so scrolling doesn't jump when it
+   arrives, and shows nothing rather than a flash of its raw source. */
+.mermaid.is-diagram-pending,
+.nomnoml-diagram.is-diagram-pending {
+  min-height: 120px;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--line) 22%, transparent) 0 8px,
+    transparent 8px 16px
+  );
+  border-radius: var(--diagram-radius);
+  opacity: 0.5;
+}
+
+/* A resized diagram (```mermaid w=520) sizes its container; the generated <svg>
+   is stretched to fill it by the rule above, so the whole drawing scales and
+   keeps its aspect ratio. Same custom-property and class an image uses. */
+#notesView .diagram-shell > .mermaid.has-custom-size,
+#notesView .diagram-shell > .nomnoml-diagram.has-custom-size,
+#questionView .diagram-shell > .mermaid.has-custom-size,
+#questionView .diagram-shell > .nomnoml-diagram.has-custom-size,
+#answerView .diagram-shell > .mermaid.has-custom-size,
+#answerView .diagram-shell > .nomnoml-diagram.has-custom-size,
+#printRoot .mermaid.has-custom-size,
+#printRoot .nomnoml-diagram.has-custom-size {
+  width: var(--notes-img-w) !important;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+/* …and the drawing inside fills exactly that width. Without this the diagram
+   would be --visual-max-width (a Style setting, 50% by default on desktop) OF
+   the requested width, so dragging the grip to 400px would draw 200px. */
+#notesView .diagram-shell > .mermaid.has-custom-size > svg,
+#notesView .diagram-shell > .nomnoml-diagram.has-custom-size > svg,
+#questionView .diagram-shell > .mermaid.has-custom-size > svg,
+#questionView .diagram-shell > .nomnoml-diagram.has-custom-size > svg,
+#answerView .diagram-shell > .mermaid.has-custom-size > svg,
+#answerView .diagram-shell > .nomnoml-diagram.has-custom-size > svg,
+#printRoot .mermaid.has-custom-size > svg,
+#printRoot .nomnoml-diagram.has-custom-size > svg {
+  width: 100% !important;
+  max-width: none !important;
+}
+
 /* ── Editable images: corner-drag resize ────────────────────────────────────
    Scoped to the three editable surfaces — the notes view and both card faces —
    plus #printRoot for export, so generated diagrams elsewhere keep the forced
@@ -10780,6 +10826,22 @@ kbd {
 .notes-rendered > * {
   max-width: var(--notes-max-width);
   margin-inline: auto;
+}
+
+/* Long notes: let the browser skip laying out the blocks nobody is looking at.
+   Showing a 230KB note (coming back from raw mode, or switching to Notes) costs
+   a full layout of every paragraph in it — ~300ms on a desktop, far worse on a
+   phone — and this brings that down to the handful of blocks actually on screen.
+   `auto` in contain-intrinsic-size makes each block remember its real height
+   once measured, so the scrollbar settles down as the note is browsed.
+
+   Deliberately NOT applied to diagrams (.diagram-shell) or tables
+   (.markdown-table-wrap): both are already deferred in JS off their own
+   IntersectionObserver, which needs their geometry to stay real, and paint
+   containment would clip an image mid-resize-drag. */
+.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
 
 .notes-rendered:empty::before {

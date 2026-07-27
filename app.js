@@ -2483,6 +2483,9 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = themeId;
   updateThemeControl(themeId);
   configureMermaid(themeId);
+  // Diagrams are drawn with the theme's colours baked into their SVG, so every
+  // cached rendered block is now stale even though its markdown didn't change.
+  invalidateRenderedBlockCache();
   const metaThemeColor = document.querySelector('meta[name="theme-color"]');
   if (metaThemeColor) metaThemeColor.setAttribute("content", themeById(themeId).colors.bg);
   if (state.cards[state.current]) showCard();
@@ -8150,23 +8153,70 @@ function normalizeCitations(text) {
     .replace(FOOTNOTE_BACKREF_ARROW_RE, "");
 }
 
+// ── Diagram sizing ─────────────────────────────────────────────────────────
+// A mermaid/nomnoml diagram is as resizable as an image, and its size has to
+// survive in the markdown like an image's does. An image carries it in a raw
+// <img style="--notes-img-w:…">; a diagram is a fenced code block, which has
+// nowhere to hang an attribute — except its info string. So a resized diagram
+// is stored as ```mermaid w=520, which every renderer here already accepts
+// (the fence is matched on /\bmermaid\b/, not on an exact language) and which
+// no other markdown tool chokes on. The parsed width rides to the DOM as an
+// inline width on the .mermaid/.nomnoml-diagram element, so it applies to the
+// generated <svg> (which is stretched to its container) without a JS pass, and
+// exports/prints inherit it for free.
+const DIAGRAM_WIDTH_MIN = 80;
+const DIAGRAM_WIDTH_MAX = 4000;
+
+// The one fence scanner. The renderer walks it to turn diagram fences into
+// elements and the resize grip walks it to find the fence behind the Nth
+// diagram on screen — sharing the pattern is what guarantees those two walks
+// stay in lockstep. Capture 1 is the info string, capture 2 the body.
+const FENCE_PATTERN_SOURCE = "```[ \\t]*([^\\n]*)\\n([\\s\\S]*?)```";
+function fencePattern() {
+  return new RegExp(FENCE_PATTERN_SOURCE, "g");
+}
+
+function parseDiagramWidth(info) {
+  const match = String(info || "").match(/\b(?:w|width)\s*=\s*(\d{2,4})\b/i);
+  if (!match) return null;
+  const px = parseInt(match[1], 10);
+  if (!Number.isFinite(px)) return null;
+  return Math.min(DIAGRAM_WIDTH_MAX, Math.max(DIAGRAM_WIDTH_MIN, px));
+}
+
+// `<div class="mermaid …">` for one fence, sized if its info string says so.
+// `has-custom-size` is the same marker a resized image carries, so the resize
+// grip reads a diagram's current width back the same way.
+function diagramOpenTag(className, info) {
+  const px = parseDiagramWidth(info);
+  if (!px) return `<div class="${className}"`;
+  return `<div class="${className} has-custom-size" style="--notes-img-w:${px}px; width:${px}px"`;
+}
+
+// Rewrites a fence's info string to carry `w=<px>` (replacing any width already
+// there), keeping the declared language and any other words intact.
+function fenceInfoWithWidth(info, px) {
+  const cleaned = String(info || "").replace(/\s*\b(?:w|width)\s*=\s*\d+\b/gi, "").trim();
+  return px ? `${cleaned} w=${px}`.trim() : cleaned;
+}
+
 function preprocessSpecialBlocks(markdown) {
   const source = normalizeMarkdown(markdown || "");
-  const fencePattern = /```[ \t]*([^\n]*)\n([\s\S]*?)```/g;
+  const fences = fencePattern();
   let output = "";
   let lastIndex = 0;
   let match;
 
-  while ((match = fencePattern.exec(source))) {
+  while ((match = fences.exec(source))) {
     output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex, match.index))));
     if (/\bmermaid\b/i.test(match[1])) {
-      output += `<div class="mermaid" data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
+      output += `${diagramOpenTag("mermaid", match[1])} data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
     } else if (/\bnomnoml\b/i.test(match[1])) {
-      output += `<div class="nomnoml-diagram" data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
+      output += `${diagramOpenTag("nomnoml-diagram", match[1])} data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
     } else {
       output += match[0];
     }
-    lastIndex = fencePattern.lastIndex;
+    lastIndex = fences.lastIndex;
   }
 
   output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex))));
@@ -8187,23 +8237,31 @@ function normalizeImageUrl(url) {
   return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w1000`;
 }
 
+const SANITIZE_CONFIG = {
+  ADD_TAGS: ["foreignObject", "font", "u", "del", "kbd"],
+  ADD_ATTR: ["target", "rel", "class", "data-tex", "data-diagram", "style", "color", "face", "tabindex", "role", "aria-label"],
+  // DOMPurify's default URI allowlist would strip `recall-img:` and a
+  // not-yet-uploaded image would render as a broken <img> with no src. This
+  // is DOMPurify's default expression with exactly one scheme added — nothing
+  // else is widened. In particular `data:` is deliberately NOT here: DOMPurify
+  // already permits data: URIs on <img> and friends through its own
+  // DATA_URI_TAGS path, and listing it here would additionally allow
+  // `data:text/html` in an href, which is a script-execution vector.
+  // recall-img: resolves only to a blob this app itself put in IndexedDB
+  // (see hydrateLocalImages) and can't reference anything remote.
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|recall-img):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+};
+
+// Second half of the pipeline, split out so the incremental renderer can run it
+// on ONE changed block: preprocessSpecialBlocks has already been applied to the
+// whole document (its math/cloze/code protection reads across block boundaries,
+// so it must never be re-run on a fragment of its own output).
+function safeHtmlFromPrepared(prepared) {
+  return DOMPurify.sanitize(marked.parse(prepared), SANITIZE_CONFIG);
+}
+
 function markdownToSafeHtml(markdown) {
-  const prepared = preprocessSpecialBlocks(markdown || "");
-  const html = marked.parse(prepared);
-  return DOMPurify.sanitize(html, {
-    ADD_TAGS: ["foreignObject", "font", "u", "del", "kbd"],
-    ADD_ATTR: ["target", "rel", "class", "data-tex", "data-diagram", "style", "color", "face", "tabindex", "role", "aria-label"],
-    // DOMPurify's default URI allowlist would strip `recall-img:` and a
-    // not-yet-uploaded image would render as a broken <img> with no src. This
-    // is DOMPurify's default expression with exactly one scheme added — nothing
-    // else is widened. In particular `data:` is deliberately NOT here: DOMPurify
-    // already permits data: URIs on <img> and friends through its own
-    // DATA_URI_TAGS path, and listing it here would additionally allow
-    // `data:text/html` in an href, which is a script-execution vector.
-    // recall-img: resolves only to a blob this app itself put in IndexedDB
-    // (see hydrateLocalImages) and can't reference anything remote.
-    ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|recall-img):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
-  });
+  return safeHtmlFromPrepared(preprocessSpecialBlocks(markdown || ""));
 }
 
 function nomnomlThemeDefaults(print = false) {
@@ -8256,10 +8314,155 @@ function codeLanguageLabel(language) {
     .toUpperCase();
 }
 
-function enhanceCodeBlocks(container) {
+// ── Scoped enhancement ─────────────────────────────────────────────────────
+// Every enhancement pass below used to take one container and sweep the whole
+// thing. The incremental renderer re-renders only the blocks that changed, so
+// each pass now takes a LIST of roots instead — either [container] (a full
+// render) or just the freshly rendered nodes. `roots` may contain the matches
+// themselves (a rendered block can BE the <table>/<img>/.mermaid), so each root
+// is tested as well as searched.
+function scopedQueryAll(target, selector) {
+  const roots = Array.isArray(target) ? target : [target];
+  const found = [];
+  roots.forEach((root) => {
+    if (!root || root.nodeType !== 1) return;
+    if (root.matches(selector)) found.push(root);
+    root.querySelectorAll(selector).forEach((node) => found.push(node));
+  });
+  return found;
+}
+
+// ── Viewport-deferred finishing work ───────────────────────────────────────
+// Rendering a diagram or auto-fitting a table costs a forced layout of the
+// whole (potentially enormous) notes document, and a long note has dozens of
+// each — that was 8 of the 9 seconds it took a 230KB note to appear. Neither
+// job's result can be seen until you scroll to it, so work that lands below the
+// fold is queued and run when it approaches the viewport instead.
+//
+// Deliberately limited to the notes view (see deferrableRenderRoot): card faces
+// are one screen of content, and #printRoot is captured programmatically the
+// moment it's built, so both must finish everything up front.
+const DEFERRED_WORK_MARGIN = 1200;
+const deferredWorkRunners = new WeakMap(); // node -> run(batch)
+const deferredWorkObservers = new Map(); // scroll root -> IntersectionObserver
+const pendingDeferredWork = new Set(); // live nodes with queued work, for flushing
+
+function deferrableRenderRoot(container) {
+  // el.notesView is its own scroll port (.notes-rendered), so it's both the
+  // "is this deferrable" answer and the intersection root.
+  return container === el.notesView ? el.notesView : null;
+}
+
+function deferredWorkObserver(root) {
+  const existing = deferredWorkObservers.get(root);
+  if (existing) return existing;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      // Batch everything that came into view together and hand each runner its
+      // whole batch: one mermaid.run for six diagrams costs far less than six.
+      const batches = new Map();
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const node = entry.target;
+        const run = deferredWorkRunners.get(node);
+        observer.unobserve(node);
+        deferredWorkRunners.delete(node);
+        pendingDeferredWork.delete(node);
+        if (!run) return;
+        const batch = batches.get(run);
+        if (batch) batch.push(node);
+        else batches.set(run, [node]);
+      });
+      batches.forEach((batch, run) => {
+        try {
+          Promise.resolve(run(batch)).catch((error) => console.warn("Deferred render failed", error));
+        } catch (error) {
+          console.warn("Deferred render failed", error);
+        }
+      });
+    },
+    { root, rootMargin: `${DEFERRED_WORK_MARGIN}px 0px` }
+  );
+  deferredWorkObservers.set(root, observer);
+  return observer;
+}
+
+// Splits `nodes` into the ones already at (or near) the visible part of `root`
+// and the ones further away. Every rect is read BEFORE anything is mutated —
+// interleaving reads with diagram rendering is what makes this expensive in the
+// first place.
+function partitionByViewportProximity(nodes, root) {
+  const bounds = root.getBoundingClientRect();
+  const top = bounds.top - DEFERRED_WORK_MARGIN;
+  const bottom = bounds.bottom + DEFERRED_WORK_MARGIN;
+  const near = [];
+  const far = [];
+  nodes.forEach((node) => {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom >= top && rect.top <= bottom) near.push(node);
+    else far.push(node);
+  });
+  return { near, far };
+}
+
+// Runs `run` over the nodes near the viewport now and queues the rest. Falls
+// back to running everything immediately where there's no root to observe or no
+// IntersectionObserver at all.
+function runNearViewportAndDefer(nodes, root, run) {
+  if (!nodes.length) return Promise.resolve();
+  if (!root || typeof IntersectionObserver !== "function") return Promise.resolve(run(nodes));
+  // Nodes dropped by a later render would otherwise sit in this set forever.
+  pendingDeferredWork.forEach((node) => {
+    if (!node.isConnected) pendingDeferredWork.delete(node);
+  });
+  const { near, far } = partitionByViewportProximity(nodes, root);
+  if (far.length) {
+    const observer = deferredWorkObserver(root);
+    far.forEach((node) => {
+      deferredWorkRunners.set(node, run);
+      pendingDeferredWork.add(node);
+      observer.observe(node);
+    });
+  }
+  return near.length ? Promise.resolve(run(near)) : Promise.resolve();
+}
+
+// Forces queued work inside `root` to run now — for anything that reads the
+// rendered result programmatically (zooming a diagram, exporting) instead of
+// waiting for it to be scrolled into view.
+async function flushDeferredWork(root) {
+  const due = [];
+  pendingDeferredWork.forEach((node) => {
+    if (!node.isConnected) {
+      pendingDeferredWork.delete(node);
+      return;
+    }
+    if (!root || root === node || root.contains(node)) due.push(node);
+  });
+  const batches = new Map();
+  due.forEach((node) => {
+    const run = deferredWorkRunners.get(node);
+    deferredWorkRunners.delete(node);
+    pendingDeferredWork.delete(node);
+    deferredWorkObservers.forEach((observer) => observer.unobserve(node));
+    if (!run) return;
+    const batch = batches.get(run);
+    if (batch) batch.push(node);
+    else batches.set(run, [node]);
+  });
+  for (const [run, batch] of batches) {
+    try {
+      await run(batch);
+    } catch (error) {
+      console.warn("Deferred render failed", error);
+    }
+  }
+}
+
+function enhanceCodeBlocks(roots) {
   configurePrismLanguages();
 
-  container.querySelectorAll("pre code").forEach((code) => {
+  scopedQueryAll(roots, "pre code").forEach((code) => {
     const pre = code.closest("pre");
     const declaredLanguage = declaredCodeLanguage(code);
     const normalizedLanguage = normalizeCodeLanguage(declaredLanguage);
@@ -8305,15 +8508,20 @@ function enhanceCodeBlocks(container) {
   });
 }
 
-async function enhanceRenderedMarkdown(container) {
-  container.querySelectorAll("a[href]").forEach((link) => {
+// `roots` (optional) narrows every pass to the nodes the incremental renderer
+// just created; omit it to enhance the whole container, which is what the
+// export/print paths and every non-incremental surface do.
+async function enhanceRenderedMarkdown(container, roots = null) {
+  const scope = roots || [container];
+
+  scopedQueryAll(scope, "a[href]").forEach((link) => {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
   });
 
-  enhanceCodeBlocks(container);
+  enhanceCodeBlocks(scope);
 
-  container.querySelectorAll(".math-display[data-tex], .math-inline[data-tex]").forEach((node) => {
+  scopedQueryAll(scope, ".math-display[data-tex], .math-inline[data-tex]").forEach((node) => {
     try {
       katex.render(decodeURIComponent(node.dataset.tex), node, {
         displayMode: node.classList.contains("math-display"),
@@ -8331,62 +8539,94 @@ async function enhanceRenderedMarkdown(container) {
   // left is text protectMath examined and declined — overwhelmingly two dollar
   // AMOUNTS on one line, e.g. "$5 for one and $10 for two", which this pass
   // would otherwise swallow and render as math.
-  renderMathInElement(container, {
-    delimiters: [
-      { left: "\\[", right: "\\]", display: true },
-      { left: "\\(", right: "\\)", display: false }
-    ],
-    throwOnError: false
-  });
-
-  const diagrams = container.querySelectorAll(".mermaid");
-  diagrams.forEach((node) => {
-    if (node.dataset.diagram) {
-      node.textContent = decodeURIComponent(node.dataset.diagram);
-    }
-    node.removeAttribute("data-processed");
-  });
-  if (diagrams.length) {
-    try {
-      await mermaid.run({ nodes: diagrams });
-      diagrams.forEach(addDiagramZoomControl);
-    } catch (error) {
-      console.warn("Mermaid render failed", error);
-    }
-  }
-
-  const nomnomlDiagrams = container.querySelectorAll(".nomnoml-diagram");
-  nomnomlDiagrams.forEach((node) => {
-    if (node.dataset.diagram) {
-      node.textContent = decodeURIComponent(node.dataset.diagram);
-    }
-    node.removeAttribute("data-processed");
-  });
-
-  if (nomnomlDiagrams.length) {
-    nomnomlDiagrams.forEach((node) => {
-      try {
-        const diagramSource = node.textContent;
-        const printTheme = Boolean(node.closest(".print-root"));
-        const svg = nomnoml.renderSvg(sourceWithNomnomlTheme(diagramSource, printTheme));
-        node.classList.add("nomnoml-light-theme");
-        node.innerHTML = svg;
-        node.querySelector("svg")?.classList.add("nomnoml-light-svg");
-        addDiagramZoomControl(node);
-      } catch (err) {
-        console.warn("Nomnoml render error:", err);
-        node.textContent = "Error rendering Nomnoml: " + err.message;
-      }
+  scope.filter((node) => node.nodeType === 1).forEach((node) => {
+    renderMathInElement(node, {
+      delimiters: [
+        { left: "\\[", right: "\\]", display: true },
+        { left: "\\(", right: "\\)", display: false }
+      ],
+      throwOnError: false
     });
-  }
+  });
 
-  container.querySelectorAll("img").forEach((img) => {
+  // Diagrams get their shell (and so their Zoom pill and resize grip) up front,
+  // even when the drawing itself is deferred — the shell is what reserves the
+  // space and carries the controls.
+  const diagrams = scopedQueryAll(scope, ".mermaid, .nomnoml-diagram");
+  diagrams.forEach((node) => {
+    node.classList.add("is-diagram-pending");
+    addDiagramZoomControl(node);
+  });
+
+  const lazyRoot = deferrableRenderRoot(container);
+  const diagramWork = runNearViewportAndDefer(diagrams, lazyRoot, renderDiagramNodes);
+
+  scopedQueryAll(scope, "img").forEach((img) => {
     const rewritten = normalizeImageUrl(img.getAttribute("src"));
     if (rewritten !== img.getAttribute("src")) img.setAttribute("src", rewritten);
+    // Long notes routinely carry dozens of screenshots; letting the browser skip
+    // the ones below the fold is the cheapest win available here. Card faces and
+    // the print/export roots stay eager — both are measured right after render.
+    if (lazyRoot) {
+      img.loading = "lazy";
+      img.decoding = "async";
+    }
     addDiagramZoomControl(img);
   });
 
-  fitMarkdownTables(container);
+  fitMarkdownTables(container, roots);
+  await diagramWork;
+}
+
+// Draws one batch of diagrams (mermaid and/or nomnoml). The source lives in
+// data-diagram and is only written into the element here, at render time, so a
+// deferred diagram never flashes its raw source on screen.
+async function renderDiagramNodes(nodes) {
+  const mermaidNodes = nodes.filter((node) => node.classList.contains("mermaid"));
+  const nomnomlNodes = nodes.filter((node) => node.classList.contains("nomnoml-diagram"));
+
+  nodes.forEach((node) => {
+    if (node.dataset.diagram) node.textContent = decodeURIComponent(node.dataset.diagram);
+    node.removeAttribute("data-processed");
+    node.classList.remove("is-diagram-pending");
+  });
+
+  if (mermaidNodes.length) {
+    // One diagram mermaid can't lay out rejects the whole batch, so a bad
+    // diagram must not take its neighbours' drawings down with it: retry the
+    // batch one node at a time and let only the broken one fail.
+    try {
+      await mermaid.run({ nodes: mermaidNodes });
+    } catch (error) {
+      console.warn("Mermaid render failed", error);
+      for (const node of mermaidNodes) {
+        if (node.querySelector("svg")) continue;
+        try {
+          await mermaid.run({ nodes: [node] });
+        } catch (nodeError) {
+          console.warn("Mermaid render failed", nodeError);
+        }
+      }
+    }
+  }
+
+  nomnomlNodes.forEach((node) => {
+    try {
+      const printTheme = Boolean(node.closest(".print-root"));
+      const svg = nomnoml.renderSvg(sourceWithNomnomlTheme(node.textContent, printTheme));
+      node.classList.add("nomnoml-light-theme");
+      node.innerHTML = svg;
+      node.querySelector("svg")?.classList.add("nomnoml-light-svg");
+      // The shell is created before the diagram is drawn now, so it can't pick
+      // nomnoml's light background up from the class it used to wait for.
+      if (node.parentElement?.classList.contains("diagram-shell")) {
+        node.parentElement.classList.add("nomnoml-light-shell");
+      }
+    } catch (err) {
+      console.warn("Nomnoml render error:", err);
+      node.textContent = "Error rendering Nomnoml: " + err.message;
+    }
+  });
 }
 
 // Notes frequently start at ## (or deeper) because the top-level # is reserved
@@ -8422,6 +8662,187 @@ function promoteNotesHeadings(markdown) {
   return lines.map((line, i) => (levels[i] ? "#".repeat(levels[i] - shift) + line.slice(levels[i]) : line)).join("\n");
 }
 
+// ── Incremental rendering ──────────────────────────────────────────────────
+// Flipping the notes between raw and rendered used to throw the entire rendered
+// DOM away and rebuild it: reparse, re-sanitize, re-highlight every code block,
+// re-typeset every formula and — the expensive part — redraw every mermaid
+// diagram. On a 230KB note that was ~9 seconds per toggle, for a document that
+// in the overwhelming majority of cases hadn't changed at all.
+//
+// So the render is now keyed by content. The preprocessed markdown is split into
+// its top-level blocks and each block's rendered nodes are remembered with the
+// block's exact source as the key. A re-render reuses the DOM of every block
+// whose source is byte-identical and only builds the ones that actually changed:
+// an unedited toggle touches nothing (and keeps your scroll position), a
+// one-paragraph edit re-renders one paragraph.
+//
+// Only the three editable surfaces are cached — the notes view and both card
+// faces, the ones a user toggles in and out of. Everything else (All Cards, the
+// print roots, the paste preview) renders once into a container it just built,
+// where a cache could never hit.
+const renderedBlockCache = new WeakMap(); // view -> { generation, source, blocks: [{key, nodes}] }
+const renderSequence = new WeakMap(); // view -> number, so a superseded render can bail
+// Bumped when something outside the markdown changes what a render would
+// produce (the mermaid theme), which retires every cached block.
+let renderGeneration = 0;
+
+function invalidateRenderedBlockCache() {
+  renderGeneration += 1;
+}
+
+function isCachedRenderSurface(container) {
+  return container === el.notesView || container === el.questionView || container === el.answerView;
+}
+
+// The block boundaries of already-preprocessed markdown, as exact source slices.
+// marked's lexer is the authority on where one top-level block ends and the next
+// begins (the image-resize commits lean on the same guarantee), so a list with
+// blank lines between its items stays one block instead of being sliced into
+// several lists.
+//
+// Link reference definitions ([id]: url) are the one thing that isn't local to
+// its block: they produce no output of their own but any block in the document
+// can point at them, and marked collects them onto the token list as `.links`
+// rather than leaving them in the stream. Rebuilding them into a `prelude` that
+// is parsed in front of each block is what keeps `[text][id]` a link when its
+// definition lives twenty blocks away.
+function definitionPrelude(links) {
+  return Object.entries(links || {})
+    .map(([label, link]) => {
+      if (!link || typeof link.href !== "string" || /[\n\r]/.test(label)) return "";
+      const key = label.replace(/[\\[\]]/g, "\\$&");
+      const href = /\s/.test(link.href) ? `<${link.href}>` : link.href;
+      const title = link.title ? ` "${String(link.title).replace(/"/g, '\\"')}"` : "";
+      return `[${key}]: ${href}${title}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Returns null when there's nothing to render block-wise.
+function splitPreparedBlocks(prepared) {
+  let tokens;
+  try {
+    tokens = marked.lexer(prepared);
+  } catch (error) {
+    return null;
+  }
+  const blocks = [];
+  for (const token of tokens) {
+    if (token.type === "space") continue;
+    if (typeof token.raw !== "string" || !token.raw.trim()) continue;
+    blocks.push(token.raw);
+  }
+  return blocks.length ? { blocks, prelude: definitionPrelude(tokens.links) } : null;
+}
+
+// A marker that survives sanitisation, so every changed block can be parsed and
+// sanitized in ONE pass and then split back into per-block HTML.
+const BLOCK_BREAK_HTML = '\n<hr data-recall-block-break="1">\n';
+const BLOCK_BREAK_RE = /<hr\b[^>]*\bdata-recall-block-break\b[^>]*>/;
+
+function renderPreparedBlocks(sources, prelude = "") {
+  const head = prelude ? prelude + "\n\n" : "";
+  const joined = sources.map((source) => marked.parse(head + source)).join(BLOCK_BREAK_HTML);
+  const parts = DOMPurify.sanitize(joined, SANITIZE_CONFIG).split(BLOCK_BREAK_RE);
+  if (parts.length === sources.length) return parts;
+  // A marker was dropped, or the markdown contained one of its own. Either way
+  // the split can't be trusted — sanitize each block on its own instead.
+  return sources.map((source) => safeHtmlFromPrepared(head + source));
+}
+
+function nodesFromHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return Array.from(template.content.childNodes);
+}
+
+// Re-resolves a remembered block's nodes against the DOM as it is now. A node
+// can have been wrapped since it was cached (every image and diagram gets a
+// .diagram-shell, every table a .markdown-table-wrap), so what the block really
+// owns is the top-level ancestor; anything no longer under `container` is gone
+// and its block has to be re-rendered.
+function liveBlockNodes(container, nodes, claimed) {
+  const live = [];
+  nodes.forEach((node) => {
+    let top = node;
+    while (top && top.parentNode && top.parentNode !== container) top = top.parentNode;
+    if (!top || top.parentNode !== container || claimed.has(top)) return;
+    claimed.add(top);
+    live.push(top);
+  });
+  return live;
+}
+
+// Rebuilds `container`'s children to match `blocks`, reusing the DOM of every
+// block whose source is unchanged. Returns the new block list plus the nodes
+// that were freshly built, which are the only ones needing enhancement.
+function patchRenderedBlocks(container, blocks, prelude, cached) {
+  const pool = new Map(); // block source -> reusable node groups, in document order
+  if (cached) {
+    const claimed = new Set();
+    cached.blocks.forEach((entry) => {
+      const nodes = liveBlockNodes(container, entry.nodes, claimed);
+      if (!nodes.length) return;
+      const bucket = pool.get(entry.key);
+      if (bucket) bucket.push(nodes);
+      else pool.set(entry.key, [nodes]);
+    });
+  }
+
+  const groups = new Array(blocks.length);
+  const missing = [];
+  blocks.forEach((key, index) => {
+    const bucket = pool.get(key);
+    const reused = bucket && bucket.length ? bucket.shift() : null;
+    if (reused) groups[index] = reused;
+    else missing.push(index);
+  });
+
+  const fresh = [];
+  if (missing.length) {
+    const parts = renderPreparedBlocks(missing.map((index) => blocks[index]), prelude);
+    missing.forEach((blockIndex, part) => {
+      const nodes = nodesFromHtml(parts[part] ?? "");
+      groups[blockIndex] = nodes;
+      nodes.forEach((node) => fresh.push(node));
+    });
+  }
+
+  // Walk the target order once: a node already in the right place is stepped
+  // over, anything else is moved (reused) or inserted (fresh) in front of the
+  // cursor. Whatever is left after the last block never made it into the new
+  // document and is dropped.
+  let cursor = container.firstChild;
+  groups.forEach((nodes) => {
+    nodes.forEach((node) => {
+      if (node === cursor) {
+        cursor = cursor.nextSibling;
+        return;
+      }
+      container.insertBefore(node, cursor);
+    });
+  });
+  while (cursor) {
+    const next = cursor.nextSibling;
+    container.removeChild(cursor);
+    cursor = next;
+  }
+
+  return {
+    blocks: blocks.map((key, index) => ({ key, nodes: groups[index] })),
+    fresh
+  };
+}
+
+// Rebuilding a view used to put every {{cloze}} back in its hidden state, and
+// the flip-all button is reset to match after each render. Reused blocks keep
+// whatever the reader flipped open, so hide them explicitly to keep that
+// contract — otherwise the button and the text disagree.
+function resetRenderedClozes(container) {
+  container.querySelectorAll(".cloze.is-revealed").forEach((node) => node.classList.remove("is-revealed"));
+}
+
 async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   let displayMarkdown = markdown;
   if (allowPlaceholder && (!markdown || String(markdown).trim() === "")) {
@@ -8432,18 +8853,59 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
     }
   }
   if (container === el.notesView) displayMarkdown = promoteNotesHeadings(displayMarkdown);
-  container.innerHTML = markdownToSafeHtml(displayMarkdown);
-  await enhanceRenderedMarkdown(container);
+
+  const cacheable = isCachedRenderSurface(container);
+  const cached = cacheable ? renderedBlockCache.get(container) : null;
+  // The whole point: same content, same theme, and the DOM on screen is already
+  // the answer. This is the raw → rendered toggle when nothing was edited.
+  if (cached && cached.generation === renderGeneration && cached.source === displayMarkdown) {
+    resetRenderedClozes(container);
+    return;
+  }
+
+  const sequence = (renderSequence.get(container) || 0) + 1;
+  renderSequence.set(container, sequence);
+
+  const prepared = preprocessSpecialBlocks(displayMarkdown);
+  const split = cacheable ? splitPreparedBlocks(prepared) : null;
+  let roots = null;
+  if (split) {
+    // Every block is parsed behind the document's link reference definitions, so
+    // a change to those changes what any block could render to: start over.
+    const reusable = cached && cached.prelude === split.prelude ? cached : null;
+    const patched = patchRenderedBlocks(container, split.blocks, split.prelude, reusable);
+    roots = patched.fresh;
+    resetRenderedClozes(container);
+    // Committed before the awaits below: another render can start while mermaid
+    // is drawing, and it must see the DOM as it actually is, not as it was.
+    renderedBlockCache.set(container, {
+      generation: renderGeneration,
+      source: displayMarkdown,
+      prelude: split.prelude,
+      blocks: patched.blocks
+    });
+  } else {
+    container.innerHTML = safeHtmlFromPrepared(prepared);
+    if (cacheable) renderedBlockCache.delete(container);
+  }
+
+  await enhanceRenderedMarkdown(container, roots);
   // Images still waiting to upload live in IndexedDB behind a recall-img: URL,
   // which no browser can load directly — swap in a blob URL so they're visible
   // straight away rather than only after they eventually reach the cloud.
-  await hydrateLocalImages(container);
+  await hydrateLocalImages(roots || container);
+  if (renderSequence.get(container) !== sequence) return; // a newer render owns the view now
   // Notes AND both card faces are editable surfaces, so all three get the
   // resize/delete grips. Every other caller of renderMarkdown (All Cards, the
   // print root, the paste preview, the Quick Notes board) renders read-only and
-  // imageSurfaceForView returns null for it.
+  // imageSurfaceForView returns null for it. Always run over the whole surface,
+  // never just the fresh blocks: an inserted or deleted block shifts the token
+  // indices every other image's resize handler was bound to.
   const surface = imageSurfaceForView(container);
-  if (surface) enhanceSurfaceImageControls(surface);
+  if (surface) {
+    enhanceSurfaceImageControls(surface);
+    enhanceSurfaceDiagramControls(surface);
+  }
   if (container === el.notesView) buildNotesToc();
 }
 
@@ -8548,48 +9010,66 @@ function markdownTableFits(table, wrapper) {
     .every((cell) => cell.scrollWidth <= cell.clientWidth + allowance);
 }
 
-function fitMarkdownTables(container) {
-  container.querySelectorAll("table").forEach((table) => {
+// Shrink-to-fit for one table: a binary search over font sizes, each step
+// reading layout back. That's up to ten forced layouts of the whole document per
+// table, which is why it's deferred until the table is nearly on screen (see
+// runNearViewportAndDefer) — a note with 130 tables spent 1.6s of its render
+// here, all of it on tables nobody was looking at.
+function fitMarkdownTableFont(table) {
+  const wrapper = table.parentElement;
+  if (!wrapper?.classList.contains("markdown-table-wrap") || !wrapper.clientWidth) return;
+
+  if (!table.dataset.baseFontSize) {
+    table.dataset.baseFontSize = String(parseFloat(getComputedStyle(table).fontSize) || 16);
+  }
+
+  const baseFontSize = parseFloat(table.dataset.baseFontSize) || 16;
+  const minimumFontSize = 7;
+  table.style.fontSize = `${baseFontSize}px`;
+
+  if (styleMobileMedia?.matches) return;
+
+  if (markdownTableFits(table, wrapper)) return;
+
+  let low = minimumFontSize;
+  let high = baseFontSize;
+  let best = low;
+
+  for (let index = 0; index < 10; index += 1) {
+    const mid = (low + high) / 2;
+    table.style.fontSize = `${mid}px`;
+    if (markdownTableFits(table, wrapper)) {
+      best = mid;
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  table.style.fontSize = `${Math.max(minimumFontSize, best - 0.25)}px`;
+}
+
+function fitMarkdownTableBatch(tables) {
+  tables.forEach(fitMarkdownTableFont);
+}
+
+function fitMarkdownTables(container, roots = null) {
+  const tables = scopedQueryAll(roots || container, "table").filter((table) => {
     // Genuine markdown tables always live inside a `.rendered` block. Skip
     // anything else (e.g. the structural <table> the Cornell HTML/Word
     // export uses for its question/answer columns) so this auto-fit pass
     // doesn't reflow layout tables it was never meant to touch.
-    if (table.closest("pre") || !table.closest(".rendered")) return;
-
-    const wrapper = wrapMarkdownTable(table);
+    if (table.closest("pre") || !table.closest(".rendered")) return false;
+    // Cheap, layout-free preparation stays eager: the mobile per-cell labels and
+    // the column sizing are pure DOM writes, and a table scrolled past before
+    // its fit runs must still be structurally correct.
+    wrapMarkdownTable(table);
     applyMarkdownTableLabels(table);
     applyMarkdownTableColumns(table);
-    if (!wrapper.clientWidth) return;
-
-    if (!table.dataset.baseFontSize) {
-      table.dataset.baseFontSize = String(parseFloat(getComputedStyle(table).fontSize) || 16);
-    }
-
-    const baseFontSize = parseFloat(table.dataset.baseFontSize) || 16;
-    const minimumFontSize = 7;
-    table.style.fontSize = `${baseFontSize}px`;
-
-    if (styleMobileMedia?.matches) return;
-
-    if (markdownTableFits(table, wrapper)) return;
-
-    let low = minimumFontSize;
-    let high = baseFontSize;
-    let best = low;
-
-    for (let index = 0; index < 10; index += 1) {
-      const mid = (low + high) / 2;
-      table.style.fontSize = `${mid}px`;
-      if (markdownTableFits(table, wrapper)) {
-        best = mid;
-        low = mid;
-      } else {
-        high = mid;
-      }
-    }
-
-    table.style.fontSize = `${Math.max(minimumFontSize, best - 0.25)}px`;
+    return true;
   });
+
+  runNearViewportAndDefer(tables, deferrableRenderRoot(container), fitMarkdownTableBatch);
 }
 
 function scheduleMarkdownTableFit() {
@@ -8612,7 +9092,12 @@ function addDiagramZoomControl(node) {
   button.className = "diagram-zoom";
   button.type = "button";
   button.textContent = "Zoom";
-  button.addEventListener("click", () => openDiagramModal(node));
+  button.addEventListener("click", async () => {
+    // A diagram whose drawing is still queued (below the fold in a long note)
+    // has nothing to zoom into yet — draw it first.
+    if (node.classList.contains("is-diagram-pending")) await flushDeferredWork(node);
+    openDiagramModal(node);
+  });
 
   node.parentNode.insertBefore(shell, node);
   shell.appendChild(node);
@@ -9536,7 +10021,10 @@ function enterNotesEditing(cursorOffset = null) {
   el.editNotesBtn.title = "Back to preview";
   if (el.notesTocDrawer?.classList.contains("is-open")) closeNotesToc();
   hideNotesSelectionButton();
-  el.notesEdit.dispatchEvent(new Event("input", { bubbles: true }));
+  // Paint the highlight mirror directly rather than faking an "input": the text
+  // hasn't changed, and the input listener would mark the deck dirty and queue a
+  // full autosave just for opening the editor.
+  refreshHighlightBackdrop(el.notesEdit);
   el.notesEdit.focus();
   // Assigning .value leaves the caret at the very end in most browsers, so
   // always place it explicitly — a matched offset when we have one, otherwise
@@ -10007,12 +10495,33 @@ function buildNotesToc() {
   updateNotesTocActive();
 }
 
-function scrollNotesHeadingIntoView(heading) {
+// Distance kept between the top of the notes viewport and the heading it
+// scrolled to.
+const NOTES_HEADING_SCROLL_GAP = 8;
+
+function notesHeadingOffset(heading) {
+  return heading.getBoundingClientRect().top - el.notesView.getBoundingClientRect().top;
+}
+
+// A long note doesn't know its own height until you get there: diagrams below
+// the fold are only drawn as they approach the viewport, images only load then,
+// and each one that arrives pushes everything under it down. So aiming once at
+// where the heading LOOKS like it is can land thousands of pixels off. Re-aim
+// until it settles (or until the corrections stop helping).
+async function scrollNotesHeadingIntoView(heading) {
   if (!heading || !el.notesView) return;
-  const viewTop = el.notesView.getBoundingClientRect().top;
-  const headTop = heading.getBoundingClientRect().top;
-  const target = el.notesView.scrollTop + (headTop - viewTop) - 8;
-  el.notesView.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  const aim = (behavior) => {
+    const target = el.notesView.scrollTop + notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP;
+    el.notesView.scrollTo({ top: Math.max(0, target), behavior });
+  };
+
+  aim("smooth");
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    if (!heading.isConnected) return;
+    if (Math.abs(notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP) <= 4) return;
+    aim("auto");
+  }
 }
 
 // Raw-mode counterpart of scrollNotesHeadingIntoView: the rendered notes view is
@@ -11770,12 +12279,21 @@ function removeSurfaceImage(surface, tokenIndex, subPos, imageRaw, url) {
 // corner to grow, in to shrink. Width is what's stored; height is auto, so
 // aspect ratio is preserved for free. A live badge shows the current px width
 // and its share of the surface's own column so sizing isn't guesswork.
-function beginImageResize(event, shell, img, onCommit, refEl) {
+// `bounds` lets a diagram use its own floor/ceiling (a diagram shrunk to 20px is
+// unreadable in a way a small image isn't).
+function beginImageResize(event, shell, img, onCommit, refEl, bounds = null) {
   event.preventDefault();
   event.stopPropagation();
   shell.setPointerCapture?.(event.pointerId);
+  const minWidth = bounds?.min ?? 20;
+  const maxWidth = bounds?.max ?? 2000;
   const startX = event.clientX;
-  const startWidth = img.getBoundingClientRect().width || shell.getBoundingClientRect().width;
+  // For a diagram, `img` is the block that HOLDS the drawing and is as wide as
+  // the column even when the <svg> inside is drawn narrower (the Style panel's
+  // "visual width" setting). Start from what the user can actually see, so the
+  // edge tracks the pointer from the first pixel of the drag.
+  const drawn = img.tagName === "IMG" ? img : img.querySelector("svg") || img;
+  const startWidth = drawn.getBoundingClientRect().width || shell.getBoundingClientRect().width;
   const refWidth = refEl?.clientWidth || el.notesView?.clientWidth || 600;
   let widthPx = Math.round(startWidth);
 
@@ -11790,7 +12308,7 @@ function beginImageResize(event, shell, img, onCommit, refEl) {
   shell.classList.add("is-resizing");
   const onMove = (e) => {
     const dx = e.clientX - startX;
-    widthPx = Math.min(2000, Math.max(20, Math.round(startWidth + dx)));
+    widthPx = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth + dx)));
     img.style.setProperty("--notes-img-w", `${widthPx}px`);
     img.style.width = `${widthPx}px`;
     img.classList.add("has-custom-size");
@@ -11828,7 +12346,9 @@ function beginImageResize(event, shell, img, onCommit, refEl) {
 // the only image controls: every rendered image on an editable surface gets
 // them, so images buried in bullet points are resized/removed in place just
 // like any other, with no intermediate "move to own line" step.
-function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl) {
+// `onDelete` may be null for a target that only resizes (a diagram, whose source
+// is a fenced code block the user edits as text).
+function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl, bounds = null) {
   shell.querySelector(".notes-img-controls")?.remove();
   shell.querySelector(".notes-img-resize-handle")?.remove();
   shell.querySelector(".notes-img-delete-btn")?.remove();
@@ -11836,8 +12356,10 @@ function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl) {
   resizeHandle.className = "notes-img-resize-handle";
   resizeHandle.title = "Drag to resize";
   resizeHandle.setAttribute("aria-hidden", "true");
-  resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, onCommit, refEl));
+  resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, onCommit, refEl, bounds));
   shell.appendChild(resizeHandle);
+
+  if (!onDelete) return;
 
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
@@ -11924,6 +12446,74 @@ function enhanceSurfaceImageControls(surface) {
         view
       );
     }
+  });
+}
+
+// ── Editable diagrams: the same corner-drag resize images get ──────────────
+// A mermaid/nomnoml diagram renders as a picture, so it should be sizeable like
+// one. Its source is a fenced code block rather than an <img>, so the width is
+// written back into the fence's info string (```mermaid w=520 — see
+// parseDiagramWidth) instead of onto a tag.
+//
+// The DOM→source mapping is by ordinal position, which is exact here in a way it
+// isn't for images: preprocessSpecialBlocks turns every diagram fence into
+// exactly one .mermaid/.nomnoml-diagram element, in source order, wherever the
+// fence sits. Walking the shared fencePattern() keeps the two lists in lockstep;
+// if the counts ever disagree, no grip is attached rather than a grip that would
+// resize the wrong diagram.
+function findDiagramFences(source) {
+  const text = String(source || "");
+  const pattern = fencePattern();
+  const fences = [];
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (!/\b(?:mermaid|nomnoml)\b/i.test(match[1])) continue;
+    const headEnd = text.indexOf("\n", match.index);
+    fences.push({
+      start: match.index,
+      headEnd: headEnd === -1 ? text.length : headEnd,
+      info: match[1],
+      widthPx: parseDiagramWidth(match[1])
+    });
+  }
+  return fences;
+}
+
+function commitDiagramWidth(surface, fenceIndex, px) {
+  const widthPx = Math.min(DIAGRAM_WIDTH_MAX, Math.max(DIAGRAM_WIDTH_MIN, Math.round(px)));
+  const source = surface.getSource() || "";
+  const fence = findDiagramFences(source)[fenceIndex];
+  if (!fence) return;
+  const head = "```" + fenceInfoWithWidth(fence.info, widthPx);
+  surface.setSource(source.slice(0, fence.start) + head + source.slice(fence.headEnd));
+  surface.rerender();
+  scheduleDeckAutosave();
+}
+
+function enhanceSurfaceDiagramControls(surface) {
+  const view = surface?.view;
+  if (!view) return;
+  const fences = findDiagramFences(surface.getSource());
+  const diagrams = Array.from(view.querySelectorAll(".mermaid, .nomnoml-diagram"));
+  if (!diagrams.length || diagrams.length !== fences.length) return;
+
+  diagrams.forEach((node, index) => {
+    const shell = node.parentElement;
+    if (!shell?.classList.contains("diagram-shell")) return;
+    const widthPx = fences[index].widthPx;
+    if (widthPx) {
+      node.style.setProperty("--notes-img-w", `${widthPx}px`);
+      node.style.width = `${widthPx}px`;
+      node.classList.add("has-custom-size");
+    }
+    attachNotesImageResizeHandle(
+      shell,
+      node,
+      (px) => commitDiagramWidth(surface, index, px),
+      null,
+      view,
+      { min: DIAGRAM_WIDTH_MIN, max: DIAGRAM_WIDTH_MAX }
+    );
   });
 }
 
@@ -19708,7 +20298,7 @@ function toggleEditMode(side, { cursorOffset = null, remember = true } = {}) {
       btn.classList.add('is-editing');
       btn.title = 'Back to preview';
     }
-    edit.dispatchEvent(new Event("input", { bubbles: true }));
+    refreshHighlightBackdrop(edit);
     edit.focus();
     // Assigning .value leaves the caret at the very end in most browsers, so
     // always place it explicitly — a matched offset when we have one, otherwise
@@ -20244,8 +20834,12 @@ function revokeLocalImageUrls() {
 
 // Swap every recall-img: placeholder in the DOM for its blob URL. Called after
 // a render, since markdown-to-HTML leaves the custom scheme untouched.
+// `root` is a container, or the list of freshly rendered nodes the incremental
+// renderer just built (which may themselves be the images).
 async function hydrateLocalImages(root = document) {
-  const nodes = root.querySelectorAll?.(`img[src^="${LOCAL_IMAGE_SCHEME}"]`);
+  const nodes = Array.isArray(root)
+    ? scopedQueryAll(root, `img[src^="${LOCAL_IMAGE_SCHEME}"]`)
+    : root.querySelectorAll?.(`img[src^="${LOCAL_IMAGE_SCHEME}"]`);
   if (!nodes || !nodes.length) return;
   for (const node of nodes) {
     const token = node.getAttribute("src").slice(LOCAL_IMAGE_SCHEME.length);
@@ -21765,7 +22359,19 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && el.clozePanel && !el.clozePanel.hidden) closeClozePanel();
 });
 
-// Syntax highlighting backdrop creator for textareas
+// Syntax highlighting backdrop creator for textareas.
+//
+// The textarea's own text is transparent (see .edit-textarea) — what you read in
+// raw mode is this mirror underneath it, which is why it can't simply be skipped
+// for a big document. What it CAN do is stop rebuilding itself more than once
+// per frame: a burst of keystrokes (or a held key) used to re-escape and re-lay
+// out the whole document once per event.
+const highlightBackdropSync = new WeakMap(); // textarea -> force a resync now
+
+function refreshHighlightBackdrop(textarea) {
+  highlightBackdropSync.get(textarea)?.();
+}
+
 function enableSyntaxHighlighting(textarea) {
   if (!textarea || textarea.dataset.highlighted === "true") return;
   textarea.dataset.highlighted = "true";
@@ -21780,8 +22386,13 @@ function enableSyntaxHighlighting(textarea) {
   wrapper.appendChild(backdrop);
   wrapper.appendChild(textarea);
 
+  let syncedText = null;
+  let syncFrame = 0;
+
   function sync() {
     const text = textarea.value;
+    if (text === syncedText) return;
+    syncedText = text;
     const escaped = text
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -21806,13 +22417,34 @@ function enableSyntaxHighlighting(textarea) {
     backdrop.innerHTML = highlighted;
   }
 
+  // One rebuild per frame at most. The mirror only has to be right by the time
+  // the frame is painted, so several inputs landing in the same frame (fast
+  // typing, autorepeat, a paste followed by a programmatic edit) collapse into a
+  // single pass over the text.
+  function scheduleSync() {
+    if (syncFrame) return;
+    syncFrame = requestAnimationFrame(() => {
+      syncFrame = 0;
+      sync();
+    });
+  }
+
+  function syncNow() {
+    if (syncFrame) {
+      cancelAnimationFrame(syncFrame);
+      syncFrame = 0;
+    }
+    sync();
+  }
+
   function syncScroll() {
     backdrop.scrollTop = textarea.scrollTop;
     backdrop.scrollLeft = textarea.scrollLeft;
   }
 
-  textarea.addEventListener("input", sync);
+  textarea.addEventListener("input", scheduleSync);
   textarea.addEventListener("scroll", syncScroll);
+  highlightBackdropSync.set(textarea, syncNow);
 
   // Initialize
   sync();
