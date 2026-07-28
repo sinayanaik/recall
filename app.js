@@ -801,7 +801,17 @@ async function chooseDeckCategory(currentCategory = defaultDeckCategory) {
     `;
 
     const select = shell.querySelector("[data-category-select]");
-    categoriesFromDecks([], [...webDeckCategories, currentCategory]).forEach((category) => {
+    // Offer every folder that actually exists, not just the ones the cloud knows
+    // about: the local library's own categories and the known-folder registry
+    // (which is where empty folders live). Without these the picker was just
+    // "Uncategorized" + "New category" whenever Supabase was unreachable or the
+    // folder had only ever existed on this device — so choosing an existing
+    // folder was impossible offline.
+    categoriesFromDecks(readLocalDeckIndex(), [
+      ...webDeckCategories,
+      ...readKnownFolders(),
+      currentCategory
+    ]).forEach((category) => {
       const option = document.createElement("option");
       option.value = category;
       option.textContent = category;
@@ -2160,28 +2170,38 @@ let liveQuestionFitFrame = 0;
 // fitLiveQuestion), owed as soon as the selection is released.
 let questionFitDeferredBySelection = false;
 let markdownTableFitFrame = 0;
-let pasteImportAppend = false;
-let pastePreviewSource = "";
-let pastePreviewCards = [];
 
 const el = {
   sourceInput: document.querySelector("#sourceInput"),
   urlInput: document.querySelector("#urlInput"),
   fileInput: document.querySelector("#fileInput"),
-  fileInputCards: document.querySelector("#fileInputCards"),
   fetchBtn: document.querySelector("#fetchBtn"),
-  pasteDeckBtn: document.querySelector("#pasteDeckBtn"),
-  pasteCardsBtn: document.querySelector("#pasteCardsBtn"),
-  pasteEditorPanel: document.querySelector("#pasteEditorPanel"),
-  pasteEditorTitle: document.querySelector("#pasteEditorTitle"),
-  pasteEditorHint: document.querySelector("#pasteEditorHint"),
   pasteMarkdownInput: document.querySelector("#pasteMarkdownInput"),
-  pastePreviewBtn: document.querySelector("#pastePreviewBtn"),
-  pastePreviewSummary: document.querySelector("#pastePreviewSummary"),
-  pastePreviewList: document.querySelector("#pastePreviewList"),
-  pasteImportBtn: document.querySelector("#pasteImportBtn"),
-  pasteCancelBtn: document.querySelector("#pasteCancelBtn"),
-  parseBtn: document.querySelector("#parseBtn"),
+  importSourceStep: document.querySelector("#importSourceStep"),
+  importFilePick: document.querySelector("#importFilePick"),
+  importPasteSourceBtn: document.querySelector("#importPasteSourceBtn"),
+  importUrlSourceBtn: document.querySelector("#importUrlSourceBtn"),
+  importUrlRow: document.querySelector("#importUrlRow"),
+  importPasteRow: document.querySelector("#importPasteRow"),
+  importPasteContinueBtn: document.querySelector("#importPasteContinueBtn"),
+  importPasteCancelBtn: document.querySelector("#importPasteCancelBtn"),
+  importReviewStep: document.querySelector("#importReviewStep"),
+  importDetect: document.querySelector("#importDetect"),
+  importContentOptions: document.querySelector("#importContentOptions"),
+  importContentHint: document.querySelector("#importContentHint"),
+  importTargetOptions: document.querySelector("#importTargetOptions"),
+  importTargetHint: document.querySelector("#importTargetHint"),
+  importFolderRow: document.querySelector("#importFolderRow"),
+  importFolderPath: document.querySelector("#importFolderPath"),
+  importFolderChangeBtn: document.querySelector("#importFolderChangeBtn"),
+  importDeckList: document.querySelector("#importDeckList"),
+  importDeckListLabel: document.querySelector("#importDeckListLabel"),
+  importDeckListRows: document.querySelector("#importDeckListRows"),
+  importDeckSelectAll: document.querySelector("#importDeckSelectAll"),
+  importPreviewSummary: document.querySelector("#importPreviewSummary"),
+  importPreviewBody: document.querySelector("#importPreviewBody"),
+  importConfirmBtn: document.querySelector("#importConfirmBtn"),
+  importStartOverBtn: document.querySelector("#importStartOverBtn"),
   sampleBtn: document.querySelector("#sampleBtn"),
   newDeckBtn: document.querySelector("#newDeckBtn"),
   importBtn: document.querySelector("#importBtn"),
@@ -2335,12 +2355,6 @@ const el = {
   replayUncategorizedBtn: document.querySelector("#replayUncategorizedBtn"),
   replayAllBtn: document.querySelector("#replayAllBtn"),
   deckSummary: document.querySelector("#deckSummary"),
-  importSelectorPanel: document.querySelector("#importSelectorPanel"),
-  importSelectorListTable: document.querySelector("#importSelectorListTable"),
-  selectAllImportSelectorCheckbox: document.querySelector("#selectAllImportSelectorCheckbox"),
-  importSelectorLoadBtn: document.querySelector("#importSelectorLoadBtn"),
-  importSelectorCancelBtn: document.querySelector("#importSelectorCancelBtn"),
-  closeImportSelectorBtn: document.querySelector("#closeImportSelectorBtn"),
   questionEditToolbar: document.querySelector("#questionEditToolbar"),
   answerEditToolbar: document.querySelector("#answerEditToolbar"),
   viewModeToggle: document.querySelector("#viewModeToggle"),
@@ -3035,7 +3049,6 @@ function anyModalOpen() {
     (el.frameCardModal && !el.frameCardModal.hidden) ||
     (el.myDecksPanel && !el.myDecksPanel.hidden) ||
     (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) ||
-    (el.importSelectorPanel && !el.importSelectorPanel.hidden) ||
     (el.stylePanel && !el.stylePanel.hidden) ||
     (el.storagePanel && !el.storagePanel.hidden) ||
     (el.diagramModal && !el.diagramModal.hidden) ||
@@ -3225,7 +3238,6 @@ function closeTopmostOverlay() {
   if (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) { closeHelpModal(); return; }
   if (el.syncModal && !el.syncModal.hidden) { el.syncModal.hidden = true; return; }
   if (el.diagramModal && !el.diagramModal.hidden) { closeDiagramModal(); return; }
-  if (el.importSelectorPanel && !el.importSelectorPanel.hidden) { closeImportSelectorPanel(); return; }
 
   // Full-surface panels.
   if (el.clozePanel && !el.clozePanel.hidden) { closeClozePanel(); return; }
@@ -3651,12 +3663,15 @@ async function editCurrentDeckCategory() {
 
 function openImportPanel() {
   lockPageScroll();
-  closePasteEditor(false);
   el.importPanel.classList.add("is-open");
 }
 
+// Closing throws away anything staged but not committed: a half-chosen import
+// must not be waiting the next time the panel opens.
 function closeImportPanel() {
-  closePasteEditor(true);
+  clearImportStaging();
+  showImportSourceDrawer(null);
+  if (el.pasteMarkdownInput) el.pasteMarkdownInput.value = "";
   el.importPanel.classList.remove("is-open");
   unlockPageScroll();
 }
@@ -4094,8 +4109,16 @@ async function exportDeckPayloads(payloads, format, { fileBaseName, title }, con
       return;
     }
     if (format === "markdown") {
+      // Wrapped in the recall:notes sentinels the importer looks for, so a
+      // notes export re-imports as notes. Without them the file is just a
+      // Markdown document with headings, and importing it used to chop it into
+      // one flashcard per heading. The sentinels are HTML comments, so the file
+      // still reads normally in any other Markdown tool.
       downloadTextFile(
-        payloads.map((payload) => `# ${payload.deck.title}\n\n${String(payload.deck.notes || "").trim() || "*No notes for this deck.*"}`).join("\n\n---\n\n"),
+        payloads.map((payload) => {
+          const body = String(payload.deck.notes || "").trim();
+          return `# ${payload.deck.title}\n\n${body ? notesExportBlock(body) : "*No notes for this deck.*"}`;
+        }).join("\n\n---\n\n"),
         `${fileBaseName}.md`,
         "text/markdown;charset=utf-8"
       );
@@ -4891,8 +4914,10 @@ async function runLibraryBackup({ fileBaseName, includeImages, progress, autoClo
     "them there on the next sync. Nothing depends on the original owner's",
     "storage staying reachable.",
     "",
-    "Restore from the app: Import panel -> Restore from backup (or the My Decks",
-    "toolbar). Restore compares every deck, card and note against your current",
+    "Restore from the app: My Decks -> More -> Restore backup. Restore is not",
+    "the same as Import: Import brings ONE source in as notes or cards and lets",
+    "you choose where it lands, while Restore merges a whole library archive.",
+    "Restore compares every deck, card and note against your current",
     "decks and shows a preview before changing anything. It never deletes your",
     "local-only decks or cards; it only adds what's missing and applies edits",
     "from this backup.",
@@ -6891,7 +6916,7 @@ function buildFolderActionCluster(path) {
   wrap.append(
     mk("newDeck", "Deck", "New deck in this folder", () => newDeckInFolder(path)),
     mk("newFolder", "Folder", "New subfolder", () => createFolder(path)),
-    mk("importDeck", "Import", "Import a deck file into this folder", () => importIntoFolder(path)),
+    mk("importDeck", "Import", "Import a file into this folder — as notes, as cards, or both", () => importIntoFolder(path)),
     mk("pencil", "Rename", "Rename folder", () => renameFolder(path)),
     mk("trash", "Delete", "Delete folder", () => deleteFolder(path)),
   );
@@ -7366,6 +7391,9 @@ function stripReaderMetadata(markdown) {
 // sentinels so the card parsers never mistake freeform notes (which may
 // legitimately contain `::` lines, `---` rules, or headings) for cards.
 const NOTES_BLOCK_RE = /\n?<!--\s*recall:notes\s*-->\n?([\s\S]*?)\n?<!--\s*\/recall:notes\s*-->\n?/g;
+// Non-global twin for presence checks: `.test()` on the /g regex above advances
+// its lastIndex, so consecutive calls would alternate true/false.
+const NOTES_BLOCK_PRESENT_RE = /<!--\s*recall:notes\s*-->/;
 
 function extractNotesFromMarkdown(markdown) {
   const found = [];
@@ -7765,7 +7793,36 @@ function countQuestionHeadings(markdown) {
     .length;
 }
 
-function parseCards(markdown) {
+// True when the markdown carries syntax that can only mean "these are cards":
+// `::` blocks, <details> toggles, `>` toggle blocks, Q:/A: pairs, or headings
+// that are literally questions. Plain prose under plain headings is NOT card
+// syntax — it's a notes document, and treating it as cards is what used to
+// shred imported notes into hundreds of flashcards.
+function hasExplicitCardSyntax(markdown) {
+  const source = removeEmptyHeadingGroups(stripReaderMetadata(extractNotesFromMarkdown(markdown).markdown));
+  if (delimitedCardBoundaryPattern.test(source)) return true;
+  if (parseDetailsCards(source).length) return true;
+  if (parseQACards(source).length) return true;
+  if (parseBlockquoteCards(source).length) return true;
+  return countQuestionHeadings(source) > 0;
+}
+
+// How confidently this markdown reads as flashcards:
+//   "explicit"  — real card syntax (see hasExplicitCardSyntax)
+//   "heuristic" — only plain `##` headings with text under them; these MIGHT be
+//                 cards, but a notes document looks identical, so the import UI
+//                 offers the choice instead of deciding silently
+//   "none"      — nothing card-shaped at all
+function classifyCardSyntax(markdown) {
+  if (hasExplicitCardSyntax(markdown)) return "explicit";
+  const source = removeEmptyHeadingGroups(stripReaderMetadata(extractNotesFromMarkdown(markdown).markdown));
+  return parseLegacyHeadingFallbackCards(source).length ? "heuristic" : "none";
+}
+
+// `allowHeuristicHeadings: false` restricts the result to explicit card syntax,
+// so callers that are only asking "does this file contain real cards?" don't
+// get a plain document chopped up at its headings.
+function parseCards(markdown, { allowHeuristicHeadings = true } = {}) {
   // Deck notes blocks are never card material — strip them defensively so
   // notes content can't leak into any of the parsers below.
   const withoutNotes = extractNotesFromMarkdown(markdown).markdown;
@@ -7777,7 +7834,8 @@ function parseCards(markdown) {
     ...parseBlockquoteCards(source),
     ...parseQACards(source)
   ];
-  const legacyHeadingCards = parseLegacyHeadingFallbackCards(source);
+  const questionHeadingCards = parseHeadingCards(source, { includeStudySections: false });
+  const legacyHeadingCards = allowHeuristicHeadings ? parseLegacyHeadingFallbackCards(source) : [];
   const parsedCards = delimitedCards.length
     ? delimitedCards
     : hasDelimitedCardSyntax
@@ -7785,11 +7843,13 @@ function parseCards(markdown) {
     : structuredLegacyCards.length
       ? [
         ...structuredLegacyCards,
-        ...parseHeadingCards(source, { includeStudySections: true })
+        ...parseHeadingCards(source, { includeStudySections: allowHeuristicHeadings })
       ]
       : legacyHeadingCards.length
         ? legacyHeadingCards
-        : parseHeadingCards(source, { includeStudySections: true });
+        : allowHeuristicHeadings
+          ? parseHeadingCards(source, { includeStudySections: true })
+          : questionHeadingCards;
   const seen = new Set();
   const cards = parsedCards.filter((card) => {
     const key = `${card.question.trim()}\u0000${card.answer.trim()}`;
@@ -12711,85 +12771,217 @@ function animateToCard(direction, updateState) {
   }, 210);
 }
 
-function detectDecksInMarkdown(markdown) {
+// ── Import — one vocabulary, one flow ───────────────────────────────────────
+//
+// Recall has exactly two kinds of content, and every import produces one or
+// both of them:
+//
+//   deck  — what you open from My Decks. A title, a category (the folder it
+//           lives in), ONE notes document, and any number of cards.
+//   notes — that single freeform Markdown document (the deck's "Notes" view).
+//   cards — question / answer pairs (the deck's "Cards" view).
+//
+// There is no third thing: files that other apps call slides, pages or
+// documents all arrive here as notes, as cards, or as both. The import panel
+// says which one it is and lets you change it BEFORE anything is created —
+// importing a plain Markdown page used to silently shred it into one card per
+// heading, because the parser had no way to say "this is a document, not a
+// deck of cards".
+
+// Deck metadata lines webDeckPayloadMarkdown writes under the title. They are
+// bookkeeping — never notes text and never card content.
+const DECK_META_LINE_RE = /^(?:Category|Deck ID|Exported):\s*/i;
+
+function stripDeckMetaLines(markdown) {
+  return normalizeMarkdown(markdown)
+    .split("\n")
+    .filter((line) => !DECK_META_LINE_RE.test(line.trim()))
+    .join("\n")
+    .trim();
+}
+
+// Splits a Markdown file at its top-level `#` headings into candidate deck
+// sections. Splitting alone proves nothing — sectionsLookLikeSeparateDecks
+// below decides whether the split is real.
+function splitDeckSections(markdown) {
   const source = removeEmptyHeadingGroups(stripReaderMetadata(markdown));
   const lines = source.split("\n");
-  const deckSections = [];
-  let currentDeck = null;
-
+  const sections = [];
+  let current = null;
   let inNotesBlock = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    // Never treat lines inside a deck-notes block as deck boundaries or
-    // metadata — notes are freeform and may contain `# headings` of their own.
+
+  const start = (title) => ({ title, category: defaultDeckCategory, hadMeta: false, lines: [] });
+
+  for (const line of lines) {
+    // Never read inside a deck-notes block: notes are freeform and may contain
+    // `#` headings, `Category:` lines and card-looking syntax of their own.
     if (/^<!--\s*recall:notes\s*-->\s*$/.test(line.trim())) inNotesBlock = true;
     if (inNotesBlock) {
-      if (currentDeck) {
-        currentDeck.lines.push(line);
-      } else {
-        currentDeck = { title: "", category: "General", lines: [line] };
-      }
+      if (!current) current = start("");
+      current.lines.push(line);
       if (/^<!--\s*\/recall:notes\s*-->\s*$/.test(line.trim())) inNotesBlock = false;
       continue;
     }
-    const match = line.match(/^#\s+(.+)$/);
-    if (match) {
-      if (currentDeck) {
-        deckSections.push(currentDeck);
-      }
-      currentDeck = {
-        title: match[1].trim(),
-        category: "General",
-        lines: []
-      };
-    } else if (currentDeck) {
-      const catMatch = line.match(/^Category:\s*(.+)$/i);
-      if (catMatch) {
-        currentDeck.category = catMatch[1].trim();
-      } else {
-        const isDeckId = /^Deck ID:\s*/i.test(line);
-        const isExported = /^Exported:\s*/i.test(line);
-        if (!isDeckId && !isExported) {
-          currentDeck.lines.push(line);
-        }
-      }
-    } else {
-      const trimmed = line.trim();
-      if (trimmed) {
-        currentDeck = {
-          title: "",
-          category: "General",
-          lines: [line]
-        };
-      }
+
+    const heading = line.match(/^#\s+(.+)$/);
+    if (heading) {
+      if (current) sections.push(current);
+      current = start(heading[1].trim());
+      continue;
     }
-  }
-  if (currentDeck) {
-    deckSections.push(currentDeck);
+
+    if (!current) {
+      if (!line.trim()) continue;
+      current = start("");
+    }
+
+    const category = line.match(/^Category:\s*(.+)$/i);
+    if (category) {
+      current.category = normalizeDeckCategory(category[1].trim());
+      current.hadMeta = true;
+      continue;
+    }
+    if (/^(?:Deck ID|Exported):\s*/i.test(line.trim())) {
+      current.hadMeta = true;
+      continue;
+    }
+    current.lines.push(line);
   }
 
-  const parsedDecks = [];
-  deckSections.forEach((d) => {
-    const rawContent = d.lines.join("\n").trim();
-    if (!rawContent) return;
-    const { markdown: content, notes } = extractNotesFromMarkdown(rawContent);
-    const cards = parseCards(content);
-    if (cards.length > 0 || notes.trim()) {
-      parsedDecks.push({
-        title: d.title || "",
-        category: d.category || "General",
-        cards: cards,
-        notes: notes,
-        content: content
-      });
-    }
-  });
-
-  return parsedDecks;
+  if (current) sections.push(current);
+  return sections
+    .map((section) => ({ ...section, content: section.lines.join("\n").trim() }))
+    .filter((section) => section.content || section.title);
 }
 
-let currentDetectedDecks = [];
-let currentImportTitleHint = "";
+// A section is its own deck only if it proves it: Recall's own export metadata
+// (`Category:` / `Deck ID:`), a saved notes block, or genuine card syntax.
+function sectionLooksLikeDeck(section) {
+  return section.hadMeta
+    || NOTES_BLOCK_PRESENT_RE.test(section.content)
+    || hasExplicitCardSyntax(section.content);
+}
+
+// True only for files that really are several decks glued together. A long
+// notes document with several `#` chapters fails this test — it used to be torn
+// into one deck per chapter.
+function sectionsLookLikeSeparateDecks(sections) {
+  if (sections.length < 2) return false;
+  return sections.every(sectionLooksLikeDeck);
+}
+
+// Everything the import panel needs to know about one candidate deck inside the
+// staged file. `cards` is the generous read (plain headings included) offered
+// behind the "Cards" choice; `explicitCards` is the conservative read used when
+// the document is kept as notes and its real cards are pulled out alongside.
+function analyzeIncomingDeck({ title = "", category = defaultDeckCategory, content = "", titleHint = "", source = "" }) {
+  const body = stripDeckMetaLines(content);
+  const { notes: notesFromBlock } = extractNotesFromMarkdown(body);
+  return {
+    title: title || inferDeckTitle(body, titleHint),
+    category: normalizeDeckCategory(category),
+    source,
+    content: body,
+    notesFromBlock,
+    // The document as notes: Recall's own exports keep their notes in a
+    // sentinel block, everything else IS the notes.
+    notesBody: notesFromBlock || body,
+    cardSyntax: classifyCardSyntax(body),
+    cards: parseCards(body),
+    explicitCards: parseCards(body, { allowHeuristicHeadings: false }),
+    selected: true
+  };
+}
+
+// A candidate deck built from a Recall .json export. Its notes/cards split is
+// already recorded in the file, so nothing is parsed or guessed — the payload
+// rides along so a lone snapshot can still take the full-fidelity path (cloud
+// id, per-card statuses, quick-note labels) through loadDeckSnapshot.
+function snapshotIncomingDeck(payload, { name = "", source = "" } = {}) {
+  const notes = String(payload?.notes || "");
+  const cards = (Array.isArray(payload?.cards) ? payload.cards : [])
+    .filter((card) => card && (card.question || card.answer))
+    .map((card) => ({
+      question: String(card.question || ""),
+      answer: String(card.answer || ""),
+      status: normalizeCardStatus(card.status)
+    }));
+  return {
+    title: String(payload?.deckTitle || "").trim() || titleFromImportHint(name) || "Imported deck",
+    category: normalizeDeckCategory(payload?.deckCategory || payload?.category),
+    source,
+    content: "",
+    notesFromBlock: notes,
+    notesBody: notes,
+    cardSyntax: "explicit",
+    cards,
+    explicitCards: cards,
+    snapshot: payload,
+    selected: true
+  };
+}
+
+// What a chosen content mode actually produces for one candidate deck.
+function resolveIncomingDeck(deck, mode) {
+  const base = { title: deck.title, category: deck.category, source: deck.source };
+  if (mode === "cards") return { ...base, notes: "", cards: deck.cards };
+  if (mode === "both") return { ...base, notes: deck.notesBody, cards: deck.explicitCards };
+  return { ...base, notes: deck.notesBody, cards: [] };
+}
+
+// Which "Import as" choices make sense for this file, and which one to preselect.
+// The default is the heart of the fix: plain headings ("heuristic") mean a
+// document, so notes wins unless the file proves it holds real cards.
+function importContentModesFor(decks) {
+  const anyCards = decks.some((deck) => deck.cards.length > 0);
+  const anyExplicitCards = decks.some((deck) => deck.explicitCards.length > 0);
+  const anyNotes = decks.some((deck) => deck.notesBody.trim());
+  const anyNotesBlock = decks.some((deck) => deck.notesFromBlock.trim());
+
+  const modes = [];
+  if (anyNotes) modes.push("notes");
+  if (anyCards) modes.push("cards");
+  if (anyExplicitCards && anyNotes) modes.push("both");
+  if (!modes.length) modes.push("notes");
+
+  // "cards" is only safe when EVERY file proves it holds cards. In a mixed
+  // batch — a folder of lecture notes with one quiz file among them — one file's
+  // card syntax must not drag the prose files into being shredded at their
+  // headings, so those batches fall to "both": each document is kept whole and
+  // only genuine card syntax is pulled out of it.
+  const withContent = decks.filter((deck) => deck.cards.length || deck.notesBody.trim());
+  const allExplicit = withContent.length > 0 && withContent.every((deck) => deck.explicitCards.length > 0);
+
+  let suggested;
+  if (anyNotesBlock && anyExplicitCards) suggested = "both";
+  else if (allExplicit) suggested = "cards";
+  else if (anyExplicitCards) suggested = "both";
+  else suggested = "notes";
+  if (!modes.includes(suggested)) suggested = modes[0];
+
+  return { modes, suggested };
+}
+
+function analyzeMarkdownImport(rawMarkdown, { name = "" } = {}) {
+  const sections = splitDeckSections(rawMarkdown);
+  const multi = sectionsLookLikeSeparateDecks(sections);
+  const titleHint = titleFromImportHint(name);
+
+  const decks = multi
+    ? sections.map((section) => analyzeIncomingDeck({ ...section, titleHint, source: name }))
+    : [analyzeIncomingDeck({
+      title: sections.length === 1 ? sections[0].title : "",
+      category: sections.length === 1 ? sections[0].category : defaultDeckCategory,
+      // Single-document imports keep the file verbatim (minus reader chrome and
+      // export bookkeeping) so a notes import round-trips exactly as written.
+      content: stripReaderMetadata(rawMarkdown),
+      titleHint,
+      source: name
+    })];
+
+  const { modes, suggested } = importContentModesFor(decks);
+  return { decks, modes, suggested, multi };
+}
 
 // ── Importing into a specific folder ────────────────────────────────────────
 // My Decks can create a deck or a subfolder in whatever folder you're looking
@@ -12797,13 +12989,34 @@ let currentImportTitleHint = "";
 // move it — so the folder an import is aimed at is recorded here.
 //
 // Deliberately a module-level value rather than a parameter threaded through
-// loadFile → loadZipFile → buildCards, because a Markdown file containing
-// several decks breaks that chain across a user interaction (the deck-selector
-// panel), exactly the way currentImportTitleHint above already has to be held
-// here for the same reason. Every import entry point sets it — to a folder for
-// the My Decks buttons, to null for the ordinary Import panel — so a stale
-// value can't leak from one import into the next.
+// loadFile → loadZipFile → the review step, because the review step breaks that
+// chain across a user interaction. Every import entry point sets it — to a
+// folder for the My Decks buttons, to null for the ordinary Import panel — so a
+// stale value can't leak from one import into the next.
 let pendingImportFolder = null;
+
+// The folder the last import was filed into. Every Import entry point outside
+// My Decks (the toolbar, the home screen) aims at no folder in particular, so
+// without this every one of them defaulted to the root and had to be corrected
+// by hand — which, for anyone who keeps their decks in folders, is every time.
+const LAST_IMPORT_FOLDER_KEY = "flashcards_last_import_folder_v1";
+
+function readLastImportFolder() {
+  try {
+    const value = localStorage.getItem(LAST_IMPORT_FOLDER_KEY);
+    return value ? normalizeDeckCategory(value) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeLastImportFolder(path) {
+  try {
+    localStorage.setItem(LAST_IMPORT_FOLDER_KEY, normalizeDeckCategory(path));
+  } catch (error) {
+    /* private mode / quota — the default just won't be remembered */
+  }
+}
 
 // The category a freshly imported deck should land in, consuming the pending
 // folder so it applies to exactly one import.
@@ -12814,71 +13027,572 @@ function importTargetCategory(fallback = defaultDeckCategory) {
   return normalizeDeckCategory(pending);
 }
 
-function showImportDecksSelector(decks, titleHint) {
-  currentDetectedDecks = decks;
-  currentImportTitleHint = titleHint;
+// ── Import staging ──────────────────────────────────────────────────────────
+// One or more sources that have been read and analysed but not yet committed.
+// Nothing touches the working deck or the library until commitStagedImport runs.
+//
+//   decks       every candidate deck found across all the picked sources, each
+//               with its own `selected` flag
+//   sources     [{ kind: "markdown" | "snapshot", name, … }] — what was read
+//   content     the chosen "Import as" mode: "notes" | "cards" | "both"
+//   target      the chosen destination:
+//                 "separate" — one saved deck per candidate (batch default)
+//                 "new"      — one new working deck, everything merged
+//                 "current"  — appended to the deck already open
+//   folder      the My Decks folder this import was aimed at, if any
+let importStaging = null;
 
-  el.importSelectorListTable.innerHTML = decks.map((deck, index) => {
-    const deckTitle = deck.title || titleHint || `Deck ${index + 1}`;
-    return `
-      <tr>
-        <td style="text-align: center; vertical-align: middle;">
-          <input type="checkbox" class="import-selector-checkbox" data-index="${index}" checked style="cursor: pointer; width: 16px; height: 16px; accent-color: var(--accent);">
-        </td>
-        <td style="vertical-align: middle; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;"><strong>${escapeHtml(deckTitle)}</strong></td>
-        <td style="vertical-align: middle;"><span class="cornell-status" data-status="uncategorized">${escapeHtml(deck.category)}</span></td>
-        <td style="vertical-align: middle; text-align: right; padding-right: 14px; font-weight: 800;">${deck.cards.length}</td>
-      </tr>
-    `;
-  }).join("");
-
-  el.selectAllImportSelectorCheckbox.checked = true;
-  el.importSelectorPanel.hidden = false;
-  lockPageScroll();
+function currentDeckIsOpen() {
+  return Boolean(state.masterCards.length || state.notes.trim() || state.deckTitle.trim());
 }
 
-function closeImportSelectorPanel() {
-  el.importSelectorPanel.hidden = true;
-  unlockPageScroll();
+// A lone Recall .json export can take the full-fidelity path through
+// loadDeckSnapshot (cloud id, per-card statuses, quick-note labels, current
+// position). In a batch those decks are written fresh, so only the content and
+// per-card statuses carry over.
+function stagingIsLoneSnapshot(staging) {
+  return staging.sources.length === 1
+    && staging.sources[0].kind === "snapshot"
+    && staging.decks.length === 1
+    && Boolean(staging.decks[0].snapshot);
 }
 
-function toggleAllImportSelector() {
-  const checked = el.selectAllImportSelectorCheckbox.checked;
-  const checkboxes = el.importSelectorListTable.querySelectorAll(".import-selector-checkbox");
-  checkboxes.forEach((cb) => {
-    cb.checked = checked;
-  });
+function importSourceLabel(sources) {
+  if (!sources.length) return "";
+  if (sources.length === 1) return sources[0].name || "Pasted Markdown";
+  return `${sources.length} files`;
 }
 
-async function loadSelectedImportDecks() {
-  const checkboxes = el.importSelectorListTable.querySelectorAll(".import-selector-checkbox");
-  const selectedDecks = [];
-  checkboxes.forEach((cb) => {
-    if (cb.checked) {
-      const index = parseInt(cb.dataset.index, 10);
-      selectedDecks.push(currentDetectedDecks[index]);
+// Builds the staging area from everything that was read. `sources` is already
+// flat: zips have been expanded into their Markdown entries, so one picked file
+// can contribute several sources.
+function stageImportSources(sources, { folder = null, skipped = [] } = {}) {
+  const usable = sources.filter((source) => source && (source.kind === "snapshot" || String(source.markdown || "").trim()));
+  if (!usable.length) {
+    setStatus(sources.length ? "Nothing importable in those files." : "That source was empty — nothing to import.", "error");
+    return null;
+  }
+
+  const decks = [];
+  usable.forEach((source) => {
+    if (source.kind === "snapshot") {
+      const candidate = snapshotIncomingDeck(source.payload, { name: source.name, source: source.name });
+      if (candidate.cards.length || candidate.notesBody.trim()) decks.push(candidate);
+      return;
     }
+    decks.push(...analyzeMarkdownImport(source.markdown, { name: source.name }).decks);
   });
 
-  if (selectedDecks.length === 0) {
-    setStatus("Please select at least one deck to import.", "error");
+  if (!decks.length) {
+    setStatus("Those files had neither notes nor cards.", "error");
+    return null;
+  }
+
+  // Keeps the legacy single-source buffer in step for anything still reading it.
+  el.sourceInput.value = usable.length === 1 && usable[0].kind === "markdown" ? usable[0].markdown : "";
+
+  // Where these decks land, when the caller didn't aim at a folder. Files that
+  // carry their own category (a Recall export's `Category:` line) keep it —
+  // null means "each file's own folder". Anything else falls back to wherever
+  // the last import went, which is nearly always where this one belongs too.
+  const declaresOwnFolder = decks.some((deck) => normalizeDeckCategory(deck.category) !== defaultDeckCategory);
+  // An EMPTY folder string is "nothing in particular", not "the root". My Decks
+  // hands one over whenever there is no folder in view — grid/tree view with no
+  // scope selected, or folder view sitting at the top — and treating that as an
+  // explicit instruction was overriding both the remembered folder and each
+  // file's own category, dumping every import into Uncategorized.
+  const aimedAt = folder != null && String(folder).trim() !== "" ? folder : null;
+  const resolvedFolder = aimedAt != null
+    ? aimedAt
+    : (declaresOwnFolder ? null : readLastImportFolder());
+
+  const { modes, suggested } = importContentModesFor(decks);
+  importStaging = {
+    sources: usable,
+    sourceLabel: importSourceLabel(usable),
+    // Only meaningful for a single source; a batch names each deck from its own file.
+    titleHint: usable.length === 1 ? usable[0].name : "",
+    folder: resolvedFolder,
+    skipped,
+    decks,
+    multi: decks.length > 1,
+    modes,
+    content: suggested,
+    // More than one deck in play almost always means "one deck each" — that is
+    // what picking twelve lecture notes at once is asking for.
+    target: decks.length > 1 ? "separate" : "new"
+  };
+  openImportPanel();
+  renderImportReview();
+  return importStaging;
+}
+
+function stageMarkdownImport(markdown, { name = "", folder = null } = {}) {
+  return stageImportSources([{ kind: "markdown", name, markdown: String(markdown || "") }], { folder });
+}
+
+function stageSnapshotImport(payload, { name = "", folder = null } = {}) {
+  return stageImportSources([{ kind: "snapshot", name, payload }], { folder });
+}
+
+function clearImportStaging() {
+  importStaging = null;
+  pendingImportFolder = null;
+  if (el.importReviewStep) el.importReviewStep.hidden = true;
+  if (el.importSourceStep) el.importSourceStep.hidden = false;
+}
+
+// ── Import review UI ────────────────────────────────────────────────────────
+
+const IMPORT_CONTENT_LABELS = {
+  notes: { label: "Notes", icon: "📝" },
+  cards: { label: "Cards", icon: "🗂" },
+  both: { label: "Notes + cards", icon: "📝🗂" }
+};
+
+function importSelectedDecks() {
+  if (!importStaging) return [];
+  return importStaging.decks.filter((deck) => deck.selected);
+}
+
+function importResolvedDecks() {
+  return importSelectedDecks().map((deck) => resolveIncomingDeck(deck, importStaging.content));
+}
+
+function importTotals() {
+  if (!importStaging) return { cards: 0, notes: 0, decks: 0 };
+  const resolved = importResolvedDecks();
+  return {
+    cards: resolved.reduce((sum, deck) => sum + deck.cards.length, 0),
+    notes: resolved.filter((deck) => deck.notes.trim()).length,
+    decks: resolved.length
+  };
+}
+
+function importDetectionChips() {
+  if (!importStaging) return [];
+  const decks = importStaging.decks;
+  const chips = [];
+
+  const fileCount = importStaging.sources.length;
+  if (fileCount > 1) chips.push({ text: `${fileCount} files read`, tone: "ok" });
+  if (decks.length > 1) {
+    chips.push({ text: `${decks.length} decks found`, tone: "ok" });
+  }
+
+  const snapshotDecks = decks.filter((deck) => deck.snapshot);
+  if (snapshotDecks.length) {
+    chips.push({ text: `${snapshotDecks.length} Recall deck export${snapshotDecks.length === 1 ? "" : "s"}`, tone: "ok" });
+    const saved = snapshotDecks.reduce((sum, deck) => sum + deck.cards.length, 0);
+    const withNotes = snapshotDecks.filter((deck) => deck.notesBody.trim()).length;
+    chips.push({ text: `${saved} saved card${saved === 1 ? "" : "s"}` });
+    chips.push({ text: withNotes ? `${withNotes} with notes` : "no notes" });
+  }
+
+  const parsed = decks.filter((deck) => !deck.snapshot);
+  const explicit = parsed.reduce((sum, deck) => sum + deck.explicitCards.length, 0);
+  const heuristic = parsed.reduce((sum, deck) => sum + deck.cards.length, 0);
+  const notesBlocks = parsed.filter((deck) => deck.notesFromBlock.trim()).length;
+
+  if (parsed.length) {
+    if (explicit) {
+      chips.push({ text: `${explicit} card${explicit === 1 ? "" : "s"} in card syntax`, tone: "ok" });
+    } else if (heuristic) {
+      chips.push({ text: `${heuristic} heading section${heuristic === 1 ? "" : "s"} — could be cards`, tone: "warn" });
+    } else {
+      chips.push({ text: "no card syntax found" });
+    }
+
+    if (notesBlocks) chips.push({ text: `${notesBlocks} saved notes document${notesBlocks === 1 ? "" : "s"}`, tone: "ok" });
+    else chips.push({ text: fileCount > 1 ? "read as Markdown documents" : "reads as a Markdown document" });
+  }
+
+  importStaging.skipped.forEach((name) => {
+    chips.push({ text: `skipped ${name}`, tone: "warn" });
+  });
+
+  return chips;
+}
+
+function importContentHintText() {
+  if (!importStaging) return "";
+  const parsed = importStaging.decks.filter((deck) => !deck.snapshot);
+  if (!parsed.length) {
+    return "A Recall export already says which half is notes and which is cards, so both come across as they were saved.";
+  }
+  const what = importStaging.decks.length > 1 ? "Each file is kept as" : "Kept as";
+  const heuristicOnly = parsed.every((deck) => deck.cardSyntax !== "explicit");
+  if (importStaging.content === "notes") {
+    return heuristicOnly
+      ? `${what} one Markdown document, exactly as written. Nothing is split into cards.`
+      : `${what} one Markdown document. The cards inside are ignored.`;
+  }
+  if (importStaging.content === "cards") {
+    return heuristicOnly
+      ? "Every ## heading becomes a card question and the text under it becomes the answer. Use Notes instead if these are documents you want to read."
+      : "Only the flashcards are kept; the surrounding document is dropped.";
+  }
+  return importStaging.decks.length > 1
+    ? "Each document is kept whole as its notes, and any cards written in card syntax are pulled out alongside it. Files with no card syntax stay pure notes."
+    : "The whole document is kept as notes, and the cards written in card syntax are pulled out alongside it.";
+}
+
+function importTargetHintText() {
+  if (!importStaging) return "";
+
+  if (importStaging.target === "current") {
+    const bits = [];
+    if (importStaging.content !== "notes") bits.push("cards are added after the existing ones");
+    if (importStaging.content !== "cards") bits.push("notes are appended to the end of this deck's notes");
+    return `Nothing is replaced — ${bits.join(", ")}.`;
+  }
+  if (importStaging.target === "separate") {
+    const count = importTotals().decks;
+    return `Saves ${count} separate deck${count === 1 ? "" : "s"} into that folder and opens the library there. The deck you have open now is untouched.`;
+  }
+  return "Merges everything into one new deck in that folder and opens it. The deck you have open now is left saved in My Decks.";
+}
+
+function importChoiceButtonHtml(value, label, { active, disabled = false, title = "" } = {}) {
+  return `<button type="button" class="import-choice-btn${active ? " is-active" : ""}" data-import-choice="${escapeHtml(value)}"${disabled ? " disabled" : ""}${title ? ` title="${escapeHtml(title)}"` : ""}>${escapeHtml(label)}</button>`;
+}
+
+function renderImportDetection() {
+  if (!el.importDetect) return;
+  const chips = importDetectionChips();
+  el.importDetect.innerHTML = `
+    <div class="import-detect-source" title="${escapeHtml(importStaging?.sourceLabel || "")}">${escapeHtml(importStaging?.sourceLabel || "")}</div>
+    <div class="import-detect-chips">${chips.map((chip) => `<span class="import-chip${chip.tone ? ` is-${chip.tone}` : ""}">${escapeHtml(chip.text)}</span>`).join("")}</div>
+  `;
+}
+
+function renderImportChoices() {
+  if (!importStaging) return;
+
+  if (el.importContentOptions) {
+    el.importContentOptions.innerHTML = ["notes", "cards", "both"].map((mode) => {
+      const meta = IMPORT_CONTENT_LABELS[mode];
+      const available = importStaging.modes.includes(mode);
+      return importChoiceButtonHtml(mode, `${meta.icon} ${meta.label}`, {
+        active: importStaging.content === mode,
+        disabled: !available,
+        title: available ? "" : "This file has nothing that could become that."
+      });
+    }).join("");
+  }
+  if (el.importContentHint) el.importContentHint.textContent = importContentHintText();
+
+  if (el.importTargetOptions) {
+    const hasDeck = currentDeckIsOpen();
+    // Based on what is actually SELECTED: "separate" means "don't merge these",
+    // which is vacuous once the selection narrows to a single deck — so the
+    // option disappears and the target falls back to the plain new-deck path
+    // rather than silently saving one deck into the library without opening it.
+    const multiple = importSelectedDecks().length > 1;
+    if (!multiple && importStaging.target === "separate") importStaging.target = "new";
+    const currentLabel = state.deckTitle.trim() ? `Current deck — ${state.deckTitle.trim()}` : "Current deck";
+    el.importTargetOptions.innerHTML = [
+      // Only offered when there is more than one deck to separate — with a
+      // single candidate it would be indistinguishable from "one new deck".
+      multiple
+        ? importChoiceButtonHtml("separate", "🗃 Separate decks", { active: importStaging.target === "separate" })
+        : "",
+      importChoiceButtonHtml("new", multiple ? "✦ One new deck" : "✦ A new deck", { active: importStaging.target === "new" }),
+      importChoiceButtonHtml("current", `⊕ ${currentLabel}`, {
+        active: importStaging.target === "current",
+        disabled: !hasDeck,
+        title: hasDeck ? "" : "No deck is open yet."
+      })
+    ].filter(Boolean).join("");
+  }
+  renderImportFolderRow();
+  if (el.importTargetHint) el.importTargetHint.textContent = importTargetHintText();
+}
+
+// The folder new decks will be filed under, and the control to change it.
+// Before this, the destination came only from wherever the import was launched
+// (a My Decks folder button armed one, the Import panel armed none) with no way
+// to correct it in the review step — so anything started from the toolbar had
+// to land in the root and be dragged afterwards.
+function renderImportFolderRow() {
+  if (!el.importFolderRow) return;
+  const appending = importStaging.target === "current";
+  el.importFolderRow.hidden = appending;
+  if (appending || !el.importFolderPath) return;
+
+  // With no folder chosen, each deck keeps whatever category its own file
+  // declared — say so rather than showing just the first one's and implying
+  // they all land together.
+  if (importStaging.folder == null) {
+    const categories = new Set(importSelectedDecks().map((deck) => normalizeDeckCategory(deck.category)));
+    if (categories.size > 1) {
+      el.importFolderPath.textContent = "each file's own folder";
+      return;
+    }
+  }
+  el.importFolderPath.textContent = importDestinationFolder();
+}
+
+// Where decks will actually be filed: the folder chosen for this import, else
+// the category the file itself declared, else the default. Kept in one place so
+// the row, the hint and the commit paths can never disagree.
+function importDestinationFolder() {
+  if (!importStaging) return defaultDeckCategory;
+  if (importStaging.folder != null) return normalizeDeckCategory(importStaging.folder);
+  const first = importSelectedDecks()[0];
+  return normalizeDeckCategory(first ? first.category : defaultDeckCategory);
+}
+
+function renderImportDeckList() {
+  if (!el.importDeckList) return;
+  if (!importStaging || importStaging.decks.length < 2) {
+    el.importDeckList.hidden = true;
     return;
   }
 
-  closeImportSelectorPanel();
+  el.importDeckList.hidden = false;
+  if (el.importDeckListLabel) {
+    el.importDeckListLabel.textContent = importStaging.sources.length > 1
+      ? "Decks these files will become"
+      : "Decks found in this file";
+  }
+  el.importDeckListRows.innerHTML = importStaging.decks.map((deck, index) => {
+    const resolved = resolveIncomingDeck(deck, importStaging.content);
+    const parts = [];
+    if (resolved.cards.length) parts.push(`${resolved.cards.length} card${resolved.cards.length === 1 ? "" : "s"}`);
+    if (resolved.notes.trim()) parts.push("notes");
+    // Name the file when it isn't already obvious from the deck title, so a
+    // batch of similarly-titled documents is still tellable apart.
+    const meta = deck.source && titleFromImportHint(deck.source) !== deck.title
+      ? deck.source
+      : deck.category;
+    return `
+      <label class="import-decklist-row">
+        <input type="checkbox" data-import-deck="${index}"${deck.selected ? " checked" : ""}>
+        <span class="import-decklist-title">${escapeHtml(deck.title || `Deck ${index + 1}`)}</span>
+        <span class="import-decklist-meta">${escapeHtml(meta)}</span>
+        <span class="import-decklist-count">${escapeHtml(parts.join(" · ") || "empty")}</span>
+      </label>
+    `;
+  }).join("");
 
-  let combinedCards = [];
-  selectedDecks.forEach((deck) => {
-    combinedCards = combinedCards.concat(deck.cards);
+  if (el.importDeckSelectAll) {
+    el.importDeckSelectAll.checked = importStaging.decks.every((deck) => deck.selected);
+  }
+}
+
+async function renderImportPreview() {
+  if (!el.importPreviewBody) return;
+  const totals = importTotals();
+
+  if (el.importPreviewSummary) {
+    const bits = [];
+    if (totals.decks > 1) bits.push(`${totals.decks} decks`);
+    if (totals.cards) bits.push(`${totals.cards} card${totals.cards === 1 ? "" : "s"}`);
+    if (totals.notes) bits.push(`${totals.notes} notes document${totals.notes === 1 ? "" : "s"}`);
+    el.importPreviewSummary.textContent = bits.join(" · ") || "nothing to import";
+  }
+
+  const resolved = importResolvedDecks();
+  if (!resolved.length) {
+    el.importPreviewBody.innerHTML = `<div class="import-preview-empty">Select at least one deck above.</div>`;
+    return;
+  }
+
+  // Notes preview reads as the document it will become; card preview lists the
+  // first few question/answer pairs. Both are capped so a huge file can't lock
+  // the panel up while you are still deciding.
+  if (importStaging.content === "notes") {
+    const body = resolved.map((deck) => deck.notes).filter((notes) => notes.trim()).join("\n\n---\n\n");
+    const clipped = body.length > 6000;
+    el.importPreviewBody.innerHTML = `<div class="rendered import-preview-notes">${markdownToSafeHtml(clipped ? `${body.slice(0, 6000)}\n\n…` : body)}</div>`;
+    await enhanceRenderedMarkdown(el.importPreviewBody);
+    return;
+  }
+
+  const cards = [];
+  resolved.forEach((deck) => deck.cards.forEach((card) => cards.push({ ...card, deckTitle: deck.title })));
+  const shown = cards.slice(0, 12);
+  const notesLead = importStaging.content === "both" && resolved.some((deck) => deck.notes.trim())
+    ? `<div class="import-preview-note">${resolved.length > 1 ? "Each document is also kept as its deck's notes." : "The full document is also kept as this deck's notes."}</div>`
+    : "";
+
+  if (!shown.length) {
+    el.importPreviewBody.innerHTML = `${notesLead}<div class="import-preview-empty">No cards to show for this choice.</div>`;
+    return;
+  }
+
+  el.importPreviewBody.innerHTML = notesLead + shown.map((card, index) => `
+    <article class="import-preview-card">
+      <div class="import-preview-card-head">Card ${index + 1}${resolved.length > 1 ? ` · ${escapeHtml(card.deckTitle)}` : ""}</div>
+      <div class="import-preview-card-side">
+        <span class="import-preview-card-label">Question</span>
+        <div class="rendered">${markdownToSafeHtml(card.question)}</div>
+      </div>
+      <div class="import-preview-card-side">
+        <span class="import-preview-card-label">Answer</span>
+        <div class="rendered">${markdownToSafeHtml(card.answer)}</div>
+      </div>
+    </article>
+  `).join("") + (cards.length > shown.length
+    ? `<div class="import-preview-empty">…and ${cards.length - shown.length} more.</div>`
+    : "");
+  await enhanceRenderedMarkdown(el.importPreviewBody);
+}
+
+function renderImportReview() {
+  if (!importStaging || !el.importReviewStep) return;
+  el.importReviewStep.hidden = false;
+  if (el.importSourceStep) el.importSourceStep.hidden = true;
+  renderImportDetection();
+  renderImportChoices();
+  renderImportDeckList();
+  if (el.importConfirmBtn) {
+    const totals = importTotals();
+    el.importConfirmBtn.disabled = !totals.cards && !totals.notes;
+    el.importConfirmBtn.textContent = importStaging.target === "current"
+      ? "Add to this deck"
+      : importStaging.target === "separate"
+        ? `Create ${totals.decks} deck${totals.decks === 1 ? "" : "s"}`
+        : "Create deck";
+  }
+  renderImportPreview();
+}
+
+// ── Committing a staged import ──────────────────────────────────────────────
+
+function appendNotesToCurrentDeck(body) {
+  const incoming = String(body || "").trim();
+  if (!incoming) return false;
+  const existing = String(state.notes || "").trim();
+  state.notes = existing ? `${existing}\n\n---\n\n${incoming}` : incoming;
+  return true;
+}
+
+// Mints fresh ids for incoming cards and pulls any statuses they carried (a
+// Recall .json export has them) into the parallel statusById map the rest of the
+// app reads. Ids get a random suffix for the same reason as parseCards: card ids
+// are globally unique in the cloud, so deterministic index+question ids collide
+// across decks and the sync upsert would reassign the existing row's deck_id.
+function mintImportCards(incoming) {
+  const statusById = {};
+  const cards = incoming.map((card, index) => {
+    const id = `${index}-${card.question.slice(0, 24)}-${Math.random().toString(36).slice(2, 8)}`;
+    const status = normalizeCardStatus(card.status);
+    if (status) statusById[id] = status;
+    return { id, question: card.question, answer: card.answer };
   });
+  return { cards, statusById };
+}
 
-  // Random suffix for the same reason as parseCards: card ids are globally
-  // unique in the cloud, so deterministic index+question ids collide across decks.
-  const cards = combinedCards.map((card, index) => ({
-    id: `${index}-${card.question.slice(0, 24)}-${Math.random().toString(36).slice(2, 8)}`,
-    question: card.question,
-    answer: card.answer
-  }));
+// One saved deck per candidate — what picking a folder full of notes is asking
+// for. These go straight into the library rather than through the working deck,
+// so the deck the user has open is saved off and put back afterwards, exactly
+// the way the EPUB chapter importer does it.
+function commitSeparateDecks() {
+  const resolved = importResolvedDecks();
+  if (!resolved.length) {
+    setStatus("Select at least one deck to import.", "error");
+    return false;
+  }
+
+  const folder = importStaging.folder;
+  pendingImportFolder = null;
+  const landingFolder = normalizeDeckCategory(folder != null ? folder : resolved[0].category);
+  if (folder != null) addKnownFolder(landingFolder);
+
+  const restore = {
+    deckId: state.deckId, localDeckId: state.localDeckId, deckTitle: state.deckTitle,
+    deckCategory: state.deckCategory, notes: state.notes, masterCards: state.masterCards,
+    cards: state.cards, statusById: state.statusById, sourceTitle: state.sourceTitle,
+    importTitleHint: state.importTitleHint, current: state.current
+  };
+
+  // Staggered a second apart so My Decks' default "recent" sort lists them in
+  // the order they were picked rather than an arbitrary one.
+  const baseTime = Date.now();
+  let written = 0;
+  let failed = false;
+  for (let i = 0; i < resolved.length; i++) {
+    const deck = resolved[i];
+    const { cards, statusById } = mintImportCards(deck.cards);
+    state.deckId = null;
+    state.localDeckId = null;
+    state.deckTitle = deck.title || `Imported deck ${i + 1}`;
+    // A folder the import was aimed at wins; otherwise each deck keeps the
+    // category its own file declared.
+    state.deckCategory = folder != null ? landingFolder : normalizeDeckCategory(deck.category);
+    state.notes = deck.notes;
+    state.masterCards = cards;
+    state.cards = cards;
+    state.statusById = statusById;
+    state.sourceTitle = state.deckTitle;
+    state.importTitleHint = deck.source || "";
+    state.current = 0;
+    // saveDeckToLibrary returns null (never throws) when storage is full —
+    // ignoring that would leave a half-written batch behind a success message.
+    if (!saveDeckToLibrary({ silent: true, updatedAt: new Date(baseTime - i * 1000).toISOString() })) {
+      failed = true;
+      break;
+    }
+    written += 1;
+  }
+
+  Object.assign(state, restore);
+  persistWorkingDeck();
+  closeImportPanel();
+
+  // You cannot "open" twelve decks, so the batch lands you in the library
+  // looking at where they went.
+  setMyDecksView("folder");
+  setMyDecksCwd(landingFolder);
+  if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
+  else openMyDecksPanel();
+
+  if (failed) {
+    const message = lastSaveErrorWasQuota
+      ? `Only ${written} of ${resolved.length} decks saved — device storage is full. Delete some decks and try again.`
+      : `Only ${written} of ${resolved.length} decks could be saved.`;
+    setStatus(message, "error");
+    showToast(message, "error");
+    return written > 0;
+  }
+
+  const message = `Imported ${written} deck${written === 1 ? "" : "s"} into ${landingFolder}.`;
+  setStatus(message);
+  showToast(message);
+  return true;
+}
+
+// Returns true when the import actually happened, so commitStagedImport knows
+// whether the staging area may be cleared.
+function commitMarkdownImport() {
+  const resolved = importResolvedDecks();
+  if (!resolved.length) {
+    setStatus("Select at least one deck to import.", "error");
+    return false;
+  }
+
+  const { cards, statusById } = mintImportCards(resolved.flatMap((deck) => deck.cards));
+  const notes = resolved.map((deck) => deck.notes).filter((body) => body.trim()).join("\n\n---\n\n");
+
+  if (importStaging.target === "current") {
+    pendingImportFolder = null; // appending never re-files the open deck
+    if (cards.length) {
+      state.cards = state.cards.concat(cards);
+      state.masterCards = state.masterCards.concat(cards);
+      Object.assign(state.statusById, statusById);
+      syncResults();
+    }
+    const notesChanged = appendNotesToCurrentDeck(notes);
+    closeAllCardsPanel();
+    closeImportPanel();
+    setViewMode(notesChanged && !cards.length ? "notes" : state.viewMode);
+    scheduleDeckAutosave();
+    showCard();
+    setStatus(importCommitMessage(cards.length, notesChanged ? 1 : 0, resolved.length, true));
+    return true;
+  }
 
   state.masterCards = cards.slice();
   state.deckId = null;
@@ -12886,76 +13600,74 @@ async function loadSelectedImportDecks() {
   // autosave creates a NEW deck instead of overwriting the old one.
   state.localDeckId = null;
   resetStudyDeck(state.masterCards);
+  // After resetStudyDeck, which clears the per-card maps for the outgoing deck.
+  state.statusById = statusById;
+  syncResults();
 
-  if (selectedDecks.length === 1) {
-    state.deckTitle = selectedDecks[0].title || currentImportTitleHint || "Imported Deck";
-    state.deckCategory = importTargetCategory(selectedDecks[0].category || defaultDeckCategory);
-  } else {
-    state.deckTitle = `Combined: ${selectedDecks.map(d => d.title || "Untitled").join(", ")}`.slice(0, 80);
-    state.deckCategory = importTargetCategory();
-  }
-  state.sourceTitle = state.deckTitle;
-  state.notes = selectedDecks
-    .map((deck) => String(deck.notes || "").trim())
-    .filter(Boolean)
-    .join("\n\n---\n\n");
-  setViewMode("notes");
+  const title = resolved.length === 1
+    ? (resolved[0].title || titleFromImportHint(importStaging.titleHint) || "Imported deck")
+    : `Combined: ${resolved.map((deck) => deck.title || "Untitled").join(", ")}`.slice(0, 80);
+  state.deckTitle = title;
+  state.deckCategory = importTargetCategory(resolved.length === 1 ? resolved[0].category : defaultDeckCategory);
+  state.sourceTitle = title;
+  state.importTitleHint = importStaging.titleHint;
+  state.notes = notes;
 
   closeAllCardsPanel();
   closeImportPanel();
-
-  if (cards.length) {
-    setStatus(`Imported ${selectedDecks.length} deck(s) with ${cards.length} total card(s).`);
-  }
-
+  // Land on whichever view actually received content, so an imported document
+  // opens on its notes instead of an empty card stage.
+  setViewMode(cards.length ? "cards" : "notes");
   showCard();
+  setStatus(importCommitMessage(cards.length, notes.trim() ? 1 : 0, resolved.length, false));
+  return true;
 }
 
-function buildCards(titleHint = state.importTitleHint || "", append = false) {
-  const rawSource = stripReaderMetadata(el.sourceInput.value);
-  if (!append) {
-    const detectedDecks = detectDecksInMarkdown(rawSource);
-    if (detectedDecks.length > 1) {
-      showImportDecksSelector(detectedDecks, titleHint);
-      return 0;
-    }
-  }
-  const { markdown: source, notes: extractedNotes } = extractNotesFromMarkdown(rawSource);
-  const cards = parseCards(source);
-  const headingCount = countQuestionHeadings(source);
-  const importTitle = titleFromImportHint(titleHint);
-  if (append) {
-    state.cards = state.cards.concat(cards);
-    state.masterCards = state.masterCards.concat(cards);
-  } else {
-    const hasContent = cards.length > 0 || Boolean(extractedNotes.trim());
-    state.masterCards = cards.slice();
-    state.deckId = null;
-    // Fresh deck → detach from any previously-loaded library entry, or the first
-    // autosave would overwrite THAT deck's snapshot under its stale localDeckId.
-    state.localDeckId = null;
-    resetStudyDeck(state.masterCards);
-    state.deckTitle = hasContent ? importTitle || inferDeckTitle(source, titleHint) : "";
-    state.deckCategory = importTargetCategory();
-    state.sourceTitle = hasContent ? importTitle || state.deckTitle : "";
-    state.notes = extractedNotes;
-    setViewMode("cards");
-  }
-  state.importTitleHint = titleHint;
-  closeAllCardsPanel();
+function importCommitMessage(cardCount, notesCount, deckCount, appended) {
+  const bits = [];
+  if (cardCount) bits.push(`${cardCount} card${cardCount === 1 ? "" : "s"}`);
+  if (notesCount) bits.push("notes");
+  const what = bits.join(" and ") || "nothing";
+  if (appended) return `Added ${what} to "${state.deckTitle || "this deck"}".`;
+  if (deckCount > 1) return `Imported ${what} from ${deckCount} decks.`;
+  return `Imported ${what}.`;
+}
 
-  if (cards.length) {
-    setStatus(`Built ${cards.length} card${cards.length === 1 ? "" : "s"}.`);
-    closeImportPanel();
-  } else {
-    const message = headingCount
-      ? `Found ${headingCount} question heading${headingCount === 1 ? "" : "s"}, but no answer text. This Notion page is exposing collapsed toggle titles only; export Markdown or paste expanded toggle content.`
-      : "No cards found. Use :: card blocks with a --- separator, legacy > toggle blocks, Q:/A: blocks, or ##/###/#### headings with answer content.";
-    setStatus(message, "error");
+function commitSnapshotImport() {
+  const candidate = importStaging.decks[0];
+  const append = importStaging.target === "current";
+  pendingImportFolder = append ? null : importStaging.folder;
+  try {
+    loadDeckSnapshot(candidate.snapshot, importStaging.titleHint, append);
+  } catch (error) {
+    setStatus("Could not read this Recall JSON export.", "error");
+    return false;
   }
+  const title = state.deckTitle || candidate.title;
+  closeImportPanel();
+  setStatus(append
+    ? `Added ${state.masterCards.length} card${state.masterCards.length === 1 ? "" : "s"} to "${title || "this deck"}".`
+    : `Imported "${title}".`);
+  if (append) scheduleDeckAutosave();
+  return true;
+}
 
-  showCard();
-  return cards.length;
+function commitStagedImport() {
+  if (!importStaging) return;
+  if (importStaging.target !== "current") {
+    pendingImportFolder = importStaging.folder;
+    // Remember it BEFORE committing: the commit paths clear the staging area.
+    writeLastImportFolder(importDestinationFolder());
+  }
+  const done = importStaging.target === "separate"
+    ? commitSeparateDecks()
+    // A lone .json export keeps its cloud id, per-card statuses and quick-note
+    // labels by going through loadDeckSnapshot; in a batch it is written fresh
+    // like any other candidate.
+    : stagingIsLoneSnapshot(importStaging)
+      ? commitSnapshotImport()
+      : commitMarkdownImport();
+  if (done) importStaging = null;
 }
 
 function flipCard() {
@@ -17067,32 +17779,18 @@ async function fetchUrl() {
       text = await fetchText(readerUrlFor(url));
     }
 
-    el.sourceInput.value = text;
     const source = stripReaderMetadata(text);
-    const cards = parseCards(source);
 
-    if (!cards.length && countQuestionHeadings(source)) {
-      state.cards = [];
-      state.masterCards = [];
-      state.statusById = {};
-      state.previewCard = null;
-      state.deckId = null;
-      state.deckTitle = "";
-      state.deckCategory = defaultDeckCategory;
-      state.notes = "";
-      state.sourceTitle = "";
-      state.importTitleHint = url;
-      state.current = 0;
-      resetResults();
-      setViewMode("cards");
+    // A public Notion page renders its toggles collapsed, so the fetch comes
+    // back as question headings with nothing under them. Say so instead of
+    // staging a page that would import as a list of empty prompts.
+    if (!parseCards(source).length && countQuestionHeadings(source)) {
       setStatus("This public Notion URL only exposes collapsed question headings, not answers. Use Export -> Markdown & CSV, then upload the zip or paste the exported Markdown.", "error");
-      showCard();
       return;
     }
 
-    setStatus("Fetched source. Building cards...");
-    pendingImportFolder = null; // a URL import isn't aimed at a My Decks folder
-    buildCards(url);
+    setStatus("Fetched. Checking what's in it...");
+    stageMarkdownImport(text, { name: url, folder: null });
   } catch (error) {
     setStatus("Could not fetch this URL. If it is private Notion content, export Markdown or paste the page content.", "error");
   } finally {
@@ -18408,197 +19106,138 @@ async function collectMarkdownFromZip(input, prefix = "", depth = 0) {
   return found;
 }
 
-async function loadZipFile(file, append = false) {
+// Pulls every Markdown document out of a zip (including nested zips) as its own
+// import source, so a zipped export folder behaves exactly like selecting those
+// files by hand.
+async function readZipSources(file) {
   if (!window.JSZip) {
-    setStatus("Zip support did not load. Extract the zip and upload the .md file.", "error");
-    return;
+    setStatus("Zip support did not load. Extract the zip and upload the .md files.", "error");
+    return [];
   }
-
-  try {
-    setStatus("Reading zip export...");
-    const markdownFiles = await collectMarkdownFromZip(file);
-
-    if (!markdownFiles.length) {
-      setStatus("No Markdown file found in this zip export, including nested zip files.", "error");
-      return;
-    }
-
-    const markdown = markdownFiles
-      .map((entry) => `<!-- Source: ${entry.name} -->\n\n${entry.text}`)
-      .join("\n\n---\n\n");
-    el.sourceInput.value = markdown;
-    state.importTitleHint = markdownFiles.length === 1 ? markdownFiles[0].name : file.name;
-    setStatus(`Loaded ${markdownFiles.length} Markdown file${markdownFiles.length === 1 ? "" : "s"} from ${file.name}.`);
-    buildCards(state.importTitleHint, append);
-  } catch (error) {
-    setStatus("Could not read this zip export.", "error");
+  const markdownFiles = await collectMarkdownFromZip(file);
+  if (!markdownFiles.length) {
+    setStatus(`No Markdown file found in ${file.name}, including nested zip files.`, "error");
+    return [];
   }
+  return markdownFiles.map((entry) => ({
+    kind: "markdown",
+    name: entry.name || file.name,
+    markdown: entry.text
+  }));
 }
 
-// `folderPath` files the imported deck under that folder (the My Decks "Import
-// here" buttons); null — every ordinary import — files it under the default
-// category and clears any folder left pending by an earlier, dismissed picker.
-function loadFile(file, append = false, folderPath = null) {
-  if (!file) return;
-  pendingImportFolder = folderPath;
-
-  // Must precede the zip branch: an EPUB *is* a zip, and its "application/
-  // epub+zip" type matches the /zip/i test below — without this it fell into
-  // the markdown-in-a-zip reader and dead-ended on "No Markdown file found".
-  if (isEpubName(file.name) || /epub/i.test(file.type)) {
-    // An EPUB becomes a whole folder of chapter decks, so it takes the target
-    // folder directly rather than through the single-deck category path.
-    importEpubFile(file, folderPath).catch(reportEpubImportCrash);
-    return;
-  }
-
-  if (isZipName(file.name) || /zip/i.test(file.type)) {
-    loadZipFile(file, append);
-    return;
-  }
-
-  const reader = new FileReader();
-  reader.addEventListener("load", () => {
-    const text = String(reader.result || "");
-
-    if (isJsonName(file.name) || file.type === "application/json") {
-      try {
-        loadDeckSnapshot(JSON.parse(text), file.name, append);
-        el.sourceInput.value = "";
-        setStatus(`Loaded ${state.masterCards.length} card${state.masterCards.length === 1 ? "" : "s"} from ${file.name}.`);
-        closeImportPanel();
-      } catch (error) {
-        setStatus("Could not read this flashcard JSON export.", "error");
-      }
-      return;
-    }
-
-    el.sourceInput.value = text;
-    state.importTitleHint = file.name;
-    setStatus(`Loaded ${file.name}.`);
-    buildCards(state.importTitleHint, append);
+function readFileText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")));
+    reader.addEventListener("error", () => reject(new Error(`Could not read ${file.name}`)));
+    reader.readAsText(file);
   });
-  reader.addEventListener("error", () => setStatus("Could not read the selected file.", "error"));
-  reader.readAsText(file);
+}
+
+// One picked file → zero or more import sources. Zips fan out; everything else
+// is a single source. Never throws: an unreadable file is reported and skipped
+// so one bad file can't sink a batch of twenty good ones.
+async function readImportSources(file) {
+  if (isZipName(file.name) || /zip/i.test(file.type)) {
+    try {
+      return await readZipSources(file);
+    } catch (error) {
+      setStatus(`Could not read ${file.name}.`, "error");
+      return [];
+    }
+  }
+
+  let text;
+  try {
+    text = await readFileText(file);
+  } catch (error) {
+    setStatus(`Could not read ${file.name}.`, "error");
+    return [];
+  }
+
+  if (isJsonName(file.name) || file.type === "application/json") {
+    try {
+      // A JSON export already records its own notes/cards split, so it needs no
+      // analysis — only a destination.
+      return [{ kind: "snapshot", name: file.name, payload: JSON.parse(text) }];
+    } catch (error) {
+      setStatus(`${file.name} is not readable Recall JSON.`, "error");
+      return [];
+    }
+  }
+
+  return [{ kind: "markdown", name: file.name, markdown: text }];
+}
+
+// Reads everything that was picked and stages it for review. `folderPath` files
+// the resulting decks under that folder (the My Decks "Import here" buttons);
+// null — every ordinary import — leaves them under their own category.
+//
+// Nothing is created here: every source except EPUB hands off to the review
+// step, where you say whether the files become notes, cards, or both, and
+// whether they land as separate decks, one merged deck, or the open one.
+async function loadFiles(fileList, folderPath = null) {
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) return;
+  pendingImportFolder = null;
+
+  // An EPUB *is* a zip, and its "application/epub+zip" type matches the /zip/i
+  // test, so it has to be split off before anything else looks at the list.
+  const isEpub = (file) => isEpubName(file.name) || /epub/i.test(file.type);
+  const epubs = files.filter(isEpub);
+  const rest = files.filter((file) => !isEpub(file));
+
+  // An EPUB becomes a whole folder of chapter decks behind its own preview
+  // modal, so it can't share the review step. On its own (or several at once)
+  // it runs that flow directly; mixed into a batch it is left out and named,
+  // rather than silently dropped.
+  if (epubs.length && !rest.length) {
+    for (const file of epubs) {
+      await importEpubFile(file, folderPath).catch(reportEpubImportCrash);
+    }
+    return;
+  }
+
+  if (files.length > 1) setStatus(`Reading ${files.length} files…`);
+  const sources = [];
+  for (const file of rest) {
+    sources.push(...await readImportSources(file));
+  }
+
+  stageImportSources(sources, {
+    folder: folderPath,
+    skipped: epubs.map((file) => `${file.name} — import EPUBs on their own`)
+  });
+}
+
+function loadFile(file, folderPath = null) {
+  return loadFiles(file ? [file] : [], folderPath);
 }
 
 function loadSample() {
-  pendingImportFolder = null; // not aimed at a My Decks folder
-  el.sourceInput.value = sampleMarkdown;
-  state.importTitleHint = "Sample flashcards";
-  setStatus("Sample loaded.");
-  buildCards(state.importTitleHint);
+  stageMarkdownImport(sampleMarkdown, { name: "Sample flashcards", folder: null });
 }
 
-function resetPastePreview(message = "Paste Markdown and click Preview.", summary = "No preview yet") {
-  pastePreviewSource = "";
-  pastePreviewCards = [];
-  if (el.pastePreviewSummary) el.pastePreviewSummary.textContent = summary;
-  if (el.pastePreviewList) {
-    el.pastePreviewList.innerHTML = `<div class="paste-preview-empty">${escapeHtml(message)}</div>`;
-  }
-  if (el.pasteImportBtn) el.pasteImportBtn.disabled = true;
+// ── Import panel: source pickers ────────────────────────────────────────────
+
+function showImportSourceDrawer(which) {
+  if (el.importUrlRow) el.importUrlRow.hidden = which !== "url";
+  if (el.importPasteRow) el.importPasteRow.hidden = which !== "paste";
+  if (el.importPasteSourceBtn) el.importPasteSourceBtn.classList.toggle("is-active", which === "paste");
+  if (el.importUrlSourceBtn) el.importUrlSourceBtn.classList.toggle("is-active", which === "url");
+  if (which === "paste") window.setTimeout(() => el.pasteMarkdownInput?.focus(), 0);
+  if (which === "url") window.setTimeout(() => el.urlInput?.focus(), 0);
 }
 
-function closePasteEditor(clear = false) {
-  if (el.pasteEditorPanel) el.pasteEditorPanel.hidden = true;
-  if (clear && el.pasteMarkdownInput) el.pasteMarkdownInput.value = "";
-  resetPastePreview();
-}
-
-function openPasteEditor(append = false) {
-  pasteImportAppend = append;
-
-  if (el.pasteEditorTitle) {
-    el.pasteEditorTitle.textContent = append ? "Paste Markdown Cards" : "Paste Markdown Deck";
-  }
-  if (el.pasteEditorHint) {
-    el.pasteEditorHint.textContent = append
-      ? "Append pasted Markdown cards to the current deck."
-      : "Replace the current deck with pasted Markdown.";
-  }
-  if (el.pasteImportBtn) {
-    el.pasteImportBtn.textContent = append ? "Import Pasted Cards" : "Import Pasted Deck";
-  }
-  if (el.pasteMarkdownInput) {
-    el.pasteMarkdownInput.placeholder = append
-      ? "Paste Markdown cards here"
-      : "Paste Markdown deck here";
-  }
-  if (el.pasteEditorPanel) el.pasteEditorPanel.hidden = false;
-  resetPastePreview();
-
-  window.setTimeout(() => el.pasteMarkdownInput?.focus(), 0);
-}
-
-async function previewPastedMarkdown() {
+function stagePastedMarkdown() {
   const markdown = el.pasteMarkdownInput?.value || "";
   if (!markdown.trim()) {
-    setStatus("Paste Markdown before importing.", "error");
+    setStatus("Paste some Markdown first.", "error");
     el.pasteMarkdownInput?.focus();
-    resetPastePreview("Paste Markdown to generate a preview.", "No preview");
     return;
   }
-
-  const cards = parseCards(markdown);
-  if (!cards.length) {
-    const headingCount = countQuestionHeadings(markdown);
-    const message = headingCount
-      ? `Found ${headingCount} question heading${headingCount === 1 ? "" : "s"}, but no answer text.`
-      : "No cards found in this Markdown.";
-    resetPastePreview(message, "0 cards");
-    setStatus(message, "error");
-    return;
-  }
-
-  pastePreviewSource = markdown;
-  pastePreviewCards = cards;
-  if (el.pastePreviewSummary) {
-    el.pastePreviewSummary.textContent = `${cards.length} card${cards.length === 1 ? "" : "s"}`;
-  }
-  if (el.pastePreviewList) {
-    el.pastePreviewList.innerHTML = cards.map((card, index) => `
-      <article class="paste-preview-card">
-        <div class="paste-preview-card-head">Card ${index + 1}</div>
-        <div class="paste-preview-card-side">
-          <span class="paste-preview-card-label">Question</span>
-          <div class="rendered">${markdownToSafeHtml(card.question)}</div>
-        </div>
-        <div class="paste-preview-card-side">
-          <span class="paste-preview-card-label">Answer</span>
-          <div class="rendered">${markdownToSafeHtml(card.answer)}</div>
-        </div>
-      </article>
-    `).join("");
-    await enhanceRenderedMarkdown(el.pastePreviewList);
-  }
-  if (el.pasteImportBtn) el.pasteImportBtn.disabled = false;
-  setStatus(`Previewed ${cards.length} card${cards.length === 1 ? "" : "s"}.`);
-}
-
-async function importPastedMarkdown() {
-  const markdown = el.pasteMarkdownInput?.value || "";
-  if (!markdown.trim()) {
-    setStatus("Paste Markdown before importing.", "error");
-    el.pasteMarkdownInput?.focus();
-    resetPastePreview("Paste Markdown to generate a preview.", "No preview");
-    return;
-  }
-
-  if (!pastePreviewCards.length || pastePreviewSource !== markdown) {
-    await previewPastedMarkdown();
-    if (!pastePreviewCards.length || pastePreviewSource !== markdown) return;
-  }
-
-  el.sourceInput.value = markdown;
-  const titleHint = pasteImportAppend
-    ? state.importTitleHint || state.deckTitle || "Pasted cards"
-    : "";
-  state.importTitleHint = titleHint;
-  setStatus(pasteImportAppend ? "Importing pasted cards..." : "Importing pasted deck...");
-  pendingImportFolder = null; // a pasted import isn't aimed at a My Decks folder
-  const builtCount = buildCards(titleHint, pasteImportAppend);
-  if (builtCount) closePasteEditor(true);
+  stageMarkdownImport(markdown, { name: "", folder: null });
 }
 
 function currentCardCanMove() {
@@ -18879,7 +19518,7 @@ function preventCancelableScroll(event) {
 }
 
 function styleScrollRegion(target) {
-  return closestElement(target, ".style-grid, .all-cards-list, .paste-preview-list, textarea, .import-card, .web-decks-table-wrap, .my-decks-grid, .diagram-modal-body");
+  return closestElement(target, ".style-grid, .all-cards-list, .import-preview-body, .import-decklist-rows, textarea, .import-card, .web-decks-table-wrap, .my-decks-grid, .diagram-modal-body");
 }
 
 function canScrollStyleRegion(region) {
@@ -19043,6 +19682,21 @@ function registerServiceWorker() {
       .catch(() => { /* no worker yet — the next online event tries again */ });
   };
 
+  // A worker that takes over a page which already had one has just swapped the
+  // app's files underneath a page still running the PREVIOUS release's JS. The
+  // markup can already be the new build while the behaviour is the old one, so
+  // half the app quietly does the old thing and there is nothing on screen to
+  // explain it — which is what makes "is my fix live yet?" unanswerable. Say so
+  // out loud, once, and let the user finish the update when they want to.
+  let hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController) {
+      hadController = true; // first-ever install: this page is already current
+      return;
+    }
+    showToast("Recall updated — reload to finish", "info");
+  });
+
   const register = () => {
     navigator.serviceWorker.register("./sw.js")
       .then(requestOfflineCacheRepair)
@@ -19193,11 +19847,7 @@ document.getElementById("cancelSyncBtn")?.addEventListener("click", () => {
   el.syncModal.hidden = true;
 });
 
-el.parseBtn.addEventListener("click", () => {
-  pendingImportFolder = null; // the Import panel's own Build button, not a folder's
-  buildCards();
-});
-el.sampleBtn.addEventListener("click", loadSample);
+el.sampleBtn?.addEventListener("click", loadSample);
 el.fetchBtn.addEventListener("click", fetchUrl);
 el.urlInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") fetchUrl();
@@ -19369,16 +20019,20 @@ function importIntoFolder(folderPath = "") {
 el.myDecksImportBtn?.addEventListener("click", () => importIntoFolder(currentMyDecksFolder()));
 
 el.myDecksImportInput?.addEventListener("change", (event) => {
-  const file = event.target.files?.[0];
+  const files = Array.from(event.target.files || []);
   event.target.value = "";
-  if (!file) return;
+  if (!files.length) return;
   const folder = myDecksImportFolder;
-  // An EPUB becomes a whole folder of chapter decks and re-renders My Decks
-  // itself when it's done, so it stays open; everything else becomes the working
-  // deck, which means leaving the library the way New deck does.
-  const isEpub = isEpubName(file.name) || /epub/i.test(file.type);
-  if (!isEpub) closeMyDecksPanel();
-  loadFile(file, false, folder);
+  // An EPUB has its own preview modal and re-renders My Decks itself when it is
+  // done, so the library stays open for it. EVERYTHING else goes through the
+  // Import panel's review step, which must be closed over — the library sits at
+  // z-index 100 and the import panel at 50, so leaving it open buried the whole
+  // review step behind it and picking files looked like it did nothing at all.
+  // (A batch still returns to the library afterwards: commitSeparateDecks
+  // reopens it at the folder it wrote to.)
+  const allEpub = files.every((file) => isEpubName(file.name) || /epub/i.test(file.type));
+  if (!allEpub) closeMyDecksPanel();
+  loadFiles(files, folder);
 });
 
 // A dismissed picker must not leave a folder armed for whatever import happens
@@ -19430,10 +20084,6 @@ document.addEventListener("click", (e) => {
 // Escape is handled by closeTopmostOverlay(), which peels these menus back
 // before the panel itself — a listener here would close both at once.
 el.closeImportBtn.addEventListener("click", closeImportPanel);
-el.closeImportSelectorBtn.addEventListener("click", closeImportSelectorPanel);
-el.importSelectorCancelBtn.addEventListener("click", closeImportSelectorPanel);
-el.selectAllImportSelectorCheckbox.addEventListener("change", toggleAllImportSelector);
-el.importSelectorLoadBtn.addEventListener("click", loadSelectedImportDecks);
 el.editDeckTitleBtn.addEventListener("click", editCurrentDeckTitle);
 el.editDeckCategoryBtn?.addEventListener("click", editCurrentDeckCategory);
 
@@ -19819,16 +20469,60 @@ el.themeMenu?.addEventListener("click", (event) => {
   setTheme(button.dataset.themeOption);
   setThemeMenuOpen(false);
 });
-el.fileInput.addEventListener("change", (event) => loadFile(event.target.files[0], false));
-if (el.fileInputCards) el.fileInputCards.addEventListener("change", (event) => loadFile(event.target.files[0], true));
-el.pasteDeckBtn?.addEventListener("click", () => openPasteEditor(false));
-el.pasteCardsBtn?.addEventListener("click", () => openPasteEditor(true));
-el.pastePreviewBtn?.addEventListener("click", previewPastedMarkdown);
-el.pasteImportBtn?.addEventListener("click", importPastedMarkdown);
-el.pasteCancelBtn?.addEventListener("click", () => closePasteEditor(false));
-el.pasteMarkdownInput?.addEventListener("input", () => resetPastePreview("Preview is out of date. Click Preview again.", "Needs preview"));
+el.fileInput.addEventListener("change", (event) => {
+  const files = Array.from(event.target.files || []);
+  event.target.value = ""; // re-picking the same files must still fire `change`
+  loadFiles(files, null);
+});
+el.importPasteSourceBtn?.addEventListener("click", () => {
+  showImportSourceDrawer(el.importPasteRow?.hidden ? "paste" : null);
+});
+el.importUrlSourceBtn?.addEventListener("click", () => {
+  showImportSourceDrawer(el.importUrlRow?.hidden ? "url" : null);
+});
+el.importPasteContinueBtn?.addEventListener("click", stagePastedMarkdown);
+el.importPasteCancelBtn?.addEventListener("click", () => showImportSourceDrawer(null));
 el.pasteMarkdownInput?.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closePasteEditor(false);
+  if (event.key === "Escape") showImportSourceDrawer(null);
+});
+
+// ── Import review step ──────────────────────────────────────────────────────
+el.importContentOptions?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-import-choice]");
+  if (!button || button.disabled || !importStaging) return;
+  importStaging.content = button.dataset.importChoice;
+  renderImportReview();
+});
+el.importTargetOptions?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-import-choice]");
+  if (!button || button.disabled || !importStaging) return;
+  importStaging.target = button.dataset.importChoice;
+  renderImportReview();
+});
+el.importDeckListRows?.addEventListener("change", (event) => {
+  const box = event.target.closest("[data-import-deck]");
+  if (!box || !importStaging) return;
+  const deck = importStaging.decks[Number(box.dataset.importDeck)];
+  if (deck) deck.selected = box.checked;
+  renderImportReview();
+});
+el.importDeckSelectAll?.addEventListener("change", (event) => {
+  if (!importStaging) return;
+  importStaging.decks.forEach((deck) => { deck.selected = event.target.checked; });
+  renderImportReview();
+});
+el.importFolderChangeBtn?.addEventListener("click", async () => {
+  if (!importStaging) return;
+  const chosen = await chooseDeckCategory(importDestinationFolder());
+  if (chosen == null || !importStaging) return;
+  importStaging.folder = normalizeDeckCategory(chosen);
+  renderImportReview();
+});
+el.importConfirmBtn?.addEventListener("click", commitStagedImport);
+el.importStartOverBtn?.addEventListener("click", () => {
+  clearImportStaging();
+  showImportSourceDrawer(null);
+  setStatus("");
 });
 el.prevCardBtn.addEventListener("click", () => navigateCard(-1, "prev"));
 el.nextCardBtn.addEventListener("click", () => navigateCard(1, "next"));
@@ -24257,3 +24951,28 @@ function saveQuickNote(rawText, button, sourceAnchor = null) {
     });
   }
 }
+
+// ── Replay a click made while app.js was still loading ──────────────────────
+// Everything above attaches at module scope, and this file only finishes parsing
+// several seconds after the toolbar is on screen (see the boot-click queue in
+// index.html). Anything the user pressed in that window landed on a control with
+// no listener yet; now that they all have one, honour the press.
+(function replayBootClick() {
+  const boot = window.__recallBoot;
+  if (!boot || typeof boot.take !== "function") return;
+  const id = boot.take();
+  if (!id) return;
+  const target = document.getElementById(id);
+  if (!target) return;
+  // Must wait for DOMContentLoaded, not just a task tick: several controls
+  // (notably the ☰ drawer, which every toolbar action lives behind) are wired
+  // by initToolbars on DOMContentLoaded, and this file finishes parsing BEFORE
+  // that fires. Replaying earlier would click a button whose handler still
+  // doesn't exist — the exact failure this is here to fix.
+  const fire = () => window.setTimeout(() => target.click(), 0);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", fire, { once: true });
+  } else {
+    fire();
+  }
+})();

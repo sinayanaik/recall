@@ -1,4 +1,4 @@
-const CACHE_NAME = "recall-v20260727-02";
+const CACHE_NAME = "recall-v20260728-07";
 
 // How long a same-origin request may stall before the cached copy is served
 // instead. The failure this exists for is NOT being offline — that fails fast
@@ -50,8 +50,8 @@ async function trimImageCache() {
 // precached copy was dead weight for the whole of that release.
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260727-02",
-  "./app.js?v=20260727-02",
+  "./styles.css?v=20260728-07",
+  "./app.js?v=20260728-07",
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
@@ -158,7 +158,14 @@ self.addEventListener("install", (event) => {
     caches.open(CACHE_NAME)
       .then(async (cache) => {
         // App shell is same-origin and must all cache — fail install if not.
-        await cache.addAll(APP_SHELL);
+        // "./" is handled separately: it is the one entry with no ?v= stamp, so
+        // addAll would take it from the browser's HTTP cache and precache the
+        // PREVIOUS release's HTML into this release's cache. Same reason as the
+        // no-store fetch in sameOriginNetworkFirst.
+        await cache.addAll(APP_SHELL.filter((asset) => asset !== "./"));
+        const shell = await fetch("./", { cache: "no-store", credentials: "same-origin" });
+        if (!shell.ok) throw new Error(`app shell fetch failed: ${shell.status}`);
+        await cache.put("./", shell);
         // CDN assets are best-effort: one flaky/unavailable file must not abort
         // the whole install and leave the app with no cache at all. What that
         // drops, repairCdnCache picks up later.
@@ -361,7 +368,19 @@ async function sameOriginNetworkFirst(event, request) {
   // respondWith promise has settled, so a background continuation cannot
   // register its own, and the refresh would be dropped the moment the timeout
   // path won (i.e. exactly when it matters).
-  const network = fetch(request).then(async (response) => {
+  //
+  // `cache: "no-store"` is what makes this network-FIRST rather than
+  // network-shaped. The only same-origin request that reaches here is the HTML,
+  // whose URL carries no ?v= stamp — so with the default cache mode this fetch
+  // is answered by the browser's own HTTP cache, and the SW then "refreshes"
+  // its cache with a stale copy of index.html. Every release after the first
+  // one was invisible: the new sw.js installed and activated correctly, but the
+  // page it served still pointed at the PREVIOUS build's app.js?v=…, which
+  // cache-first then happily served from the new cache. Reloading never helped,
+  // because every reload repeated the same loop. Requests are GET-only and
+  // same-origin here (see the fetch handler), so rebuilding from the URL loses
+  // nothing.
+  const network = fetch(request.url, { cache: "no-store", credentials: "same-origin" }).then(async (response) => {
     if (response && response.status === 200) {
       const copy = response.clone();
       try { await cache.put(request, copy); } catch (_) { /* quota, or evicted */ }

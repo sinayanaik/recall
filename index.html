@@ -15,7 +15,48 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260727-02">
+    <link rel="stylesheet" href="styles.css?v=20260728-07">
+    <script>
+      // ── Boot-click queue ────────────────────────────────────────────────
+      // The whole toolbar is in the HTML, so it paints immediately — but every
+      // one of its listeners is attached at the END of app.js, which itself
+      // runs after 15 blocking CDN libraries. Measured cold, that left ~5s
+      // (much longer on a slow connection) where Import, New Deck and the rest
+      // looked perfectly ready and did absolutely nothing when pressed. The app
+      // read as broken, and the only cure was to keep clicking until it wasn't.
+      //
+      // This runs first, before any of that, and remembers the last control the
+      // user pressed while the app was still booting. app.js replays it the
+      // moment its listeners are live, so an early click is honoured late
+      // instead of being swallowed.
+      (function () {
+        var pending = null;
+        var root = document.documentElement;
+        root.classList.add("app-booting");
+
+        function capture(event) {
+          // Buttons only. A <label> wrapping a file input can't be replayed —
+          // opening a file chooser needs a real user gesture — and by the time
+          // one is on screen the app is long since live anyway.
+          var el = event.target && event.target.closest ? event.target.closest("button[id]") : null;
+          if (el && el.id) pending = { id: el.id, at: Date.now() };
+        }
+        document.addEventListener("click", capture, true);
+
+        window.__recallBoot = {
+          // Called once by app.js when every listener is attached.
+          take: function () {
+            document.removeEventListener("click", capture, true);
+            root.classList.remove("app-booting");
+            var p = pending;
+            pending = null;
+            // Only honour a press the user made moments ago; replaying a click
+            // from minutes back would be a surprise, not a fix.
+            return p && (Date.now() - p.at) < 20000 ? p.id : null;
+          }
+        };
+      })();
+    </script>
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
@@ -38,7 +79,7 @@
 
           <span class="drawer-section-label">Decks</span>
           <button class="tool-button" id="newDeckBtn" type="button">&#43; New Deck</button>
-          <button class="tool-button" id="importBtn" type="button">&#8679; Import from File</button>
+          <button class="tool-button" id="importBtn" type="button" title="Import a file, pasted Markdown, or a link — as notes, as cards, or both">&#8679; Import</button>
           <button class="tool-button" id="myDecksBtn" type="button" title="All your decks — saved on this device and synced to the cloud automatically">&#128218; My Decks</button>
           <button class="tool-button" id="syncNowBtn" type="button" title="Sync all decks with the cloud now (two-way, keeps the newest of each)">&#8635; Sync Now</button>
           <div class="autosync-field" title="Automatically run Sync Now on a timer, so you don't have to click it">
@@ -284,80 +325,109 @@
       </section>
     </main>
 
-    <section class="import-panel" id="importPanel" aria-label="Import notes">
+    <!-- Import is one linear flow: pick a source, then review what Recall found
+         and say what it should become. Nothing is created until you press
+         Import, so a Markdown page can no longer be silently shredded into
+         flashcards just because it happened to have headings. -->
+    <section class="import-panel" id="importPanel" aria-label="Import">
       <div class="import-card">
         <div class="import-head">
           <div>
-            <h1>Import notes</h1>
-            <p>Import local files, paste Markdown, or fetch a deck via URL.</p>
+            <h1>Import</h1>
+            <p>A deck holds <strong>notes</strong> (one Markdown document) and <strong>cards</strong> (question / answer pairs). Pick your sources below, then choose which of the two they become — and whether each one gets its own deck.</p>
           </div>
           <button class="icon-button" id="closeImportBtn" type="button" aria-label="Close import panel">&#215;</button>
         </div>
 
-        <div class="import-grid">
-          <div class="import-group">
-            <h3 class="import-group-title">URL</h3>
+        <div class="import-step" id="importSourceStep">
+          <div class="import-step-head">
+            <span class="import-step-num">1</span>
+            <h3>Pick a source</h3>
+          </div>
+
+          <div class="import-source-row">
+            <label class="file-pick import-action-btn" id="importFilePick">
+              <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed,application/epub+zip">
+              <span class="import-icon" aria-hidden="true">📁</span>
+              <span>Choose files</span>
+            </label>
+            <button id="importPasteSourceBtn" type="button" class="import-action-btn">
+              <span class="import-icon" aria-hidden="true">📋</span>
+              <span>Paste Markdown</span>
+            </button>
+            <button id="importUrlSourceBtn" type="button" class="import-action-btn">
+              <span class="import-icon" aria-hidden="true">🔗</span>
+              <span>From a link</span>
+            </button>
+          </div>
+          <p class="import-source-hint">Markdown or plain text, a Recall <code>.json</code> / <code>.zip</code> export, or an <code>.epub</code> book (one deck per chapter). <strong>Pick as many files as you like</strong> — you can turn each one into its own deck, or merge them all into one.</p>
+
+          <div class="import-source-drawer" id="importUrlRow" hidden>
             <div class="url-row-compact">
-              <input id="urlInput" type="url" placeholder="https://... URL" autocomplete="off" class="url-input-compact">
-              <button id="fetchBtn" type="button" class="import-action-btn small-btn" title="Fetch URL">Fetch</button>
+              <input id="urlInput" type="url" placeholder="https://…" autocomplete="off" class="url-input-compact">
+              <button id="fetchBtn" type="button" class="import-action-btn small-btn" title="Fetch this link">Fetch</button>
             </div>
           </div>
 
-          <div class="import-group">
-            <h3 class="import-group-title">Local</h3>
-            <div class="import-file-row">
-              <label class="file-pick import-action-btn">
-                <input id="fileInput" type="file" accept=".md,.markdown,.txt,.json,.zip,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed">
-                <span class="import-icon" aria-hidden="true">📁</span>
-                <span>Import Deck</span>
-              </label>
-              <button id="pasteDeckBtn" type="button" class="paste-source-btn" title="Paste Markdown deck" aria-label="Paste Markdown deck">
-                <span aria-hidden="true">📋</span>
-              </button>
-            </div>
-            <div class="import-file-row">
-              <label class="file-pick import-action-btn">
-                <input id="fileInputCards" type="file" accept=".md,.markdown,.txt,.json,.zip,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed">
-                <span class="import-icon" aria-hidden="true">📄</span>
-                <span>Import Cards</span>
-              </label>
-              <button id="pasteCardsBtn" type="button" class="paste-source-btn" title="Paste Markdown cards" aria-label="Paste Markdown cards">
-                <span aria-hidden="true">📋</span>
-              </button>
+          <div class="import-source-drawer" id="importPasteRow" hidden>
+            <textarea id="pasteMarkdownInput" spellcheck="false" placeholder="Paste Markdown here…"></textarea>
+            <div class="import-source-drawer-actions">
+              <button id="importPasteContinueBtn" type="button" class="import-action-btn import-action-primary">Continue</button>
+              <button id="importPasteCancelBtn" type="button" class="import-action-btn">Cancel</button>
             </div>
           </div>
         </div>
 
-        <div class="paste-editor-panel" id="pasteEditorPanel" hidden>
-          <div class="paste-editor-head">
-            <div>
-              <h3 id="pasteEditorTitle">Paste Markdown</h3>
-              <p id="pasteEditorHint">Paste raw Markdown, preview the cards, then import it.</p>
+        <div class="import-step" id="importReviewStep" hidden>
+          <div class="import-step-head">
+            <span class="import-step-num">2</span>
+            <h3>Review and choose</h3>
+          </div>
+
+          <div class="import-detect" id="importDetect"></div>
+
+          <div class="import-choice">
+            <span class="import-choice-label">Import as</span>
+            <div class="import-choice-options" id="importContentOptions"></div>
+            <p class="import-choice-hint" id="importContentHint"></p>
+          </div>
+
+          <div class="import-choice">
+            <span class="import-choice-label">Add to</span>
+            <div class="import-choice-options" id="importTargetOptions"></div>
+            <div class="import-folder-row" id="importFolderRow" hidden>
+              <span class="import-folder-icon" aria-hidden="true">📁</span>
+              <span class="import-folder-path" id="importFolderPath"></span>
+              <button type="button" class="import-folder-change" id="importFolderChangeBtn">Change folder</button>
             </div>
-            <button class="icon-button" id="pasteCancelBtn" type="button" aria-label="Close Markdown editor">&#215;</button>
+            <p class="import-choice-hint" id="importTargetHint"></p>
           </div>
-          <div class="paste-editor-body">
-            <textarea id="pasteMarkdownInput" spellcheck="false" placeholder="Paste Markdown here"></textarea>
-            <section class="paste-preview-panel" aria-label="Pasted card preview">
-              <div class="paste-preview-head">
-                <h4>Preview</h4>
-                <span id="pastePreviewSummary">No preview yet</span>
-              </div>
-              <div class="paste-preview-list" id="pastePreviewList">
-                <div class="paste-preview-empty">Paste Markdown and click Preview.</div>
-              </div>
-            </section>
+
+          <div class="import-decklist" id="importDeckList" hidden>
+            <div class="import-decklist-head">
+              <span class="import-choice-label" id="importDeckListLabel">Decks found</span>
+              <label class="import-decklist-all"><input type="checkbox" id="importDeckSelectAll" checked> Select all</label>
+            </div>
+            <div class="import-decklist-rows" id="importDeckListRows"></div>
           </div>
-          <div class="paste-editor-actions">
-            <button id="pastePreviewBtn" type="button" class="import-action-btn">Preview Cards</button>
-            <button id="pasteImportBtn" type="button" class="import-action-btn import-action-primary" disabled>Import Pasted Deck</button>
+
+          <section class="import-preview" aria-label="Import preview">
+            <div class="import-preview-head">
+              <h4>Preview</h4>
+              <span id="importPreviewSummary"></span>
+            </div>
+            <div class="import-preview-body" id="importPreviewBody"></div>
+          </section>
+
+          <div class="import-review-actions">
+            <button id="importConfirmBtn" type="button" class="import-action-btn import-action-primary">Import</button>
+            <button id="importStartOverBtn" type="button" class="import-action-btn">Start over</button>
           </div>
         </div>
 
         <!-- Hidden legacy fields for JS compatibility -->
         <div hidden>
           <textarea id="sourceInput" spellcheck="false"></textarea>
-          <button id="parseBtn" type="button">Import</button>
           <button id="sampleBtn" type="button">Load sample</button>
         </div>
 
@@ -537,8 +607,8 @@
                    way to put something in the folder you're looking at. The
                    picker below is shared with every folder row's own Import
                    button; myDecksImportFolder records which one opened it. -->
-              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import a deck file (.md, .txt, .json, .zip, .epub) into the current folder"><span class="md-btn-label">Import</span></button>
-              <input id="myDecksImportInput" type="file" accept=".md,.markdown,.txt,.json,.zip,.epub,text/markdown,text/plain,application/json,application/zip,application/epub+zip" hidden>
+              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.md, .txt, .json, .zip, .epub) into this folder — you choose whether they become notes or cards, and whether each file gets its own deck"><span class="md-btn-label">Import</span></button>
+              <input id="myDecksImportInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,text/markdown,text/plain,application/json,application/zip,application/epub+zip" hidden>
               <!-- Everything else lives behind one "⋯" so the toolbar is a single
                    row at every width. Ids are unchanged, so the existing
                    listeners (and syncMyDecksChrome's hidden/label handling for
@@ -673,12 +743,14 @@
 
           <section class="help-section">
             <h3 class="help-section-title">1. Load a Deck</h3>
+            <p>A <strong>deck</strong> is the thing you open from My Decks. It holds exactly two kinds of content: one <strong>notes</strong> document (freeform Markdown) and any number of <strong>cards</strong> (question / answer pairs). Everything you import becomes one or both of those.</p>
             <p>Open the menu (<strong>☰</strong>, top-left) to get started:</p>
             <ul class="help-list">
               <li><strong>+ New Deck</strong> — start a blank deck and add cards manually</li>
-              <li><strong>Import from File</strong> — paste Markdown, upload a <code>.md</code>/<code>.json</code>/<code>.zip</code> file, or fetch from a URL</li>
+              <li><strong>Import</strong> — choose one file or a whole batch of them, paste Markdown, or fetch a link. Recall then shows what it found and asks whether it should become <strong>notes</strong>, <strong>cards</strong>, or <strong>both</strong>, and where it lands: <strong>separate decks</strong> (one per file), <strong>one new deck</strong>, or appended to the deck you already have open. Nothing is created until you confirm</li>
               <li><strong>My Decks</strong> — every deck you've studied, saved on this device and mirrored to the cloud</li>
             </ul>
+            <p>A plain Markdown page with ordinary headings is imported as <strong>notes</strong> by default — it is a document, not a stack of flashcards. Pick <strong>Cards</strong> in the review step if you do want each heading turned into a card.</p>
           </section>
 
           <section class="help-section">
@@ -836,7 +908,8 @@ What year was the Eiffel Tower built?
 ---
 1889
 ::</pre>
-            <p>You can also use <code>##</code>, <code>###</code>, or <code>####</code> headings as card fronts, with the content below as the back.</p>
+            <p>Recall also reads <code>&lt;details&gt;</code> toggles, <code>&gt;</code> blockquote toggles, <code>Q:</code>/<code>A:</code> pairs, and any <code>##</code>–<code>######</code> heading that ends in a question mark. All of these are unambiguous card syntax, so a file containing them is offered as <strong>Cards</strong> straight away.</p>
+            <p>Plain <code>##</code>/<code>###</code>/<code>####</code> headings can be turned into card fronts too, with the text below as the back — but because a normal document looks exactly the same, Recall imports those as <strong>notes</strong> unless you choose <strong>Cards</strong> in the import review step.</p>
           </section>
 
           <section class="help-section">
@@ -891,38 +964,9 @@ What year was the Eiffel Tower built?
       </div>
     </section>
 
-    <section class="import-selector-panel" id="importSelectorPanel" hidden aria-label="Select decks to import">
-      <div class="import-selector-shell">
-        <div class="import-selector-head">
-          <div>
-            <h1>Select Decks to Import</h1>
-            <p>Multiple decks were detected in this file. Choose which ones you want to import.</p>
-          </div>
-          <button class="icon-button" id="closeImportSelectorBtn" type="button" aria-label="Close import selector">&#215;</button>
-        </div>
-        <div class="import-selector-body">
-          <div class="import-selector-table-wrap">
-            <table class="import-selector-table">
-              <thead>
-                <tr>
-                  <th style="width: 50px; text-align: center;"><input type="checkbox" id="selectAllImportSelectorCheckbox" checked></th>
-                  <th>Deck Title</th>
-                  <th>Category</th>
-                  <th style="text-align: right; padding-right: 14px;">Cards</th>
-                </tr>
-              </thead>
-              <tbody id="importSelectorListTable">
-                <!-- Injected dynamically -->
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div class="import-selector-actions">
-          <button id="importSelectorLoadBtn" class="import-action-btn import-action-primary" type="button">Load Selected Decks</button>
-          <button id="importSelectorCancelBtn" class="import-action-btn" type="button">Cancel</button>
-        </div>
-      </div>
-    </section>
+<!-- The old standalone "Select Decks to Import" modal is gone: a multi-deck file
+     now lists its decks inline in the Import panel's review step, so choosing
+     what to import never hops between two panels. -->
 
     <div id="setupOverlay" class="login-overlay" hidden>
       <div class="login-card">
@@ -980,6 +1024,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260727-02"></script>
+    <script src="app.js?v=20260728-07"></script>
   </body>
 </html>

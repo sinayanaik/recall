@@ -1113,32 +1113,6 @@ button:disabled {
   font-weight: 900;
 }
 
-.import-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin-top: 1rem;
-}
-
-.import-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: var(--panel-corner-radius);
-  padding: 1rem;
-}
-
-.import-group-title {
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin: 0 0 4px 0;
-}
-
 .import-action-btn {
   display: flex;
   align-items: center;
@@ -1208,85 +1182,333 @@ button:disabled {
   justify-content: center;
 }
 
-.import-file-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--input-height);
-  gap: 8px;
-  align-items: center;
-}
+/* ── Import flow ───────────────────────────────────────────
+   Two numbered steps inside the Import panel: pick a source, then review what
+   Recall found and choose whether it becomes notes, cards, or both. */
 
-.paste-source-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--input-height);
-  height: var(--input-height);
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--toolbar-button-radius);
-  background: var(--panel);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 1.05rem;
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent),
-    0 1px 2px rgba(0, 0, 0, 0.22);
-  transition: all 0.15s ease;
-}
-
-.paste-source-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  transform: translateY(-1px);
-}
-
-.paste-editor-panel[hidden] {
-  display: none;
-}
-
-.paste-editor-panel {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
-  padding-top: 12px;
+.import-step {
+  margin-top: 14px;
+  padding-top: 14px;
   border-top: 1px solid var(--line);
 }
 
-.paste-editor-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+.import-step[hidden] {
+  display: none;
 }
 
-.paste-editor-head h3 {
-  margin: 0 0 4px;
+.import-step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.import-step-num {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 0.74rem;
+  font-weight: 900;
+}
+
+.import-step-head h3 {
+  margin: 0;
   font-size: 0.98rem;
   letter-spacing: 0;
 }
 
-.paste-editor-head p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.86rem;
-  line-height: 1.35;
-}
-
-.paste-editor-body {
+.import-source-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.85fr);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.import-source-row .import-action-btn.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.import-source-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.import-source-hint code {
+  font-size: 0.94em;
+}
+
+.import-source-drawer {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.import-source-drawer[hidden] {
+  display: none;
+}
+
+.import-source-drawer textarea {
+  height: min(34vh, 280px);
+}
+
+.import-source-drawer-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.import-source-drawer-actions .import-action-btn {
+  width: auto;
+  min-width: 120px;
+}
+
+/* Detection summary — what Recall thinks the staged source is. */
+
+.import-detect {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--panel-2);
+}
+
+.import-detect-source {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-detect-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.import-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.import-chip.is-ok {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--accent-strong);
+}
+
+/* "could be cards" is a judgement call, not a failure — dashed and in body
+   text, so it reads as something to check rather than something broken. */
+.import-chip.is-warn {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--text) 40%, var(--line));
+  color: var(--text);
+}
+
+/* "Import as" / "Add to" segmented choices. */
+
+.import-choice {
+  margin-top: 12px;
+}
+
+.import-choice-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.import-choice-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.import-choice-btn {
+  flex: 1 1 150px;
+  min-height: var(--input-height);
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--button-font-size);
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.import-choice-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.import-choice-btn.is-active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.import-choice-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.import-choice-hint {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+/* Destination folder for new decks, with its own change control. */
+
+.import-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--panel-2);
+}
+
+.import-folder-row[hidden] {
+  display: none;
+}
+
+.import-folder-icon {
+  flex: none;
+  font-size: 0.95rem;
+}
+
+.import-folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-folder-change {
+  flex: none;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.import-folder-change:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Deck picker for files that really do hold several decks. */
+
+.import-decklist {
+  margin-top: 12px;
+}
+
+.import-decklist[hidden] {
+  display: none;
+}
+
+.import-decklist-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   gap: 12px;
-  align-items: stretch;
 }
 
-.paste-editor-panel textarea {
-  height: min(42vh, 340px);
+.import-decklist-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
 }
 
-.paste-preview-panel {
+.import-decklist-all input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.import-decklist-rows {
+  max-height: 190px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+}
+
+.import-decklist-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 11px;
+  cursor: pointer;
+}
+
+.import-decklist-row + .import-decklist-row {
+  border-top: 1px solid var(--line);
+}
+
+.import-decklist-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.import-decklist-title {
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-decklist-meta,
+.import-decklist-count {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* Preview of exactly what the current choices will produce. */
+
+.import-preview {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  height: min(42vh, 340px);
+  height: min(30vh, 250px);
+  margin-top: 12px;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1294,7 +1516,7 @@ button:disabled {
   background: var(--card);
 }
 
-.paste-preview-head {
+.import-preview-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1303,46 +1525,63 @@ button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
-.paste-preview-head h4 {
+.import-preview-head h4 {
   margin: 0;
   font-size: 0.86rem;
   letter-spacing: 0;
 }
 
-.paste-preview-head span {
+.import-preview-head span {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
   white-space: nowrap;
 }
 
-.paste-preview-list {
+.import-preview-body {
   min-height: 0;
   overflow: auto;
   padding: 10px;
 }
 
-.paste-preview-empty {
-  display: grid;
-  min-height: 100%;
-  place-items: center;
+.import-preview-empty {
+  padding: 14px 4px;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   text-align: center;
 }
 
-.paste-preview-card {
+.import-preview-note {
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  border: 1px dashed var(--line);
+  border-radius: var(--input-radius);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.import-preview-notes {
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.import-preview-notes > :first-child {
+  margin-top: 0;
+}
+
+.import-preview-card {
   border: 1px solid var(--line);
   border-radius: var(--input-radius);
   background: var(--panel);
   overflow: hidden;
 }
 
-.paste-preview-card + .paste-preview-card {
+.import-preview-card + .import-preview-card {
   margin-top: 10px;
 }
 
-.paste-preview-card-head {
+.import-preview-card-head {
   padding: 7px 10px;
   border-bottom: 1px solid var(--line);
   color: var(--muted);
@@ -1351,16 +1590,16 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.paste-preview-card-side {
+.import-preview-card-side {
   padding: 10px;
   min-width: 0;
 }
 
-.paste-preview-card-side + .paste-preview-card-side {
+.import-preview-card-side + .import-preview-card-side {
   border-top: 1px solid var(--line);
 }
 
-.paste-preview-card-label {
+.import-preview-card-label {
   display: block;
   margin-bottom: 6px;
   color: var(--muted);
@@ -1369,27 +1608,29 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.paste-preview-card .rendered {
+.import-preview-card .rendered {
   font-size: 0.9rem;
   line-height: 1.45;
 }
 
-.paste-preview-card .rendered > :first-child {
+.import-preview-card .rendered > :first-child {
   margin-top: 0;
 }
 
-.paste-preview-card .rendered > :last-child {
+.import-preview-card .rendered > :last-child {
   margin-bottom: 0;
 }
 
-.paste-editor-actions {
+.import-review-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  margin-top: 12px;
 }
 
-.paste-editor-actions .import-action-btn {
-  width: min(260px, 100%);
+.import-review-actions .import-action-btn {
+  width: auto;
+  min-width: 150px;
 }
 
 .import-action-primary {
@@ -1403,16 +1644,29 @@ button:disabled {
   color: var(--accent-contrast);
 }
 
+.import-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
 @media (max-width: 780px) {
-  .paste-editor-body {
-    grid-template-columns: 1fr;
+  .import-decklist-row {
+    grid-template-columns: 20px minmax(0, 1fr);
   }
 
-  .paste-editor-actions {
+  .import-decklist-meta,
+  .import-decklist-count {
+    grid-column: 2;
+  }
+
+  .import-review-actions,
+  .import-source-drawer-actions {
     flex-direction: column;
   }
 
-  .paste-editor-actions .import-action-btn {
+  .import-review-actions .import-action-btn,
+  .import-source-drawer-actions .import-action-btn {
     width: 100%;
   }
 }
@@ -5277,7 +5531,11 @@ svg.nomnoml-light-svg [fill="none"] {
 
 .import-panel {
   position: fixed;
-  z-index: 50;
+  /* Above the My Decks library (z-index 100). Import is very often launched
+     FROM the library, and at 50 the whole review step rendered behind it — the
+     panel was open and working, just invisible, so picking files looked like it
+     did nothing. Anything that opens this panel must be able to be seen. */
+  z-index: 150;
   inset: 0;
   display: none;
   align-items: center;
@@ -9231,117 +9489,6 @@ textarea {
   color: color-mix(in srgb, var(--review) 88%, var(--text)) !important;
 }
 
-.import-selector-panel {
-  position: fixed;
-  z-index: 105;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.7);
-  padding: 18px;
-  touch-action: none;
-}
-
-.import-selector-shell {
-  display: grid;
-  width: min(var(--modal-width), 100%);
-  height: min(72vh, 620px);
-  height: min(72dvh, 620px);
-  max-height: min(72vh, 620px);
-  max-height: min(72dvh, 620px);
-  min-width: 0;
-  min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  border: 1px solid var(--line);
-  border-radius: var(--modal-radius);
-  background: var(--panel);
-  color: var(--text);
-  padding: var(--modal-padding);
-  box-shadow: var(--shadow);
-  touch-action: auto;
-}
-
-.import-selector-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
-}
-
-.import-selector-head h1 {
-  margin: 0;
-  font-size: 1.25rem;
-  letter-spacing: 0;
-}
-
-.import-selector-head p {
-  margin: 3px 0 0;
-  color: var(--muted);
-  font-size: 0.9rem;
-  line-height: 1.4;
-}
-
-.import-selector-table-wrap {
-  border: 1px solid var(--line);
-  border-radius: var(--input-radius);
-  background: var(--card);
-  overflow: auto;
-  min-height: 0;
-  margin-bottom: 14px;
-}
-
-.import-selector-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  text-align: left;
-  font-size: 0.92rem;
-}
-
-.import-selector-table th,
-.import-selector-table td {
-  border-bottom: 1px solid var(--line);
-  padding: 12px 10px;
-  vertical-align: middle;
-}
-
-.import-selector-table th {
-  color: var(--text);
-  font-weight: 900;
-  background: var(--card);
-}
-
-.import-selector-table th:nth-child(1),
-.import-selector-table td:nth-child(1) {
-  width: 12%;
-  text-align: center;
-}
-.import-selector-table th:nth-child(2),
-.import-selector-table td:nth-child(2) {
-  width: 48%;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.import-selector-table th:nth-child(3),
-.import-selector-table td:nth-child(3) {
-  width: 25%;
-}
-.import-selector-table th:nth-child(4),
-.import-selector-table td:nth-child(4) {
-  width: 15%;
-  text-align: right;
-}
-
-.import-selector-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
 /* ── Login overlay ─────────────────────────────────────── */
 
 .login-overlay {
@@ -12200,4 +12347,15 @@ kbd {
 
   .qn-card { padding: 10px 11px; }
   .qn-card-time { font-size: 0.64rem; }
+}
+
+/* ── While app.js is still parsing ─────────────────────────────────────────
+   The toolbar paints long before its listeners exist (see the boot-click queue
+   in index.html). A progress cursor is the honest signal that a press has been
+   noticed but not yet acted on — the click itself is replayed once the app is
+   live, so nothing is lost either way. */
+html.app-booting .tool-button,
+html.app-booting .deck-empty-action,
+html.app-booting .icon-button {
+  cursor: progress;
 }
