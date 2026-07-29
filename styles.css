@@ -7839,6 +7839,18 @@ textarea {
     display: none !important;
   }
 
+  /* A copy button on paper is a button nobody can press. Every code block now
+     carries one (the language badge doubles as it), so leaving them in would
+     stamp a pill over the first line of every printed block — and the padding
+     that reserved room for it goes back too. */
+  .code-copy-btn {
+    display: none !important;
+  }
+
+  .rendered pre.has-code-language code[class*="language-"] {
+    padding-top: 6px;
+  }
+
   .cornell-print-document {
     width: auto;
     margin: 0;

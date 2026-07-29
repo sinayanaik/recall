@@ -2434,6 +2434,10 @@ const CODE_LANGUAGE_SIGNATURES = [
     [/\bprint\s*\(/, 3],
     [/\b(?:lambda|yield|elif|__init__|__name__)\b/, 3],
     [/^\s*@\w+(?:\.\w+)*(?:\([^)]*\))?\s*$/m, 2],
+    // Notebook/data-science lines are half of what gets pasted into notes and
+    // carry none of the keywords above.
+    [/\b(?:np|pd|plt|df|sns|torch|tf|nn|sk)\.\w+/, 3],
+    [/\.(?:fit|predict|transform|head|describe|dropna|groupby)\s*\(/, 3],
     [/;\s*$/m, -2],
     [/^\s*[\w)\]"']\s*;\s*$/m, -3],
     [/\b(?:const|let|var|function)\s+\w+\s*=/, -3],
@@ -2482,6 +2486,7 @@ const CODE_LANGUAGE_SIGNATURES = [
   ]],
   ["cpp", [
     [/#include\s*<(?:iostream|vector|string|map|algorithm|memory|cstdio)>/, 6],
+    [/#include\s*<bits\/stdc\+\+\.h>/, 6],
     [/\bstd::\w+/, 5],
     [/\b(?:cout|cin|endl)\b/, 4],
     [/\btemplate\s*</, 4],
@@ -2490,11 +2495,13 @@ const CODE_LANGUAGE_SIGNATURES = [
     [/\b(?:public|private|protected)\s*:/, 3]
   ]],
   ["c", [
-    [/#include\s*<\w+\.h>/, 6],
+    [/#include\s*<[\w./+-]+>/, 5],
     [/\bprintf\s*\(/, 4],
     [/\b(?:int|void|char|float|double)\s+\w+\s*\([^)]*\)\s*\{/, 3],
     [/\bmalloc\s*\(|\bfree\s*\(/, 3],
     [/\bstruct\s+\w+\s*\{/, 2],
+    [/^\s*(?:unsigned\s+|signed\s+|const\s+)?(?:int|char|float|double|long|short|size_t|void)\s+\*?\w+\s*(?:=|;|\[)/m, 3],
+    [/\bfor\s*\(\s*(?:int|size_t|unsigned|long)\s+\w+\s*=/, 4],
     [/\bstd::/, -5],
     [/\bclass\s+\w+/, -4]
   ]],
@@ -2574,8 +2581,8 @@ const CODE_LANGUAGE_SIGNATURES = [
   ]],
   ["markup", [
     [/<!DOCTYPE\s+html>/i, 6],
-    [/<(?:html|head|body|div|span|p|a|ul|li|table|section|header|footer|script|style|img|input|button)\b[^>]*>/i, 4],
-    [/<\/(?:div|span|p|a|li|body|html|section|table)>/i, 4],
+    [/<(?:html|head|body|div|span|p|a|h[1-6]|ul|ol|li|table|tr|td|th|form|label|select|option|textarea|nav|main|article|aside|section|header|footer|script|style|img|input|button|br|hr|meta|link)\b[^>]*>/i, 4],
+    [/<\/(?:div|span|p|a|h[1-6]|li|ul|ol|body|html|section|table|tr|td|th|form|nav|main|article|header|footer|button|label)>/i, 4],
     [/<\w+[^>]*\/>/, 2]
   ]],
   ["xml", [
@@ -2601,12 +2608,24 @@ const CODE_LANGUAGE_SIGNATURES = [
   ]]
 ];
 
-const INFER_SCORE_FLOOR = 6; // below this, nothing looked like code
-const INFER_SCORE_MARGIN = 2; // and the winner must beat the runner-up by this
+// Two tiers, because most fences in real notes are three lines long. A
+// confident win needs a high score AND daylight over the runner-up; failing
+// that, any single real signal still beats leaving the block blank, as long as
+// nothing else scored as well (`console.log(…)` is JavaScript; `int x = 10;`
+// on its own is C-family and could be four different languages, so it isn't).
+const INFER_SCORE_FLOOR = 6; // confident: this is what the block is
+const INFER_SCORE_MARGIN = 2; // …and the winner must beat the runner-up by this
+const INFER_WEAK_FLOOR = 3; // plausible: one signal, uncontested
+
+// Blocks nothing matches still get a language, so every block renders and
+// copies the same way and no selection is ever fenced bare. Prism defines
+// `text` as an empty grammar, so it highlights to exactly what you typed
+// rather than 404ing the autoloader on a language that doesn't exist.
+const GENERIC_CODE_LANGUAGE = "text";
 
 const INFER_SAMPLE_CHARS = 2000; // enough signal; keeps long blocks cheap
 
-// Guessed language for an undeclared block, or "" when nothing wins clearly.
+// Guessed language for an undeclared block, or "" when nothing scored at all.
 // Scores the block as a whole (not the selection), so every selection out of a
 // block — and the block's own badge — agree on one answer.
 function inferCodeLanguage(source) {
@@ -2629,8 +2648,16 @@ function inferCodeLanguage(source) {
       runnerUp = score;
     }
   }
-  if (bestScore < INFER_SCORE_FLOOR || bestScore - runnerUp < INFER_SCORE_MARGIN) return "";
-  return best;
+  if (bestScore >= INFER_SCORE_FLOOR && bestScore - runnerUp >= INFER_SCORE_MARGIN) return best;
+  if (bestScore >= INFER_WEAK_FLOOR && bestScore > runnerUp) return best;
+  return "";
+}
+
+// The language to render, badge and fence a block with — the guess when there
+// is one, the generic fallback when there isn't. Every code block gets an
+// answer here; nothing is left blank.
+function codeLanguageOrGeneric(language) {
+  return language || GENERIC_CODE_LANGUAGE;
 }
 
 if (window.Prism?.plugins?.autoloader) {
@@ -8758,7 +8785,9 @@ function enhanceCodeBlocks(roots) {
       if (code.dataset.inferredLanguage === undefined) {
         code.dataset.inferredLanguage = inferCodeLanguage(code.textContent);
       }
-      inferred = code.dataset.inferredLanguage;
+      // Falls back to `text` when the guess came up empty — a block with no
+      // language at all is what left some blocks flat and badge-less.
+      inferred = codeLanguageOrGeneric(code.dataset.inferredLanguage);
     }
     const declaredLanguage = declared || inferred;
     const normalizedLanguage = normalizeCodeLanguage(declaredLanguage);
@@ -11094,7 +11123,7 @@ function renderedCodeBlockLanguage(pre) {
   const langMatch = code.className.match(/language-([\w+-]*)/);
   if (langMatch && langMatch[1]) return langMatch[1];
   const badge = (pre.dataset.language || "").toLowerCase().replace(/\s+/g, "");
-  return badge || normalizeCodeLanguage(inferCodeLanguage(code.textContent));
+  return badge || codeLanguageOrGeneric(normalizeCodeLanguage(inferCodeLanguage(code.textContent)));
 }
 
 // If the selection lands inside a rendered code block, rebuild the fence
@@ -11191,7 +11220,7 @@ function findRawCodeFence(value, start, end) {
     const bodyEnd = bodyStart + match[3].length;
     if (start >= bodyStart && end <= bodyEnd) {
       const declared = match[2].trim();
-      return { language: declared || inferCodeLanguage(match[3]) };
+      return { language: declared || codeLanguageOrGeneric(inferCodeLanguage(match[3])) };
     }
   }
   return null;
@@ -11203,8 +11232,7 @@ function findRawCodeFence(value, start, end) {
 function withInferredFenceLanguages(markdown) {
   return String(markdown).replace(RAW_FENCE_RE, (whole, ticks, info, body, close) => {
     if (info.trim()) return whole;
-    const language = inferCodeLanguage(body);
-    if (!language) return whole;
+    const language = codeLanguageOrGeneric(inferCodeLanguage(body));
     const indent = whole.slice(0, whole.indexOf(ticks));
     return `${indent}${ticks}${language}\n${body}${close}`;
   });
