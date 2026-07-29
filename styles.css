@@ -2559,6 +2559,13 @@ button:disabled {
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
+/* Guessed language (the fence declared none — see inferCodeLanguage). Dashed
+   edge so a badge the app worked out is never mistaken for one the note
+   stated. */
+.rendered pre[data-language-inferred="1"] .code-copy-btn {
+  border-style: dashed;
+}
+
 .rendered pre .code-copy-btn:hover {
   background: rgba(255, 255, 255, 0.13);
   color: #dbe7e4;

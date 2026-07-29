@@ -2412,6 +2412,227 @@ const codeLanguageAliases = {
   yml: "yaml"
 };
 
+// ── Guessing a language for undeclared fences ──────────────────────────────
+// Plenty of code arrives in notes as a bare ``` fence with no language —
+// pasted from chat, from a PDF, typed in a hurry. Those blocks render as flat
+// grey text (no highlighting, no badge), and — the reason this matters most —
+// a selection lifted out of one can only ever be re-fenced as a bare ```.
+// Each entry scores a body against weighted signals; the winner needs both an
+// absolute score (INFER_SCORE_FLOOR) and a clear margin over the runner-up, so
+// prose, logs and pseudocode stay unlabelled rather than being mislabelled.
+// Negative weights are counter-evidence (semicolon line endings aren't
+// Python; `: string` isn't plain JavaScript).
+const CODE_LANGUAGE_SIGNATURES = [
+  ["python", [
+    [/^\s*def\s+\w+\s*\([^)]*\)\s*(?:->[^:]*)?:/m, 5],
+    [/^\s*(?:async\s+)?def\s/m, 3],
+    [/^\s*class\s+\w+\s*(?:\([^)]*\))?\s*:\s*$/m, 4],
+    [/^\s*(?:from\s+[\w.]+\s+)?import\s+[\w.*]/m, 3],
+    [/^\s*(?:if|elif|else|for|while|try|except|finally|with)\b[^\n{]*:\s*$/m, 3],
+    [/\bself\./, 4],
+    [/\b(?:True|False|None)\b/, 2],
+    [/\bprint\s*\(/, 3],
+    [/\b(?:lambda|yield|elif|__init__|__name__)\b/, 3],
+    [/^\s*@\w+(?:\.\w+)*(?:\([^)]*\))?\s*$/m, 2],
+    [/;\s*$/m, -2],
+    [/^\s*[\w)\]"']\s*;\s*$/m, -3],
+    [/\b(?:const|let|var|function)\s+\w+\s*=/, -3],
+    [/\{\s*$/m, -1]
+  ]],
+  ["typescript", [
+    [/\b(?:interface|type)\s+\w+\s*(?:<[^>]*>)?\s*[={]/, 5],
+    [/:\s*(?:string|number|boolean|any|void|unknown|never)\b/, 4],
+    [/\b(?:public|private|protected|readonly)\s+\w+\s*[:(]/, 4],
+    [/\bimplements\s+\w/, 3],
+    [/\benum\s+\w+\s*\{/, 4],
+    [/\bas\s+(?:const|string|number|unknown)\b/, 3],
+    [/\b(?:const|let)\s+\w+\s*:\s*\w/, 4],
+    [/\bfunction\s+\w+\s*\([^)]*\)\s*:\s*\w/, 4]
+  ]],
+  ["javascript", [
+    [/\b(?:const|let|var)\s+[\w{[$]/, 3],
+    [/\bfunction\s*\w*\s*\(/, 3],
+    [/=>\s*[{(\w'"`]/, 3],
+    [/\b(?:console|document|window)\.\w+/, 3],
+    [/\b(?:require|module\.exports|export\s+(?:default|const|function)|import\s+.*\bfrom\b)/, 3],
+    [/\b(?:async|await)\b/, 2],
+    [/===|!==|\?\?|\?\./, 2],
+    [/\b(?:null|undefined|true|false)\b/, 1],
+    [/;\s*$/m, 1],
+    [/:\s*(?:string|number|boolean)\b/, -3],
+    [/\binterface\s+\w+\s*\{/, -3]
+  ]],
+  ["java", [
+    [/\b(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?[\w<>\[\]]+\s+\w+\s*\(/, 5],
+    [/\bSystem\.out\.print/, 6],
+    [/\bpublic\s+(?:final\s+)?class\s+\w+/, 4],
+    [/\bimport\s+(?:java|javax)\./, 5],
+    [/\bnew\s+[A-Z]\w*\s*(?:<[^>]*>)?\s*\(/, 2],
+    [/\bvoid\s+main\s*\(/, 3],
+    [/@Override\b/, 3]
+  ]],
+  ["csharp", [
+    [/\busing\s+System(?:\.\w+)*\s*;/, 5],
+    [/\bnamespace\s+[\w.]+/, 4],
+    [/\bConsole\.(?:Write|Read)/, 5],
+    [/\bpublic\s+(?:static\s+)?(?:async\s+)?[\w<>\[\]]+\s+\w+\s*\(/, 2],
+    [/\bvar\s+\w+\s*=\s*new\b/, 2],
+    [/\b(?:string|int|bool)\s+\w+\s*=/, 1],
+    [/\{\s*get;\s*set;\s*\}/, 5]
+  ]],
+  ["cpp", [
+    [/#include\s*<(?:iostream|vector|string|map|algorithm|memory|cstdio)>/, 6],
+    [/\bstd::\w+/, 5],
+    [/\b(?:cout|cin|endl)\b/, 4],
+    [/\btemplate\s*</, 4],
+    [/\bnamespace\s+\w+\s*\{/, 3],
+    [/\bnullptr\b/, 3],
+    [/\b(?:public|private|protected)\s*:/, 3]
+  ]],
+  ["c", [
+    [/#include\s*<\w+\.h>/, 6],
+    [/\bprintf\s*\(/, 4],
+    [/\b(?:int|void|char|float|double)\s+\w+\s*\([^)]*\)\s*\{/, 3],
+    [/\bmalloc\s*\(|\bfree\s*\(/, 3],
+    [/\bstruct\s+\w+\s*\{/, 2],
+    [/\bstd::/, -5],
+    [/\bclass\s+\w+/, -4]
+  ]],
+  ["go", [
+    [/\bfunc\s+(?:\([^)]*\)\s*)?\w+\s*\(/, 5],
+    [/\bpackage\s+\w+\s*$/m, 4],
+    [/\bfmt\.\w+/, 5],
+    [/:=/, 4],
+    [/\bimport\s+\(/, 3],
+    [/\b(?:defer|go|chan)\b/, 3]
+  ]],
+  ["rust", [
+    [/\bfn\s+\w+\s*(?:<[^>]*>)?\s*\(/, 5],
+    [/\blet\s+mut\b/, 5],
+    [/\b(?:println!|vec!|format!|panic!)/, 6],
+    [/\bimpl\s+\w/, 4],
+    [/->\s*(?:Result|Option|Vec|String|&str|[iu](?:8|16|32|64|size))\b/, 4],
+    [/\buse\s+(?:std|crate)::/, 4],
+    [/&(?:mut\s+)?self\b/, 3]
+  ]],
+  ["ruby", [
+    [/^\s*def\s+\w+[!?]?(?:\([^)]*\))?\s*$/m, 4],
+    [/^\s*end\s*$/m, 4],
+    [/\bputs\s+/, 4],
+    [/\brequire\s+['"]/, 3],
+    [/\b(?:do\s*\|[^|]*\||nil|elsif)\b/, 3],
+    [/@\w+\s*=/, 2],
+    [/\battr_(?:accessor|reader|writer)\b/, 5]
+  ]],
+  ["php", [
+    [/<\?php/, 6],
+    [/\$\w+\s*=/, 3],
+    [/\becho\s+/, 2],
+    [/\bfunction\s+\w+\s*\([^)]*\)\s*\{/, 1],
+    [/->\w+\s*\(/, 1],
+    [/\bpublic\s+function\b/, 4]
+  ]],
+  ["sql", [
+    [/\bSELECT\b[\s\S]*\bFROM\b/i, 6],
+    [/\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b/i, 5],
+    [/\bCREATE\s+(?:TABLE|INDEX|VIEW|DATABASE)\b/i, 6],
+    [/\bALTER\s+TABLE\b/i, 6],
+    [/\b(?:INNER|LEFT|RIGHT|FULL)\s+JOIN\b/i, 4],
+    [/\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING)\b/i, 2],
+    // Keeps prose that happens to say "create table of contents" out of SQL.
+    [/\b(?:the|this|these|those|your|our|which|because|when)\b/i, -4]
+  ]],
+  ["bash", [
+    [/^#!.*\b(?:ba|z|k)?sh\b/, 6],
+    [/^\s*\$\s+\w/m, 3],
+    [/\b(?:sudo|apt-get|yum|brew|chmod|chown|mkdir|grep|sed|awk|curl|wget|tar|ssh|scp)\b/, 3],
+    [/\b(?:npm|yarn|pnpm|pip|pip3|git|docker|kubectl|cargo|go|make)\s+\w[\w-]*/, 3],
+    [/\becho\s+["'$]/, 2],
+    [/\$\{?\w+\}?/, 1],
+    [/^\s*(?:export|source)\s+\w/m, 3],
+    [/\|\s*(?:grep|sed|awk|xargs|head|tail|sort|uniq|jq)\b/, 3],
+    [/^\s*(?:npm|npx|yarn|pnpm|pip3?|git|docker|kubectl|cargo|cd|ls|cat|mv|cp|rm|touch|mkdir|export|python3?|node|brew|apt|apt-get)\s+\S/m, 4],
+    [/\s-{1,2}[A-Za-z][\w-]*(?:\s|$)/, 2],
+    [/^\s*(?:if|for|while)\b.*;\s*(?:then|do)\s*$/m, 4],
+    [/^\s*fi\s*$|^\s*done\s*$/m, 3]
+  ]],
+  ["json", [
+    [/^\s*[{[][\s\S]*[}\]]\s*$/, 3],
+    [/"[\w.-]+"\s*:/, 4],
+    [/:\s*(?:"[^"]*"|\d+(?:\.\d+)?|true|false|null|[{[])\s*,?\s*$/m, 2],
+    [/^\s*(?:\/\/|#)/m, -4],
+    [/[;=]\s*$/m, -4],
+    [/\b(?:function|def|class|const|let|var|return)\b/, -4]
+  ]],
+  ["yaml", [
+    [/^---\s*$/m, 4],
+    [/^\s*[\w.-]+:\s*(?:$|[^:\n]*$)/m, 2],
+    [/^\s*-\s+[\w"'{[]/m, 2],
+    [/^\s*#\s/m, 1],
+    [/[{};]\s*$/m, -3],
+    [/^\s*"[\w.-]+"\s*:/m, -2]
+  ]],
+  ["markup", [
+    [/<!DOCTYPE\s+html>/i, 6],
+    [/<(?:html|head|body|div|span|p|a|ul|li|table|section|header|footer|script|style|img|input|button)\b[^>]*>/i, 4],
+    [/<\/(?:div|span|p|a|li|body|html|section|table)>/i, 4],
+    [/<\w+[^>]*\/>/, 2]
+  ]],
+  ["xml", [
+    [/<\?xml\b/, 6],
+    [/<\/[\w:-]+>/, 1],
+    [/xmlns(?::\w+)?\s*=/, 4]
+  ]],
+  ["css", [
+    [/^[^{}]*\{[^{}]*:[^{}]*;[^{}]*\}/m, 4],
+    [/\b(?:color|background|margin|padding|font-size|display|position|flex|grid-template)\s*:/, 4],
+    [/^\s*[.#]?[\w-]+(?:[.#:][\w-]+)*\s*(?:,\s*)?\{\s*$/m, 3],
+    [/@(?:media|import|keyframes|font-face)\b/, 4],
+    [/--[\w-]+\s*:/, 3],
+    [/\b(?:function|return|if)\s*\(/, -4]
+  ]],
+  ["dockerfile", [
+    [/^\s*FROM\s+\S+/m, 5],
+    [/^\s*(?:RUN|CMD|COPY|ADD|ENTRYPOINT|WORKDIR|EXPOSE|ENV|ARG)\s+\S/m, 3]
+  ]],
+  ["diff", [
+    [/^(?:diff --git|@@ -\d)/m, 8],
+    [/^[+-]{3}\s+\S/m, 3]
+  ]]
+];
+
+const INFER_SCORE_FLOOR = 6; // below this, nothing looked like code
+const INFER_SCORE_MARGIN = 2; // and the winner must beat the runner-up by this
+
+const INFER_SAMPLE_CHARS = 2000; // enough signal; keeps long blocks cheap
+
+// Guessed language for an undeclared block, or "" when nothing wins clearly.
+// Scores the block as a whole (not the selection), so every selection out of a
+// block — and the block's own badge — agree on one answer.
+function inferCodeLanguage(source) {
+  const text = String(source || "");
+  if (!text.trim()) return "";
+  const sample = text.length > INFER_SAMPLE_CHARS ? text.slice(0, INFER_SAMPLE_CHARS) : text;
+  let best = "";
+  let bestScore = 0;
+  let runnerUp = 0;
+  for (const [language, signals] of CODE_LANGUAGE_SIGNATURES) {
+    let score = 0;
+    for (const [pattern, weight] of signals) {
+      if (pattern.test(sample)) score += weight;
+    }
+    if (score > bestScore) {
+      runnerUp = bestScore;
+      bestScore = score;
+      best = language;
+    } else if (score > runnerUp) {
+      runnerUp = score;
+    }
+  }
+  if (bestScore < INFER_SCORE_FLOOR || bestScore - runnerUp < INFER_SCORE_MARGIN) return "";
+  return best;
+}
+
 if (window.Prism?.plugins?.autoloader) {
   Prism.plugins.autoloader.languages_path = "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/";
 }
@@ -8524,14 +8745,36 @@ function enhanceCodeBlocks(roots) {
 
   scopedQueryAll(roots, "pre code").forEach((code) => {
     const pre = code.closest("pre");
-    const declaredLanguage = declaredCodeLanguage(code);
+    const declared = declaredCodeLanguage(code);
+    // No ```lang on the fence? Guess one from the body (see
+    // inferCodeLanguage) so the block still highlights, still gets a badge,
+    // and — via code.dataset.codeLanguage below — so anything selected out of
+    // it can be re-fenced with a real language. The guess is cached on the
+    // element: enhancement passes run again on re-render, and the answer can't
+    // change for a body that hasn't changed. Rendering never rewrites the
+    // user's markdown; the fence in the source stays exactly as they wrote it.
+    let inferred = "";
+    if (!declared) {
+      if (code.dataset.inferredLanguage === undefined) {
+        code.dataset.inferredLanguage = inferCodeLanguage(code.textContent);
+      }
+      inferred = code.dataset.inferredLanguage;
+    }
+    const declaredLanguage = declared || inferred;
     const normalizedLanguage = normalizeCodeLanguage(declaredLanguage);
 
     pre?.classList.add("code-block");
+    // Single source of truth for "what language is this block", read back by
+    // the selection→fence path on both the rendered and raw sides.
+    if (normalizedLanguage) code.dataset.codeLanguage = normalizedLanguage;
 
     if (declaredLanguage && pre) {
       pre.classList.add("has-code-language");
       pre.dataset.language = codeLanguageLabel(declaredLanguage);
+      // Marks the badge as a guess rather than something the note declared —
+      // used for the tooltip, and available to CSS if it should ever look
+      // different.
+      if (inferred) pre.dataset.languageInferred = "1";
 
       // Inject a real button for the language badge so it can be clicked to copy.
       // Guard against double-injection when the block is re-rendered.
@@ -8541,7 +8784,7 @@ function enhanceCodeBlocks(roots) {
         btn.type = "button";
         btn.className = "code-copy-btn";
         btn.textContent = label;
-        btn.title = "Copy code";
+        btn.title = inferred ? `Copy code · ${label} detected` : "Copy code";
         btn.addEventListener("click", async (event) => {
           event.stopPropagation();
           try {
@@ -8560,10 +8803,15 @@ function enhanceCodeBlocks(roots) {
       }
     }
 
-    if (!window.Prism || !normalizedLanguage || code.dataset.highlighted === "yes") return;
+    if (!normalizedLanguage) return;
 
+    // Set the class even when Prism isn't around: it's what Turndown reads to
+    // put the language on the fence when a selection spanning the whole block
+    // goes through the HTML→Markdown path.
     code.classList.add(`language-${normalizedLanguage}`);
     pre?.classList.add(`language-${normalizedLanguage}`);
+
+    if (!window.Prism || code.dataset.highlighted === "yes") return;
     Prism.highlightElement(code);
   });
 }
@@ -10043,6 +10291,27 @@ function isNotesEditing() {
   return Boolean(el.notesEdit && !el.notesEdit.hidden);
 }
 
+// The notes markdown the rendered view is currently laid out for. #notesView is
+// its own scroll port and is never re-created — it's reused for every deck — so
+// its scrollTop survives a content swap. Opening a DIFFERENT note therefore
+// used to land wherever you happened to be reading in the previous one, tens of
+// screens down a document you've never seen. Comparing the source (rather than
+// a deck id) means every route in — web deck, saved deck, import, restore —
+// gets the same answer without each having to remember to ask.
+let notesScrolledSource = null;
+
+// Every path that repaints the rendered notes goes through here, so the "is
+// this a different note?" bookkeeping can't drift out of step with what's on
+// screen. Re-rendering the SAME note (an edit commit, a cloze toggle, an image
+// finishing its upload) deliberately leaves the scroll alone — you get put back
+// where you were reading.
+function renderNotesView() {
+  if (!el.notesView) return Promise.resolve();
+  notesScrolledSource = state.notes;
+  return renderMarkdown(el.notesView, state.notes, true)
+    .then(() => resetClozeButton(el.clozeToggleNotesBtn));
+}
+
 // UI-only exit from notes edit mode. Deliberately does NOT copy the textarea
 // into state.notes — the textarea's input listener keeps state in sync while
 // typing, and deck-load paths call this after state.notes was already replaced.
@@ -10061,7 +10330,7 @@ function commitNotesEditIfActive() {
   if (!isNotesEditing()) return;
   state.notes = el.notesEdit.value;
   resetNotesEditingUI();
-  renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
+  renderNotesView();
   scheduleDeckAutosave();
   updateMeta();
 }
@@ -10238,7 +10507,12 @@ function setViewMode(mode) {
   // Switching views is navigation, not reading — start with the header visible.
   if (changed) resetChromeAutoHide();
   if (notesActive) {
-    renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
+    // A note you haven't been reading opens at its first line. Done BEFORE the
+    // render rather than after it: scheduleNoteJump() calls setViewMode() and
+    // then scrolls to the anchor a couple of frames later, and resetting on the
+    // render's promise would yank that jump back to the top.
+    if (el.notesView && state.notes !== notesScrolledSource) el.notesView.scrollTop = 0;
+    renderNotesView();
     if (!state.notes.trim()) enterNotesEditing();
   } else if (changed) {
     showCard();
@@ -10252,6 +10526,10 @@ el.editNotesBtn?.addEventListener("click", () => {
 
 el.notesEdit?.addEventListener("input", () => {
   state.notes = el.notesEdit.value;
+  // Typing edits the note you're already in — it doesn't open a new one. Kept
+  // in step here so leaving the editor for the cards and coming back doesn't
+  // read as "different note" and throw away your place.
+  notesScrolledSource = state.notes;
   if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
   scheduleDeckAutosave();
 });
@@ -10794,25 +11072,88 @@ function cleanedSelectionFragment(range) {
   return container;
 }
 
+// The <pre> a range boundary sits in, or null. Both the container and (for an
+// element container) the child the offset points at are considered: a triple-
+// click or a drag past the last line leaves a boundary ON the <pre>/wrapper
+// with an offset pointing INTO it, which .closest() alone would miss.
+function boundaryCodeBlock(container, offset) {
+  const start = container.nodeType === Node.TEXT_NODE
+    ? container.parentElement
+    : (container.childNodes[Math.min(offset, container.childNodes.length - 1)] || container);
+  const node = start?.nodeType === Node.TEXT_NODE ? start.parentElement : start;
+  return node?.closest?.("pre") || (container.nodeType === Node.ELEMENT_NODE ? container.closest?.("pre") : null) || null;
+}
+
+// The language a rendered code block should be fenced with: whatever
+// enhanceCodeBlocks settled on (declared ```lang, else its inference), with
+// the class/badge as fallbacks for blocks that never went through it.
+function renderedCodeBlockLanguage(pre) {
+  const code = pre?.querySelector("code");
+  if (!code) return "";
+  if (code.dataset.codeLanguage) return code.dataset.codeLanguage;
+  const langMatch = code.className.match(/language-([\w+-]*)/);
+  if (langMatch && langMatch[1]) return langMatch[1];
+  const badge = (pre.dataset.language || "").toLowerCase().replace(/\s+/g, "");
+  return badge || normalizeCodeLanguage(inferCodeLanguage(code.textContent));
+}
+
 // If the selection lands inside a rendered code block, rebuild the fence
-// directly from the raw selected text and the <code> element's language
-// class instead of going through the generic HTML→Markdown conversion —
-// Turndown's fenced-block rule only fires when the selection's boundary
-// crosses the whole <pre>; a selection that starts/ends *inside* the <code>
-// (the common case — dragging across a few lines of a longer block) falls
-// through to its inline-code rule instead, which collapses every newline to
-// a space and drops the language. Returns null for a non-code selection.
+// directly from the raw selected text and the block's language instead of
+// going through the generic HTML→Markdown conversion — Turndown's fenced-block
+// rule only fires when the selection's boundary crosses the whole <pre>; a
+// selection that starts/ends *inside* the <code> (the common case — dragging
+// across a few lines of a longer block) falls through to its inline-code rule
+// instead, which collapses every newline to a space and drops the language.
+//
+// Matching is done on the <pre>, not the <code>: dragging a hair past the
+// first/last line of a block parks that boundary on the <pre> (or the
+// scroll wrapper) rather than inside the <code>, and keying off the <code>
+// alone dropped exactly those selections back into the unfenced path. The
+// language comes from the PARENT block, so a partial selection is fenced the
+// same way the whole block is — including when the block's language was
+// inferred rather than declared.
 function notesSelectionCodeFence(range, target) {
-  const anchor = range.commonAncestorContainer;
-  const node = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
-  const codeEl = node?.closest?.("code");
-  if (!codeEl || !target?.view?.contains(codeEl)) return null;
+  const startPre = boundaryCodeBlock(range.startContainer, range.startOffset);
+  if (!startPre || !target?.view?.contains(startPre)) return null;
+  // Only when the whole selection is one block's code. A selection that runs
+  // from a code block into the prose after it (or across two blocks) has real
+  // structure to preserve and belongs on the HTML→Markdown path, which keeps
+  // the fence anyway because the <pre> is cloned intact.
+  const endPre = boundaryCodeBlock(range.endContainer, range.endOffset);
+  if (endPre !== startPre) return null;
   const raw = range.toString();
   if (!raw.trim()) return null;
-  const langMatch = codeEl.className.match(/language-([\w+-]*)/);
-  const lang = langMatch ? langMatch[1] : (codeEl.closest("pre")?.dataset.language || "").toLowerCase();
-  const trimmed = raw.replace(/^\n+|\n+$/g, "");
-  return `\`\`\`${lang}\n${trimmed}\n\`\`\``;
+  const lang = renderedCodeBlockLanguage(startPre);
+  // The copy button is the <pre>'s last child, so its label rides along at the
+  // END of range.toString() once the selection reaches the block's edge. Strip
+  // it there only — a bare replace would also eat a legitimate "SQL" sitting
+  // in a comment somewhere in the middle of the code.
+  const label = startPre.querySelector(".code-copy-btn")?.textContent || "";
+  const body = label && raw.endsWith(label) ? raw.slice(0, -label.length) : raw;
+  const trimmed = body.replace(/^\n+|\n+$/g, "");
+  if (!trimmed.trim()) return null;
+  return `\`\`\`${lang}\n${leadingCodeIndent(startPre, range)}${trimmed}\n\`\`\``;
+}
+
+// Whitespace between the start of the first selected line and the selection
+// itself. A drag almost never lands exactly on column 0, so without this the
+// first line of a card arrives dedented while every line under it keeps its
+// indentation — which in Python is not just ugly, it's a syntax error. Only
+// whitespace is reclaimed: if the selection starts mid-token, nothing is
+// added rather than inventing code the user didn't highlight.
+function leadingCodeIndent(pre, range) {
+  const code = pre.querySelector("code");
+  if (!code) return "";
+  const before = document.createRange();
+  try {
+    before.selectNodeContents(code);
+    before.setEnd(range.startContainer, range.startOffset);
+  } catch (_) {
+    return "";
+  }
+  const text = before.toString();
+  const prefix = text.slice(text.lastIndexOf("\n") + 1);
+  return /^[ \t]+$/.test(prefix) ? prefix : "";
 }
 
 // Serialize the notes selection back to MARKDOWN, so images, math, bold text
@@ -10824,22 +11165,49 @@ function notesSelectionMarkdown(range, target) {
   if (codeFence) return codeFence;
   const fragment = cleanedSelectionFragment(range);
   const markdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
-  return markdown || fragment.textContent.trim();
+  if (!markdown) return fragment.textContent.trim();
+  // Turndown puts the language on the fence from the <code> class, which
+  // enhanceCodeBlocks sets for guessed languages too — this catches whatever
+  // reached the markdown as a bare fence anyway.
+  return withInferredFenceLanguages(markdown);
 }
 
+// A fenced block in raw markdown: optional indent, 3+ backticks, an info
+// string, the body, and the closing run. `m` + `^` so a ``` inside a string
+// mid-line can't open a phantom fence.
+const RAW_FENCE_RE = /^[ \t]*(`{3,})([^\n`]*)\n([\s\S]*?)(\n[ \t]*\1`*[ \t]*)$/gm;
+
 // If [start, end) in the raw markdown sits inside an existing ```lang fence,
-// return its language and body bounds; else null. Used so selecting just the
-// inner lines of a code block (not the ``` marker lines themselves) still
-// keeps its fence + language when turned into a card.
+// return its language; else null. Used so selecting just the inner
+// lines of a code block (not the ``` marker lines themselves) still keeps its
+// fence + language when turned into a card. A fence that declares no language
+// contributes the same guess the rendered block shows, so a partial selection
+// out of an undeclared block still lands on the card as highlightable code.
 function findRawCodeFence(value, start, end) {
-  const fenceRe = /```([^\n`]*)\n([\s\S]*?)\n```/g;
+  RAW_FENCE_RE.lastIndex = 0;
   let match;
-  while ((match = fenceRe.exec(value))) {
-    const bodyStart = match.index + 3 + match[1].length + 1;
-    const bodyEnd = bodyStart + match[2].length;
-    if (start >= bodyStart && end <= bodyEnd) return { language: match[1].trim() };
+  while ((match = RAW_FENCE_RE.exec(value))) {
+    const bodyStart = match.index + match[0].indexOf("\n") + 1;
+    const bodyEnd = bodyStart + match[3].length;
+    if (start >= bodyStart && end <= bodyEnd) {
+      const declared = match[2].trim();
+      return { language: declared || inferCodeLanguage(match[3]) };
+    }
   }
   return null;
+}
+
+// Stamp a guessed language onto every bare ``` fence in a chunk of markdown.
+// Applied only to text being lifted OUT of a note (into a card, a cloze, a
+// quick note) — the note's own source is never rewritten behind the user.
+function withInferredFenceLanguages(markdown) {
+  return String(markdown).replace(RAW_FENCE_RE, (whole, ticks, info, body, close) => {
+    if (info.trim()) return whole;
+    const language = inferCodeLanguage(body);
+    if (!language) return whole;
+    const indent = whole.slice(0, whole.indexOf(ticks));
+    return `${indent}${ticks}${language}\n${body}${close}`;
+  });
 }
 
 // The raw-textarea equivalent of notesSelectionRange(): plain selected text
@@ -10853,9 +11221,13 @@ function notesEditSelectionText(target) {
   const { selectionStart, selectionEnd, value } = target.edit;
   if (selectionStart === selectionEnd) return "";
   const raw = value.slice(selectionStart, selectionEnd);
-  if (/^```/.test(raw.trim())) return raw;
+  // Selection starts on a fence line: it already carries its own markers, so
+  // it only needs a language stamped on any bare fence inside it.
+  if (/^`{3,}/.test(raw.trim())) return withInferredFenceLanguages(raw);
   const fence = findRawCodeFence(value, selectionStart, selectionEnd);
-  return fence ? `\`\`\`${fence.language}\n${raw}\n\`\`\`` : raw;
+  if (fence) return `\`\`\`${fence.language}\n${raw}\n\`\`\``;
+  // Not inside a fence, but the selection may still CONTAIN whole ones.
+  return withInferredFenceLanguages(raw);
 }
 
 // The current selection's markdown, regardless of which face (notes,
@@ -11607,8 +11979,7 @@ function renderTargetConfig(target) {
         state.notes = v;
         if (el.notesEdit) el.notesEdit.value = v;
       },
-      rerender: () =>
-        renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn)),
+      rerender: () => renderNotesView(),
     };
   }
   const side = target === "answer" ? "answer" : "question";
@@ -14848,7 +15219,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
         // The rewrite touched state as well as the snapshots, so repaint — the
         // on-screen copy is otherwise still pointing at the blob placeholder.
         showCard();
-        if (el.notesView) renderMarkdown(el.notesView, state.notes, true);
+        renderNotesView();
       }
     } catch (error) {
       console.warn("Could not deliver queued images", error);
@@ -22928,7 +23299,7 @@ function clozeNotesTableColumn(tableIndex, colIndex) {
   state.notes = lines.join("\n");
   if (el.notesEdit) el.notesEdit.value = state.notes;
   scheduleDeckAutosave();
-  renderMarkdown(el.notesView, state.notes, true).then(() => resetClozeButton(el.clozeToggleNotesBtn));
+  renderNotesView();
   showToast(`Clozed ${changed} cell${changed === 1 ? "" : "s"}`);
   renderClozePanel();
 }

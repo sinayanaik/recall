@@ -1,4 +1,4 @@
-const CACHE_NAME = "recall-v20260728-07";
+const CACHE_NAME = "recall-v20260729-01";
 
 // How long a same-origin request may stall before the cached copy is served
 // instead. The failure this exists for is NOT being offline — that fails fast
@@ -50,8 +50,8 @@ async function trimImageCache() {
 // precached copy was dead weight for the whole of that release.
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260728-07",
-  "./app.js?v=20260728-07",
+  "./styles.css?v=20260729-01",
+  "./app.js?v=20260729-01",
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
