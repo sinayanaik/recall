@@ -20295,6 +20295,35 @@ function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
 
+  // Never run the worker against a dev server. Versioned assets (app.js?v=…)
+  // are cache-first and deliberately never revalidated — that is what makes a
+  // release load instantly — but it also means an edit to app.js WITHOUT a new
+  // ?v= is invisible forever: the browser keeps serving the bundle it cached
+  // under that URL, so the page reloads into frozen code and the fix looks
+  // broken. Fine for releases, useless while editing. Unregister anything a
+  // previous visit left behind and drop its caches, so localhost always runs
+  // the files on disk.
+  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+    serviceWorkerRegistered = true;
+    navigator.serviceWorker.getRegistrations()
+      .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+      .then((unregistered) => caches.keys()
+        // Only the versioned app shell. The image cache holds the user's
+        // uploaded pictures and is spared here for the same reason the worker
+        // spares it on every release — re-downloading them is pure waste.
+        .then((keys) => keys.filter((key) => key.startsWith("recall-v")))
+        .then((stale) => Promise.all(stale.map((key) => caches.delete(key))).then(() => stale.length))
+        .then((cleared) => {
+          // Reload only when something was actually removed, so this settles
+          // after one pass instead of looping. The page that reached here was
+          // still being served by the worker, so it needs the reload to pick
+          // up the files on disk.
+          if (unregistered.some(Boolean) || cleared) location.reload();
+        }))
+      .catch((error) => console.warn("Could not unregister dev service worker", error));
+    return;
+  }
+
   serviceWorkerRegistered = true;
   // Ask the worker to re-fetch any offline asset its install failed to get.
   // The install's third-party precache is best-effort, so a first run on a bad
@@ -23386,7 +23415,16 @@ function htmlToMarkdown(html, options = {}) {
     // spans have to be lifted out of the DOM before conversion — see
     // protectMathInDom.
     const doc = new DOMParser().parseFromString(html, "text/html");
-    return turndownService.turndown(protectMathInDom(doc.body));
+    const markdown = turndownService.turndown(protectMathInDom(doc.body));
+    // Belt and braces. protectMathInDom works from the DOM, so it depends on
+    // recognising how a given site lays its formulas out, and sites keep
+    // inventing new ways — math split across elements the flattener treats as
+    // opaque, delimiters buried in a widget, and so on. This pass works on the
+    // finished markdown instead, where the damage has an unmistakable
+    // signature ("\\begin", "\\dots", "x\_v"), so it heals what got through no
+    // matter what the source markup looked like. Same function that repairs
+    // notes already in storage, so paste and repair can never disagree.
+    return repairEscapedMathMarkdown(markdown);
   } catch (err) {
     console.error("Turndown conversion failed", err);
     return "";
