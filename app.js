@@ -8371,48 +8371,109 @@ function protectMath(markdown) {
   return output;
 }
 
-// [start, end) ranges of every math span in `text`, using the same delimiters
-// and the same open/close rules protectMath() applies when rendering. Sharing
-// the primitives keeps "what counts as math" identical on the way in (paste)
-// and on the way out (render), so a span that survives untouched through the
-// clipboard is exactly a span KaTeX will be handed later.
+// The math span opening at `index` as [start, end), or null. Uses the same
+// delimiters and the same open/close rules protectMath() applies when
+// rendering, so "what counts as math" means one thing everywhere: on the way in
+// (paste), when repairing stored text, and on the way out (render).
+function mathSpanAt(text, index) {
+  if (text.startsWith("$$", index) && !isEscaped(text, index)) {
+    const close = findUnescaped(text, "$$", index + 2);
+    if (close !== -1) return [index, close + 2];
+  }
+
+  if ((text.startsWith("\\[", index) || text.startsWith("\\(", index)) && !isEscaped(text, index)) {
+    const closeToken = text[index + 1] === "[" ? "\\]" : "\\)";
+    const close = findUnescaped(text, closeToken, index + 2);
+    if (close !== -1) return [index, close + 2];
+  }
+
+  if (text[index] === "$" && canOpenInlineDollar(text, index)) {
+    const close = findInlineDollarClose(text, index + 1);
+    if (close !== -1) return [index, close + 1];
+  }
+
+  return null;
+}
+
+// [start, end) ranges of every math span in `text`.
 function findMathRanges(text) {
   const ranges = [];
   let index = 0;
 
   while (index < text.length) {
-    if (text.startsWith("$$", index) && !isEscaped(text, index)) {
-      const close = findUnescaped(text, "$$", index + 2);
-      if (close !== -1) {
-        ranges.push([index, close + 2]);
-        index = close + 2;
-        continue;
-      }
+    const span = mathSpanAt(text, index);
+    if (span) {
+      ranges.push(span);
+      index = span[1];
+      continue;
     }
-
-    if ((text.startsWith("\\[", index) || text.startsWith("\\(", index)) && !isEscaped(text, index)) {
-      const closeToken = text[index + 1] === "[" ? "\\]" : "\\)";
-      const close = findUnescaped(text, closeToken, index + 2);
-      if (close !== -1) {
-        ranges.push([index, close + 2]);
-        index = close + 2;
-        continue;
-      }
-    }
-
-    if (text[index] === "$" && canOpenInlineDollar(text, index)) {
-      const close = findInlineDollarClose(text, index + 1);
-      if (close !== -1) {
-        ranges.push([index, close + 1]);
-        index = close + 1;
-        continue;
-      }
-    }
-
     index += 1;
   }
 
   return ranges;
+}
+
+// The end of the code region starting at `index`, or -1 if none starts there.
+// A "$" inside code is not a delimiter and its backslashes belong to the
+// author, so the repair below has to step over code rather than into it.
+function codeRegionEnd(source, index) {
+  if (source.startsWith("```", index)) {
+    const close = source.indexOf("```", index + 3);
+    return close === -1 ? source.length : close + 3;
+  }
+  if (source[index] === "`") {
+    let ticks = 0;
+    while (source[index + ticks] === "`") ticks += 1;
+    // CommonMark closes an inline span on a backtick run of exactly the same
+    // length, which is how a literal backtick can sit inside ``a ` b``.
+    const close = source.indexOf("`".repeat(ticks), index + ticks);
+    return close === -1 ? index + ticks : close + ticks;
+  }
+  return -1;
+}
+
+// Rewrites every math span in `markdown` through healEscapedTex, so the fix
+// lands in the stored text itself — what the ✎ raw view shows, what gets
+// exported and backed up, and what syncs to the cloud. Prose keeps its own
+// legitimate escapes ("snake\_case" stays escaped, because it is not math) and
+// code is stepped over untouched.
+//
+// Returns the input string unchanged when there was nothing to repair, so
+// callers can use identity to decide whether a write is needed at all.
+function repairEscapedMathMarkdown(markdown) {
+  const source = String(markdown ?? "");
+  if (!source.includes("\\")) return source;
+
+  let output = "";
+  let index = 0;
+  let changed = false;
+
+  while (index < source.length) {
+    const codeEnd = codeRegionEnd(source, index);
+    if (codeEnd !== -1) {
+      output += source.slice(index, codeEnd);
+      index = codeEnd;
+      continue;
+    }
+
+    const span = mathSpanAt(source, index);
+    if (span) {
+      const raw = source.slice(span[0], span[1]);
+      // "$$"/"\[" delimiters are two characters, a bare "$" is one.
+      const width = raw.startsWith("$$") || raw.startsWith("\\") ? 2 : 1;
+      const healed = healEscapedTex(raw.slice(width, raw.length - width));
+      const repaired = raw.slice(0, width) + healed + raw.slice(raw.length - width);
+      if (repaired !== raw) changed = true;
+      output += repaired;
+      index = span[1];
+      continue;
+    }
+
+    output += source[index];
+    index += 1;
+  }
+
+  return changed ? output : source;
 }
 
 // Convert {{cloze}} spans into hidden fill-in-the-blank markup. Rendered as a
@@ -15759,6 +15820,82 @@ function readLocalDeckIndex() {
 
 function writeLocalDeckIndex(list) {
   localStorage.setItem(LOCAL_DECKS_INDEX_KEY, JSON.stringify(list));
+}
+
+// Set once the stored-text repair below has run on this device.
+const MATH_ESCAPE_REPAIR_KEY = "flashcards_math_escape_repair_v1";
+
+// Every note captured before htmlToMarkdown learned to protect math is sitting
+// in storage with the damage baked into its text — "x_k" saved as "x\_k",
+// "\int" saved as "\\int". Repair the saved markdown itself, once per device,
+// so the ✎ raw view, exports, backups and the cloud copy all come good; a fix
+// that only ran at render time would leave every one of those still wrong.
+//
+// Cheap on a clean library: decks that need nothing are never rewritten, and
+// repairEscapedMathMarkdown returns its input by identity when it found no
+// damage, so "did this change?" costs no comparison.
+function repairEscapedMathInLibrary() {
+  try {
+    if (localStorage.getItem(MATH_ESCAPE_REPAIR_KEY)) return 0;
+  } catch {
+    return 0;
+  }
+
+  const stampIso = new Date().toISOString();
+  let repaired = 0;
+
+  const nextIndex = readLocalDeckIndex().map((entry) => {
+    let snapshot = null;
+    try {
+      const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
+      if (!raw) return entry;
+      snapshot = JSON.parse(raw);
+    } catch {
+      return entry;
+    }
+
+    let changed = false;
+
+    const notes = repairEscapedMathMarkdown(snapshot.notes || "");
+    if (notes !== (snapshot.notes || "")) {
+      snapshot.notes = notes;
+      changed = true;
+    }
+
+    for (const card of snapshot.cards || []) {
+      const question = repairEscapedMathMarkdown(card.question || "");
+      const answer = repairEscapedMathMarkdown(card.answer || "");
+      if (question === (card.question || "") && answer === (card.answer || "")) continue;
+      card.question = question;
+      card.answer = answer;
+      // The repair is a real content edit, so it has to travel: leave the card
+      // clean and the next pull hands the damaged cloud copy straight back.
+      card.dirty = true;
+      card.updatedAt = stampIso;
+      changed = true;
+    }
+
+    if (!changed) return entry;
+
+    try {
+      localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
+    } catch (error) {
+      console.warn("Could not write repaired deck", entry.id, error);
+      return entry;
+    }
+    repaired += 1;
+    // Deck notes are deck-level, not per-card, so this timestamp is what
+    // carries a notes-only repair to the cloud.
+    return { ...entry, updatedAt: stampIso };
+  });
+
+  try {
+    if (repaired) writeLocalDeckIndex(nextIndex);
+    localStorage.setItem(MATH_ESCAPE_REPAIR_KEY, stampIso);
+  } catch (error) {
+    console.warn("Could not record math-escape repair", error);
+  }
+  return repaired;
 }
 
 function generateLocalDeckId() {
@@ -25650,6 +25787,19 @@ function saveQuickNote(rawText, button, sourceAnchor = null) {
 }
 
 // ── Replay a click made while app.js was still loading ──────────────────────
+// Repair math that older builds saved with Markdown escapes still in it. Runs
+// at module scope so it lands before any deck can be opened — the deck a user
+// picks must already hold repaired text, not get repaired underneath them.
+(function runEscapedMathRepair() {
+  try {
+    const repaired = repairEscapedMathInLibrary();
+    if (repaired) console.info(`Repaired escaped math in ${repaired} deck(s)`);
+  } catch (error) {
+    // A library that cannot be repaired is still a library worth opening.
+    console.warn("Escaped-math repair failed", error);
+  }
+})();
+
 // Everything above attaches at module scope, and this file only finishes parsing
 // several seconds after the toolbar is on screen (see the boot-click queue in
 // index.html). Anything the user pressed in that window landed on a control with
