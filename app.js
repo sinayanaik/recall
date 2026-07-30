@@ -8324,6 +8324,50 @@ function protectMath(markdown) {
   return output;
 }
 
+// [start, end) ranges of every math span in `text`, using the same delimiters
+// and the same open/close rules protectMath() applies when rendering. Sharing
+// the primitives keeps "what counts as math" identical on the way in (paste)
+// and on the way out (render), so a span that survives untouched through the
+// clipboard is exactly a span KaTeX will be handed later.
+function findMathRanges(text) {
+  const ranges = [];
+  let index = 0;
+
+  while (index < text.length) {
+    if (text.startsWith("$$", index) && !isEscaped(text, index)) {
+      const close = findUnescaped(text, "$$", index + 2);
+      if (close !== -1) {
+        ranges.push([index, close + 2]);
+        index = close + 2;
+        continue;
+      }
+    }
+
+    if ((text.startsWith("\\[", index) || text.startsWith("\\(", index)) && !isEscaped(text, index)) {
+      const closeToken = text[index + 1] === "[" ? "\\]" : "\\)";
+      const close = findUnescaped(text, closeToken, index + 2);
+      if (close !== -1) {
+        ranges.push([index, close + 2]);
+        index = close + 2;
+        continue;
+      }
+    }
+
+    if (text[index] === "$" && canOpenInlineDollar(text, index)) {
+      const close = findInlineDollarClose(text, index + 1);
+      if (close !== -1) {
+        ranges.push([index, close + 1]);
+        index = close + 1;
+        continue;
+      }
+    }
+
+    index += 1;
+  }
+
+  return ranges;
+}
+
 // Convert {{cloze}} spans into hidden fill-in-the-blank markup. Rendered as a
 // redaction bar that reveals its text when tapped (see the .cloze click handler).
 // Runs before protectMath so any math inside a cloze ($x$) still gets processed.
@@ -22813,6 +22857,29 @@ function htmlToMarkdown(html, options = {}) {
   if (typeof turndownPluginGfm !== "undefined" && turndownPluginGfm.gfm) {
     turndownService.use(turndownPluginGfm.gfm);
   }
+
+  // Turndown escapes Markdown punctuation in every text node, including "_" →
+  // "\_" and "\" → "\\". Inside LaTeX that is fatal: "x_k" arrives as "x\_k"
+  // (KaTeX then prints a literal underscore) and "\int"/"\frac" arrive as
+  // "\\int"/"\\frac", which KaTeX reads as a line break followed by the words
+  // "int"/"frac". Any page that ships math as plain "$…$"/"$$…$$" text rather
+  // than rendered KaTeX/MathJax — AI chat transcripts, raw README views —
+  // mangles on every paste. Escape the prose and hand math spans through byte
+  // for byte; the .katex/mathjax rules above already cover rendered math, this
+  // covers the unrendered kind.
+  const escapeProse = turndownService.escape.bind(turndownService);
+  turndownService.escape = (string) => {
+    const ranges = findMathRanges(string);
+    if (!ranges.length) return escapeProse(string);
+    let output = "";
+    let cursor = 0;
+    ranges.forEach(([start, end]) => {
+      if (start > cursor) output += escapeProse(string.slice(cursor, start));
+      output += string.slice(start, end);
+      cursor = end;
+    });
+    return output + (cursor < string.length ? escapeProse(string.slice(cursor)) : "");
+  };
 
   // Notes carry inline styling as raw HTML — colored/font-family text
   // (`<span style="…">` from the toolbar's color/font pickers), underline
