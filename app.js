@@ -501,6 +501,40 @@ async function getCachedSession() {
   }
 }
 
+// Proof that the requests this sync is about to make will actually carry THIS
+// user's identity — not just that the app once saw a session (`isSignedIn`).
+//
+// This is the single most destructive failure mode the app has. Every table is
+// RLS-scoped to `auth.uid()`, so a request that reaches Supabase without a valid
+// user token is not rejected: it succeeds and matches nothing. The reconcile
+// then reads an empty deck list as "every deck was deleted on another device",
+// deletes the local library, and (before the change alongside this one) wrote
+// tombstones for all of it — losing the user's decks on every device at once.
+//
+// `isSignedIn` cannot rule that out. It's a boolean set from a CACHED session,
+// so it stays true after a refresh token expires or a refresh fails. getSession()
+// is the check that matters: it refreshes an expired access token when it can,
+// and returns null when it can't — which is precisely "your next query would run
+// as nobody". No network cost in the common case (a live token is returned from
+// local storage as-is).
+async function verifiedCloudUserId() {
+  if (!supabaseClient) return null;
+  try {
+    const { data, error } = await supabaseClient.auth.getSession();
+    if (error) return null;
+    const session = data?.session;
+    // An access token that has already expired means the queries below would go
+    // out unauthenticated (or be rejected outright). getSession normally
+    // refreshes it for us; if it handed one back anyway, don't trust it.
+    if (!session?.user?.id || !session?.access_token) return null;
+    if (session.expires_at && Number(session.expires_at) * 1000 <= Date.now()) return null;
+    return String(session.user.id);
+  } catch (error) {
+    console.warn("Could not verify the signed-in user", error);
+    return null;
+  }
+}
+
 let explicitLogout = false;
 
 async function handleLogin(email, password) {
@@ -1667,15 +1701,27 @@ function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbackIso) {
     merged.push(fromCloud);
   }
 
+  // Zero cloud rows for a deck that has cards here is NOT read as "every card
+  // was deleted elsewhere". It is what an unauthenticated read looks like (RLS
+  // returns an empty set, not an error), and what a dropped page looks like —
+  // and the cost of believing it is the entire deck, here and then in the cloud
+  // on the next push. A deck genuinely emptied on another device still converges:
+  // that device holds per-card tombstones and re-deletes these rows, which is
+  // the evidence-based path. This only refuses the guess.
+  const cloudLooksBlank = !(cloudCards || []).length && localCards.length > 0;
+
   for (const card of localCards) {
     const id = String(card.id || "");
     if (!id || seenLocalIds.has(id)) continue;
     // Clean and cloud-less means it was synced once and deleted elsewhere —
     // dropping it is the whole point of a two-way mirror. Only unpushed work
     // survives a cloud that has never heard of it.
-    if (!cardIsDirty(card)) continue;
+    if (!cardIsDirty(card) && !cloudLooksBlank) continue;
     keptLocal += 1;
     merged.push({ ...card, id });
+  }
+  if (cloudLooksBlank) {
+    console.warn(`Cloud returned 0 cards for a deck holding ${localCards.length} — keeping them all rather than treating it as a deletion.`);
   }
 
   // Retire the tombstones the cloud has already honoured. Keeping them past
@@ -1720,16 +1766,27 @@ function reconcileCardsBeforePush(snapshot, cloudCards) {
   // deck is legacy for exactly one sync.
   const hasCardSyncState = localCards.some((card) => card.dirty !== undefined || card.updatedAt);
 
+  // The same refusal as the pull side (see mergeCloudCardsIntoSnapshot): a deck
+  // whose cloud rows all came back empty is far more likely to be a bad read
+  // than a deck someone emptied card by card — and here the stakes are higher
+  // still, because these cards are about to be dropped from the snapshot AND
+  // the push that follows prunes whatever it doesn't send. Believing a blank
+  // read at this point deletes the deck's contents on every device at once.
+  const cloudLooksBlank = !(cloudCards || []).length && localCards.length > 0;
+
   const cards = [];
   let dropped = 0;
   for (const card of localCards) {
     const id = String(card.id || "");
     if (!id) continue;
-    if (hasCardSyncState && !cloudById.has(id) && !cardIsDirty(card)) {
+    if (hasCardSyncState && !cloudLooksBlank && !cloudById.has(id) && !cardIsDirty(card)) {
       dropped += 1;
       continue;
     }
     cards.push(card);
+  }
+  if (cloudLooksBlank) {
+    console.warn(`Push diff saw 0 cloud cards for a deck holding ${localCards.length} — sending them all rather than pruning.`);
   }
 
   let adopted = 0;
@@ -6485,44 +6542,79 @@ const DECK_INDEX_COLUMNS = "id, title, category, updated_at, last_accessed_at, c
 // in reconcileAllDecks). PostgREST caps a response at ~1000 rows, so an unpaged
 // read would silently present every deck past the cap as deleted and take the
 // local copies with it. Keep asking until a short page comes back.
+// The reconcile derives DELETIONS from what is missing here, so a short read is
+// not a performance detail — it is data loss. Two things make it provably whole:
+//
+//   • a stable sort. Paging with `.order("updated_at")` alone is unsound:
+//     timestamps tie (a bulk import stamps many decks the same millisecond) and
+//     Postgres is free to order ties differently per page, so a row can appear
+//     on both pages or on neither. The one that lands on neither reads as a
+//     deleted deck. `id` is unique, so adding it as a tiebreak makes the total
+//     order deterministic across requests.
+//   • an exact count. Even with stable paging, a row inserted or deleted by
+//     another device mid-read shifts the window. Comparing what we assembled
+//     against the server's own count turns "silently short" into a thrown
+//     error — and a throw is safe, because the caller aborts the sync while a
+//     short list would have deleted decks.
 async function fetchCloudDeckIndex() {
-  const rows = [];
+  const byId = new Map();
   const pageSize = 1000;
+  let expectedTotal = null;
   for (let from = 0; ; from += pageSize) {
-    const { data, error } = await withTimeout(
+    const { data, error, count } = await withTimeout(
       abortable((signal) => supabaseClient
         .from("decks")
-        .select(DECK_INDEX_COLUMNS)
+        .select(DECK_INDEX_COLUMNS, { count: "exact" })
         .order("updated_at", { ascending: false })
+        .order("id", { ascending: true })
         .range(from, from + pageSize - 1)
         .abortSignal(signal)),
       CLOUD_TIMEOUT_MS,
       "read deck index"
     );
     if (error) throw error;
+    if (typeof count === "number") expectedTotal = count;
     const page = data || [];
-    rows.push(...page);
+    // Keyed by id rather than appended: if a concurrent write did shift the
+    // window, an overlap is a duplicate row, not a second deck.
+    for (const row of page) byId.set(String(row.id), row);
     if (page.length < pageSize) break;
+  }
+  const rows = [...byId.values()];
+  if (expectedTotal !== null && rows.length < expectedTotal) {
+    throw new Error(`Deck index read was incomplete (${rows.length} of ${expectedTotal}) — not treating the gap as deletions`);
   }
   return rows;
 }
 
 // Full rows (notes + meta included) for a specific set of decks — the ones a
 // sync has decided to pull or push. Returns a Map keyed by deck id.
+// CHUNKED, and load-bearing for the same reason the index read is paged: these
+// rows are the ONLY source of a deck's notes and meta (DECK_INDEX_COLUMNS
+// carries neither). PostgREST caps a response at ~1000 rows, so a single
+// `.in()` over a big library silently returned nothing for the decks past the
+// cap — and the pull then had a deck row with no `notes` key at all, which it
+// wrote as empty notes. Chunks stay well under the cap, so a row missing from
+// the result now means only one thing: that deck really isn't in the cloud.
+// (A long `.in()` list is also a very long URL; chunking fixes that too.)
 async function fetchCloudDeckRows(deckIds) {
   const byId = new Map();
   if (!deckIds.length) return byId;
-  const { data, error } = await withTimeout(
-    abortable((signal) => supabaseClient
-      .from("decks")
-      .select("*")
-      .in("id", deckIds)
-      .abortSignal(signal)),
-    CLOUD_TIMEOUT_MS,
-    "read deck bodies"
-  );
-  if (error) throw error;
-  for (const row of data || []) byId.set(String(row.id), row);
+  const chunkSize = 200;
+  for (let i = 0; i < deckIds.length; i += chunkSize) {
+    const chunk = deckIds.slice(i, i + chunkSize);
+    const { data, error } = await withTimeout(
+      abortable((signal) => supabaseClient
+        .from("decks")
+        .select("*")
+        .in("id", chunk)
+        .abortSignal(signal)),
+      CLOUD_TIMEOUT_MS,
+      "read deck bodies"
+    );
+    if (error) throw error;
+    for (const row of data || []) byId.set(String(row.id), row);
+  }
   return byId;
 }
 
@@ -6536,6 +6628,7 @@ async function fetchCloudDeckRows(deckIds) {
 async function fetchCardsForDecks(deckIds, columns = "*") {
   const byDeck = new Map(deckIds.map((id) => [String(id), []]));
   if (!deckIds.length) return byDeck;
+  const seen = new Set();
   const pageSize = 1000;
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await withTimeout(
@@ -6545,6 +6638,11 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
         .in("deck_id", deckIds)
         .order("deck_id", { ascending: true })
         .order("position", { ascending: true })
+        // Unique tiebreak. (deck_id, position) is NOT unique — a merge can leave
+        // two cards on the same position — and ties order arbitrarily per page,
+        // so without this a card can fall between two pages. A card missing from
+        // this read is read as deleted by the merge, so the gap costs the card.
+        .order("id", { ascending: true })
         .range(from, from + pageSize - 1)
         .abortSignal(signal)),
       CLOUD_TIMEOUT_MS,
@@ -6554,7 +6652,12 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
     const rows = data || [];
     for (const row of rows) {
       const bucket = byDeck.get(String(row.deck_id));
-      if (bucket) bucket.push(row);
+      if (!bucket) continue;
+      // Guard against an overlapping page re-delivering a row we already have.
+      const key = String(row.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      bucket.push(row);
     }
     if (rows.length < pageSize) break;
   }
@@ -14544,6 +14647,56 @@ const LAST_GLOBAL_SYNC_ERROR_KEY = "flashcards_last_global_sync_error";
 // tombstones let reconcileAllDecks re-assert the deletion (delete the cloud row
 // again, never pull it back) until the cloud copy is confirmed gone.
 const LOCAL_DECK_TOMBSTONES_KEY = "flashcards_deleted_deck_ids_v1";
+// Decks seen missing from the cloud but NOT yet acted on: { deckId: { firstMissingAt,
+// sightings, title } }. A deck vanishing from the cloud list is the only signal
+// this app has for "deleted on another device" — and it is also what a bad read
+// looks like (an unauthenticated query returns zero rows and no error, because
+// every table is RLS-scoped). Acting on the first sighting is what let a single
+// bad read delete a whole library, so absence has to be observed repeatedly,
+// over time, before it counts. Persisted because those observations must span
+// app launches. See the missing-decks block in reconcileAllDecks.
+const MISSING_DECK_WATCH_KEY = "flashcards_missing_deck_watch_v1";
+// Two independent syncs, at least this far apart, before an absence is believed.
+// Both matter: the count rules out one bad response, the age rules out a burst
+// of syncs inside a single bad session (reconnect, tab focus, manual retry).
+const MISSING_DECK_MIN_SIGHTINGS = 2;
+const MISSING_DECK_MIN_AGE_MS = 5 * 60 * 1000;
+// Blast-radius cap on removals inferred from absence (deletions with a real
+// shared tombstone are exempt — those are recorded human decisions). Below the
+// cap, removal is silent and immediate, which keeps the everyday "I deleted a
+// deck on my laptop" working. Above it, the decks are held intact and the user
+// is asked, because at that scale a wrong guess is the difference between a
+// nuisance and losing everything.
+const ADOPT_DELETION_MIN_CAP = 3;
+const ADOPT_DELETION_MAX_FRACTION = 0.25;
+
+function readMissingDeckWatch() {
+  try {
+    const map = JSON.parse(localStorage.getItem(MISSING_DECK_WATCH_KEY) || "{}");
+    return map && typeof map === "object" ? map : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeMissingDeckWatch(map) {
+  try {
+    localStorage.setItem(MISSING_DECK_WATCH_KEY, JSON.stringify(map || {}));
+  } catch (error) {
+    // Quota, most likely. Failing to persist means an absence has to be
+    // re-observed from scratch, which delays a deletion — never causes one.
+    console.warn("Could not record missing-deck observations", error);
+  }
+}
+
+function clearMissingDeckWatch(deckId) {
+  if (!deckId) return;
+  const map = readMissingDeckWatch();
+  if (map[String(deckId)] !== undefined) {
+    delete map[String(deckId)];
+    writeMissingDeckWatch(map);
+  }
+}
 
 let deckAutosaveTimer = null;
 
@@ -14969,6 +15122,23 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     oldSnapshot = null;
   }
 
+  // Distinguish "the cloud says these notes are empty" from "this row never
+  // carried a notes column". Both look like a falsy `cloud.notes`, and the
+  // second one used to be written as an empty string — silently destroying
+  // every note in the deck. `in` is the discriminator that works: a real deck
+  // row from select("*") always HAS the key (null if the user cleared it),
+  // while a slim index row (DECK_INDEX_COLUMNS) has no such key at all.
+  // Deliberately not a throw: keeping what this device already holds is always
+  // the safe outcome, and the deck's cards can still merge normally.
+  const cloudCarriesBody = Object.prototype.hasOwnProperty.call(cloud, "notes");
+  if (!cloudCarriesBody) {
+    console.warn(`Deck ${cloud.id} arrived without a notes column — keeping this device's notes and meta instead of blanking them.`);
+  }
+  const incomingNotes = cloudCarriesBody ? String(cloud.notes || "") : String(oldSnapshot?.notes || "");
+  const incomingMeta = cloudCarriesBody
+    ? (cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {})
+    : (oldSnapshot?.meta && typeof oldSnapshot.meta === "object" ? oldSnapshot.meta : {});
+
   const cloudIso = cloud.updated_at || new Date().toISOString();
   // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this
   // device changed and hasn't pushed yet survive the pull instead of being
@@ -14982,7 +15152,7 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     exportedAt: new Date().toISOString(),
     deckTitle: cloud.title || "",
     deckCategory: normalizeDeckCategory(cloud.category),
-    notes: String(cloud.notes || ""),
+    notes: incomingNotes,
     sourceTitle: cloud.title || "",
     importTitleHint: cloud.title || "",
     deckId: cloud.id,
@@ -14990,7 +15160,7 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     // Deck-level bag (quick_notes' managed category set) — a pull that dropped
     // it left every pulled note pointing at categories this device no longer
     // knew the name or colour of.
-    meta: cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {},
+    meta: incomingMeta,
     cards: mergedCards,
     localDeckId: localId
   };
@@ -15006,7 +15176,13 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
   let notesConflicted = false;
   if (oldSnapshot && syncTextChanged(oldSnapshot.notes || "", snapshot.notes)) {
     const localNotesEdited = tsMs(existing?.updatedAt) > tsMs(existing?.lastSyncedAt);
-    if (localNotesEdited && String(oldSnapshot.notes || "").trim()) {
+    // Notes going from "something" to "nothing" is the destructive case, and it
+    // used to be stashed only when this device had unsynced edits — so the
+    // ordinary path (notes fully synced, then wiped by a bad pull) left no copy
+    // at all. Whatever emptied them, a deck's entire notes body disappearing is
+    // worth one recoverable copy.
+    const notesBeingEmptied = String(oldSnapshot.notes || "").trim() && !snapshot.notes.trim();
+    if ((localNotesEdited || notesBeingEmptied) && String(oldSnapshot.notes || "").trim()) {
       notesConflicted = true;
       try {
         localStorage.setItem(LOCAL_DECK_PREFIX + localId + NOTES_CONFLICT_SUFFIX, JSON.stringify({
@@ -15365,6 +15541,43 @@ async function reconcileAllDecks({ explicit = false } = {}) {
   const deckLog = [];
 
   try {
+    // Identity first, before a single byte is read or written. Every table is
+    // RLS-scoped to auth.uid(), so a query made without a valid user token comes
+    // back EMPTY AND SUCCESSFUL — and the deletion rules further down read an
+    // empty cloud as "deleted on another device". Sync as nobody, lose the
+    // library. See verifiedCloudUserId.
+    const cloudUserId = await verifiedCloudUserId();
+    if (!cloudUserId) {
+      // Not an error state to shout about: a lapsed token on a phone that's been
+      // in a pocket for a week is routine. It is, however, an absolute bar on
+      // syncing — treat it exactly like being offline, which is the one state
+      // this app already handles by leaving every local deck alone.
+      console.warn("Sync skipped — no verified session; refusing to sync as an unauthenticated user.");
+      setSyncIndicator("offline");
+      if (explicit) {
+        setStatus("Couldn't confirm you're signed in — sign in again to sync. Your decks are safe on this device.", "error");
+        showToast("Couldn't confirm your sign-in — your decks are safe on this device", "error");
+      }
+      return;
+    }
+    // The local library mirrors exactly one account. If the verified user isn't
+    // the one this library belongs to, every comparison below is meaningless:
+    // the other account's (correctly empty-for-us) deck list would read as a
+    // mass deletion. ensureLocalLibraryOwner normally resets the library on an
+    // account switch; this is the backstop for when it didn't run.
+    const libraryOwner = (() => {
+      try { return localStorage.getItem(LAST_USER_STORAGE_KEY); } catch { return null; }
+    })();
+    if (libraryOwner && libraryOwner !== cloudUserId) {
+      console.warn("Sync skipped — the signed-in account doesn't own this device's deck library.");
+      setSyncIndicator("error");
+      if (explicit) {
+        setStatus("This device's decks belong to a different account — sign out and back in to sync them.", "error");
+        showToast("Signed-in account doesn't match this device's decks", "error");
+      }
+      return;
+    }
+
     // Deliver every queued decks.meta edit — quick-note categories and source
     // anchors — BEFORE reading the deck list. Order is the whole point: the pull
     // below replaces the local snapshot's meta with the cloud's copy, so
@@ -15447,62 +15660,175 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // the push loop below would otherwise see "no cloud row, so mine must be
     // newer" and re-create it.
     const remoteDeletedSet = new Set(remoteDeletedIds.map(String));
+    // The cap applies here too, and not out of theoretical tidiness: the bug this
+    // guard replaced PUBLISHED its bad guesses to deleted_decks, so a project can
+    // still be carrying real tombstones for decks nobody ever deleted. Those rows
+    // outlive the code that wrote them, and a device that still holds the only
+    // surviving copies would otherwise honour them on its very next sync — losing
+    // the data a second time, from the one place it survived. A handful of
+    // tombstones is an ordinary cross-device delete and still applies instantly;
+    // a mass one is a question for the user.
+    const localIndexBeforeDeletes = readLocalDeckIndex();
+    const syncedLocalCount = localIndexBeforeDeletes.filter((m) => m.deckId && m.lastSyncedAt).length;
+    const removalCap = Math.max(ADOPT_DELETION_MIN_CAP, Math.floor(syncedLocalCount * ADOPT_DELETION_MAX_FRACTION));
+
+    const remoteTombstoneRemovals = [];
     for (const deckId of remoteDeletedIds) {
       if (isDeckTombstoned(deckId)) continue;
-      tombstoneDeck(deckId);
-      const staleLocal = readLocalDeckIndex().find((m) => String(m.deckId) === String(deckId));
-      if (staleLocal) {
-        const wasActive = state.deckId && String(state.deckId) === String(deckId);
-        deleteDeckFromLibrary(staleLocal.id);
+      const staleLocal = localIndexBeforeDeletes.find((m) => String(m.deckId) === String(deckId));
+      remoteTombstoneRemovals.push({
+        deckId: String(deckId),
+        meta: staleLocal || null,
+        title: staleLocal?.title || "Untitled deck",
+        origin: TOMBSTONE_ORIGIN_USER
+      });
+    }
+    // Only removals that actually cost the user a deck count toward the cap —
+    // a tombstone for a deck this device never had is free to adopt.
+    const remoteTombstoneWithLocalCopy = remoteTombstoneRemovals.filter((entry) => entry.meta);
+    // Decks whose removal is deferred to the confirmation prompt; the passes
+    // below must leave them completely alone in the meantime.
+    let deferredRemoteRemovals = [];
+    if (remoteTombstoneWithLocalCopy.length > removalCap) {
+      deferredRemoteRemovals = remoteTombstoneWithLocalCopy;
+      console.warn(
+        `${deferredRemoteRemovals.length} decks are tombstoned in the cloud (cap ${removalCap}) — ` +
+        "held on this device pending confirmation. Nothing was removed."
+      );
+    }
+    const deferredRemoteIds = new Set(deferredRemoteRemovals.map((entry) => entry.deckId));
+    for (const entry of remoteTombstoneRemovals) {
+      if (deferredRemoteIds.has(entry.deckId)) continue;
+      // A shared record is positive evidence that a human deleted this deck, so
+      // the tombstone is "user"-grade: it's echoing a real deletion, not guessing.
+      tombstoneDeck(entry.deckId, TOMBSTONE_ORIGIN_USER);
+      if (entry.meta) {
+        const wasActive = state.deckId && String(state.deckId) === entry.deckId;
+        deleteDeckFromLibrary(entry.meta.id);
         if (wasActive) resetActiveDeckAfterDelete();
       }
     }
 
-    // The same rule the card merge uses, at deck level: a deck this device has
-    // CONFIRMED in the cloud at least once (deckId + lastSyncedAt) and that is
-    // no longer there was deleted on another device. Absence is the deletion.
+    // ── Decks missing from the cloud ────────────────────────────────────────
+    // A deck this device confirmed in the cloud (deckId + lastSyncedAt) that is
+    // no longer in the cloud's list was PROBABLY deleted on another device —
+    // and acting on "probably" is what cost this app a library.
     //
-    // Without this, the push pass below reads "no cloud row" as "brand new here"
-    // and uploads it again, which is a loop, not a one-off: the deleting device
-    // still holds its local tombstone, sees the row it deleted back in the
-    // cloud, and deletes it again — so the two devices trade the same decks
-    // forever, each reporting a perfectly successful sync. That is exactly what
-    // a 130-vs-78 deck count with "Synced" on both screens looks like.
+    // The rule used to be one-shot: absent once, deleted forever, local copy
+    // removed and a permanent shared tombstone published for every device. That
+    // is only sound if a missing deck can ONLY mean a deletion, and it can't. An
+    // unauthenticated read (RLS returns zero rows, no error), a half-delivered
+    // page, a project whose rows lost their user_id — every one of them looks
+    // identical to "the user deleted everything", and the damage is unbounded
+    // and unrecoverable.
     //
-    // The shared deleted_decks table was supposed to prevent this, but it only
-    // works if every delete's write to it succeeded — offline, a timeout, or a
-    // project that never ran supabase_setup.sql all leave no record,
-    // and then nothing stops the resurrection. This rule needs no shared state
-    // at all: it reads the deletion out of the cloud's own deck list. Safe only
-    // because fetchCloudDeckIndex is paged and throws rather than returning a
-    // partial list — a truncated read here would delete a library.
+    // So absence is now treated as evidence to be corroborated, not a fact:
+    //
+    //   1. an empty cloud list is never evidence of anything (see below);
+    //   2. a deck must be seen missing by two separate syncs, minutes apart,
+    //      before its absence counts — one bad read can no longer delete;
+    //   3. removals above the blast-radius cap need the user to say yes;
+    //   4. nothing derived this way is ever published to deleted_decks.
+    //
+    // Until a deck's absence is corroborated it is HELD: not deleted, and not
+    // pushed either (the push pass skips heldDeckIds). Holding rather than
+    // pushing is what stops a genuine cross-device delete from bouncing back
+    // during the wait, so the slower rule costs correctness nothing.
+    const localIndexNow = readLocalDeckIndex();
+    const syncedLocalDecks = localIndexNow.filter((m) => m.deckId && m.lastSyncedAt);
+    const missingFromCloud = syncedLocalDecks.filter(
+      (m) => !cloudIdSet.has(String(m.deckId)) &&
+             !isDeckTombstoned(m.deckId) &&
+             // Already awaiting the user's decision on the tombstone pass above.
+             // They're missing from the cloud too (that's what a tombstone means),
+             // so without this they'd be counted a second time here.
+             !deferredRemoteIds.has(String(m.deckId))
+    );
+
+    // An empty deck list from a device that is holding synced decks is the exact
+    // signature of the bug this guard exists for. It is technically also what
+    // "the user deleted every last deck elsewhere" looks like — but that is rare,
+    // recoverable (the decks are still here, and get re-pushed), and explicitly
+    // recorded in deleted_decks when it really happens, which the pass above
+    // already honours. Guessing wrong the other way is unrecoverable. Never
+    // delete a library on a zero-row read.
+    const cloudListLooksBlank = cloudDecks.length === 0 && syncedLocalDecks.length > 0;
+    if (cloudListLooksBlank) {
+      console.warn(
+        `Cloud returned 0 decks while this device holds ${syncedLocalDecks.length} synced deck(s) — ` +
+        "refusing to treat that as deletions. Nothing was removed."
+      );
+    }
+
+    // Watchlist of "seen missing, not yet acted on", persisted so the two
+    // observations can span app launches — the common case is a phone that syncs
+    // once on open and is put away again.
+    const missingWatch = readMissingDeckWatch();
+    const nowMs = Date.now();
+    const heldDeckIds = new Set();      // don't delete, and don't push, this run
+    const qualifiedForRemoval = [];     // absence corroborated; eligible to act on
+
+    if (cloudListLooksBlank) {
+      // Hold everything, and keep the watchlist untouched: a blank read is not an
+      // observation, and must not count as one of the two sightings.
+      for (const meta of missingFromCloud) heldDeckIds.add(String(meta.deckId));
+    } else {
+      for (const meta of missingFromCloud) {
+        const deckId = String(meta.deckId);
+        const seen = missingWatch[deckId];
+        const firstMissingAt = seen?.firstMissingAt ? tsMs(seen.firstMissingAt) : nowMs;
+        const sightings = (seen?.sightings || 0) + 1;
+        missingWatch[deckId] = {
+          firstMissingAt: seen?.firstMissingAt || new Date(nowMs).toISOString(),
+          sightings,
+          title: meta.title || "Untitled deck"
+        };
+        const corroborated =
+          sightings >= MISSING_DECK_MIN_SIGHTINGS &&
+          nowMs - firstMissingAt >= MISSING_DECK_MIN_AGE_MS;
+        if (corroborated) qualifiedForRemoval.push({ title: meta.title || "Untitled deck", deckId, id: meta.id });
+        else heldDeckIds.add(deckId);
+      }
+      // Anything present again (or already gone from the library) leaves the
+      // watchlist, so a deck has to be missing on CONSECUTIVE syncs to count.
+      const stillMissing = new Set(missingFromCloud.map((m) => String(m.deckId)));
+      for (const deckId of Object.keys(missingWatch)) {
+        if (!stillMissing.has(deckId)) delete missingWatch[deckId];
+      }
+    }
+    writeMissingDeckWatch(missingWatch);
+
+    // Blast-radius cap. Losing a deck to a wrong guess is bad; losing a library
+    // to one is the reported disaster. Past the cap this stops being a routine
+    // sync outcome and becomes something a human should look at, so the decks
+    // are held intact and the user is asked. Small removals (the everyday "I
+    // deleted a deck on my laptop") still just work.
+    let removalNeedsConfirmation = deferredRemoteRemovals.length ? deferredRemoteRemovals.slice() : null;
+    for (const entry of deferredRemoteRemovals) heldDeckIds.add(entry.deckId);
+    if (qualifiedForRemoval.length > removalCap) {
+      console.warn(
+        `${qualifiedForRemoval.length} decks are missing from the cloud (cap ${removalCap}) — ` +
+        "held on this device pending confirmation. Nothing was removed."
+      );
+      for (const entry of qualifiedForRemoval) heldDeckIds.add(entry.deckId);
+      removalNeedsConfirmation = (removalNeedsConfirmation || []).concat(qualifiedForRemoval);
+      qualifiedForRemoval.length = 0;
+    }
+
     const adoptedDeletions = [];
-    for (const localMeta of readLocalDeckIndex()) {
-      if (!localMeta.deckId) continue;                          // local-only: push it, don't delete it
-      if (!localMeta.lastSyncedAt) continue;                    // never confirmed in the cloud
-      if (cloudIdSet.has(String(localMeta.deckId))) continue;   // still there
-      if (isDeckTombstoned(localMeta.deckId)) continue;         // handled by the pass above
-      adoptedDeletions.push({ title: localMeta.title || "Untitled deck", deckId: String(localMeta.deckId) });
-      // Tombstone locally too, so a row that reappears (another device mid-cycle)
-      // is re-deleted rather than adopted back.
-      tombstoneDeck(localMeta.deckId);
-      const wasActive = state.deckId && String(state.deckId) === String(localMeta.deckId);
-      deleteDeckFromLibrary(localMeta.id);
+    for (const entry of qualifiedForRemoval) {
+      adoptedDeletions.push({ title: entry.title, deckId: entry.deckId });
+      // Local-only tombstone: it stops THIS device re-pushing the deck, without
+      // publishing a guess that no device could ever undo. See tombstoneDeck.
+      tombstoneDeck(entry.deckId, TOMBSTONE_ORIGIN_INFERRED);
+      const wasActive = state.deckId && String(state.deckId) === entry.deckId;
+      deleteDeckFromLibrary(entry.id);
       if (wasActive) resetActiveDeckAfterDelete();
+      delete missingWatch[entry.deckId];
     }
     if (adoptedDeletions.length) {
-      // Best-effort shared record, so devices that haven't synced since learn it
-      // from the table instead of re-deriving it. Failure is fine — the rule
-      // above doesn't depend on it.
-      const records = adoptedDeletions
-        .filter((entry) => !remoteDeletedSet.has(entry.deckId))
-        .map((entry) => ({ deck_id: entry.deckId }));
-      if (records.length) {
-        const { error: recordError } = await withTimeout(abortable((signal) => supabaseClient.from("deleted_decks").upsert(records).abortSignal(signal)), CLOUD_TIMEOUT_MS, "record adopted deletions");
-        if (recordError) console.warn("Could not record adopted deck deletions", recordError);
-        else for (const row of records) remoteDeletedSet.add(String(row.deck_id));
-      }
-      // Named in the report rather than counted silently — 52 decks vanishing is
+      writeMissingDeckWatch(missingWatch);
+      // Named in the report rather than counted silently — decks vanishing is
       // the correct outcome here, but it must never be a surprise.
       for (const entry of adoptedDeletions) {
         deckLog.push({ title: entry.title, direction: "removed", ...emptySyncStats(), deckRemovedHere: true });
@@ -15523,6 +15849,13 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       if (cloudIdSet.has(String(tid))) continue;
       if (remoteDeletedSet.has(String(tid))) {
         clearDeckTombstone(tid); // fully propagated — safe to forget
+      } else if (deckTombstoneOrigin(tid) === TOMBSTONE_ORIGIN_INFERRED) {
+        // Nobody deleted this deck here — this device only concluded it was
+        // gone. Publishing that conclusion is what turned one device's bad read
+        // into a permanent, cross-device deletion, so an inferred tombstone
+        // stays local. It keeps doing its real job (never re-push this deck)
+        // and every other device can observe the same absence for itself.
+        continue;
       } else {
         tombstonesToReassert.push({ deck_id: tid });
       }
@@ -15548,8 +15881,22 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       // race with an in-flight sync, or another device that re-pushed it. Don't
       // pull it back; re-assert the deletion in the cloud instead.
       if (isDeckTombstoned(cloud.id)) {
-        tombstonedInCloud.push(cloud.id);
-        continue;
+        // ...unless the tombstone was only ever a guess. This device concluded
+        // the deck was deleted because the cloud didn't list it; the cloud is
+        // now listing it, which means the conclusion was wrong (or another
+        // device has a copy it believes in). Letting a guess reach the delete
+        // below would destroy the cloud row — the guess would come true. Retract
+        // it instead and let the deck be pulled back. If it really was deleted,
+        // the device that deleted it holds a real tombstone and will re-delete
+        // it; a deck that bounces once is recoverable, a deleted one is not.
+        if (deckTombstoneOrigin(cloud.id) === TOMBSTONE_ORIGIN_INFERRED) {
+          console.warn(`Deck ${cloud.id} is back in the cloud — retracting this device's inferred deletion.`);
+          clearDeckTombstone(cloud.id);
+          clearMissingDeckWatch(cloud.id);
+        } else {
+          tombstonedInCloud.push(cloud.id);
+          continue;
+        }
       }
       const localMeta = localByDeckId.get(String(cloud.id));
       if (!localMeta) {
@@ -15602,9 +15949,20 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       : [new Map(), new Map()];
 
     for (const indexRow of toPull) {
-      // Prefer the full row; fall back to the index row so a deck deleted
-      // between the two requests still pulls what we know rather than throwing.
-      const cloud = pullBodyById.get(String(indexRow.id)) || indexRow;
+      // The full row, and ONLY the full row. This used to fall back to the index
+      // row when the body was missing, so that a deck deleted between the two
+      // requests still pulled "what we know" instead of throwing. But
+      // DECK_INDEX_COLUMNS selects no `notes` and no `meta`, so what we knew was
+      // a deck with no notes — and the pull wrote that over the real ones,
+      // destroying every note in the deck (and the quick-note category
+      // definitions with them). Skipping is the only safe reading of a missing
+      // body: nothing is written, the local copy stands, and the deck pulls
+      // normally on the next sync if it does still exist.
+      const cloud = pullBodyById.get(String(indexRow.id));
+      if (!cloud) {
+        console.warn(`No cloud body for deck ${indexRow.id} — skipping the pull rather than writing a deck with no notes.`);
+        continue;
+      }
       try {
         const res = await pullCloudDeckToLibrary(cloud, pullCardsByDeck.get(String(cloud.id)) || []);
         if (!isNoOpStats(res.stats)) {
@@ -15637,6 +15995,13 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       // Never re-upload a deck that was deleted here (a stray local copy that
       // outlived the delete) — that's exactly how a deleted deck comes back.
       if (isDeckTombstoned(localMeta.deckId)) continue;
+      // Missing from the cloud, but not yet believed to be deleted (see the
+      // missing-decks block above). Sit this run out entirely: pushing would
+      // resurrect a deck another device may genuinely have deleted, and would
+      // also erase the very evidence being gathered — the deck would be present
+      // again next sync, resetting the count forever. Held, not lost: the local
+      // copy is untouched and it pushes as normal the moment it's cleared.
+      if (localMeta.deckId && heldDeckIds.has(String(localMeta.deckId))) continue;
       const cloud = localMeta.deckId ? cloudById.get(String(localMeta.deckId)) : null;
       if (!cloud || tsMs(localMeta.updatedAt) > tsMs(cloud.updated_at)) toPush.push({ localMeta, cloud });
     }
@@ -15739,6 +16104,13 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     if (adoptedDeletions.length) {
       parts.push(`${adoptedDeletions.length} deck${adoptedDeletions.length === 1 ? "" : "s"} removed here (deleted on another device)`);
     }
+    // Decks the sync deliberately left alone. Worth saying out loud: the user
+    // asked for a sync and some of their decks were skipped, and the old silent
+    // behaviour here — delete first, explain never — is what made the failure so
+    // expensive. "Kept" is the message; nothing was lost.
+    if (heldDeckIds.size && !removalNeedsConfirmation) {
+      parts.push(`${heldDeckIds.size} deck${heldDeckIds.size === 1 ? "" : "s"} missing from the cloud kept here for now`);
+    }
     if (imagesUploaded) parts.push(`${imagesUploaded} image${imagesUploaded === 1 ? "" : "s"} uploaded`);
     const changes = describeSyncStats(totalSyncStats(deckLog), { asTotals: true });
     const detail = changes.length ? ` — ${changes.join(", ")}` : "";
@@ -15776,6 +16148,34 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       // already what the user is looking at.
       lastStartupSyncReport = deckLog.length ? { deckLog, pulled, pushed, failed } : null;
       if (el.deckEmptyState && !el.deckEmptyState.hidden) renderDeckEmptyState(hasActiveDeck() ? "active" : "none");
+    }
+
+    // A removal too large to make on this app's own authority. The decks are all
+    // still here — this asks whether they should go. Deliberately last, after
+    // the summary and the report, so it never pre-empts them; and deliberately a
+    // question, because the honest answer to "were these deleted elsewhere?" is
+    // that only the user knows. Declining costs nothing: they stay, and the next
+    // sync asks again.
+    if (removalNeedsConfirmation) {
+      const names = removalNeedsConfirmation.slice(0, 3).map((entry) => entry.title).join(", ");
+      const more = removalNeedsConfirmation.length > 3 ? ` and ${removalNeedsConfirmation.length - 3} more` : "";
+      const count = `${removalNeedsConfirmation.length} deck${removalNeedsConfirmation.length === 1 ? "" : "s"}`;
+      if (explicit) {
+        showConfirmModal(
+          `${count} on this device are no longer in the cloud: ${names}${more}.\n\n` +
+          "If you deleted them on another device, remove them here too. If not — this can also happen " +
+          "when the cloud can't be read properly — keep them, and they'll be uploaded again on the next sync.",
+          () => {
+            const removed = removeDecksMissingFromCloud(removalNeedsConfirmation);
+            showToast(`${removed} deck${removed === 1 ? "" : "s"} removed from this device`, "success");
+            if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
+            updateDeckEmptyStatus();
+          },
+          { confirmLabel: "Remove them here", danger: true }
+        );
+      } else {
+        showToast(`${count} missing from the cloud — kept on this device. Tap Sync Now to review.`, "info");
+      }
     }
   } catch (error) {
     console.error("Reconcile failed", error);
@@ -16185,10 +16585,37 @@ function isDeckTombstoned(deckId) {
   return deckId ? Boolean(readDeckTombstones()[String(deckId)]) : false;
 }
 
-function tombstoneDeck(deckId) {
+// Where a tombstone came from, which decides whether it may be PUBLISHED to the
+// shared deleted_decks table:
+//
+//   "user"     — someone deleted this deck on this device. A real, intentional
+//                deletion, and the only kind that earns a permanent shared
+//                record telling every other device to drop its copy.
+//   "inferred" — nobody deleted anything here; this device merely observed the
+//                deck missing from the cloud and concluded it must have been
+//                deleted elsewhere. That conclusion is a guess, and publishing a
+//                guess is how a local misread became global, permanent loss:
+//                the shared record is never pruned, so it goes on suppressing
+//                the deck on every device forever, including after a restore.
+//                Kept local-only — it still stops THIS device from re-pushing,
+//                and any other device can derive the same absence for itself.
+const TOMBSTONE_ORIGIN_USER = "user";
+const TOMBSTONE_ORIGIN_INFERRED = "inferred";
+
+// Entries were plain ISO strings before origins existed. Those all predate the
+// inference path being distrusted, and every one of them was written by an
+// explicit delete, so read a bare string as "user".
+function deckTombstoneOrigin(deckId) {
+  const entry = readDeckTombstones()[String(deckId)];
+  if (!entry) return null;
+  if (typeof entry === "string") return TOMBSTONE_ORIGIN_USER;
+  return entry.origin === TOMBSTONE_ORIGIN_INFERRED ? TOMBSTONE_ORIGIN_INFERRED : TOMBSTONE_ORIGIN_USER;
+}
+
+function tombstoneDeck(deckId, origin = TOMBSTONE_ORIGIN_USER) {
   if (!deckId) return;
   const map = readDeckTombstones();
-  map[String(deckId)] = new Date().toISOString();
+  map[String(deckId)] = { at: new Date().toISOString(), origin };
   writeDeckTombstones(map);
 }
 
@@ -16265,6 +16692,10 @@ async function flushPendingUntombstones() {
     return 0;
   }
   ids.forEach(clearDeckTombstone);
+  // A restored deck starts with a clean slate: any lingering "seen missing"
+  // observations would otherwise carry over and count toward deleting the deck
+  // the user just went to the trouble of bringing back.
+  ids.forEach(clearMissingDeckWatch);
   clearPendingUntombstones();
   return ids.length;
 }
@@ -16294,6 +16725,35 @@ function resetActiveDeckAfterDelete() {
   setViewMode("cards");
   closeAllCardsPanel();
   showCard();
+}
+
+// Remove local decks the user has CONFIRMED were deleted elsewhere, after the
+// sync declined to do it on its own (see the blast-radius cap in
+// reconcileAllDecks). Local-only, on purpose: it deletes no cloud row — there is
+// nothing there to delete, that being the whole reason we're here — and writes
+// no shared tombstone, because "they're missing from my cloud list" is still an
+// inference even once a user has agreed with it. Returns how many were removed.
+function removeDecksMissingFromCloud(entries) {
+  let removed = 0;
+  for (const entry of entries || []) {
+    const deckId = String(entry.deckId || "");
+    if (!deckId) continue;
+    // Re-resolve the local row: the index has been rewritten several times since
+    // the entry was built, so a stale local id could delete the wrong snapshot.
+    const meta = readLocalDeckIndex().find((m) => String(m.deckId) === deckId);
+    // Entries backed by a shared deleted_decks record are a real deletion the
+    // user has now confirmed, so they tombstone as "user" — that record already
+    // exists in the cloud, and matching it keeps the deck from bouncing back.
+    // Entries derived purely from absence stay "inferred" and local-only.
+    tombstoneDeck(deckId, entry.origin === TOMBSTONE_ORIGIN_USER ? TOMBSTONE_ORIGIN_USER : TOMBSTONE_ORIGIN_INFERRED);
+    clearMissingDeckWatch(deckId);
+    if (!meta) continue;
+    const wasActive = state.deckId && String(state.deckId) === deckId;
+    deleteDeckFromLibrary(meta.id);
+    if (wasActive) resetActiveDeckAfterDelete();
+    removed++;
+  }
+  return removed;
 }
 
 // Delete a deck from EVERYWHERE it lives — the on-device library AND the cloud
@@ -21394,6 +21854,9 @@ function ensureLocalLibraryOwner(userId) {
         .forEach((key) => localStorage.removeItem(key));
       localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
       localStorage.removeItem(LOCAL_DECK_TOMBSTONES_KEY);
+      // Observations about the previous account's decks say nothing about this
+      // one's, and a stale entry is a head start toward deleting a deck.
+      localStorage.removeItem(MISSING_DECK_WATCH_KEY);
       localStorage.removeItem(LAST_GLOBAL_SYNC_KEY);
       localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
       localStorage.removeItem(deckStorageKey);
