@@ -1859,23 +1859,13 @@ function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {
 // rather than replacing it, so neither version is lost and the user can edit
 // the two together. Bumps updatedAt so the merged result is what gets pushed.
 function restoreStashedNotes(localId) {
-  let stash;
-  try {
-    stash = JSON.parse(localStorage.getItem(LOCAL_DECK_PREFIX + localId + NOTES_CONFLICT_SUFFIX) || "null");
-  } catch {
-    stash = null;
-  }
+  const stash = readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
   if (!stash || !String(stash.notes || "").trim()) {
     showToast("Nothing left to restore", "info");
     return false;
   }
 
-  let snapshot;
-  try {
-    snapshot = JSON.parse(localStorage.getItem(LOCAL_DECK_PREFIX + localId) || "null");
-  } catch {
-    snapshot = null;
-  }
+  const snapshot = readDeckSnapshot(localId);
   if (!snapshot) {
     showToast("That deck is no longer on this device", "error");
     return false;
@@ -1885,21 +1875,20 @@ function restoreStashedNotes(localId) {
   const marker = `\n\n---\n\n## Your notes from before ${when}\n\n${stash.notes}\n`;
   snapshot.notes = String(snapshot.notes || "") + marker;
   const now = new Date().toISOString();
-  try {
-    localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
-  } catch (error) {
-    console.warn("Could not restore the stashed notes", error);
-    showToast("Couldn't restore — device storage is full", "error");
-    return false;
-  }
+  writeDeckSnapshot(localId, snapshot);
   const index = readLocalDeckIndex();
   const entry = index.find((m) => m.id === localId);
   if (entry) {
     entry.updatedAt = now;
     entry.hasNotes = true;
+    // The conflict is resolved — both versions are now in the notes body, and
+    // the stash below is about to be deleted. Without clearing this the deck
+    // would keep showing "Notes conflict" forever, pointing at a stash that no
+    // longer exists.
+    entry.notesConflicted = false;
     writeLocalDeckIndex(index);
   }
-  localStorage.removeItem(LOCAL_DECK_PREFIX + localId + NOTES_CONFLICT_SUFFIX);
+  deleteDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
   // Reflect it immediately if that deck is the one on screen.
   if (state.localDeckId === localId) loadDeckFromLibrary(localId);
   showToast("Your notes were added back at the end of the deck's notes", "success");
@@ -2059,7 +2048,7 @@ async function upsertCardRows(rows) {
 // `webCards`: this deck's existing cloud rows if the caller already fetched
 // them (reconcileAllDecks fetches every deck's in one batched request), else
 // null to fetch them here.
-async function pushDeckRowsToCloud({ deckId, title, category, notes, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, say = () => {}, silent = true }) {
+async function pushDeckRowsToCloud({ deckId, title, category, notes, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, say = () => {} }) {
   const deckData = {
     id: deckId,
     title,
@@ -2082,12 +2071,24 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
     () => withTimeout(abortable((signal) => supabaseClient.from("decks").upsert(deckDataPending).abortSignal(signal)), CLOUD_TIMEOUT_MS, "save deck"),
     { label: "save deck" }
   );
-  if (deckError && String(deckError.message || "").includes("notes")) {
+  // This deck is NOT fully synced if we fall into this branch — cards may
+  // still go through below, but the notes text stays cloud-side stale. The
+  // caller must know that, not just see a console warning: this flag rides
+  // in pushStats all the way to the sync report and the "Synced" pill, so the
+  // deck stops silently reading as fully synced. See isMissingNotesColumnError
+  // for why this is keyed on the error code, not a loose message match.
+  let notesSyncFailed = false;
+  if (deckError && isMissingNotesColumnError(deckError)) {
     // Database hasn't run supabase_setup.sql yet — sync everything else so
     // the user doesn't lose card changes, but warn about notes.
     const { notes: _omit, ...deckDataWithoutNotes } = deckDataPending;
     ({ error: deckError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").upsert(deckDataWithoutNotes).abortSignal(signal)), CLOUD_TIMEOUT_MS, "save deck"));
-    if (!deckError && String(notes || "").trim() && !silent) {
+    if (!deckError && String(notes || "").trim()) {
+      notesSyncFailed = true;
+      // A data-loss-relevant warning, unlike routine save-confirmation toasts
+      // that only make sense for an explicit action — this must fire on a
+      // background sync too, or it never reaches the user at all (the only
+      // caller always pushes in the background).
       showToast("Notes not synced — run supabase_setup.sql in Supabase", "error");
     }
   }
@@ -2186,6 +2187,7 @@ async function pushDeckRowsToCloud({ deckId, title, category, notes, currentInde
   if (bumpError) throw bumpError;
 
   pushStats.cardsDeleted = cardsDeleted;
+  pushStats.notesSyncFailed = notesSyncFailed;
   return pushStats;
 }
 
@@ -4032,9 +4034,8 @@ function myDecksEmptyRow(message) {
 
 function localDeckPayload(localId) {
   try {
-    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + localId);
-    if (!raw) return null;
-    const snapshot = JSON.parse(raw);
+    const snapshot = readDeckSnapshot(localId);
+    if (!snapshot) return null;
     const meta = readLocalDeckIndex().find((m) => m.id === localId) || {};
     return normalizeWebDeckPayload({
       id: snapshot.deckId || localId,
@@ -4217,15 +4218,10 @@ function setLocalDeckCategory(localId, category) {
   entry.category = normalized;
   entry.updatedAt = new Date().toISOString();
   writeLocalDeckIndex(index);
-  try {
-    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + localId);
-    if (raw) {
-      const snapshot = JSON.parse(raw);
-      snapshot.deckCategory = normalized;
-      localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
-    }
-  } catch (error) {
-    console.warn("Could not update local deck snapshot category", error);
+  const snapshot = readDeckSnapshot(localId);
+  if (snapshot) {
+    snapshot.deckCategory = normalized;
+    writeDeckSnapshot(localId, snapshot);
   }
 }
 
@@ -5507,12 +5503,7 @@ function planRestore(backupDecks) {
       return;
     }
 
-    let localSnapshot = null;
-    try {
-      localSnapshot = JSON.parse(localStorage.getItem(LOCAL_DECK_PREFIX + localMeta.id) || "null");
-    } catch {
-      localSnapshot = null;
-    }
+    const localSnapshot = readDeckSnapshot(localMeta.id);
     // Newest-wins per deck: the backup only overwrites an existing card or the
     // notes when the backup deck was edited more recently than the local one.
     // A missing card is ALWAYS added back and a local-only card is ALWAYS kept,
@@ -5900,7 +5891,7 @@ async function applyRestore(report, { autoBackup = true } = {}) {
       if (entry.status === "new") {
         const localId = deterministicRestoreLocalId(entry.backupDeck);
         const snapshot = backupDeckToSnapshot(entry.backupDeck, localId);
-        localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
+        writeDeckSnapshot(localId, snapshot);
         upsertRestoredMeta(localId, snapshot, entry.backupDeck);
         if (snapshot.deckId) restoredDeckIds.push(String(snapshot.deckId));
         addedDecks += 1;
@@ -5910,7 +5901,7 @@ async function applyRestore(report, { autoBackup = true } = {}) {
         // A restore is an explicit "this should exist again" for cards too, not
         // just decks — retire the tombstone of anything the backup brought back.
         dropTombstonesForLiveCards(merged.snapshot);
-        localStorage.setItem(LOCAL_DECK_PREFIX + entry.localId, JSON.stringify(merged.snapshot));
+        writeDeckSnapshot(entry.localId, merged.snapshot);
         upsertRestoredMeta(entry.localId, merged.snapshot, entry.backupDeck);
         if (merged.snapshot.deckId) restoredDeckIds.push(String(merged.snapshot.deckId));
         mergedDecks += 1;
@@ -6625,16 +6616,26 @@ async function fetchCloudDeckRows(deckIds) {
 // (a limit a per-deck query rarely hit but a batched one easily does): keep
 // asking until a short page comes back, or rows would be silently dropped and
 // the sync would read the missing cards as "deleted in the cloud".
+//
+// Also count-verified, the same way fetchCloudDeckIndex is: a short-page check
+// alone only catches a read that came back FULLY short, not one where a
+// concurrent write shifted the window mid-page (same row count, wrong rows,
+// or an off-by-a-few miss). The callers that matter — mergeCloudCardsIntoSnapshot
+// and reconcileCardsBeforePush — drop a local card the moment it's absent from
+// this result, so an unverified partial read here costs a card, not just a
+// deck; see the (now corrected) comment this used to leave in
+// pushLibraryDeckToCloud claiming this always returns a complete list.
 async function fetchCardsForDecks(deckIds, columns = "*") {
   const byDeck = new Map(deckIds.map((id) => [String(id), []]));
   if (!deckIds.length) return byDeck;
   const seen = new Set();
   const pageSize = 1000;
+  let expectedTotal = null;
   for (let from = 0; ; from += pageSize) {
-    const { data, error } = await withTimeout(
+    const { data, error, count } = await withTimeout(
       abortable((signal) => supabaseClient
         .from("cards")
-        .select(columns)
+        .select(columns, { count: "exact" })
         .in("deck_id", deckIds)
         .order("deck_id", { ascending: true })
         .order("position", { ascending: true })
@@ -6649,6 +6650,7 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
       "download cards"
     );
     if (error) throw error;
+    if (typeof count === "number") expectedTotal = count;
     const rows = data || [];
     for (const row of rows) {
       const bucket = byDeck.get(String(row.deck_id));
@@ -6660,6 +6662,9 @@ async function fetchCardsForDecks(deckIds, columns = "*") {
       bucket.push(row);
     }
     if (rows.length < pageSize) break;
+  }
+  if (expectedTotal !== null && seen.size < expectedTotal) {
+    throw new Error(`Card read was incomplete (${seen.size} of ${expectedTotal}) — not treating the gap as deletions`);
   }
   return byDeck;
 }
@@ -6686,6 +6691,19 @@ function isMissingRelationError(error) {
   if (String(error.code || "") === "42P01") return true;
   const message = String(error.message || error).toLowerCase();
   return message.includes("does not exist") || message.includes("could not find the table");
+}
+
+// PostgREST reports an unknown column as 42703 ("undefined_column"), sometimes
+// as a bare message. Checked by code first — matching on the word "notes"
+// anywhere in the message (the old approach) could misclassify an unrelated
+// error that merely mentions the column (a check constraint, an RLS policy
+// naming it) as "the migration hasn't run", silently drop the notes payload,
+// and report the push as a clean success. See pushDeckRowsToCloud.
+function isMissingNotesColumnError(error) {
+  if (!error) return false;
+  if (String(error.code || "") === "42703") return true;
+  const message = String(error.message || error).toLowerCase();
+  return message.includes("notes") && message.includes("column") && message.includes("does not exist");
 }
 
 async function fetchDeletedDeckIds() {
@@ -6758,6 +6776,16 @@ function deckSyncStatus(deck, cloudById, cloudOnly = false) {
       } else if (cloudMs > localMs) {
         label = "Update"; cls = "sync-behind";
         title = "A newer copy is in the cloud — will download on the next sync.";
+      } else if (deck.notesSyncFailed) {
+        // Cards and the deck row matched, but the notes column specifically
+        // never reached the cloud (see pushDeckRowsToCloud) — timestamps alone
+        // would read this as fully synced, which is exactly the bug this flag
+        // exists to stop.
+        label = "Notes not synced"; cls = "sync-error";
+        title = "Cards synced, but notes did not — run supabase_setup.sql in Supabase.";
+      } else if (deck.notesConflicted) {
+        label = "Notes conflict"; cls = "sync-error";
+        title = "A newer notes edit from another device replaced yours here — your copy was kept, see Sync Now for details.";
       } else {
         label = "Synced"; cls = "sync-ok";
         title = "In sync with the cloud.";
@@ -14732,15 +14760,476 @@ function isQuotaExceededError(error) {
     || error.code === 1014;
 }
 
+// A per-deck sync failure's message is shown verbatim in the report, so a
+// local quota DOMException reads as opaque browser-internal text ("Failed to
+// execute 'setItem' on 'Storage'...") right next to what looks like a cloud
+// sync failure — which is exactly why the user reads a local, on-device
+// problem as a cloud/sync one. Label the one case this file can actually
+// diagnose; leave everything else (network, RLS, timeouts) as the real
+// message, since isTransientCloudError already handles retryable ones.
+function describeSyncError(error) {
+  if (isQuotaExceededError(error)) return "This device's storage is full";
+  return error?.message || String(error);
+}
+
 let deckAutosaveStorageFailed = false;
-// Set by saveDeckToLibrary's catch block so scheduleDeckAutosave can tell a
-// genuine quota failure apart from any other save error without changing
+// Set whenever a deck write hits a genuine quota error (see
+// handleDeckStorageQuotaError) so scheduleDeckAutosave and saveDeckToLibrary's
+// callers can tell that apart from any other save error without changing
 // saveDeckToLibrary's return contract (many callers just check truthiness).
 let lastSaveErrorWasQuota = false;
+
+// One place to react to a real quota DOMException from ANY deck-data write —
+// the index (still localStorage) or a snapshot (IndexedDB, see below, or its
+// localStorage fallback). Latches deckAutosaveStorageFailed and shows the
+// toast at most once per failure streak; callers still do their own
+// setStatus/return-null for the immediate action, since "which action failed"
+// varies by call site but "the device is out of room" doesn't.
+function handleDeckStorageQuotaError(error) {
+  if (!isQuotaExceededError(error)) return false;
+  lastSaveErrorWasQuota = true;
+  if (!deckAutosaveStorageFailed) {
+    deckAutosaveStorageFailed = true;
+    setSyncIndicator("error");
+    showToast("Device storage full — clear old decks to keep saving", "error");
+  }
+  return true;
+}
+
+// ── Deck snapshot storage — IndexedDB, not localStorage ─────────────────────
+// localStorage is capped by browsers at a fixed ~5-10MB per origin, entirely
+// unrelated to the device's actual free disk space (the number
+// navigator.storage.estimate() reports, and what the Storage & Data panel
+// shows as "available"). A library of thousands of decks — cards AND notes,
+// which is what actually fills this up — blows that ceiling long before the
+// user's real storage is anywhere near full, and the resulting
+// QuotaExceededError reads as "the app is broken", not "an unrelated,
+// arbitrary browser limit was hit". IndexedDB's quota IS the disk-relative
+// one, so moving the bulk data here is what actually removes the ceiling.
+//
+// Reads stay synchronous: deckSnapshotCache is a full in-memory mirror,
+// loaded once at boot (loadDeckSnapshotCache), so every call site that used
+// to do a synchronous localStorage.getItem keeps the same shape. Writes
+// update the cache immediately — so a read right after a write is never
+// stale — and persist to IndexedDB in the background; a persist failure
+// routes through handleDeckStorageQuotaError above, the same path
+// saveDeckToLibrary already used, so there's one messaging surface, not two.
+// In practice this almost never fires: a text-only library's real IndexedDB
+// footprint is a rounding error against actual disk space.
+const DECK_STORE_DB = "recall-decks";
+const DECK_STORE_NAME = "snapshots";
+const deckSnapshotCache = new Map();
+let deckStoreDbPromise = null;
+
+// ── Unload durability journal ───────────────────────────────────────────────
+// The one thing localStorage did better: its writes were SYNCHRONOUS, so an
+// edit saved in the pagehide handler was on disk before the page went away.
+// An IndexedDB put is async, and this app's main home is a phone PWA that gets
+// backgrounded and then killed by the OS — precisely the moment the last edit
+// is still in flight. Losing it would be a data-loss regression traded for a
+// quota fix, which is no trade at all.
+//
+// So: every write not yet CONFIRMED by IndexedDB stays in `pendingDeckWrites`,
+// and flushWorkingDeck (pagehide / visibilitychange→hidden) mirrors that map
+// into one synchronous localStorage key. loadDeckSnapshotCache replays it at
+// the next boot. Normally the map is empty within a few ms of a save, so the
+// journal is usually a no-op and never approaches the localStorage cap — it
+// holds in-flight writes only, not the library.
+const DECK_WRITE_JOURNAL_KEY = "flashcards_deck_write_journal_v1";
+const pendingDeckWrites = new Map();
+// Whether a journal is currently sitting on disk. Tracked so the journal can be
+// cleared the moment it's provably unnecessary — a stale journal is worse than
+// no journal, because replaying it would resurrect a deck deleted after the
+// journal was written.
+let deckWriteJournalOnDisk = false;
+
+// ── Cross-tab cache coherence ───────────────────────────────────────────────
+// localStorage had one property this cache gives up for free: it was SHARED.
+// Two tabs read and wrote the same bytes, so a read-modify-write helper
+// (renameDeckInLibrary, appendCardToLocalLibraryDeck, setLocalDeckCategory,
+// syncLocalLibraryMetaForDeck, setQuickNoteCardCategory) always re-read what
+// the other tab had just written. An in-memory cache is per-tab, so without
+// this a second tab would keep serving a snapshot from ITS boot, and the next
+// rename there would write that stale copy back over the other tab's edits —
+// silently losing, say, a quick note pinned moments earlier in tab A.
+//
+// Each tab announces a committed write/delete; the others refresh just that id
+// from IndexedDB. BroadcastChannel never echoes to the sender, so no loop.
+// This narrows the window to "between another tab's commit and this tab's
+// refresh" rather than "forever", which is the best a synchronous-read design
+// can do without making every call site async.
+let deckStoreChannel = null;
+try {
+  deckStoreChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("recall-deck-store") : null;
+} catch {
+  deckStoreChannel = null; // not supported — single-tab behaviour, as before
+}
+if (deckStoreChannel) {
+  deckStoreChannel.onmessage = (event) => {
+    const { type, id } = event.data || {};
+    if (indexedDbUnavailable) return;
+    // The library was wiped elsewhere (account switch / "Clear this device").
+    // Keeping a full cache here would let this tab's next write re-persist
+    // decks that were just deleted — or, after an account switch, write the
+    // previous account's decks into the new one's library.
+    if (type === "clear") {
+      deckSnapshotCache.clear();
+      pendingDeckWrites.clear();
+      return;
+    }
+    if (!id) return;
+    // A write of our own is still in flight for this deck: it is the newer
+    // intent, and it will broadcast in turn once it commits. Refreshing here
+    // would just install the other tab's copy over ours moments before we
+    // overwrite it again.
+    if (pendingDeckWrites.has(String(id))) return;
+    if (type === "delete") {
+      deckSnapshotCache.delete(String(id));
+      return;
+    }
+    deckStoreRequest("readonly", (store) => store.get(String(id)))
+      .then((row) => {
+        if (pendingDeckWrites.has(String(id))) return; // raced with a local write
+        if (row && row.snapshot) deckSnapshotCache.set(String(id), row.snapshot);
+        else deckSnapshotCache.delete(String(id));
+      })
+      .catch((error) => console.warn("Could not refresh a deck snapshot after another tab changed it", id, error));
+  };
+}
+
+function announceDeckStoreChange(type, id) {
+  if (!deckStoreChannel) return;
+  try {
+    deckStoreChannel.postMessage({ type, id: String(id) });
+  } catch (error) {
+    console.warn("Could not announce a deck store change to other tabs", error);
+  }
+}
+
+// Synchronous by design — the whole point is to complete before the page dies.
+function journalPendingDeckWrites() {
+  // The fallback path already writes synchronously to localStorage, so there
+  // is nothing in flight to protect.
+  if (indexedDbUnavailable) return;
+  try {
+    if (!pendingDeckWrites.size) {
+      if (deckWriteJournalOnDisk) {
+        localStorage.removeItem(DECK_WRITE_JOURNAL_KEY);
+        deckWriteJournalOnDisk = false;
+      }
+      return;
+    }
+    localStorage.setItem(DECK_WRITE_JOURNAL_KEY, JSON.stringify(Object.fromEntries(pendingDeckWrites)));
+    deckWriteJournalOnDisk = true;
+  } catch (error) {
+    // Journalling is best-effort insurance; failing it must never break the
+    // save that already succeeded in memory and is on its way to IndexedDB.
+    console.warn("Could not journal in-flight deck writes", error);
+    // A journal we failed to UPDATE is worse than none: replaying a stale one
+    // could resurrect a deck deleted since it was written. Drop it and rely on
+    // what IndexedDB confirmed.
+    try {
+      localStorage.removeItem(DECK_WRITE_JOURNAL_KEY);
+      deckWriteJournalOnDisk = false;
+    } catch { /* nothing more to try */ }
+  }
+}
+// True only if IndexedDB itself is unavailable (e.g. Safari private
+// browsing) — not a per-write failure. Falls back to the old
+// LOCAL_DECK_PREFIX + localStorage behavior for the rest of the session
+// rather than losing access to the library.
+let indexedDbUnavailable = false;
+// Stronger than indexedDbUnavailable: the deck store holds this library and we
+// could not read it. Every deck reads as empty while the real data is intact
+// on disk, so any write derived from that emptiness — a push, a pull that
+// merges against "no local cards", an autosave — is a way to turn a temporary
+// read failure into permanent loss. Set only by loadDeckSnapshotCache, and it
+// bars syncing outright (see reconcileAllDecks). A reload is the fix.
+let deckStoreUnreadable = false;
+
+function openDeckStore() {
+  if (deckStoreDbPromise) return deckStoreDbPromise;
+  deckStoreDbPromise = new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error("IndexedDB unavailable"));
+    const request = indexedDB.open(DECK_STORE_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DECK_STORE_NAME)) {
+        db.createObjectStore(DECK_STORE_NAME, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return deckStoreDbPromise;
+}
+
+// Unlike imageOutboxRequest's sibling pattern (which opens a fresh connection
+// per call and closes it after), openDeckStore's connection is cached and
+// reused for the whole session — this runs on nearly every save, so reopening
+// every time would be real overhead. That means it must NOT be closed here:
+// closing after the first transaction left every later request calling
+// .transaction() on an already-closed IDBDatabase, which throws
+// InvalidStateError — caught by writeDeckSnapshot's .catch, so every write
+// after the very first appeared to succeed (the in-memory cache still updated)
+// while silently never reaching IndexedDB at all. Found by driving this
+// against a real browser IndexedDB, not just a stubbed one.
+function deckStoreRequest(mode, run) {
+  return openDeckStore().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(DECK_STORE_NAME, mode);
+    const request = run(tx.objectStore(DECK_STORE_NAME));
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  }));
+}
+
+// Loads every snapshot into the in-memory cache once at boot, and — the
+// one-time migration — sweeps any snapshot still sitting in localStorage
+// from before this store existed (or left behind by an interrupted migration
+// on a prior boot) into IndexedDB, then removes it from localStorage. Freeing
+// that quota needs no user action. Idempotent: a fully-migrated device finds
+// no legacy keys and does no work, so this is safe to run every boot rather
+// than needing a "migrated" flag that could itself go stale.
+async function loadDeckSnapshotCache() {
+  deckSnapshotCache.clear();
+  let records;
+  try {
+    records = await deckStoreRequest("readonly", (store) => store.getAll());
+  } catch (error) {
+    console.warn("IndexedDB unavailable — deck snapshots will stay in localStorage this session", error);
+    indexedDbUnavailable = true;
+    // Two very different situations look identical from here, and only one is
+    // safe. Private browsing / a blocked IndexedDB means this device never had
+    // a deck store, and localStorage IS the library — degraded but correct.
+    // A store that exists and holds the library but couldn't be READ this once
+    // is something else entirely: every deck would come back empty while the
+    // real data sits intact on disk. Tell them apart by whether the library
+    // index describes decks that localStorage cannot account for.
+    const indexedDecks = readLocalDeckIndex().length;
+    const localSnapshots = Object.keys(localStorage).filter((key) => key.startsWith(LOCAL_DECK_PREFIX)).length;
+    if (indexedDecks > 0 && localSnapshots === 0) {
+      deckStoreUnreadable = true;
+      console.error(
+        `Deck store could not be read, but the library index lists ${indexedDecks} deck(s). ` +
+        "Their contents are still on this device — refusing to sync so nothing overwrites them."
+      );
+    }
+    return;
+  }
+  for (const record of records) deckSnapshotCache.set(record.id, record.snapshot);
+
+  const legacyKeys = Object.keys(localStorage).filter((key) => key.startsWith(LOCAL_DECK_PREFIX));
+  let migrated = 0;
+  for (const key of legacyKeys) {
+    const id = key.slice(LOCAL_DECK_PREFIX.length);
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw == null) continue;
+      const snapshot = JSON.parse(raw);
+      deckSnapshotCache.set(id, snapshot);
+      await deckStoreRequest("readwrite", (store) => store.put({ id, snapshot }));
+      localStorage.removeItem(key);
+      migrated++;
+    } catch (error) {
+      // Left in place on purpose — it's picked up again (and retried) next
+      // boot instead of being silently dropped.
+      console.warn(`Could not migrate deck snapshot ${id} to IndexedDB — left in localStorage, will retry next boot`, error);
+    }
+  }
+  if (migrated) console.log(`Migrated ${migrated} deck snapshot(s) from localStorage to IndexedDB.`);
+
+  // Writes that were still in flight when the app was last closed (see
+  // journalPendingDeckWrites). Applied LAST so they win over both IndexedDB
+  // and any legacy key — by definition they are the newest thing this device
+  // knows about that deck.
+  try {
+    const journalRaw = localStorage.getItem(DECK_WRITE_JOURNAL_KEY);
+    if (journalRaw) {
+      const journal = JSON.parse(journalRaw);
+      let replayed = 0;
+      for (const [id, snapshot] of Object.entries(journal || {})) {
+        if (!id || !snapshot) continue;
+        deckSnapshotCache.set(id, snapshot);
+        await deckStoreRequest("readwrite", (store) => store.put({ id, snapshot }));
+        replayed++;
+      }
+      localStorage.removeItem(DECK_WRITE_JOURNAL_KEY);
+      deckWriteJournalOnDisk = false;
+      if (replayed) console.log(`Recovered ${replayed} deck edit(s) that were still saving when the app last closed.`);
+    }
+  } catch (error) {
+    // A journal we can't read is not worth failing the boot over — the app
+    // still has everything IndexedDB confirmed.
+    console.warn("Could not replay the deck write journal", error);
+  }
+}
+
+// Best-effort: reduces the chance the browser evicts this origin's storage
+// under disk pressure. Never called anywhere before this. Non-blocking —
+// boot doesn't wait on it, and a denial just means the (pre-existing) risk
+// of eviction under real disk pressure is unchanged.
+let storagePersisted = null;
+function requestPersistentStorage() {
+  if (!navigator.storage?.persist) return;
+  navigator.storage.persist()
+    .then((granted) => { storagePersisted = granted; })
+    .catch((error) => console.warn("Could not request persistent storage", error));
+}
+
+// One copy routine for both directions. structuredClone is the fast path, but
+// it throws on anything non-cloneable (a stray function or DOM node that
+// JSON.stringify would have quietly dropped) and doesn't exist at all on
+// pre-2022 browsers — either of which, unguarded, would break saving outright.
+// The JSON round-trip is exactly what the old localStorage code did, so the
+// fallback is a return to previous behaviour, not a new risk.
+function cloneSnapshot(snapshot) {
+  try {
+    return structuredClone(snapshot);
+  } catch (error) {
+    try {
+      return JSON.parse(JSON.stringify(snapshot));
+    } catch (jsonError) {
+      console.error("Could not copy a deck snapshot", jsonError);
+      return null;
+    }
+  }
+}
+
+function readDeckSnapshot(id) {
+  if (!id) return null;
+  const key = String(id);
+  if (indexedDbUnavailable) {
+    try {
+      const raw = localStorage.getItem(LOCAL_DECK_PREFIX + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+  const entry = deckSnapshotCache.get(key);
+  if (entry === undefined) return null;
+  // A clone, never the cache's own object. Call sites throughout the app read
+  // a snapshot, mutate it in memory, and only SOMETIMES call writeDeckSnapshot
+  // to persist the result (e.g. a pre-push reconcile that decides nothing
+  // actually changed). Handing out the live object would let that in-memory
+  // mutation silently corrupt what every other reader of this deck sees for
+  // the rest of the session, even though nothing was ever saved — exactly
+  // what the old fresh JSON.parse-per-read made impossible by construction.
+  return cloneSnapshot(entry);
+}
+
+// The same read WITHOUT the defensive clone, for read-only passes over the
+// whole library (the storage report, the image-reference scan, the quick-note
+// source search). Those touch every deck, and cloning a few thousand snapshots
+// just to read a string out of each is pure waste on exactly the large library
+// this whole change exists to support.
+//
+// The contract is in the name: the returned object is the cache's own. NEVER
+// mutate it, and never hand it to something that might — use readDeckSnapshot
+// for anything that writes. See its comment for what mutation would cost.
+function peekDeckSnapshot(id) {
+  if (!id) return null;
+  if (indexedDbUnavailable) return readDeckSnapshot(id);
+  const entry = deckSnapshotCache.get(String(id));
+  return entry === undefined ? null : entry;
+}
+
+// Synchronous from the caller's point of view — the cache (and therefore
+// every subsequent readDeckSnapshot) is updated before this returns. The
+// IndexedDB persist itself is fire-and-forget; see the block comment above
+// for why that's an acceptable trade for keeping ~48 call sites synchronous.
+// Clones before storing too, so a caller that keeps mutating its own
+// `snapshot` variable after calling this can't reach back into the cache.
+function writeDeckSnapshot(id, snapshot) {
+  if (!id) return;
+  const key = String(id);
+  if (indexedDbUnavailable) {
+    try {
+      localStorage.setItem(LOCAL_DECK_PREFIX + key, JSON.stringify(snapshot));
+    } catch (error) {
+      handleDeckStorageQuotaError(error);
+    }
+    return;
+  }
+  const stored = cloneSnapshot(snapshot);
+  if (!stored) return;
+  deckSnapshotCache.set(key, stored);
+  pendingDeckWrites.set(key, stored);
+  deckStoreRequest("readwrite", (store) => store.put({ id: key, snapshot: stored })).then(() => {
+    // Identity-compared: a newer write for the same deck may have replaced this
+    // one while the transaction was open, and that one is still unconfirmed.
+    if (pendingDeckWrites.get(key) === stored) pendingDeckWrites.delete(key);
+    // Provably nothing in flight — drop the journal rather than leave a stale
+    // copy that a later boot would replay over newer truth.
+    if (!pendingDeckWrites.size && deckWriteJournalOnDisk) journalPendingDeckWrites();
+    // Announced only once COMMITTED, so a tab that reacts by reading IndexedDB
+    // is guaranteed to find this version rather than the one it replaced.
+    announceDeckStoreChange("write", key);
+  }).catch((error) => {
+    console.warn("Could not persist deck snapshot to IndexedDB", key, error);
+    handleDeckStorageQuotaError(error);
+  });
+}
+
+function deleteDeckSnapshot(id) {
+  if (!id) return;
+  const key = String(id);
+  if (indexedDbUnavailable) {
+    localStorage.removeItem(LOCAL_DECK_PREFIX + key);
+    return;
+  }
+  deckSnapshotCache.delete(key);
+  const wasPending = pendingDeckWrites.delete(key);
+  // Rewrite the journal immediately if this deck could still be sitting in it.
+  // Waiting until the next pagehide would leave a window where a crash replays
+  // a journal entry for a deck the user just deleted — resurrecting it.
+  if (wasPending && deckWriteJournalOnDisk) journalPendingDeckWrites();
+  deckStoreRequest("readwrite", (store) => store.delete(key))
+    .then(() => announceDeckStoreChange("delete", key))
+    .catch((error) => {
+      console.warn("Could not delete deck snapshot from IndexedDB", key, error);
+    });
+}
+
+// Every id currently holding a snapshot (main deck bodies AND notes-conflict
+// stashes, which share this namespace via the NOTES_CONFLICT_SUFFIX-suffixed
+// id — see pruneOrphanedDeckSnapshots).
+function allDeckSnapshotIds() {
+  if (indexedDbUnavailable) {
+    return Object.keys(localStorage)
+      .filter((key) => key.startsWith(LOCAL_DECK_PREFIX))
+      .map((key) => key.slice(LOCAL_DECK_PREFIX.length));
+  }
+  return Array.from(deckSnapshotCache.keys());
+}
+
+// Used by wipeLocalLibrary / an account switch — every snapshot, gone.
+async function clearAllDeckSnapshots() {
+  // Both paths: a journal that outlived the library it describes would replay
+  // the wiped decks straight back on the next boot (and on an account switch,
+  // into the WRONG account's library).
+  pendingDeckWrites.clear();
+  try {
+    localStorage.removeItem(DECK_WRITE_JOURNAL_KEY);
+    deckWriteJournalOnDisk = false;
+  } catch { /* nothing journalled */ }
+  if (indexedDbUnavailable) {
+    Object.keys(localStorage).filter((key) => key.startsWith(LOCAL_DECK_PREFIX)).forEach((key) => localStorage.removeItem(key));
+    return;
+  }
+  deckSnapshotCache.clear();
+  try {
+    await deckStoreRequest("readwrite", (store) => store.clear());
+  } catch (error) {
+    console.warn("Could not clear IndexedDB deck store", error);
+  }
+  announceDeckStoreChange("clear", "");
+}
+
 function scheduleDeckAutosave() {
   // After a storage-quota failure, stop scheduling further writes — the
-  // toast already told the user, and hammering a full localStorage just
-  // wastes CPU and fires more confusing errors.
+  // toast already told the user, and hammering a full store just wastes CPU
+  // and fires more confusing errors.
   if (deckAutosaveStorageFailed) return;
   if (deckAutosaveTimer) clearTimeout(deckAutosaveTimer);
   deckAutosaveTimer = setTimeout(() => {
@@ -14754,20 +15243,10 @@ function scheduleDeckAutosave() {
       return;
     }
     const savedMeta = saveDeckToLibrary({ silent: true });
-    if (!savedMeta) {
-      // Only latch (and stop future autosaves) on a REAL quota error. Any
-      // other save failure is presumably transient/one-off — don't lock the
-      // rest of the session out of autosaving over it.
-      if (lastSaveErrorWasQuota) {
-        deckAutosaveStorageFailed = true;
-        setSyncIndicator("error");
-        showToast("Device storage full — clear old decks to keep saving", "error");
-      } else {
-        setSyncIndicator("error");
-      }
-      return;
-    }
-    setSyncIndicator("saved");
+    // A genuine quota failure already latched deckAutosaveStorageFailed and
+    // showed its toast inside saveDeckToLibrary (via handleDeckStorageQuotaError)
+    // — nothing left to do here but reflect the outcome in the pill.
+    setSyncIndicator(savedMeta ? "saved" : "error");
   }, 400);
 }
 
@@ -14861,13 +15340,26 @@ function setSyncIndicator(stateName) {
     offline: "Offline · saved on device",
     error: "Sync failed · saved on device",
   };
-  node.dataset.state = stateName === "signin" ? "saved" : stateName;
+  let resolvedState = stateName === "signin" ? "saved" : stateName;
   let text = labels[stateName] || "";
   if (stateName === "synced" && state.localDeckId) {
     const localMeta = readLocalDeckIndex().find((m) => m.id === state.localDeckId);
-    const relative = formatRelativeTime(localMeta?.lastSyncedAt);
-    if (relative) text += ` · ${relative}`;
+    // Timestamps alone (all this state normally reflects) can't tell "fully
+    // synced" apart from "cards synced, notes silently didn't" — check the
+    // flags pushLibraryDeckToCloud/pullCloudDeckToLibrary persist for exactly
+    // this, so the pill doesn't claim success a deck's notes didn't reach.
+    if (localMeta?.notesSyncFailed) {
+      resolvedState = "error";
+      text = "Notes not synced";
+    } else if (localMeta?.notesConflicted) {
+      resolvedState = "error";
+      text = "Notes conflict — see Sync Now";
+    } else {
+      const relative = formatRelativeTime(localMeta?.lastSyncedAt);
+      if (relative) text += ` · ${relative}`;
+    }
   }
+  node.dataset.state = resolvedState;
   node.textContent = text;
   renderSyncCountdown();
 }
@@ -15008,6 +15500,12 @@ function emptySyncStats() {
     // markdown and can't be merged card-wise, so the losing copy is stashed
     // (see NOTES_CONFLICT_SUFFIX) and flagged here.
     notesConflicted: false,
+    // A push's deck-row write failed specifically on the notes column (see
+    // isMissingNotesColumnError) — cards may still have gone through, but the
+    // notes text itself never reached the cloud. Without this flag the push
+    // still reports as a plain success, which is exactly the "shows Synced
+    // but notes didn't sync" failure mode this exists to close.
+    notesSyncFailed: false,
     // The whole deck was deleted on another device, so this device dropped its
     // copy instead of re-uploading it. A deck-level flag, not a card count —
     // there is no card detail to report once the deck is gone.
@@ -15018,7 +15516,7 @@ function emptySyncStats() {
 // The counted stats (summed across decks), as opposed to the deck-level
 // booleans below them, which are counted as "how many decks".
 const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere"];
-const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "deckRemovedHere"];
+const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesSyncFailed", "deckRemovedHere"];
 
 // Human phrases for a diff, most consequential first. Returns an array so
 // callers can join, count, or truncate it. With `asTotals`, the deck-level
@@ -15044,6 +15542,7 @@ function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   flag(stats.deckCategoryChanged, "deck category changed");
   flag(stats.noteCategoriesChanged, "note categories added/renamed/removed");
   flag(stats.notesConflicted, "your notes edit was replaced by a newer one (a copy was kept)");
+  flag(stats.notesSyncFailed, "notes could NOT be synced — run supabase_setup.sql in Supabase");
   flag(stats.deckRemovedHere, "removed here (deleted on another device)");
   return parts;
 }
@@ -15114,13 +15613,7 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
   // it's both the merge base and the diff base for the sync report. A corrupt
   // snapshot must not abort the pull: it degrades to "everything is new", which
   // is exactly right when the old copy is unreadable anyway.
-  const oldRaw = existing ? localStorage.getItem(LOCAL_DECK_PREFIX + localId) : null;
-  let oldSnapshot = null;
-  try {
-    oldSnapshot = oldRaw ? JSON.parse(oldRaw) : null;
-  } catch {
-    oldSnapshot = null;
-  }
+  const oldSnapshot = existing ? readDeckSnapshot(localId) : null;
 
   // Distinguish "the cloud says these notes are empty" from "this row never
   // carried a notes column". Both look like a falsy `cloud.notes`, and the
@@ -15184,17 +15677,11 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     const notesBeingEmptied = String(oldSnapshot.notes || "").trim() && !snapshot.notes.trim();
     if ((localNotesEdited || notesBeingEmptied) && String(oldSnapshot.notes || "").trim()) {
       notesConflicted = true;
-      try {
-        localStorage.setItem(LOCAL_DECK_PREFIX + localId + NOTES_CONFLICT_SUFFIX, JSON.stringify({
-          savedAt: new Date().toISOString(),
-          deckTitle: oldSnapshot.deckTitle || "",
-          notes: oldSnapshot.notes || ""
-        }));
-      } catch (error) {
-        // Out of quota is not a reason to abandon the pull — the flag below
-        // still tells the user their copy was replaced.
-        console.warn("Could not stash the replaced notes copy", error);
-      }
+      writeDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX, {
+        savedAt: new Date().toISOString(),
+        deckTitle: oldSnapshot.deckTitle || "",
+        notes: oldSnapshot.notes || ""
+      });
     }
   }
 
@@ -15237,7 +15724,7 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     stats = { ...emptySyncStats(), cardsAdded: snapshot.cards.length, notesChanged: Boolean(snapshot.notes.trim()) };
   }
 
-  localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
+  writeDeckSnapshot(localId, snapshot);
 
   const meta = {
     id: localId,
@@ -15245,6 +15732,13 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
     category: snapshot.deckCategory,
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(snapshot.notes.trim()),
+    // Persisted (not just in the one-off sync report) so the "Synced" pill and
+    // the My Decks table keep reflecting it after the report modal is closed.
+    // A pull recomputes notesConflicted authoritatively, but it says nothing
+    // about whether this device's notes ever reached the cloud — only a push
+    // can establish or clear that, so carry it rather than dropping it.
+    notesConflicted,
+    notesSyncFailed: existing?.notesSyncFailed || false,
     // Normally the cloud's timestamp, so the two read as in sync. But when the
     // merge KEPT local cards, this deck still owes the cloud a push — stamping
     // it with the cloud's time would make the push pass skip it and those
@@ -15274,9 +15768,8 @@ async function pullCloudDeckToLibrary(cloud, prefetchedCards = null) {
 // disturbing the active in-memory deck. Mints a stable cloud id if the deck has
 // never been synced, then records it locally and aligns the timestamp.
 async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDeck = null, webCards = null } = {}) {
-  const raw = localStorage.getItem(LOCAL_DECK_PREFIX + localMeta.id);
-  if (!raw) throw new Error("Local deck snapshot missing");
-  const snapshot = JSON.parse(raw);
+  const snapshot = readDeckSnapshot(localMeta.id);
+  if (!snapshot) throw new Error("Local deck snapshot missing");
 
   let deckId = snapshot.deckId || localMeta.deckId || null;
   let isNewDeck = !cloudExists;
@@ -15296,9 +15789,9 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
   // resurrects cards other devices deleted and deletes cards they added. The
   // reconcile is only possible when we genuinely know the cloud's card list:
   // `webCards` is null for a deck the cloud doesn't have yet (nothing to
-  // reconcile against) and fetchCardsForDecks throws rather than returning a
-  // partial list, so an array here is always complete. See
-  // reconcileCardsBeforePush.
+  // reconcile against) and fetchCardsForDecks now count-verifies its read and
+  // throws on a short/shifted one rather than returning it, so an array here
+  // is always complete. See reconcileCardsBeforePush.
   let cardsRemovedHere = 0;
   let cardsAdoptedHere = 0;
   // Ids this push is about to delete from the cloud on a tombstone's say-so.
@@ -15320,11 +15813,7 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     // here, and rewriting every deck's snapshot on every sync is pure quota
     // churn on the device where quota is already the binding constraint.
     if (cardsRemovedHere || cardsAdoptedHere || tombstonesRetired) {
-      try {
-        localStorage.setItem(LOCAL_DECK_PREFIX + localMeta.id, JSON.stringify(snapshot));
-      } catch (error) {
-        console.warn("Could not save the pre-push card merge", error);
-      }
+      writeDeckSnapshot(localMeta.id, snapshot);
     }
   }
 
@@ -15346,21 +15835,14 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     isNewDeck,
     overwrite: false,
     now,
-    webCards,
-    silent: true
+    webCards
   });
 
   // Re-read rather than writing back the copy captured before the push. The
   // push is a multi-second network round trip and the user keeps editing during
   // it; persisting the stale in-memory snapshot silently discarded every edit
   // made in that window. Patch only what the push actually establishes.
-  let liveSnapshot = snapshot;
-  try {
-    const freshRaw = localStorage.getItem(LOCAL_DECK_PREFIX + localMeta.id);
-    if (freshRaw) liveSnapshot = JSON.parse(freshRaw);
-  } catch (error) {
-    console.warn("Could not re-read deck snapshot after push", error);
-  }
+  const liveSnapshot = readDeckSnapshot(localMeta.id) || snapshot;
   liveSnapshot.deckId = deckId;
   // The cloud now holds exactly `pushedCards`, so every card still matching what
   // we sent is confirmed clean. A card whose signature changed mid-push stays
@@ -15381,7 +15863,7 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     for (const id of tombstonesBeingPruned) delete liveSnapshot.deletedCardIds[id];
     if (!Object.keys(liveSnapshot.deletedCardIds).length) delete liveSnapshot.deletedCardIds;
   }
-  localStorage.setItem(LOCAL_DECK_PREFIX + localMeta.id, JSON.stringify(liveSnapshot));
+  writeDeckSnapshot(localMeta.id, liveSnapshot);
 
   const index = readLocalDeckIndex();
   const entry = index.find((m) => m.id === localMeta.id);
@@ -15395,6 +15877,10 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     const untouchedDuringPush = entry.updatedAt === localMeta.updatedAt;
     if (!stillDirty && untouchedDuringPush) entry.updatedAt = now;
     entry.lastSyncedAt = now;
+    // Persisted onto the index (not just the one-off sync report) so the
+    // "Synced" pill and the My Decks table still reflect it the next time
+    // this deck is opened or listed, long after the toast is gone.
+    entry.notesSyncFailed = pushStats.notesSyncFailed || false;
     // The push wrote every card in the snapshot, so the count is authoritative
     // — and a quick note pinned into a stub deck would otherwise keep the 0 it
     // was created with.
@@ -15541,7 +16027,23 @@ async function reconcileAllDecks({ explicit = false } = {}) {
   const deckLog = [];
 
   try {
-    // Identity first, before a single byte is read or written. Every table is
+    // Local integrity before anything else: if this device's deck bodies could
+    // not be read (see deckStoreUnreadable), every deck looks empty here while
+    // the real contents sit intact on disk. Syncing on that reading is how a
+    // one-off read failure becomes permanent loss — the push would send empty
+    // decks and prune the cloud's cards to match. Same rule the cloud side
+    // already follows: absence that can't be trusted is not a fact.
+    if (deckStoreUnreadable) {
+      console.warn("Sync skipped — this device's deck contents could not be read this session.");
+      setSyncIndicator("error");
+      if (explicit) {
+        setStatus("Couldn't read this device's decks — reload the app before syncing. Nothing was changed.", "error");
+        showToast("Couldn't read this device's decks — reload before syncing", "error");
+      }
+      return;
+    }
+
+    // Identity next, before a single byte is read or written. Every table is
     // RLS-scoped to auth.uid(), so a query made without a valid user token comes
     // back EMPTY AND SUCCESSFUL — and the deletion rules further down read an
     // empty cloud as "deleted on another device". Sync as nobody, lose the
@@ -15981,7 +16483,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
         }
       } catch (e) {
         failed++;
-        deckLog.push({ title: cloud.title || "Untitled deck", direction: "failed", error: e?.message || String(e) });
+        deckLog.push({ title: cloud.title || "Untitled deck", direction: "failed", error: describeSyncError(e) });
         console.warn("Reconcile pull failed", cloud.id, e);
       }
     }
@@ -16051,7 +16553,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
         }
       } catch (e) {
         failed++;
-        deckLog.push({ title: localMeta.title || "Untitled deck", direction: "failed", error: e?.message || String(e) });
+        deckLog.push({ title: localMeta.title || "Untitled deck", direction: "failed", error: describeSyncError(e) });
         console.warn("Reconcile push failed", localMeta.id, e);
       }
       // Counted as decks finish rather than as they start — with three in flight
@@ -16188,7 +16690,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       const offlineNow = !navigator.onLine || /failed to fetch|networkerror|load failed/i.test(error?.message || "");
       const reason = offlineNow
         ? "Couldn't reach the cloud — check your connection"
-        : error?.message || "Unknown error";
+        : (isQuotaExceededError(error) ? describeSyncError(error) : error?.message || "Unknown error");
       setStatus(`Sync failed — ${reason}. Your decks are safe on this device.`, "error");
       showToast(`Sync failed — ${reason}`, "error");
     }
@@ -16218,8 +16720,16 @@ function readLocalDeckIndex() {
   }
 }
 
+// Rethrows on failure (unlike most small localStorage writers in this file,
+// which swallow-and-warn) so saveDeckToLibrary's caller-facing "could not
+// save" messaging actually fires instead of the error going uncaught.
 function writeLocalDeckIndex(list) {
-  localStorage.setItem(LOCAL_DECKS_INDEX_KEY, JSON.stringify(list));
+  try {
+    localStorage.setItem(LOCAL_DECKS_INDEX_KEY, JSON.stringify(list));
+  } catch (error) {
+    console.warn("Could not save the local deck index", error);
+    throw error;
+  }
 }
 
 // Set once the stored-text repair below has run on this device.
@@ -16245,14 +16755,8 @@ function repairEscapedMathInLibrary() {
   let repaired = 0;
 
   const nextIndex = readLocalDeckIndex().map((entry) => {
-    let snapshot = null;
-    try {
-      const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
-      if (!raw) return entry;
-      snapshot = JSON.parse(raw);
-    } catch {
-      return entry;
-    }
+    const snapshot = readDeckSnapshot(entry.id);
+    if (!snapshot) return entry;
 
     let changed = false;
 
@@ -16277,12 +16781,7 @@ function repairEscapedMathInLibrary() {
 
     if (!changed) return entry;
 
-    try {
-      localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
-    } catch (error) {
-      console.warn("Could not write repaired deck", entry.id, error);
-      return entry;
-    }
+    writeDeckSnapshot(entry.id, snapshot);
     repaired += 1;
     // Deck notes are deck-level, not per-card, so this timestamp is what
     // carries a notes-only repair to the cloud.
@@ -16296,6 +16795,23 @@ function repairEscapedMathInLibrary() {
     console.warn("Could not record math-escape repair", error);
   }
   return repaired;
+}
+
+// Repair math that older builds saved with Markdown escapes still in it.
+// Called from bootApp the moment the deck cache is loaded, so it lands before
+// any deck can be opened — the deck a user picks must already hold repaired
+// text, not get repaired underneath them.
+function runEscapedMathRepair() {
+  // The repair stamps itself as done even when it finds nothing, so running it
+  // against an unreadable store would permanently skip it for this device.
+  if (deckStoreUnreadable) return;
+  try {
+    const repaired = repairEscapedMathInLibrary();
+    if (repaired) console.info(`Repaired escaped math in ${repaired} deck(s)`);
+  } catch (error) {
+    // A library that cannot be repaired is still a library worth opening.
+    console.warn("Escaped-math repair failed", error);
+  }
 }
 
 function generateLocalDeckId() {
@@ -16314,21 +16830,15 @@ function appendCardToLocalLibraryDeck(deckId, card, now) {
   const entry = index.find((e) => e.deckId === deckId);
   if (!entry) return;
   const resolvedNow = now || new Date().toISOString();
-  try {
-    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
-    if (!raw) return;
-    const snapshot = JSON.parse(raw);
-    snapshot.cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
-    // Written straight into the snapshot, so it never passes through
-    // saveDeckToLibrary's stamping — mark it here or the next pull would treat
-    // this brand-new card as "clean and absent from the cloud" and delete it.
-    snapshot.cards.push({ ...card, dirty: true, updatedAt: resolvedNow });
-    dropTombstonesForLiveCards(snapshot);
-    localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
-  } catch (error) {
-    console.warn("Could not append card to local deck snapshot", error);
-    return;
-  }
+  const snapshot = readDeckSnapshot(entry.id);
+  if (!snapshot) return;
+  snapshot.cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
+  // Written straight into the snapshot, so it never passes through
+  // saveDeckToLibrary's stamping — mark it here or the next pull would treat
+  // this brand-new card as "clean and absent from the cloud" and delete it.
+  snapshot.cards.push({ ...card, dirty: true, updatedAt: resolvedNow });
+  dropTombstonesForLiveCards(snapshot);
+  writeDeckSnapshot(entry.id, snapshot);
   entry.cardCount = (entry.cardCount || 0) + 1;
   entry.updatedAt = resolvedNow;
   writeLocalDeckIndex(index);
@@ -16352,22 +16862,17 @@ function syncLocalLibraryMetaForDeck(deckId, { title, category, now } = {}) {
   entry.updatedAt = resolvedNow;
   writeLocalDeckIndex(index);
 
-  try {
-    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
-    if (raw) {
-      const snapshot = JSON.parse(raw);
-      if (title !== undefined) {
-        snapshot.deckTitle = title;
-        // Keep the title mirrors in step so a later loadDeckFromLibrary (which
-        // reads sourceTitle first) can't resurrect the old name.
-        snapshot.sourceTitle = title;
-        snapshot.importTitleHint = title;
-      }
-      if (category !== undefined) snapshot.deckCategory = category;
-      localStorage.setItem(LOCAL_DECK_PREFIX + entry.id, JSON.stringify(snapshot));
+  const snapshot = readDeckSnapshot(entry.id);
+  if (snapshot) {
+    if (title !== undefined) {
+      snapshot.deckTitle = title;
+      // Keep the title mirrors in step so a later loadDeckFromLibrary (which
+      // reads sourceTitle first) can't resurrect the old name.
+      snapshot.sourceTitle = title;
+      snapshot.importTitleHint = title;
     }
-  } catch (error) {
-    console.warn("Could not update local deck snapshot metadata", error);
+    if (category !== undefined) snapshot.deckCategory = category;
+    writeDeckSnapshot(entry.id, snapshot);
   }
 }
 
@@ -16413,6 +16918,15 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
     if (!silent) setStatus("Add some cards or notes before saving a deck.", "error");
     return null;
   }
+  // The deck bodies on this device couldn't be read this session (see
+  // deckStoreUnreadable). Writing now would persist whatever partial state the
+  // app managed to assemble over a deck whose real contents are intact but
+  // invisible — the one way a read failure becomes a write failure. Refuse,
+  // and say so; a reload restores normal operation.
+  if (deckStoreUnreadable) {
+    if (!silent) setStatus("Couldn't read this device's decks — reload the app before editing. Nothing was changed.", "error");
+    return null;
+  }
   const snapshot = deckSnapshot();
   let localId = id || state.localDeckId;
   if (!localId && snapshot.deckId) {
@@ -16426,11 +16940,7 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
   // Read the copy we're about to overwrite, BEFORE writing, so we can tell a
   // real content edit apart from a position-only / no-op save and keep the cloud
   // id from ever being dropped.
-  let previousSnapshot = null;
-  try {
-    const prevRaw = localStorage.getItem(LOCAL_DECK_PREFIX + localId);
-    if (prevRaw) previousSnapshot = JSON.parse(prevRaw);
-  } catch { previousSnapshot = null; }
+  const previousSnapshot = readDeckSnapshot(localId);
   if (!snapshot.deckId) snapshot.deckId = previousSnapshot?.deckId || previousEntry?.deckId || null;
 
   // Only advance updatedAt when the content actually changed (or on an explicit
@@ -16455,22 +16965,12 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
   // distinguish from "never had it". See recordDeletedCardIds.
   recordDeletedCardIds(snapshot, previousSnapshot, updatedAt || nowIso);
 
-  try {
-    localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
-    lastSaveErrorWasQuota = false;
-  } catch (error) {
-    console.warn("Could not save deck to library", error);
-    lastSaveErrorWasQuota = isQuotaExceededError(error);
-    if (!silent) {
-      setStatus(
-        lastSaveErrorWasQuota
-          ? "Could not save deck — device storage is full. Delete some old decks to free space."
-          : `Could not save deck: ${error?.message || error?.name || "unknown error"}`,
-        "error"
-      );
-    }
-    return null;
-  }
+  // Updates the in-memory cache synchronously — everything below sees this
+  // deck as saved — and persists to IndexedDB in the background. A genuine
+  // quota error surfaces asynchronously via handleDeckStorageQuotaError
+  // rather than failing this call; see the block comment on writeDeckSnapshot.
+  lastSaveErrorWasQuota = false;
+  writeDeckSnapshot(localId, snapshot);
 
   const meta = {
     id: localId,
@@ -16484,9 +16984,31 @@ function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSy
     // Preserved as-is here — only touchLocalDeckAccess (called on a genuine
     // open, not on every autosave) advances this.
     accessedAt: previousEntry?.accessedAt || null,
+    // Carried over, NOT recomputed. These say "the cloud copy of this deck's
+    // notes is wrong/contested", which only a sync can establish or clear
+    // (pullCloudDeckToLibrary and pushLibraryDeckToCloud each rewrite them
+    // authoritatively). Dropping them here meant the very next autosave — 400ms
+    // after the user typed one character — silently cleared the warning while
+    // the notes were still missing from the cloud.
+    notesConflicted: previousEntry?.notesConflicted || false,
+    notesSyncFailed: previousEntry?.notesSyncFailed || false,
     deckId: snapshot.deckId || null,
   };
-  writeLocalDeckIndex([meta, ...readLocalDeckIndex().filter((entry) => entry.id !== localId)]);
+  try {
+    writeLocalDeckIndex([meta, ...readLocalDeckIndex().filter((entry) => entry.id !== localId)]);
+  } catch (error) {
+    console.warn("Could not save deck index", error);
+    const isQuota = handleDeckStorageQuotaError(error);
+    if (!silent) {
+      setStatus(
+        isQuota
+          ? "Could not save deck — device storage is full. Delete some old decks to free space."
+          : `Could not save deck: ${error?.message || error?.name || "unknown error"}`,
+        "error"
+      );
+    }
+    return null;
+  }
   state.localDeckId = localId;
   persistWorkingDeck();
   return meta;
@@ -16498,8 +17020,8 @@ function loadDeckFromLibrary(id) {
   // silently refile an existing deck.
   pendingImportFolder = null;
   try {
-    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + id);
-    if (!raw) {
+    const payload = readDeckSnapshot(id);
+    if (!payload) {
       setStatus("That saved deck could not be found.", "error");
       return false;
     }
@@ -16507,7 +17029,6 @@ function loadDeckFromLibrary(id) {
     // it. Recorded only once the deck is known to exist — a failed open doesn't
     // move anyone.
     recordNavHistory();
-    const payload = JSON.parse(raw);
     loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "");
     state.localDeckId = id;
     persistWorkingDeck();
@@ -16523,10 +17044,10 @@ function loadDeckFromLibrary(id) {
 }
 
 function deleteDeckFromLibrary(id) {
-  localStorage.removeItem(LOCAL_DECK_PREFIX + id);
+  deleteDeckSnapshot(id);
   // The deck is gone, so its stashed notes conflict has nothing left to be
   // recovered into — and leaving it behind would keep eating quota invisibly.
-  localStorage.removeItem(LOCAL_DECK_PREFIX + id + NOTES_CONFLICT_SUFFIX);
+  deleteDeckSnapshot(id + NOTES_CONFLICT_SUFFIX);
   writeLocalDeckIndex(readLocalDeckIndex().filter((entry) => entry.id !== id));
   if (state.localDeckId === id) state.localDeckId = null;
   // Deleting a deck is the natural "free up space" action after a quota
@@ -16536,12 +17057,12 @@ function deleteDeckFromLibrary(id) {
 }
 
 // One-time cleanup for snapshots orphaned by the race in pullCloudDeckToLibrary
-// (see its comment) — a deck snapshot written to LOCAL_DECK_PREFIX + id but
-// never referenced by the index again after a losing race, so it sits in
-// localStorage forever, invisible in My Decks, silently eating quota. Removes
-// any LOCAL_DECK_PREFIX key whose id isn't in the current index. Safe: a
-// snapshot only ever exists there if it was written alongside a matching
-// index entry, so "not in the index" means nothing currently references it.
+// (see its comment) — a deck snapshot written under some id but never
+// referenced by the index again after a losing race, so it sits in the deck
+// store forever, invisible in My Decks, silently eating quota. Removes any
+// snapshot id that isn't in the current index. Safe: a snapshot only ever
+// exists there if it was written alongside a matching index entry, so "not
+// in the index" means nothing currently references it.
 function pruneOrphanedDeckSnapshots() {
   const validIds = new Set(readLocalDeckIndex().map((entry) => String(entry.id)));
   // readLocalDeckIndex() returns [] both when the library is genuinely empty
@@ -16551,16 +17072,15 @@ function pruneOrphanedDeckSnapshots() {
   // nothing to prune anyway, so skipping costs nothing either way.
   if (!validIds.size) return 0;
   let removed = 0;
-  for (const key of Object.keys(localStorage)) {
-    if (!key.startsWith(LOCAL_DECK_PREFIX)) continue;
-    let id = key.slice(LOCAL_DECK_PREFIX.length);
-    // A stashed notes conflict is a sibling key on the same prefix, so it has
-    // to be resolved back to its owning deck id — otherwise this sweep would
-    // read it as an orphan and throw away the one copy of the user's replaced
-    // notes on the very next boot.
+  for (const key of allDeckSnapshotIds()) {
+    let id = key;
+    // A stashed notes conflict is a sibling entry on the same namespace, so it
+    // has to be resolved back to its owning deck id — otherwise this sweep
+    // would read it as an orphan and throw away the one copy of the user's
+    // replaced notes on the very next boot.
     if (id.endsWith(NOTES_CONFLICT_SUFFIX)) id = id.slice(0, -NOTES_CONFLICT_SUFFIX.length);
     if (!validIds.has(id)) {
-      localStorage.removeItem(key);
+      deleteDeckSnapshot(key);
       removed++;
     }
   }
@@ -16812,20 +17332,15 @@ function renameDeckInLibrary(id, title) {
     entry.updatedAt = new Date().toISOString();
     writeLocalDeckIndex(index);
   }
-  try {
-    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + id);
-    if (raw) {
-      const payload = JSON.parse(raw);
-      payload.deckTitle = trimmed;
-      // Keep sourceTitle in sync so the snapshot is self-consistent — without
-      // this, loadDeckFromLibrary reads the stale sourceTitle and the card's
-      // header reverts to the old name even though the index shows the new one.
-      payload.sourceTitle = trimmed;
-      payload.importTitleHint = trimmed;
-      localStorage.setItem(LOCAL_DECK_PREFIX + id, JSON.stringify(payload));
-    }
-  } catch (error) {
-    console.warn("Could not rename saved deck snapshot", error);
+  const payload = readDeckSnapshot(id);
+  if (payload) {
+    payload.deckTitle = trimmed;
+    // Keep sourceTitle in sync so the snapshot is self-consistent — without
+    // this, loadDeckFromLibrary reads the stale sourceTitle and the card's
+    // header reverts to the old name even though the index shows the new one.
+    payload.sourceTitle = trimmed;
+    payload.importTitleHint = trimmed;
+    writeDeckSnapshot(id, payload);
   }
   if (state.localDeckId === id) {
     state.deckTitle = trimmed;
@@ -21844,14 +22359,12 @@ function initAppForUser() {
 // decks). The previous user's data is safe in their own cloud account.
 const LAST_USER_STORAGE_KEY = "flashcards_last_user_id";
 
-function ensureLocalLibraryOwner(userId) {
+async function ensureLocalLibraryOwner(userId) {
   if (!userId) return;
   try {
     const previous = localStorage.getItem(LAST_USER_STORAGE_KEY);
     if (previous && previous !== String(userId)) {
-      Object.keys(localStorage)
-        .filter((key) => key.startsWith(LOCAL_DECK_PREFIX))
-        .forEach((key) => localStorage.removeItem(key));
+      await clearAllDeckSnapshots();
       localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
       localStorage.removeItem(LOCAL_DECK_TOMBSTONES_KEY);
       // Observations about the previous account's decks say nothing about this
@@ -21876,10 +22389,10 @@ function setupAuthListener() {
     authListenerSubscription.unsubscribe();
     authListenerSubscription = null;
   }
-  const { data } = supabaseClient.auth.onAuthStateChange((event, session) => {
+  const { data } = supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (session?.user) {
       isSignedIn = true;
-      ensureLocalLibraryOwner(session.user.id);
+      await ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
       if (!appInitialized) {
         appInitialized = true;
@@ -21900,6 +22413,15 @@ function setupAuthListener() {
 }
 
 async function bootApp() {
+  // Before anything reads a deck: load the IndexedDB-backed snapshot cache
+  // (and migrate any pre-existing localStorage snapshots into it) so every
+  // downstream readDeckSnapshot/writeDeckSnapshot call sees a consistent
+  // picture from the very first render. requestPersistentStorage is
+  // best-effort and doesn't need to block boot.
+  await loadDeckSnapshotCache();
+  requestPersistentStorage();
+  runEscapedMathRepair();
+
   const hasConfig = initSupabaseClient();
 
   if (!hasConfig) {
@@ -21914,7 +22436,7 @@ async function bootApp() {
   const session = await getCachedSession();
   if (session?.user) {
     isSignedIn = true;
-    ensureLocalLibraryOwner(session.user.id);
+    await ensureLocalLibraryOwner(session.user.id);
     showAuthenticatedUI();
     if (!appInitialized) {
       appInitialized = true;
@@ -21952,6 +22474,11 @@ function flushWorkingDeck() {
   // by the debounced scheduleDeckAutosave() timer would otherwise never reach
   // the library, and the next reconcile wouldn't even know it happened.
   saveDeckToLibrary({ silent: true });
+  // That save reaches IndexedDB asynchronously, and this handler runs when the
+  // page is about to stop existing. Mirror anything still in flight into a
+  // synchronous localStorage journal so the next boot can replay it — without
+  // this, the last edit before a phone kills the backgrounded app is lost.
+  journalPendingDeckWrites();
 }
 window.addEventListener("pagehide", () => {
   flushWorkingDeck();
@@ -22723,31 +23250,20 @@ function rewriteLocalImageReferences(token, url) {
 
   const now = new Date().toISOString();
   for (const meta of readLocalDeckIndex()) {
-    let raw;
-    try {
-      raw = localStorage.getItem(LOCAL_DECK_PREFIX + meta.id);
-    } catch { continue; }
-    if (!raw || !raw.includes(placeholder)) continue;
-    let snapshot;
-    try {
-      snapshot = JSON.parse(raw);
-    } catch { continue; }
-    snapshot.notes = swap(snapshot.notes);
-    for (const card of snapshot.cards || []) {
-      if (touched(card.question) || touched(card.answer)) {
-        card.question = swap(card.question);
-        card.answer = swap(card.answer);
-        // The card's text genuinely changed, so it owes the cloud a push.
-        card.dirty = true;
-        card.updatedAt = now;
-      }
+    const snapshot = readDeckSnapshot(meta.id);
+    if (!snapshot) continue;
+    const notesTouched = touched(snapshot.notes);
+    const touchedCards = (snapshot.cards || []).filter((card) => touched(card.question) || touched(card.answer));
+    if (!notesTouched && !touchedCards.length) continue;
+    if (notesTouched) snapshot.notes = swap(snapshot.notes);
+    for (const card of touchedCards) {
+      card.question = swap(card.question);
+      card.answer = swap(card.answer);
+      // The card's text genuinely changed, so it owes the cloud a push.
+      card.dirty = true;
+      card.updatedAt = now;
     }
-    try {
-      localStorage.setItem(LOCAL_DECK_PREFIX + meta.id, JSON.stringify(snapshot));
-    } catch (error) {
-      console.warn("Could not rewrite an uploaded image reference", error);
-      continue;
-    }
+    writeDeckSnapshot(meta.id, snapshot);
     const index = readLocalDeckIndex();
     const entry = index.find((m) => m.id === meta.id);
     if (entry) {
@@ -22897,14 +23413,11 @@ async function collectReferencedStoragePaths(onProgress) {
   };
 
   for (const meta of readLocalDeckIndex()) {
-    try {
-      const snapshot = JSON.parse(localStorage.getItem(LOCAL_DECK_PREFIX + meta.id) || "null");
-      if (!snapshot) continue;
-      add(snapshot.notes);
-      for (const card of snapshot.cards || []) { add(card.question); add(card.answer); }
-    } catch (error) {
-      console.warn("Could not scan a local deck for image references", meta.id, error);
-    }
+    // peek, not read: this only reads strings out of every deck in the library.
+    const snapshot = peekDeckSnapshot(meta.id);
+    if (!snapshot) continue;
+    add(snapshot.notes);
+    for (const card of snapshot.cards || []) { add(card.question); add(card.answer); }
   }
 
   onProgress?.("Reading decks in the cloud…");
@@ -22956,7 +23469,9 @@ function localLibraryStats() {
   for (const meta of index) {
     cards += Number(meta.cardCount) || 0;
     try {
-      bytes += (localStorage.getItem(LOCAL_DECK_PREFIX + meta.id) || "").length;
+      // peek, not read: measuring size must not also clone every deck.
+      const snapshot = peekDeckSnapshot(meta.id);
+      if (snapshot) bytes += JSON.stringify(snapshot).length;
     } catch { /* unreadable snapshot — its size is the least of the problems */ }
   }
   return { decks: index.length, cards, bytes };
@@ -23128,12 +23643,13 @@ async function deleteAllCloudTombstones() {
 // make them re-enter the project URL and key, which is a different (and much
 // more annoying) action than emptying the library.
 async function wipeLocalLibrary() {
-  const keys = [];
-  for (let i = 0; i < localStorage.length; i += 1) {
-    const key = localStorage.key(i);
-    if (key === LOCAL_DECKS_INDEX_KEY || (key && key.startsWith(LOCAL_DECK_PREFIX))) keys.push(key);
-  }
-  for (const key of keys) localStorage.removeItem(key);
+  const snapshotCount = allDeckSnapshotIds().length;
+  await clearAllDeckSnapshots();
+  localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
+  // Clearing the device is the explicit "free up space" action — the same
+  // reason deleteDeckFromLibrary resets this — so a quota latch from before
+  // must not keep blocking autosave after the library that caused it is gone.
+  deckAutosaveStorageFailed = false;
   try {
     for (const entry of await allOutboxImages()) await deleteOutboxImage(entry.token);
   } catch { /* nothing queued */ }
@@ -23143,7 +23659,7 @@ async function wipeLocalLibrary() {
   } catch { /* nothing cached */ }
   resetActiveDeckAfterDelete();
   await renderMyDecksList();
-  return keys.length;
+  return snapshotCount + 1;
 }
 
 // ── Panel ──────────────────────────────────────────────────────────────────
@@ -23242,11 +23758,11 @@ function renderStoragePanel(busyText = "") {
       <p class="storage-sub">The local copy that makes the app work offline.</p>
       <div class="storage-stats">
         ${storageStatTile(device.decks, "Decks")}
-        ${storageStatTile(formatStorageBytes(device.bytes), "In localStorage")}
+        ${storageStatTile(formatStorageBytes(device.bytes), "On this device")}
         ${storageStatTile(device.cachedImages, "Cached images")}
         ${storageStatTile(device.queuedImages, "Queued uploads", device.queuedImages ? "is-warn" : "")}
       </div>
-      ${device.quota ? `<p class="storage-note">Browser storage used by this site: ${escapeHtml(formatStorageBytes(device.quotaUsed))} of about ${escapeHtml(formatStorageBytes(device.quota))} available.</p>` : ""}
+      ${device.quota ? `<p class="storage-note">Browser storage used by this site: ${escapeHtml(formatStorageBytes(device.quotaUsed))} of about ${escapeHtml(formatStorageBytes(device.quota))} available${storagePersisted === false ? " (not persisted — the browser may reclaim some of this under disk pressure)" : storagePersisted ? " (persisted)" : ""}.</p>` : ""}
       ${device.queuedImages ? `<p class="storage-note is-warning">${device.queuedImages} image${device.queuedImages === 1 ? "" : "s"} still waiting to upload. Sync before clearing this device, or those images are lost.</p>` : ""}
     </div>
 
@@ -24961,10 +25477,8 @@ function readLocalSnapshotByDeckId(deckId) {
   if (!deckId) return null;
   const entry = readLocalDeckIndex().find((e) => e.deckId === deckId);
   if (!entry) return null;
-  try {
-    const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
-    return raw ? { localId: entry.id, snapshot: JSON.parse(raw) } : null;
-  } catch { return null; }
+  const snapshot = readDeckSnapshot(entry.id);
+  return snapshot ? { localId: entry.id, snapshot } : null;
 }
 
 // The local quick_notes snapshot, creating an empty one if this device has none
@@ -25000,12 +25514,7 @@ function ensureLocalQuickNotesSnapshot() {
     cards: [],
     localDeckId: localId
   };
-  try {
-    localStorage.setItem(LOCAL_DECK_PREFIX + localId, JSON.stringify(snapshot));
-  } catch (error) {
-    console.warn("Could not create the local quick_notes snapshot", error);
-    return null;
-  }
+  writeDeckSnapshot(localId, snapshot);
   // A brand-new local deck with no cloud counterpart yet reads as "newer than
   // the cloud", which is what makes the next reconcile push it — including
   // creating the decks row, so ensureQuickNotesDeck is no longer needed on the
@@ -25151,7 +25660,7 @@ function adoptQuickNoteCategories(list) {
   const local = deckId ? readLocalSnapshotByDeckId(deckId) : null;
   if (local) {
     local.snapshot.meta = { ...(local.snapshot.meta || {}), quickNoteCategories: clean };
-    try { localStorage.setItem(LOCAL_DECK_PREFIX + local.localId, JSON.stringify(local.snapshot)); } catch (_) {}
+    writeDeckSnapshot(local.localId, local.snapshot);
   }
   return clean;
 }
@@ -25416,21 +25925,19 @@ async function loadDeckNotesForSearch() {
   // Local snapshots first: free, offline, and they carry the localId that makes
   // the jump instant.
   for (const entry of readLocalDeckIndex()) {
-    try {
-      const raw = localStorage.getItem(LOCAL_DECK_PREFIX + entry.id);
-      if (!raw) continue;
-      const snapshot = JSON.parse(raw);
-      if (snapshot.deckId && snapshot.deckId === qid) continue; // never match the board itself
-      const plain = notesAnchorPlainText(snapshot.notes || "");
-      if (!plain) continue;
-      if (snapshot.deckId) seen.add(String(snapshot.deckId));
-      decks.push({
-        localId: entry.id,
-        deckId: snapshot.deckId || null,
-        title: snapshot.deckTitle || entry.title || "source",
-        plain
-      });
-    } catch (_) { /* a corrupt snapshot just isn't searchable */ }
+    // peek, not read: this only reads notes text out of every deck.
+    const snapshot = peekDeckSnapshot(entry.id);
+    if (!snapshot) continue;
+    if (snapshot.deckId && snapshot.deckId === qid) continue; // never match the board itself
+    const plain = notesAnchorPlainText(snapshot.notes || "");
+    if (!plain) continue;
+    if (snapshot.deckId) seen.add(String(snapshot.deckId));
+    decks.push({
+      localId: entry.id,
+      deckId: snapshot.deckId || null,
+      title: snapshot.deckTitle || entry.title || "source",
+      plain
+    });
   }
 
   // Then any cloud deck this device has no local copy of.
@@ -25521,6 +26028,13 @@ function setQuickNoteCardCategory(cardId, categoryId) {
           ...(fromBoard.noteAnchor ? { noteAnchor: fromBoard.noteAnchor } : {})
         };
         local.snapshot.cards.push(card);
+        // Adopting a card back into the snapshot must retire any tombstone for
+        // it, or the invariant "a present card is not tombstoned" breaks and
+        // the two rules fight: the push re-uploads this card while the pull
+        // skips it as deleted, so the user's recategorisation flip-flops and
+        // is ultimately lost. Same reason appendCardToLocalLibraryDeck and the
+        // restore merge call this.
+        dropTombstonesForLiveCards(local.snapshot);
       }
     }
     if (card) {
@@ -25532,12 +26046,7 @@ function setQuickNoteCardCategory(cardId, categoryId) {
       // the next pull would take the cloud's older category back.
       card.dirty = true;
       local.snapshot.updatedAt = now;
-      try {
-        localStorage.setItem(LOCAL_DECK_PREFIX + local.localId, JSON.stringify(local.snapshot));
-      } catch (error) {
-        console.warn("Could not save the quick-note category change", error);
-        patched = false;
-      }
+      writeDeckSnapshot(local.localId, local.snapshot);
       const index = readLocalDeckIndex();
       const entry = index.find((e) => e.id === local.localId);
       if (entry) {
@@ -26207,7 +26716,7 @@ function saveQuickNote(rawText, button, sourceAnchor = null) {
 
   const local = ensureLocalQuickNotesSnapshot();
   if (!local) {
-    setStatus("Could not save quick note — device storage is unavailable.", "error");
+    setStatus("Could not save quick note — try signing in again.", "error");
     showToast("Couldn't save quick note", "error");
     return;
   }
@@ -26287,19 +26796,14 @@ function saveQuickNote(rawText, button, sourceAnchor = null) {
   }
 }
 
-// ── Replay a click made while app.js was still loading ──────────────────────
-// Repair math that older builds saved with Markdown escapes still in it. Runs
-// at module scope so it lands before any deck can be opened — the deck a user
-// picks must already hold repaired text, not get repaired underneath them.
-(function runEscapedMathRepair() {
-  try {
-    const repaired = repairEscapedMathInLibrary();
-    if (repaired) console.info(`Repaired escaped math in ${repaired} deck(s)`);
-  } catch (error) {
-    // A library that cannot be repaired is still a library worth opening.
-    console.warn("Escaped-math repair failed", error);
-  }
-})();
+// NOTE: the escaped-math repair used to run here, at module scope. It can't
+// any more: deck bodies moved to IndexedDB, and bootApp() suspends on its first
+// await (loadDeckSnapshotCache) — so module scope now runs with an EMPTY cache.
+// The repair would read every deck as missing, repair nothing, and still stamp
+// MATH_ESCAPE_REPAIR_KEY, permanently skipping itself on every device. It is
+// now invoked from bootApp immediately after the cache loads, which preserves
+// the original guarantee (repaired before any deck can be opened) against the
+// new async storage. See runEscapedMathRepair.
 
 // Everything above attaches at module scope, and this file only finishes parsing
 // several seconds after the toolbar is on screen (see the boot-click queue in

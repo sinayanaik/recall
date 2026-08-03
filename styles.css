@@ -3521,6 +3521,7 @@ svg.nomnoml-light-svg [fill="none"] {
 .sync-behind { --sync-tone: var(--accent); }
 .sync-local,
 .sync-cloud-only { --sync-tone: var(--muted); }
+.sync-error { --sync-tone: var(--danger); }
 
 /* The shared modal width (--modal-width, 60vw) is comfortable for prose
    modals but cramped for a 5-column data table with inline action buttons
