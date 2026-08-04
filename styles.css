@@ -9149,7 +9149,8 @@ textarea {
   padding: 4px 8px !important;
 }
 
-.edit-toolbar .color-menu {
+.edit-toolbar .color-menu,
+.edit-toolbar .highlight-menu {
   flex-direction: row !important;
   flex-wrap: wrap;
   width: 115px;
@@ -9157,7 +9158,8 @@ textarea {
   justify-content: center;
 }
 
-.edit-toolbar .color-menu button[data-color] {
+.edit-toolbar .color-menu button[data-color],
+.edit-toolbar .highlight-menu button[data-highlight] {
   width: 18px !important;
   height: 18px !important;
   min-width: 18px !important;
@@ -9171,12 +9173,14 @@ textarea {
   background-color: var(--btn-bg, transparent) !important;
 }
 
-.edit-toolbar .color-menu button[data-color]:hover {
+.edit-toolbar .color-menu button[data-color]:hover,
+.edit-toolbar .highlight-menu button[data-highlight]:hover {
   transform: scale(1.15) !important;
   border-color: var(--text) !important;
 }
 
-.edit-toolbar .color-menu button.color-clear {
+.edit-toolbar .color-menu button.color-clear,
+.edit-toolbar .highlight-menu button.highlight-clear {
   width: 100% !important;
   min-height: 22px !important;
   font-size: 0.72rem !important;
@@ -10836,9 +10840,9 @@ kbd {
 
 .quiz-panel .view-mode-toggle:not([hidden]) {
   display: grid;
-  width: min(240px, 100%);
+  width: min(320px, 100%);
   margin: 0 auto 6px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   border: 1px solid var(--line);
   border-radius: var(--toolbar-button-radius);
@@ -10935,7 +10939,11 @@ kbd {
 
 .highlight-row {
   display: flex;
-  align-items: center;
+  /* flex-start, not center: a preview can now be a whole rendered list or
+     several paragraphs (see renderHighlightsPanel — full markdown, not a
+     cropped plain-text line), and centering a tall block against the small
+     jump button pushed it visually out of line with the row. */
+  align-items: flex-start;
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--line);
@@ -10950,6 +10958,17 @@ kbd {
   line-height: 1.4;
   color: var(--text);
   overflow-wrap: break-word;
+}
+
+/* Rendered markdown (paragraphs, lists, headings, …), not a single text run —
+   its own top/bottom child margins would otherwise add extra air inside a
+   row that already has its own padding. */
+.highlight-preview > :first-child {
+  margin-top: 0;
+}
+
+.highlight-preview > :last-child {
+  margin-bottom: 0;
 }
 
 .highlight-jump-btn {
@@ -11104,15 +11123,27 @@ kbd {
 }
 
 /* A highlighted passage (see makeHighlightFromSelection in app.js — a literal
-   <mark> in the markdown source). A subtle tint, not the browser default
-   loud yellow, so it reads as "marked" without fighting the rest of the
-   note's styling. */
-.notes-rendered mark {
+   <mark data-color="…"> in the markdown source, shared by notes AND card
+   faces — .rendered is the class all three views have in common). Each colour
+   is an alpha tint (color-mix over transparent) rather than an opaque swatch,
+   so it reads correctly no matter which of this app's many light/dark theme
+   variants is active — it's tinting whatever surface is actually behind it
+   instead of asserting a fixed colour that could clash with (or vanish into)
+   that surface. Plain <mark> with no data-color (every highlight made before
+   colour existed) keeps the original subtle-gold look via the bare selector. */
+.rendered mark {
   background: color-mix(in srgb, #e0b400 35%, transparent);
   color: inherit;
   border-radius: 3px;
   padding: 0 1px;
 }
+
+.rendered mark[data-color="yellow"] { background: color-mix(in srgb, #e0b400 35%, transparent); }
+.rendered mark[data-color="green"]  { background: color-mix(in srgb, #22c55e 33%, transparent); }
+.rendered mark[data-color="blue"]   { background: color-mix(in srgb, #3b82f6 32%, transparent); }
+.rendered mark[data-color="pink"]   { background: color-mix(in srgb, #ec4899 30%, transparent); }
+.rendered mark[data-color="orange"] { background: color-mix(in srgb, #f97316 33%, transparent); }
+.rendered mark[data-color="purple"] { background: color-mix(in srgb, #8b5cf6 30%, transparent); }
 
 .notes-stage .highlight-textarea-wrapper {
   flex: 1 1 auto;

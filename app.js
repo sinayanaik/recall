@@ -1318,6 +1318,14 @@ function exportSql(scope = "all") {
   setStatus("Exported current deck as SQL.");
 }
 
+// Bumped by every deck-open attempt (web or local), so an in-flight one can
+// tell whether it's still the load the user actually wants applied. A big
+// note's web fetch can take long enough that the user opens a different deck
+// from My Decks before it resolves — without this, the slower response lands
+// LAST and silently overwrites whatever the user navigated to with the deck
+// they left. See the checks in loadWebDeck and loadDeckFromLibrary below.
+let activeDeckLoadToken = 0;
+
 async function loadWebDeck(deckId) {
   if (!deckId || !supabaseClient) return;
   if (!navigator.onLine) {
@@ -1330,6 +1338,7 @@ async function loadWebDeck(deckId) {
   // A navigation door — see recordNavHistory. Recorded synchronously, before
   // the await below can let anything else move the user.
   recordNavHistory();
+  const loadToken = ++activeDeckLoadToken;
 
   try {
     const [deckResult, cardsResult] = await Promise.all([
@@ -1342,6 +1351,11 @@ async function loadWebDeck(deckId) {
 
     const { data: cardsData, error: cardsError } = cardsResult;
     if (cardsError) throw cardsError;
+
+    // The user opened a different deck (local or web) while this fetch was in
+    // flight — that newer load already owns the view. Applying this response
+    // now would yank the screen back to the deck the user left.
+    if (loadToken !== activeDeckLoadToken) return;
 
     const statusById = {};
     const categoryById = {};
@@ -1394,12 +1408,20 @@ async function loadWebDeck(deckId) {
     // cloud id) so it stays readable offline without an extra manual save. Align
     // its timestamps to the cloud copy so it reads as already in-sync — otherwise
     // it would look "newer" and trigger a redundant re-push on the next reconcile.
-    state.localDeckId = null;
-    const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
-    if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
-    refreshSyncIndicatorBaseline();
-    refreshNavBack(); // arrived — now the button knows where "here" is
-    resetChromeAutoHide(); // a new deck starts at the top, header showing
+    // Skipped entirely once superseded: saveDeckToLibrary assigns state.localDeckId
+    // as a side effect, and running that for a deck the user has since navigated
+    // away from would yank state.localDeckId back to it out from under whatever
+    // deck is actually on screen now.
+    if (loadToken === activeDeckLoadToken) {
+      state.localDeckId = null;
+      const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
+      if (loadToken === activeDeckLoadToken) {
+        if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
+        refreshSyncIndicatorBaseline();
+        refreshNavBack(); // arrived — now the button knows where "here" is
+        resetChromeAutoHide(); // a new deck starts at the top, header showing
+      }
+    }
   } catch (error) {
     setStatus("Failed to load deck from web.", "error");
     showToast("Couldn't load deck", "error");
@@ -11662,6 +11684,57 @@ function cleanedSelectionFragment(range) {
   return container;
 }
 
+// marked is configured with `breaks: true` (see marked.setOptions), so every
+// bare newline in the source — including an ordinary word-wrapped line inside
+// one paragraph, not just a blank line between two — renders as a real <br>
+// element. Plain `.textContent`/`Range.toString()` silently drop <br> (it's an
+// empty element, not a text node), which glues the line before it straight
+// onto the line after with nothing between them — "wrapped like\nthis" reads
+// back as "wrapped likethis". That text then can't be found anywhere in the
+// raw markdown source, so highlighting (or clozing, or erasing) ANY selection
+// that crosses a wrapped line — the common case for more than a short sentence
+// — silently failed to match. Walking the tree and emitting "\n" for each
+// <br> instead keeps the extracted text shaped the way the source actually is.
+//
+// A selection spanning two block elements (two <p>s from a selection dragged
+// across a blank line, two <li>s down a list, …) has the SAME problem one
+// level up: cloning them side by side and reading text out gives no separator
+// at all between them, but the raw source has one. <li> siblings get a single
+// "\n" (a tight list has no blank line between items); every other block tag
+// gets "\n\n" (marked always emits a real blank line between paragraphs,
+// headings, blockquotes, etc). This is an approximation — nested/loose lists
+// and tables aren't reconstructed exactly — but it covers the common case of
+// selecting across an ordinary paragraph or list-item boundary, which used to
+// fail outright (locateSelectionInSource has no fallback for it — see its
+// "spans block boundaries" comment).
+const TIGHT_BLOCK_TAGS = new Set(["LI"]);
+const LOOSE_BLOCK_TAGS = new Set(["P", "DIV", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TABLE", "HR", "UL", "OL"]);
+
+function textWithLineBreaks(node) {
+  let text = "";
+  let prevBlockTag = null;
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === Node.TEXT_NODE) {
+      text += child.data;
+      return;
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) return;
+    if (child.tagName === "BR") {
+      text += "\n";
+      return;
+    }
+    const isTight = TIGHT_BLOCK_TAGS.has(child.tagName);
+    const isLoose = LOOSE_BLOCK_TAGS.has(child.tagName);
+    if ((isTight || isLoose) && text) {
+      const gap = isTight && prevBlockTag === "LI" ? "\n" : "\n\n";
+      if (!text.endsWith(gap)) text = text.replace(/\n+$/, "") + gap;
+    }
+    text += textWithLineBreaks(child);
+    if (isTight || isLoose) prevBlockTag = child.tagName;
+  });
+  return text;
+}
+
 // The <pre> a range boundary sits in, or null. Both the container and (for an
 // element container) the child the offset points at are considered: a triple-
 // click or a drag past the last line leaves a boundary ON the <pre>/wrapper
@@ -11755,7 +11828,7 @@ function notesSelectionMarkdown(range, target) {
   if (codeFence) return codeFence;
   const fragment = cleanedSelectionFragment(range);
   const markdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
-  if (!markdown) return fragment.textContent.trim();
+  if (!markdown) return textWithLineBreaks(fragment).trim();
   // Turndown puts the language on the fence from the <code> class, which
   // enhanceCodeBlocks sets for guessed languages too — this catches whatever
   // reached the markdown as a bare fence anyway.
@@ -11934,10 +12007,11 @@ function positionNotesSelectionButton() {
     if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
     if (imageMatches.length) parts.push(imageMatches.length === 1 ? "1 image" : `${imageMatches.length} images`);
     cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
-    // Both are rendered-view-only. Eraser: native Delete/Backspace already
-    // does its job in raw-edit mode. Highlight: authoring is only wired for
-    // a rendered selection (see makeHighlightFromSelection) — no raw-editor
-    // counterpart, unlike cloze.
+    // Both are hidden on THIS (floating-pill) control while raw-editing.
+    // Eraser: native Delete/Backspace already does its job in raw-edit mode.
+    // Highlight: the pill has no raw-editor counterpart, but the edit
+    // toolbar's own Highlight dropdown (createToolbarHtml, data-highlight)
+    // covers the same ground there via toggleMarkColorInText.
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = true;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = true;
     button.hidden = false;
@@ -12536,7 +12610,7 @@ function renderedSelectionStrings(view) {
   const range = selection.getRangeAt(0);
   if (!view.contains(range.commonAncestorContainer)) return null;
   const fragment = cleanedSelectionFragment(range);
-  const asText = fragment.textContent.trim();
+  const asText = textWithLineBreaks(fragment).trim();
   let asMarkdown = "";
   try {
     asMarkdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
@@ -12554,7 +12628,11 @@ function renderedSelectionStrings(view) {
       const pre = document.createRange();
       pre.setStart(view, 0);
       pre.setEnd(range.startContainer, range.startOffset);
-      occurrence = countOccurrences(pre.toString(), asText);
+      // textWithLineBreaks, not Range.toString() — the native stringifier
+      // drops <br> the same way .textContent does, which would make this
+      // count come up short (or zero) against an asText that now legitimately
+      // contains "\n" from a wrapped line, for the same reason described above.
+      occurrence = countOccurrences(textWithLineBreaks(pre.cloneContents()), asText);
     } catch { occurrence = 0; }
   }
   return { asText, asMarkdown, occurrence };
@@ -12582,6 +12660,31 @@ function nthIndexOf(haystack, needle, n) {
   return idx;
 }
 
+// Turndown's list-item rule pads every marker to a fixed width ("-   text",
+// not the single-space "- text" this app's own bullet toggle writes) so
+// continuation lines line up — a real Turndown behavior, not a bug, but it
+// means an asMarkdown needle reconstructed from a selection spanning list
+// items can be byte-perfect CONTENT and still never match the source via a
+// plain indexOf, because the marker spacing genuinely differs. Escaping the
+// needle and turning every run of whitespace in it into `\s+` before
+// searching absorbs exactly that kind of incidental reformatting (also covers
+// any other whitespace marked/Turndown might not round-trip identically).
+// Returns the ACTUAL matched text from source — never the needle's — so
+// whatever locates the match downstream (wrapAcrossBlocks etc.) works with
+// real spacing, not what was searched for.
+function fuzzyWhitespaceMatch(source, needle) {
+  if (!needle) return null;
+  const pattern = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  let re;
+  try {
+    re = new RegExp(pattern);
+  } catch {
+    return null;
+  }
+  const m = re.exec(source);
+  return m ? { idx: m.index, end: m.index + m[0].length, needle: m[0] } : null;
+}
+
 // Locate the SELECTED occurrence of a rendered selection inside the markdown
 // source. Targets `sel.occurrence` (the copy the user actually highlighted)
 // rather than blindly the first match, so repeated words act in place. Tries
@@ -12589,7 +12692,17 @@ function nthIndexOf(haystack, needle, n) {
 // serialization (so a selected image / math / bold run that isn't present
 // verbatim as plain text still matches). Returns { idx, end, needle } or null
 // when the selection can't be located at all (e.g. it spans block boundaries).
-function locateSelectionInSource(source, sel) {
+//
+// `fuzzy: true` adds a third retry, tolerant of whitespace differences (see
+// fuzzyWhitespaceMatch) — needed for a selection spanning list items, where
+// Turndown's padded "-   " markers never equal this app's own single-space
+// "- ". Opt-in, not the default: a caller that just wraps the match in a
+// simple pair (clozeToggleInSource, eraseSelectionFromSource, the bold/
+// italic/colour text formatters) would corrupt a multi-item list the same way
+// a bare <mark> across block boundaries used to — wrapAcrossBlocks exists
+// specifically so highlightToggleInSource can ask for this safely; the
+// others haven't been made block-boundary-safe, so they don't opt in.
+function locateSelectionInSource(source, sel, { fuzzy = false } = {}) {
   const attempts = [];
   if (sel.asText) attempts.push({ needle: sel.asText, occurrence: sel.occurrence || 0 });
   if (sel.asMarkdown && sel.asMarkdown !== sel.asText) attempts.push({ needle: sel.asMarkdown, occurrence: 0 });
@@ -12599,6 +12712,12 @@ function locateSelectionInSource(source, sel) {
     if (idx === -1) idx = source.indexOf(needle); // occurrence miscounted → first match
     if (idx === -1) continue;
     return { idx, end: idx + needle.length, needle };
+  }
+  if (fuzzy) {
+    for (const { needle } of attempts) {
+      const match = fuzzyWhitespaceMatch(source, needle);
+      if (match) return match;
+    }
   }
   return null;
 }
@@ -12700,53 +12819,185 @@ function eraseNotesSelection({ view, label, getSource, setSource, rerender }) {
   showToast("Selection erased");
 }
 
-// Wrap the located occurrence in <mark></mark> — or strip the tags if it's
-// already exactly a highlight. Same shape as clozeToggleInSource, with <mark>
-// delimiters instead of {{ }}: DOMPurify's default allowlist already permits
-// <mark>, and the existing "keep-mark" Turndown rule (see htmlToMarkdown)
-// already round-trips it back out of a selection, so no render/sanitize
-// change is needed for this to display or to survive being lifted into a
-// card/cloze/quick-note.
-function highlightToggleInSource(source, sel) {
-  const loc = locateSelectionInSource(source, sel);
+// Highlighting is a literal <mark data-color="…"> in the markdown source —
+// NOT an inline background-color <span>, which is what this used to be. A
+// fixed, opaque background chosen at authoring time looked wrong the moment
+// the reader switched themes (light text on a pale swatch in a dark theme, or
+// vice versa) — that span carried no opinion about what was behind it.
+// `data-color` is a small closed set of named tokens, and each one is styled
+// with `color-mix(in srgb, <hue> N%, transparent)` (see .rendered mark[data-
+// color] in styles.css) — an alpha tint over whatever surface is actually
+// behind it, which is what makes it read correctly across every one of this
+// app's light AND dark theme variants without a single theme-specific
+// override. MARK_HIGHLIGHT_HEX is only the PICKER's own preview swatches (a
+// normal opaque chip, the same idiom the text-colour picker uses) — it never
+// reaches the note itself.
+const MARK_HIGHLIGHT_DEFAULT = "yellow";
+const MARK_HIGHLIGHT_HEX = {
+  yellow: "#e0b400",
+  green: "#22c55e",
+  blue: "#3b82f6",
+  pink: "#ec4899",
+  orange: "#f97316",
+  purple: "#8b5cf6",
+};
+const MARK_HIGHLIGHT_COLORS = Object.entries(MARK_HIGHLIGHT_HEX).map(([token, hex]) => ({
+  name: token[0].toUpperCase() + token.slice(1),
+  value: token,
+  swatch: hex,
+}));
+
+// The raw-editor toolbar's Highlight dropdown reuses the .color-menu circular-
+// swatch styling (see styles.css) via data-highlight instead of data-color, so
+// it needs its own button markup rather than renderSplitControlHtml's (which
+// is shaped for the rendered-view split button, not a plain dropdown).
+function markHighlightSwatchButtonsHtml() {
+  return MARK_HIGHLIGHT_COLORS.map(
+    (c) => `<button type="button" data-highlight="${c.value}" style="--btn-bg: ${c.swatch};" title="${c.name}"></button>`
+  ).join("");
+}
+
+// A <mark>, optionally coloured via data-color (see MARK_HIGHLIGHT_COLORS —
+// omitted entirely for the default token, so plain old <mark> highlights from
+// before colour existed keep matching this and still toggle/recolour fine).
+const MARK_OPEN_RE = /<mark(?:\s+data-color="([a-z]+)")?>$/;
+const MARK_CLOSE_TAG = "</mark>";
+
+function markOpenTag(color) {
+  return color && color !== MARK_HIGHLIGHT_DEFAULT ? `<mark data-color="${color}">` : "<mark>";
+}
+
+// A selection spanning a block boundary can't be wrapped in ONE <mark>: each
+// block (see splitPreparedBlocks) is parsed by marked independently, and —
+// even setting that aside — inline HTML can't legally straddle two block-
+// level elements at all. A <mark> left open at the end of one paragraph gets
+// force-closed there by the browser's own HTML parser, and nothing carries it
+// into the next one — the back half of the selection silently rendered
+// unhighlighted (the "multiline highlight does nothing" bug). Worse for a
+// list: a <mark> opened BEFORE a line's "- "/"1. " marker stops marked
+// recognising that line as a list item at all — confirmed against real marked
+// output — which can turn a bulleted item into a stray paragraph and split
+// the list in two, not just fail to highlight it (the "multi-bulletpoint
+// highlighting is unreliable" bug). Turndown's list serialisation also means
+// a selection starting mid-list can hand back the FIRST item's marker too
+// (see asMarkdown in renderedSelectionStrings) — every marker has to be kept
+// outside every mark, not just the ones after the first split.
+//
+// Splitting on blank lines (paragraph/block boundaries) and then, within each
+// piece, on every "\n" that starts a new list item — keeping each item's own
+// marker outside its mark — makes a highlight that LOOKS continuous across
+// paragraphs and list items actually render that way; it's just several
+// marks under the hood. Re-selecting that exact span later to toggle it off
+// doesn't work yet: locateSelectionInSource's plain-text search can't see
+// past the tags this leaves behind — clear each piece individually instead.
+const LIST_MARKER_RE = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/;
+
+function wrapAcrossBlocks(source, color) {
+  return source
+    .split(/(\n{2,})/)
+    .map((part, i) => (i % 2 === 1 || !part ? part : wrapListItems(part, color)))
+    .join("");
+}
+
+function wrapListItems(text, color) {
+  return text
+    .split(/\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t]+)/)
+    .map((piece) => {
+      const marker = LIST_MARKER_RE.exec(piece);
+      if (!marker) return piece ? markOpenTag(color) + piece + MARK_CLOSE_TAG : piece;
+      const rest = piece.slice(marker[0].length);
+      return rest ? marker[0] + markOpenTag(color) + rest + MARK_CLOSE_TAG : piece;
+    })
+    .join("\n");
+}
+
+// Wrap the located occurrence in <mark[ data-color]></mark>, strip it if the
+// selection is already exactly that colour, or recolour it in place if it's
+// already highlighted a DIFFERENT colour than the one requested. Same shape
+// as clozeToggleInSource. DOMPurify's default allowlist already permits
+// <mark> (and, via ALLOW_DATA_ATTR, data-color on it), and the "keep-mark"
+// Turndown rule (see htmlToMarkdown) round-trips both back out of a
+// selection, so no render/sanitize change is needed for this to display or to
+// survive being lifted into a card/cloze/quick-note.
+function highlightToggleInSource(source, sel, color) {
+  const loc = locateSelectionInSource(source, sel, { fuzzy: true });
   if (!loc) return null;
   const { idx, end, needle } = loc;
-  if (source.slice(Math.max(0, idx - 6), idx) === "<mark>" && source.slice(end, end + 7) === "</mark>") {
-    return { text: source.slice(0, idx - 6) + needle + source.slice(end + 7), action: "removed" };
+  const openMatch = MARK_OPEN_RE.exec(source.slice(0, idx));
+  const hasClose = source.slice(end, end + MARK_CLOSE_TAG.length) === MARK_CLOSE_TAG;
+  if (openMatch && hasClose) {
+    const existingColor = openMatch[1] || MARK_HIGHLIGHT_DEFAULT;
+    const openStart = idx - openMatch[0].length;
+    const closeEnd = end + MARK_CLOSE_TAG.length;
+    if (color === "clear" || color === existingColor) {
+      return { text: source.slice(0, openStart) + needle + source.slice(closeEnd), action: "removed" };
+    }
+    return {
+      text: source.slice(0, openStart) + markOpenTag(color) + needle + MARK_CLOSE_TAG + source.slice(closeEnd),
+      action: "recolored"
+    };
   }
+  if (color === "clear") return { text: source, action: "not-highlighted" };
   // Sub-selection inside a larger existing highlight (an unclosed <mark>
   // precedes the match, with a </mark> still to come): wrapping it would nest
   // <mark> tags rather than extend the existing highlight.
   const before = source.slice(0, idx);
-  if (before.lastIndexOf("<mark>") > before.lastIndexOf("</mark>") && source.indexOf("</mark>", end) !== -1) {
+  if (before.lastIndexOf("<mark") > before.lastIndexOf(MARK_CLOSE_TAG) && source.indexOf(MARK_CLOSE_TAG, end) !== -1) {
     return { text: source, action: "already" };
   }
-  return { text: source.slice(0, idx) + "<mark>" + needle + "</mark>" + source.slice(end), action: "added" };
+  return { text: source.slice(0, idx) + wrapAcrossBlocks(needle, color) + source.slice(end), action: "added" };
+}
+
+function highlightToastMessage(action) {
+  if (action === "removed") return "Highlight removed";
+  if (action === "recolored") return "Highlight recoloured";
+  return "Highlighted";
+}
+
+function highlightInfoMessage(action) {
+  return action === "not-highlighted" ? "That text isn't highlighted" : "That text is already highlighted";
+}
+
+// Raw-editor counterpart to highlightToggleInSource: the textarea already
+// gives an exact [start,end) selection, so there's no source-search step —
+// just wrap, recolour, or strip the substring directly. Used by the raw
+// notes/card editor's Highlight dropdown (handleToolbarClick's data-highlight
+// branch), the edit-mode equivalent of the rendered-view highlight button.
+function toggleMarkColorInText(text, color) {
+  const whole = /^<mark(?:\s+data-color="([a-z]+)")?>([\s\S]*)<\/mark>$/.exec(text);
+  if (whole) {
+    const existingColor = whole[1] || MARK_HIGHLIGHT_DEFAULT;
+    if (color === "clear" || color === existingColor) return whole[2];
+    return markOpenTag(color) + whole[2] + MARK_CLOSE_TAG;
+  }
+  if (color === "clear") return text;
+  return wrapAcrossBlocks(text, color);
 }
 
 // Driver for the highlight button — same shape as makeClozeFromSelection.
-// Only ever called with renderTargetConfig("notes") (see the pointerdown
-// handler and the visibility gate in positionNotesSelectionButton).
-function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }) {
+// `color` defaults to the shared last-used swatch (renderFormatDefaults.highlight)
+// so a plain tap of the floating pill applies/toggles that colour; the render
+// toolbar's split-button menu passes a specific token instead.
+function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight) {
   const sel = renderedSelectionStrings(view);
   if (!sel) {
     setStatus(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
     return;
   }
-  const result = highlightToggleInSource(getSource(), sel);
+  const result = highlightToggleInSource(getSource(), sel, color);
   if (!result) {
     setStatus("Couldn't match that selection in the source — try selecting whole words.", "error");
     return;
   }
-  if (result.action === "already") {
-    showToast("That text is already highlighted", "info");
+  if (result.action === "already" || result.action === "not-highlighted") {
+    showToast(highlightInfoMessage(result.action), "info");
     return;
   }
   setSource(result.text);
   window.getSelection()?.removeAllRanges();
   rerender();
   scheduleDeckAutosave();
-  showToast(result.action === "removed" ? "Highlight removed" : "Highlighted");
+  showToast(highlightToastMessage(result.action));
 }
 
 // Persist a question/answer edit to both the active deck and the master list
@@ -12811,8 +13062,7 @@ function renderTargetConfig(target) {
 // functions as the raw editor's toolbar (toggleWrap, applyInlineStyleProperty,
 // …), then re-renders and autosaves.
 
-// Text-colour palette mirrors the editor toolbar's; highlight uses soft tints
-// that stay legible behind dark text.
+// Text-colour palette mirrors the editor toolbar's.
 const RENDER_TEXT_COLORS = [
   { name: "Red", value: "#ef4444" },
   { name: "Orange", value: "#f97316" },
@@ -12827,22 +13077,17 @@ const RENDER_TEXT_COLORS = [
   { name: "White", value: "#ffffff" },
   { name: "Gray", value: "#9ca3af" },
 ];
-const RENDER_HIGHLIGHT_COLORS = [
-  { name: "Yellow", value: "#fde68a" },
-  { name: "Green", value: "#bbf7d0" },
-  { name: "Blue", value: "#bfdbfe" },
-  { name: "Pink", value: "#fbcfe8" },
-  { name: "Orange", value: "#fed7aa" },
-  { name: "Purple", value: "#e9d5ff" },
-  { name: "Teal", value: "#99f6e4" },
-  { name: "Gray", value: "#e5e7eb" },
-];
 
 // The currently-chosen default for each split-button's one-click apply. Persisted
-// so it survives reloads; seeded from the first palette swatch.
+// so it survives reloads; seeded from the first palette swatch. A pre-existing
+// value under the highlight key predates data-color tokens (it was a hex
+// background colour) — falling back to the default token instead of trusting
+// it keeps an old install from writing an unrecognised data-color into notes.
 const renderFormatDefaults = {
   color: localStorage.getItem("recall:renderColorDefault") || RENDER_TEXT_COLORS[0].value,
-  highlight: localStorage.getItem("recall:renderHighlightDefault") || RENDER_HIGHLIGHT_COLORS[0].value,
+  highlight: MARK_HIGHLIGHT_HEX[localStorage.getItem("recall:renderHighlightDefault")]
+    ? localStorage.getItem("recall:renderHighlightDefault")
+    : MARK_HIGHLIGHT_DEFAULT,
 };
 
 // The split button's face IS the preview: an "A" wearing the colour it will
@@ -12851,11 +13096,14 @@ const renderFormatDefaults = {
 // separate swatch chip on the ▾ side — two things saying the same thing, in a
 // row where width is scarce. `data-render-swatch` stays on whichever element
 // carries the colour, so refreshRenderSwatches() keeps working untouched.
+// Each swatch's --sw preview uses c.swatch when given (an opaque chip colour
+// distinct from the value actually applied — see MARK_HIGHLIGHT_COLORS above)
+// and falls back to c.value for palettes where the two are the same thing.
 function renderSplitControlHtml(prop, glyph, label, swatches) {
   const items = swatches
     .map(
       (c) =>
-        `<button type="button" class="render-swatch-btn" data-render-color="${c.value}" data-render-prop="${prop}" style="--sw:${c.value};" title="${c.name}"></button>`
+        `<button type="button" class="render-swatch-btn" data-render-color="${c.value}" data-render-prop="${prop}" style="--sw:${c.swatch || c.value};" title="${c.name}"></button>`
     )
     .join("");
   return `
@@ -12917,7 +13165,7 @@ function createRenderToolbarHtml({ actions = true } = {}) {
     <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
     <span class="render-divider" aria-hidden="true"></span>
     ${renderSplitControlHtml("color", RENDER_COLOR_GLYPH, "text colour", RENDER_TEXT_COLORS)}
-    ${renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", RENDER_HIGHLIGHT_COLORS)}${captureGroup}`;
+    ${renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", MARK_HIGHLIGHT_COLORS)}${captureGroup}`;
 }
 
 // Paint the little swatch on each split-button's side control to the current
@@ -12927,7 +13175,7 @@ function refreshRenderSwatches() {
     s.style.background = renderFormatDefaults.color;
   });
   document.querySelectorAll('[data-render-swatch="highlight"]').forEach((s) => {
-    s.style.background = renderFormatDefaults.highlight;
+    s.style.background = MARK_HIGHLIGHT_HEX[renderFormatDefaults.highlight] || MARK_HIGHLIGHT_HEX[MARK_HIGHLIGHT_DEFAULT];
   });
 }
 
@@ -13050,13 +13298,14 @@ function handleRenderToolbarAction(btn, toolbar) {
     const prop = btn.dataset.renderProp;
     closeAllRenderMenus();
     setRenderDefault(prop, colorVal);
-    applyRenderColor(config, prop, colorVal);
+    if (prop === "highlight") makeHighlightFromSelection(config, colorVal);
+    else applyRenderColor(config, prop, colorVal);
     return;
   }
 
   // One-click apply of the current default colour/highlight.
   if (action === "color-apply") return applyRenderColor(config, "color", renderFormatDefaults.color);
-  if (action === "highlight-apply") return applyRenderColor(config, "highlight", renderFormatDefaults.highlight);
+  if (action === "highlight-apply") return makeHighlightFromSelection(config, renderFormatDefaults.highlight);
 
   // The three selection actions below live in the notes HEADER, which stays put
   // when you tap ✎ — so unlike the formatting controls (whose whole toolbar is
@@ -17803,6 +18052,12 @@ async function loadDeckFromLibrary(id) {
   // over from an "Import here" whose file picker was dismissed — that would
   // silently refile an existing deck.
   pendingImportFolder = null;
+  // Shares the counter with loadWebDeck: whichever deck the user opened MOST
+  // RECENTLY wins, regardless of which one's read/fetch happens to resolve
+  // first. A big note can take a moment to come off IndexedDB (cold read) or
+  // still be mid-fetch from the web — without this, that slower response
+  // lands after a faster subsequent open and silently overwrites it.
+  const loadToken = ++activeDeckLoadToken;
   // The READ is caught separately from everything after it, because the two
   // failures mean opposite things and only one is the user's problem. A throw
   // here is IndexedDB failing to answer — the deck is fine, this attempt
@@ -17821,6 +18076,9 @@ async function loadDeckFromLibrary(id) {
     setStatus("That saved deck could not be found.", "error");
     return false;
   }
+  // A newer deck open (local or web) has taken over the view since this read
+  // started — applying this one now would yank the screen back to it.
+  if (loadToken !== activeDeckLoadToken) return false;
   try {
     // A navigation door: remember where the user was before this deck replaces
     // it. Recorded only once the deck is known to exist — a failed open doesn't
@@ -25124,13 +25382,22 @@ function htmlToMarkdown(html, options = {}) {
     });
     [
       ["u", "U"],
-      ["mark", "MARK"],
       ["kbd", "KBD"]
     ].forEach(([tag, nodeName]) => {
       turndownService.addRule(`keep-${tag}`, {
         filter: (node) => node.nodeName === nodeName,
         replacement: (content) => `<${tag}>${content}</${tag}>`
       });
+    });
+    // <mark> carries its colour as data-color (see MARK_HIGHLIGHT_COLORS) — the
+    // generic keep-tag loop above would drop it, so a copied highlight would
+    // always turn yellow on the far side regardless of what it actually was.
+    turndownService.addRule("keep-mark", {
+      filter: (node) => node.nodeName === "MARK",
+      replacement: (content, node) => {
+        const color = node.getAttribute("data-color");
+        return `${markOpenTag(color)}${content}${MARK_CLOSE_TAG}`;
+      }
     });
 
     // A rendered mermaid/nomnoml diagram is an <svg>, which carries no usable
@@ -25427,6 +25694,14 @@ function createToolbarHtml(options = {}) {
       </div>
     </div>
 
+    <div class="toolbar-dropdown">
+      <button type="button" class="toolbar-dropdown-toggle" title="Highlight">${RENDER_HIGHLIGHT_GLYPH}</button>
+      <div class="toolbar-dropdown-content highlight-menu">
+        ${markHighlightSwatchButtonsHtml()}
+        <button type="button" data-highlight="clear" class="highlight-clear" title="Clear Highlight">Clear Highlight</button>
+      </div>
+    </div>
+
     <button type="button" data-action="bullet" title="Toggle Bullet List">-</button>
     <button type="button" data-action="insert-image" title="Insert image (upload to Supabase Storage)">🖼️</button>
     <button type="button" data-action="clear-all" title="Clear Formatting">Tx</button>${quickNoteBtn}
@@ -25449,6 +25724,11 @@ function initToolbars() {
   if (el.questionEdit) enableSyntaxHighlighting(el.questionEdit);
   if (el.answerEdit) enableSyntaxHighlighting(el.answerEdit);
   if (el.notesEdit) enableSyntaxHighlighting(el.notesEdit);
+  // These toolbars carry their own copy of the highlight glyph (RENDER_HIGHLIGHT_GLYPH,
+  // inside the Highlight dropdown toggle) — paint it now rather than leaving it
+  // unstyled until the reader happens to change the default highlight colour.
+  // Safe to call again: refreshRenderSwatches just re-paints every match.
+  refreshRenderSwatches();
 }
 
 if (document.readyState === "loading") {
@@ -25612,34 +25892,111 @@ function collectDeckClozes() {
 // derived from state.notes on every call, so an edit made in the raw editor
 // (typing <mark> by hand, or deleting one) can never drift out of sync with
 // what the Highlights tab shows.
-const HIGHLIGHT_SCAN_RE = /<mark>([\s\S]+?)<\/mark>/g;
-const HIGHLIGHT_OPEN_TAG_LENGTH = "<mark>".length;
+// data-color (see MARK_HIGHLIGHT_COLORS) makes the open tag's length variable,
+// so the offset below is measured off the actual match rather than a fixed
+// "<mark>".length constant — a coloured highlight would otherwise report an
+// anchor that starts a few characters into its own text. Colour is captured
+// (not just detected) so adjacent matches can be compared when grouping below.
+const HIGHLIGHT_SCAN_RE = /<mark(?:\s+data-color="([a-z]+)")?>([\s\S]+?)<\/mark>/g;
 
-// One entry per highlight: a trimmed preview for the list row, and a
-// trimNoteAnchor-shaped anchor (offset + exact source span + plain text) so
-// "Go to →" can reuse scheduleNoteJump/revealNoteAnchor exactly as the
-// note-origin and cloze-jump features already do — no separate jump logic.
+// What can legally sit between two adjacent <mark>s that wrapAcrossBlocks
+// produced from ONE highlight action: nothing but the block boundary itself —
+// a blank line, or a newline plus the next list item's own "- "/"1. " marker.
+// Real note content between two marks (including a non-highlighted list item)
+// is always more than this, so it never matches and those stay separate rows.
+const HIGHLIGHT_GROUP_GAP_RE = /^\n+(?:[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?$/;
+
+// wrapAcrossBlocks always keeps a list item's own marker OUTSIDE the mark
+// (see its comment for why one inside breaks marked's list parsing), so a
+// mark's captured `inner` text never knows it was ever a bullet — rendering
+// `inner` alone would show plain text where the note shows a list. If the
+// mark starts exactly where its line's own marker ends (nothing else on the
+// line before it), that marker is captured here so the preview can put the
+// bullet back. Returns null for a highlight that's a sub-span of a line
+// (marker, if any, isn't immediately adjacent) — those render as plain text,
+// which is correct: they were never "the whole item" to begin with.
+function precedingListMarker(source, start) {
+  const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+  const prefix = source.slice(lineStart, start);
+  const match = LIST_MARKER_RE.exec(prefix);
+  return match && match[0].length === prefix.length ? prefix : null;
+}
+
+// One entry per highlight: a self-contained markdown fragment (rendered as-is
+// in the Highlights tab, not flattened to plain text or cropped — see
+// renderHighlightsPanel) and a trimNoteAnchor-shaped anchor (offset + exact
+// source span + plain text) so "Go to →" can reuse scheduleNoteJump/
+// revealNoteAnchor exactly as the note-origin and cloze-jump features already
+// do — no separate jump logic.
+//
+// Highlighting a selection that crosses a paragraph or list-item boundary
+// (wrapAcrossBlocks, see makeHighlightFromSelection) leaves several adjacent
+// <mark> tags behind — one per block, because a single one can't legally span
+// a boundary. Without the grouping pass below, that ONE highlight action
+// showed up here as three separate rows. Adjacent same-colour matches
+// separated by nothing but boundary syntax (HIGHLIGHT_GROUP_GAP_RE) are
+// merged back into one entry, matching what the user actually did — and each
+// piece's own list marker (if it had one) is restored so a highlighted list
+// still LOOKS like a list here, not three plain-text lines.
 function collectDeckHighlights() {
   const source = state.notes || "";
-  const items = [];
+  const raw = [];
   HIGHLIGHT_SCAN_RE.lastIndex = 0;
   let m;
   while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
-    const inner = m[1];
-    const offset = m.index + HIGHLIGHT_OPEN_TAG_LENGTH;
-    const text = notesAnchorPlainText(inner);
-    if (!text) continue;
-    items.push({
-      preview: text.length > 160 ? text.slice(0, 160).trim() + "…" : text,
-      anchor: trimNoteAnchor({ offset, source: inner, text, deckId: state.deckId, deckTitle: state.deckTitle })
+    const color = m[1] || MARK_HIGHLIGHT_DEFAULT;
+    const inner = m[2];
+    const openTagLength = m[0].length - inner.length - MARK_CLOSE_TAG.length;
+    const start = m.index;
+    raw.push({
+      start,
+      end: start + m[0].length,
+      offset: start + openTagLength,
+      color,
+      inner,
+      marker: precedingListMarker(source, start)
     });
   }
+
+  const groups = [];
+  raw.forEach((entry) => {
+    const last = groups[groups.length - 1];
+    if (last && last.color === entry.color && HIGHLIGHT_GROUP_GAP_RE.test(source.slice(last.end, entry.start))) {
+      last.end = entry.end;
+      last.pieces.push(entry);
+    } else {
+      groups.push({ offset: entry.offset, end: entry.end, color: entry.color, pieces: [entry] });
+    }
+  });
+
+  const items = [];
+  groups.forEach((group) => {
+    // Marks are reapplied (not just the bare inner text) so a highlight's own
+    // colour still shows here exactly as it does in the notes.
+    const markdown = group.pieces.reduce((acc, piece, i) => {
+      const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
+      const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
+      if (i === 0) return rendered;
+      return acc + (piece.marker ? "\n" : "\n\n") + rendered;
+    }, "");
+    const text = notesAnchorPlainText(markdown);
+    if (!text) return;
+    items.push({
+      markdown,
+      anchor: trimNoteAnchor({ offset: group.offset, source: group.pieces[0].inner, text, deckId: state.deckId, deckTitle: state.deckTitle })
+    });
+  });
   return items;
 }
 
 // Redraws the Highlights tab from scratch — cheap enough to just always
 // rebuild (same choice collectDeckClozes/renderClozePanel already make)
 // rather than diffing, and it only runs when that tab is actually opened.
+// Each row renders its markdown fragment exactly like the notes view does —
+// bold/links/images/lists intact, nothing flattened to plain text or cropped
+// with an ellipsis — via the same synchronous safe-HTML pass renderMarkdown
+// itself is built on (markdownToSafeHtml), since a highlight preview is
+// always short enough not to need that function's viewport-deferral machinery.
 function renderHighlightsPanel() {
   const list = el.highlightsList;
   if (!list) return;
@@ -25650,8 +26007,8 @@ function renderHighlightsPanel() {
     const row = document.createElement("div");
     row.className = "highlight-row";
     const preview = document.createElement("div");
-    preview.className = "highlight-preview";
-    preview.textContent = item.preview;
+    preview.className = "highlight-preview rendered";
+    preview.innerHTML = markdownToSafeHtml(item.markdown);
     const jumpBtn = document.createElement("button");
     jumpBtn.type = "button";
     jumpBtn.className = "highlight-jump-btn";
@@ -26292,11 +26649,7 @@ function handleToolbarClick(event) {
     }
   } else if (button.dataset.highlight) {
     const highlight = button.dataset.highlight;
-    if (highlight === "clear") {
-      formatFn = (val, s, e) => clearInlineStyleProperty(val.slice(s, e), "background-color");
-    } else {
-      formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "background-color", highlight);
-    }
+    formatFn = (val, s, e) => toggleMarkColorInText(val.slice(s, e), highlight);
   }
 
   if (!formatFn) return;
