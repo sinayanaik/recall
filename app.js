@@ -52,6 +52,9 @@ const state = {
   categoryById: {},
   // Managed category set for the quick_notes deck: [{ id, name, color }].
   quickNoteCategories: [],
+  // The open deck's meta bag, carried forward from load so per-deck fields
+  // (quick_notes categories, a synced reading position, …) survive autosave.
+  meta: {},
   previewCard: null,
   deckTitle: "",
   deckCategory: "Uncategorized",
@@ -1359,6 +1362,10 @@ async function loadWebDeck(deckId) {
     state.categoryById = categoryById;
     // Managed category set lives on the deck's meta bag (quick_notes only).
     applyDeckMetaCategories(deckData.meta, deckData.id, deckData.title);
+    // Carry the whole meta bag forward (not just the quick_notes categories
+    // pulled out above) so per-deck fields like a synced reading position
+    // survive the next autosave instead of being silently dropped.
+    state.meta = deckData.meta && typeof deckData.meta === "object" ? deckData.meta : {};
     state.current = 0; // always start from the first card on fresh load
     state.deckTitle = deckData.title || "";
     state.deckCategory = normalizeDeckCategory(deckData.category);
@@ -1367,6 +1374,12 @@ async function loadWebDeck(deckId) {
     state.sourceTitle = deckData.title || "";
     state.importTitleHint = deckData.title || "";
     setViewMode("notes");
+    // Cross-device resume: this deck's meta may carry a reading position
+    // synced from another device. Ambient landing, not a deliberate jump —
+    // no flash, no animated scroll. scheduleNoteJump no-ops quietly if the
+    // anchor can't be found (notes changed since, or this is the first time
+    // this deck has ever had a position saved).
+    if (state.meta?.readingPosition) scheduleNoteJump(state.meta.readingPosition, { flash: false, smooth: false });
 
     syncResults();
     touchWebDeckAccess(deckData.id).catch((error) => console.error("Failed to touch deck access", error));
@@ -2048,12 +2061,20 @@ async function upsertCardRows(rows) {
 // `webCards`: this deck's existing cloud rows if the caller already fetched
 // them (reconcileAllDecks fetches every deck's in one batched request), else
 // null to fetch them here.
-async function pushDeckRowsToCloud({ deckId, title, category, notes, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, say = () => {} }) {
+async function pushDeckRowsToCloud({ deckId, title, category, notes, meta, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, say = () => {} }) {
   const deckData = {
     id: deckId,
     title,
     category,
     notes: notes || "",
+    // Symmetric with the pull side (pullCloudDeckToLibrary), which already
+    // reads cloud.meta generically for any deck — this was the missing half:
+    // meta only ever reached Supabase via the quick_notes-scoped writers, so
+    // a normal deck's meta (e.g. a synced reading position) never left the
+    // device. Whole-column last-write-wins, same as notes; this does add one
+    // more writer against that column alongside the quick-notes-scoped ones,
+    // accepted as the same class of risk as two devices pushing concurrently.
+    meta: meta && typeof meta === "object" ? meta : {},
     current_card_index: Number.isFinite(currentIndex) ? currentIndex : 0,
     updated_at: now,
     last_accessed_at: now
@@ -2432,7 +2453,12 @@ const el = {
   makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
   makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),
   pinQuickNoteFromSelectionBtn: document.querySelector("#pinQuickNoteFromSelectionBtn"),
+  highlightSelectionBtn: document.querySelector("#highlightSelectionBtn"),
+  eraseNotesSelectionBtn: document.querySelector("#eraseNotesSelectionBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
+  highlightsStage: document.querySelector("#highlightsStage"),
+  highlightsList: document.querySelector("#highlightsList"),
+  highlightsEmpty: document.querySelector("#highlightsEmpty"),
   frameCardModal: document.querySelector("#frameCardModal"),
   frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
@@ -8301,6 +8327,16 @@ function resetResults() {
   // behind, a combined/imported/new deck inherits the previous deck's labels
   // and the next autosave writes them back out as if they were its own.
   state.categoryById = {};
+  // Same reasoning for the deck's meta bag (readingPosition, etc.) — a genuine
+  // deck change must not carry it over. loadDeckSnapshot/loadWebDeck assign
+  // the real value for the incoming deck right after calling resetStudyDeck.
+  state.meta = {};
+  // The in-memory reading-position tracker is keyed by deck (see
+  // currentDeckKey/deckSnapshot), so this isn't strictly required for
+  // correctness — but clearing it here too means "belongs to no deck or the
+  // currently open one" holds without having to reason about the key check.
+  currentReadingAnchor = null;
+  currentReadingAnchorDeckKey = null;
   state.previewCard = null;
   state.results = {
     known: [],
@@ -8968,6 +9004,17 @@ const deferredWorkRunners = new WeakMap(); // node -> run(batch)
 const deferredWorkObservers = new Map(); // scroll root -> IntersectionObserver
 const pendingDeferredWork = new Set(); // live nodes with queued work, for flushing
 
+// Placeholder height for a not-yet-built notes block (see patchRenderedBlocks
+// below) — kept equal to styles.css's `.notes-rendered > *` contain-intrinsic-
+// size estimate (search NOTES_PLACEHOLDER_HEIGHT_PX there) so a placeholder's
+// box roughly matches what content-visibility already assumes before it's
+// measured for real. CSS can't read this constant, so the two are kept in
+// sync by hand — a change to one should update the other.
+const NOTES_PLACEHOLDER_HEIGHT_PX = 120;
+// placeholder element -> { container, source } — what a placeholder needs to
+// become real content once upgradePlaceholderNodes gets to it.
+const placeholderBlockInfo = new WeakMap();
+
 function deferrableRenderRoot(container) {
   // el.notesView is its own scroll port (.notes-rendered), so it's both the
   // "is this deferrable" answer and the intersection root.
@@ -9449,8 +9496,34 @@ function patchRenderedBlocks(container, blocks, prelude, cached) {
     else missing.push(index);
   });
 
+  // Large notes (see the DEFERRED_WORK_MARGIN section above) can have
+  // hundreds of missing blocks on a first render or after a cache-wide
+  // invalidation (a link-reference-definition change resets the whole
+  // cache) — building every one synchronously (marked.parse + one shared
+  // DOMPurify.sanitize pass) is the actual cost behind a slow raw<->rendered
+  // toggle, not the DOM insertion itself. For the notes view specifically
+  // (deferrableRenderRoot excludes card faces / print / paste-preview —
+  // those must be complete when this function returns), a missing block gets
+  // a lightweight placeholder instead of real content; runNearViewportAndDefer
+  // (below, called AFTER insertion so the placeholders have real geometry to
+  // measure) upgrades the ones near the viewport immediately and the rest as
+  // the reader scrolls to them — the exact same viewport-deferral machinery
+  // diagram drawing and table fitting already use, rather than a parallel
+  // virtualization scheme.
+  const deferRoot = deferrableRenderRoot(container);
   const fresh = [];
-  if (missing.length) {
+  const placeholders = [];
+  if (missing.length && deferRoot) {
+    missing.forEach((blockIndex) => {
+      const source = blocks[blockIndex];
+      const placeholder = document.createElement("div");
+      placeholder.className = "notes-block-placeholder";
+      placeholder.style.minHeight = `${NOTES_PLACEHOLDER_HEIGHT_PX}px`;
+      placeholderBlockInfo.set(placeholder, { container, source });
+      groups[blockIndex] = [placeholder];
+      placeholders.push(placeholder);
+    });
+  } else if (missing.length) {
     const parts = renderPreparedBlocks(missing.map((index) => blocks[index]), prelude);
     missing.forEach((blockIndex, part) => {
       const nodes = nodesFromHtml(parts[part] ?? "");
@@ -9460,9 +9533,9 @@ function patchRenderedBlocks(container, blocks, prelude, cached) {
   }
 
   // Walk the target order once: a node already in the right place is stepped
-  // over, anything else is moved (reused) or inserted (fresh) in front of the
-  // cursor. Whatever is left after the last block never made it into the new
-  // document and is dropped.
+  // over, anything else is moved (reused) or inserted (fresh/placeholder) in
+  // front of the cursor. Whatever is left after the last block never made it
+  // into the new document and is dropped.
   let cursor = container.firstChild;
   groups.forEach((nodes) => {
     nodes.forEach((node) => {
@@ -9479,10 +9552,91 @@ function patchRenderedBlocks(container, blocks, prelude, cached) {
     cursor = next;
   }
 
+  // Kicked off only now that placeholders are actually in the document and
+  // have real geometry for partitionByViewportProximity to measure. Resolves
+  // once the near-viewport batch is upgraded to real content; far batches
+  // upgrade later, off the IntersectionObserver, whenever they're scrolled to.
+  const placeholderUpgrade = placeholders.length
+    ? runNearViewportAndDefer(placeholders, deferRoot, (batch) => upgradePlaceholderNodes(container, batch, prelude))
+    : Promise.resolve();
+
   return {
     blocks: blocks.map((key, index) => ({ key, nodes: groups[index] })),
-    fresh
+    fresh,
+    placeholderUpgrade
   };
+}
+
+// Turns a batch of placeholder nodes (from patchRenderedBlocks, upgraded
+// either immediately for the near-viewport batch or later off the deferred-
+// work observer for a far one) into their real rendered content. Must locate
+// and overwrite the SAME renderedBlockCache entry the placeholders were
+// recorded under — otherwise a same-content re-render (renderMarkdown's
+// "nothing changed" fast path) would treat the cache as authoritative and the
+// block would never upgrade even after being scrolled into view.
+async function upgradePlaceholderNodes(container, batch, prelude) {
+  const withInfo = batch
+    .map((node) => ({ node, info: placeholderBlockInfo.get(node) }))
+    // A newer render can have dropped this placeholder from the document
+    // (its block's source no longer appears) before this batch was reached —
+    // skip it rather than resurrecting content nothing references anymore.
+    .filter((entry) => entry.info && entry.node.isConnected);
+  if (!withInfo.length) return;
+
+  const deferRoot = deferrableRenderRoot(container);
+  const viewportTop = deferRoot ? deferRoot.getBoundingClientRect().top : null;
+  const parts = renderPreparedBlocks(withInfo.map((entry) => entry.info.source), prelude);
+  const cacheEntry = renderedBlockCache.get(container);
+  const freshRealNodes = [];
+  let scrollCompensation = 0;
+
+  withInfo.forEach((entry, i) => {
+    const { node: placeholder, info } = entry;
+    if (!placeholder.isConnected) return; // dropped by a newer render mid-batch
+    const beforeRect = placeholder.getBoundingClientRect();
+    // A placeholder resolving to a different real height shifts everything
+    // below it — including the current scroll position — when it sits above
+    // what's currently visible. Below the viewport, a height change just
+    // moves content the reader hasn't scrolled to yet, which needs no
+    // correction.
+    const isAboveViewport = viewportTop != null && beforeRect.bottom <= viewportTop;
+    let realNodes = nodesFromHtml(parts[i] ?? "");
+    if (!realNodes.length) realNodes = [document.createComment("empty-block")];
+    placeholder.replaceWith(...realNodes);
+    placeholderBlockInfo.delete(placeholder);
+    if (isAboveViewport) {
+      const afterHeight = realNodes.reduce(
+        (sum, node) => sum + (node.nodeType === 1 ? node.getBoundingClientRect().height : 0),
+        0
+      );
+      scrollCompensation += afterHeight - beforeRect.height;
+    }
+    realNodes.forEach((node) => { if (node.nodeType === 1) freshRealNodes.push(node); });
+    // Multiple blocks can share identical source (e.g. a lone "---"), so key
+    // alone isn't unique — disambiguate by which entry actually held this
+    // placeholder node.
+    if (cacheEntry) {
+      const blockEntry = cacheEntry.blocks.find((b) => b.key === info.source && b.nodes.includes(placeholder));
+      if (blockEntry) blockEntry.nodes = realNodes;
+    }
+  });
+
+  if (deferRoot && scrollCompensation) deferRoot.scrollTop += scrollCompensation;
+  if (!freshRealNodes.length) return;
+
+  await enhanceRenderedMarkdown(container, freshRealNodes);
+  await hydrateLocalImages(freshRealNodes);
+  // Mirrors renderMarkdown's own tail exactly, because a far/scroll-triggered
+  // upgrade happens long after that function's promise already resolved —
+  // these side effects have nowhere else to run for it. Comment at that call
+  // site explains why the whole surface is re-scanned rather than just the
+  // fresh nodes.
+  const surface = imageSurfaceForView(container);
+  if (surface) {
+    enhanceSurfaceImageControls(surface);
+    enhanceSurfaceDiagramControls(surface);
+  }
+  if (container === el.notesView) buildNotesToc();
 }
 
 // Rebuilding a view used to put every {{cloze}} back in its hidden state, and
@@ -9519,15 +9673,20 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   const prepared = preprocessSpecialBlocks(displayMarkdown);
   const split = cacheable ? splitPreparedBlocks(prepared) : null;
   let roots = null;
+  let placeholderUpgrade = null;
   if (split) {
     // Every block is parsed behind the document's link reference definitions, so
     // a change to those changes what any block could render to: start over.
     const reusable = cached && cached.prelude === split.prelude ? cached : null;
     const patched = patchRenderedBlocks(container, split.blocks, split.prelude, reusable);
     roots = patched.fresh;
+    placeholderUpgrade = patched.placeholderUpgrade;
     resetRenderedClozes(container);
     // Committed before the awaits below: another render can start while mermaid
-    // is drawing, and it must see the DOM as it actually is, not as it was.
+    // is drawing, and it must see the DOM as it actually is, not as it was. Some
+    // of these blocks' nodes may still be placeholders at this instant — that's
+    // the live DOM state right now, and upgradePlaceholderNodes patches this
+    // exact entry's nodes in place once real content lands.
     renderedBlockCache.set(container, {
       generation: renderGeneration,
       source: displayMarkdown,
@@ -9544,6 +9703,11 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   // which no browser can load directly — swap in a blob URL so they're visible
   // straight away rather than only after they eventually reach the cloud.
   await hydrateLocalImages(roots || container);
+  // Only resolves the near-viewport placeholder batch (far ones stay queued on
+  // the observer) — so this render's promise doesn't settle with visible
+  // content still showing placeholder shimmer, without ever waiting on
+  // off-screen work that might not land for a long time.
+  if (placeholderUpgrade) await placeholderUpgrade;
   if (renderSequence.get(container) !== sequence) return; // a newer render owns the view now
   // Notes AND both card faces are editable surfaces, so all three get the
   // resize/delete grips. Every other caller of renderMarkdown (All Cards, the
@@ -10621,7 +10785,7 @@ function updateMeta() {
   if (el.viewModeToggle) el.viewModeToggle.hidden = !hasDeck;
   if (el.notesBtn) el.notesBtn.disabled = !hasDeck;
   if (el.exportNotesBtn) el.exportNotesBtn.disabled = !hasDeck || !state.notes.trim();
-  if (!hasDeck && state.viewMode === "notes") setViewMode("cards");
+  if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
 }
 
 // ── Deck study notes view ──────────────────────────────────────────
@@ -10670,9 +10834,17 @@ function resetNotesEditingUI() {
 
 function commitNotesEditIfActive() {
   if (!isNotesEditing()) return;
+  // Capture BEFORE overwriting state.notes / hiding the textarea — both the
+  // scroll position and the value it's measured against have to be the
+  // pre-commit ones.
+  const resumeOffset = textareaOffsetFromScroll(el.notesEdit);
   state.notes = el.notesEdit.value;
   resetNotesEditingUI();
-  renderNotesView();
+  // #notesView's own stale scrollTop (it's never destroyed, just hidden) is
+  // what used to make this look like it "worked" for a same-source re-render
+  // — an incidental side effect, not a real position match. Explicitly aim
+  // at the offset we just left, once the re-render settles.
+  renderNotesView().then(() => scrollRenderedNotesToRawOffset(resumeOffset, { smooth: false }));
   scheduleDeckAutosave();
   updateMeta();
 }
@@ -10824,6 +10996,76 @@ function scrollTextareaToOffset(textarea, pos) {
   textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
 }
 
+// Arithmetic inverse of scrollTextareaToOffset: approximate the raw character
+// offset at the textarea's CURRENT scroll position, using the same
+// line-height heuristic in both directions so a round trip (scroll → offset
+// → scroll) is self-consistent rather than compounding error.
+function textareaOffsetFromScroll(textarea) {
+  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+  const lineIndex = Math.max(0, Math.round((textarea.scrollTop + textarea.clientHeight / 2) / lineHeight));
+  const lines = textarea.value.split("\n");
+  let offset = 0;
+  for (let i = 0; i < lineIndex && i < lines.length; i += 1) {
+    offset += lines[i].length + 1; // +1 for the newline the split ate
+  }
+  return Math.min(offset, textarea.value.length);
+}
+
+// A representative raw-markdown offset for whatever's currently at the top of
+// the visible #notesView. Unlike the triple-click path, the "Edit notes"
+// toolbar button has no click point to hand findRawOffsetForRenderedPoint —
+// synthesize one near the top of the viewport instead, so leaving rendered
+// mode via the button still lands raw-edit mode near where you were reading
+// instead of always at the top.
+function rawOffsetForCurrentNotesScroll() {
+  if (!el.notesView || el.notesView.hidden) return null;
+  const rect = el.notesView.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + Math.min(64, rect.height / 3);
+  return findRawOffsetForRenderedPoint(el.notesView, state.notes, x, y);
+}
+
+// ── Cross-device reading-position resume ────────────────────────────────
+// currentReadingAnchor is tracked in memory ONLY — no IndexedDB/localStorage
+// write here, no debounce/timer. It's folded into deckSnapshot()'s meta bag
+// (see the `readingPosition` line there) purely as a piggyback on whatever
+// save is already about to happen for some other reason (a notes edit, a
+// card change, the pagehide flush) — the user's explicit "no advanced/costly
+// logic, just sync the current location whenever the sync happens" call.
+let currentReadingAnchor = null;
+// Which deck the anchor above was captured for — a scroll captured in deck A
+// must never ride into deck B's meta after switching decks without any
+// intervening scroll in B. Compared against currentDeckKey() in deckSnapshot.
+let currentReadingAnchorDeckKey = null;
+
+function currentDeckKey() {
+  return JSON.stringify([state.deckId || null, state.localDeckId || null]);
+}
+
+function captureCurrentReadingAnchor() {
+  if (!el.notesView || el.notesView.hidden || state.viewMode !== "notes") return;
+  const offset = rawOffsetForCurrentNotesScroll();
+  if (offset == null) return;
+  const notes = state.notes || "";
+  const text = notes.slice(offset, offset + 80).trim() || notes.slice(Math.max(0, offset - 80), offset).trim();
+  if (!text) return;
+  currentReadingAnchor = trimNoteAnchor({ offset, source: notes.slice(offset, offset + 80), text });
+  currentReadingAnchorDeckKey = currentDeckKey();
+}
+
+// rAF-coalesced so a fling-scroll doesn't run the hit-test on every native
+// scroll event — this is event-handler hygiene, not a persistence schedule;
+// nothing is written to storage from here.
+let readingAnchorCaptureQueued = false;
+el.notesView?.addEventListener("scroll", () => {
+  if (readingAnchorCaptureQueued) return;
+  readingAnchorCaptureQueued = true;
+  requestAnimationFrame(() => {
+    readingAnchorCaptureQueued = false;
+    captureCurrentReadingAnchor();
+  });
+}, { passive: true });
+
 el.notesView?.addEventListener("click", (event) => {
   if (event.detail !== 3 || isNotesEditing()) return;
   if (event.target.closest("button, a")) return;
@@ -10831,7 +11073,7 @@ el.notesView?.addEventListener("click", (event) => {
 });
 
 function setViewMode(mode) {
-  const next = mode === "notes" ? "notes" : "cards";
+  const next = mode === "notes" ? "notes" : mode === "highlights" ? "highlights" : "cards";
   if (!el.notesStage || !el.viewModeToggle) {
     state.viewMode = next;
     return;
@@ -10840,8 +11082,12 @@ function setViewMode(mode) {
   const changed = state.viewMode !== next;
   state.viewMode = next;
   const notesActive = next === "notes";
-  quizPanel?.classList.toggle("notes-mode", notesActive);
+  const highlightsActive = next === "highlights";
+  // Highlights reuses the notes-mode layout (deck/controls give way to a
+  // full-height stage) — it's a notes-adjacent view, not a card view.
+  quizPanel?.classList.toggle("notes-mode", notesActive || highlightsActive);
   el.notesStage.hidden = !notesActive;
+  if (el.highlightsStage) el.highlightsStage.hidden = !highlightsActive;
   el.viewModeToggle.querySelectorAll("[data-view-mode]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.viewMode === next);
   });
@@ -10856,6 +11102,8 @@ function setViewMode(mode) {
     if (el.notesView && state.notes !== notesScrolledSource) el.notesView.scrollTop = 0;
     renderNotesView();
     if (!state.notes.trim()) enterNotesEditing();
+  } else if (highlightsActive) {
+    renderHighlightsPanel();
   } else if (changed) {
     showCard();
   }
@@ -10863,7 +11111,7 @@ function setViewMode(mode) {
 
 el.editNotesBtn?.addEventListener("click", () => {
   if (isNotesEditing()) commitNotesEditIfActive();
-  else enterNotesEditing();
+  else enterNotesEditing(rawOffsetForCurrentNotesScroll());
 });
 
 el.notesEdit?.addEventListener("input", () => {
@@ -11686,6 +11934,12 @@ function positionNotesSelectionButton() {
     if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
     if (imageMatches.length) parts.push(imageMatches.length === 1 ? "1 image" : `${imageMatches.length} images`);
     cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
+    // Both are rendered-view-only. Eraser: native Delete/Backspace already
+    // does its job in raw-edit mode. Highlight: authoring is only wired for
+    // a rendered selection (see makeHighlightFromSelection) — no raw-editor
+    // counterpart, unlike cloze.
+    if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = true;
+    if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = true;
     button.hidden = false;
     if (mobile) return pinSelectionButtonToBottom(button);
     // Track the actual selection (same approach as the rendered-view branch
@@ -11728,6 +11982,9 @@ function positionNotesSelectionButton() {
   if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
   if (imageCount) parts.push(imageCount === 1 ? "1 image" : `${imageCount} images`);
   cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
+  // Both are Notes-only — hidden for a question/answer rendered selection.
+  if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = renderedTarget?.name !== "notes";
+  if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = renderedTarget?.name !== "notes";
   button.hidden = false;
   if (mobile) return pinSelectionButtonToBottom(button);
   const rect = range.getBoundingClientRect();
@@ -11974,9 +12231,71 @@ function findRenderedNoteRange(anchor) {
   }
 }
 
+// Scroll #notesView to the block containing a given RAW markdown offset — the
+// reverse of findRawOffsetForRenderedPoint. Used when leaving raw-edit mode
+// (the offset is a caret/scroll position in the textarea) and by the
+// cross-device resume feature. Built on findRenderedNoteRange (a text search
+// over the rendered DOM) rather than block-index arithmetic, because
+// preprocessSpecialBlocks changes string length/structure between raw
+// state.notes and what actually gets lexed into rendered blocks — an index
+// computed one way wouldn't line up with the other. Retries across a few
+// frames because block heights are unstable while deferred work (diagram
+// draw, table fit, and viewport-deferred block placeholders) is still
+// landing on a large note — a single scroll-to-position attempt would
+// frequently land on a spot that's about to move out from under it.
+// A rough proportional estimate of where `offset` sits in #notesView's
+// scroll range — not the final answer, just enough to bring a still-
+// placeholder block (see Feature 1 / patchRenderedBlocks) within the
+// deferred-work observer's margin so it upgrades to real, searchable
+// content. The precise landing spot still comes from the caller's own text
+// search; this only exists to give that search something real to find on a
+// note whose target hasn't been scrolled near yet (a fresh load, or a jump
+// far from wherever the rendered view last happened to sit).
+function estimateNotesScrollForOffset(offset) {
+  if (!el.notesView || !Number.isFinite(offset) || !state.notes) return;
+  const fraction = Math.max(0, Math.min(1, offset / state.notes.length));
+  el.notesView.scrollTop = fraction * el.notesView.scrollHeight;
+}
+
+function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
+  if (offset == null || !el.notesView || el.notesView.hidden) return;
+  const notes = state.notes || "";
+  const forward = notes.slice(offset, offset + 60).trim();
+  const backward = notes.slice(Math.max(0, offset - 60), offset).trim();
+  const needle = forward || backward;
+  if (!needle) return;
+
+  let estimatedOnce = false;
+  const attempt = (retriesLeft) => {
+    const range = findRenderedNoteRange({ text: needle });
+    if (range) {
+      const startEl = range.startContainer.nodeType === Node.TEXT_NODE
+        ? range.startContainer.parentElement
+        : range.startContainer;
+      const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
+      (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+      return;
+    }
+    // Not found yet — on a large note this usually means the target block is
+    // still a placeholder because nothing has scrolled near it. Nudge toward
+    // a proportional estimate once, giving the observer a chance to upgrade
+    // it before the next retry searches again.
+    if (!estimatedOnce) {
+      estimatedOnce = true;
+      estimateNotesScrollForOffset(offset);
+    }
+    if (retriesLeft > 0) setTimeout(() => attempt(retriesLeft - 1), 120);
+  };
+  requestAnimationFrame(() => requestAnimationFrame(() => attempt(8)));
+}
+
 // Scroll to the anchor and briefly flash it. Handles both rendered and raw
-// notes. Returns true when it found and revealed the spot.
-function revealNoteAnchor(anchor) {
+// notes. Returns true when it found and revealed the spot. `flash`/`smooth`
+// default to true (every existing caller — a deliberate jump-to-origin click)
+// so only an ambient landing (cross-device reading-position resume on load)
+// needs to opt out: no flash for something the reader didn't ask to jump to,
+// no animated scroll on every deck open.
+function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}) {
   const notesTarget = SELECTION_TARGETS[0];
   if (isTargetEditing(notesTarget)) {
     const idx = resolveRawNoteIndex(anchor);
@@ -11995,7 +12314,8 @@ function revealNoteAnchor(anchor) {
     ? range.startContainer.parentElement
     : range.startContainer;
   const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
-  (block || el.notesView).scrollIntoView({ behavior: "smooth", block: "center" });
+  (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+  if (!flash) return true;
   // The browser's own selection highlight makes the exact span obvious; the
   // block flash draws the eye there first.
   const sel = window.getSelection();
@@ -12011,13 +12331,26 @@ function revealNoteAnchor(anchor) {
 // Switch to the notes view (if needed) and reveal the anchor. setViewMode
 // re-renders the notes markdown asynchronously, so retry across a few frames
 // before giving up. Two rAFs cover the initial render; the timeout loop is a
-// belt-and-braces fallback for slower renders / a just-loaded deck.
-function scheduleNoteJump(anchor) {
+// belt-and-braces fallback for slower renders / a just-loaded deck. `options`
+// (flash/smooth) is threaded straight through to revealNoteAnchor.
+function scheduleNoteJump(anchor, options) {
   if (state.viewMode !== "notes") setViewMode("notes");
+  let estimatedOnce = false;
   const attempt = (retries) => {
-    if (revealNoteAnchor(anchor)) return;
+    if (revealNoteAnchor(anchor, options)) return;
+    // findRenderedNoteRange (inside revealNoteAnchor) does a text search over
+    // the rendered DOM — on a large note a target deep in the document that
+    // hasn't been scrolled near yet is still a Feature 1 placeholder with no
+    // text to find. Nudge toward a proportional estimate once so the
+    // deferred-work observer gets a chance to upgrade it before retrying.
+    if (!estimatedOnce && Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0])) {
+      estimatedOnce = true;
+      estimateNotesScrollForOffset(anchor.offset);
+    }
     if (retries > 0) setTimeout(() => attempt(retries - 1), 120);
-    else setStatus("Couldn't find that spot in the notes — it may have been edited.", "info");
+    else if (!options || options.flash !== false) {
+      setStatus("Couldn't find that spot in the notes — it may have been edited.", "info");
+    }
   };
   requestAnimationFrame(() => requestAnimationFrame(() => attempt(8)));
 }
@@ -12149,6 +12482,29 @@ el.pinQuickNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   hideNotesSelectionButton();
   window.getSelection()?.removeAllRanges();
   saveQuickNote(text, button, anchor);
+});
+
+// The floater's highlight button: mark the rendered-view selection. Notes-
+// only, same gating as the eraser below.
+el.highlightSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const rendered = activeRenderedTarget();
+  if (rendered?.name === "notes") makeHighlightFromSelection(renderTargetConfig("notes"));
+  hideNotesSelectionButton();
+});
+
+// The floater's eraser button: delete the rendered-view selection from the
+// notes source. Notes-only — this button is hidden for question/answer
+// selections (see positionNotesSelectionButton) and, unlike the other three,
+// has no raw-editor counterpart: native Delete/Backspace already does this
+// job in edit mode.
+el.eraseNotesSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const rendered = activeRenderedTarget();
+  if (rendered?.name === "notes") eraseNotesSelection(renderTargetConfig("notes"));
+  hideNotesSelectionButton();
 });
 
 [el.notesView, el.questionView, el.answerView].forEach((view) => {
@@ -12289,6 +12645,108 @@ function makeClozeFromSelection({ view, label, getSource, setSource, rerender })
   rerender();
   scheduleDeckAutosave();
   showToast(result.action === "removed" ? "Cloze removed" : "Cloze added");
+}
+
+// Delete the located occurrence from the source, same locate-then-splice
+// shape as clozeToggleInSource but removing instead of wrapping. Closes the
+// gap with a single space when leaving none would glue two words together.
+// A selection spanning multiple blocks (its plain text contains a paragraph
+// break) is refused rather than silently merging two paragraphs into one —
+// the same kind of single-block limit notesSelectionCodeFence already applies
+// to a selection spanning more than one <pre>.
+function eraseSelectionFromSource(source, sel) {
+  const loc = locateSelectionInSource(source, sel);
+  if (!loc) return null;
+  const { idx, end, needle } = loc;
+  if (needle.includes("\n\n")) return null;
+  const before = source.slice(0, idx);
+  const after = source.slice(end);
+  const beforeEndsWithSpace = /[ \t]$/.test(before);
+  const afterStartsWithSpace = /^[ \t]/.test(after);
+  // Both sides already carried their own separating space (the usual case —
+  // the selection itself was just the word, not its surrounding spaces) —
+  // erasing what sat between them would otherwise leave a double space.
+  if (beforeEndsWithSpace && afterStartsWithSpace) return before + after.slice(1);
+  // Neither side had any padding at all (selection abutted words on both
+  // sides with nothing between) — erasing it would glue two words together
+  // without a space to replace what was removed.
+  if (!beforeEndsWithSpace && !afterStartsWithSpace && before && after && !/\s$/.test(before) && !/^\s/.test(after)) {
+    return before + " " + after;
+  }
+  return before + after;
+}
+
+// Driver for the eraser button — same shape as makeClozeFromSelection, but
+// splices the selection OUT of the source instead of wrapping it. Only ever
+// called with renderTargetConfig("notes") (see the pointerdown handler and
+// the visibility gate in positionNotesSelectionButton), so it never runs
+// against a card's question/answer even though renderTargetConfig itself
+// supports those targets too.
+function eraseNotesSelection({ view, label, getSource, setSource, rerender }) {
+  const sel = renderedSelectionStrings(view);
+  if (!sel) {
+    setStatus(`Select some text in the ${label} first, then tap the eraser to delete it.`, "error");
+    return;
+  }
+  const result = eraseSelectionFromSource(getSource(), sel);
+  if (result == null) {
+    setStatus("Couldn't match that selection in the source — try selecting text within a single paragraph.", "error");
+    return;
+  }
+  setSource(result);
+  window.getSelection()?.removeAllRanges();
+  rerender();
+  scheduleDeckAutosave();
+  showToast("Selection erased");
+}
+
+// Wrap the located occurrence in <mark></mark> — or strip the tags if it's
+// already exactly a highlight. Same shape as clozeToggleInSource, with <mark>
+// delimiters instead of {{ }}: DOMPurify's default allowlist already permits
+// <mark>, and the existing "keep-mark" Turndown rule (see htmlToMarkdown)
+// already round-trips it back out of a selection, so no render/sanitize
+// change is needed for this to display or to survive being lifted into a
+// card/cloze/quick-note.
+function highlightToggleInSource(source, sel) {
+  const loc = locateSelectionInSource(source, sel);
+  if (!loc) return null;
+  const { idx, end, needle } = loc;
+  if (source.slice(Math.max(0, idx - 6), idx) === "<mark>" && source.slice(end, end + 7) === "</mark>") {
+    return { text: source.slice(0, idx - 6) + needle + source.slice(end + 7), action: "removed" };
+  }
+  // Sub-selection inside a larger existing highlight (an unclosed <mark>
+  // precedes the match, with a </mark> still to come): wrapping it would nest
+  // <mark> tags rather than extend the existing highlight.
+  const before = source.slice(0, idx);
+  if (before.lastIndexOf("<mark>") > before.lastIndexOf("</mark>") && source.indexOf("</mark>", end) !== -1) {
+    return { text: source, action: "already" };
+  }
+  return { text: source.slice(0, idx) + "<mark>" + needle + "</mark>" + source.slice(end), action: "added" };
+}
+
+// Driver for the highlight button — same shape as makeClozeFromSelection.
+// Only ever called with renderTargetConfig("notes") (see the pointerdown
+// handler and the visibility gate in positionNotesSelectionButton).
+function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }) {
+  const sel = renderedSelectionStrings(view);
+  if (!sel) {
+    setStatus(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
+    return;
+  }
+  const result = highlightToggleInSource(getSource(), sel);
+  if (!result) {
+    setStatus("Couldn't match that selection in the source — try selecting whole words.", "error");
+    return;
+  }
+  if (result.action === "already") {
+    showToast("That text is already highlighted", "info");
+    return;
+  }
+  setSource(result.text);
+  window.getSelection()?.removeAllRanges();
+  rerender();
+  scheduleDeckAutosave();
+  showToast(result.action === "removed" ? "Highlight removed" : "Highlighted");
 }
 
 // Persist a question/answer edit to both the active deck and the master list
@@ -14235,6 +14693,9 @@ async function commitSeparateDecks() {
     // category its own file declared.
     state.deckCategory = folder != null ? landingFolder : normalizeDeckCategory(deck.category);
     state.notes = deck.notes;
+    // Each imported deck is brand new — don't let the previously-open deck's
+    // meta bag (e.g. a synced reading position) leak into it.
+    state.meta = {};
     state.masterCards = cards;
     state.cards = cards;
     state.statusById = statusById;
@@ -14554,12 +15015,28 @@ function deckSnapshot() {
     importTitleHint: state.importTitleHint || "",
     deckId: state.deckId,
     current: Number.isFinite(state.current) ? state.current : 0,
-    // Deck-level bag. Only the quick_notes deck owns a category set, and
-    // autosave must carry it or saving the deck erases the names/colours every
-    // card chip resolves against.
-    ...(isQuickNotesDeck(state.deckId, state.deckTitle) && state.quickNoteCategories.length
-      ? { meta: { quickNoteCategories: state.quickNoteCategories } }
-      : {}),
+    // Deck-level bag: whatever this deck's meta already carried (a synced
+    // reading position, etc.), plus the quick_notes category set overlaid on
+    // top when this is that deck — autosave must carry both, or saving the
+    // deck erases the names/colours every card chip resolves against, or
+    // drops per-deck fields set elsewhere back to nothing.
+    ...(() => {
+      const metaBag = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
+      if (isQuickNotesDeck(state.deckId, state.deckTitle) && state.quickNoteCategories.length) {
+        metaBag.quickNoteCategories = state.quickNoteCategories;
+      }
+      // Cross-device reading-position resume: piggyback whatever the in-memory
+      // scroll tracker last captured, IF it was captured for THIS deck — a
+      // stale anchor from a deck scrolled away from must never leak into a
+      // different deck's meta (see captureCurrentReadingAnchor). No dedicated
+      // write schedule: this only ever rides along when a save is already
+      // happening for some other reason, per the deliberately simple sync
+      // strategy — "whenever the sync happens just sync the current location."
+      if (currentReadingAnchor && currentReadingAnchorDeckKey === currentDeckKey()) {
+        metaBag.readingPosition = currentReadingAnchor;
+      }
+      return Object.keys(metaBag).length ? { meta: metaBag } : {};
+    })(),
     cards: state.masterCards.map((card, index) => {
       const id = card.id || `${index}-${card.question.slice(0, 32)}`;
       return {
@@ -14651,6 +15128,9 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // otherwise leak its labels onto same-id cards and get pushed to the cloud.
     state.categoryById = categoryById;
     applyDeckMetaCategories(payload.meta, payload.deckId, payload.deckTitle);
+    // Carry the whole meta bag forward — see the loadWebDeck sibling of this
+    // line for why (per-deck fields beyond quick_notes categories).
+    state.meta = payload.meta && typeof payload.meta === "object" ? payload.meta : {};
     state.current = Math.min(Math.max(Number(payload.current) || 0, 0), cards.length);
     state.deckTitle = String(payload.deckTitle || "").trim() || humanizeSourceTitle(titleHint);
     // Importing a JSON snapshot INTO a folder overrides the category the
@@ -14668,6 +15148,10 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     state.importTitleHint = String(payload.importTitleHint || "").trim() || titleHint;
     state.notes = payloadNotes;
     setViewMode("notes");
+    // Cross-device resume — see the identical call in loadWebDeck for why
+    // flash/smooth are both off. Only reached on this non-append branch, so
+    // merge-importing more cards into an already-open deck never triggers it.
+    if (state.meta?.readingPosition) scheduleNoteJump(state.meta.readingPosition, { flash: false, smooth: false });
   }
   syncResults();
   closeAllCardsPanel();
@@ -16006,6 +16490,7 @@ async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDec
     title,
     category: deckCategory,
     notes: snapshot.notes || "",
+    meta: snapshot.meta,
     currentIndex: snapshot.current,
     cards: pushedCards,
     isNewDeck,
@@ -20796,6 +21281,8 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
       state.notes = combinedMarkdown;
       state.masterCards = [];
       state.sourceTitle = sanitizedTitle;
+      // Brand new deck — don't inherit whatever meta was in state before this import.
+      state.meta = {};
       if (await saveDeckToLibrary({ silent: true })) saved = 1;
       else saveFailed = true;
     } else {
@@ -20823,6 +21310,9 @@ async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = 
         state.notes = chapters[i].markdown;
         state.masterCards = [];
         state.sourceTitle = chapters[i].title;
+        // Each chapter deck is brand new — don't inherit meta from the
+        // previous chapter's iteration or the deck open before this import.
+        state.meta = {};
         // A book is many decks in one go, so this is the realistic way to hit
         // the storage quota. saveDeckToLibrary returns null (never throws) on
         // failure — ignoring that would leave a half-imported book behind a
@@ -22548,7 +23038,7 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     if (state.viewMode === "notes") {
       isNotesEditing() ? commitNotesEditIfActive() : enterNotesEditing();
-    } else if (state.cards[state.current]) {
+    } else if (state.viewMode === "cards" && state.cards[state.current]) {
       toggleEditMode(state.flipped ? "answer" : "question");
     }
     return;
@@ -22574,9 +23064,9 @@ document.addEventListener("keydown", (event) => {
   }
   // Card shortcuts are meaningless while any modal/panel is open (it either
   // covers the card stage or shouldn't let keys leak through to it) or while
-  // the Notes view covers the card stage.
+  // the Notes/Highlights view covers the card stage.
   if (anyModalOpen()) return;
-  if (state.viewMode === "notes") return;
+  if (state.viewMode !== "cards") return;
   // A focused cloze handles its own Space/Enter (reveal) — don't also flip.
   if (event.target.closest?.(".cloze")) return;
   if (event.key === " " || event.key === "Enter") {
@@ -24642,6 +25132,31 @@ function htmlToMarkdown(html, options = {}) {
         replacement: (content) => `<${tag}>${content}</${tag}>`
       });
     });
+
+    // A rendered mermaid/nomnoml diagram is an <svg>, which carries no usable
+    // text for Turndown's generic element handling to fall back on — a
+    // selection spanning one used to come out empty or as jumbled label
+    // fragments. preprocessSpecialBlocks stashes the original fence source,
+    // URL-encoded, in data-diagram on this exact node (and never clears it —
+    // renderDiagramNodes re-reads it on every re-render), so recover it here
+    // instead of serializing the SVG, the same way notesSelectionCodeFence
+    // recovers a code block's source ahead of the generic path.
+    turndownService.addRule("keep-diagram-source", {
+      filter: (node) =>
+        node.nodeName === "DIV" &&
+        (node.classList.contains("mermaid") || node.classList.contains("nomnoml-diagram")) &&
+        Boolean(node.dataset.diagram),
+      replacement: (content, node) => {
+        const lang = node.classList.contains("mermaid") ? "mermaid" : "nomnoml";
+        let source = "";
+        try {
+          source = decodeURIComponent(node.dataset.diagram);
+        } catch (err) {
+          source = "";
+        }
+        return source ? `\n\n\`\`\`${lang}\n${source}\n\`\`\`\n\n` : "";
+      }
+    });
   }
 
   // App clozes render as <span class="cloze">…</span>. Turn them back into
@@ -25085,6 +25600,68 @@ function collectDeckClozes() {
     pushGroup(`Card ${i + 1} · Answer`, card.answer || "");
   });
   return groups;
+}
+
+// ── Highlights view ────────────────────────────────────────────────────────
+// A highlight is a literal <mark>…</mark> pair sitting in state.notes — same
+// authored-in-source approach as {{cloze}}, which is what already makes it
+// render correctly (DOMPurify's default allowlist includes <mark>, no
+// SANITIZE_CONFIG change needed) and round-trip out of a selection (the
+// existing "keep-mark" Turndown rule). There is deliberately no separate
+// stored list: collectDeckHighlights, like collectDeckClozes above, is fully
+// derived from state.notes on every call, so an edit made in the raw editor
+// (typing <mark> by hand, or deleting one) can never drift out of sync with
+// what the Highlights tab shows.
+const HIGHLIGHT_SCAN_RE = /<mark>([\s\S]+?)<\/mark>/g;
+const HIGHLIGHT_OPEN_TAG_LENGTH = "<mark>".length;
+
+// One entry per highlight: a trimmed preview for the list row, and a
+// trimNoteAnchor-shaped anchor (offset + exact source span + plain text) so
+// "Go to →" can reuse scheduleNoteJump/revealNoteAnchor exactly as the
+// note-origin and cloze-jump features already do — no separate jump logic.
+function collectDeckHighlights() {
+  const source = state.notes || "";
+  const items = [];
+  HIGHLIGHT_SCAN_RE.lastIndex = 0;
+  let m;
+  while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
+    const inner = m[1];
+    const offset = m.index + HIGHLIGHT_OPEN_TAG_LENGTH;
+    const text = notesAnchorPlainText(inner);
+    if (!text) continue;
+    items.push({
+      preview: text.length > 160 ? text.slice(0, 160).trim() + "…" : text,
+      anchor: trimNoteAnchor({ offset, source: inner, text, deckId: state.deckId, deckTitle: state.deckTitle })
+    });
+  }
+  return items;
+}
+
+// Redraws the Highlights tab from scratch — cheap enough to just always
+// rebuild (same choice collectDeckClozes/renderClozePanel already make)
+// rather than diffing, and it only runs when that tab is actually opened.
+function renderHighlightsPanel() {
+  const list = el.highlightsList;
+  if (!list) return;
+  list.innerHTML = "";
+  const items = collectDeckHighlights();
+  if (el.highlightsEmpty) el.highlightsEmpty.hidden = items.length > 0;
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "highlight-row";
+    const preview = document.createElement("div");
+    preview.className = "highlight-preview";
+    preview.textContent = item.preview;
+    const jumpBtn = document.createElement("button");
+    jumpBtn.type = "button";
+    jumpBtn.className = "highlight-jump-btn";
+    jumpBtn.title = "Go to this highlight in the notes";
+    jumpBtn.setAttribute("aria-label", "Go to this highlight in the notes");
+    jumpBtn.textContent = "Go to →";
+    jumpBtn.addEventListener("click", () => scheduleNoteJump(item.anchor));
+    row.append(preview, jumpBtn);
+    list.appendChild(row);
+  });
 }
 
 // Split a markdown table row into trimmed cell strings (drops the outer pipes).
