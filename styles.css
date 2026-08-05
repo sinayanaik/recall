@@ -9336,6 +9336,29 @@ textarea {
   display: none !important;
 }
 
+/* Plain mode — the raw editor for a very large note, where the backdrop mirror
+   is switched off because laying out a second copy of the document cost ~1.9s
+   to open and ~0.4s per keystroke (see HIGHLIGHT_MIRROR_MAX_CHARS in app.js).
+   The textarea normally renders its own text transparent and lets the mirror
+   supply every visible pixel, so with no mirror the text has to be given back:
+   its real colour, the background, and the focus border the backdrop was
+   carrying. Metrics are untouched — this only moves who paints the glyphs. */
+.highlight-textarea-wrapper.is-plain > .highlight-textarea-backdrop {
+  display: none !important;
+}
+
+.highlight-textarea-wrapper.is-plain > .edit-textarea {
+  color: var(--text) !important;
+  background: var(--card) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--input-radius) !important;
+}
+
+.highlight-textarea-wrapper.is-plain > .edit-textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent) !important;
+}
+
 /* Faint styling elements / HTML tags in editor mode */
 .syntax-tag {
   opacity: 0.35 !important;
@@ -11087,33 +11110,27 @@ kbd {
    `auto` in contain-intrinsic-size makes each block remember its real height
    once measured, so the scrollbar settles down as the note is browsed.
 
+   --notes-block-estimate is the height an UNMEASURED block is assumed to have,
+   and it matters far more than it looks. It used to be a hardcoded 120px, which
+   is a large overestimate for ordinary prose: on a 400KB note the document
+   claimed 249,880px on first paint and collapsed to 141,773px as the reader
+   scrolled through it — a 43% shrink spread over 124 separate height changes,
+   the largest a single 961px jump. That is what made scrolling a long note feel
+   broken: the scrollbar thumb kept growing, content slid out from under the
+   cursor, and anything that restores a reading position (raw<->rendered toggle,
+   jump-to-heading, cross-device resume) computed against a height that no longer
+   existed a second later. measureNotesBlockEstimate() in app.js now samples the
+   blocks the browser actually laid out and writes this variable per note, which
+   takes the total-height error to roughly zero. The 120px here is only the
+   fallback for the first paint, before any sample exists.
+
    Deliberately NOT applied to diagrams (.diagram-shell) or tables
    (.markdown-table-wrap): both are already deferred in JS off their own
    IntersectionObserver, which needs their geometry to stay real, and paint
    containment would clip an image mid-resize-drag. */
 .notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap) {
   content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
-}
-
-/* A stand-in for a block whose real content hasn't been built yet — see
-   NOTES_PLACEHOLDER_HEIGHT_PX in app.js, kept at the same 120px as the
-   contain-intrinsic-size estimate above so a placeholder's box roughly
-   matches what content-visibility already assumes before anything is
-   upgraded. A subtle shimmer, not blank space, so it doesn't read as
-   missing/broken content while off-screen blocks wait their turn, and
-   carries no text a page search could mistake for real content. */
-.notes-block-placeholder {
-  min-height: 120px;
-  border-radius: 10px;
-  background: linear-gradient(90deg, var(--panel-2) 25%, var(--panel) 50%, var(--panel-2) 75%);
-  background-size: 200% 100%;
-  animation: notes-placeholder-shimmer 1.6s ease-in-out infinite;
-}
-
-@keyframes notes-placeholder-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  contain-intrinsic-size: auto var(--notes-block-estimate, 120px);
 }
 
 .notes-rendered:empty::before {

@@ -9026,17 +9026,6 @@ const deferredWorkRunners = new WeakMap(); // node -> run(batch)
 const deferredWorkObservers = new Map(); // scroll root -> IntersectionObserver
 const pendingDeferredWork = new Set(); // live nodes with queued work, for flushing
 
-// Placeholder height for a not-yet-built notes block (see patchRenderedBlocks
-// below) — kept equal to styles.css's `.notes-rendered > *` contain-intrinsic-
-// size estimate (search NOTES_PLACEHOLDER_HEIGHT_PX there) so a placeholder's
-// box roughly matches what content-visibility already assumes before it's
-// measured for real. CSS can't read this constant, so the two are kept in
-// sync by hand — a change to one should update the other.
-const NOTES_PLACEHOLDER_HEIGHT_PX = 120;
-// placeholder element -> { container, source } — what a placeholder needs to
-// become real content once upgradePlaceholderNodes gets to it.
-const placeholderBlockInfo = new WeakMap();
-
 function deferrableRenderRoot(container) {
   // el.notesView is its own scroll port (.notes-rendered), so it's both the
   // "is this deferrable" answer and the intersection root.
@@ -9409,6 +9398,204 @@ function invalidateRenderedBlockCache() {
   renderGeneration += 1;
 }
 
+// ── Coalesced surface finalization ─────────────────────────────────────────
+// enhanceSurfaceImageControls re-lexes the WHOLE note (surfaceLexTokens),
+// enhanceSurfaceDiagramControls re-scans it for diagram fences, and
+// buildNotesToc re-queries every heading — each an O(whole document) pass.
+// renderMarkdown runs them once, but EVERY placeholder-upgrade batch (one per
+// scroll chunk on a large note) ran them again synchronously, turning a single
+// render into O(document) × O(number of scroll batches). That is what made a
+// large book crawl. These scans are idempotent and only exist to (re)bind the
+// token indices / heading list against the current DOM, so it's safe — and
+// vastly cheaper — to coalesce them: at most one pass per container per frame,
+// shared by the render tail and every upgrade batch that lands in the same
+// window.
+const surfaceFinalizeFrames = new WeakMap(); // container -> rAF id
+
+function finalizeRenderedSurface(container) {
+  const surface = imageSurfaceForView(container);
+  if (surface) {
+    enhanceSurfaceImageControls(surface);
+    enhanceSurfaceDiagramControls(surface);
+  }
+  if (container === el.notesView) {
+    buildNotesToc();
+    scheduleNotesBlockEstimate(container);
+  }
+}
+
+function scheduleSurfaceFinalize(container, { sync = false } = {}) {
+  if (sync) {
+    const pending = surfaceFinalizeFrames.get(container);
+    if (pending) {
+      cancelAnimationFrame(pending);
+      surfaceFinalizeFrames.delete(container);
+    }
+    finalizeRenderedSurface(container);
+    return;
+  }
+  if (surfaceFinalizeFrames.get(container)) return; // already queued this frame
+  const frame = requestAnimationFrame(() => {
+    surfaceFinalizeFrames.delete(container);
+    finalizeRenderedSurface(container);
+  });
+  surfaceFinalizeFrames.set(container, frame);
+}
+
+// ── Adaptive block-height estimate ─────────────────────────────────────────
+// `content-visibility: auto` needs a guess for how tall a block it hasn't laid
+// out yet will be (contain-intrinsic-size). That guess used to be a hardcoded
+// 120px, which is far too tall for ordinary prose: on a 400KB note the document
+// claimed 249,880px on first paint and shrank to 141,773px as the reader
+// scrolled through it — 43% of the scroll range evaporating across 124 separate
+// jumps. Every one of those is the scrollbar thumb resizing and the content
+// under the cursor sliding, which is what made a long note feel broken to
+// scroll, and it also quietly wrecked anything that restores a reading position
+// (the raw<->rendered toggle, jump-to-heading, cross-device resume) because the
+// height those compute against changed underneath them.
+//
+// The fix is to stop guessing globally and measure THIS note. What governs
+// scroll stability is the TOTAL height, not any individual block, so one
+// well-chosen number per note is enough — and beats a per-block model derived
+// from source length, which was tried and came out worse.
+//
+// Getting that number right needs care in two places that both burned a first
+// attempt at this:
+//
+// 1. A block whose layout content-visibility skipped reports the ESTIMATE from
+//    contain-intrinsic-size as its offsetHeight, not its content's height — not
+//    zero, as you might expect. Averaging "whatever is laid out right now"
+//    therefore mostly re-reads the number we ourselves just wrote, and each
+//    pass feeds on the last: on the 400KB note it climbed 120 -> 157px and made
+//    the drift worse (-55% instead of -43%). So the sample must FORCE layout on
+//    the blocks it measures (content-visibility: visible, restored right after)
+//    rather than trusting whatever geometry happens to be available.
+// 2. The sample has to be spread across the whole document, and a fixed stride
+//    aliases badly against repetitive structure — on an endnote chapter of
+//    alternating list/pre blocks a strided sample landed on the tall one nearly
+//    every time (+21%). A golden-ratio low-discrepancy sequence spreads the
+//    picks evenly without ever locking onto a period.
+//
+// The average is winsorized — every sample is clamped into the 10th..90th
+// percentile band before averaging — because block heights are nowhere near
+// normally distributed and a plain mean is at the mercy of a single outlier: one
+// 200-item list or one full-page image is enough to drag it wildly off (that
+// case measured -50% drift on a plain mean, -0.2% winsorized). Clamping the
+// tails rather than discarding them (a trimmed mean) matters on heterogeneous
+// notes, where the tall blocks are real content rather than freak values and
+// dropping them outright under-estimates: a note of mixed headings, quotes and
+// long paragraphs drifted +20.4% trimmed against +6.1% winsorized.
+//
+// Measured against real scroll-through drift on five note shapes — uniform
+// prose, an endnote chapter, a list-then-prose note, 1500 one-line paragraphs,
+// and mixed headings/quotes/paragraphs — this holds mean absolute drift to ~6%
+// and worst case to 20%, against 38%/65% for the fixed 120px it replaces.
+//
+// Deliberately measured ONCE per note and never revised while scrolling: a
+// revision re-sizes every not-yet-measured block at once, which is a single
+// enormous jump (61,812px was observed) rather than the gradual settling it was
+// meant to cure. Being approximately right before the reader starts moving is
+// worth far more than converging on exactly right while they read.
+const NOTES_ESTIMATE_MIN_PX = 24;
+const NOTES_ESTIMATE_MAX_PX = 900;
+// Under this there is nothing to gain: the browser lays out a screenful or two
+// eagerly anyway, so almost every block is real and the estimate is unused.
+const NOTES_ESTIMATE_MIN_BLOCKS = 60;
+const NOTES_ESTIMATE_SAMPLE_SIZE = 48;
+// Percentile band the sample is clamped into before averaging (winsorizing).
+const NOTES_ESTIMATE_WINSOR_RATIO = 0.10;
+// Successive multiples of this mod 1 never repeat and never clump — the
+// standard trick for spreading N picks over a range without aliasing.
+const GOLDEN_RATIO_CONJUGATE = 0.6180339887498949;
+
+let notesBlockEstimatePx = null;
+// The note the current estimate was measured against — a different note's
+// blocks say nothing about this one's.
+let notesBlockEstimateSource = null;
+let notesBlockEstimateFrame = 0;
+
+function measureNotesBlockEstimate(container) {
+  if (container !== el.notesView || !container) return;
+  if (notesBlockEstimatePx != null) return; // one measurement per note, by design
+
+  const blocks = [];
+  for (let i = 0; i < container.children.length; i += 1) {
+    const node = container.children[i];
+    if (node.nodeType === 1) blocks.push(node);
+  }
+  if (blocks.length < NOTES_ESTIMATE_MIN_BLOCKS) return;
+
+  const wanted = Math.min(NOTES_ESTIMATE_SAMPLE_SIZE, blocks.length);
+  const picked = [];
+  const seen = new Set();
+  for (let i = 0; picked.length < wanted && i < wanted * 4; i += 1) {
+    const index = Math.floor(((i * GOLDEN_RATIO_CONJUGATE) % 1) * blocks.length);
+    if (seen.has(index)) continue;
+    seen.add(index);
+    picked.push(blocks[index]);
+  }
+  if (!picked.length) return;
+
+  // Both loops stay separate from the read below so the forced layout happens
+  // once for the whole sample instead of once per block.
+  picked.forEach((node) => { node.style.contentVisibility = "visible"; });
+  // Border-box height only, deliberately WITHOUT margins. contain-intrinsic-size
+  // stands in for the element's own box; its margins sit outside it and are
+  // applied whether or not the contents were skipped. Adding them here also
+  // double-counted every collapsed margin between adjacent blocks (each gap
+  // counted once as the block above's bottom and again as the block below's
+  // top), which inflated the estimate by ~60% and left 30% of the drift in
+  // place even once the sampling itself was right.
+  const heights = picked.map((node) => node.offsetHeight);
+  picked.forEach((node) => { node.style.removeProperty("content-visibility"); });
+  // removeProperty leaves an empty style="" behind, which is invisible to the
+  // reader but makes a re-rendered block differ from a freshly built one —
+  // enough to fail the render-equivalence check the block cache is verified
+  // with. Deferred a frame because removing it inline here does not stick while
+  // the blocks are still being re-skipped by content-visibility. Blocks that
+  // carry real inline styles (a sized image) have style.length > 0 and keep theirs.
+  requestAnimationFrame(() => {
+    picked.forEach((node) => { if (!node.style.length) node.removeAttribute("style"); });
+  });
+
+  heights.sort((a, b) => a - b);
+  const at = (ratio) => heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * ratio)))];
+  const low = at(NOTES_ESTIMATE_WINSOR_RATIO);
+  const high = at(1 - NOTES_ESTIMATE_WINSOR_RATIO);
+  const mean = heights.reduce((sum, h) => sum + Math.min(Math.max(h, low), high), 0) / heights.length;
+  if (!Number.isFinite(mean) || mean <= 0) return;
+
+  notesBlockEstimatePx = Math.min(NOTES_ESTIMATE_MAX_PX, Math.max(NOTES_ESTIMATE_MIN_PX, mean));
+  container.style.setProperty("--notes-block-estimate", `${Math.round(notesBlockEstimatePx)}px`);
+}
+
+// A new note's blocks have nothing to do with the previous one's, so the old
+// mean must not carry over — it would be applied to the first paint of content
+// it was never measured against.
+function resetNotesBlockEstimate() {
+  notesBlockEstimatePx = null;
+  el.notesView?.style.removeProperty("--notes-block-estimate");
+}
+
+function syncNotesBlockEstimateSource() {
+  if (notesBlockEstimateSource === state.notes) return;
+  notesBlockEstimateSource = state.notes;
+  resetNotesBlockEstimate();
+}
+
+// Deferred to a frame rather than run inline: reading offsetHeight forces
+// layout, and the render tail is the one moment we most want to hand back to
+// the browser so it can paint. A frame later the blocks near the viewport have
+// real geometry, which is exactly what this needs to sample.
+function scheduleNotesBlockEstimate(container) {
+  if (container !== el.notesView) return;
+  if (notesBlockEstimateFrame) return;
+  notesBlockEstimateFrame = requestAnimationFrame(() => {
+    notesBlockEstimateFrame = 0;
+    measureNotesBlockEstimate(el.notesView);
+  });
+}
+
 function isCachedRenderSurface(container) {
   return container === el.notesView || container === el.questionView || container === el.answerView;
 }
@@ -9462,6 +9649,12 @@ const BLOCK_BREAK_RE = /<hr\b[^>]*\bdata-recall-block-break\b[^>]*>/;
 
 function renderPreparedBlocks(sources, prelude = "") {
   const head = prelude ? prelude + "\n\n" : "";
+  // Parse each block on its own: marked needs a block in isolation to detect
+  // its structure (a heading, list, etc.). Joining them into ONE marked.parse
+  // call with an <hr> separator breaks that — headings after the first block
+  // come back as literal "## text" instead of <h2>, which is exactly the
+  // broken/blank content seen on large notes. The per-block parse is correct;
+  // the shared DOMPurify.sanitize pass below keeps it from being N sanitizes.
   const joined = sources.map((source) => marked.parse(head + source)).join(BLOCK_BREAK_HTML);
   const parts = DOMPurify.sanitize(joined, SANITIZE_CONFIG).split(BLOCK_BREAK_RE);
   if (parts.length === sources.length) return parts;
@@ -9518,34 +9711,18 @@ function patchRenderedBlocks(container, blocks, prelude, cached) {
     else missing.push(index);
   });
 
-  // Large notes (see the DEFERRED_WORK_MARGIN section above) can have
-  // hundreds of missing blocks on a first render or after a cache-wide
-  // invalidation (a link-reference-definition change resets the whole
-  // cache) — building every one synchronously (marked.parse + one shared
-  // DOMPurify.sanitize pass) is the actual cost behind a slow raw<->rendered
-  // toggle, not the DOM insertion itself. For the notes view specifically
-  // (deferrableRenderRoot excludes card faces / print / paste-preview —
-  // those must be complete when this function returns), a missing block gets
-  // a lightweight placeholder instead of real content; runNearViewportAndDefer
-  // (below, called AFTER insertion so the placeholders have real geometry to
-  // measure) upgrades the ones near the viewport immediately and the rest as
-  // the reader scrolls to them — the exact same viewport-deferral machinery
-  // diagram drawing and table fitting already use, rather than a parallel
-  // virtualization scheme.
-  const deferRoot = deferrableRenderRoot(container);
+  // Large notes used to get lightweight placeholder nodes here, upgraded to
+  // real content as they scrolled into view. That made the FIRST paint fast,
+  // but the IntersectionObserver/estimate/scroll-compensation machinery was
+  // fragile — it produced blank regions and jitter on big notes. The browser
+  // already skips laying out off-screen blocks natively via
+  // `content-visibility: auto` (see .notes-rendered > * in styles.css), which
+  // is robust and needs none of that. So build every missing block as real
+  // content now: the only cost is the synchronous marked.parse + one shared
+  // DOMPurify.sanitize pass, and the incremental block cache means the common
+  // raw<->rendered toggle (nothing edited) never pays it anyway.
   const fresh = [];
-  const placeholders = [];
-  if (missing.length && deferRoot) {
-    missing.forEach((blockIndex) => {
-      const source = blocks[blockIndex];
-      const placeholder = document.createElement("div");
-      placeholder.className = "notes-block-placeholder";
-      placeholder.style.minHeight = `${NOTES_PLACEHOLDER_HEIGHT_PX}px`;
-      placeholderBlockInfo.set(placeholder, { container, source });
-      groups[blockIndex] = [placeholder];
-      placeholders.push(placeholder);
-    });
-  } else if (missing.length) {
+  if (missing.length) {
     const parts = renderPreparedBlocks(missing.map((index) => blocks[index]), prelude);
     missing.forEach((blockIndex, part) => {
       const nodes = nodesFromHtml(parts[part] ?? "");
@@ -9555,9 +9732,9 @@ function patchRenderedBlocks(container, blocks, prelude, cached) {
   }
 
   // Walk the target order once: a node already in the right place is stepped
-  // over, anything else is moved (reused) or inserted (fresh/placeholder) in
-  // front of the cursor. Whatever is left after the last block never made it
-  // into the new document and is dropped.
+  // over, anything else is moved (reused) or inserted (fresh) in front of the
+  // cursor. Whatever is left after the last block never made it into the new
+  // document and is dropped.
   let cursor = container.firstChild;
   groups.forEach((nodes) => {
     nodes.forEach((node) => {
@@ -9574,91 +9751,10 @@ function patchRenderedBlocks(container, blocks, prelude, cached) {
     cursor = next;
   }
 
-  // Kicked off only now that placeholders are actually in the document and
-  // have real geometry for partitionByViewportProximity to measure. Resolves
-  // once the near-viewport batch is upgraded to real content; far batches
-  // upgrade later, off the IntersectionObserver, whenever they're scrolled to.
-  const placeholderUpgrade = placeholders.length
-    ? runNearViewportAndDefer(placeholders, deferRoot, (batch) => upgradePlaceholderNodes(container, batch, prelude))
-    : Promise.resolve();
-
   return {
     blocks: blocks.map((key, index) => ({ key, nodes: groups[index] })),
-    fresh,
-    placeholderUpgrade
+    fresh
   };
-}
-
-// Turns a batch of placeholder nodes (from patchRenderedBlocks, upgraded
-// either immediately for the near-viewport batch or later off the deferred-
-// work observer for a far one) into their real rendered content. Must locate
-// and overwrite the SAME renderedBlockCache entry the placeholders were
-// recorded under — otherwise a same-content re-render (renderMarkdown's
-// "nothing changed" fast path) would treat the cache as authoritative and the
-// block would never upgrade even after being scrolled into view.
-async function upgradePlaceholderNodes(container, batch, prelude) {
-  const withInfo = batch
-    .map((node) => ({ node, info: placeholderBlockInfo.get(node) }))
-    // A newer render can have dropped this placeholder from the document
-    // (its block's source no longer appears) before this batch was reached —
-    // skip it rather than resurrecting content nothing references anymore.
-    .filter((entry) => entry.info && entry.node.isConnected);
-  if (!withInfo.length) return;
-
-  const deferRoot = deferrableRenderRoot(container);
-  const viewportTop = deferRoot ? deferRoot.getBoundingClientRect().top : null;
-  const parts = renderPreparedBlocks(withInfo.map((entry) => entry.info.source), prelude);
-  const cacheEntry = renderedBlockCache.get(container);
-  const freshRealNodes = [];
-  let scrollCompensation = 0;
-
-  withInfo.forEach((entry, i) => {
-    const { node: placeholder, info } = entry;
-    if (!placeholder.isConnected) return; // dropped by a newer render mid-batch
-    const beforeRect = placeholder.getBoundingClientRect();
-    // A placeholder resolving to a different real height shifts everything
-    // below it — including the current scroll position — when it sits above
-    // what's currently visible. Below the viewport, a height change just
-    // moves content the reader hasn't scrolled to yet, which needs no
-    // correction.
-    const isAboveViewport = viewportTop != null && beforeRect.bottom <= viewportTop;
-    let realNodes = nodesFromHtml(parts[i] ?? "");
-    if (!realNodes.length) realNodes = [document.createComment("empty-block")];
-    placeholder.replaceWith(...realNodes);
-    placeholderBlockInfo.delete(placeholder);
-    if (isAboveViewport) {
-      const afterHeight = realNodes.reduce(
-        (sum, node) => sum + (node.nodeType === 1 ? node.getBoundingClientRect().height : 0),
-        0
-      );
-      scrollCompensation += afterHeight - beforeRect.height;
-    }
-    realNodes.forEach((node) => { if (node.nodeType === 1) freshRealNodes.push(node); });
-    // Multiple blocks can share identical source (e.g. a lone "---"), so key
-    // alone isn't unique — disambiguate by which entry actually held this
-    // placeholder node.
-    if (cacheEntry) {
-      const blockEntry = cacheEntry.blocks.find((b) => b.key === info.source && b.nodes.includes(placeholder));
-      if (blockEntry) blockEntry.nodes = realNodes;
-    }
-  });
-
-  if (deferRoot && scrollCompensation) deferRoot.scrollTop += scrollCompensation;
-  if (!freshRealNodes.length) return;
-
-  await enhanceRenderedMarkdown(container, freshRealNodes);
-  await hydrateLocalImages(freshRealNodes);
-  // Mirrors renderMarkdown's own tail exactly, because a far/scroll-triggered
-  // upgrade happens long after that function's promise already resolved —
-  // these side effects have nowhere else to run for it. Comment at that call
-  // site explains why the whole surface is re-scanned rather than just the
-  // fresh nodes.
-  const surface = imageSurfaceForView(container);
-  if (surface) {
-    enhanceSurfaceImageControls(surface);
-    enhanceSurfaceDiagramControls(surface);
-  }
-  if (container === el.notesView) buildNotesToc();
 }
 
 // Rebuilding a view used to put every {{cloze}} back in its hidden state, and
@@ -9695,20 +9791,15 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   const prepared = preprocessSpecialBlocks(displayMarkdown);
   const split = cacheable ? splitPreparedBlocks(prepared) : null;
   let roots = null;
-  let placeholderUpgrade = null;
   if (split) {
     // Every block is parsed behind the document's link reference definitions, so
     // a change to those changes what any block could render to: start over.
     const reusable = cached && cached.prelude === split.prelude ? cached : null;
     const patched = patchRenderedBlocks(container, split.blocks, split.prelude, reusable);
     roots = patched.fresh;
-    placeholderUpgrade = patched.placeholderUpgrade;
     resetRenderedClozes(container);
     // Committed before the awaits below: another render can start while mermaid
-    // is drawing, and it must see the DOM as it actually is, not as it was. Some
-    // of these blocks' nodes may still be placeholders at this instant — that's
-    // the live DOM state right now, and upgradePlaceholderNodes patches this
-    // exact entry's nodes in place once real content lands.
+    // is drawing, and it must see the DOM as it actually is, not as it was.
     renderedBlockCache.set(container, {
       generation: renderGeneration,
       source: displayMarkdown,
@@ -9725,24 +9816,15 @@ async function renderMarkdown(container, markdown, allowPlaceholder = false) {
   // which no browser can load directly — swap in a blob URL so they're visible
   // straight away rather than only after they eventually reach the cloud.
   await hydrateLocalImages(roots || container);
-  // Only resolves the near-viewport placeholder batch (far ones stay queued on
-  // the observer) — so this render's promise doesn't settle with visible
-  // content still showing placeholder shimmer, without ever waiting on
-  // off-screen work that might not land for a long time.
-  if (placeholderUpgrade) await placeholderUpgrade;
   if (renderSequence.get(container) !== sequence) return; // a newer render owns the view now
   // Notes AND both card faces are editable surfaces, so all three get the
   // resize/delete grips. Every other caller of renderMarkdown (All Cards, the
   // print root, the paste preview, the Quick Notes board) renders read-only and
   // imageSurfaceForView returns null for it. Always run over the whole surface,
   // never just the fresh blocks: an inserted or deleted block shifts the token
-  // indices every other image's resize handler was bound to.
-  const surface = imageSurfaceForView(container);
-  if (surface) {
-    enhanceSurfaceImageControls(surface);
-    enhanceSurfaceDiagramControls(surface);
-  }
-  if (container === el.notesView) buildNotesToc();
+  // indices every other image's resize handler was bound to. Runs synchronously
+  // here (the print/export path reads the grips right after this resolves).
+  scheduleSurfaceFinalize(container, { sync: true });
 }
 
 function markdownTableColumnCount(table) {
@@ -10836,6 +10918,7 @@ let notesScrolledSource = null;
 function renderNotesView() {
   if (!el.notesView) return Promise.resolve();
   notesScrolledSource = state.notes;
+  syncNotesBlockEstimateSource();
   return renderMarkdown(el.notesView, state.notes, true)
     .then(() => resetClozeButton(el.clozeToggleNotesBtn));
 }
@@ -10858,8 +10941,10 @@ function commitNotesEditIfActive() {
   if (!isNotesEditing()) return;
   // Capture BEFORE overwriting state.notes / hiding the textarea — both the
   // scroll position and the value it's measured against have to be the
-  // pre-commit ones.
-  const resumeOffset = textareaOffsetFromScroll(el.notesEdit);
+  // pre-commit ones. The caret (selectionStart) is the reader's position and
+  // is O(1) to read — far cheaper than reconstructing an offset from the
+  // scroll position, which on a huge note meant scanning the whole document.
+  const resumeOffset = el.notesEdit.selectionStart ?? textareaOffsetFromScroll(el.notesEdit);
   state.notes = el.notesEdit.value;
   resetNotesEditingUI();
   // #notesView's own stale scrollTop (it's never destroyed, just hidden) is
@@ -10939,11 +11024,27 @@ function textOffsetWithin(root, node, offset) {
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// How far either side of the hint the windowed search below looks before
+// falling back to the whole document. Wide enough to absorb the error in a
+// proportional block-position estimate on a large note, narrow enough that a
+// phrase repeated every few hundred characters can't be confused across it.
+const SNIPPET_SEARCH_WINDOW_CHARS = 20000;
+
 // Locate `before`+`after` snippets (either may be empty) inside state.notes and
 // return the character offset of the seam between them. `allowNewline` lets the
 // gap and fuzzified whitespace cross line breaks — essential inside fenced code
 // blocks, whose raw markdown keeps the newlines the click snippet spans.
-function matchSnippetInSource(source, before, after, allowNewline) {
+//
+// `hint` is roughly where in the source the caller believes the snippet lives,
+// and it is what makes this usable on a repetitive document. The match is
+// otherwise simply the FIRST one in the whole note, which is wrong whenever the
+// same words appear more than once: an endnote chapter repeats "GO TO NOTE
+// REFERENCE IN TEXT" once per note and body prose repeats ordinary phrases all
+// the time, so leaving the rendered view for raw mode 600 paragraphs down
+// resolved to paragraph 1 and dumped the reader at the top of the note. With a
+// hint, the search runs over a window around it first and only falls back to
+// the whole document when nothing matches there.
+function matchSnippetInSource(source, before, after, allowNewline, hint = null) {
   if (!source || (!before && !after)) return null;
   // Lazy bounded gap absorbs stripped markdown syntax (a link's
   // `](https://example.com)` tail is full of letters/digits, so a gap of only
@@ -10960,12 +11061,78 @@ function matchSnippetInSource(source, before, after, allowNewline) {
     ? `(${fuzzify(before)})${gap}(${fuzzify(after)})`
     : `(${fuzzify(before || after)})`;
   try {
+    const seam = (match, base) => (before ? match.index + match[1].length : match.index) + base;
+
+    if (Number.isFinite(hint)) {
+      const start = Math.max(0, Math.floor(hint) - SNIPPET_SEARCH_WINDOW_CHARS);
+      const end = Math.min(source.length, Math.floor(hint) + SNIPPET_SEARCH_WINDOW_CHARS);
+      if (end > start) {
+        // Every match in the window is considered and the one NEAREST the hint
+        // wins. Taking the window's first match instead would just move the
+        // original bug rather than fix it: on text that repeats every few dozen
+        // characters the first hit in the window is its left edge, which is
+        // wrong by however wide the window is.
+        const scan = new RegExp(pattern, "g");
+        const slice = source.slice(start, end);
+        let best = null;
+        let bestDistance = Infinity;
+        let match;
+        while ((match = scan.exec(slice)) !== null) {
+          const position = seam(match, start);
+          const distance = Math.abs(position - hint);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = position;
+          }
+          // A pattern that can match empty would never advance lastIndex.
+          if (match.index === scan.lastIndex) scan.lastIndex += 1;
+        }
+        if (best != null) return best;
+      }
+    }
+
     const match = new RegExp(pattern).exec(source);
     if (!match) return null;
-    return before ? match.index + match[1].length : match.index;
+    return seam(match, 0);
   } catch (_) {
     return null;
   }
+}
+
+// Roughly where in `source` a given rendered block begins, for use as a search
+// hint (never as an answer). The incremental renderer already keeps this
+// container's blocks in document order with each one's own prepared source as
+// its cache key, so the share of the document lying before a block is just the
+// share of those key lengths — no measuring and no re-lexing. It is a ratio
+// rather than a raw character sum because preprocessSpecialBlocks changes
+// lengths on its way to the prepared text (math, cloze and code protection),
+// so prepared offsets and raw offsets differ by a factor that a proportion
+// cancels out. Returns null when there's no cache to read, and the caller
+// simply searches without a hint.
+function approximateRawOffsetForBlock(root, source, node) {
+  const cached = renderedBlockCache.get(root);
+  if (!cached || !Array.isArray(cached.blocks) || !cached.blocks.length || !source) return null;
+
+  // Walk up to the top-level block — the cache is keyed on root's own children.
+  let topLevel = node;
+  while (topLevel && topLevel.parentElement !== root) topLevel = topLevel.parentElement;
+  if (!topLevel) return null;
+
+  let before = 0;
+  let total = 0;
+  let found = false;
+  let precedingLength = 0;
+  for (const entry of cached.blocks) {
+    const length = (entry.key || "").length;
+    if (!found && Array.isArray(entry.nodes) && entry.nodes.includes(topLevel)) {
+      found = true;
+      precedingLength = before;
+    }
+    if (!found) before += length;
+    total += length;
+  }
+  if (!found || !total) return null;
+  return (precedingLength / total) * source.length;
 }
 
 // `root` is the rendered container (notes view, or a card's question/answer
@@ -10990,6 +11157,10 @@ function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
   // and punctuation the click snippet spans — match across lines for those.
   const isCode = block.tagName === "PRE" || Boolean(startEl.closest("pre, code"));
   const blockText = block.textContent || "";
+  // Which region of the source to prefer. Without this the snippet search takes
+  // the first match in the note, so any phrase that recurs resolves to its
+  // earliest occurrence instead of the one under the pointer.
+  const hint = approximateRawOffsetForBlock(root, source, block);
 
   // Precise hit: match the text on both sides of the exact click point.
   const localOffset = caret && root.contains(caret.node)
@@ -10998,7 +11169,7 @@ function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
   if (localOffset != null) {
     const before = blockText.slice(Math.max(0, localOffset - 24), localOffset).trim();
     const after = blockText.slice(localOffset, localOffset + 24).trim();
-    const hit = matchSnippetInSource(source, before, after, isCode);
+    const hit = matchSnippetInSource(source, before, after, isCode, hint);
     if (hit != null) return hit;
   }
 
@@ -11006,7 +11177,7 @@ function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
   // failed fuzzy match, …). Land at the start of that block rather than leaving
   // the caret to snap to the very end of the source.
   const blockStart = blockText.replace(/^\s+/, "").slice(0, 40).trim();
-  return matchSnippetInSource(source, blockStart, "", isCode);
+  return matchSnippetInSource(source, blockStart, "", isCode, hint);
 }
 
 // setSelectionRange alone doesn't reliably re-scroll a long textarea in every
@@ -11025,12 +11196,18 @@ function scrollTextareaToOffset(textarea, pos) {
 function textareaOffsetFromScroll(textarea) {
   const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
   const lineIndex = Math.max(0, Math.round((textarea.scrollTop + textarea.clientHeight / 2) / lineHeight));
-  const lines = textarea.value.split("\n");
+  const value = textarea.value;
+  // Walk to the start of the target line by scanning for newlines with
+  // indexOf — this only touches the prefix up to the caret line, and never
+  // materialises the whole document as an array (split("\n") on a huge note
+  // is what made the raw→rendered toggle slow).
   let offset = 0;
-  for (let i = 0; i < lineIndex && i < lines.length; i += 1) {
-    offset += lines[i].length + 1; // +1 for the newline the split ate
+  for (let i = 0; i < lineIndex; i += 1) {
+    const nl = value.indexOf("\n", offset);
+    if (nl === -1) break;
+    offset = nl + 1;
   }
-  return Math.min(offset, textarea.value.length);
+  return Math.min(offset, value.length);
 }
 
 // A representative raw-markdown offset for whatever's currently at the top of
@@ -12257,18 +12434,52 @@ function resolveRawNoteIndex(anchor) {
 // Build a DOM Range spanning the anchor text inside the rendered notes view, so
 // it can be scrolled to and flashed. Falls back to a shorter prefix when the
 // full selection can't be matched verbatim (e.g. the notes were edited since).
-function findRenderedNoteRange(anchor) {
+function findRenderedNoteRange(anchor, offset = null) {
   const view = el.notesView;
   const needle = (anchor.text || "").trim();
   if (!view || !needle) return null;
 
-  const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
+  // When the caller knows the raw offset (the raw→rendered toggle, or a
+  // jump-to-anchor), scope the text walk to a window around the estimated
+  // scroll position instead of flattening the whole (potentially enormous)
+  // document. The window is wide enough to absorb the proportional estimate's
+  // error on a note whose block heights are far from uniform. Without an
+  // offset (rare), fall back to a full walk.
+  let winTopView = -Infinity;
+  let winBottomView = Infinity;
+  if (offset != null && state.notes) {
+    const fraction = Math.max(0, Math.min(1, offset / state.notes.length));
+    const centerDoc = fraction * view.scrollHeight;
+    const half = Math.max(4000, view.clientHeight * 2);
+    const viewTop = view.getBoundingClientRect().top;
+    winTopView = viewTop + (centerDoc - half) - view.scrollTop;
+    winBottomView = viewTop + (centerDoc + half) - view.scrollTop;
+  }
+
   const segments = [];
   let full = "";
-  let node;
-  while ((node = walker.nextNode())) {
+  const collect = (node) => {
     segments.push({ node, start: full.length });
     full += node.textContent;
+  };
+
+  if (offset != null) {
+    // Windowed: only descend into top-level blocks whose vertical span
+    // overlaps the window, so a huge note isn't flattened in full.
+    const blocks = view.children;
+    for (let i = 0; i < blocks.length; i += 1) {
+      const block = blocks[i];
+      if (block.nodeType !== 1) continue;
+      const rect = block.getBoundingClientRect();
+      if (rect.bottom < winTopView || rect.top > winBottomView) continue;
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) collect(node);
+    }
+  } else {
+    const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) collect(node);
   }
   if (!segments.length) return null;
 
@@ -12312,19 +12523,12 @@ function findRenderedNoteRange(anchor) {
 // over the rendered DOM) rather than block-index arithmetic, because
 // preprocessSpecialBlocks changes string length/structure between raw
 // state.notes and what actually gets lexed into rendered blocks — an index
-// computed one way wouldn't line up with the other. Retries across a few
-// frames because block heights are unstable while deferred work (diagram
-// draw, table fit, and viewport-deferred block placeholders) is still
-// landing on a large note — a single scroll-to-position attempt would
-// frequently land on a spot that's about to move out from under it.
+// computed one way wouldn't line up with the other.
 // A rough proportional estimate of where `offset` sits in #notesView's
-// scroll range — not the final answer, just enough to bring a still-
-// placeholder block (see Feature 1 / patchRenderedBlocks) within the
-// deferred-work observer's margin so it upgrades to real, searchable
-// content. The precise landing spot still comes from the caller's own text
-// search; this only exists to give that search something real to find on a
-// note whose target hasn't been scrolled near yet (a fresh load, or a jump
-// far from wherever the rendered view last happened to sit).
+// scroll range — not the final answer, just enough to centre the windowed
+// text search (findRenderedNoteRange) near the target. The precise landing
+// spot still comes from that text search; the estimate only makes the search
+// cheap on a long note (a slice of the DOM instead of the whole thing).
 function estimateNotesScrollForOffset(offset) {
   if (!el.notesView || !Number.isFinite(offset) || !state.notes) return;
   const fraction = Math.max(0, Math.min(1, offset / state.notes.length));
@@ -12339,9 +12543,15 @@ function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
   const needle = forward || backward;
   if (!needle) return;
 
-  let estimatedOnce = false;
+  // Scroll to a proportional estimate first — cheap, and it centers the
+  // windowed text search (findRenderedNoteRange) near the target so the search
+  // walks a slice of the document instead of the whole thing. Content is always
+  // real now (no placeholder layer), so the estimate's accuracy only depends on
+  // how uniform the block heights are — a wide search window absorbs the error.
+  estimateNotesScrollForOffset(offset);
+
   const attempt = (retriesLeft) => {
-    const range = findRenderedNoteRange({ text: needle });
+    const range = findRenderedNoteRange({ text: needle }, offset);
     if (range) {
       const startEl = range.startContainer.nodeType === Node.TEXT_NODE
         ? range.startContainer.parentElement
@@ -12350,17 +12560,23 @@ function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
       (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
       return;
     }
-    // Not found yet — on a large note this usually means the target block is
-    // still a placeholder because nothing has scrolled near it. Nudge toward
-    // a proportional estimate once, giving the observer a chance to upgrade
-    // it before the next retry searches again.
-    if (!estimatedOnce) {
-      estimatedOnce = true;
-      estimateNotesScrollForOffset(offset);
+    // Not found in the window — heights are still settling (images loading),
+    // so the estimate was off. Fall back to one full-document search before
+    // giving up rather than looping.
+    if (retriesLeft > 0) {
+      const full = findRenderedNoteRange({ text: needle });
+      if (full) {
+        const startEl = full.startContainer.nodeType === Node.TEXT_NODE
+          ? full.startContainer.parentElement
+          : full.startContainer;
+        const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
+        (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+        return;
+      }
+      requestAnimationFrame(() => attempt(retriesLeft - 1));
     }
-    if (retriesLeft > 0) setTimeout(() => attempt(retriesLeft - 1), 120);
   };
-  requestAnimationFrame(() => requestAnimationFrame(() => attempt(8)));
+  requestAnimationFrame(() => attempt(2));
 }
 
 // Scroll to the anchor and briefly flash it. Handles both rendered and raw
@@ -12382,7 +12598,7 @@ function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}) {
     return true;
   }
 
-  const range = findRenderedNoteRange(anchor);
+  const range = findRenderedNoteRange(anchor, anchor.offset);
   if (!range) return false;
   const startEl = range.startContainer.nodeType === Node.TEXT_NODE
     ? range.startContainer.parentElement
@@ -12413,10 +12629,8 @@ function scheduleNoteJump(anchor, options) {
   const attempt = (retries) => {
     if (revealNoteAnchor(anchor, options)) return;
     // findRenderedNoteRange (inside revealNoteAnchor) does a text search over
-    // the rendered DOM — on a large note a target deep in the document that
-    // hasn't been scrolled near yet is still a Feature 1 placeholder with no
-    // text to find. Nudge toward a proportional estimate once so the
-    // deferred-work observer gets a chance to upgrade it before retrying.
+    // the rendered DOM. Nudge toward a proportional estimate once so the
+    // windowed search is centred near the target before retrying.
     if (!estimatedOnce && Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0])) {
       estimatedOnce = true;
       estimateNotesScrollForOffset(anchor.offset);
@@ -25533,6 +25747,35 @@ function htmlToMarkdown(html, options = {}) {
     }
   });
 
+  // Turndown 7.1.2's built-in listItem rule always indents a list item's
+  // second+ line (a loose <li> with more than one <p>, e.g. an endnote's
+  // citation followed by a "go to reference" link) by a hardcoded 4 spaces,
+  // regardless of how wide the marker actually is. That only lines up for a
+  // single-digit ordered marker ("1.  " is 4 chars); a two-digit one ("32.  "
+  // is 5 chars) leaves the continuation one column short of the list's
+  // content column. marked/CommonMark then stops treating it as part of the
+  // list item — a bare 4-space-indented line at that point IS the syntax for
+  // an indented code block, so the link renders as inert code instead of a
+  // clickable link. Re-deriving the indent from the actual prefix width (the
+  // same computation turndown itself does) fixes this for every marker size.
+  turndownService.addRule("list-item-indent-fix", {
+    filter: "li",
+    replacement: function (content, node, options) {
+      content = content
+        .replace(/^\n+/, "")
+        .replace(/\n+$/, "\n");
+      let prefix = options.bulletListMarker + "   ";
+      const parent = node.parentNode;
+      if (parent.nodeName === "OL") {
+        const start = parent.getAttribute("start");
+        const index = Array.prototype.indexOf.call(parent.children, node);
+        prefix = (start ? Number(start) + index : index + 1) + ".  ";
+      }
+      content = content.replace(/\n/gm, "\n" + " ".repeat(prefix.length));
+      return prefix + content + (node.nextSibling && !/\n$/.test(content) ? "\n" : "");
+    }
+  });
+
   try {
     // Parsed here rather than handed to Turndown as a string, because the math
     // spans have to be lifted out of the DOM before conversion — see
@@ -26213,6 +26456,29 @@ function refreshHighlightBackdrop(textarea) {
   highlightBackdropSync.get(textarea)?.();
 }
 
+// ── Why very large notes edit without the highlight mirror ─────────────────
+// The raw editor is a transparent <textarea> laid over a backdrop <div> holding
+// a styled copy of the same text — that mirror is the only thing you actually
+// see, and it's what tints {{cloze}} braces and fades HTML tags. Its cost is a
+// second full text layout of the whole document, and unlike the textarea's own
+// (native, cheap) layout it is ordinary DOM text with spans, which measured
+// roughly ten times more expensive.
+//
+// On a large note that is ruinous, and it dominated everything the editor does.
+// Measured on an 800KB note, entering raw mode took 1,950ms with the mirror and
+// 186ms without it; a single keystroke took 442ms with and 187ms without,
+// because every keystroke replaces the mirror's entire innerHTML and re-lays out
+// the document. The string work itself is nothing (~1ms) — it is purely the
+// layout of a second copy of the text.
+//
+// So past this threshold the mirror is switched off and the textarea shows its
+// own text instead (see .highlight-textarea-wrapper.is-plain in styles.css,
+// which un-hides the textarea's colour and moves the visible border onto it).
+// What that costs is the cloze/HTML-tag tinting, on exactly the notes least
+// likely to use clozes — an imported book chapter — and what it buys is an
+// editor that responds to typing. Everything below the threshold is unchanged.
+const HIGHLIGHT_MIRROR_MAX_CHARS = 60000;
+
 function enableSyntaxHighlighting(textarea) {
   if (!textarea || textarea.dataset.highlighted === "true") return;
   textarea.dataset.highlighted = "true";
@@ -26229,11 +26495,26 @@ function enableSyntaxHighlighting(textarea) {
 
   let syncedText = null;
   let syncFrame = 0;
+  let plainMode = false;
 
   function sync() {
     const text = textarea.value;
     if (text === syncedText) return;
     syncedText = text;
+
+    // Checked before any string work: past the threshold the whole point is to
+    // never build or lay out a second copy of the text.
+    const wantPlain = text.length > HIGHLIGHT_MIRROR_MAX_CHARS;
+    if (wantPlain !== plainMode) {
+      plainMode = wantPlain;
+      wrapper.classList.toggle("is-plain", wantPlain);
+      // Dropping the old mirror content matters as much as not building a new
+      // one — leaving a stale 800KB subtree in the DOM would keep costing
+      // layout and memory for as long as the editor is open.
+      if (wantPlain) backdrop.textContent = "";
+    }
+    if (plainMode) return;
+
     const escaped = text
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -26279,6 +26560,9 @@ function enableSyntaxHighlighting(textarea) {
   }
 
   function syncScroll() {
+    // Nothing to keep in step in plain mode, and skipping it keeps scrolling a
+    // large note free of a per-event write that would force layout.
+    if (plainMode) return;
     backdrop.scrollTop = textarea.scrollTop;
     backdrop.scrollLeft = textarea.scrollLeft;
   }
