@@ -8410,15 +8410,31 @@ function isEscaped(source, index) {
   return slashes % 2 === 1;
 }
 
+// Whitespace that is not a line break — i.e. a line's own indentation and
+// trailing spaces.
+const LINE_SPACE_RE = /[^\S\n]/;
+
 function isSingleDollarLine(source, index) {
   if (source[index] !== "$" || source[index - 1] === "$" || source[index + 1] === "$" || isEscaped(source, index)) {
     return false;
   }
 
-  const lineStart = source.lastIndexOf("\n", index - 1) + 1;
-  const lineEnd = source.indexOf("\n", index);
-  const line = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd);
-  return line.trim() === "$";
+  // "Is this line just a $" answered by stepping out over the line's own
+  // spaces, rather than lastIndexOf("\n") + indexOf("\n") + slice + trim.
+  // That BACKWARD search scans to the start of the document whenever the note
+  // has no newline above this point — and a note written as one very long line
+  // (an imported book paragraph is exactly that) makes every "$" in it pay a
+  // full scan back to character zero. Quadratic: 2MB of prose that merely
+  // mentions prices took ~10 seconds here, on every render that isn't a
+  // block-cache hit. Stepping over spaces is O(indentation) and answers the
+  // identical question.
+  let before = index - 1;
+  while (before >= 0 && LINE_SPACE_RE.test(source[before])) before -= 1;
+  if (before >= 0 && source[before] !== "\n") return false;
+
+  let after = index + 1;
+  while (after < source.length && LINE_SPACE_RE.test(source[after])) after += 1;
+  return after >= source.length || source[after] === "\n";
 }
 
 function findSingleDollarLine(source, start) {
@@ -8440,8 +8456,46 @@ function canOpenInlineDollar(source, index) {
   return next && next !== "$" && !/\s/.test(next) && !isEscaped(source, index);
 }
 
+// How far an inline $…$ span may reach. Real inline math is a formula inside a
+// sentence — tens of characters, not thousands — so this only ever rules out
+// things that were never math.
+//
+// Unbounded, this is quadratic on ordinary prose. An opening "$" with no valid
+// partner scans to the END of the note before giving up, and text that merely
+// mentions money ("it cost $5 for one and $10 for two") has such a "$" every
+// few words: each one is rejected as a closer because the character before it
+// is a space, so every one of them pays a full-document scan. Measured on a 2MB
+// note of exactly that shape: 38 SECONDS inside preprocessSpecialBlocks, on
+// every render that isn't a block-cache hit. With the bound, 2MB of the same
+// text is a few milliseconds.
+const INLINE_MATH_MAX_SPAN = 1000;
+
 function findInlineDollarClose(source, start) {
-  for (let index = source.indexOf("$", start); index !== -1; index = source.indexOf("$", index + 1)) {
+  let limit = Math.min(source.length, start + INLINE_MATH_MAX_SPAN);
+  // Inline math lives inside ONE paragraph, so a blank line ends the search.
+  // Without this, prose that mentions money is silently eaten: in
+  //
+  //     It cost $5 for one and $10 for two.
+  //
+  //     A real formula $a + b = c$ sits here.
+  //
+  // the "$" before 5 opens (next char isn't whitespace) and "$10" is rejected
+  // as a closer (the char before it IS whitespace) — so the scan runs on into
+  // the NEXT paragraph and closes on the "$" after "c". Three paragraphs
+  // collapse into one math span and the prose between them vanishes from the
+  // rendered note. The comment on the KaTeX safety-net pass claims protectMath
+  // declines two dollar amounts on a line; it only actually does so when no
+  // later "$" happens to qualify.
+  // Scanned with a bounded loop, not indexOf: indexOf("\n\n") would search to
+  // the end of the document when there is no blank line at all, which is the
+  // very quadratic this bound exists to prevent.
+  for (let at = start; at < limit - 1; at += 1) {
+    if (source[at] === "\n" && source[at + 1] === "\n") {
+      limit = at;
+      break;
+    }
+  }
+  for (let index = source.indexOf("$", start); index !== -1 && index < limit; index = source.indexOf("$", index + 1)) {
     const previous = source[index - 1];
     if (source[index + 1] !== "$" && previous && !/\s/.test(previous) && !isEscaped(source, index)) {
       return index;
@@ -8583,8 +8637,21 @@ function protectMath(markdown) {
       }
     }
 
-    output += source[index];
-    index += 1;
+    // Nothing at `index` opens math. Every branch above requires a "$" or a "\"
+    // right here ($$…$$, a lone-$ line, \[…\], \(…\), inline $…$), so the next
+    // one of those two characters is the soonest anything can happen — copy the
+    // whole run up to it in one go.
+    //
+    // This used to append ONE CHARACTER per iteration, and since ordinary prose
+    // is almost entirely not-math, that loop ran once per character of the
+    // whole note on every render that isn't a block-cache hit. Measured on a
+    // 2MB note: the scanning is ~6ms and the per-character append was ~250ms of
+    // it. Starting the search at index + 1 is safe because `source[index]`
+    // itself has just failed every branch.
+    let next = index + 1;
+    while (next < source.length && source[next] !== "$" && source[next] !== "\\") next += 1;
+    output += source.slice(index, next);
+    index = next;
   }
 
   return output;
@@ -8731,16 +8798,29 @@ function protectInline(segment) {
 
   while (i < len) {
     const clozeStart = segment.indexOf("{{", i);
-    const backtickMatch = /`+/.exec(segment.slice(i));
-    const codeStart = backtickMatch ? i + backtickMatch.index : -1;
+    // indexOf, never segment.slice(i) + regex. Slicing copied the WHOLE
+    // remaining document on every iteration and then scanned that copy, so a
+    // note with k code spans cost O(n·k) — measured quadratic (200KB → 5ms,
+    // 1MB → 64ms, 2MB → 250ms), paid on every render that isn't a cache hit.
+    // codeRegionEnd and findUnescaped already solve this exact problem the
+    // cheap way; this is the same approach.
+    const codeStart = segment.indexOf("`", i);
 
     if (codeStart !== -1 && (clozeStart === -1 || codeStart < clozeStart)) {
-      const tickRun = backtickMatch[0];
-      const afterOpen = codeStart + tickRun.length;
-      const closeRe = new RegExp("`{" + tickRun.length + "}(?!`)");
-      const closeMatch = closeRe.exec(segment.slice(afterOpen));
-      if (closeMatch) {
-        const codeEnd = afterOpen + closeMatch.index + closeMatch[0].length;
+      let ticks = 0;
+      while (segment[codeStart + ticks] === "`") ticks += 1;
+      const afterOpen = codeStart + ticks;
+      // CommonMark closes an inline span on a backtick run of EXACTLY this
+      // length, so skip over any longer run rather than matching inside it.
+      let closeAt = -1;
+      const fence = "`".repeat(ticks);
+      for (let at = segment.indexOf(fence, afterOpen); at !== -1; at = segment.indexOf(fence, at + 1)) {
+        if (segment[at + ticks] === "`") continue; // part of a longer run
+        closeAt = at;
+        break;
+      }
+      if (closeAt !== -1) {
+        const codeEnd = closeAt + ticks;
         output += protectMath(applyClozeMarkup(segment.slice(i, codeStart)));
         output += segment.slice(codeStart, codeEnd); // raw code span, untouched
         i = codeEnd;
@@ -9066,6 +9146,35 @@ function deferredWorkObserver(root) {
   return observer;
 }
 
+// Forgets every queued node that is no longer in the document — from the Set,
+// from the runner map, and (the part that actually frees memory) from every
+// observer still holding it as a target.
+function releaseDetachedDeferredWork() {
+  pendingDeferredWork.forEach((node) => {
+    if (node.isConnected) return;
+    pendingDeferredWork.delete(node);
+    deferredWorkRunners.delete(node);
+    deferredWorkObservers.forEach((observer) => observer.unobserve(node));
+  });
+}
+
+// Drops everything queued for `root`, observers included. Used when the content
+// under a scroll root is replaced wholesale (a different note), where the old
+// queue describes nodes that no longer exist and re-creating the observer is
+// both cheaper and more certain than unobserving them one at a time.
+function releaseDeferredWork(root) {
+  const observer = deferredWorkObservers.get(root);
+  if (observer) {
+    observer.disconnect();
+    deferredWorkObservers.delete(root);
+  }
+  pendingDeferredWork.forEach((node) => {
+    if (root && node.isConnected && !(root === node || root.contains(node))) return;
+    pendingDeferredWork.delete(node);
+    deferredWorkRunners.delete(node);
+  });
+}
+
 // Splits `nodes` into the ones already at (or near) the visible part of `root`
 // and the ones further away. Every rect is read BEFORE anything is mutated —
 // interleaving reads with diagram rendering is what makes this expensive in the
@@ -9090,10 +9199,16 @@ function partitionByViewportProximity(nodes, root) {
 function runNearViewportAndDefer(nodes, root, run) {
   if (!nodes.length) return Promise.resolve();
   if (!root || typeof IntersectionObserver !== "function") return Promise.resolve(run(nodes));
-  // Nodes dropped by a later render would otherwise sit in this set forever.
-  pendingDeferredWork.forEach((node) => {
-    if (!node.isConnected) pendingDeferredWork.delete(node);
-  });
+  // Nodes dropped by a later render would otherwise sit here forever. Dropping
+  // them from the Set is NOT enough on its own: an IntersectionObserver holds a
+  // STRONG reference to every target it observes, and these observers are
+  // memoized per scroll root (el.notesView, which is never destroyed — see the
+  // note on notesScrolledSource), so a target that is only forgotten here stays
+  // reachable from the observer for the life of the tab. Since the targets are
+  // tables and diagram shells, each one drags its whole detached subtree with
+  // it — including rendered mermaid SVGs. That is a real, unbounded,
+  // note-after-note memory leak, and it needs the unobserve.
+  releaseDetachedDeferredWork();
   const { near, far } = partitionByViewportProximity(nodes, root);
   if (far.length) {
     const observer = deferredWorkObserver(root);
@@ -9111,11 +9226,8 @@ function runNearViewportAndDefer(nodes, root, run) {
 // waiting for it to be scrolled into view.
 async function flushDeferredWork(root) {
   const due = [];
+  releaseDetachedDeferredWork();
   pendingDeferredWork.forEach((node) => {
-    if (!node.isConnected) {
-      pendingDeferredWork.delete(node);
-      return;
-    }
     if (!root || root === node || root.contains(node)) due.push(node);
   });
   const batches = new Map();
@@ -9990,11 +10102,24 @@ function fitMarkdownTables(container, roots = null) {
   runNearViewportAndDefer(tables, deferrableRenderRoot(container), fitMarkdownTableBatch);
 }
 
+// Debounced, not just rAF-coalesced. Callers include the style panel's `input`
+// handler, which fires continuously while a slider is dragged — and each run
+// re-queries every `.rendered` surface and re-fits every table in it, where
+// fitMarkdownTableFont is a ~10-step binary search that reads scrollWidth on
+// the table and every cell (a forced layout per step). Once per frame of a drag
+// is far too often for work whose result only matters once the drag stops.
+const MARKDOWN_TABLE_FIT_DEBOUNCE_MS = 120;
+let markdownTableFitTimer = 0;
+
 function scheduleMarkdownTableFit() {
   cancelAnimationFrame(markdownTableFitFrame);
-  markdownTableFitFrame = requestAnimationFrame(() => {
-    document.querySelectorAll(".rendered").forEach((node) => fitMarkdownTables(node));
-  });
+  if (markdownTableFitTimer) clearTimeout(markdownTableFitTimer);
+  markdownTableFitTimer = setTimeout(() => {
+    markdownTableFitTimer = 0;
+    markdownTableFitFrame = requestAnimationFrame(() => {
+      document.querySelectorAll(".rendered").forEach((node) => fitMarkdownTables(node));
+    });
+  }, MARKDOWN_TABLE_FIT_DEBOUNCE_MS);
 }
 
 function addDiagramZoomControl(node) {
@@ -10910,6 +11035,25 @@ function isNotesEditing() {
 // gets the same answer without each having to remember to ask.
 let notesScrolledSource = null;
 
+// ── Telling our own scrolling apart from the reader's ──────────────────────
+// #notesView carries several scroll listeners that derive "where is the reader"
+// from the scroll position. When the APP scrolls — restoring a position across
+// the raw<->rendered toggle, jumping to a heading or a highlight — those
+// listeners would fire and re-derive a position we were in the middle of
+// setting, which is both wasteful and a source of drift. Same shape as the
+// chromeSettleUntil guard further down: a short window, checked rather than
+// unwound, so no code path can leave the flag stuck on.
+const NOTES_PROGRAMMATIC_SCROLL_MS = 250;
+let notesProgrammaticScrollUntil = 0;
+
+function markProgrammaticNotesScroll(ms = NOTES_PROGRAMMATIC_SCROLL_MS) {
+  notesProgrammaticScrollUntil = Math.max(notesProgrammaticScrollUntil, performance.now() + ms);
+}
+
+function isProgrammaticNotesScroll() {
+  return performance.now() < notesProgrammaticScrollUntil;
+}
+
 // Every path that repaints the rendered notes goes through here, so the "is
 // this a different note?" bookkeeping can't drift out of step with what's on
 // screen. Re-rendering the SAME note (an edit commit, a cloze toggle, an image
@@ -10917,6 +11061,10 @@ let notesScrolledSource = null;
 // where you were reading.
 function renderNotesView() {
   if (!el.notesView) return Promise.resolve();
+  // A different note replaces every block, so everything queued against the old
+  // one describes nodes that are about to be detached. Released here, while we
+  // can still name the root, rather than left for the next render to notice.
+  if (notesScrolledSource !== state.notes) releaseDeferredWork(el.notesView);
   notesScrolledSource = state.notes;
   syncNotesBlockEstimateSource();
   return renderMarkdown(el.notesView, state.notes, true)
@@ -10962,6 +11110,13 @@ function commitNotesEditIfActive() {
 // place.
 function enterNotesEditing(cursorOffset = null) {
   if (!el.notesEdit || isNotesEditing()) return;
+  // Normalised BEFORE the textarea sees it, because a <textarea> silently
+  // rewrites \r\n to \n in its own .value. Without this, the first raw toggle
+  // of any CRLF-containing import (a Windows-authored .md, most EPUB
+  // conversions) made commitNotesEditIfActive write back a value that differs
+  // from state.notes — which misses the render cache, rebuilds every block, and
+  // marks the deck dirty for an "edit" the reader never made.
+  if (state.notes && state.notes.includes("\r")) state.notes = state.notes.replace(/\r\n?/g, "\n");
   el.notesEdit.value = state.notes;
   el.notesView.hidden = true;
   el.notesEdit.hidden = false;
@@ -11024,11 +11179,91 @@ function textOffsetWithin(root, node, offset) {
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// How far either side of the hint the windowed search below looks before
-// falling back to the whole document. Wide enough to absorb the error in a
-// proportional block-position estimate on a large note, narrow enough that a
-// phrase repeated every few hundred characters can't be confused across it.
+// How far either side of the hint the windowed search below looks. Wide enough
+// to absorb the error in a proportional block-position estimate on a large
+// note, narrow enough that a phrase repeated every few hundred characters can't
+// be confused across it. A hinted search that misses this window gives up
+// rather than widening — see the note at the miss below.
 const SNIPPET_SEARCH_WINDOW_CHARS = 20000;
+
+// ── Why this search is bounded three separate ways ─────────────────────────
+// The pattern below used to turn every run of punctuation/whitespace in the
+// snippet into its own lazy bounded gap. Chained bounded lazy quantifiers backtrack
+// combinatorially when the overall match FAILS, and failing is the common case:
+// this runs while you scroll, against whatever block happens to be near the top
+// of the viewport, including tables and code fences whose rendered text doesn't
+// survive into the raw source verbatim. Measured on a real note shape (an
+// indented list, allowNewline on, the 40KB window): ONE call took 9,945ms. That
+// is the "scrolling freezes and Chrome offers to exit the site" report — the
+// unresponsive-page dialog, not an OOM.
+//
+// The fix is structural: the gaps are made non-backtracking, so the engine can
+// no longer explore anything. A gap is written as a *tempered* run —
+//
+//     (?:(?!word)[^\n]){0,60}word
+//
+// — which can only consume characters that do not begin the next word, and so
+// stops dead at that word's first occurrence. There is exactly one way for it to
+// match, which means adjacent gaps have nothing to negotiate over and the whole
+// pattern runs in linear time. Semantically this is first-fit rather than
+// full backtracking, which is what we wanted anyway: locate the nearest
+// occurrence of these words in this order, within this distance of each other.
+//
+// Two cheaper bounds sit in front of it: an indexOf prefilter that proves
+// impossibility before the engine is involved at all, and a wall-clock budget
+// on the scan loop. A snippet that can't be located yields null, and every
+// caller already handles null by falling back to a coarser position.
+//
+// Measured on the case that reproduced the freeze (an indented list, newlines
+// allowed, the 40KB window): 9,897ms before, 0.5ms after, with identical
+// results on the snippet-matching cases this has to keep getting right.
+const SNIPPET_GAP_MAX_CHARS = 60;
+const SNIPPET_SEARCH_BUDGET_MS = 8;
+// Runs shorter than this are too common to be worth an indexOf (a one-letter
+// word appears everywhere, so the prefilter would never reject on it).
+const SNIPPET_PREFILTER_MIN_RUN = 3;
+
+// The alphanumeric runs of a snippet, which are what the pattern anchors on.
+// Whitespace and punctuation between them is deliberately discarded: the
+// rendered text a snippet is taken from has already had markdown syntax
+// stripped out of it, so the raw source is expected to differ there — that is
+// the entire reason for the gaps.
+function snippetWordRuns(snippet) {
+  return (snippet || "").split(/[^A-Za-z0-9]+/).filter(Boolean);
+}
+
+// A tempered gap that ends where `next` begins. For prose the gap excludes
+// newlines so a short generic fragment can't bridge into an unrelated block;
+// inside code we must allow them so a snippet straddling two code lines still
+// matches.
+function snippetGap(next, allowNewline) {
+  const unit = allowNewline ? "[\\s\\S]" : "[^\\n]";
+  return `(?:(?!${escapeRe(next)})${unit}){0,${SNIPPET_GAP_MAX_CHARS}}`;
+}
+
+// words joined by tempered gaps: word1 GAP word2 GAP word3 …
+function snippetSequencePattern(runs, allowNewline) {
+  if (!runs.length) return null;
+  let pattern = escapeRe(runs[0]);
+  for (let i = 1; i < runs.length; i += 1) {
+    pattern += snippetGap(runs[i], allowNewline) + escapeRe(runs[i]);
+  }
+  return pattern;
+}
+
+// Every word run appears in the pattern verbatim, so if any one of them is
+// absent from the text being searched, no match is possible — and indexOf can
+// prove that in microseconds.
+function snippetLiteralRuns(snippet) {
+  return snippetWordRuns(snippet).filter((run) => run.length >= SNIPPET_PREFILTER_MIN_RUN);
+}
+
+function snippetCannotMatch(text, runs) {
+  for (const run of runs) {
+    if (text.indexOf(run) === -1) return true;
+  }
+  return false;
+}
 
 // Locate `before`+`after` snippets (either may be empty) inside state.notes and
 // return the character offset of the seam between them. `allowNewline` lets the
@@ -11042,26 +11277,31 @@ const SNIPPET_SEARCH_WINDOW_CHARS = 20000;
 // REFERENCE IN TEXT" once per note and body prose repeats ordinary phrases all
 // the time, so leaving the rendered view for raw mode 600 paragraphs down
 // resolved to paragraph 1 and dumped the reader at the top of the note. With a
-// hint, the search runs over a window around it first and only falls back to
-// the whole document when nothing matches there.
+// hint, the search runs over a window around it and takes the match nearest the
+// hint; without one it takes the first match in the document.
 function matchSnippetInSource(source, before, after, allowNewline, hint = null) {
   if (!source || (!before && !after)) return null;
-  // Lazy bounded gap absorbs stripped markdown syntax (a link's
-  // `](https://example.com)` tail is full of letters/digits, so a gap of only
-  // non-alphanumerics can't skip it). For prose the gap excludes newlines so a
-  // short generic fragment can't bridge into an unrelated block; inside code we
-  // must allow them so a snippet straddling two code lines still matches.
-  const gap = allowNewline ? "[\\s\\S]{0,300}?" : "[^\\n]{0,300}?";
-  // Fuzzify: keep alphanumeric runs literal, let every run of punctuation/whitespace
-  // in the snippet absorb stripped markdown syntax — not just the one at the click
-  // seam. A snippet like "bold text" must also match raw "**bold text**", where the
-  // stripped `**` sits mid-snippet (right after "text"), not at the before/after join.
-  const fuzzify = (s) => s.split(/([^A-Za-z0-9]+)/).map((part, i) => (i % 2 === 0 ? escapeRe(part) : gap)).join("");
-  const pattern = before && after
-    ? `(${fuzzify(before)})${gap}(${fuzzify(after)})`
-    : `(${fuzzify(before || after)})`;
+  const beforeRuns = snippetWordRuns(before);
+  const afterRuns = snippetWordRuns(after);
+  const beforePattern = snippetSequencePattern(beforeRuns, allowNewline);
+  const afterPattern = snippetSequencePattern(afterRuns, allowNewline);
+  let pattern;
+  if (beforePattern && afterPattern) {
+    // The seam gap is tempered against the first word on the far side, so it
+    // stops at that word rather than negotiating with the gaps around it.
+    pattern = `(${beforePattern})${snippetGap(afterRuns[0], allowNewline)}(${afterPattern})`;
+  } else if (beforePattern || afterPattern) {
+    pattern = `(${beforePattern || afterPattern})`;
+  } else {
+    // A snippet with no word characters at all (pure punctuation) — nothing to
+    // anchor on, so match it literally or not at all.
+    pattern = `(${escapeRe(before || after)})`;
+  }
+  const literalRuns = snippetLiteralRuns(before).concat(snippetLiteralRuns(after));
+
   try {
     const seam = (match, base) => (before ? match.index + match[1].length : match.index) + base;
+    const deadline = performance.now() + SNIPPET_SEARCH_BUDGET_MS;
 
     if (Number.isFinite(hint)) {
       const start = Math.max(0, Math.floor(hint) - SNIPPET_SEARCH_WINDOW_CHARS);
@@ -11072,8 +11312,10 @@ function matchSnippetInSource(source, before, after, allowNewline, hint = null) 
         // original bug rather than fix it: on text that repeats every few dozen
         // characters the first hit in the window is its left edge, which is
         // wrong by however wide the window is.
-        const scan = new RegExp(pattern, "g");
         const slice = source.slice(start, end);
+        // Cheap proof of impossibility before the engine is involved at all.
+        if (snippetCannotMatch(slice, literalRuns)) return null;
+        const scan = new RegExp(pattern, "g");
         let best = null;
         let bestDistance = Infinity;
         let match;
@@ -11086,11 +11328,20 @@ function matchSnippetInSource(source, before, after, allowNewline, hint = null) 
           }
           // A pattern that can match empty would never advance lastIndex.
           if (match.index === scan.lastIndex) scan.lastIndex += 1;
+          if (performance.now() > deadline) break;
         }
         if (best != null) return best;
+        // A hint that missed its own ±20,000-char window is not going to produce
+        // a trustworthy answer from the rest of the note, only a slow wrong one:
+        // the whole reason the hint exists (see the header comment) is that the
+        // first match elsewhere in a repetitive document is the WRONG match. So
+        // a hinted miss is a miss, and the caller falls back to block-level
+        // positioning rather than paying for a full-document scan.
+        return null;
       }
     }
 
+    if (snippetCannotMatch(source, literalRuns)) return null;
     const match = new RegExp(pattern).exec(source);
     if (!match) return null;
     return seam(match, 0);
@@ -11180,13 +11431,32 @@ function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
   return matchSnippetInSource(source, blockStart, "", isCode, hint);
 }
 
+// Counts newlines in value[0..pos) without materialising the prefix. The old
+// `value.slice(0, pos).match(/\n/g).length` allocated a copy of everything above
+// the caret AND an array with one entry per line in it — on a book chapter that
+// is megabytes of garbage every time the editor opens.
+function lineIndexAtOffset(value, pos) {
+  let count = 0;
+  let at = value.indexOf("\n");
+  while (at !== -1 && at < pos) {
+    count += 1;
+    at = value.indexOf("\n", at + 1);
+  }
+  return count;
+}
+
 // setSelectionRange alone doesn't reliably re-scroll a long textarea in every
-// browser, so approximate a centered scroll from the line number of `pos`.
+// browser, so approximate the scroll from the line number of `pos`. Puts the
+// line on the same reading line the rendered view samples from and restores to
+// (notesReadingLineOffset) — previously this centred while the sampler read
+// from near the top, so a round trip drifted by half a viewport.
 function scrollTextareaToOffset(textarea, pos) {
-  const before = textarea.value.slice(0, pos);
-  const lineIndex = (before.match(/\n/g) || []).length;
+  const lineIndex = lineIndexAtOffset(textarea.value, pos);
   const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
-  textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
+  const gap = textarea === el.notesEdit
+    ? notesReadingLineOffset(textarea.clientHeight)
+    : textarea.clientHeight / 2;
+  textarea.scrollTop = Math.max(0, lineIndex * lineHeight - gap);
 }
 
 // Arithmetic inverse of scrollTextareaToOffset: approximate the raw character
@@ -11195,7 +11465,10 @@ function scrollTextareaToOffset(textarea, pos) {
 // → scroll) is self-consistent rather than compounding error.
 function textareaOffsetFromScroll(textarea) {
   const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
-  const lineIndex = Math.max(0, Math.round((textarea.scrollTop + textarea.clientHeight / 2) / lineHeight));
+  const gap = textarea === el.notesEdit
+    ? notesReadingLineOffset(textarea.clientHeight)
+    : textarea.clientHeight / 2;
+  const lineIndex = Math.max(0, Math.round((textarea.scrollTop + gap) / lineHeight));
   const value = textarea.value;
   // Walk to the start of the target line by scanning for newlines with
   // indexOf — this only touches the prefix up to the caret line, and never
@@ -11216,11 +11489,26 @@ function textareaOffsetFromScroll(textarea) {
 // synthesize one near the top of the viewport instead, so leaving rendered
 // mode via the button still lands raw-edit mode near where you were reading
 // instead of always at the top.
+// How far below the top of the notes viewport "where you are reading" is taken
+// to be. THE one definition: the sampler below reads from this line and every
+// restore (scrollNotesBlockToReadingLine, scrollTextareaToOffset) puts the
+// target back on it, which is what makes a raw<->rendered round trip land you
+// on the line you left rather than drifting each time.
+// Takes the height explicitly because the two sides are never both on screen:
+// in raw mode #notesView is hidden and reports clientHeight 0, so the editor
+// has to measure against the textarea that replaced it.
+const NOTES_READING_LINE_MAX_PX = 64;
+
+function notesReadingLineOffset(viewportHeight) {
+  const height = viewportHeight || el.notesView?.clientHeight || 0;
+  return Math.min(NOTES_READING_LINE_MAX_PX, height / 3);
+}
+
 function rawOffsetForCurrentNotesScroll() {
   if (!el.notesView || el.notesView.hidden) return null;
   const rect = el.notesView.getBoundingClientRect();
   const x = rect.left + rect.width / 2;
-  const y = rect.top + Math.min(64, rect.height / 3);
+  const y = rect.top + notesReadingLineOffset(rect.height);
   return findRawOffsetForRenderedPoint(el.notesView, state.notes, x, y);
 }
 
@@ -11252,17 +11540,43 @@ function captureCurrentReadingAnchor() {
   currentReadingAnchorDeckKey = currentDeckKey();
 }
 
-// rAF-coalesced so a fling-scroll doesn't run the hit-test on every native
-// scroll event — this is event-handler hygiene, not a persistence schedule;
-// nothing is written to storage from here.
-let readingAnchorCaptureQueued = false;
+// Deliberately a TRAILING debounce rather than the rAF coalescing this used to
+// use. rAF coalescing still means "once per frame", i.e. ~60 hit-tests per
+// second for as long as a fling lasts — and each one is a
+// caretPositionFromPoint, a Range.toString() over the block, a walk of the
+// block cache and up to two snippet searches. That was the single most
+// expensive thing happening while reading.
+//
+// Nothing needs this mid-scroll. The anchor is memory-only (see above) and is
+// read when some *other* save happens, so the only moment it has to be right is
+// after you stop moving. requestIdleCallback keeps it off the critical path
+// even then.
+const READING_ANCHOR_IDLE_MS = 150;
+let readingAnchorCaptureTimer = 0;
+let readingAnchorIdleHandle = 0;
+
+function scheduleReadingAnchorCapture() {
+  if (readingAnchorCaptureTimer) clearTimeout(readingAnchorCaptureTimer);
+  readingAnchorCaptureTimer = setTimeout(() => {
+    readingAnchorCaptureTimer = 0;
+    if (typeof requestIdleCallback !== "function") {
+      captureCurrentReadingAnchor();
+      return;
+    }
+    if (readingAnchorIdleHandle) cancelIdleCallback(readingAnchorIdleHandle);
+    readingAnchorIdleHandle = requestIdleCallback(() => {
+      readingAnchorIdleHandle = 0;
+      captureCurrentReadingAnchor();
+    }, { timeout: 1000 });
+  }, READING_ANCHOR_IDLE_MS);
+}
+
 el.notesView?.addEventListener("scroll", () => {
-  if (readingAnchorCaptureQueued) return;
-  readingAnchorCaptureQueued = true;
-  requestAnimationFrame(() => {
-    readingAnchorCaptureQueued = false;
-    captureCurrentReadingAnchor();
-  });
+  // A scroll the app performed itself (the raw<->rendered restore, a TOC jump)
+  // is not the reader moving, and re-deriving an anchor from it would just
+  // re-measure the position we were asked to go to.
+  if (isProgrammaticNotesScroll()) return;
+  scheduleReadingAnchorCapture();
 }, { passive: true });
 
 el.notesView?.addEventListener("click", (event) => {
@@ -11514,6 +11828,11 @@ requestAnimationFrame(() => document.body.classList.add("chrome-ready"));
 // keeps the entry for the section you're reading highlighted.
 let notesTocHeadings = [];
 let notesTocScrollFrame = 0;
+// The rendered <a> for each heading, captured as buildNotesToc creates them so
+// the scroll handler never has to re-query the list, plus which one is lit right
+// now so it can touch only the two rows that change.
+let notesTocLinks = [];
+let notesTocActiveIndex = -1;
 
 function slugifyHeading(text, used) {
   const base = String(text || "")
@@ -11559,6 +11878,10 @@ function buildNotesToc() {
   ).filter((h) => h.textContent.trim() !== "");
 
   el.notesTocList.innerHTML = "";
+  // The list is being rebuilt, so every link reference updateNotesTocActive
+  // held is now detached and the remembered active row means nothing.
+  notesTocLinks = [];
+  notesTocActiveIndex = -1;
   const hasHeadings = notesTocHeadings.length > 0;
   if (el.notesTocEmpty) el.notesTocEmpty.hidden = hasHeadings;
   el.notesTocList.hidden = !hasHeadings;
@@ -11617,6 +11940,7 @@ function buildNotesToc() {
     link.querySelector(".notes-toc-text").textContent = heading.textContent.trim();
     li.appendChild(link);
     el.notesTocList.appendChild(li);
+    notesTocLinks.push(link);
   });
 
   updateNotesTocActive();
@@ -11639,6 +11963,7 @@ async function scrollNotesHeadingIntoView(heading) {
   if (!heading || !el.notesView) return;
   const aim = (behavior) => {
     const target = el.notesView.scrollTop + notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP;
+    markProgrammaticNotesScroll(behavior === "smooth" ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
     el.notesView.scrollTo({ top: Math.max(0, target), behavior });
   };
 
@@ -11688,21 +12013,62 @@ function scrollNotesEditToHeadingIndex(index) {
   textarea.dispatchEvent(new Event("scroll"));
 }
 
+// ── Why this is gated, and searched rather than swept ──────────────────────
+// This runs on the notes scroll, so it is on the hot path of every frame of
+// every scroll. Two things made it the largest single cost there:
+//
+//   1. It ran whether or not the TOC drawer was open — and the drawer is closed
+//      almost all the time. The work was invisible by construction.
+//   2. getBoundingClientRect() on a heading inside a `content-visibility: auto`
+//      block FORCES that block to lay out. Sweeping EVERY heading in the note
+//      therefore un-skipped the whole document, 60 times a second, defeating
+//      the point of the content-visibility rule in styles.css (and of the
+//      deferred-work machinery built around it).
+//
+// Headings are in document order, so "the last one at or above the mark" is a
+// binary search: ~9 rect reads on a 500-heading chapter instead of 500. Rects
+// (not offsetTop) are kept deliberately — .notes-rendered is not positioned, so
+// offsetTop would be measured against some ancestor and would not answer the
+// question being asked here. The links are captured once when the list is built
+// rather than re-queried per frame, and only the two that change are touched.
+function isNotesTocOpen() {
+  return Boolean(el.notesTocDrawer?.classList.contains("is-open"));
+}
+
 function updateNotesTocActive() {
   if (!el.notesTocList || !notesTocHeadings.length) return;
-  const viewTop = el.notesView.getBoundingClientRect().top;
+  // Closed drawer: nothing to show, so nothing to compute. openNotesToc() calls
+  // this on the way open, so it still lands on the right entry.
+  if (!isNotesTocOpen()) return;
+
   // The active section is the last heading whose top has scrolled to (or above)
   // a line a little below the viewport top.
+  const mark = el.notesView.getBoundingClientRect().top + 24;
+  let low = 0;
+  let high = notesTocHeadings.length - 1;
   let activeIndex = 0;
-  notesTocHeadings.forEach((heading, index) => {
-    if (heading.getBoundingClientRect().top - viewTop <= 24) activeIndex = index;
-  });
-  el.notesTocList.querySelectorAll(".notes-toc-link").forEach((link) => {
-    const on = Number(link.dataset.tocIndex) === activeIndex;
-    link.classList.toggle("is-active", on);
-    if (on) link.setAttribute("aria-current", "true");
-    else link.removeAttribute("aria-current");
-  });
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (notesTocHeadings[mid].getBoundingClientRect().top <= mark) {
+      activeIndex = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  if (activeIndex === notesTocActiveIndex) return;
+  const previous = notesTocLinks[notesTocActiveIndex];
+  if (previous) {
+    previous.classList.remove("is-active");
+    previous.removeAttribute("aria-current");
+  }
+  const next = notesTocLinks[activeIndex];
+  if (next) {
+    next.classList.add("is-active");
+    next.setAttribute("aria-current", "true");
+  }
+  notesTocActiveIndex = activeIndex;
 }
 
 function openNotesToc() {
@@ -11759,6 +12125,10 @@ el.notesTocList?.addEventListener("click", (event) => {
 el.notesView?.addEventListener(
   "scroll",
   () => {
+    // Checked here as well as inside updateNotesTocActive so a closed drawer
+    // doesn't even cost a scheduled frame — which is the state it is in for
+    // almost all reading.
+    if (!isNotesTocOpen()) return;
     if (notesTocScrollFrame) return;
     notesTocScrollFrame = requestAnimationFrame(() => {
       notesTocScrollFrame = 0;
@@ -12023,11 +12393,38 @@ const RAW_FENCE_RE = /^[ \t]*(`{3,})([^\n`]*)\n([\s\S]*?)(\n[ \t]*\1`*[ \t]*)$/g
 // fence + language when turned into a card. A fence that declares no language
 // contributes the same guess the rendered block shows, so a partial selection
 // out of an undeclared block still lands on the card as highlightable code.
+// How much of the document either side of the selection is searched for an
+// enclosing fence. A code block big enough to fall outside this simply doesn't
+// get its language carried onto the card — the same outcome as an undeclared
+// fence, which the caller already handles.
+//
+// The bound matters because RAW_FENCE_RE is a lazy `[\s\S]*?` closed by a
+// backreference: when a ``` has no matching close — which is the state the text
+// is in the entire time you are part-way through typing a code block — every
+// opener in the note rescans to end-of-document before failing. Measured on
+// text with one unterminated fence: 320ms at 200KB and 8,185ms at 1MB, on every
+// selection change in raw mode.
+const RAW_FENCE_SEARCH_WINDOW = 20000;
+
 function findRawCodeFence(value, start, end) {
+  let from = Math.max(0, start - RAW_FENCE_SEARCH_WINDOW);
+  let to = Math.min(value.length, end + RAW_FENCE_SEARCH_WINDOW);
+  // Snapped to line boundaries so the pattern's ^ and $ still anchor to real
+  // lines rather than to the arbitrary points the window happened to cut.
+  if (from > 0) {
+    const newline = value.indexOf("\n", from);
+    from = newline === -1 || newline >= start ? 0 : newline + 1;
+  }
+  if (to < value.length) {
+    const newline = value.indexOf("\n", to);
+    to = newline === -1 ? value.length : newline;
+  }
+  const slice = from === 0 && to === value.length ? value : value.slice(from, to);
+
   RAW_FENCE_RE.lastIndex = 0;
   let match;
-  while ((match = RAW_FENCE_RE.exec(value))) {
-    const bodyStart = match.index + match[0].indexOf("\n") + 1;
+  while ((match = RAW_FENCE_RE.exec(slice))) {
+    const bodyStart = from + match.index + match[0].indexOf("\n") + 1;
     const bodyEnd = bodyStart + match[3].length;
     if (start >= bodyStart && end <= bodyEnd) {
       const declared = match[2].trim();
@@ -12092,8 +12489,34 @@ function scheduleNotesSelectionCheck() {
 // offscreen mirror div, split its text at the selection boundaries with
 // marker spans, and read the spans' positions back out. Returns a viewport-
 // relative rect, same shape as getBoundingClientRect().
+// Above this the mirror is skipped entirely. It lays out a SECOND full copy of
+// the document — the exact cost HIGHLIGHT_MIRROR_MAX_CHARS exists to avoid for
+// the syntax-highlight backdrop (see the block comment there) — except this one
+// had no guard at all, and it runs on every selection change (160ms debounce)
+// while you drag a selection. On a book-sized note that is a full document
+// layout six times a second.
+//
+// The fallback estimates the caret's line from line-height arithmetic, the same
+// approximation scrollTextareaToOffset already trusts in both directions. It is
+// off for wrapped lines, but the caller clamps the button into the editor's box
+// anyway, so the worst case is a button a little above or below the selection
+// rather than a frozen tab.
+function estimatedTextareaSelectionRect(textarea) {
+  const { selectionStart, value } = textarea;
+  const rect = textarea.getBoundingClientRect();
+  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+  const y = rect.top + lineIndexAtOffset(value, selectionStart) * lineHeight - textarea.scrollTop;
+  return {
+    top: y,
+    bottom: y + lineHeight,
+    left: rect.left,
+    right: rect.right,
+  };
+}
+
 function textareaSelectionRect(textarea) {
   const { selectionStart, selectionEnd, value } = textarea;
+  if (value.length > HIGHLIGHT_MIRROR_MAX_CHARS) return estimatedTextareaSelectionRect(textarea);
   const style = getComputedStyle(textarea);
   const mirror = document.createElement("div");
   [
@@ -12466,12 +12889,31 @@ function findRenderedNoteRange(anchor, offset = null) {
   if (offset != null) {
     // Windowed: only descend into top-level blocks whose vertical span
     // overlaps the window, so a huge note isn't flattened in full.
+    //
+    // Blocks are in document order, so the window is a contiguous run and its
+    // first member can be binary searched for instead of found by testing every
+    // block from the top. That matters because these are `content-visibility:
+    // auto` blocks: reading a rect forces the browser to lay one out, so the
+    // old linear sweep un-skipped the entire document just to decide which
+    // handful of blocks to read — on every toggle and every anchor jump.
     const blocks = view.children;
-    for (let i = 0; i < blocks.length; i += 1) {
+    const topOf = (i) => blocks[i].getBoundingClientRect().top;
+    let low = 0;
+    let high = blocks.length - 1;
+    let first = blocks.length;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (blocks[mid].getBoundingClientRect().bottom < winTopView) {
+        low = mid + 1;
+      } else {
+        first = mid;
+        high = mid - 1;
+      }
+    }
+    for (let i = first; i < blocks.length; i += 1) {
       const block = blocks[i];
       if (block.nodeType !== 1) continue;
-      const rect = block.getBoundingClientRect();
-      if (rect.bottom < winTopView || rect.top > winBottomView) continue;
+      if (topOf(i) > winBottomView) break;
       const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
       let node;
       while ((node = walker.nextNode())) collect(node);
@@ -12532,7 +12974,30 @@ function findRenderedNoteRange(anchor, offset = null) {
 function estimateNotesScrollForOffset(offset) {
   if (!el.notesView || !Number.isFinite(offset) || !state.notes) return;
   const fraction = Math.max(0, Math.min(1, offset / state.notes.length));
+  markProgrammaticNotesScroll();
   el.notesView.scrollTop = fraction * el.notesView.scrollHeight;
+}
+
+// Puts `block` where rawOffsetForCurrentNotesScroll SAMPLES from, so that a
+// round trip is the identity. This used to be scrollIntoView({block:"center"}),
+// which centred the target while the sampler read from near the top — so every
+// raw<->rendered toggle slid the note by about half a viewport, compounding in
+// whichever direction you happened to be toggling.
+function scrollNotesBlockToReadingLine(block, smooth) {
+  if (!block || !el.notesView) return;
+  const view = el.notesView;
+  const delta = block.getBoundingClientRect().top - view.getBoundingClientRect().top;
+  const target = view.scrollTop + delta - notesReadingLineOffset(view.clientHeight);
+  markProgrammaticNotesScroll(smooth ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
+  view.scrollTo({ top: Math.max(0, target), behavior: smooth ? "smooth" : "auto" });
+}
+
+function blockForRange(range) {
+  if (!range) return null;
+  const startEl = range.startContainer.nodeType === Node.TEXT_NODE
+    ? range.startContainer.parentElement
+    : range.startContainer;
+  return startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
 }
 
 function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
@@ -12543,34 +13008,27 @@ function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
   const needle = forward || backward;
   if (!needle) return;
 
-  // Scroll to a proportional estimate first — cheap, and it centers the
-  // windowed text search (findRenderedNoteRange) near the target so the search
-  // walks a slice of the document instead of the whole thing. Content is always
-  // real now (no placeholder layer), so the estimate's accuracy only depends on
-  // how uniform the block heights are — a wide search window absorbs the error.
-  estimateNotesScrollForOffset(offset);
-
+  // No proportional pre-scroll here any more. It used to run unconditionally,
+  // "to centre the windowed text search" — but findRenderedNoteRange derives its
+  // window from the offset's fraction of scrollHeight in DOCUMENT space and
+  // subtracts scrollTop back out, so where the view happens to be scrolled makes
+  // no difference to what it searches. The pre-scroll bought nothing and cost a
+  // visible jump: the toggle moved once to a proportional guess and then again
+  // to the real target, which is what made it feel broken even on a short note
+  // where the target had never left the screen.
   const attempt = (retriesLeft) => {
-    const range = findRenderedNoteRange({ text: needle }, offset);
-    if (range) {
-      const startEl = range.startContainer.nodeType === Node.TEXT_NODE
-        ? range.startContainer.parentElement
-        : range.startContainer;
-      const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
-      (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+    const block = blockForRange(findRenderedNoteRange({ text: needle }, offset));
+    if (block) {
+      scrollNotesBlockToReadingLine(block, smooth);
       return;
     }
-    // Not found in the window — heights are still settling (images loading),
-    // so the estimate was off. Fall back to one full-document search before
-    // giving up rather than looping.
+    // Not found in the window — heights are still settling (images loading), so
+    // the offset→position estimate the window was built from was off. Fall back
+    // to one full-document search before giving up rather than looping.
     if (retriesLeft > 0) {
-      const full = findRenderedNoteRange({ text: needle });
+      const full = blockForRange(findRenderedNoteRange({ text: needle }));
       if (full) {
-        const startEl = full.startContainer.nodeType === Node.TEXT_NODE
-          ? full.startContainer.parentElement
-          : full.startContainer;
-        const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
-        (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+        scrollNotesBlockToReadingLine(full, smooth);
         return;
       }
       requestAnimationFrame(() => attempt(retriesLeft - 1));
@@ -12600,10 +13058,12 @@ function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}) {
 
   const range = findRenderedNoteRange(anchor, anchor.offset);
   if (!range) return false;
-  const startEl = range.startContainer.nodeType === Node.TEXT_NODE
-    ? range.startContainer.parentElement
-    : range.startContainer;
-  const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
+  const block = blockForRange(range);
+  // Centred, unlike the raw<->rendered restore: this is an explicit jump to
+  // somewhere you weren't, so putting the target in the middle of the screen is
+  // what you want. Restoring a reading position is the case that has to land on
+  // the reading line instead.
+  markProgrammaticNotesScroll(smooth ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
   (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
   if (!flash) return true;
   // The browser's own selection highlight makes the exact span obvious; the
@@ -15705,17 +16165,29 @@ function clearMissingDeckWatch(deckId) {
 
 let deckAutosaveTimer = null;
 
+// ── Why this no longer writes anything ─────────────────────────────────────
+// This used to do `localStorage.setItem(deckStorageKey, JSON.stringify(deckSnapshot()))`
+// — the entire deck, serialized synchronously on the main thread — and
+// scheduleDeckAutosave calls it on a 400ms debounce, so it ran continuously
+// while typing. On a large deck that is a multi-megabyte string built several
+// times a second, and localStorage's ~5MB cap meant the setItem then threw
+// QuotaExceededError, which the catch below swallowed into a console.warn.
+//
+// The write was pointless even when it succeeded: NOTHING reads deckStorageKey
+// back. clearBrowserPersistence() removes it on every boot on purpose (a
+// refresh is meant to start on the clean home screen, not reopen the last
+// deck), and there is no getItem for it anywhere in the app. The durable copy
+// is the IndexedDB snapshot that saveDeckToLibrary/writeDeckSnapshot writes —
+// see the storage note above, which is why bulk data moved off localStorage in
+// the first place. This call site was simply left behind.
+//
+// Kept as a function (rather than deleted at its ~10 call sites) because the
+// key still has to be cleared when the working deck empties out.
 function persistWorkingDeck() {
   try {
-    if (!state.masterCards.length && !state.notes.trim()) {
-      localStorage.removeItem(deckStorageKey);
-      return;
-    }
-    const snapshot = deckSnapshot();
-    snapshot.localDeckId = state.localDeckId || null;
-    localStorage.setItem(deckStorageKey, JSON.stringify(snapshot));
+    localStorage.removeItem(deckStorageKey);
   } catch (error) {
-    console.warn("Could not save working deck", error);
+    console.warn("Could not clear working deck key", error);
   }
 }
 
@@ -15892,6 +16364,11 @@ function announceDeckStoreChange(type, id) {
   }
 }
 
+// Total characters the journal is allowed to occupy. localStorage gives an
+// origin roughly 5MB for everything, and the deck library shares it, so this
+// stays well under that — the journal is short-lived insurance, not storage.
+const DECK_JOURNAL_MAX_CHARS = 2_000_000;
+
 // Synchronous by design — the whole point is to complete before the page dies.
 function journalPendingDeckWrites() {
   // The fallback path already writes synchronously to localStorage, so there
@@ -15905,7 +16382,31 @@ function journalPendingDeckWrites() {
       }
       return;
     }
-    localStorage.setItem(DECK_WRITE_JOURNAL_KEY, JSON.stringify(Object.fromEntries(pendingDeckWrites)));
+    // Serialized deck by deck, biggest dropped first if the whole set won't
+    // fit. localStorage caps an origin at a few MB, so one large deck used to
+    // make this setItem throw — and the catch below then deletes the journal
+    // entirely, taking every OTHER in-flight deck's insurance down with it. A
+    // deck too big to journal is unlucky; the small ones sitting behind it in
+    // the same Map should not be.
+    const entries = [];
+    let budget = DECK_JOURNAL_MAX_CHARS;
+    for (const [id, snapshot] of pendingDeckWrites) {
+      const body = JSON.stringify(snapshot);
+      if (body.length > budget) {
+        console.warn(`Deck ${id} is too large to journal (${body.length} chars) — its IndexedDB write still stands`);
+        continue;
+      }
+      budget -= body.length;
+      entries.push(`${JSON.stringify(String(id))}:${body}`);
+    }
+    if (!entries.length) {
+      if (deckWriteJournalOnDisk) {
+        localStorage.removeItem(DECK_WRITE_JOURNAL_KEY);
+        deckWriteJournalOnDisk = false;
+      }
+      return;
+    }
+    localStorage.setItem(DECK_WRITE_JOURNAL_KEY, `{${entries.join(",")}}`);
     deckWriteJournalOnDisk = true;
   } catch (error) {
     // Journalling is best-effort insurance; failing it must never break the
@@ -16408,9 +16909,14 @@ function renderSyncCountdown() {
   if (!node) return;
   const text = syncCountdownText();
   const mins = getAutoSyncMinutes();
-  node.title = mins
+  const title = mins
     ? `Auto-sync every ${mins} min${mins === 1 ? "" : "s"}${text ? ` — ${text.replace("↻ ", "")} to the next one` : ""}`
     : "Auto-sync is off — use Sync Now, or pick an interval in the menu";
+  // Compared before assigning, like the countdown's own textContent below.
+  // This runs from a 1s ticker that never stops, so an unconditional write was
+  // an attribute mutation every second for the life of the tab even when
+  // auto-sync is off and the string never changes.
+  if (node.title !== title) node.title = title;
   // `!node.textContent` means the pill itself is empty (no deck): nothing to
   // hang a countdown off, and an orphan "↻ 4m" on its own would be nonsense.
   if (!text || !node.textContent) {
@@ -18063,20 +18569,33 @@ function listLocalDecks() {
 // whole two-way sync compares on) must bump ONLY when this changes; otherwise
 // merely viewing or paging through a deck would make it read as "newer" than the
 // cloud and overwrite a genuinely newer cloud edit on the next reconcile.
-function deckContentSignature(snapshot) {
-  if (!snapshot) return "";
-  // Per-card fields come from cardSyncSignature so "what counts as a card edit"
-  // is defined in exactly one place. `category` used to be missing here, which
-  // meant a card recategorisation never bumped the deck's updatedAt and so was
-  // never pushed — it only reached the cloud because setQuickNoteCardCategory
-  // bumped the index entry by hand.
-  const cards = (snapshot.cards || []).map((c) => `${String(c.id)}␟${cardSyncSignature(c)}`);
-  return JSON.stringify({
-    title: normalizeSyncText(snapshot.deckTitle),
-    category: normalizeDeckCategory(snapshot.deckCategory),
-    notes: normalizeSyncText(snapshot.notes),
-    cards,
-  });
+// Compares two snapshots on that fingerprint WITHOUT building it. The previous
+// version rendered each snapshot to one big JSON string and compared the
+// strings — which on a large deck means two full serializations of every note
+// and every card (plus an intermediate array of per-card signature strings)
+// every time anything is saved, i.e. continuously while typing, just to answer
+// a question that is almost always "no, nothing changed". Field by field with
+// an early exit answers it with no allocation at all, and bails on the first
+// difference when the answer is "yes".
+//
+// Per-card fields come from cardSyncSignature so "what counts as a card edit"
+// is defined in exactly one place. `category` used to be missing here, which
+// meant a card recategorisation never bumped the deck's updatedAt and so was
+// never pushed — it only reached the cloud because setQuickNoteCardCategory
+// bumped the index entry by hand.
+function deckContentMatches(a, b) {
+  if (!a || !b) return false;
+  if (normalizeSyncText(a.deckTitle) !== normalizeSyncText(b.deckTitle)) return false;
+  if (normalizeDeckCategory(a.deckCategory) !== normalizeDeckCategory(b.deckCategory)) return false;
+  if (normalizeSyncText(a.notes) !== normalizeSyncText(b.notes)) return false;
+  const aCards = a.cards || [];
+  const bCards = b.cards || [];
+  if (aCards.length !== bCards.length) return false;
+  for (let i = 0; i < aCards.length; i += 1) {
+    if (String(aCards[i].id) !== String(bCards[i].id)) return false;
+    if (cardSyncSignature(aCards[i]) !== cardSyncSignature(bCards[i])) return false;
+  }
+  return true;
 }
 
 // Save the current deck into the local library. Re-saving the same deck (matched
@@ -18129,14 +18648,14 @@ function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, 
   // sync with the cloud instead of falsely winning last-write-wins.
   const nowIso = new Date().toISOString();
   const contentChanged = !previousSnapshot
-    || deckContentSignature(previousSnapshot) !== deckContentSignature(snapshot);
+    || !deckContentMatches(previousSnapshot, snapshot);
   const resolvedUpdatedAt = updatedAt
     || (contentChanged ? nowIso : (previousEntry?.updatedAt || nowIso));
 
   // Mark exactly the cards this save changed, so a later pull can tell "I edited
   // this and haven't pushed it" apart from "this is just what the cloud gave me"
   // and merge instead of overwrite. Must run AFTER contentChanged is computed —
-  // it mutates snapshot.cards, and deckContentSignature ignores these fields but
+  // it mutates snapshot.cards, and deckContentMatches ignores these fields but
   // there's no reason to depend on that.
   stampCardSyncState(snapshot, previousSnapshot, updatedAt || nowIso, { synced });
   // Every local card deletion funnels through here (the delete handlers mutate
@@ -22816,7 +23335,11 @@ function rearmAutoSync() {
 }
 
 function autoSyncTick() {
-  renderSyncCountdown();
+  // Only the repaint is skipped behind a hidden tab — the sync check below
+  // still runs, because a backgrounded tab is exactly when an auto-sync is
+  // worth having. The countdown is derived from wall-clock time, so it is
+  // correct again as soon as the tab is shown.
+  if (!document.hidden) renderSyncCountdown();
   if (!getAutoSyncMinutes()) return;
   if (Date.now() < autoSyncNextAt) return;
   // Not syncable right now (signed out, offline, or a sync already running).
@@ -23509,7 +24032,12 @@ document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && (event.key === "e" || event.key === "E")) {
     event.preventDefault();
     if (state.viewMode === "notes") {
-      isNotesEditing() ? commitNotesEditIfActive() : enterNotesEditing();
+      // Same position handoff as the toolbar button (see el.editNotesBtn) —
+      // without the offset this always dropped the caret at line 1, so the
+      // shortcut and the button disagreed about where raw mode opens.
+      isNotesEditing()
+        ? commitNotesEditIfActive()
+        : enterNotesEditing(rawOffsetForCurrentNotesScroll());
     } else if (state.viewMode === "cards" && state.cards[state.current]) {
       toggleEditMode(state.flipped ? "answer" : "question");
     }
@@ -23736,20 +24264,21 @@ registerServiceWorker();
 bootApp();
 
 // Commit any in-progress edit into the session before the tab is hidden or closed.
-// (The working deck is snapshotted too, but it's intentionally not restored on the
-// next load — see clearBrowserPersistence — so a refresh starts on the home screen.)
 function flushWorkingDeck() {
   try {
     commitEditIfActive();
   } catch (error) {
     console.warn("Could not commit active edit before save", error);
   }
-  persistWorkingDeck();
-  // persistWorkingDeck only writes the ephemeral working-deck cache (wiped on
-  // every boot). If the tab/process is killed right after this — the whole
-  // reason this handler exists — an edit committed above but not yet flushed
-  // by the debounced scheduleDeckAutosave() timer would otherwise never reach
-  // the library, and the next reconcile wouldn't even know it happened.
+  // The working-deck localStorage snapshot that used to be taken here is gone —
+  // it was write-only (see persistWorkingDeck) and on a large deck it meant a
+  // multi-megabyte synchronous JSON.stringify on every single app switch, which
+  // on a phone PWA is constant. The durable save below is the one that matters.
+  //
+  // If the tab/process is killed right after this — the whole reason this
+  // handler exists — an edit committed above but not yet flushed by the
+  // debounced scheduleDeckAutosave() timer would otherwise never reach the
+  // library, and the next reconcile wouldn't even know it happened.
   //
   // saveDeckToLibrarySync, deliberately NOT the async saveDeckToLibrary: this
   // runs from pagehide/visibilitychange, and there is no guarantee an awaited
@@ -25546,9 +26075,32 @@ function relaxEscapedBrackets(text) {
 
 // Shared HTML→Markdown converter (paste handler + notes selection capture).
 // Returns "" when Turndown is unavailable or conversion fails.
+// A configured TurndownService per option combination, built once.
+//
+// The whole setup below — the GFM plugin plus ~15 custom rules — used to be
+// rebuilt on EVERY call, and htmlToMarkdown is called from
+// positionNotesSelectionButton, i.e. every 160ms while a selection is being
+// dragged. The rules are pure functions of the two option flags, so there are
+// only a handful of distinct services and they can simply be kept.
+const turndownServices = new Map();
+
+function turndownServiceFor(options) {
+  const key = `${options.preserveInlineStyles ? 1 : 0}:${options.epubMode ? 1 : 0}`;
+  let service = turndownServices.get(key);
+  if (!service) {
+    service = buildTurndownService(options);
+    turndownServices.set(key, service);
+  }
+  return service;
+}
+
 function htmlToMarkdown(html, options = {}) {
   if (typeof TurndownService === "undefined") return "";
+  const turndownService = turndownServiceFor(options);
+  return turndownWithService(turndownService, html, options);
+}
 
+function buildTurndownService(options = {}) {
   const turndownService = new TurndownService({
     headingStyle: "atx",
     codeBlockStyle: "fenced",
@@ -25776,6 +26328,10 @@ function htmlToMarkdown(html, options = {}) {
     }
   });
 
+  return turndownService;
+}
+
+function turndownWithService(turndownService, html, options = {}) {
   try {
     // Parsed here rather than handed to Turndown as a string, because the math
     // spans have to be lifted out of the DOM before conversion — see
@@ -26045,16 +26601,6 @@ document.addEventListener("keydown", (e) => {
 
 const CLOZE_SCAN_RE = /\{\{([\s\S]+?)\}\}/g;
 
-// Break text into display "units": split on sentence terminators followed by
-// whitespace AND on newlines, so a heading, list item or table row each become
-// their own unit (they carry no sentence punctuation of their own).
-function clozeSplitUnits(text) {
-  return String(text)
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 // A lone table row / heading / list item isn't valid standalone markdown, so
 // normalise it to readable inline text before rendering the context snippet.
 function clozeCleanUnit(unit) {
@@ -26076,24 +26622,94 @@ function clozeCleanUnit(unit) {
     .trim();
 }
 
+// Table delimiter rows (|---|---|) are dropped so a cloze inside a table gets
+// the header row as its "before" context instead of a row of dashes.
+const CLOZE_TABLE_DELIMITER_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
+const CLOZE_UNIT_SPLIT_RE = /(?<=[.!?])\s+|\n+/g;
+const CLOZE_MASK_CHAR = "";
+
+// A copy of `source` the SAME LENGTH, with every cloze's hidden text blanked
+// out. Equal length is the point: unit boundaries found in here are offsets
+// into the original, so units can be described as spans instead of rebuilt as
+// strings. Blanking also stops a cloze's own punctuation ("{{Rome. Then
+// Ravenna}}") from splitting the sentence it is buried in, which is right on
+// its own terms: a cloze is one opaque blank, not a sentence boundary.
+function clozeMaskSource(source) {
+  const scan = new RegExp(CLOZE_SCAN_RE.source, "g");
+  let masked = "";
+  let at = 0;
+  let m;
+  while ((m = scan.exec(source))) {
+    const innerLength = m[0].length - 4; // minus the "{{" and "}}"
+    masked += source.slice(at, m.index + 2) + CLOZE_MASK_CHAR.repeat(innerLength);
+    at = m.index + m[0].length - 2;
+  }
+  return masked + source.slice(at);
+}
+
+// -- Why the unit list is built once per source -----------------------------
+// This used to be done per cloze, inside clozeContextParts: rebuild the whole
+// document with this one cloze replaced by a marker, split it into lines,
+// filter every line, join it back, split THAT into sentence units, then scan
+// the units for the marker. Roughly five full copies of the note plus two big
+// arrays, once per {{...}} -- O(clozes x note). Opening the cloze panel on a
+// long note was not merely slow, it was fatal: measured 161ms at 100KB,
+// 2,270ms at 400KB, and at 1MB it exhausted a 4GB heap outright.
+//
+// The same information, computed once: split the masked source into units and
+// remember each one's span. Locating any cloze is then a binary search.
+function clozeUnitIndex(source) {
+  const masked = clozeMaskSource(source);
+  CLOZE_UNIT_SPLIT_RE.lastIndex = 0;
+  const bounds = [];
+  let from = 0;
+  let m;
+  while ((m = CLOZE_UNIT_SPLIT_RE.exec(masked))) {
+    bounds.push([from, m.index]);
+    from = m.index + m[0].length;
+  }
+  bounds.push([from, masked.length]);
+
+  const units = [];
+  for (const [rawStart, rawEnd] of bounds) {
+    let start = rawStart;
+    let end = rawEnd;
+    while (start < end && /\s/.test(source[start])) start += 1;
+    while (end > start && /\s/.test(source[end - 1])) end -= 1;
+    if (start >= end) continue;
+    const text = source.slice(start, end);
+    if (CLOZE_TABLE_DELIMITER_RE.test(text)) continue;
+    units.push({ start, end, text });
+  }
+  return units;
+}
+
+// The index of the unit containing `offset`, or -1.
+function clozeUnitAt(units, offset) {
+  let low = 0;
+  let high = units.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (units[mid].end <= offset) low = mid + 1;
+    else if (units[mid].start > offset) high = mid - 1;
+    else return mid;
+  }
+  return -1;
+}
+
 // Build {prev, cur, next} context around one cloze occurrence. `cur` keeps the
-// {{…}} braces so it renders as a live redaction span; neighbours are plain.
-function clozeContextParts(source, start, end) {
-  const MARK = "\ue000";
-  const inner = source.slice(start + 2, end - 2);
-  // Drop table delimiter rows (|---|---|) so a cloze inside a table gets the
-  // header row as its "before" context instead of a row of dashes.
-  const marked = (source.slice(0, start) + MARK + source.slice(end))
-    .split("\n")
-    .filter((ln) => !/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(ln))
-    .join("\n");
-  const units = clozeSplitUnits(marked);
-  const idx = units.findIndex((u) => u.includes(MARK));
-  const curRaw = (idx >= 0 ? units[idx] : MARK).replace(MARK, "{{" + inner + "}}");
+// {{...}} braces so it renders as a live redaction span; neighbours are plain.
+function clozeContextParts(units, source, start, end) {
+  const index = clozeUnitAt(units, start);
+  if (index === -1) {
+    // No unit covers this offset (a dropped delimiter row, or pure whitespace)
+    // -- show the cloze on its own rather than losing the row entirely.
+    return { prev: "", cur: clozeCleanUnit(source.slice(start, end)), next: "" };
+  }
   return {
-    prev: idx > 0 ? clozeCleanUnit(units[idx - 1]) : "",
-    cur: clozeCleanUnit(curRaw),
-    next: idx >= 0 && idx < units.length - 1 ? clozeCleanUnit(units[idx + 1]) : "",
+    prev: index > 0 ? clozeCleanUnit(units[index - 1].text) : "",
+    cur: clozeCleanUnit(units[index].text),
+    next: index < units.length - 1 ? clozeCleanUnit(units[index + 1].text) : "",
   };
 }
 
@@ -26101,19 +26717,23 @@ function clozeContextParts(source, start, end) {
 function collectDeckClozes() {
   const groups = [];
   const pushGroup = (label, source) => {
+    if (!source || source.indexOf("{{") === -1) return;
     const items = [];
     // A sentence with several clozes yields the SAME context snippet for each
-    // (every blank in that sentence is already shown), so collapse duplicates —
-    // list each sentence once instead of once per cloze.
+    // (every blank in that sentence is already shown), so collapse duplicates:
+    // list each sentence once instead of once per cloze. Keyed on the unit
+    // itself rather than on the assembled text, so a sentence with twenty
+    // blanks costs one row's work instead of twenty.
     const seen = new Set();
+    const units = clozeUnitIndex(source);
     CLOZE_SCAN_RE.lastIndex = 0;
     let m;
     while ((m = CLOZE_SCAN_RE.exec(source))) {
-      const parts = clozeContextParts(source, m.index, m.index + m[0].length);
-      const key = `${parts.prev}\u0001${parts.cur}\u0001${parts.next}`;
+      const unitIndex = clozeUnitAt(units, m.index);
+      const key = unitIndex === -1 ? "@" + m.index : "u" + unitIndex;
       if (seen.has(key)) continue;
       seen.add(key);
-      items.push(parts);
+      items.push(clozeContextParts(units, source, m.index, m.index + m[0].length));
     }
     if (items.length) groups.push({ label, items });
   };
