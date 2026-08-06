@@ -1,0 +1,378 @@
+/* Recall Clipper — injected UI. Everything is scoped under our ids and forced
+   with !important so arbitrary host-page CSS can't distort it. */
+
+/* ---- Overlay layer + selection boxes (glued to elements every frame) ---- */
+#recall-clip-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483646 !important;
+  pointer-events: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: none !important;
+}
+#recall-clip-overlay .rc-hover,
+#recall-clip-overlay .rc-box {
+  position: fixed !important;
+  box-sizing: border-box !important;
+  pointer-events: none !important;
+  border-radius: 3px !important;
+  margin: 0 !important;
+}
+#recall-clip-overlay .rc-hover {
+  border: 2px solid #27e0d0 !important;
+  background: rgba(39, 224, 208, 0.12) !important;
+  transition: top .03s linear, left .03s linear, width .03s linear, height .03s linear !important;
+}
+#recall-clip-overlay .rc-hover[data-mode="remove"] {
+  border-color: #ff6b6b !important;
+  background: rgba(255, 107, 107, 0.14) !important;
+}
+#recall-clip-overlay .rc-box.rc-keep {
+  border: 2px solid #27e0d0 !important;
+  background: rgba(39, 224, 208, 0.14) !important;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35) inset !important;
+}
+#recall-clip-overlay .rc-box.rc-remove {
+  border: 2px dashed #ff6b6b !important;
+  background: repeating-linear-gradient(45deg, rgba(255,107,107,0.20) 0, rgba(255,107,107,0.20) 6px, rgba(255,107,107,0.06) 6px, rgba(255,107,107,0.06) 12px) !important;
+}
+#recall-clip-overlay .rc-badge {
+  position: absolute !important;
+  top: -2px !important;
+  left: -2px !important;
+  font: 700 11px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif !important;
+  color: #04211f !important;
+  background: #27e0d0 !important;
+  padding: 1px 6px !important;
+  border-radius: 4px 0 6px 0 !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+}
+#recall-clip-overlay .rc-box.rc-remove .rc-badge {
+  color: #2a0a0a !important;
+  background: #ff6b6b !important;
+}
+
+/* Reinforce "picking mode" with a crosshair cursor on the page. */
+html.recall-clip-active, html.recall-clip-active body { cursor: crosshair !important; }
+
+/* ---- Toolbar ---- */
+#recall-clipper-ui {
+  all: initial;
+  position: fixed !important;
+  top: 12px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 2147483647 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+  color: #f4fbfb !important;
+  width: min(820px, calc(100vw - 24px)) !important;
+  box-sizing: border-box !important;
+  cursor: auto !important;
+}
+#recall-clipper-ui.rc-docked-bottom { top: auto !important; bottom: 12px !important; }
+#recall-clipper-ui * { box-sizing: border-box !important; }
+
+#recall-clipper-ui .rc-bar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-wrap: wrap !important;
+  background: #0a0f10 !important;
+  border: 1px solid #1e2b2b !important;
+  border-radius: 12px !important;
+  padding: 8px 10px !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+}
+#recall-clipper-ui .rc-logo {
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  color: #27e0d0 !important;
+  cursor: grab !important;
+  user-select: none !important;
+  white-space: nowrap !important;
+}
+#recall-clipper-ui .rc-modes, #recall-clipper-ui .rc-tabs { display: inline-flex !important; gap: 4px !important; }
+#recall-clipper-ui .rc-count {
+  font-size: 12px !important;
+  color: #9fb3b3 !important;
+  white-space: nowrap !important;
+  margin-left: 2px !important;
+}
+#recall-clipper-ui .rc-tables {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  font-size: 12px !important;
+  color: #9fb3b3 !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+#recall-clipper-ui .rc-tables select {
+  font-family: inherit !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  color: #dceeee !important;
+  background: #14201f !important;
+  border: 1px solid #26403e !important;
+  border-radius: 8px !important;
+  padding: 6px 8px !important;
+  cursor: pointer !important;
+  appearance: auto !important;
+}
+#recall-clipper-ui .rc-tables select:hover { border-color: #35605c !important; }
+#recall-clipper-ui .rc-tables select:focus-visible { outline: 2px solid #27e0d0 !important; outline-offset: 1px !important; }
+/* Forced away from Auto — flag it, since it silently changes every clip. */
+#recall-clipper-ui .rc-tables select:not([data-auto]) {
+  border-color: #27e0d0 !important;
+  color: #27e0d0 !important;
+}
+
+#recall-clipper-ui .rc-actions { display: inline-flex !important; gap: 6px !important; margin-left: auto !important; }
+
+#recall-clipper-ui button {
+  font-family: inherit !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  color: #dceeee !important;
+  background: #14201f !important;
+  border: 1px solid #26403e !important;
+  border-radius: 8px !important;
+  padding: 7px 10px !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  transition: background .12s, border-color .12s !important;
+}
+#recall-clipper-ui button:hover { background: #1c2c2b !important; border-color: #35605c !important; }
+#recall-clipper-ui .rc-mode.is-active, #recall-clipper-ui .rc-tab.is-active {
+  background: #123330 !important;
+  border-color: #27e0d0 !important;
+  color: #27e0d0 !important;
+}
+#recall-clipper-ui[data-mode="remove"] .rc-mode[data-mode="remove"].is-active {
+  background: #331313 !important;
+  border-color: #ff6b6b !important;
+  color: #ff9c9c !important;
+}
+#recall-clipper-ui .rc-primary {
+  background: #27e0d0 !important;
+  border-color: #27e0d0 !important;
+  color: #04211f !important;
+  font-weight: 700 !important;
+}
+#recall-clipper-ui .rc-primary:hover { background: #4fe9dc !important; }
+#recall-clipper-ui .rc-toggle[aria-pressed="true"] {
+  background: #123330 !important;
+  border-color: #27e0d0 !important;
+  color: #27e0d0 !important;
+  font-weight: 700 !important;
+}
+#recall-clipper-ui .rc-close { padding: 7px 9px !important; }
+
+#recall-clipper-ui .rc-hint {
+  font-size: 11px !important;
+  color: #7d9494 !important;
+  background: #0a0f10 !important;
+  border: 1px solid #1e2b2b !important;
+  border-top: none !important;
+  border-radius: 0 0 10px 10px !important;
+  margin: -2px 8px 0 8px !important;
+  padding: 5px 10px !important;
+}
+#recall-clipper-ui .rc-hint b { color: #a9c4c4 !important; }
+
+/* ---- Preview panel ---- */
+#recall-clipper-ui .rc-panel {
+  margin-top: 8px !important;
+  background: #0a0f10 !important;
+  border: 1px solid #1e2b2b !important;
+  border-radius: 12px !important;
+  padding: 8px !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+}
+#recall-clipper-ui .rc-panel-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin-bottom: 8px !important;
+}
+#recall-clipper-ui .rc-panel-head [data-chars] {
+  font-size: 11px !important;
+  color: #7d9494 !important;
+  margin-left: auto !important;
+}
+#recall-clipper-ui .rc-render {
+  height: 300px !important;
+  overflow: auto !important;
+  background: #050809 !important;
+  border: 1px solid #1e2b2b !important;
+  border-radius: 8px !important;
+  padding: 12px 14px !important;
+  font-size: 14px !important;
+  line-height: 1.55 !important;
+  color: #e7f4f4 !important;
+}
+#recall-clipper-ui .rc-raw {
+  width: 100% !important;
+  height: 300px !important;
+  resize: vertical !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  color: #e7f4f4 !important;
+  background: #050809 !important;
+  border: 1px solid #1e2b2b !important;
+  border-radius: 8px !important;
+  padding: 10px !important;
+  white-space: pre !important;
+}
+#recall-clipper-ui .rc-note {
+  font-size: 11px !important;
+  color: #7d9494 !important;
+  margin-top: 6px !important;
+}
+#recall-clipper-ui .rc-note code {
+  background: #14201f !important;
+  padding: 1px 4px !important;
+  border-radius: 4px !important;
+}
+
+/* Rendered-markdown typography (scoped so page CSS can't leak in) */
+#recall-clipper-ui .rc-render > *:first-child { margin-top: 0 !important; }
+#recall-clipper-ui .rc-render h1,
+#recall-clipper-ui .rc-render h2,
+#recall-clipper-ui .rc-render h3,
+#recall-clipper-ui .rc-render h4 { color: #f4fbfb !important; line-height: 1.25 !important; margin: 1em 0 .4em !important; font-weight: 700 !important; }
+#recall-clipper-ui .rc-render h1 { font-size: 1.5em !important; }
+#recall-clipper-ui .rc-render h2 { font-size: 1.3em !important; }
+#recall-clipper-ui .rc-render h3 { font-size: 1.12em !important; }
+#recall-clipper-ui .rc-render p,
+#recall-clipper-ui .rc-render ul,
+#recall-clipper-ui .rc-render ol,
+#recall-clipper-ui .rc-render blockquote { margin: 0 0 .7em !important; }
+#recall-clipper-ui .rc-render ul, #recall-clipper-ui .rc-render ol { padding-left: 1.4em !important; }
+#recall-clipper-ui .rc-render li { margin: .2em 0 !important; }
+#recall-clipper-ui .rc-render a { color: #4fe9dc !important; text-decoration: underline !important; }
+#recall-clipper-ui .rc-render strong { color: #fff !important; font-weight: 700 !important; }
+#recall-clipper-ui .rc-render em { font-style: italic !important; }
+#recall-clipper-ui .rc-render del { color: #8fa5a5 !important; }
+#recall-clipper-ui .rc-render code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: .88em !important;
+  background: #14201f !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+}
+#recall-clipper-ui .rc-render pre {
+  background: #0c1413 !important;
+  border: 1px solid #1e2b2b !important;
+  border-radius: 8px !important;
+  padding: 10px 12px !important;
+  overflow: auto !important;
+  margin: 0 0 .7em !important;
+}
+#recall-clipper-ui .rc-render pre code { background: none !important; padding: 0 !important; }
+#recall-clipper-ui .rc-render blockquote {
+  border-left: 3px solid #26403e !important;
+  padding-left: 12px !important;
+  color: #b7cccc !important;
+}
+#recall-clipper-ui .rc-render img { max-width: 100% !important; height: auto !important; border-radius: 6px !important; }
+#recall-clipper-ui .rc-render hr { border: none !important; border-top: 1px solid #1e2b2b !important; margin: 1em 0 !important; }
+#recall-clipper-ui .rc-render table { border-collapse: collapse !important; width: auto !important; margin: 0 0 .7em !important; display: block !important; overflow: auto !important; }
+#recall-clipper-ui .rc-render th, #recall-clipper-ui .rc-render td {
+  border: 1px solid #26403e !important;
+  padding: 5px 9px !important;
+  text-align: left !important;
+}
+#recall-clipper-ui .rc-render th { background: #123330 !important; color: #d8f7f3 !important; }
+
+#recall-clipper-ui .rc-toast {
+  margin-top: 8px !important;
+  font-size: 12px !important;
+  text-align: center !important;
+  padding: 8px 12px !important;
+  border-radius: 10px !important;
+  background: #123330 !important;
+  color: #d8f7f3 !important;
+  border: 1px solid #27e0d0 !important;
+}
+#recall-clipper-ui .rc-toast[data-ok="0"] {
+  background: #331313 !important;
+  border-color: #ff6b6b !important;
+  color: #ffdede !important;
+}
+
+/* --- Full-parity render constructs (match a Recall deck) ------------------ */
+#recall-clipper-ui .rc-rendering {
+  color: #7d9494 !important;
+  font-size: 13px !important;
+  padding: 4px 2px !important;
+}
+
+/* Cloze blanks: a redaction bar that reveals its text on tap. */
+#recall-clipper-ui .rc-render .cloze {
+  background: #26403e !important;
+  color: transparent !important;
+  border-radius: 4px !important;
+  padding: 0 4px !important;
+  cursor: pointer !important;
+  box-shadow: inset 0 0 0 1px #34524f !important;
+}
+#recall-clipper-ui .rc-render .cloze.is-revealed {
+  background: #123330 !important;
+  color: #7ff0e4 !important;
+}
+
+/* Display math: centered, horizontally scrollable when wide. */
+#recall-clipper-ui .rc-render .math-display,
+#recall-clipper-ui .rc-render .katex-display {
+  display: block !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  text-align: center !important;
+  margin: .8em 0 !important;
+}
+#recall-clipper-ui .rc-render .katex { color: #eafcfb !important; }
+
+/* Code-language badge (Recall shows the language in the block's corner). */
+#recall-clipper-ui .rc-render pre.has-code-language {
+  position: relative !important;
+  padding-top: 24px !important;
+}
+#recall-clipper-ui .rc-render pre.has-code-language::before {
+  content: attr(data-language) !important;
+  position: absolute !important;
+  top: 6px !important;
+  right: 10px !important;
+  font-size: 10px !important;
+  letter-spacing: .06em !important;
+  color: #6f8a8a !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+/* Diagrams render dark-on-light, so give them a light surface to sit on. */
+#recall-clipper-ui .rc-render .mermaid,
+#recall-clipper-ui .rc-render .nomnoml-diagram {
+  background: #f6f8f7 !important;
+  border: 1px solid #26403e !important;
+  border-radius: 8px !important;
+  padding: 10px !important;
+  margin: 0 0 .7em !important;
+  text-align: center !important;
+  overflow: auto !important;
+}
+#recall-clipper-ui .rc-render .mermaid svg,
+#recall-clipper-ui .rc-render .nomnoml-diagram svg { max-width: 100% !important; height: auto !important; }
+
+/* Side-by-side image rows (`![](a) | ![](b)`). */
+#recall-clipper-ui .rc-render .notes-img-row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  align-items: flex-start !important;
+  margin: 0 0 .7em !important;
+}
+#recall-clipper-ui .rc-render .notes-img-row img { flex: 1 1 0 !important; min-width: 0 !important; }

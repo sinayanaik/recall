@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Recall Clipper",
+  "version": "1.0.0",
+  "description": "Select or trim any part of a web page and copy it as clean GFM Markdown — ready to paste into a Recall deck's Study Notes.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Recall Clipper — click, then pick content to copy as Markdown",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["vendor/katex/fonts/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "commands": {
+    "toggle-clipper": {
+      "suggested_key": {
+        "default": "Alt+Shift+M"
+      },
+      "description": "Toggle Recall Clipper on the current page"
+    }
+  }
+}
