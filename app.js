@@ -8518,12 +8518,28 @@ function findInlineDollarClose(source, start) {
 function healEscapedTex(tex) {
   if (!tex.includes("\\")) return tex;
 
-  // 1. "\\" followed by a LETTER. A real "\\" is a line break, always followed
-  //    by whitespace, "[" or end of line — never by a command name. So this
-  //    span went through an escaper, which doubled EVERY backslash in it. That
-  //    makes the inverse exact: "\\" is one original backslash, and a lone "\"
-  //    can only be one the escaper inserted.
-  if (/\\\\[a-zA-Z]/.test(tex)) {
+  // A command written with ONE backslash. Its presence is proof the span was
+  // not run through an escaper: an escaper doubles every backslash without
+  // exception, so a surviving single one means nothing was doubled.
+  //
+  // This guard is what makes test 1 safe. Test 1's premise — "a real \\ is a
+  // line break, always followed by whitespace, [ or end of line, never by a
+  // command name" — is not true inside an environment, where \\ ends a row and
+  // is followed directly by the next row's content:
+  //
+  //     {\begin{aligned}E_{\text{rel}}^{2}&=m_{0}^{2}c^{4}\\E_{\text{rel}}…
+  //                                                       ^^ then a letter
+  //
+  // Wikipedia writes every multi-line equation that way, and pasting one used
+  // to halve every backslash in it — "\begin{aligned}" became "begin{aligned}"
+  // and the formula was destroyed rather than repaired.
+  const hasSingleBackslashCommand = /(^|[^\\])\\[a-zA-Z]/.test(tex);
+
+  // 1. "\\" followed by a LETTER, and no single-backslash command anywhere. Then
+  //    this span went through an escaper, which doubled EVERY backslash in it.
+  //    That makes the inverse exact: "\\" is one original backslash, and a lone
+  //    "\" can only be one the escaper inserted.
+  if (!hasSingleBackslashCommand && /\\\\[a-zA-Z]/.test(tex)) {
     let output = "";
     for (let index = 0; index < tex.length; index += 1) {
       if (tex[index] !== "\\") {
@@ -8541,7 +8557,7 @@ function healEscapedTex(tex) {
   //    front of punctuation only Markdown escapes can only have come from an
   //    escaper. This is the "P(x\_k | x\_{k-1}, u\_k)" case: subscripts
   //    escaped, with no "\\int" alongside them to give it away.
-  if (/\\[a-zA-Z]/.test(tex)) return tex;
+  if (hasSingleBackslashCommand || /\\[a-zA-Z]/.test(tex)) return tex;
   return tex.replace(/\\([_*[\]+=.>~#`-])/g, "$1");
 }
 

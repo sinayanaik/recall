@@ -9,6 +9,7 @@
 //   turndownPluginGfm   (vendor/turndown-plugin-gfm.js)
 //   marked              (vendor/marked.min.js)          — for the rendered preview
 //   DOMPurify           (vendor/purify.min.js)          — sanitises that preview
+//   window.__recallMath (content/recall-math.js)        — math capture, ported from app.js
 (function () {
   "use strict";
 
@@ -31,10 +32,6 @@
   // State
   // ---------------------------------------------------------------------------
   let mode = "select";                 // "select" (keep) | "remove" (trim)
-  // How tables are clipped. "auto" keeps grid-shaped tables as Markdown and
-  // falls back to HTML only for the ones Markdown can't hold (spans, nesting);
-  // "html" and "md" force one or the other. See the Tables section below.
-  let tableMode = "auto";              // "auto" | "html" | "md"
   const kept = new Map();              // Element -> overlay box
   // Remove now genuinely deletes elements from the live page. Each removed
   // element maps to its saved inline `display` so we can put it back exactly.
@@ -45,6 +42,8 @@
   let isolateOn = false;
   let hoverEl = null;
   let rafId = 0;
+  // How the last clip's math went: { captured, missed }, so the toast can say.
+  let lastMath = { captured: 0, missed: 0 };
 
   // ---------------------------------------------------------------------------
   // Overlay layer — every selection mark is a floating box that we re-glue to
@@ -140,13 +139,25 @@
   // / close. The live page is therefore only ever changed while the tool is on.
   // ---------------------------------------------------------------------------
   function savedDisplay(el) {
-    return { value: el.style.getPropertyValue("display"), priority: el.style.getPropertyPriority("display") };
+    return {
+      value: el.style.getPropertyValue("display"),
+      priority: el.style.getPropertyPriority("display"),
+      // Whether the element had a style attribute AT ALL, which is not the same
+      // question as what its display was — see restoreLive.
+      hadStyleAttr: el.hasAttribute("style")
+    };
   }
   function hideLive(el) { el.style.setProperty("display", "none", "important"); }
   function restoreLive(el, saved) {
     if (!saved) return;
     if (saved.value) el.style.setProperty("display", saved.value, saved.priority);
     else el.style.removeProperty("display");
+    // Touching el.style materialises a style attribute on an element that never
+    // had one, and removeProperty leaves it behind empty. Without this, every
+    // block the picker hid keeps a style="" for the rest of the page's life —
+    // visible in devtools, matched by [style] selectors, and a broken promise:
+    // this file's whole contract is that the page is unchanged once we're off.
+    if (!saved.hadStyleAttr && !el.style.length) el.removeAttribute("style");
   }
   function isOurs(el) { return el === ui || el === overlay || (ui.contains && ui.contains(el)) || (overlay.contains && overlay.contains(el)); }
 
@@ -392,9 +403,39 @@
     });
   }
 
+  // Page furniture that is never the article: only ever stripped on the
+  // "remaining" path, where the whole <body> is being clipped because the user
+  // deleted the parts they didn't want. On the picked/selection paths the user's
+  // choice is authoritative and nothing structural is second-guessed.
+  const PAGE_CHROME = [
+    "nav", "header", "footer", "aside",
+    '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]', '[role="complementary"]', '[role="search"]',
+    ".sidebar", ".site-header", ".site-footer", ".site-nav", ".navbar", ".menu",
+    ".comments", ".comment-list", ".related", ".related-posts", ".breadcrumb", ".breadcrumbs",
+    ".cookie-banner", ".newsletter", ".share", ".social-share", ".advertisement", ".ad"
+  ].join(",");
+
+  function stripPageChrome(root) {
+    root.querySelectorAll(PAGE_CHROME).forEach((el) => {
+      // A <header> is also what an <article> puts its title in, and plenty of
+      // sites wrap the whole post in a <section> with a .menu somewhere inside.
+      // Only drop a branch that carries no substantial prose of its own.
+      if ((el.textContent || "").trim().length > 600) return;
+      if (el.querySelector("pre, table, figure")) return;
+      el.remove();
+    });
+  }
+
   // Remove image-expand affordance text/buttons from a (cloned) subtree without
   // touching legitimate captions or the images themselves.
+  //
+  // extractPageMath runs FIRST and is not optional: KaTeX, MathJax and
+  // Wikipedia all keep the formula's real LaTeX in a `display:none` subtree
+  // (Wikipedia's is `<span class="mwe-math-mathml-inline" style="display:none">`),
+  // which stripHidden — two lines below — would otherwise delete, leaving only
+  // the fallback image for smartImages to turn into `![{\displaystyle …}](…svg)`.
   function scrubNoise(root) {
+    if (window.__recallMath) lastMath = window.__recallMath.extractPageMath(root);
     stripAnchors(root);
     stripHidden(root);
     absolutizeUrls(root);
@@ -510,14 +551,57 @@
   // into a deck. Resolve them against the source document while we still know
   // what it was.
   // ---------------------------------------------------------------------------
+  // A `src` that is really a placeholder, not the picture. Lazy-loading widgets
+  // park a tiny inline image in `src` and keep the real URL in a data-attribute
+  // or srcset; the old test only knew the GIF and SVG spellings, so Medium and
+  // Substack's 1×1 transparent PNG sailed through and the article's images all
+  // came out blank. Any data: URI short enough to be a spacer is one.
+  function isPlaceholderSrc(url) {
+    if (!url) return true;
+    if (!/^data:/i.test(url)) return false;
+    return url.length < 2048;
+  }
+
+  // The widest candidate in a srcset ("a.jpg 400w, b.jpg 1200w" → b.jpg).
+  function widestFromSrcset(srcset) {
+    const candidates = String(srcset || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [url, descriptor = ""] = part.split(/\s+/);
+        const width = /^(\d+)w$/.exec(descriptor);
+        const density = /^([\d.]+)x$/.exec(descriptor);
+        return { url, weight: width ? Number(width[1]) : density ? Number(density[1]) * 1000 : 1 };
+      })
+      .filter((c) => c.url);
+    if (!candidates.length) return "";
+    return candidates.reduce((best, c) => (c.weight > best.weight ? c : best)).url;
+  }
+
+  const LAZY_ATTRS = ["data-src", "data-original", "data-lazy-src", "data-actualsrc", "data-hi-res-src", "data-full-src"];
+
   function bestImageUrl(img) {
     const src = img.getAttribute("src") || "";
-    const lazy = img.getAttribute("data-src") || img.getAttribute("data-original") ||
-      img.getAttribute("data-lazy-src") || "";
-    let url = src;
-    if (!url || /^data:image\/(gif|svg)/i.test(url) || url.startsWith("data:,")) url = lazy || src;
-    if (!url && img.getAttribute("srcset")) url = img.getAttribute("srcset").split(",")[0].trim().split(" ")[0];
-    return url;
+    if (!isPlaceholderSrc(src)) return src;
+
+    for (const attr of LAZY_ATTRS) {
+      const value = img.getAttribute(attr);
+      if (value && !isPlaceholderSrc(value)) return value;
+    }
+    const fromSrcset = widestFromSrcset(img.getAttribute("srcset") || img.getAttribute("data-srcset"));
+    if (fromSrcset && !isPlaceholderSrc(fromSrcset)) return fromSrcset;
+
+    // <picture><source srcset="…"><img src="placeholder"> — the <img> carries
+    // nothing usable and the real candidates live on its sibling <source>s.
+    const picture = img.closest && img.closest("picture");
+    if (picture) {
+      for (const source of Array.from(picture.querySelectorAll("source"))) {
+        const candidate = widestFromSrcset(source.getAttribute("srcset") || source.getAttribute("data-srcset"));
+        if (candidate && !isPlaceholderSrc(candidate)) return candidate;
+      }
+    }
+    return src;
   }
   function absoluteUrl(url) {
     if (!url || /^(?:data|blob):/i.test(url)) return url;
@@ -551,6 +635,15 @@
   // stay clean Markdown; the ones that don't are emitted as sanitised inline
   // HTML, which marked passes through untouched and Recall's DOMPurify allow-list
   // already covers — spans, nesting and all.
+  //
+  // This used to be a three-way user choice (Auto / HTML / Markdown). It isn't
+  // one any more, because the two forced modes were both lossy in ways the user
+  // had no way to see: "Markdown" flattened every table through a grid that
+  // dropped <caption> outright and folded a nested table into a single cell,
+  // and "HTML" turned even a plain two-column table into a wall of raw markup.
+  // The capability test below decides per table, which is what "Auto" was
+  // always trying to do — it just needed to be right more often (see
+  // promoteHeaderRow) rather than to have an escape hatch bolted beside it.
   // ---------------------------------------------------------------------------
   function spanOf(cell, name) {
     const n = parseInt(cell.getAttribute(name) || "1", 10);
@@ -572,78 +665,61 @@
     return Array.prototype.every.call(tr.childNodes, (n) => n.nodeName === "TH");
   }
 
+  // Most tables on the open web have no <thead> at all — they open with a plain
+  // <tr> of <td>s that is visually the header and semantically nothing. The GFM
+  // plugin refuses those outright, so every ordinary blog table used to leave
+  // here as raw HTML. If the shape is otherwise a clean grid, promote that first
+  // row to <th> (on the detached clone — the live page is never touched) and it
+  // becomes a proper Markdown table.
+  //
+  // Only when the first row genuinely reads as a header: short, non-empty,
+  // distinct cells. A data row promoted by mistake is silently deleted content,
+  // because a GFM header is not a row you can see.
+  function canPromoteHeaderRow(table) {
+    const tr = table.rows && table.rows[0];
+    if (!tr || !tr.cells.length || table.rows.length < 2) return false;
+    const cells = Array.from(tr.cells);
+    if (cells.some((cell) => cell.querySelector("p, div, ul, ol, table, pre, img"))) return false;
+    const texts = cells.map((cell) => (cell.textContent || "").trim());
+    if (texts.some((t) => !t || t.length > 60)) return false;
+    return new Set(texts).size === texts.length;
+  }
+
+  function promoteHeaderRow(table) {
+    const tr = table.rows && table.rows[0];
+    if (!tr) return;
+    const doc = table.ownerDocument;
+    Array.from(tr.cells).forEach((cell) => {
+      if (cell.nodeName === "TH") return;
+      const th = doc.createElement("th");
+      Array.from(cell.attributes).forEach((a) => th.setAttribute(a.name, a.value));
+      while (cell.firstChild) th.appendChild(cell.firstChild);
+      cell.replaceWith(th);
+    });
+    // isHeadingRow also demands the row be the first child of the TABLE or of
+    // the first TBODY; a promoted row inside a later section would still fail.
+    const parent = tr.parentNode;
+    if (parent && parent.nodeName === "TBODY" && parent.previousElementSibling) {
+      const thead = doc.createElement("thead");
+      thead.appendChild(tr);
+      table.insertBefore(thead, table.firstChild);
+    }
+  }
+
   // Can this table survive the round-trip through a Markdown grid?
   function isGridTable(table) {
     if (table.querySelector("table")) return false;                       // nested
     for (const cell of table.querySelectorAll("th,td")) {
       if (spanOf(cell, "colspan") > 1 || spanOf(cell, "rowspan") > 1) return false;
     }
-    return tableHasHeadingRow(table);
+    return tableHasHeadingRow(table) || canPromoteHeaderRow(table);
   }
 
-  // Lay a table out as a rectangular grid, resolving colspan/rowspan into the
-  // slots they actually occupy. grid[r][c] = { cell, primary } — `primary` marks
-  // the one slot that owns the cell's content; the slots a span covers point at
-  // the same cell so nothing is written into them twice.
-  function tableGrid(table) {
-    const grid = [];
-    const at = (r) => (grid[r] || (grid[r] = []));
-    Array.from(table.rows).forEach((tr, r) => {
-      at(r);
-      let c = 0;
-      for (const cell of Array.from(tr.cells)) {
-        while (at(r)[c]) c++;                       // skip slots a rowspan above took
-        const cols = spanOf(cell, "colspan");
-        const rows = spanOf(cell, "rowspan");
-        for (let i = 0; i < rows; i++) {
-          for (let j = 0; j < cols; j++) {
-            at(r + i)[c + j] = { cell, primary: i === 0 && j === 0 };
-          }
-        }
-        c += cols;
-      }
-    });
-    return grid;
-  }
-
-  // Rebuild a table as a plain rectangle: every row the same width, a heading
-  // row guaranteed (the GFM plugin refuses a table without one). Markdown has no
-  // way to say "this cell spans two columns", so a spanned cell's content is
-  // written once and the slots it covered are left empty — every value survives,
-  // but the geometry is an approximation. That's the trade the Markdown mode is.
-  function flattenTable(table) {
-    const grid = tableGrid(table);
-    const width = grid.reduce((max, row) => Math.max(max, row.length), 0);
-    if (!width || !grid.length) return null;
-    const doc = table.ownerDocument;
-    const out = doc.createElement("table");
-    const thead = doc.createElement("thead");
-    const tbody = doc.createElement("tbody");
-    grid.forEach((row, r) => {
-      const tr = doc.createElement("tr");
-      for (let c = 0; c < width; c++) {
-        const slot = row[c];
-        const cell = doc.createElement(r === 0 ? "th" : "td");
-        // Move (not copy) the content: each cell is primary in exactly one slot,
-        // so this runs once per cell and can't duplicate a spanned value.
-        if (slot && slot.primary) {
-          while (slot.cell.firstChild) cell.appendChild(slot.cell.firstChild);
-        }
-        tr.appendChild(cell);
-      }
-      (r === 0 ? thead : tbody).appendChild(tr);
-    });
-    out.appendChild(thead);
-    out.appendChild(tbody);
-    return out;
-  }
-
-  // Innermost first, so a nested table is already a clean grid by the time its
-  // parent lifts it into a cell.
-  function flattenTables(root) {
-    Array.from(root.querySelectorAll("table")).reverse().forEach((table) => {
-      const flat = flattenTable(table);
-      if (flat) table.replaceWith(flat);
+  // Give every Markdown-bound table the heading row the GFM plugin insists on.
+  // Runs on the detached clone, just before conversion.
+  function prepareGridTables(root) {
+    Array.from(root.querySelectorAll("table")).forEach((table) => {
+      if (isGridTable(table) && !tableHasHeadingRow(table)) promoteHeaderRow(table);
     });
   }
 
@@ -654,28 +730,60 @@
     const stats = { html: 0, md: 0 };
     Array.from(root.querySelectorAll("table"))
       .filter((t) => !(t.parentElement && t.parentElement.closest("table")))
-      .forEach((t) => {
-        const asHtml = tableMode === "html" || (tableMode === "auto" && !isGridTable(t));
-        stats[asHtml ? "html" : "md"]++;
-      });
+      .forEach((t) => { stats[isGridTable(t) ? "md" : "html"]++; });
     return stats;
   }
 
   const TABLE_DROP = "script,style,noscript,iframe,canvas,svg,form,button,input,select,textarea,link,meta,object,embed";
-  // Worth carrying into a deck: structure, plus the inline colours an infobox
-  // paints its title bars with. Everything else (class, id, data-*, the page's
-  // own JS hooks) is meaningless once the table is separated from its site.
+  // Worth carrying into a deck: structure. Everything else (class, id, data-*,
+  // the page's own JS hooks) is meaningless once the table is separated from
+  // its site.
   const TABLE_ATTR = /^(?:colspan|rowspan|scope|align|valign|style|alt|title|href|src)$/i;
+  // …and `style` only for the properties that describe the table's shape. The
+  // rest is the site's paint job: a table clipped from a dark-themed page
+  // carried `color:#fff; background:#111` into a deck and rendered as white text
+  // on Recall's white page — invisible, with no way to tell it apart from a
+  // failed clip. Recall themes its own tables in both light and dark, so the
+  // source's colours are not just unhelpful, they're actively wrong.
+  const TABLE_STYLE_KEEP = /^(?:text-align|vertical-align|width)$/i;
+
+  function filterTableStyle(value) {
+    return String(value || "")
+      .split(";")
+      .map((decl) => decl.trim())
+      .filter(Boolean)
+      .filter((decl) => TABLE_STYLE_KEEP.test(decl.split(":")[0].trim()))
+      .join("; ");
+  }
 
   function serializeTable(table) {
     const clone = table.cloneNode(true);
     clone.querySelectorAll(TABLE_DROP).forEach((n) => n.remove());
+    // This path emits raw HTML, so Turndown's rules never see inside it — the
+    // citation and anchor cleanup that runs everywhere else has to be applied
+    // here by hand, or a clipped infobox keeps every dead "#cite_note-6" link
+    // and its bracket spans while the prose around it comes out clean.
+    stripAnchors(clone);
+    clone.querySelectorAll("sup").forEach((sup) => {
+      const link = sup.querySelector("a[href*='#']");
+      const text = citationText(link && isCitationLink(link) ? link : sup);
+      if (!CITE_TEXT.test(text)) return;
+      sup.replaceWith(sup.ownerDocument.createTextNode(normalizeCite(text)));
+    });
+    clone.querySelectorAll("a[href]").forEach((a) => {
+      if (isCitationLink(a)) a.replaceWith(a.ownerDocument.createTextNode(normalizeCite(citationText(a))));
+    });
     // The <table> itself included — querySelectorAll("*") only sees descendants,
     // which would leave the page's own class/id hooks on the root element.
     [clone, ...clone.querySelectorAll("*")].forEach((el) => {
       Array.from(el.attributes).forEach((a) => {
         if (!TABLE_ATTR.test(a.name)) el.removeAttribute(a.name);
       });
+      if (el.hasAttribute("style")) {
+        const kept = filterTableStyle(el.getAttribute("style"));
+        if (kept) el.setAttribute("style", kept);
+        else el.removeAttribute("style");
+      }
     });
     // Emit as a single line: marked ends an HTML block at the first blank line,
     // and one inside the table would spill the remainder back out as escaped
@@ -693,6 +801,8 @@
     return "`".repeat(n);
   }
 
+  const RAW_MATH_ATTR = (window.__recallMath && window.__recallMath.RAW_MATH_ATTR) || "data-recall-raw-math";
+
   function buildTurndown() {
     const td = new TurndownService({
       headingStyle: "atx", hr: "---", bulletListMarker: "-",
@@ -702,11 +812,48 @@
     if (typeof turndownPluginGfm !== "undefined" && turndownPluginGfm.gfm) {
       td.use(turndownPluginGfm.gfm); // tables, strikethrough, task lists
     }
+
+    // Turndown escapes every literal "[" and "]" so a bracket can never be
+    // re-read as link syntax. That is one bracket too many here: "\[…\]" is also
+    // KaTeX's display-math delimiter, so clipped prose like "[citation needed]"
+    // came out escaped and then RENDERED AS MATH in the deck. Only a pair
+    // immediately followed by "(" actually needs the escape. Same override
+    // Recall's own paste handler installs.
+    if (window.__recallMath) {
+      const escapeMarkdown = td.escape.bind(td);
+      td.escape = (string) => window.__recallMath.relaxEscapedBrackets(escapeMarkdown(string));
+    }
     // The GFM plugin emits single-tilde strikethrough (~x~); Recall's Markdown
     // renderer (marked) only recognises the double-tilde form, so override it.
     td.addRule("strikethrough", {
       filter: ["del", "s", "strike"],
       replacement: (content) => `~~${content}~~`
+    });
+
+    // Markdown has no superscript or subscript, and Turndown's default is to
+    // drop the tag and keep the text — so "x<sup>2</sup>" arrived as "x2" and
+    // "H<sub>2</sub>O" as "H2O", which is not a formatting loss but a factual
+    // one. Recall's sanitiser allows both tags, so emit them as raw HTML.
+    // Registered BEFORE citationSup: Turndown consults added rules
+    // most-recently-added first, so the narrower citation rule still wins on the
+    // <sup>s that are really footnote markers.
+    // Emitted from textContent, not from the converted content: Recall's
+    // renderer isn't guaranteed to re-parse Markdown nested inside an inline
+    // HTML tag, so a link or bold run inside a <sup> would arrive as its own
+    // source text. Same trade app.js makes.
+    td.addRule("keepSup", {
+      filter: "sup",
+      replacement: (_c, node) => {
+        const text = (node.textContent || "").trim();
+        return text ? `<sup>${escapeInlineHtml(text)}</sup>` : "";
+      }
+    });
+    td.addRule("keepSub", {
+      filter: "sub",
+      replacement: (_c, node) => {
+        const text = (node.textContent || "").trim();
+        return text ? `<sub>${escapeInlineHtml(text)}</sub>` : "";
+      }
     });
 
     // Citation / footnote markers → clean, unescaped inline `[n]`, no dead
@@ -738,21 +885,27 @@
       }
     });
 
-    // Tables → sanitised inline HTML: all of them under "html", and under "auto"
-    // only the ones the Markdown grid can't hold. Under "md" the rule is left off
-    // entirely and flattenTables (in convert) has already reshaped every table
-    // into a grid the GFM plugin can take. Registered after the GFM plugin so it
-    // wins over both its table rule and its raw-HTML `keep` fallback (Turndown
-    // checks added rules before kept ones, most-recently-added first).
-    if (tableMode !== "md") {
-      td.addRule("complexTable", {
-        filter: (node) => node.nodeName === "TABLE" &&
-          (tableMode === "html" || !isGridTable(node)),
-        replacement: (_c, node) => serializeTable(node)
-      });
-    }
+    // Tables the Markdown grid can't hold → sanitised inline HTML. Registered
+    // after the GFM plugin so it wins over both its table rule and its raw-HTML
+    // `keep` fallback (Turndown checks added rules before kept ones,
+    // most-recently-added first).
+    td.addRule("complexTable", {
+      filter: (node) => node.nodeName === "TABLE" && !isGridTable(node),
+      replacement: (_c, node) => serializeTable(node)
+    });
 
-    td.remove(["script", "style", "noscript", "iframe", "canvas", "svg", "form", "button", "input", "select", "textarea"]);
+    td.remove(["script", "style", "noscript", "canvas", "svg", "form", "button", "input", "select", "textarea"]);
+
+    // <math> can't go in the list above: Turndown's remove() compares an
+    // uppercased tag name against node.nodeName, and a MathML element's
+    // nodeName keeps its lowercase qualified name — so "MATH" never matches and
+    // the element would fall through to the default handler, which prints its
+    // leaf text ("x2"). extractPageMath has normally claimed every one already;
+    // this catches whatever it declined.
+    td.addRule("dropMathML", {
+      filter: (node) => node.localName === "math",
+      replacement: () => ""
+    });
 
     // Fence every <pre> as a code block — including Medium's, which wrap code in
     // bare spans (no <code> child), so Turndown's built-in rule misses them and
@@ -769,19 +922,24 @@
       }
     });
 
+    // extractPageMath normally claims KaTeX before Turndown ever sees it; these
+    // remain for anything it missed. They fall back to `content` rather than to
+    // "" — KaTeX built with `output:"html"` emits no MathML annotation at all,
+    // and returning "" there silently DELETED the equation instead of leaving
+    // the rendered glyphs behind.
     td.addRule("katexDisplay", {
       filter: (node) => node.nodeType === 1 && node.classList && node.classList.contains("katex-display"),
-      replacement: (_c, node) => {
+      replacement: (content, node) => {
         const tex = node.querySelector('annotation[encoding="application/x-tex"]');
-        return tex ? `\n\n$$\n${tex.textContent.trim()}\n$$\n\n` : "";
+        return tex ? `\n\n$$\n${tex.textContent.trim()}\n$$\n\n` : content;
       }
     });
     td.addRule("katexInline", {
       filter: (node) => node.nodeType === 1 && node.classList && node.classList.contains("katex")
         && !(node.parentNode && node.parentNode.classList && node.parentNode.classList.contains("katex-display")),
-      replacement: (_c, node) => {
+      replacement: (content, node) => {
         const tex = node.querySelector('annotation[encoding="application/x-tex"]');
-        return tex ? `$${tex.textContent.trim()}$` : "";
+        return tex ? `$${tex.textContent.trim()}$` : content;
       }
     });
     td.addRule("smartImages", {
@@ -795,7 +953,291 @@
         return `![${alt}](${url})`;
       }
     });
+
+    // A <figure> is an image and the caption that belongs to it. Turndown emits
+    // the caption as an unremarkable paragraph, so a page with a dozen figures
+    // becomes a dozen images each trailed by an orphan sentence. Italicise it,
+    // which is how a caption reads as a caption in a deck.
+    td.addRule("figcaption", {
+      filter: "figcaption",
+      replacement: (content) => {
+        const text = content.replace(/\s+/g, " ").trim();
+        return text ? `\n\n*${text}*\n\n` : "";
+      }
+    });
+
+    // Inline formatting Recall's sanitiser allows and Turndown otherwise throws
+    // away. <mark> in particular is Recall's own highlight syntax, so a page's
+    // highlights survive as highlights instead of as unremarkable prose.
+    td.addRule("keepMark", {
+      filter: "mark",
+      replacement: (content, node) => {
+        if (!content.trim()) return content;
+        const color = markColorName(node);
+        return color ? `<mark data-color="${color}">${content}</mark>` : `<mark>${content}</mark>`;
+      }
+    });
+    [["u", "U"], ["kbd", "KBD"], ["ins", "INS"]].forEach(([tag, nodeName]) => {
+      td.addRule(`keep-${tag}`, {
+        filter: (node) => node.nodeName === nodeName,
+        replacement: (content) => (content.trim() ? `<${tag}>${content}</${tag}>` : content)
+      });
+    });
+    // An <abbr>'s whole value is the title nobody can hover in a deck.
+    td.addRule("abbrTitle", {
+      filter: (node) => node.nodeName === "ABBR" && (node.getAttribute("title") || "").trim(),
+      replacement: (content, node) => `${content} (${node.getAttribute("title").trim()})`
+    });
+
+    // <details>/<summary> is a disclosure widget, and Recall's importer reads
+    // that exact markup as explicit FLASHCARD syntax — clipping an FAQ page
+    // would offer to shred it into question/answer cards instead of keeping it
+    // as notes. So flatten it deliberately: the summary becomes a bold lead-in
+    // and the body follows as ordinary prose.
+    td.addRule("disclosureSummary", {
+      filter: "summary",
+      replacement: (content) => {
+        const text = content.replace(/\s+/g, " ").trim();
+        return text ? `\n\n**${text}**\n\n` : "";
+      }
+    });
+    td.addRule("disclosure", {
+      filter: "details",
+      replacement: (content) => {
+        const body = content.trim();
+        return body ? `\n\n${body}\n\n` : "";
+      }
+    });
+
+    // Docs-site callouts (MkDocs, Docusaurus, Bootstrap alerts, GitHub-style
+    // notes). Without a rule the label — "Warning", "Note" — becomes a stray
+    // sentence and the box reads as an unremarkable paragraph. A blockquote is
+    // the nearest thing Markdown has, and Recall renders it as one.
+    const CALLOUT_SEL = ".admonition, .alert, .callout, .notice, .note-block, [role='note']";
+    // Its label lives in a child of its own; bolding it here is what keeps
+    // "Warning" reading as the callout's kind rather than as its first sentence.
+    // Deliberately NOT part of CALLOUT_SEL — matching the title as a callout in
+    // its own right made the container fail its own no-nested-callout guard, so
+    // only the label was quoted and the body escaped the blockquote entirely.
+    const CALLOUT_TITLE_SEL = ".admonition-title, .callout-title, .alert-heading, .notice-title, .admonition-heading";
+    td.addRule("calloutTitle", {
+      filter: (node) => node.nodeType === 1 && node.matches && node.matches(CALLOUT_TITLE_SEL),
+      replacement: (content) => {
+        const text = content.replace(/\s+/g, " ").trim();
+        return text ? `\n\n**${text}**\n\n` : "";
+      }
+    });
+    td.addRule("callout", {
+      filter: (node) =>
+        node.nodeType === 1 && node.matches && node.matches(CALLOUT_SEL) &&
+        !node.querySelector(CALLOUT_SEL) && (node.textContent || "").trim().length > 0,
+      replacement: (content) => {
+        const body = content.trim().replace(/\n{3,}/g, "\n\n");
+        if (!body) return "";
+        return `\n\n${body.split("\n").map((line) => `> ${line}`.trimEnd()).join("\n")}\n\n`;
+      }
+    });
+
+    // SPA docs and design-system sites routinely build headings out of divs with
+    // an ARIA role. Without this the clip has no heading structure at all — and
+    // Recall's notes view promotes the shallowest heading to <h1>, so losing
+    // them costs the whole outline and the table of contents with it.
+    td.addRule("ariaHeading", {
+      filter: (node) => node.nodeType === 1 && node.getAttribute &&
+        node.getAttribute("role") === "heading" && !/^H[1-6]$/.test(node.nodeName),
+      replacement: (content, node) => {
+        const level = Math.min(6, Math.max(1, parseInt(node.getAttribute("aria-level") || "2", 10) || 2));
+        const text = content.replace(/\s+/g, " ").trim();
+        return text ? `\n\n${"#".repeat(level)} ${text}\n\n` : "";
+      }
+    });
+
+    // Definition lists — API references, glossaries, spec pages. Turndown has no
+    // rule, so <dt> and <dd> ran together into one unreadable paragraph. Markdown
+    // has no definition list either; a bullet per term is the honest equivalent.
+    td.addRule("definitionTerm", {
+      filter: "dt",
+      replacement: (content) => {
+        const text = content.replace(/\s*\n\s*/g, " ").trim();
+        return text ? `\n- **${text}**` : "";
+      }
+    });
+    td.addRule("definitionDesc", {
+      filter: "dd",
+      replacement: (content, node) => {
+        // A <dd> with no <dt> above it isn't a definition — it's the indentation
+        // trick MediaWiki uses for a centred display equation, and dozens of
+        // other sites use for a pull-quote. Gluing an em dash to the front of
+        // one turns a formula into "— $$…$$".
+        if (!hasDefinitionTerm(node)) return `\n\n${content.trim()}\n\n`;
+        const text = content.replace(/\s*\n\s*/g, " ").trim();
+        return text ? ` — ${text}` : "";
+      }
+    });
+    td.addRule("definitionList", {
+      filter: "dl",
+      replacement: (content, node) => {
+        const body = node.querySelector("dt")
+          ? content.replace(/\n{2,}/g, "\n").trim()   // a real list: one line per term
+          : content.trim();                            // an indent wrapper: leave its blocks alone
+        return body ? `\n\n${body}\n\n` : "";
+      }
+    });
+
+    // Embeds are removed by the sanitiser on both sides, but silently: a clipped
+    // tutorial lost every video with no trace that one had been there. Leave the
+    // link behind so the reference survives.
+    td.addRule("embedLink", {
+      filter: (node) => node.nodeName === "IFRAME",
+      replacement: (_c, node) => {
+        const src = absoluteUrl(node.getAttribute("src") || node.getAttribute("data-src") || "");
+        if (!src || /^(?:about:|javascript:)/i.test(src)) return "";
+        const title = (node.getAttribute("title") || "").trim();
+        let label = title;
+        if (!label) {
+          try { label = new URL(src).hostname.replace(/^www\./, ""); } catch (_) { label = "embed"; }
+        }
+        return `\n\n[▶ ${label}](${src})\n\n`;
+      }
+    });
+
+    // Turndown 7.1.2's built-in listItem rule always indents a list item's
+    // second+ line by a hardcoded 4 spaces, regardless of how wide the marker
+    // actually is. That only lines up for a single-digit ordered marker ("1.  "
+    // is 4 chars); a two-digit one ("32.  " is 5 chars) leaves the continuation
+    // one column short of the list's content column. marked/CommonMark then
+    // stops treating it as part of the item — and a bare 4-space-indented line
+    // at that point IS the syntax for an indented code block, so the paragraph
+    // renders as inert grey code. Re-deriving the indent from the actual prefix
+    // width fixes it for every marker size. (Ported from app.js.)
+    td.addRule("list-item-indent-fix", {
+      filter: "li",
+      replacement: (content, node, options) => {
+        content = content.replace(/^\n+/, "").replace(/\n+$/, "\n");
+        let prefix = options.bulletListMarker + "   ";
+        const parent = node.parentNode;
+        if (parent.nodeName === "OL") {
+          const start = parent.getAttribute("start");
+          const index = Array.prototype.indexOf.call(parent.children, node);
+          prefix = (start ? Number(start) + index : index + 1) + ".  ";
+        }
+        content = content.replace(/\n/gm, "\n" + " ".repeat(prefix.length));
+        return prefix + content + (node.nextSibling && !/\n$/.test(content) ? "\n" : "");
+      }
+    });
+
+    // ---- Math ---------------------------------------------------------------
+    // extractPageMath has already replaced every rendered widget, and
+    // protectMathInDom every un-rendered "$…$", with a placeholder span carrying
+    // the finished LaTeX. Emit it exactly as written — a replacement's return
+    // value is never passed through the escaper, which is the whole point.
+    td.addRule("raw-math", {
+      filter: (node) => node.nodeName === "SPAN" && node.hasAttribute && node.hasAttribute(RAW_MATH_ATTR),
+      replacement: (_c, node) => {
+        const tex = node.getAttribute(RAW_MATH_ATTR);
+        const isDisplay = tex.startsWith("$$") || tex.startsWith("\\[");
+        return isDisplay ? `\n\n${tex}\n\n` : tex;
+      }
+    });
+
+    // Safety nets for MathJax islands extractPageMath declined (a container it
+    // could read no source from, or one injected after the clone was taken).
+    // Same two rules Recall's own paste handler uses.
+    td.addRule("mathjax-containers", {
+      filter: (node) =>
+        (node.classList && (node.classList.contains("MathJax") ||
+          node.classList.contains("MathJax_Preview") ||
+          node.classList.contains("MathJax_Display"))) ||
+        node.nodeName === "MJX-CONTAINER",
+      replacement: (_c, node) => {
+        if (node.nodeName === "MJX-CONTAINER") {
+          const copyText = node.querySelector("mjx-copytext");
+          if (copyText) return copyText.textContent.trim();
+        }
+        return "";
+      }
+    });
+    td.addRule("mathjax-script", {
+      filter: (node) => node.nodeName === "SCRIPT" && node.type && node.type.startsWith("math/tex"),
+      replacement: (_c, node) => {
+        const tex = node.textContent.trim();
+        return node.type.includes("mode=display") ? `\n$$\n${tex}\n$$\n` : `$${tex}$`;
+      }
+    });
+
     return td;
+  }
+
+  // Text going straight into a raw HTML tag we emit — it bypasses Turndown's
+  // escaper, so it has to be safe on its own.
+  function escapeInlineHtml(text) {
+    return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Does this <dd>'s list actually define anything, or is <dl> just being used
+  // as an indent wrapper (MediaWiki's display-equation trick)?
+  function hasDefinitionTerm(node) {
+    const list = node.parentElement;
+    return Boolean(list && list.querySelector && list.querySelector("dt"));
+  }
+
+  // A page's <mark> is usually painted with a background colour; map it onto the
+  // nearest of Recall's six named highlight colours so the tint survives, and
+  // fall back to a bare <mark> (Recall's yellow) when it's anything else.
+  //
+  // Matched on HUE, not on RGB distance. A highlight is by definition a pale
+  // wash of a colour, and pale washes are far from their saturated namesake in
+  // RGB — Material's #c8e6c9 is 182 units from Recall's green, further than the
+  // threshold any useful cutoff can sit at, yet nobody would call it anything
+  // but green. Hue ignores how pale it is, which is exactly the property that
+  // shouldn't matter here; the saturation floor is what keeps a grey or white
+  // background from being assigned a colour it doesn't have.
+  const MARK_HUES = { orange: 36, yellow: 54, green: 122, blue: 207, purple: 291, pink: 340 };
+  const MARK_HUE_TOLERANCE = 25;
+  const MARK_MIN_SATURATION = 0.12;
+
+  function markColorName(node) {
+    const raw = (node.getAttribute("data-color") || "").toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(MARK_HUES, raw)) return raw;
+    const style = node.getAttribute("style") || "";
+    const match = /background(?:-color)?\s*:\s*(#[0-9a-f]{3,8}|rgba?\([^)]*\))/i.exec(style);
+    if (!match) return "";
+    const rgb = parseColor(match[1]);
+    if (!rgb) return "";
+    const { hue, saturation } = hsl(rgb);
+    if (saturation < MARK_MIN_SATURATION) return "";
+    let best = "";
+    let bestDistance = Infinity;
+    for (const [name, target] of Object.entries(MARK_HUES)) {
+      const raw = Math.abs(hue - target);
+      const distance = Math.min(raw, 360 - raw);   // hue is a circle
+      if (distance < bestDistance) { bestDistance = distance; best = name; }
+    }
+    return bestDistance <= MARK_HUE_TOLERANCE ? best : "";
+  }
+
+  function parseColor(value) {
+    const rgb = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(value);
+    if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+    let hex = value.replace("#", "");
+    if (hex.length === 3) hex = hex.split("").map((c) => c + c).join("");
+    if (hex.length < 6) return null;
+    return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+  }
+
+  function hsl([r, g, b]) {
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    if (!delta) return { hue: 0, saturation: 0 };
+    let hue;
+    if (max === r) hue = 60 * (((g - b) / delta) % 6);
+    else if (max === g) hue = 60 * ((b - r) / delta + 2);
+    else hue = 60 * ((r - g) / delta + 4);
+    if (hue < 0) hue += 360;
+    const lightness = (max + min) / 2 / 255;
+    const saturation = delta / 255 / (1 - Math.abs(2 * lightness - 1) || 1);
+    return { hue, saturation };
   }
 
   // Kept elements in document order, dropping any nested inside another kept
@@ -810,8 +1252,27 @@
     return root;
   }
 
-  function tidyMarkdown(md) {
-    return md
+  // Split markdown into alternating prose / fenced-code segments, so the tidying
+  // below can leave code exactly as the page wrote it. Collapsing blank lines and
+  // trimming trailing whitespace inside a fence rewrites the snippet — two blank
+  // lines separating two functions became one, and significant trailing spaces
+  // vanished. Both are edits to the user's code that nothing asked for.
+  function splitFences(md) {
+    const parts = [];
+    const fenceRe = /^([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1?\2[ \t]*$/gm;
+    let last = 0;
+    let match;
+    while ((match = fenceRe.exec(md))) {
+      if (match.index > last) parts.push({ code: false, text: md.slice(last, match.index) });
+      parts.push({ code: true, text: match[0] });
+      last = fenceRe.lastIndex;
+    }
+    if (last < md.length) parts.push({ code: false, text: md.slice(last) });
+    return parts;
+  }
+
+  function tidyProse(text) {
+    return text
       .replace(/ /g, " ")
       // De-escape citation-style brackets Turndown escapes blindly (every [ → \[).
       // `\[1\]`, `\[1, 2\]`, `\[3-5\]` are literal text, never links, so the
@@ -819,8 +1280,37 @@
       // citation shapes so real escaped brackets in prose stay escaped.
       .replace(/\\\[(\s*\d+[a-z]?(?:\s*[-–—,;]\s*\d+[a-z]?)*\s*)\\\]/gi, "[$1]")
       .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
+      .replace(/\n{3,}/g, "\n\n");
+  }
+
+  function tidyMarkdown(md) {
+    const tidied = splitFences(md)
+      .map((part) => (part.code ? part.text : tidyProse(part.text)))
+      .join("")
       .trim();
+    // Last: neutralise the dollar signs that are currency, not math. Recall's
+    // renderer closes an inline "$…$" on any later "$" preceded by a non-space
+    // character and scans up to 1000 chars to find one, so "…raised $100
+    // million … priced at US$50…" swallowed the whole sentence between the two
+    // amounts. See looksLikeMath in recall-math.js for where the line is drawn.
+    return window.__recallMath ? window.__recallMath.escapeStrayDollars(tidied) : tidied;
+  }
+
+  // cloneNode(true) does not clone shadow roots, so anything a page renders
+  // inside a web component (Lit, Stencil, most design-system docs) came back as
+  // an empty custom element and the clip looked like it had failed. Walk the
+  // subtree ourselves and splice each open shadow root's children into the
+  // clone in its place. Closed roots are genuinely unreachable; nothing to do.
+  function deepClone(el) {
+    const clone = el.cloneNode(false);
+    const roots = el.shadowRoot ? [el.shadowRoot, el] : [el];
+    for (const root of roots) {
+      for (const child of Array.from(root.childNodes)) {
+        if (child.nodeType === Node.ELEMENT_NODE) clone.appendChild(deepClone(child));
+        else clone.appendChild(child.cloneNode(true));
+      }
+    }
+    return clone;
   }
 
   // Build the DOM to convert. Removed elements are stamped just for the clone
@@ -833,7 +1323,7 @@
     removedEls.forEach((el) => el.setAttribute(REMOVE_ATTR, "1"));
     try {
       if (tops.length) {
-        tops.forEach((el) => container.appendChild(el.cloneNode(true)));
+        tops.forEach((el) => container.appendChild(deepClone(el)));
         container.querySelectorAll(`[${REMOVE_ATTR}]`).forEach((n) => n.remove());
         stripHelpers(container);
         scrubNoise(container);
@@ -850,9 +1340,14 @@
       // Smart Remove workflow: with nothing explicitly kept, whatever is LEFT on
       // the page after your deletions is the selection — clip the cleaned page.
       if (mode === "remove" && removedEls.length) {
-        const bodyClone = document.body.cloneNode(true);
+        const bodyClone = deepClone(document.body);
         bodyClone.querySelectorAll(`[${REMOVE_ATTR}]`).forEach((n) => n.remove());
         stripHelpers(bodyClone);
+        // Only here: the whole page is being taken, so its navigation, footer
+        // and sidebars are certainly not what was meant. On the picked and
+        // selection paths the user said exactly what they wanted and nothing
+        // structural is second-guessed.
+        stripPageChrome(bodyClone);
         scrubNoise(bodyClone);
         container.appendChild(bodyClone);
         return { html: container, source: "remaining" };
@@ -864,12 +1359,23 @@
   }
 
   function convert() {
+    lastMath = { captured: 0, missed: 0 };
     const { html, source } = collectSourceHtml();
-    if (!html) return { markdown: "", source, tables: { html: 0, md: 0 } };
-    const tables = tableStats(html);              // before flattening rewrites them
+    if (!html) return { markdown: "", source, tables: { html: 0, md: 0 }, math: lastMath };
     // Safe to reshape in place: collectSourceHtml hands back a detached clone.
-    if (tableMode === "md") flattenTables(html);
-    return { markdown: tidyMarkdown(buildTurndown().turndown(html)), source, tables };
+    prepareGridTables(html);
+    const tables = tableStats(html);
+    // Formulas the page never rendered — plain "$x_k$" in a paragraph — are
+    // lifted out of their text nodes here, so Turndown's escaper can't put
+    // backslashes through them on the way past. scrubNoise has already dealt
+    // with the rendered ones.
+    if (window.__recallMath) window.__recallMath.protectMathInDom(html);
+    let markdown = tidyMarkdown(buildTurndown().turndown(html));
+    // Belt and braces: heals math that reached the markdown still escaped,
+    // whatever shape the source markup was in. Same function Recall runs on its
+    // own pasted notes, so paste and clip can never disagree.
+    if (window.__recallMath) markdown = window.__recallMath.repairEscapedMathMarkdown(markdown);
+    return { markdown, source, tables, math: lastMath };
   }
 
   // ---------------------------------------------------------------------------
@@ -907,14 +1413,6 @@
         <button type="button" data-mode="remove" class="rc-mode" title="Press R · click blocks to TRIM them out">🗑 Remove</button>
       </div>
       <span class="rc-count" data-count>0 kept</span>
-      <label class="rc-tables" title="How to clip tables. Auto: Markdown when it fits, HTML when the table needs spans or nesting (Wikipedia infoboxes). HTML: always keep the exact layout. Markdown: always flatten to a Markdown grid.">
-        Tables
-        <select data-tables data-auto>
-          <option value="auto">Auto</option>
-          <option value="html">HTML — keep layout</option>
-          <option value="md">Markdown — flatten</option>
-        </select>
-      </label>
       <div class="rc-actions">
         <button type="button" data-act="isolate" class="rc-toggle" aria-pressed="false" title="Hide everything on the page except your kept blocks (toggle)">🎯 Isolate</button>
         <button type="button" data-act="copy" class="rc-primary" title="Convert to Markdown and copy">Copy Markdown</button>
@@ -940,7 +1438,7 @@
       </div>
       <div class="rc-render" data-render></div>
       <textarea class="rc-raw" data-md spellcheck="false" readonly hidden></textarea>
-      <div class="rc-note">Rendered with Recall's own engine — math (<code>$…$</code>), Mermaid/nomnoml diagrams and syntax highlighting appear exactly as they will in a deck. Tables with merged or nested cells (Wikipedia infoboxes) can't be expressed in Markdown, so they're kept as HTML — use the <b>Tables</b> control above to force one format or the other.</div>
+      <div class="rc-note">Rendered with Recall's own engine — math (<code>$…$</code>), Mermaid/nomnoml diagrams and syntax highlighting appear exactly as they will in a deck. Equations are recovered as LaTeX from KaTeX, MathJax, Wikipedia and plain MathML. Tables become Markdown when the grid can hold them and sanitised HTML when they need merged or nested cells (Wikipedia infoboxes), so nothing is dropped either way.</div>
     </div>
     <div class="rc-toast" data-toast hidden></div>
   `;
@@ -948,7 +1446,6 @@
 
   const countEl = ui.querySelector("[data-count]");
   const isoBtn = ui.querySelector('[data-act="isolate"]');
-  const tablesSel = ui.querySelector("[data-tables]");
   const panelEl = ui.querySelector("[data-panel]");
   const renderEl = ui.querySelector("[data-render]");
   const mdEl = ui.querySelector("[data-md]");
@@ -973,25 +1470,6 @@
     toastTimer = setTimeout(() => { toastEl.hidden = true; }, 2600);
   }
 
-  const TABLE_MODE_NOTE = {
-    auto: "Tables: Auto — simple tables become Markdown, spanned/nested ones (infoboxes) keep their layout as HTML.",
-    html: "Tables: HTML — every table keeps its exact layout. Nothing is lost, but raw HTML shows in the Raw Markdown view.",
-    md: "Tables: Markdown — every table is flattened to a Markdown grid. All values are kept; merged cells are approximated."
-  };
-
-  function setTableMode(next) {
-    if (!Object.prototype.hasOwnProperty.call(TABLE_MODE_NOTE, next)) return;
-    tableMode = next;
-    if (tablesSel.value !== next) tablesSel.value = next;
-    tablesSel.toggleAttribute("data-auto", next === "auto");  // highlights a forced choice
-    toast(TABLE_MODE_NOTE[next]);
-    // Re-clip so an open preview reflects the new choice immediately.
-    if (!panelEl.hidden) {
-      const { markdown } = convert();
-      if (markdown) showPreview(markdown);
-    }
-  }
-
   function setMode(next) {
     if (next !== "select" && next !== "remove") return;
     mode = next;
@@ -1004,6 +1482,21 @@
   // Heavy preview libraries (KaTeX, Prism, mermaid, nomnoml) are injected only
   // the first time a preview is shown, so the common Copy path stays fast. The
   // background worker does the injecting (executeScript/insertCSS) on request.
+  // Ask the background worker to re-read MathJax's source into the DOM (see
+  // content/mathjax-source.js). It already ran once at activation; this catches
+  // formulas typeset since — a lazily-loaded section, an SPA route change.
+  // Always resolves: without it we still capture math, just from the MathML.
+  function ensureMathSource() {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: "rc-stamp-math" }, () => {
+          void chrome.runtime.lastError;
+          resolve();
+        });
+      } catch (_) { resolve(); }
+    });
+  }
+
   let previewLibsPromise = null;
   function ensurePreviewLibs() {
     if (window.__rcPreviewLibsReady) return Promise.resolve(true);
@@ -1061,19 +1554,28 @@
     await renderInto(md);
   }
 
-  // "2 tables as HTML, 1 as Markdown" — so the format each table took is never
+  // "2 tables as HTML, 1 as Markdown · 14 formulas" — what the clip actually
+  // did with the parts that have more than one possible answer, so it is never
   // something you have to infer from the output.
-  function tablesNote({ html, md }) {
+  function clipNote({ html, md }, math) {
     const parts = [];
-    if (html) parts.push(`${html} as HTML`);
-    if (md) parts.push(`${md} as Markdown`);
-    if (!parts.length) return "";
-    const n = html + md;
-    return ` · ${n} table${n === 1 ? "" : "s"} ${parts.join(", ")}`;
+    if (html || md) {
+      const shapes = [];
+      if (md) shapes.push(`${md} as Markdown`);
+      if (html) shapes.push(`${html} as HTML`);
+      const n = html + md;
+      parts.push(`${n} table${n === 1 ? "" : "s"} ${shapes.join(", ")}`);
+    }
+    if (math.captured) parts.push(`${math.captured} formula${math.captured === 1 ? "" : "s"} as LaTeX`);
+    // Say so out loud: a formula we couldn't read is the one thing in a clip
+    // that needs checking by eye, and it looks like ordinary text otherwise.
+    if (math.missed) parts.push(`${math.missed} formula${math.missed === 1 ? "" : "s"} had no readable source`);
+    return parts.length ? ` · ${parts.join(" · ")}` : "";
   }
 
   async function doCopy() {
-    const { markdown, source, tables } = convert();
+    await ensureMathSource();
+    const { markdown, source, tables, math } = convert();
     if (!markdown) { toast("Nothing picked — click a block or highlight some text first.", false); return; }
     lastMarkdown = markdown;
     mdEl.value = markdown;
@@ -1082,7 +1584,7 @@
     const where = source === "selection" ? "highlighted text"
       : source === "remaining" ? "the cleaned page"
       : "picked blocks";
-    toast(ok ? `Copied ${markdown.length} chars from ${where}${tablesNote(tables)} → paste into a deck's Notes`
+    toast(ok ? `Copied ${markdown.length} chars from ${where}${clipNote(tables, math)} → paste into a deck's Notes`
              : "Couldn't reach the clipboard — open Preview to copy manually.", ok);
   }
 
@@ -1095,14 +1597,17 @@
     if (!act) return;
     if (act === "copy") doCopy();
     else if (act === "isolate") setIsolate(!isolateOn);
-    else if (act === "preview") { const { markdown } = convert(); markdown ? showPreview(markdown) : toast("Nothing picked yet.", false); }
+    else if (act === "preview") {
+      ensureMathSource().then(() => {
+        const { markdown } = convert();
+        markdown ? showPreview(markdown) : toast("Nothing picked yet.", false);
+      });
+    }
     else if (act === "copy2") copyText(lastMarkdown).then((ok) => toast(ok ? "Copied." : "Copy failed.", ok));
     else if (act === "clear") clearAll();
     else if (act === "hidepanel") panelEl.hidden = true;
     else if (act === "close") destroy();
   });
-
-  tablesSel.addEventListener("change", () => setTableMode(tablesSel.value));
 
   ui.querySelector(".rc-logo").addEventListener("dblclick", () => ui.classList.toggle("rc-docked-bottom"));
 
@@ -1139,12 +1644,22 @@
     clearIsolation();
     // Defensive: ensure no stray marker attribute survives on the page.
     document.querySelectorAll(`[${REMOVE_ATTR}]`).forEach((n) => n.removeAttribute(REMOVE_ATTR));
+    // The MAIN-world pass stamped every MathJax container with its source TeX
+    // (content/mathjax-source.js). Those are ours too, and the page gets them
+    // back exactly as it had them: without any.
+    document.querySelectorAll("[data-recall-tex]").forEach((n) => {
+      n.removeAttribute("data-recall-tex");
+      n.removeAttribute("data-recall-tex-display");
+    });
     overlay.remove();
     ui.remove();
     delete window.__recallClipper;
   }
 
-  window.__recallClipper = { destroy };
+  // `convert` is exposed alongside `destroy` so the conversion can be driven
+  // headlessly (tools/convert.test.mjs) and inspected from the console without
+  // going through the clipboard.
+  window.__recallClipper = { destroy, convert };
   updateCount();
   toast("Recall Clipper on — Remove deletes blocks from the page (Ctrl+Z undoes), Select + 🎯 Isolate keeps only what you pick. Esc closes & restores.");
 })();

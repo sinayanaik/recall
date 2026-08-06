@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Recall Clipper",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Select or trim any part of a web page and copy it as clean GFM Markdown — ready to paste into a Recall deck's Study Notes.",
   "permissions": ["activeTab", "scripting"],
   "action": {

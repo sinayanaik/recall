@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>math fixtures</title>
+<body>
+<div id="clip">
+
+<p id="wikipedia">Einstein wrote <span class="mwe-math-element"><span class="mwe-math-mathml-inline mwe-math-mathml-a11y" style="display: none;"><math xmlns="http://www.w3.org/1998/Math/MathML" alttext="{\displaystyle E=mc^{2}}"><semantics><mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">{\displaystyle E=mc^{2}}</annotation></semantics></math></span><img src="https://wikimedia.org/api/rest_v1/media/math/render/svg/abc" class="mwe-math-fallback-image-inline" alt="{\displaystyle E=mc^{2}}"></span> in 1905.</p>
+
+<p id="wikipedia-display">And in display form:</p>
+<dl><dd><span class="mwe-math-element"><span class="mwe-math-mathml-display mwe-math-mathml-a11y" style="display: none;"><math display="block" alttext="{\displaystyle \int _{0}^{1}x^{2}\,dx}"><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">{\displaystyle \int _{0}^{1}x^{2}\,dx}</annotation></semantics></math></span><img src="https://wikimedia.org/x.svg" class="mwe-math-fallback-image-display" alt="{\displaystyle \int}"></span></dd></dl>
+
+<p id="mathjax3">MathJax 3 inline: <mjx-container class="MathJax" jax="CHTML"><mjx-math><mjx-mi class="mjx-i"><mjx-c></mjx-c></mjx-mi></mjx-math><mjx-copytext>\(a^2 + b^2 = c^2\)</mjx-copytext></mjx-container> done.</p>
+
+<p id="mathjax3-mml">MathJax 3 without copytext: <mjx-container class="MathJax" jax="CHTML"><mjx-math><mjx-mi>garbage</mjx-mi></mjx-math><mjx-assistive-mml unselectable="on" display="inline"><math xmlns="http://www.w3.org/1998/Math/MathML"><mfrac><mrow><mi>a</mi><mo>+</mo><mi>b</mi></mrow><mn>2</mn></mfrac></math></mjx-assistive-mml></mjx-container> done.</p>
+
+<p id="mathjax2">MathJax 2: <span class="MathJax_Preview" style="display:none"></span><span class="MathJax" id="MathJax-Element-1-Frame"><nobr><span class="math">x + y</span></nobr></span><script type="math/tex" id="MathJax-Element-1">\alpha_i + \beta_j</script> and after.</p>
+
+<p id="mathjax2-display">MathJax 2 display:</p>
+<div><span class="MathJax_Display"><span class="MathJax">rendered</span></span><script type="math/tex; mode=display">\sum_{i=1}^{n} i = \frac{n(n+1)}{2}</script></div>
+
+<p id="katex">KaTeX: <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">\frac{1}{x_n}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true">1x</span></span> end.</p>
+
+<p id="katex-noannotation">KaTeX with no MathML: <span class="katex"><span class="katex-html" aria-hidden="true">y = 3</span></span> end.</p>
+
+<p id="bare-mathml">Bare MathML: <math xmlns="http://www.w3.org/1998/Math/MathML"><msqrt><mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><msup><mi>y</mi><mn>2</mn></msup></mrow></msqrt></math> end.</p>
+
+<p id="mathml-greek">Greek and operators: <math><mrow><munderover><mo>&#x2211;</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msub><mi>&#x3B1;</mi><mi>i</mi></msub><mo>&#x2264;</mo><mi>&#x3C0;</mi></mrow></math> end.</p>
+
+<p id="raw-latex">Unrendered source math: $x_k = \frac{a}{b}$ and \(y_1\) inline.</p>
+
+<!-- Wikipedia's multi-line equations: "\\" ends a row and is followed straight
+     away by the next row's content, which starts with a letter. healEscapedTex
+     used to read that as "an escaper doubled every backslash" and halve them
+     all, turning \begin{aligned} into begin{aligned}. -->
+<p id="wikipedia-aligned">Rearranged:</p>
+<dl><dd><span class="mwe-math-element"><span class="mwe-math-mathml-display" style="display:none"><math display="block" alttext="{\displaystyle {\begin{aligned}E_{\text{rel}}^{2}-|\mathbf {p} |^{2}c^{2}&amp;=m_{0}^{2}c^{4}\\E_{\text{rel}}^{2}&amp;=(m_{0}c^{2})^{2}\end{aligned}}}"><semantics><annotation encoding="application/x-tex">{\displaystyle {\begin{aligned}E_{\text{rel}}^{2}-|\mathbf {p} |^{2}c^{2}&amp;=m_{0}^{2}c^{4}\\E_{\text{rel}}^{2}&amp;=(m_{0}c^{2})^{2}\end{aligned}}}</annotation></semantics></math></span><img src="https://wikimedia.org/y.svg" class="mwe-math-fallback-image-display" alt="aligned"></span></dd></dl>
+
+<p id="currency">The round raised $100 million, and the device is priced at US$50 today.</p>
+
+<p id="currency-simple">It costs $5 for one and $10 for two.</p>
+
+<p id="brackets">Some prose with [citation needed] and [Figure 1] in it.</p>
+
+<p id="begin-env">Environment: <span class="katex"><span class="katex-mathml"><math><semantics><annotation encoding="application/x-tex">\begin{aligned} a &amp;= b \\ c &amp;= d \end{aligned}</annotation></semantics></math></span></span></p>
+
+<!-- A formula that opens with a digit and contains a space: the shape the
+     currency guard looks for. It carries TeX commands, so it must survive
+     unescaped. And it ends in "\ " (an explicit LaTeX space) — trimming that
+     must not leave a dangling backslash, which KaTeX rejects outright. -->
+<p id="digit-leading-math">The orientation is <span class="katex"><span class="katex-mathml"><math><semantics><annotation encoding="application/x-tex">2\pi - \epsilon\ </annotation></semantics></math></span></span> for small <span class="katex"><span class="katex-mathml"><math><semantics><annotation encoding="application/x-tex">\epsilon > 0</annotation></semantics></math></span></span>.</p>
+
+</div>
+</body>

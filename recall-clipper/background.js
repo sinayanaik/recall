@@ -12,6 +12,7 @@ const VENDOR = [
   "vendor/turndown-plugin-gfm.js",
   "vendor/purify.min.js",       // sanitises the rendered preview
   "vendor/marked.min.js",       // renders the Markdown preview
+  "content/recall-math.js",     // math capture + Recall's math scanner (ported)
   "content/recall-render.js"    // Recall's exact render pipeline (ported)
 ];
 
@@ -29,6 +30,29 @@ const PREVIEW_JS = [
   "vendor/nomnoml/nomnoml.js"
 ];
 
+// MathJax keeps every formula's original LaTeX in a page-world global, which is
+// invisible from the isolated world the rest of our code runs in. This one file
+// is injected into the page's MAIN world to copy that source onto the DOM, where
+// the picker can read it. Best-effort: a page without MathJax just returns 0,
+// and the picker falls back to reading MathML.
+async function stampMathSource(tabId, frameId) {
+  const target = { tabId };
+  if (frameId != null) target.frameIds = [frameId];
+  try {
+    const results = await chrome.scripting.executeScript({
+      target,
+      world: "MAIN",
+      files: ["content/mathjax-source.js"]
+    });
+    return results.reduce((sum, r) => sum + (Number(r && r.result) || 0), 0);
+  } catch (err) {
+    // MAIN-world injection is unavailable on older Chrome, and blocked on a few
+    // pages. Neither is fatal — it only costs fidelity, not capture.
+    console.warn("Recall Clipper: could not read MathJax source —", err?.message || err);
+    return 0;
+  }
+}
+
 async function activateOnTab(tab) {
   if (!tab || !tab.id) return;
   // Guard against pages we can never script (Chrome Web Store, chrome://, etc.).
@@ -43,6 +67,7 @@ async function activateOnTab(tab) {
       target: { tabId: tab.id },
       files: ["content/picker.css"]
     });
+    await stampMathSource(tab.id);
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: [...VENDOR, "content/picker.js"]
@@ -77,6 +102,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(() => sendResponse({ ok: true }))
       .catch((err) => { console.warn("Recall Clipper: preview libs failed —", err); sendResponse({ ok: false }); });
     return true; // keep the message channel open for the async response
+  }
+  // Re-read MathJax's source right before a clip, so formulas typeset after the
+  // picker was switched on (lazy sections, an SPA route change) are stamped too.
+  if (msg && msg.type === "rc-stamp-math" && sender.tab && sender.tab.id != null) {
+    stampMathSource(sender.tab.id, sender.frameId).then((count) => sendResponse({ ok: true, count }));
+    return true;
   }
 });
 

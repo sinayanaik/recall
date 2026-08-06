@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MathJax 3 source-recovery fixture</title>
+<body>
+<div id="clip">
+
+<!-- The DOM MathJax 3.2 actually leaves behind: CHTML glyphs (empty <mjx-c>
+     elements painted by CSS, so textContent is blank) plus an assistive-MathML
+     tree. Note there is NO annotation[encoding="application/x-tex"] and NO
+     mjx-copytext — this is the default `tex-mml-chtml` bundle, which is what
+     Sphinx / Jupyter Book / most textbook sites ship. -->
+
+<p id="inline">The state space is
+<span class="math notranslate nohighlight"><mjx-container class="MathJax" jax="CHTML" tabindex="0"><mjx-math class="MJX-TEX" aria-hidden="true"><mjx-msup><mjx-texatom texclass="ORD"><mjx-mi class="mjx-ds mjx-b"><mjx-c class="mjx-c211D TEX-A"></mjx-c></mjx-mi></mjx-texatom><mjx-script><mjx-mn class="mjx-n" size="s"><mjx-c class="mjx-c32"></mjx-c></mjx-mn></mjx-script></mjx-msup></mjx-math><mjx-assistive-mml unselectable="on" display="inline"><math xmlns="http://www.w3.org/1998/Math/MathML"><msup><mrow data-mjx-texclass="ORD"><mi mathvariant="double-struck">R</mi></mrow><mn>2</mn></msup></math></mjx-assistive-mml></mjx-container></span>
+for a planar robot.</p>
+
+<div class="math notranslate nohighlight" id="equation-wheels">
+<span class="eqno">(5.1)</span>
+<mjx-container class="MathJax" jax="CHTML" display="true"><mjx-math display="true" class="MJX-TEX" aria-hidden="true"><mjx-mo></mjx-mo></mjx-math><mjx-assistive-mml unselectable="on" display="block"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mo stretchy="false">[</mo><mtable><mtr><mtd><msub><mi>x</mi><mrow><mi mathvariant="normal">l</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi></mrow></msub></mtd></mtr><mtr><mtd><msub><mi>y</mi><mrow><mi mathvariant="normal">l</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi></mrow></msub></mtd></mtr></mtable><mo stretchy="false">]</mo><mo>=</mo><mi>c</mi></math></mjx-assistive-mml></mjx-container>
+</div>
+
+</div>
+
+<script>
+  // Stand in for MathJax 3.2.2's own state. `startup.document.math` is a linked
+  // list of MathItem; each one keeps the author's input string and a
+  // `typesetRoot` pointing at the <mjx-container> it produced. An array is
+  // iterable the same way, which is all mathjax-source.js needs.
+  const containers = document.querySelectorAll("mjx-container");
+  window.MathJax = {
+    version: "3.2.2",
+    startup: {
+      document: {
+        math: [
+          { math: "\\mathbb{R}^2", display: false, typesetRoot: containers[0] },
+          {
+            math: "\\begin{equation}\n\\left[ \\begin{array}{c} x_{\\mathrm{left}} \\\\ y_{\\mathrm{left}} \\end{array}\\right]\n=\nc\n\\end{equation}",
+            display: true,
+            typesetRoot: containers[1]
+          }
+        ]
+      }
+    }
+  };
+</script>
+</body>

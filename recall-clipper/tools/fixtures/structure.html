@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>structure fixtures</title>
+<body>
+<div id="clip">
+
+<h2 id="lists-heading">Lists</h2>
+
+<ol start="30" id="long-ol">
+  <li><p>First paragraph of item thirty.</p><p>Second paragraph that must stay inside the list item.</p></li>
+  <li><p>Item thirty-one.</p><p><a href="https://example.com/x">A link on a continuation line.</a></p></li>
+</ol>
+
+<ul id="nested-ul">
+  <li>Outer one
+    <ul><li>Inner a</li><li>Inner b</li></ul>
+  </li>
+  <li>Outer two</li>
+</ul>
+
+<dl id="deflist">
+  <dt>fetch()</dt>
+  <dd>Starts the process of fetching a resource from the network.</dd>
+  <dt>Headers</dt>
+  <dd>Represents response/request headers.</dd>
+</dl>
+
+<h2>Tables</h2>
+
+<table id="no-thead">
+  <tr><td>Name</td><td>Role</td></tr>
+  <tr><td>Ada</td><td>Engineer</td></tr>
+  <tr><td>Grace</td><td>Admiral</td></tr>
+</table>
+
+<table id="infobox" style="color:#ffffff;background:#111111">
+  <caption>Deity of destruction</caption>
+  <tbody>
+    <tr><th colspan="2" style="background:#101010;color:#fff;text-align:center">Shiva</th></tr>
+    <tr><th scope="row">Affiliation</th><td>Trimurti<sup class="reference"><a href="#cite_note-7">[7]</a></sup></td></tr>
+    <tr><th scope="row">Abode</th><td>Mount Kailash <a class="anchor" href="#abode" aria-hidden="true">#</a></td></tr>
+  </tbody>
+</table>
+
+<table id="cells-with-blocks">
+  <thead><tr><th>Key</th><th>Notes</th></tr></thead>
+  <tbody><tr><td>a</td><td><p>Line one</p><p>Line two | with a pipe</p></td></tr></tbody>
+</table>
+
+<h2>Inline HTML</h2>
+
+<p id="supsub">Water is H<sub>2</sub>O and the area is x<sup>2</sup> cm<sup>2</sup>.</p>
+<p id="citation">A claim<sup class="reference"><a href="#cite_note-1">[1]</a></sup> and another<sup><a href="#fn2">[2]</a></sup>.</p>
+<p id="inline-html">A <mark style="background:#c8e6c9">green highlight</mark>, a <u>underline</u>, press <kbd>Ctrl</kbd>+<kbd>C</kbd>, and <abbr title="HyperText Markup Language">HTML</abbr>.</p>
+
+<h2>Blocks</h2>
+
+<details id="faq"><summary>Does this become a flashcard?</summary><p>It must not — Recall reads details/summary as card syntax.</p></details>
+
+<figure id="fig"><img src="/images/diagram.png" alt="A diagram"><figcaption>Figure 3: the pipeline.</figcaption></figure>
+
+<div class="admonition warning" id="callout"><p class="admonition-title">Warning</p><p>This operation cannot be undone.</p></div>
+
+<div role="heading" aria-level="3" id="aria-h">An ARIA heading</div>
+<p>Body under the ARIA heading.</p>
+
+<iframe id="embed" src="https://www.youtube.com/embed/dQw4w9WgXcQ" title="A tutorial video"></iframe>
+
+<pre id="code"><code class="language-python">def f(x):
+    return x + 1
+
+
+def g(y):
+    return y - 1
+</code></pre>
+
+<p id="lazy-img">Lazy image:
+  <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+       data-src="https://cdn.example.com/real-image.jpg" alt="Real one">
+</p>
+
+<picture id="pic"><source srcset="https://cdn.example.com/small.jpg 400w, https://cdn.example.com/large.jpg 1600w"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="From picture"></picture>
+
+</div>
+</body>

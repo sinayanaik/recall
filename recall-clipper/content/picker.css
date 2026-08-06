@@ -101,35 +101,6 @@ html.recall-clip-active, html.recall-clip-active body { cursor: crosshair !impor
   white-space: nowrap !important;
   margin-left: 2px !important;
 }
-#recall-clipper-ui .rc-tables {
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 5px !important;
-  font-size: 12px !important;
-  color: #9fb3b3 !important;
-  white-space: nowrap !important;
-  cursor: pointer !important;
-}
-#recall-clipper-ui .rc-tables select {
-  font-family: inherit !important;
-  font-size: 12px !important;
-  line-height: 1 !important;
-  color: #dceeee !important;
-  background: #14201f !important;
-  border: 1px solid #26403e !important;
-  border-radius: 8px !important;
-  padding: 6px 8px !important;
-  cursor: pointer !important;
-  appearance: auto !important;
-}
-#recall-clipper-ui .rc-tables select:hover { border-color: #35605c !important; }
-#recall-clipper-ui .rc-tables select:focus-visible { outline: 2px solid #27e0d0 !important; outline-offset: 1px !important; }
-/* Forced away from Auto — flag it, since it silently changes every clip. */
-#recall-clipper-ui .rc-tables select:not([data-auto]) {
-  border-color: #27e0d0 !important;
-  color: #27e0d0 !important;
-}
-
 #recall-clipper-ui .rc-actions { display: inline-flex !important; gap: 6px !important; margin-left: auto !important; }
 
 #recall-clipper-ui button {
@@ -281,13 +252,52 @@ html.recall-clip-active, html.recall-clip-active body { cursor: crosshair !impor
 }
 #recall-clipper-ui .rc-render img { max-width: 100% !important; height: auto !important; border-radius: 6px !important; }
 #recall-clipper-ui .rc-render hr { border: none !important; border-top: 1px solid #1e2b2b !important; margin: 1em 0 !important; }
-#recall-clipper-ui .rc-render table { border-collapse: collapse !important; width: auto !important; margin: 0 0 .7em !important; display: block !important; overflow: auto !important; }
+/* A deck wraps every table in a scroll container and gives it a proportional
+   <colgroup> (see fitMarkdownTables in recall-render.js). Match that here, so a
+   wide table scrolls inside the preview instead of stretching the panel. */
+#recall-clipper-ui .rc-render .markdown-table-wrap {
+  overflow-x: auto !important;
+  max-width: 100% !important;
+  margin: 0 0 .7em !important;
+}
+#recall-clipper-ui .rc-render table {
+  border-collapse: collapse !important;
+  width: 100% !important;
+  table-layout: fixed !important;
+  margin: 0 !important;
+}
 #recall-clipper-ui .rc-render th, #recall-clipper-ui .rc-render td {
   border: 1px solid #26403e !important;
   padding: 5px 9px !important;
   text-align: left !important;
+  vertical-align: top !important;
+  overflow-wrap: anywhere !important;
 }
 #recall-clipper-ui .rc-render th { background: #123330 !important; color: #d8f7f3 !important; }
+#recall-clipper-ui .rc-render caption {
+  caption-side: top !important;
+  text-align: left !important;
+  font-size: .92em !important;
+  color: #9fb3b3 !important;
+  padding: 0 0 4px !important;
+}
+#recall-clipper-ui .rc-render mark {
+  background: rgba(255, 235, 59, .28) !important;
+  color: inherit !important;
+  padding: 0 .15em !important;
+  border-radius: 3px !important;
+}
+#recall-clipper-ui .rc-render sup, #recall-clipper-ui .rc-render sub { font-size: .75em !important; line-height: 0 !important; }
+#recall-clipper-ui .rc-render sup { vertical-align: super !important; }
+#recall-clipper-ui .rc-render sub { vertical-align: sub !important; }
+#recall-clipper-ui .rc-render kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace !important;
+  font-size: .85em !important;
+  background: #14201f !important;
+  border: 1px solid #2b4744 !important;
+  border-radius: 4px !important;
+  padding: 1px 5px !important;
+}
 
 #recall-clipper-ui .rc-toast {
   margin-top: 8px !important;

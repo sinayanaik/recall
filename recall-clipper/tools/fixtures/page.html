@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>whole-page fixtures</title>
+<body>
+
+<header class="site-header"><a href="/">Site name</a> · <a href="/about">About</a></header>
+<nav aria-label="Main"><ul><li><a href="/a">Alpha</a></li><li><a href="/b">Beta</a></li></ul></nav>
+
+<main>
+  <article>
+    <h1>The real article</h1>
+    <p>This is the body that should survive a whole-page clip.</p>
+
+    <doc-callout id="shadow-host"></doc-callout>
+
+    <p>Text after the component.</p>
+  </article>
+</main>
+
+<aside class="sidebar"><h3>Related</h3><p>Some other post.</p></aside>
+<div class="comments"><h3>Comments</h3><p>First!</p></div>
+<footer><p>© 2026 Example</p></footer>
+
+<p id="junk">Delete me.</p>
+
+<script>
+  class DocCallout extends HTMLElement {
+    connectedCallback() {
+      const root = this.attachShadow({ mode: "open" });
+      root.innerHTML = `
+        <h2>Inside the shadow root</h2>
+        <p>A paragraph rendered by a web component.</p>
+        <ul><li>shadow item one</li><li>shadow item two</li></ul>
+      `;
+    }
+  }
+  customElements.define("doc-callout", DocCallout);
+</script>
+</body>
