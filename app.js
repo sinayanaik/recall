@@ -3436,6 +3436,7 @@ function anyModalOpen() {
     (el.frameCardModal && !el.frameCardModal.hidden) ||
     (el.myDecksPanel && !el.myDecksPanel.hidden) ||
     (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) ||
+    (typeof appInfoModal !== "undefined" && appInfoModal && !appInfoModal.hidden) ||
     (el.stylePanel && !el.stylePanel.hidden) ||
     (el.storagePanel && !el.storagePanel.hidden) ||
     (el.diagramModal && !el.diagramModal.hidden) ||
@@ -3647,6 +3648,7 @@ function closeTopmostOverlay() {
   if (el.frameCardModal && !el.frameCardModal.hidden) { el.frameCardCancelBtn?.click(); return; }
   if (el.qnCatModal && !el.qnCatModal.hidden) { closeQnCatModal(); return; }
   if (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) { closeHelpModal(); return; }
+  if (typeof appInfoModal !== "undefined" && appInfoModal && !appInfoModal.hidden) { closeAppInfoModal(); return; }
   if (el.syncModal && !el.syncModal.hidden) { el.syncModal.hidden = true; return; }
   if (el.diagramModal && !el.diagramModal.hidden) { closeDiagramModal(); return; }
 
@@ -23424,6 +23426,9 @@ function warmDeckImageCache(snapshot) {
 }
 
 let serviceWorkerRegistered = false;
+// Kept so the App Info modal's "Check for updates" can poke the worker on
+// demand (see refreshAppInfo).
+let serviceWorkerRegistration = null;
 
 function registerServiceWorker() {
   if (serviceWorkerRegistered) return;
@@ -23509,6 +23514,7 @@ function registerServiceWorker() {
     // days never sees a release at all.
     navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
       .then((registration) => {
+        serviceWorkerRegistration = registration;
         requestOfflineCacheRepair();
         const checkForUpdate = () => registration.update().catch(() => {});
         document.addEventListener("visibilitychange", () => {
@@ -25043,6 +25049,93 @@ if (helpModal) {
   });
   helpModal.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.stopPropagation(); closeHelpModal(); }
+  });
+}
+
+// ── App Info modal ─────────────────────────────────────────────────────────
+// The running build's version, read off app.js's own ?v= stamp — the same
+// stamp that cache-busts this file, so it can never drift from what was
+// actually loaded. The latest DEPLOYED build's stamp is read off the server's
+// sw.js (its CACHE_NAME carries the same stamp), fetched cache-bypassed.
+function runningAppVersion() {
+  const src = document.querySelector('script[src*="app.js"]')?.getAttribute("src") || "";
+  return src.match(/[?&]v=([^&]+)/)?.[1] || "unknown";
+}
+
+async function latestDeployedAppVersion() {
+  const response = await fetch("./sw.js", { cache: "no-store" });
+  if (!response.ok) throw new Error(`sw.js -> ${response.status}`);
+  const text = await response.text();
+  return text.match(/CACHE_NAME\s*=\s*"recall-v([^"]+)"/)?.[1] || "unknown";
+}
+
+const appInfoModal = document.getElementById("appInfoModal");
+const appInfoBtn = document.getElementById("appInfoBtn");
+const appInfoCloseBtn = document.getElementById("appInfoCloseBtn");
+const appInfoVersion = document.getElementById("appInfoVersion");
+const appInfoLatest = document.getElementById("appInfoLatest");
+const appInfoStatus = document.getElementById("appInfoStatus");
+const appInfoCheckBtn = document.getElementById("appInfoCheckBtn");
+const appInfoReloadBtn = document.getElementById("appInfoReloadBtn");
+
+function setAppInfoStatus(text, cls = "") {
+  if (!appInfoStatus) return;
+  appInfoStatus.textContent = text;
+  appInfoStatus.classList.toggle("is-ok", cls === "ok");
+  appInfoStatus.classList.toggle("is-outdated", cls === "outdated");
+}
+
+// Fills the Latest/Status rows. Also pokes the service worker's own update
+// check — when a new worker is already waiting, that alone finishes the
+// update (controllerchange then reloads the page; see registerServiceWorker).
+async function refreshAppInfo() {
+  if (!appInfoLatest || !appInfoStatus) return;
+  appInfoLatest.textContent = "checking…";
+  setAppInfoStatus("");
+  if (appInfoReloadBtn) appInfoReloadBtn.hidden = true;
+  if (serviceWorkerRegistration) serviceWorkerRegistration.update().catch(() => {});
+  try {
+    const latest = await latestDeployedAppVersion();
+    const running = runningAppVersion();
+    appInfoLatest.textContent = latest;
+    if (latest === "unknown" || running === "unknown") {
+      setAppInfoStatus("Couldn't compare versions");
+    } else if (latest === running) {
+      setAppInfoStatus("You're up to date ✓", "ok");
+    } else {
+      setAppInfoStatus("Update available", "outdated");
+      if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
+    }
+  } catch (_) {
+    appInfoLatest.textContent = "unknown";
+    setAppInfoStatus("Offline — can't check right now");
+  }
+}
+
+function openAppInfoModal() {
+  if (!appInfoModal) return;
+  if (appInfoVersion) appInfoVersion.textContent = runningAppVersion();
+  appInfoModal.hidden = false;
+  lockPageScroll();
+  refreshAppInfo();
+}
+
+function closeAppInfoModal() {
+  if (!appInfoModal) return;
+  appInfoModal.hidden = true;
+  unlockPageScroll();
+}
+
+if (appInfoBtn) appInfoBtn.addEventListener("click", openAppInfoModal);
+if (appInfoCloseBtn) appInfoCloseBtn.addEventListener("click", closeAppInfoModal);
+if (appInfoCheckBtn) appInfoCheckBtn.addEventListener("click", refreshAppInfo);
+if (appInfoReloadBtn) appInfoReloadBtn.addEventListener("click", () => location.reload());
+if (appInfoModal) {
+  appInfoModal.addEventListener("click", (e) => {
+    if (e.target === appInfoModal) closeAppInfoModal();
+  });
+  appInfoModal.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); closeAppInfoModal(); }
   });
 }
 

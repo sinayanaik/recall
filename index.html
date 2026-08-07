@@ -124,6 +124,7 @@
           <button class="tool-button" id="styleBtn" type="button" title="Edit style" aria-label="Edit style">&#9711; Themes</button>
           <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — decks, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
+          <button class="tool-button" id="appInfoBtn" type="button" title="App version and update status" aria-label="App info">&#8505; App Info</button>
           <button class="tool-button" id="logoutBtn" type="button" title="Sign out" hidden>&#8594; Sign Out</button>
         </div>
 
@@ -937,6 +938,35 @@ What year was the Eiffel Tower built?
         </div>
         <div class="help-modal-foot">
           <button type="button" class="sync-modal-btn is-primary" id="helpModalCloseFootBtn">Got it</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="help-modal" id="appInfoModal" hidden aria-label="App info">
+      <div class="help-modal-content app-info-content">
+        <div class="help-modal-head">
+          <h2 class="help-modal-title">App Info</h2>
+          <button class="icon-button" id="appInfoCloseBtn" type="button" aria-label="Close app info">&#215;</button>
+        </div>
+        <div class="help-modal-body">
+          <dl class="app-info-list">
+            <div class="app-info-row">
+              <dt>Installed version</dt>
+              <dd id="appInfoVersion">—</dd>
+            </div>
+            <div class="app-info-row">
+              <dt>Latest available</dt>
+              <dd id="appInfoLatest">—</dd>
+            </div>
+            <div class="app-info-row">
+              <dt>Status</dt>
+              <dd id="appInfoStatus">—</dd>
+            </div>
+          </dl>
+          <div class="app-info-actions">
+            <button type="button" class="sync-modal-btn" id="appInfoCheckBtn">Check for updates</button>
+            <button type="button" class="sync-modal-btn is-primary" id="appInfoReloadBtn" hidden>Reload to update</button>
+          </div>
         </div>
       </div>
     </section>

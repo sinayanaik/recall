@@ -10199,6 +10199,60 @@ textarea {
   letter-spacing: 0;
 }
 
+/* App Info modal — reuses the help modal's overlay/shell; these are just the
+   version rows and the action row under them. */
+.app-info-content {
+  max-width: 420px;
+}
+
+.app-info-list {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.app-info-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+}
+
+.app-info-row dt {
+  font-weight: 700;
+  color: var(--muted, var(--text));
+  font-size: 0.9rem;
+}
+
+.app-info-row dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.app-info-row dd.is-ok {
+  color: var(--success, #22c55e);
+  font-weight: 700;
+}
+
+.app-info-row dd.is-outdated {
+  color: var(--danger, #d64545);
+  font-weight: 700;
+}
+
+.app-info-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
 .help-modal-body {
   flex: 1;
   overflow-y: auto;
