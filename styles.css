@@ -9,8 +9,6 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
-  --app-width-percent: 100;
-  --app-height-percent: 100;
   --app-width: 100vw;
   --app-height: 100vh;
   --app-mobile-width: 100vw;
@@ -83,10 +81,8 @@
   --answer-padding: 0px;
   --card-face-padding: clamp(18px, 3vw, 42px);
   --card-face-gap: 16px;
-  --card-width-percent: 96;
   --card-width: 96%;
   --card-mobile-width: 96%;
-  --card-max-height-percent: 74;
   --card-max-height: 74vh;
   --card-mobile-max-height: 74dvh;
   --card-border-width: 1px;
@@ -118,44 +114,39 @@
      moment either was tuned (e.g. the tighter mobile values below). */
   --notes-stage-pad: 14px;
   --notes-stage-gap: 10px;
-  --side-panel-min-width: 180px;
-  --side-panel-width-percent: 16;
-  --side-panel-width: 16%;
-  --side-panel-padding: var(--panel-padding);
-  --side-panel-radius: var(--panel-corner-radius);
   --progress-height: 5px;
   --deck-padding: 10px 0;
-  --code-font-size: 15px;
+  /* Follows the base text size so code reads at the same scale as the prose
+     around it — which is exactly what `.rendered pre { font-size: 1em }` used to
+     do before this variable had a consumer. The Code font size control
+     overrides it. */
+  --code-font-size: var(--content-font-size);
   --code-line-height: 1.55;
   --face-label-font-size: 0.72rem;
   --face-label-padding: 5px 10px;
   --face-label-radius: 999px;
   --face-label-font-weight: 900;
-  --action-button-height: 42px;
+  /* Action and replay buttons are DERIVED from the one button-height control
+     rather than carrying sliders of their own. Their old controls were inert on
+     the Mobile profile anyway (a hardcoded 34px/24px override further down won),
+     so they were two settings that only worked half the time. Replay buttons
+     stay a notch smaller — they're a secondary row — with a floor so raising
+     the main height can't leave them untappable. */
+  --action-button-height: var(--toolbar-button-height);
   --action-button-min-width: 86px;
   --action-button-radius: var(--toolbar-button-radius);
   --action-button-padding: 0 14px;
   --action-button-gap: var(--toolbar-gap);
   --button-font-size: 14px;
   --action-button-font-size: var(--button-font-size);
-  --replay-button-height: 30px;
+  --replay-button-height: max(24px, calc(var(--toolbar-button-height) - 8px));
   --replay-button-radius: var(--toolbar-button-radius);
-  --stack-badge-width: 38px;
-  --stack-badge-height: 32px;
-  --stack-badge-radius: 8px;
-  --stack-label-font-size: 0.74rem;
-  --brick-gap: 7px;
-  --brick-padding: 8px 9px;
-  --brick-radius: 8px;
-  --brick-font-size: 13px;
-  --brick-line-height: 1.28;
-  --brick-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
   --input-height: 40px;
-  --input-radius: 8px;
+  /* Buttons and inputs are one visual family and always shared a default; two
+     radius sliders just let them drift apart by accident. */
+  --input-radius: var(--toolbar-button-radius);
   --input-padding: 0 11px;
-  --markdown-box-height-percent: 30;
   --textarea-min-height: 30vh;
-  --modal-width-percent: 60;
   --modal-width: 60vw;
   --modal-radius: var(--panel-corner-radius);
   --modal-padding: 18px;
@@ -2436,7 +2427,11 @@ button:disabled {
   border-radius: var(--diagram-radius);
   background: #0b1110;
   color: #dbe7e4;
-  font-size: 1em;
+  /* The Code font size control's only consumer. It was `1em` for a long time,
+     which meant the control wrote --code-font-size and nothing ever read it —
+     the slider moved and nothing happened. The variable defaults to
+     --content-font-size, so the unset behaviour is what `1em` already gave. */
+  font-size: var(--code-font-size);
   line-height: var(--code-line-height);
   tab-size: 2;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
@@ -3111,11 +3106,14 @@ svg.nomnoml-light-svg [fill="none"] {
     margin-top: 2px;
   }
 
+  /* Icon-only mode for narrow desktop windows. Width and padding compact; the
+     HEIGHT still comes from the setting, so the button-height control isn't
+     silently inert at this width the way it was on the whole mobile profile. */
   .controls button {
     min-width: 38px;
     width: 38px;
-    height: 32px;
-    min-height: 32px;
+    height: var(--action-button-height);
+    min-height: var(--action-button-height);
     padding: 0;
     font-size: 0.88rem;
   }
@@ -3146,8 +3144,10 @@ svg.nomnoml-light-svg [fill="none"] {
     margin-top: 5px;
   }
 
+  /* Compact type and padding for the secondary replay row; the height itself
+     comes from --replay-button-height (derived from the button-height control),
+     which a hardcoded 24px here used to override on every desktop width. */
   .replay-actions button {
-    min-height: 24px;
     padding: 0 8px;
     font-size: 0.72rem;
     line-height: 1;
@@ -5435,6 +5435,73 @@ svg.nomnoml-light-svg [fill="none"] {
   text-align: center;
 }
 
+/* ── Basics / Advanced ──────────────────────────────────────────────────
+   The panel used to be seven peer accordions, all folded, all looking equally
+   important — 48 controls you had to open one drawer at a time to find the
+   text size in. Now the handful that people actually reach for sit in a plain
+   list at the top with no disclosure at all (a fold you always want open is a
+   click in the way), and everything else lives behind one "Advanced" drawer
+   which keeps the old per-section grouping inside it. */
+.style-basics {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+  overflow: hidden;
+}
+
+/* No summary above it, so its body needs the top border it would have had. */
+.style-basics .style-section-body {
+  border-top: 0;
+}
+
+.style-advanced {
+  flex-shrink: 0;
+}
+
+.style-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.style-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.style-advanced > summary::after {
+  content: "▾";
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 0.7rem;
+  opacity: 0.7;
+  transition: transform 0.2s ease;
+}
+
+.style-advanced:not([open]) > summary::after {
+  transform: rotate(-90deg);
+}
+
+.style-advanced-body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding-top: 10px;
+}
+
 .style-section {
   flex-shrink: 0;
   border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent));
@@ -7060,11 +7127,13 @@ textarea {
     border-radius: var(--card-radius);
   }
 
+  /* Same story as .replay-actions below: the hardcoded 34px here made the
+     action-button-height setting inert on the whole Mobile profile. Height now
+     comes from --action-button-height, derived from the button-height control.
+     Only the phone-specific shrinking (padding, font, ellipsis) stays. */
   .controls button {
     width: auto;
     min-width: 0;
-    height: 34px;
-    min-height: 34px;
     overflow: hidden;
     padding: 0 6px;
     font-size: 0.72rem;
@@ -7100,14 +7169,16 @@ textarea {
     display: inline-flex;
   }
 
+  /* Font size only. These used to pin height: 34px, which — together with the
+     twin rule on the nav buttons further down — is what made the button-height
+     setting inert across the whole Mobile profile. Height comes from
+     --action-button-height, whose mobile default is that same 34px. */
   .controls .nav-card {
-    height: 34px;
     font-size: 0.72rem;
   }
 
   .controls .review,
   .controls .known {
-    height: 34px;
     font-size: 0.72rem;
   }
 
@@ -7138,11 +7209,14 @@ textarea {
     margin-top: 0;
   }
 
+  /* No min-height here: it used to hardcode 24px, which silently overrode the
+     replay-button-height setting on the whole Mobile profile — the slider was
+     there, stored a value, and did nothing. The height now comes from
+     --replay-button-height, itself derived from the one button-height control. */
   .replay-actions button {
     width: auto;
     flex: 1 1 0;
     min-width: 0;
-    min-height: 24px;
     overflow: hidden;
     padding: 0 4px;
     font-size: 0.62rem;
@@ -7768,17 +7842,12 @@ textarea {
     min-height: 0;
   }
 
+  /* Very small phones: keep the horizontal compaction, but take the height from
+     the setting rather than pinning it — see the note at .controls button above. */
   .controls button {
     width: auto;
     min-width: 0;
-    height: 32px;
-    min-height: 32px;
     padding: 0 5px;
-  }
-
-  .controls .review,
-  .controls .known {
-    height: 32px;
   }
 }
 
@@ -9756,8 +9825,6 @@ textarea {
   .controls #prevCardBtn,
   .controls #addCardBtn,
   .controls #nextCardBtn {
-    height: 34px;
-    min-height: 34px;
     align-self: center;
   }
 }
@@ -11635,37 +11702,90 @@ kbd {
   }
 }
 
-/* ── Reading room: giving the phone screen back to the notes/cards ──────
-   On a phone the fixed chrome above the content — appbar (title + category +
-   score + sync), the Cards/Notes toggle, and the notes panel's own header —
-   measured 207px of a 757px viewport, so barely 70% of the screen was the
-   thing you actually came to read. Three layers of relief, in order of how
-   little they ask of the user:
+/* ── Reading room: giving the screen back to the notes/cards ────────────
+   The fixed chrome above the content — appbar (title + category + score +
+   sync), the Cards/Notes toggle, and the notes panel's own header — measured
+   207px of a 757px phone viewport, so barely 70% of the screen was the thing
+   you actually came to read. A laptop loses less proportionally but the same
+   ~130px absolutely. Three layers of relief, in order of how little they ask
+   of the user:
 
    1. Tighter tokens (below) — the notes panel's padding/gap and the toggle's
       own box, trimmed on mobile only.
    2. Auto-hide (`body.chrome-collapsed`) — scrolling down through notes or a
       card face folds the appbar and the toggle away; a small scroll back up
       brings them straight back, exactly like a mobile browser's URL bar.
+      PHONE-ONLY (gated in app.js): a mouse wheel flicking the header in and
+      out reads as a bug on a big screen.
    3. The ⤢ focus button in the notes header — pins that collapsed state so it
-      never springs back while you read a long note.
+      never springs back while you read a long note. Works at every width,
+      which is why the collapse rules below sit OUTSIDE the mobile block.
 
    Layers 2 and 3 set the same class, so they can't disagree about the layout;
    app.js just decides when it's on. */
 
-/* Focus button: hidden by default, revealed by the mobile block below. Both
-   rules are a bare class, so this one has to be authored FIRST or it would win
-   the tie and the button would never appear. Pinned-on reads as an engaged
-   toggle, matching the edit pill so the notes header has one visual language
-   for "this mode is on". */
+/* Pinned-on reads as an engaged toggle, matching the edit pill so the notes
+   header has one visual language for "this mode is on". */
 .focus-mode-btn {
-  display: none;
+  display: inline-grid;
 }
 
 .focus-mode-btn[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   color: var(--accent);
+}
+
+/* Both collapsing elements animate on the same curve so the header and the
+   toggle read as one panel folding away, not two things moving. max-height
+   (not height) because the appbar's natural height depends on how many lines
+   the deck title wraps to — there is no fixed value to animate from.
+   Gated on .chrome-ready (set one frame after boot): focus mode is
+   remembered across sessions, and without the gate every launch would open
+   with the header up and visibly fold it away. */
+.appbar,
+.quiz-panel .view-mode-toggle:not([hidden]) {
+  max-height: 300px;
+}
+
+body.chrome-ready .appbar,
+body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]) {
+  transition:
+    max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.16s linear,
+    margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Collapsed: the appbar is zero-height and inert, so the study area starts at
+   the top of the shell. The :not(:has(…)) guard is load-bearing — the side
+   drawer is a *descendant* of .appbar at every width, and while opacity:0
+   doesn't clip a position:fixed child, it does still fade it to invisible.
+   Opening the menu therefore has to un-collapse the appbar, or the drawer
+   opens blank. */
+body.chrome-collapsed .app-shell {
+  gap: 0;
+}
+
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .appbar {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .quiz-panel .view-mode-toggle:not([hidden]) {
+  max-height: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 @media (max-width: 720px) {
@@ -11698,66 +11818,6 @@ kbd {
      row to wrap into a THIRD line, making the header taller than before. */
   .notes-mode .notes-head > .face-label-row {
     display: none;
-  }
-
-  /* Both collapsing elements animate on the same curve so the header and the
-     toggle read as one panel folding away, not two things moving. max-height
-     (not height) because the appbar's natural height depends on how many lines
-     the deck title wraps to — there is no fixed value to animate from.
-     Gated on .chrome-ready (set one frame after boot): focus mode is
-     remembered across sessions, and without the gate every launch would open
-     with the header up and visibly fold it away. */
-  .appbar,
-  .quiz-panel .view-mode-toggle:not([hidden]) {
-    max-height: 300px;
-  }
-
-  body.chrome-ready .appbar,
-  body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]) {
-    transition:
-      max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-      opacity 0.16s linear,
-      margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-      padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-      transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  /* Collapsed: the appbar is zero-height and inert, so the study area starts at
-     the top of the shell. The :not(:has(…)) guard is load-bearing — the side
-     drawer is a *descendant* of .appbar, and while opacity:0 doesn't clip a
-     position:fixed child, it does still fade it to invisible. Opening the menu
-     therefore has to un-collapse the appbar, or the drawer opens blank. */
-  body.chrome-collapsed .app-shell {
-    gap: 0;
-  }
-
-  body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .appbar {
-    max-height: 0;
-    opacity: 0;
-    transform: translateY(-6px);
-    overflow: hidden;
-    pointer-events: none;
-  }
-
-  body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .quiz-panel .view-mode-toggle:not([hidden]) {
-    max-height: 0;
-    margin-bottom: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-    border-top-width: 0;
-    border-bottom-width: 0;
-    opacity: 0;
-    overflow: hidden;
-    pointer-events: none;
-  }
-
-  /* Focus button: mobile only — on desktop there is no chrome pressure worth a
-     dedicated control, and the class it toggles only does anything in here.
-     This rule must stay AFTER the `display: none` default below is *authored*
-     — it isn't; the default is declared before the media query precisely so
-     that this one wins on equal specificity. */
-  .focus-mode-btn {
-    display: inline-grid;
   }
 }
 

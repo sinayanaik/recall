@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260805-02">
+    <link rel="stylesheet" href="styles.css?v=20260807-01">
     <script>
       // ── Boot-click queue ────────────────────────────────────────────────
       // The whole toolbar is in the HTML, so it paints immediately — but every
@@ -273,11 +273,13 @@
               <button class="edit-card-btn notes-quick-note" data-render-action="quick-note" type="button" title="Pin the selection to Quick Notes" aria-label="Pin the selection to Quick Notes">&#128204;</button>
               <span class="notes-head-divider" aria-hidden="true"></span>
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
-              <!-- Phone-only. Scrolling already folds the appbar + Cards/Notes
-                   toggle away on its own; this pins that state so a long note
-                   keeps the whole screen instead of the chrome springing back
-                   the moment you nudge upward. -->
-              <button class="edit-card-btn focus-mode-btn" id="focusModeBtn" type="button" aria-pressed="false" title="Focus mode — keep the header hidden while you read" aria-label="Toggle focus mode">&#10530;</button>
+              <!-- Folds the appbar + Cards/Notes toggle away and pins them
+                   there, so a long note keeps the whole screen instead of the
+                   chrome springing back the moment you nudge upward. On phones
+                   scrolling already folds them on its own; this makes it stick.
+                   Escape and the shortcut also exit — necessary on desktop,
+                   where the collapsed appbar takes ☰ and Back with it. -->
+              <button class="edit-card-btn focus-mode-btn" id="focusModeBtn" type="button" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Toggle focus mode">&#10530;</button>
             </div>
             <div class="rendered notes-rendered" id="notesView"></div>
             <nav class="notes-toc-drawer" id="notesTocDrawer" hidden aria-label="Notes table of contents">
@@ -809,6 +811,8 @@
               <tr><td><kbd>R</kbd></td><td>Mark for Review</td></tr>
               <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Navigate cards</td></tr>
               <tr><td><kbd>Ctrl</kbd> + <kbd>E</kbd></td><td>Toggle edit / rendered view</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read)</td></tr>
+              <tr><td><kbd>Esc</kbd></td><td>Close the topmost panel, or leave focus mode</td></tr>
             </table>
           </section>
 
@@ -1037,6 +1041,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260805-02"></script>
+    <script src="app.js?v=20260807-01"></script>
   </body>
 </html>

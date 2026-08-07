@@ -198,202 +198,209 @@ const fontFamilyChoices = {
   rounded: "ui-rounded, \"Avenir Next\", \"Nunito Sans\", Inter, ui-sans-serif, system-ui, sans-serif"
 };
 
+// One entry per control in styleControlGroups, per profile — nothing more.
+// Keys the panel doesn't expose used to accumulate here (stackCard*,
+// sidePanelWidthPercent, the per-face font families) and normalizeStyleSettings
+// iterates THIS object, so a stale key is a setting the app carries around, syncs
+// to Supabase and back-fills from the wrong profile, while doing nothing at all.
+// Ordered to match the panel so the two can be checked against each other.
 const defaultStyleProfiles = {
   "mobile": {
-    "appGap": "10px",
-    "buttonGap": "8px",
+    // Basics
     "fontFamily": "system",
-    "cardPadding": "24px",
-    "inputHeight": "40px",
     "baseFontSize": "12px",
-    "codeFontSize": "10px",
-    "modalPadding": "18px",
-    "panelPadding": "10px",
-    "stackCardGap": "7px",
-    "answerPadding": "0px",
-    "questionAlign": "left",
-    "answerFontSize": "13px",
     "baseLineHeight": "1.23",
-    "buttonFontSize": "14px",
-    "cardContentGap": "16px",
-    "codeLineHeight": "1.17",
-    "appWidthPercent": "100",
-    "cardBorderWidth": "1px",
-    "questionPadding": "2px",
-    "answerFontFamily": "system",
-    "answerFontWeight": "300",
-    "answerLineHeight": "1.58",
-    "appHeightPercent": "100",
-    "cardCornerRadius": "14px",
-    "cardWidthPercent": "96",
-    "inputCornerRadius": "8px",
-    "modalWidthPercent": "60",
-    "panelCornerRadius": "14px",
-    "stackCardFontSize": "13px",
-    "actionButtonHeight": "42px",
-    "buttonCornerRadius": "8px",
-    "questionFontFamily": "system",
-    "questionFontWeight": "500",
-    "questionLineHeight": "1.17",
-    "replayButtonHeight": "30px",
-    "questionFillPercent": "75",
+    "notesFontSize": "15px",
+    "notesMaxWidthPercent": "100",
+    "answerFontSize": "13px",
     "questionMaxFontSize": "23px",
-    "rawMarkdownFontSize": "16px",
-    "stackCardLineHeight": "1.28",
-    "toolbarButtonHeight": "38px",
+    "appWidthPercent": "100",
+    // Layout
+    "appHeightPercent": "100",
+    "cardWidthPercent": "96",
     "cardMaxHeightPercent": "80",
-    "questionVerticalAlign": "center",
-    "sidePanelWidthPercent": "16",
+    "modalWidthPercent": "60",
     "visualMaxWidthPercent": "90",
     "markdownBoxHeightPercent": "30",
-    "notesFontFamily": "system",
-    "notesFontSize": "15px",
+    // Spacing and shape
+    "appGap": "10px",
+    "panelPadding": "10px",
+    "cardPadding": "24px",
+    "cardContentGap": "16px",
+    "buttonGap": "8px",
+    "cardCornerRadius": "14px",
+    "panelCornerRadius": "14px",
+    "buttonCornerRadius": "8px",
+    "cardBorderWidth": "1px",
+    // Question
+    "questionFillPercent": "75",
+    "questionLineHeight": "1.17",
+    "questionAlign": "left",
+    "questionVerticalAlign": "center",
+    "questionFontWeight": "500",
+    // Answer and notes
+    "answerLineHeight": "1.58",
+    "answerFontWeight": "300",
     "notesLineHeight": "1.5",
     "notesFontWeight": "400",
-    "notesMaxWidthPercent": "100",
-    "notesPadding": "4px"
+    "notesPadding": "4px",
+    "cardTextPadding": "2px",
+    // Controls and text
+    // 34px, not desktop's 38: this now drives the Review/Prev/Next row too,
+    // which the old hardcoded mobile override pinned at exactly 34px.
+    "toolbarButtonHeight": "34px",
+    "buttonFontSize": "14px",
+    "inputHeight": "40px",
+    "modalPadding": "18px",
+    "rawMarkdownFontSize": "16px",
+    // Matches baseFontSize: --code-font-size had NO consumer until now, so every
+    // stored value for it is noise — see migrateLegacyStyleSettings, which
+    // rewrites it rather than letting anyone's code blocks suddenly shrink.
+    "codeFontSize": "12px",
+    "codeLineHeight": "1.17"
   },
   "desktop": {
-    "appGap": "10px",
-    "buttonGap": "8px",
+    // Basics
     "fontFamily": "system",
-    "cardPadding": "24px",
-    "inputHeight": "40px",
     "baseFontSize": "18px",
-    "codeFontSize": "12px",
-    "modalPadding": "18px",
-    "panelPadding": "10px",
-    "stackCardGap": "7px",
-    "answerPadding": "0px",
-    "questionAlign": "center",
-    "answerFontSize": "23px",
     "baseLineHeight": "1.58",
-    "buttonFontSize": "14px",
-    "cardContentGap": "16px",
-    "codeLineHeight": "1.55",
-    "appWidthPercent": "100",
-    "cardBorderWidth": "1px",
-    "questionPadding": "2px",
-    "answerFontFamily": "system",
-    "answerFontWeight": "400",
-    "answerLineHeight": "1.58",
-    "appHeightPercent": "100",
-    "cardCornerRadius": "14px",
-    "cardWidthPercent": "100",
-    "inputCornerRadius": "8px",
-    "modalWidthPercent": "60",
-    "panelCornerRadius": "14px",
-    "stackCardFontSize": "13px",
-    "actionButtonHeight": "42px",
-    "buttonCornerRadius": "8px",
-    "questionFontFamily": "system",
-    "questionFontWeight": "500",
-    "questionLineHeight": "1.18",
-    "replayButtonHeight": "30px",
-    "questionFillPercent": "58",
+    "notesFontSize": "18px",
+    "notesMaxWidthPercent": "100",
+    "answerFontSize": "23px",
     "questionMaxFontSize": "19px",
-    "rawMarkdownFontSize": "18px",
-    "stackCardLineHeight": "1.28",
-    "toolbarButtonHeight": "38px",
+    "appWidthPercent": "100",
+    // Layout
+    "appHeightPercent": "100",
+    "cardWidthPercent": "100",
     "cardMaxHeightPercent": "84",
-    "questionVerticalAlign": "center",
-    "sidePanelWidthPercent": "6",
+    "modalWidthPercent": "60",
     "visualMaxWidthPercent": "50",
     "markdownBoxHeightPercent": "30",
-    "notesFontFamily": "system",
-    "notesFontSize": "18px",
+    // Spacing and shape
+    "appGap": "10px",
+    "panelPadding": "10px",
+    "cardPadding": "24px",
+    "cardContentGap": "16px",
+    "buttonGap": "8px",
+    "cardCornerRadius": "14px",
+    "panelCornerRadius": "14px",
+    "buttonCornerRadius": "8px",
+    "cardBorderWidth": "1px",
+    // Question
+    "questionFillPercent": "58",
+    "questionLineHeight": "1.18",
+    "questionAlign": "center",
+    "questionVerticalAlign": "center",
+    "questionFontWeight": "500",
+    // Answer and notes
+    "answerLineHeight": "1.58",
+    "answerFontWeight": "400",
     "notesLineHeight": "1.58",
     "notesFontWeight": "400",
-    "notesMaxWidthPercent": "100",
-    "notesPadding": "6px"
+    "notesPadding": "6px",
+    "cardTextPadding": "2px",
+    // Controls and text
+    "toolbarButtonHeight": "38px",
+    "buttonFontSize": "14px",
+    "inputHeight": "40px",
+    "modalPadding": "18px",
+    "rawMarkdownFontSize": "18px",
+    "codeFontSize": "18px",
+    "codeLineHeight": "1.55"
   },
   "version": 2
 };
 
 const styleDefaults = defaultStyleProfiles.desktop;
 
+// The panel is two tiers. `basic` groups render as a plain always-visible list
+// at the top — the handful of settings people actually reach for. Everything
+// else is `advanced`: still here, still per-profile, but folded behind one
+// disclosure so the panel opens as something you can read rather than 40-odd
+// sliders across seven accordions.
+//
+// Nothing in here may write a CSS variable no stylesheet reads. Several
+// controls used to: "Code font size" drove --code-font-size while .rendered pre
+// was hardcoded to font-size:1em, and three of the four font pickers were
+// overwritten by resolveFontFamily before anything could inherit them. A
+// control that silently does nothing is worse than a missing one, because you
+// spend your time deciding it's your eyes rather than the app.
 const styleControlGroups = [
   {
-    title: "Typography",
+    title: "Basics",
+    tier: "basic",
     fields: [
-      { key: "fontFamily", label: "Base font family", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Base app font." },
-      { key: "baseFontSize", label: "Base font size", type: "range", min: 10, max: 36, step: 1, unit: "px", hint: "General Markdown and interface text size." },
-      { key: "baseLineHeight", label: "Base line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "General reading spacing." },
-      { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "range", min: 8, max: 36, step: 1, unit: "px", hint: "Text size inside Markdown edit boxes." },
-      { key: "codeFontSize", label: "Code font size", type: "range", min: 10, max: 28, step: 1, unit: "px", hint: "Text size inside code blocks." },
-      { key: "codeLineHeight", label: "Code line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Line spacing inside code blocks." }
+      { key: "fontFamily", label: "Font", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Typeface for the whole app — cards, notes and chrome." },
+      { key: "baseFontSize", label: "Text size", type: "range", min: 10, max: 36, step: 1, unit: "px", hint: "General Markdown and interface text size." },
+      { key: "baseLineHeight", label: "Line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "General reading spacing." },
+      { key: "notesFontSize", label: "Notes text size", type: "range", min: 10, max: 40, step: 1, unit: "px", hint: "Body text size in the Study Notes view." },
+      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "range", min: 40, max: 100, step: 1, hint: "Maximum width of the notes column as a percent of the notes area." },
+      { key: "answerFontSize", label: "Answer text size", type: "range", min: 10, max: 64, step: 1, unit: "px", hint: "Main answer text size." },
+      { key: "questionMaxFontSize", label: "Question max text size", type: "range", min: 8, max: 180, step: 1, unit: "px", hint: "Largest question text size. Small questions can still shrink without a floor." },
+      { key: "appWidthPercent", label: "App width %", type: "range", min: 50, max: 100, step: 1, hint: "Width of the whole app as a percent of screen width." }
     ]
   },
   {
-    title: "Layout Percentages",
+    title: "Layout",
+    tier: "advanced",
     fields: [
-      { key: "appWidthPercent", label: "App width %", type: "range", min: 50, max: 100, step: 1, hint: "Width of the whole app as a percent of screen width." },
       { key: "appHeightPercent", label: "App height %", type: "range", min: 50, max: 100, step: 1, hint: "Height of the whole app as a percent of screen height." },
       { key: "cardWidthPercent", label: "Card width %", type: "range", min: 40, max: 100, step: 1, hint: "Flashcard width as a percent of the middle study area." },
       { key: "cardMaxHeightPercent", label: "Card max height %", type: "range", min: 30, max: 100, step: 1, hint: "Maximum flashcard height as a percent of screen height." },
-      { key: "modalWidthPercent", label: "Modal width %", type: "range", min: 30, max: 100, step: 1, hint: "Import/Web/Style panel width as a percent of screen width." },
+      { key: "modalWidthPercent", label: "Modal width %", type: "range", min: 30, max: 100, step: 1, hint: "Import and My Decks panel width as a percent of screen width." },
       { key: "visualMaxWidthPercent", label: "Visual max width %", type: "range", min: 10, max: 100, step: 1, hint: "Maximum width of images, videos, and diagrams as a percent of available space." },
       { key: "markdownBoxHeightPercent", label: "Markdown box height %", type: "range", min: 10, max: 80, step: 1, hint: "Import textarea height as a percent of screen height." }
     ]
   },
   {
-    title: "Spacing And Shape",
+    title: "Spacing and shape",
+    tier: "advanced",
     fields: [
       { key: "appGap", label: "Main gap", type: "range", min: 0, max: 40, step: 1, unit: "px", hint: "Space between major app sections." },
-      { key: "panelPadding", label: "Panel padding", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Inside spacing for study and side panels." },
+      { key: "panelPadding", label: "Panel padding", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Inside spacing for the study panel." },
       { key: "cardPadding", label: "Card padding", type: "range", min: 0, max: 80, step: 1, unit: "px", hint: "Inside spacing on question and answer faces." },
       { key: "cardContentGap", label: "Card label gap", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Space between the Question/Answer label and content." },
       { key: "buttonGap", label: "Button gap", type: "range", min: 0, max: 32, step: 1, unit: "px", hint: "Space between buttons." },
       { key: "cardCornerRadius", label: "Card corner radius", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Roundness of the flashcard corners." },
-      { key: "panelCornerRadius", label: "Panel corner radius", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Roundness of study, side, import, and style panels." },
-      { key: "buttonCornerRadius", label: "Button corner radius", type: "range", min: 0, max: 32, step: 1, unit: "px", hint: "Roundness of buttons." },
-      { key: "inputCornerRadius", label: "Input corner radius", type: "range", min: 0, max: 32, step: 1, unit: "px", hint: "Roundness of textboxes and selects." }
-    ]
-  },
-  {
-    title: "Question",
-    fields: [
-      { key: "questionFontFamily", label: "Question font family", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Question-only font." },
-      { key: "questionFillPercent", label: "Question fill %", type: "range", min: 10, max: 95, step: 1, hint: "How much vertical card space the question tries to occupy." },
-      { key: "questionMaxFontSize", label: "Question max font size", type: "range", min: 8, max: 180, step: 1, unit: "px", hint: "Largest question text size. Small questions can still shrink without a floor." },
-      { key: "questionLineHeight", label: "Question line spacing", type: "range", min: 0.8, max: 2.4, step: 0.01, hint: "Line spacing for question text." },
-      { key: "questionAlign", label: "Question horizontal align", type: "select", options: ["left", "center", "right", "justify"], hint: "Question text alignment." },
-      { key: "questionVerticalAlign", label: "Question vertical align", type: "select", options: ["start", "center", "end"], hint: "Question vertical position." },
-      { key: "questionFontWeight", label: "Question weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Question text thickness." },
-      { key: "questionPadding", label: "Question padding", type: "range", min: 0, max: 120, step: 1, unit: "px", hint: "Internal padding for the question text." }
-    ]
-  },
-  {
-    title: "Answer And Card",
-    fields: [
-      { key: "answerFontFamily", label: "Answer font family", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Answer-only font." },
-      { key: "answerFontSize", label: "Answer font size", type: "range", min: 10, max: 64, step: 1, unit: "px", hint: "Main answer text size." },
-      { key: "answerLineHeight", label: "Answer line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Reading spacing on the answer side." },
-      { key: "answerFontWeight", label: "Answer weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Answer text thickness." },
-      { key: "answerPadding", label: "Answer padding", type: "range", min: 0, max: 120, step: 1, unit: "px", hint: "Internal padding for the answer text." },
+      { key: "panelCornerRadius", label: "Panel corner radius", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Roundness of the study, import, and My Decks panels." },
+      { key: "buttonCornerRadius", label: "Control corner radius", type: "range", min: 0, max: 32, step: 1, unit: "px", hint: "Roundness of buttons, textboxes and selects." },
       { key: "cardBorderWidth", label: "Card border width", type: "range", min: 0, max: 8, step: 1, unit: "px", hint: "Border thickness around the flashcard." }
     ]
   },
   {
-    title: "Notes",
+    title: "Question",
+    tier: "advanced",
     fields: [
-      { key: "notesFontFamily", label: "Notes font family", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Font for the Study Notes document." },
-      { key: "notesFontSize", label: "Notes font size", type: "range", min: 10, max: 40, step: 1, unit: "px", hint: "Body text size in the Study Notes view." },
-      { key: "notesLineHeight", label: "Notes line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Reading spacing in the Study Notes view." },
-      { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
-      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "range", min: 40, max: 100, step: 1, hint: "Maximum width of the notes column as a percent of the notes area." },
-      { key: "notesPadding", label: "Notes padding", type: "range", min: 0, max: 64, step: 1, unit: "px", hint: "Inside spacing around the Study Notes content." }
+      { key: "questionFillPercent", label: "Question fill %", type: "range", min: 10, max: 95, step: 1, hint: "How much vertical card space the question tries to occupy." },
+      { key: "questionLineHeight", label: "Question line spacing", type: "range", min: 0.8, max: 2.4, step: 0.01, hint: "Line spacing for question text." },
+      { key: "questionAlign", label: "Question horizontal align", type: "select", options: ["left", "center", "right", "justify"], hint: "Question text alignment." },
+      { key: "questionVerticalAlign", label: "Question vertical align", type: "select", options: ["start", "center", "end"], hint: "Question vertical position." },
+      { key: "questionFontWeight", label: "Question weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Question text thickness." }
     ]
   },
   {
-    title: "Buttons And Inputs",
+    title: "Answer and notes",
+    tier: "advanced",
     fields: [
-      { key: "toolbarButtonHeight", label: "Toolbar button height", type: "range", min: 24, max: 72, step: 1, unit: "px", hint: "Height of Import, Export, and icon buttons." },
-      { key: "actionButtonHeight", label: "Action button height", type: "range", min: 28, max: 80, step: 1, unit: "px", hint: "Height of Review, Prev, Next, Known buttons." },
+      { key: "answerLineHeight", label: "Answer line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Reading spacing on the answer side." },
+      { key: "answerFontWeight", label: "Answer weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Answer text thickness." },
+      { key: "notesLineHeight", label: "Notes line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Reading spacing in the Study Notes view." },
+      { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
+      { key: "notesPadding", label: "Notes padding", type: "range", min: 0, max: 64, step: 1, unit: "px", hint: "Inside spacing around the Study Notes content." },
+      { key: "cardTextPadding", label: "Card text padding", type: "range", min: 0, max: 120, step: 1, unit: "px", hint: "Internal padding for question and answer text, inside the card padding." }
+    ]
+  },
+  {
+    title: "Controls and text",
+    tier: "advanced",
+    fields: [
+      { key: "toolbarButtonHeight", label: "Button height", type: "range", min: 24, max: 72, step: 1, unit: "px", hint: "Height of icon buttons, Review/Prev/Next, and the replay buttons (slightly shorter). Menu rows keep their own size." },
       { key: "buttonFontSize", label: "Button font size", type: "range", min: 10, max: 28, step: 1, unit: "px", hint: "Text size inside buttons." },
-      { key: "replayButtonHeight", label: "Replay button height", type: "range", min: 20, max: 56, step: 1, unit: "px", hint: "Height of All cards / Review only replay buttons." },
       { key: "inputHeight", label: "Input height", type: "range", min: 24, max: 72, step: 1, unit: "px", hint: "Height of URL and style textboxes." },
-      { key: "modalPadding", label: "Modal padding", type: "range", min: 0, max: 64, step: 1, unit: "px", hint: "Inside spacing for import, web deck, and style panels." }
+      { key: "modalPadding", label: "Modal padding", type: "range", min: 0, max: 64, step: 1, unit: "px", hint: "Inside spacing for the import and My Decks panels." },
+      { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "range", min: 8, max: 36, step: 1, unit: "px", hint: "Text size inside Markdown edit boxes." },
+      { key: "codeFontSize", label: "Code font size", type: "range", min: 10, max: 28, step: 1, unit: "px", hint: "Text size inside code blocks." },
+      { key: "codeLineHeight", label: "Code line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Line spacing inside code blocks." }
     ]
   }
 ];
@@ -405,17 +412,12 @@ const styleFieldByKey = styleControlGroups.reduce((fields, group) => {
   return fields;
 }, {});
 
+// key → the CSS variable it writes verbatim. Percent keys are deliberately
+// ABSENT: they were mapped to `--*-percent` variables no rule ever read, while
+// the value that actually did the work was the derived `--app-width: 100vw`
+// etc. set further down in applyStyleSettings. Two variables per setting, one
+// of them a decoy, is how "why doesn't this slider do anything" starts.
 const styleCssVariables = {
-  questionFontFamily: "--question-font-family",
-  answerFontFamily: "--answer-font-family",
-  appWidthPercent: "--app-width-percent",
-  appHeightPercent: "--app-height-percent",
-  sidePanelWidthPercent: "--side-panel-width-percent",
-  cardWidthPercent: "--card-width-percent",
-  cardMaxHeightPercent: "--card-max-height-percent",
-  modalWidthPercent: "--modal-width-percent",
-  visualMaxWidthPercent: "--visual-max-width-percent",
-  markdownBoxHeightPercent: "--markdown-box-height-percent",
   baseFontSize: "--content-font-size",
   baseLineHeight: "--content-line-height",
   rawMarkdownFontSize: "--raw-markdown-font-size",
@@ -426,11 +428,9 @@ const styleCssVariables = {
   questionAlign: "--question-align",
   questionVerticalAlign: "--question-vertical-align",
   questionFontWeight: "--question-font-weight",
-  questionPadding: "--question-padding",
   answerFontSize: "--answer-font-size",
   answerLineHeight: "--answer-line-height",
   answerFontWeight: "--answer-font-weight",
-  answerPadding: "--answer-padding",
   notesFontSize: "--notes-font-size",
   notesLineHeight: "--notes-line-height",
   notesFontWeight: "--notes-font-weight",
@@ -440,18 +440,12 @@ const styleCssVariables = {
   cardPadding: "--card-face-padding",
   cardContentGap: "--card-face-gap",
   buttonGap: "--toolbar-gap",
-  stackCardGap: "--brick-gap",
   cardBorderWidth: "--card-border-width",
   cardCornerRadius: "--card-radius",
   panelCornerRadius: "--panel-corner-radius",
   buttonCornerRadius: "--toolbar-button-radius",
-  inputCornerRadius: "--input-radius",
   toolbarButtonHeight: "--toolbar-button-height",
-  actionButtonHeight: "--action-button-height",
   buttonFontSize: "--button-font-size",
-  replayButtonHeight: "--replay-button-height",
-  stackCardFontSize: "--brick-font-size",
-  stackCardLineHeight: "--brick-line-height",
   inputHeight: "--input-height",
   modalPadding: "--modal-padding"
 };
@@ -2978,11 +2972,27 @@ function migrateLegacyStyleSettings(raw = {}) {
   if (Object.prototype.hasOwnProperty.call(raw, "quizPanelRadius")) migrated.panelCornerRadius = raw.quizPanelRadius;
   if (Object.prototype.hasOwnProperty.call(raw, "cardRadius")) migrated.cardCornerRadius = raw.cardRadius;
   if (Object.prototype.hasOwnProperty.call(raw, "toolbarButtonRadius")) migrated.buttonCornerRadius = raw.toolbarButtonRadius;
-  if (Object.prototype.hasOwnProperty.call(raw, "inputRadius")) migrated.inputCornerRadius = raw.inputRadius;
   if (Object.prototype.hasOwnProperty.call(raw, "actionButtonFontSize")) migrated.buttonFontSize = raw.actionButtonFontSize;
-  if (Object.prototype.hasOwnProperty.call(raw, "brickGap")) migrated.stackCardGap = raw.brickGap;
-  if (Object.prototype.hasOwnProperty.call(raw, "brickFontSize")) migrated.stackCardFontSize = raw.brickFontSize;
-  if (Object.prototype.hasOwnProperty.call(raw, "brickLineHeight")) migrated.stackCardLineHeight = raw.brickLineHeight;
+
+  // Merged controls. Each of these used to be its own slider writing its own
+  // variable; the survivor takes the old value so nobody's tuned theme resets.
+  // inputCornerRadius (and the legacy inputRadius before it) → buttonCornerRadius:
+  //   --input-radius is now an alias of --toolbar-button-radius.
+  if (Object.prototype.hasOwnProperty.call(raw, "inputRadius")) migrated.buttonCornerRadius = raw.inputRadius;
+  if (Object.prototype.hasOwnProperty.call(raw, "inputCornerRadius")) migrated.buttonCornerRadius = raw.inputCornerRadius;
+  // questionPadding/answerPadding → cardTextPadding. Question wins: it was the
+  // one with a non-zero default, so it's the one people actually moved.
+  if (Object.prototype.hasOwnProperty.call(raw, "answerPadding")) migrated.cardTextPadding = raw.answerPadding;
+  if (Object.prototype.hasOwnProperty.call(raw, "questionPadding")) migrated.cardTextPadding = raw.questionPadding;
+  // actionButtonHeight/replayButtonHeight → toolbarButtonHeight. Those two were
+  // dead on the Mobile profile (hardcoded 34px/24px overrides, now removed) and
+  // both are derived from the toolbar height in :root, so only take them as a
+  // fallback — an explicitly-set toolbar height still wins.
+  if (!Object.prototype.hasOwnProperty.call(raw, "toolbarButtonHeight")
+      && Object.prototype.hasOwnProperty.call(raw, "actionButtonHeight")) {
+    migrated.toolbarButtonHeight = raw.actionButtonHeight;
+  }
+
   return migrated;
 }
 
@@ -3003,25 +3013,45 @@ function styleProfileLabel(profile) {
   return profile === "mobile" ? "Mobile" : "Desktop";
 }
 
+// Bumped to 3 when the panel was trimmed to only controls that do something.
+// Carried on the stored blob (not just the cloud payload) so the one-shot
+// below runs exactly once per device rather than on every load.
+const STYLE_SETTINGS_VERSION = 3;
+
 function normalizeStyleProfiles(raw = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   const profileSource = source.profiles && typeof source.profiles === "object" ? source.profiles : source;
   const hasProfiles = Boolean(profileSource.desktop || profileSource.mobile);
+  const storedVersion = Number(source.version) || 1;
+
+  // v3 pointed --code-font-size at a real CSS rule for the first time; before
+  // it, .rendered pre was font-size:1em and the slider was decoration. Honouring
+  // a pre-v3 stored value would shrink every existing user's code blocks to a
+  // number they never saw the effect of choosing, so drop it once and let the
+  // new default (which equals the base text size, i.e. today's rendering) win.
+  const dropPreV3 = (settings) => {
+    if (storedVersion >= 3 || !settings || typeof settings !== "object") return settings;
+    const { codeFontSize, ...rest } = settings;
+    return rest;
+  };
 
   if (!hasProfiles) {
-    const legacy = normalizeStyleSettings(source, "desktop");
-    const mobileLegacySource = { ...defaultStyleProfiles.mobile, ...migrateLegacyStyleSettings(source) };
+    const legacySource = dropPreV3(source);
+    const legacy = normalizeStyleSettings(legacySource, "desktop");
+    const mobileLegacySource = { ...defaultStyleProfiles.mobile, ...migrateLegacyStyleSettings(legacySource) };
     return {
       desktop: { ...legacy },
-      mobile: normalizeStyleSettings(mobileLegacySource, "mobile")
+      mobile: normalizeStyleSettings(mobileLegacySource, "mobile"),
+      version: STYLE_SETTINGS_VERSION
     };
   }
 
   const desktopSource = profileSource.desktop || profileSource.mobile || defaultStyleProfiles.desktop;
   const mobileSource = profileSource.mobile || profileSource.desktop || defaultStyleProfiles.mobile;
   return {
-    desktop: normalizeStyleSettings(desktopSource, "desktop"),
-    mobile: normalizeStyleSettings(mobileSource, "mobile")
+    desktop: normalizeStyleSettings(dropPreV3(desktopSource), "desktop"),
+    mobile: normalizeStyleSettings(dropPreV3(mobileSource), "mobile"),
+    version: STYLE_SETTINGS_VERSION
   };
 }
 
@@ -3059,7 +3089,7 @@ function setStyleProfileSettings(profile, rawSettings) {
 
 function styleProfilesPayload() {
   return {
-    version: 2,
+    version: STYLE_SETTINGS_VERSION,
     desktop: getStyleProfileSettings("desktop"),
     mobile: getStyleProfileSettings("mobile")
   };
@@ -3104,16 +3134,34 @@ function renderStyleControls() {
   profileField.appendChild(profileHint);
   el.styleControls.appendChild(profileField);
 
-  styleControlGroups.forEach((group, groupIndex) => {
-    const section = document.createElement("details");
-    section.className = "style-section";
-    // Start every section folded — the panel opens as a compact list of headings
-    // the user expands only where they need to, instead of one long unfolded wall.
-    section.open = false;
+  // Everything past the basics goes inside ONE fold. Seven peer accordions read
+  // as seven equally-important things to work through; a short visible list plus
+  // "Advanced" reads as a setting you change and a drawer you can ignore.
+  const advanced = document.createElement("details");
+  advanced.className = "style-advanced";
+  advanced.open = false;
+  const advancedHeading = document.createElement("summary");
+  advancedHeading.textContent = "Advanced";
+  advanced.appendChild(advancedHeading);
+  const advancedBody = document.createElement("div");
+  advancedBody.className = "style-advanced-body";
+  advanced.appendChild(advancedBody);
 
-    const heading = document.createElement("summary");
-    heading.textContent = group.title;
-    section.appendChild(heading);
+  styleControlGroups.forEach((group) => {
+    const isBasic = group.tier === "basic";
+    // Basics render as a plain list — no summary, nothing to expand. A
+    // disclosure you always want open is just a click in the way.
+    const section = document.createElement(isBasic ? "section" : "details");
+    section.className = isBasic ? "style-basics" : "style-section";
+
+    if (isBasic) {
+      section.setAttribute("aria-label", group.title);
+    } else {
+      section.open = false;
+      const heading = document.createElement("summary");
+      heading.textContent = group.title;
+      section.appendChild(heading);
+    }
 
     const body = document.createElement("div");
     body.className = "style-section-body";
@@ -3175,9 +3223,10 @@ function renderStyleControls() {
     });
 
     section.appendChild(body);
-    el.styleControls.appendChild(section);
+    (isBasic ? el.styleControls : advancedBody).appendChild(section);
   });
 
+  el.styleControls.appendChild(advanced);
   el.styleControls.dataset.rendered = "true";
 }
 
@@ -3239,7 +3288,6 @@ function applyStyleSettings(rawSettings, options = {}) {
   state.styleSettings = settings;
   const appWidthPercent = numericStyleValue(settings.appWidthPercent) ?? 100;
   const appHeightPercent = numericStyleValue(settings.appHeightPercent) ?? 100;
-  const sidePanelWidthPercent = numericStyleValue(settings.sidePanelWidthPercent) ?? 16;
   const cardWidthPercent = numericStyleValue(settings.cardWidthPercent) ?? 96;
   const cardMaxHeightPercent = numericStyleValue(settings.cardMaxHeightPercent) ?? 74;
   const modalWidthPercent = numericStyleValue(settings.modalWidthPercent) ?? 60;
@@ -3249,22 +3297,26 @@ function applyStyleSettings(rawSettings, options = {}) {
   const notesMaxWidthPercent = numericStyleValue(settings.notesMaxWidthPercent) ?? 100;
 
   const root = document.documentElement;
+  // ONE font variable. --question/answer/notes-font-family are declared in
+  // :root as `var(--app-font-family)`, so they inherit from this for free.
+  // Setting all four here (from four separate pickers that all defaulted to
+  // "system") meant the inheritance never took effect, and "Base font family"
+  // appeared to do nothing to any card or note — it only reached app chrome.
   root.style.setProperty("--app-font-family", resolveFontFamily(settings.fontFamily));
-  root.style.setProperty("--question-font-family", resolveFontFamily(settings.questionFontFamily));
-  root.style.setProperty("--answer-font-family", resolveFontFamily(settings.answerFontFamily));
-  root.style.setProperty("--notes-font-family", resolveFontFamily(settings.notesFontFamily));
   root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
   Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
-    if (key === "questionFontFamily" || key === "answerFontFamily" || key === "notesFontFamily") return;
     root.style.setProperty(cssVariable, settings[key]);
   });
+  // One slider, both faces — question padding sits inside card padding, so two
+  // separate controls just meant two ways to push the same text inward.
+  root.style.setProperty("--question-padding", settings.cardTextPadding);
+  root.style.setProperty("--answer-padding", settings.cardTextPadding);
   root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
   root.style.setProperty("--question-fill", `${settings.questionFillPercent}%`);
   root.style.setProperty("--app-width", `${appWidthPercent}vw`);
   root.style.setProperty("--app-height", `${appHeightPercent}vh`);
   root.style.setProperty("--app-mobile-width", `${appWidthPercent}vw`);
   root.style.setProperty("--app-mobile-height", `${appHeightPercent}dvh`);
-  root.style.setProperty("--side-panel-width", `${sidePanelWidthPercent}%`);
   root.style.setProperty("--card-width", `${cardWidthPercent}%`);
   root.style.setProperty("--card-mobile-width", `${cardWidthPercent}%`);
   root.style.setProperty("--card-max-height", `${cardMaxHeightPercent}vh`);
@@ -3319,7 +3371,11 @@ function styleSettingsFromControls() {
   el.styleControls?.querySelectorAll("[data-style-key]").forEach((input) => {
     settings[input.dataset.styleKey] = input.value;
   });
-  return normalizeStyleSettings(settings);
+  // Normalize against the profile being EDITED. Without the argument this
+  // defaulted to "desktop", so anything the controls didn't supply was
+  // back-filled with desktop values while you were editing the Mobile profile.
+  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  return normalizeStyleSettings(settings, editProfile);
 }
 
 function handleStyleControlChange() {
@@ -3626,6 +3682,12 @@ function closeTopmostOverlay() {
   if (el.storagePanel && !el.storagePanel.hidden) { closeStoragePanel(); return; }
   if (el.myDecksPanel && !el.myDecksPanel.hidden) { closeMyDecksPanel(); return; }
   if (el.importPanel && el.importPanel.classList.contains("is-open")) { closeImportPanel(); return; }
+
+  // Focus mode last of all. It isn't an overlay — it's the absence of chrome —
+  // so it must never eat the Escape that was aimed at something drawn on top of
+  // it. On desktop this is also the escape hatch of last resort: the collapsed
+  // appbar takes the ☰ menu and the back button with it.
+  if (chromeFocusPinned) { setFocusMode(false); return; }
 
   // Nothing left open: make sure a scroll lock didn't outlive its owner.
   unlockPageScroll();
@@ -11660,18 +11722,21 @@ el.viewModeToggle?.addEventListener("click", (event) => {
 
 el.notesBtn?.addEventListener("click", () => setViewMode("notes"));
 
-// ── Reading room: collapsing the phone chrome ───────────────────────
+// ── Reading room: collapsing the chrome ─────────────────────────────
 // On a phone the appbar (deck title, category, score, sync) plus the
 // Cards/Notes toggle ate 103px of a 757px viewport before a single word of
 // the note. Both fold away together via `body.chrome-collapsed`, driven two
 // ways that share one piece of state so they can never disagree:
 //
-//   • auto — scrolling down through the notes or a card face hides them; a
-//     nudge back up (or reaching the top) brings them back, like a mobile
-//     browser's URL bar. Costs the user nothing.
 //   • pinned — the ⤢ button in the notes header keeps them hidden, so a long
 //     note isn't interrupted by chrome reappearing every time you scroll up
-//     to re-read a paragraph.
+//     to re-read a paragraph. Works at EVERY width: a laptop gives up the same
+//     ~130px to chrome nobody is reading, and Esc / Ctrl+. exit it there.
+//   • auto — scrolling down through the notes or a card face hides them; a
+//     nudge back up (or reaching the top) brings them back, like a mobile
+//     browser's URL bar. Costs the user nothing, but it stays PHONE-ONLY: a
+//     mouse wheel flicking the header in and out on a large screen reads as a
+//     bug rather than a feature, and desktop has the room to spare.
 //
 // Only the auto layer listens to scrolling; pinning short-circuits it, which
 // is what makes "pinned" mean pinned.
@@ -11720,7 +11785,10 @@ function hasStudyTextSelection() {
 }
 
 function applyChromeCollapse() {
-  const collapsed = isMobileChrome() && (chromeFocusPinned || chromeAutoHidden);
+  // The pin applies at any width; only the scroll-driven half is phone-gated,
+  // so resizing a window up past the breakpoint restores an auto-hidden header
+  // without disturbing a deliberate pin.
+  const collapsed = chromeFocusPinned || (isMobileChrome() && chromeAutoHidden);
   const changed = document.body.classList.contains("chrome-collapsed") !== collapsed;
   document.body.classList.toggle("chrome-collapsed", collapsed);
   // Collapsing makes the notes viewport taller, which can clamp scrollTop when
@@ -11732,8 +11800,8 @@ function applyChromeCollapse() {
     el.focusModeBtn.setAttribute("aria-pressed", chromeFocusPinned ? "true" : "false");
     el.focusModeBtn.textContent = chromeFocusPinned ? "⤡" : "⤢";
     el.focusModeBtn.title = chromeFocusPinned
-      ? "Focus mode on — tap to bring the header back"
-      : "Focus mode — keep the header hidden while you read";
+      ? "Focus mode on (Ctrl + . or Esc) — bring the header back"
+      : "Focus mode (Ctrl + .) — keep the header hidden while you read";
   }
 }
 
@@ -11813,8 +11881,11 @@ document.addEventListener(
   true,
 );
 
-el.focusModeBtn?.addEventListener("click", () => {
-  chromeFocusPinned = !chromeFocusPinned;
+// One path for all three ways in and out — the ⤢ button, Escape, and the
+// keyboard shortcut — so they can't drift on what "off" means.
+function setFocusMode(pinned) {
+  if (chromeFocusPinned === pinned) return;
+  chromeFocusPinned = pinned;
   try {
     localStorage.setItem(FOCUS_MODE_KEY, chromeFocusPinned ? "1" : "0");
   } catch (_) {
@@ -11823,10 +11894,12 @@ el.focusModeBtn?.addEventListener("click", () => {
   // Leaving focus mode should actually show the header, even mid-scroll.
   if (!chromeFocusPinned) chromeAutoHidden = false;
   applyChromeCollapse();
-});
+}
+
+el.focusModeBtn?.addEventListener("click", () => setFocusMode(!chromeFocusPinned));
 
 // Rotating to landscape (or resizing a desktop window down) crosses the mobile
-// breakpoint; the class is meaningless above it, so re-evaluate.
+// breakpoint, which turns the scroll-driven half on or off; re-evaluate.
 window.matchMedia(CHROME_MOBILE_QUERY).addEventListener("change", applyChromeCollapse);
 
 // Restore a remembered focus-mode pin before the first paint, then arm the CSS
@@ -12238,12 +12311,111 @@ function notesSelectionRange(target) {
   return selection.getRangeAt(0);
 }
 
+// Blocks that render into something with no usable text of their own, but whose
+// original markdown source is stashed on the host element: formulas (data-tex,
+// written by mathNode) and mermaid/nomnoml diagrams (data-diagram, written by
+// preprocessSpecialBlocks). Both are all-or-nothing — half a rendered formula
+// or half an SVG can't be turned back into source — so a selection boundary
+// landing inside one gets pushed out to its edge.
+const ATOMIC_SOURCE_SELECTOR = ".math-inline[data-tex], .math-display[data-tex], [data-diagram]";
+
+// The atomic host a range boundary sits in, or null. Same shape as
+// boundaryCodeBlock below and for the same reason: both the container AND the
+// child the offset points at have to be considered, because a boundary dropped
+// just past a formula parks ON the parent with an offset pointing INTO it,
+// which .closest() alone would miss.
+function boundaryAtomicHost(container, offset) {
+  const start = container.nodeType === Node.TEXT_NODE
+    ? container.parentElement
+    : (container.childNodes[Math.min(offset, container.childNodes.length - 1)] || container);
+  const node = start?.nodeType === Node.TEXT_NODE ? start.parentElement : start;
+  return node?.closest?.(ATOMIC_SOURCE_SELECTOR)
+    || (container.nodeType === Node.ELEMENT_NODE ? container.closest?.(ATOMIC_SOURCE_SELECTOR) : null)
+    || null;
+}
+
+// Widen a range so it never cuts an atomic block in half. KaTeX renders one
+// `$x^2$` into a tree of glyph spans plus a hidden MathML twin, and mermaid
+// renders a fence into an <svg> with an inline <style>; a boundary landing
+// inside either clones a meaningless slice, which came out of the
+// HTML→Markdown path as duplicated glyph soup ("x2x2") or, for a diagram, as
+// the SVG's stylesheet as literal text. Snapping outward is both the only
+// recoverable answer and the one the user meant. Everything downstream then
+// sees complete hosts, which the math-source / keep-diagram-source Turndown
+// rules and textWithLineBreaks below all know how to turn back into source.
+function snapRangeToAtomicBlocks(range) {
+  const startHost = boundaryAtomicHost(range.startContainer, range.startOffset);
+  const endHost = boundaryAtomicHost(range.endContainer, range.endOffset);
+  if (!startHost && !endHost) return range;
+  // Never mutate the live selection's own range — moving its boundaries under
+  // the user would visibly redraw (or drop) their highlight.
+  const snapped = range.cloneRange();
+  try {
+    if (startHost) snapped.setStartBefore(startHost);
+    if (endHost) snapped.setEndAfter(endHost);
+  } catch (_) {
+    return range;
+  }
+  return snapped;
+}
+
+// Range.cloneContents() rebuilds partial ancestors *inside* the range but never
+// the common ancestor itself, so selecting across a table hands back bare
+// <tr>/<tbody> with no <table> around them — and Turndown's GFM table rule,
+// which filters on the table element, doesn't fire. The result was a whole
+// table flattened to "Element Symbol Hydrogen H Helium He" on one line. Put the
+// wrapper back (with the header row, so a couple of selected rows still make a
+// legible standalone table) and the rule fires as it does for every other block.
+const ORPHAN_TABLE_PARTS = "thead, tbody, tfoot, tr, th, td";
+
+function restoreSelectionTables(container, range) {
+  const children = Array.from(container.children);
+  const firstOrphan = children.findIndex((node) => node.matches(ORPHAN_TABLE_PARTS));
+  if (firstOrphan === -1) return;
+  const anchorNode = range.commonAncestorContainer;
+  const anchorEl = anchorNode.nodeType === Node.ELEMENT_NODE ? anchorNode : anchorNode.parentElement;
+  const sourceTable = anchorEl?.closest?.("table");
+  if (!sourceTable) return;
+
+  // Mark the spot before anything moves — the wrappers below reparent these
+  // nodes, so a reference to one of them stops being a child of `container`.
+  const slot = document.createComment("table");
+  container.insertBefore(slot, children[firstOrphan]);
+
+  let parts = children.filter((node) => node.matches(ORPHAN_TABLE_PARTS));
+  // Climb back up whatever levels the clone lost: cells → row → body.
+  if (parts.some((node) => node.matches("th, td"))) {
+    const row = document.createElement("tr");
+    parts.forEach((node) => row.appendChild(node));
+    parts = [row];
+  }
+  if (parts.some((node) => node.matches("tr"))) {
+    const body = document.createElement("tbody");
+    parts.forEach((node) => body.appendChild(node));
+    parts = [body];
+  }
+
+  const table = document.createElement("table");
+  const head = sourceTable.querySelector("thead");
+  // A GFM table without a header row isn't a table at all — Turndown emits it
+  // as plain text — so borrow the source's header when the selection missed it.
+  if (head && !parts.some((node) => node.tagName === "THEAD")) {
+    table.appendChild(head.cloneNode(true));
+  }
+  parts.forEach((node) => table.appendChild(node));
+  slot.replaceWith(table);
+}
+
 // Clone the selected fragment with rendered-markdown UI chrome removed
-// (image/diagram Zoom pills, code-block copy buttons, language badges).
+// (image/diagram Zoom pills, code-block copy buttons, language badges) and the
+// SVG stylesheets mermaid inlines into its output, which otherwise read back as
+// a wall of CSS text.
 function cleanedSelectionFragment(range) {
+  const snapped = snapRangeToAtomicBlocks(range);
   const container = document.createElement("div");
-  container.appendChild(range.cloneContents());
-  container.querySelectorAll("button, .code-lang-badge").forEach((node) => node.remove());
+  container.appendChild(snapped.cloneContents());
+  container.querySelectorAll("button, .code-lang-badge, style, script").forEach((node) => node.remove());
+  restoreSelectionTables(container, snapped);
   return container;
 }
 
@@ -12273,6 +12445,27 @@ function cleanedSelectionFragment(range) {
 const TIGHT_BLOCK_TAGS = new Set(["LI"]);
 const LOOSE_BLOCK_TAGS = new Set(["P", "DIV", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TABLE", "HR", "UL", "OL"]);
 
+// The markdown source behind a rendered atomic block, from what
+// preprocessSpecialBlocks stashed on the host: `$…$`/`$$…$$` for a formula (see
+// mathNode) or the original fence for a diagram. Returns "" for anything else.
+function atomicSourceForNode(node) {
+  const encoded = node?.dataset?.tex || node?.dataset?.diagram;
+  if (!encoded) return "";
+  let decoded = "";
+  try {
+    decoded = decodeURIComponent(encoded);
+  } catch (_) {
+    return "";
+  }
+  decoded = decoded.trim();
+  if (!decoded) return "";
+  if (node.dataset.tex) {
+    return node.classList.contains("math-display") ? `$$\n${decoded}\n$$` : `$${decoded}$`;
+  }
+  const lang = node.classList.contains("nomnoml-diagram") ? "nomnoml" : "mermaid";
+  return `\`\`\`${lang}\n${decoded}\n\`\`\``;
+}
+
 function textWithLineBreaks(node) {
   let text = "";
   let prevBlockTag = null;
@@ -12286,13 +12479,29 @@ function textWithLineBreaks(node) {
       text += "\n";
       return;
     }
+    // KaTeX emits every formula TWICE: a hidden MathML tree for screen readers
+    // and the visible glyph spans. Descending into both doubles every symbol.
+    // Skipped even where there's no data-tex host to short-circuit on, so math
+    // from the \[…\] auto-render safety net comes back single, not doubled.
+    if (child.classList?.contains("katex-mathml")) return;
+    // Mermaid inlines a stylesheet into its SVG; reading it as text emits the
+    // whole thing as a wall of CSS.
+    if (child.tagName === "STYLE" || child.tagName === "SCRIPT") return;
     const isTight = TIGHT_BLOCK_TAGS.has(child.tagName);
     const isLoose = LOOSE_BLOCK_TAGS.has(child.tagName);
     if ((isTight || isLoose) && text) {
       const gap = isTight && prevBlockTag === "LI" ? "\n" : "\n\n";
       if (!text.endsWith(gap)) text = text.replace(/\n+$/, "") + gap;
     }
-    text += textWithLineBreaks(child);
+    // A rendered formula or diagram reads back as its own source, not as its
+    // glyphs/SVG — the gap handling above still runs (both are <div>s at block
+    // level, loose blocks), but the descent doesn't. This string is what
+    // locateSelectionInSource hunts for in the raw markdown, so walking the
+    // KaTeX tree instead emitted characters that appear nowhere in the source,
+    // which is why highlighting, clozing, erasing and a card's "go to notes"
+    // anchor all silently missed on any selection containing math.
+    const atomicSource = atomicSourceForNode(child);
+    text += atomicSource || textWithLineBreaks(child);
     if (isTight || isLoose) prevBlockTag = child.tagName;
   });
   return text;
@@ -24078,6 +24287,14 @@ document.addEventListener("keydown", (event) => {
     closeTopmostOverlay();
     return;
   }
+  // Ctrl/Cmd+. toggles focus mode. Above the viewMode guard below, or it would
+  // never fire in the one view it exists for; below the textarea guard, so it
+  // can't shadow anything while you're typing raw markdown.
+  if ((event.ctrlKey || event.metaKey) && event.key === ".") {
+    event.preventDefault();
+    setFocusMode(!chromeFocusPinned);
+    return;
+  }
   // Card shortcuts are meaningless while any modal/panel is open (it either
   // covers the card stage or shouldn't let keys leak through to it) or while
   // the Notes/Highlights view covers the card stage.
@@ -26224,7 +26441,38 @@ function buildTurndownService(options = {}) {
     }
   });
 
-  // Restore KaTeX rendered math back into standard LaTeX ($...$ or $$...$$)
+  // Rendered math is a tree of KaTeX glyph spans — nothing Turndown's generic
+  // handling can make sense of, exactly like the mermaid SVG above. And exactly
+  // like mermaid, the original source is already stashed on the node:
+  // preprocessSpecialBlocks writes the URL-encoded TeX to data-tex on this host
+  // and katex.render only ever replaces its CHILDREN, so the attribute survives
+  // every re-render. Read it instead of serializing the glyphs.
+  //
+  // Registered unconditionally (like the cloze rule above, unlike the diagram
+  // one): .math-inline/.math-display are our own markup, so pasted web HTML
+  // never carries them, and Recall content copied as HTML should keep its math.
+  turndownService.addRule("math-source", {
+    filter: (node) =>
+      node.nodeType === 1 && node.dataset && node.dataset.tex &&
+      node.classList && (node.classList.contains("math-inline") || node.classList.contains("math-display")),
+    replacement: (content, node) => {
+      let tex = "";
+      try {
+        tex = decodeURIComponent(node.dataset.tex);
+      } catch (err) {
+        tex = "";
+      }
+      if (!tex.trim()) return content;
+      return node.classList.contains("math-display")
+        ? `\n\n$$\n${tex.trim()}\n$$\n\n`
+        : `$${tex.trim()}$`;
+    }
+  });
+
+  // Fallback for math with no data-tex host: the renderMathInElement safety net
+  // in enhanceRenderedMarkdown renders bare \[…\] / \(…\) delimiters straight
+  // out of the DOM, and pasted web HTML arrives pre-rendered by somebody else's
+  // KaTeX. Both leave only KaTeX's own <annotation> to recover the TeX from.
   turndownService.addRule("katex", {
     filter: function (node) {
       return node.nodeName === "SPAN" && node.classList.contains("katex");
@@ -26233,8 +26481,31 @@ function buildTurndownService(options = {}) {
       const annotation = node.querySelector('annotation[encoding="application/x-tex"]');
       if (annotation) {
         const tex = annotation.textContent.trim();
-        const isDisplay = node.classList.contains("katex-display") || node.querySelector(".katex-display");
-        return isDisplay ? "\n$$\n" + tex + "\n$$\n" : "$" + tex + "$";
+        // .katex-display is the PARENT of span.katex, neither the node itself
+        // nor a descendant — so the old check was never true and display math
+        // always came back as inline $…$. That mattered: findInlineDollarClose
+        // caps inline math at INLINE_MATH_MAX_SPAN and stops at a blank line,
+        // so a long \begin{aligned} block landed on the card as literal
+        // unrendered "$\begin{aligned}…$" text. (recall-clipper's picker.js
+        // splits this into katexDisplay/katexInline rules for the same reason.)
+        const isDisplay = Boolean(node.closest?.(".katex-display"));
+        return isDisplay ? "\n\n$$\n" + tex + "\n$$\n\n" : "$" + tex + "$";
+      }
+      // No annotation — KaTeX built with output:"html" emits none, and a clone
+      // can lose it. `content` here is the serialized glyph soup, so try the
+      // stashed source one more time before falling back to it.
+      const host = node.closest?.("[data-tex]");
+      if (host) {
+        try {
+          const tex = decodeURIComponent(host.dataset.tex).trim();
+          if (tex) {
+            return host.classList.contains("math-display")
+              ? `\n\n$$\n${tex}\n$$\n\n`
+              : `$${tex}$`;
+          }
+        } catch (err) {
+          /* fall through to content */
+        }
       }
       return content;
     }

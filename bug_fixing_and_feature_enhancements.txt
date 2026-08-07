@@ -1,1 +1,0 @@
-1. the import export as zip is shit , like when i am exporting and importing everything is in text format and links to the supabase link , but suppose i send my backup to other person they dont have the supabase access , this discrepencies is grave , the backup should actually zip actual images 

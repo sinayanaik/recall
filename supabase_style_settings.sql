@@ -71,52 +71,113 @@ CREATE POLICY "Users manage own app style settings"
   USING (id = (select auth.uid())::text OR id = 'global')
   WITH CHECK (id = (select auth.uid())::text);
 
+-- Shape v3. Two things changed since the flat v1 block this file used to carry:
+--
+--   1. Settings are per-PROFILE — { version, desktop: {…}, mobile: {…} } — so a
+--      phone and a laptop can carry different sizes. The old flat object is
+--      still accepted on read (normalizeStyleProfiles migrates it), but seeding
+--      it here meant a fresh deployment started life on the legacy path.
+--   2. Controls that wrote a CSS variable nothing read were removed, and a few
+--      overlapping ones merged. Seeding those keys handed every new account
+--      settings that could never do anything: sidePanelWidthPercent (no side
+--      panels since the Known/Review columns went), stackCard* (no .brick
+--      markup), the per-face font families (overwritten before they could
+--      inherit), inputCornerRadius / actionButtonHeight / replayButtonHeight
+--      (now derived from one control), questionPadding + answerPadding (now one
+--      cardTextPadding).
+--
+-- Keep this block in sync with defaultStyleProfiles in app.js — it is the same
+-- object, and the app is the source of truth.
 WITH style_defaults AS (
   SELECT $style_defaults$
 {
-  "fontFamily": "system",
-  "questionFontFamily": "system",
-  "answerFontFamily": "system",
-  "appWidthPercent": "98",
-  "appHeightPercent": "100",
-  "sidePanelWidthPercent": "16",
-  "cardWidthPercent": "96",
-  "cardMaxHeightPercent": "74",
-  "modalWidthPercent": "60",
-  "markdownBoxHeightPercent": "30",
-  "baseFontSize": "18px",
-  "baseLineHeight": "1.58",
-  "codeFontSize": "15px",
-  "codeLineHeight": "1.55",
-  "questionFillPercent": "58",
-  "questionLineHeight": "1.18",
-  "questionAlign": "center",
-  "questionVerticalAlign": "center",
-  "questionFontWeight": "500",
-  "questionPadding": "2px",
-  "answerFontSize": "23px",
-  "answerLineHeight": "1.58",
-  "answerFontWeight": "400",
-  "answerPadding": "0px",
-  "appGap": "10px",
-  "panelPadding": "10px",
-  "cardPadding": "24px",
-  "cardContentGap": "16px",
-  "buttonGap": "8px",
-  "stackCardGap": "7px",
-  "cardBorderWidth": "1px",
-  "cardCornerRadius": "14px",
-  "panelCornerRadius": "14px",
-  "buttonCornerRadius": "8px",
-  "inputCornerRadius": "8px",
-  "toolbarButtonHeight": "38px",
-  "actionButtonHeight": "42px",
-  "buttonFontSize": "14px",
-  "replayButtonHeight": "30px",
-  "stackCardFontSize": "13px",
-  "stackCardLineHeight": "1.28",
-  "inputHeight": "40px",
-  "modalPadding": "18px"
+  "version": 3,
+  "desktop": {
+    "fontFamily": "system",
+    "baseFontSize": "18px",
+    "baseLineHeight": "1.58",
+    "notesFontSize": "18px",
+    "notesMaxWidthPercent": "100",
+    "answerFontSize": "23px",
+    "questionMaxFontSize": "19px",
+    "appWidthPercent": "100",
+    "appHeightPercent": "100",
+    "cardWidthPercent": "100",
+    "cardMaxHeightPercent": "84",
+    "modalWidthPercent": "60",
+    "visualMaxWidthPercent": "50",
+    "markdownBoxHeightPercent": "30",
+    "appGap": "10px",
+    "panelPadding": "10px",
+    "cardPadding": "24px",
+    "cardContentGap": "16px",
+    "buttonGap": "8px",
+    "cardCornerRadius": "14px",
+    "panelCornerRadius": "14px",
+    "buttonCornerRadius": "8px",
+    "cardBorderWidth": "1px",
+    "questionFillPercent": "58",
+    "questionLineHeight": "1.18",
+    "questionAlign": "center",
+    "questionVerticalAlign": "center",
+    "questionFontWeight": "500",
+    "answerLineHeight": "1.58",
+    "answerFontWeight": "400",
+    "notesLineHeight": "1.58",
+    "notesFontWeight": "400",
+    "notesPadding": "6px",
+    "cardTextPadding": "2px",
+    "toolbarButtonHeight": "38px",
+    "buttonFontSize": "14px",
+    "inputHeight": "40px",
+    "modalPadding": "18px",
+    "rawMarkdownFontSize": "18px",
+    "codeFontSize": "18px",
+    "codeLineHeight": "1.55"
+  },
+  "mobile": {
+    "fontFamily": "system",
+    "baseFontSize": "12px",
+    "baseLineHeight": "1.23",
+    "notesFontSize": "15px",
+    "notesMaxWidthPercent": "100",
+    "answerFontSize": "13px",
+    "questionMaxFontSize": "23px",
+    "appWidthPercent": "100",
+    "appHeightPercent": "100",
+    "cardWidthPercent": "96",
+    "cardMaxHeightPercent": "80",
+    "modalWidthPercent": "60",
+    "visualMaxWidthPercent": "90",
+    "markdownBoxHeightPercent": "30",
+    "appGap": "10px",
+    "panelPadding": "10px",
+    "cardPadding": "24px",
+    "cardContentGap": "16px",
+    "buttonGap": "8px",
+    "cardCornerRadius": "14px",
+    "panelCornerRadius": "14px",
+    "buttonCornerRadius": "8px",
+    "cardBorderWidth": "1px",
+    "questionFillPercent": "75",
+    "questionLineHeight": "1.17",
+    "questionAlign": "left",
+    "questionVerticalAlign": "center",
+    "questionFontWeight": "500",
+    "answerLineHeight": "1.58",
+    "answerFontWeight": "300",
+    "notesLineHeight": "1.5",
+    "notesFontWeight": "400",
+    "notesPadding": "4px",
+    "cardTextPadding": "2px",
+    "toolbarButtonHeight": "34px",
+    "buttonFontSize": "14px",
+    "inputHeight": "40px",
+    "modalPadding": "18px",
+    "rawMarkdownFontSize": "16px",
+    "codeFontSize": "12px",
+    "codeLineHeight": "1.17"
+  }
 }
 $style_defaults$::jsonb AS settings
 )
@@ -124,57 +185,20 @@ INSERT INTO app_style_settings (id, settings)
 SELECT 'global', settings
 FROM style_defaults
 ON CONFLICT (id) DO UPDATE
-SET settings = EXCLUDED.settings || COALESCE((
-  SELECT jsonb_object_agg(key, value)
-  FROM jsonb_each(app_style_settings.settings)
-  WHERE key = ANY (ARRAY[
-    'fontFamily',
-    'questionFontFamily',
-    'answerFontFamily',
-    'appWidthPercent',
-    'appHeightPercent',
-    'sidePanelWidthPercent',
-    'cardWidthPercent',
-    'cardMaxHeightPercent',
-    'modalWidthPercent',
-    'markdownBoxHeightPercent',
-    'baseFontSize',
-    'baseLineHeight',
-    'codeFontSize',
-    'codeLineHeight',
-    'questionFillPercent',
-    'questionLineHeight',
-    'questionAlign',
-    'questionVerticalAlign',
-    'questionFontWeight',
-    'questionPadding',
-    'answerFontSize',
-    'answerLineHeight',
-    'answerFontWeight',
-    'answerPadding',
-    'appGap',
-    'panelPadding',
-    'cardPadding',
-    'cardContentGap',
-    'buttonGap',
-    'stackCardGap',
-    'cardBorderWidth',
-    'cardCornerRadius',
-    'panelCornerRadius',
-    'buttonCornerRadius',
-    'inputCornerRadius',
-    'toolbarButtonHeight',
-    'actionButtonHeight',
-    'buttonFontSize',
-    'replayButtonHeight',
-    'stackCardFontSize',
-    'stackCardLineHeight',
-    'inputHeight',
-    'modalPadding'
-  ])
-), '{}'::jsonb);
+-- Preserve whatever the deployment already customised, one profile at a time:
+-- the top-level merge below would replace the whole `desktop` object with the
+-- defaults, so each profile is merged into its own defaults first. A row still
+-- in the flat v1 shape has no desktop/mobile keys, so it contributes nothing
+-- here and simply gets the new defaults — the app migrates the user's own row.
+SET settings = jsonb_build_object(
+  'version', 3,
+  'desktop', (EXCLUDED.settings -> 'desktop')
+    || COALESCE(app_style_settings.settings -> 'desktop', '{}'::jsonb),
+  'mobile', (EXCLUDED.settings -> 'mobile')
+    || COALESCE(app_style_settings.settings -> 'mobile', '{}'::jsonb)
+);
 
 COMMENT ON TABLE app_style_settings IS
   'Per-user Aa style settings (row id = auth.uid(), plus a legacy shared ''global'' row new accounts inherit) for layout, px font sizes, spacing, radius, and percent dimensions. Colors are intentionally not included.';
 COMMENT ON COLUMN app_style_settings.settings IS
-  'Flat JSON object. Keys match Aa controls and are applied as CSS variables by app.js.';
+  'JSON object of { version, desktop: {…}, mobile: {…} }. Keys match the controls in styleControlGroups and are applied as CSS variables by app.js. The legacy flat (profile-less) shape is still read and migrated on load.';
