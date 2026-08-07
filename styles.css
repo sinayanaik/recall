@@ -78,7 +78,10 @@
   --question-vertical-align: center;
   --question-font-weight: 500;
   --question-padding: 2px;
-  --answer-padding: 0px;
+  /* Was 0 here but 2px in practice — the removed "Card text padding" control
+     always overwrote both faces with its 2px default, so this matches the
+     layout everyone actually had. */
+  --answer-padding: 2px;
   --card-face-padding: clamp(18px, 3vw, 42px);
   --card-face-gap: 16px;
   --card-width: 96%;
@@ -5286,8 +5289,7 @@ svg.nomnoml-light-svg [fill="none"] {
 
 .style-field select,
 .theme-select,
-.style-field input[type="text"],
-.style-field input[type="range"] {
+.style-field input[type="text"] {
   width: 100%;
 }
 
@@ -5549,17 +5551,6 @@ svg.nomnoml-light-svg [fill="none"] {
   gap: 10px;
   border-top: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent));
   padding: 10px 12px;
-}
-
-.style-range-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(76px, 0.28fr);
-  gap: 8px;
-  align-items: center;
-}
-
-.style-range-row input[type="text"] {
-  min-width: 0;
 }
 
 .style-actions {
@@ -11295,9 +11286,8 @@ kbd {
 }
 
 /* Eraser — same quiet secondary treatment as cloze/quick-note, with a faint
-   destructive tint so it doesn't read as identical to the other two. Hidden
-   outside a Notes-view rendered selection (see positionNotesSelectionButton
-   in app.js) rather than styled differently per context. */
+   destructive tint so it doesn't read as identical to the other two. Shown for
+   every selection, rendered or raw (see positionNotesSelectionButton in app.js). */
 .selection-float-btn.is-erase {
   background: color-mix(in srgb, var(--panel-2) 82%, transparent);
   color: color-mix(in srgb, var(--danger, #d64545) 80%, var(--accent));

@@ -84,14 +84,18 @@ CREATE POLICY "Users manage own app style settings"
 --      markup), the per-face font families (overwritten before they could
 --      inherit), inputCornerRadius / actionButtonHeight / replayButtonHeight
 --      (now derived from one control), questionPadding + answerPadding (now one
---      cardTextPadding).
+--      cardTextPadding). v4 dropped cardTextPadding itself (it padded inside
+--      cardPadding — two ways to push the same text inward) and
+--      markdownBoxHeightPercent (only sized the import box); both live as
+--      :root defaults in styles.css now, and sliders gave way to plain
+--      textboxes with no min/max clamps.
 --
 -- Keep this block in sync with defaultStyleProfiles in app.js — it is the same
 -- object, and the app is the source of truth.
 WITH style_defaults AS (
   SELECT $style_defaults$
 {
-  "version": 3,
+  "version": 4,
   "desktop": {
     "fontFamily": "system",
     "baseFontSize": "18px",
@@ -106,7 +110,6 @@ WITH style_defaults AS (
     "cardMaxHeightPercent": "84",
     "modalWidthPercent": "60",
     "visualMaxWidthPercent": "50",
-    "markdownBoxHeightPercent": "30",
     "appGap": "10px",
     "panelPadding": "10px",
     "cardPadding": "24px",
@@ -126,7 +129,6 @@ WITH style_defaults AS (
     "notesLineHeight": "1.58",
     "notesFontWeight": "400",
     "notesPadding": "6px",
-    "cardTextPadding": "2px",
     "toolbarButtonHeight": "38px",
     "buttonFontSize": "14px",
     "inputHeight": "40px",
@@ -149,7 +151,6 @@ WITH style_defaults AS (
     "cardMaxHeightPercent": "80",
     "modalWidthPercent": "60",
     "visualMaxWidthPercent": "90",
-    "markdownBoxHeightPercent": "30",
     "appGap": "10px",
     "panelPadding": "10px",
     "cardPadding": "24px",
@@ -169,7 +170,6 @@ WITH style_defaults AS (
     "notesLineHeight": "1.5",
     "notesFontWeight": "400",
     "notesPadding": "4px",
-    "cardTextPadding": "2px",
     "toolbarButtonHeight": "34px",
     "buttonFontSize": "14px",
     "inputHeight": "40px",
@@ -191,7 +191,7 @@ ON CONFLICT (id) DO UPDATE
 -- in the flat v1 shape has no desktop/mobile keys, so it contributes nothing
 -- here and simply gets the new defaults — the app migrates the user's own row.
 SET settings = jsonb_build_object(
-  'version', 3,
+  'version', 4,
   'desktop', (EXCLUDED.settings -> 'desktop')
     || COALESCE(app_style_settings.settings -> 'desktop', '{}'::jsonb),
   'mobile', (EXCLUDED.settings -> 'mobile')

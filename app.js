@@ -221,7 +221,6 @@ const defaultStyleProfiles = {
     "cardMaxHeightPercent": "80",
     "modalWidthPercent": "60",
     "visualMaxWidthPercent": "90",
-    "markdownBoxHeightPercent": "30",
     // Spacing and shape
     "appGap": "10px",
     "panelPadding": "10px",
@@ -244,7 +243,6 @@ const defaultStyleProfiles = {
     "notesLineHeight": "1.5",
     "notesFontWeight": "400",
     "notesPadding": "4px",
-    "cardTextPadding": "2px",
     // Controls and text
     // 34px, not desktop's 38: this now drives the Review/Prev/Next row too,
     // which the old hardcoded mobile override pinned at exactly 34px.
@@ -275,7 +273,6 @@ const defaultStyleProfiles = {
     "cardMaxHeightPercent": "84",
     "modalWidthPercent": "60",
     "visualMaxWidthPercent": "50",
-    "markdownBoxHeightPercent": "30",
     // Spacing and shape
     "appGap": "10px",
     "panelPadding": "10px",
@@ -298,7 +295,6 @@ const defaultStyleProfiles = {
     "notesLineHeight": "1.58",
     "notesFontWeight": "400",
     "notesPadding": "6px",
-    "cardTextPadding": "2px",
     // Controls and text
     "toolbarButtonHeight": "38px",
     "buttonFontSize": "14px",
@@ -325,54 +321,57 @@ const styleDefaults = defaultStyleProfiles.desktop;
 // overwritten by resolveFontFamily before anything could inherit them. A
 // control that silently does nothing is worse than a missing one, because you
 // spend your time deciding it's your eyes rather than the app.
+// Every numeric control is a plain textbox (type "text") — no sliders and no
+// min/max clamps: whatever you type is what gets applied. A bare number in a
+// px field gets the unit appended for convenience ("18" → "18px"); anything
+// else passes through verbatim, so calc()/rem/vh values work too.
 const styleControlGroups = [
   {
     title: "Basics",
     tier: "basic",
     fields: [
       { key: "fontFamily", label: "Font", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Typeface for the whole app — cards, notes and chrome." },
-      { key: "baseFontSize", label: "Text size", type: "range", min: 10, max: 36, step: 1, unit: "px", hint: "General Markdown and interface text size." },
-      { key: "baseLineHeight", label: "Line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "General reading spacing." },
-      { key: "notesFontSize", label: "Notes text size", type: "range", min: 10, max: 40, step: 1, unit: "px", hint: "Body text size in the Study Notes view." },
-      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "range", min: 40, max: 100, step: 1, hint: "Maximum width of the notes column as a percent of the notes area." },
-      { key: "answerFontSize", label: "Answer text size", type: "range", min: 10, max: 64, step: 1, unit: "px", hint: "Main answer text size." },
-      { key: "questionMaxFontSize", label: "Question max text size", type: "range", min: 8, max: 180, step: 1, unit: "px", hint: "Largest question text size. Small questions can still shrink without a floor." },
-      { key: "appWidthPercent", label: "App width %", type: "range", min: 50, max: 100, step: 1, hint: "Width of the whole app as a percent of screen width." }
+      { key: "baseFontSize", label: "Text size", type: "text", unit: "px", hint: "General Markdown and interface text size." },
+      { key: "baseLineHeight", label: "Line spacing", type: "text", hint: "General reading spacing." },
+      { key: "notesFontSize", label: "Notes text size", type: "text", unit: "px", hint: "Body text size in the Study Notes view." },
+      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "text", hint: "Maximum width of the notes column as a percent of the notes area." },
+      { key: "answerFontSize", label: "Answer text size", type: "text", unit: "px", hint: "Main answer text size." },
+      { key: "questionMaxFontSize", label: "Question max text size", type: "text", unit: "px", hint: "Largest question text size. Small questions can still shrink without a floor." },
+      { key: "appWidthPercent", label: "App width %", type: "text", hint: "Width of the whole app as a percent of screen width." }
     ]
   },
   {
     title: "Layout",
     tier: "advanced",
     fields: [
-      { key: "appHeightPercent", label: "App height %", type: "range", min: 50, max: 100, step: 1, hint: "Height of the whole app as a percent of screen height." },
-      { key: "cardWidthPercent", label: "Card width %", type: "range", min: 40, max: 100, step: 1, hint: "Flashcard width as a percent of the middle study area." },
-      { key: "cardMaxHeightPercent", label: "Card max height %", type: "range", min: 30, max: 100, step: 1, hint: "Maximum flashcard height as a percent of screen height." },
-      { key: "modalWidthPercent", label: "Modal width %", type: "range", min: 30, max: 100, step: 1, hint: "Import and My Decks panel width as a percent of screen width." },
-      { key: "visualMaxWidthPercent", label: "Visual max width %", type: "range", min: 10, max: 100, step: 1, hint: "Maximum width of images, videos, and diagrams as a percent of available space." },
-      { key: "markdownBoxHeightPercent", label: "Markdown box height %", type: "range", min: 10, max: 80, step: 1, hint: "Import textarea height as a percent of screen height." }
+      { key: "appHeightPercent", label: "App height %", type: "text", hint: "Height of the whole app as a percent of screen height." },
+      { key: "cardWidthPercent", label: "Card width %", type: "text", hint: "Flashcard width as a percent of the middle study area." },
+      { key: "cardMaxHeightPercent", label: "Card max height %", type: "text", hint: "Maximum flashcard height as a percent of screen height." },
+      { key: "modalWidthPercent", label: "Modal width %", type: "text", hint: "Import and My Decks panel width as a percent of screen width." },
+      { key: "visualMaxWidthPercent", label: "Visual max width %", type: "text", hint: "Maximum width of images, videos, and diagrams as a percent of available space." }
     ]
   },
   {
     title: "Spacing and shape",
     tier: "advanced",
     fields: [
-      { key: "appGap", label: "Main gap", type: "range", min: 0, max: 40, step: 1, unit: "px", hint: "Space between major app sections." },
-      { key: "panelPadding", label: "Panel padding", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Inside spacing for the study panel." },
-      { key: "cardPadding", label: "Card padding", type: "range", min: 0, max: 80, step: 1, unit: "px", hint: "Inside spacing on question and answer faces." },
-      { key: "cardContentGap", label: "Card label gap", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Space between the Question/Answer label and content." },
-      { key: "buttonGap", label: "Button gap", type: "range", min: 0, max: 32, step: 1, unit: "px", hint: "Space between buttons." },
-      { key: "cardCornerRadius", label: "Card corner radius", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Roundness of the flashcard corners." },
-      { key: "panelCornerRadius", label: "Panel corner radius", type: "range", min: 0, max: 48, step: 1, unit: "px", hint: "Roundness of the study, import, and My Decks panels." },
-      { key: "buttonCornerRadius", label: "Control corner radius", type: "range", min: 0, max: 32, step: 1, unit: "px", hint: "Roundness of buttons, textboxes and selects." },
-      { key: "cardBorderWidth", label: "Card border width", type: "range", min: 0, max: 8, step: 1, unit: "px", hint: "Border thickness around the flashcard." }
+      { key: "appGap", label: "Main gap", type: "text", unit: "px", hint: "Space between major app sections." },
+      { key: "panelPadding", label: "Panel padding", type: "text", unit: "px", hint: "Inside spacing for the study panel." },
+      { key: "cardPadding", label: "Card padding", type: "text", unit: "px", hint: "Inside spacing on question and answer faces." },
+      { key: "cardContentGap", label: "Card label gap", type: "text", unit: "px", hint: "Space between the Question/Answer label and content." },
+      { key: "buttonGap", label: "Button gap", type: "text", unit: "px", hint: "Space between buttons." },
+      { key: "cardCornerRadius", label: "Card corner radius", type: "text", unit: "px", hint: "Roundness of the flashcard corners." },
+      { key: "panelCornerRadius", label: "Panel corner radius", type: "text", unit: "px", hint: "Roundness of the study, import, and My Decks panels." },
+      { key: "buttonCornerRadius", label: "Control corner radius", type: "text", unit: "px", hint: "Roundness of buttons, textboxes and selects." },
+      { key: "cardBorderWidth", label: "Card border width", type: "text", unit: "px", hint: "Border thickness around the flashcard." }
     ]
   },
   {
     title: "Question",
     tier: "advanced",
     fields: [
-      { key: "questionFillPercent", label: "Question fill %", type: "range", min: 10, max: 95, step: 1, hint: "How much vertical card space the question tries to occupy." },
-      { key: "questionLineHeight", label: "Question line spacing", type: "range", min: 0.8, max: 2.4, step: 0.01, hint: "Line spacing for question text." },
+      { key: "questionFillPercent", label: "Question fill %", type: "text", hint: "How much vertical card space the question tries to occupy." },
+      { key: "questionLineHeight", label: "Question line spacing", type: "text", hint: "Line spacing for question text." },
       { key: "questionAlign", label: "Question horizontal align", type: "select", options: ["left", "center", "right", "justify"], hint: "Question text alignment." },
       { key: "questionVerticalAlign", label: "Question vertical align", type: "select", options: ["start", "center", "end"], hint: "Question vertical position." },
       { key: "questionFontWeight", label: "Question weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Question text thickness." }
@@ -382,25 +381,24 @@ const styleControlGroups = [
     title: "Answer and notes",
     tier: "advanced",
     fields: [
-      { key: "answerLineHeight", label: "Answer line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Reading spacing on the answer side." },
+      { key: "answerLineHeight", label: "Answer line spacing", type: "text", hint: "Reading spacing on the answer side." },
       { key: "answerFontWeight", label: "Answer weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Answer text thickness." },
-      { key: "notesLineHeight", label: "Notes line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Reading spacing in the Study Notes view." },
+      { key: "notesLineHeight", label: "Notes line spacing", type: "text", hint: "Reading spacing in the Study Notes view." },
       { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
-      { key: "notesPadding", label: "Notes padding", type: "range", min: 0, max: 64, step: 1, unit: "px", hint: "Inside spacing around the Study Notes content." },
-      { key: "cardTextPadding", label: "Card text padding", type: "range", min: 0, max: 120, step: 1, unit: "px", hint: "Internal padding for question and answer text, inside the card padding." }
+      { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", hint: "Inside spacing around the Study Notes content." }
     ]
   },
   {
     title: "Controls and text",
     tier: "advanced",
     fields: [
-      { key: "toolbarButtonHeight", label: "Button height", type: "range", min: 24, max: 72, step: 1, unit: "px", hint: "Height of icon buttons, Review/Prev/Next, and the replay buttons (slightly shorter). Menu rows keep their own size." },
-      { key: "buttonFontSize", label: "Button font size", type: "range", min: 10, max: 28, step: 1, unit: "px", hint: "Text size inside buttons." },
-      { key: "inputHeight", label: "Input height", type: "range", min: 24, max: 72, step: 1, unit: "px", hint: "Height of URL and style textboxes." },
-      { key: "modalPadding", label: "Modal padding", type: "range", min: 0, max: 64, step: 1, unit: "px", hint: "Inside spacing for the import and My Decks panels." },
-      { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "range", min: 8, max: 36, step: 1, unit: "px", hint: "Text size inside Markdown edit boxes." },
-      { key: "codeFontSize", label: "Code font size", type: "range", min: 10, max: 28, step: 1, unit: "px", hint: "Text size inside code blocks." },
-      { key: "codeLineHeight", label: "Code line spacing", type: "range", min: 0.9, max: 2.6, step: 0.01, hint: "Line spacing inside code blocks." }
+      { key: "toolbarButtonHeight", label: "Button height", type: "text", unit: "px", hint: "Height of icon buttons, Review/Prev/Next, and the replay buttons (slightly shorter). Menu rows keep their own size." },
+      { key: "buttonFontSize", label: "Button font size", type: "text", unit: "px", hint: "Text size inside buttons." },
+      { key: "inputHeight", label: "Input height", type: "text", unit: "px", hint: "Height of URL and style textboxes." },
+      { key: "modalPadding", label: "Modal padding", type: "text", unit: "px", hint: "Inside spacing for the import and My Decks panels." },
+      { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "text", unit: "px", hint: "Text size inside Markdown edit boxes." },
+      { key: "codeFontSize", label: "Code font size", type: "text", unit: "px", hint: "Text size inside code blocks." },
+      { key: "codeLineHeight", label: "Code line spacing", type: "text", hint: "Line spacing inside code blocks." }
     ]
   }
 ];
@@ -2935,8 +2933,8 @@ function normalizeStyleValue(key, value, customDefault) {
     return field.options.includes(raw) ? raw : defaultValue;
   }
 
-  if (field.type !== "range") return raw || defaultValue;
-
+  // Text controls: no clamping, no range checks — whatever was typed wins.
+  // The only fix-up is unit completion: a bare number in a px field means px.
   if (!raw) return defaultValue;
   if (!field.unit) return raw;
 
@@ -2962,7 +2960,15 @@ function migrateLegacyStyleSettings(raw = {}) {
     migrated.answerLineHeight = String(raw.lineHeight);
     migrated.questionLineHeight = String(raw.lineHeight);
   }
-  if (Object.prototype.hasOwnProperty.call(raw, "cardPadding")) migrated.cardPadding = `${raw.cardPadding}px`;
+  // The legacy cardPadding was a bare NUMBER; only those get the px appended.
+  // Anything already carrying its own unit (or any free-form CSS, now that the
+  // controls are textboxes) must pass through untouched — this append used to
+  // mangle "calc(20px + 1vw)" into "calc(20px + 1vw)px" on every pass, and the
+  // repeated-unit collapse in normalizeStyleValue could only heal the plain
+  // "24pxpx" shape.
+  if (Object.prototype.hasOwnProperty.call(raw, "cardPadding") && /^-?\d*\.?\d+$/.test(String(raw.cardPadding).trim())) {
+    migrated.cardPadding = `${String(raw.cardPadding).trim()}px`;
+  }
   if (Object.prototype.hasOwnProperty.call(raw, "bodyFontSize")) migrated.baseFontSize = raw.bodyFontSize;
   if (Object.prototype.hasOwnProperty.call(raw, "bodyLineHeight")) migrated.baseLineHeight = raw.bodyLineHeight;
   if (Object.prototype.hasOwnProperty.call(raw, "cardFacePadding")) migrated.cardPadding = raw.cardFacePadding;
@@ -3013,10 +3019,12 @@ function styleProfileLabel(profile) {
   return profile === "mobile" ? "Mobile" : "Desktop";
 }
 
-// Bumped to 3 when the panel was trimmed to only controls that do something.
-// Carried on the stored blob (not just the cloud payload) so the one-shot
-// below runs exactly once per device rather than on every load.
-const STYLE_SETTINGS_VERSION = 3;
+// Bumped to 3 when the panel was trimmed to only controls that do something,
+// to 4 when sliders were dropped for plain textboxes and the two dead
+// controls (cardTextPadding, markdownBoxHeightPercent) were removed. Carried
+// on the stored blob (not just the cloud payload) so one-shot migrations run
+// exactly once per device rather than on every load.
+const STYLE_SETTINGS_VERSION = 4;
 
 function normalizeStyleProfiles(raw = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
@@ -3185,33 +3193,15 @@ function renderStyleControls() {
         });
         control.dataset.styleKey = field.key;
         label.appendChild(control);
-      } else if (field.type === "range") {
-        const rangeRow = document.createElement("div");
-        rangeRow.className = "style-range-row";
-
-        const slider = document.createElement("input");
-        slider.type = "range";
-        slider.min = String(field.min);
-        slider.max = String(field.max);
-        slider.step = String(field.step);
-        slider.dataset.styleSlider = field.key;
-        slider.dataset.unit = field.unit || "";
-        rangeRow.appendChild(slider);
-
+      } else {
+        // Plain textbox, no slider companion and no min/max — see the comment
+        // on styleControlGroups.
         control = document.createElement("input");
         control.type = "text";
         control.spellcheck = false;
         control.placeholder = styleDefaults[field.key] || "";
         control.dataset.styleKey = field.key;
         control.dataset.unit = field.unit || "";
-        rangeRow.appendChild(control);
-        label.appendChild(rangeRow);
-      } else {
-        control = document.createElement("input");
-        control.type = "text";
-        control.spellcheck = false;
-        control.placeholder = styleDefaults[field.key] || "";
-        control.dataset.styleKey = field.key;
         label.appendChild(control);
       }
 
@@ -3233,17 +3223,6 @@ function renderStyleControls() {
 function numericStyleValue(value) {
   const number = parseFloat(String(value ?? "").match(/-?\d*\.?\d+/)?.[0] ?? "");
   return Number.isFinite(number) ? number : null;
-}
-
-function sliderTextValue(slider) {
-  return `${slider.value}${slider.dataset.unit || ""}`;
-}
-
-function syncSliderFromText(input) {
-  const slider = el.styleControls?.querySelector(`[data-style-slider="${input.dataset.styleKey}"]`);
-  if (!slider) return;
-  const number = numericStyleValue(input.value);
-  if (number !== null) slider.value = String(number);
 }
 
 function updateStyleProfileUi() {
@@ -3278,7 +3257,6 @@ function updateStyleControls() {
   el.styleControls?.querySelectorAll("[data-style-key]").forEach((input) => {
     input.value = settings[input.dataset.styleKey] ?? "";
     input.placeholder = defaults[input.dataset.styleKey] || "";
-    syncSliderFromText(input);
   });
 }
 
@@ -3292,7 +3270,6 @@ function applyStyleSettings(rawSettings, options = {}) {
   const cardMaxHeightPercent = numericStyleValue(settings.cardMaxHeightPercent) ?? 74;
   const modalWidthPercent = numericStyleValue(settings.modalWidthPercent) ?? 60;
   const visualMaxWidthPercent = numericStyleValue(settings.visualMaxWidthPercent) ?? (activeProfile === "mobile" ? 90 : 50);
-  const markdownBoxHeightPercent = numericStyleValue(settings.markdownBoxHeightPercent) ?? 30;
 
   const notesMaxWidthPercent = numericStyleValue(settings.notesMaxWidthPercent) ?? 100;
 
@@ -3307,10 +3284,10 @@ function applyStyleSettings(rawSettings, options = {}) {
   Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
     root.style.setProperty(cssVariable, settings[key]);
   });
-  // One slider, both faces — question padding sits inside card padding, so two
-  // separate controls just meant two ways to push the same text inward.
-  root.style.setProperty("--question-padding", settings.cardTextPadding);
-  root.style.setProperty("--answer-padding", settings.cardTextPadding);
+  // --question-padding/--answer-padding and --textarea-min-height are NOT set
+  // here: their controls were removed (the first padded inside cardPadding —
+  // two ways to push the same text inward; the second only sized the import
+  // box). The :root defaults in styles.css carry them now.
   root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
   root.style.setProperty("--question-fill", `${settings.questionFillPercent}%`);
   root.style.setProperty("--app-width", `${appWidthPercent}vw`);
@@ -3323,7 +3300,6 @@ function applyStyleSettings(rawSettings, options = {}) {
   root.style.setProperty("--card-mobile-max-height", `${cardMaxHeightPercent}dvh`);
   root.style.setProperty("--modal-width", `${modalWidthPercent}vw`);
   root.style.setProperty("--visual-max-width", `${visualMaxWidthPercent}%`);
-  root.style.setProperty("--textarea-min-height", `${markdownBoxHeightPercent}vh`);
 
   if (!el.stylePanel || el.stylePanel.hidden || state.styleEditProfile === state.activeStyleProfile) {
     updateStyleControls();
@@ -12296,9 +12272,19 @@ function activeRenderedTarget() {
 
 let notesSelectionTimer = null;
 
+// The selection the floating pill was last positioned for, captured AT
+// position time. On touch platforms the tap that hits a pill button can
+// dissolve the live selection before the handler reads it (iOS Safari is
+// notorious), so the pill's highlight/erase/cloze actions work from this
+// snapshot instead of re-reading window.getSelection() mid-tap. Cleared
+// whenever the pill hides, so it can never act on a stale selection.
+//   { targetName, editing, sel, markdown }
+let pillSelectionCapture = null;
+
 function hideNotesSelectionButton() {
   if (el.selectionFloat) el.selectionFloat.hidden = true;
   if (el.makeCardFromSelectionBtn) el.makeCardFromSelectionBtn.dataset.selectionText = "";
+  pillSelectionCapture = null;
 }
 
 // The live selection's range, but only when it's a real selection inside the
@@ -12406,6 +12392,51 @@ function restoreSelectionTables(container, range) {
   slot.replaceWith(table);
 }
 
+// The same cloneContents() hole as the table case above, one level down: a
+// drag that starts or ends mid-list hands back bare <li>s with no <ul>/<ol>
+// around them. Turndown's list-item rule then can't see the list at all — it
+// emits every orphan with the DEFAULT bullet ("-   "), so an ordered or
+// "*"-bulleted selection serialized to markers that appear nowhere in the
+// source and highlight/erase missed every time. Put the source list's own
+// wrapper back (and, for an ordered list, the item's real number in `start`,
+// which is what the list-item rule reads the number from).
+function restoreSelectionListItems(container, range) {
+  const orphans = Array.from(container.children).filter((node) => node.tagName === "LI");
+  if (!orphans.length) return;
+  const anchorNode = range.commonAncestorContainer;
+  const anchorEl = anchorNode.nodeType === Node.ELEMENT_NODE ? anchorNode : anchorNode.parentElement;
+  const sourceList = anchorEl?.closest?.("ul, ol");
+  if (!sourceList) return;
+
+  const list = document.createElement(sourceList.tagName.toLowerCase());
+  if (sourceList.tagName === "OL") {
+    // Which item the selection starts at, counted in the SOURCE list (the
+    // orphans are clones, so indexOf has to run against the live DOM). The
+    // range can start on the list itself (offset = child index) or inside an
+    // item's text.
+    let startLi = null;
+    const sc = range.startContainer;
+    if (sc === sourceList) {
+      startLi = sourceList.children[range.startOffset] || null;
+    } else {
+      const startEl = sc.nodeType === Node.ELEMENT_NODE ? sc : sc.parentElement;
+      startLi = startEl?.closest?.("li") || null;
+    }
+    const index = startLi && sourceList.contains(startLi)
+      ? Array.prototype.indexOf.call(sourceList.children, startLi)
+      : -1;
+    if (index > 0) {
+      const base = Number(sourceList.getAttribute("start")) || 1;
+      list.setAttribute("start", String(base + index));
+    }
+  }
+
+  const slot = document.createComment("list");
+  container.insertBefore(slot, orphans[0]);
+  orphans.forEach((li) => list.appendChild(li));
+  slot.replaceWith(list);
+}
+
 // Clone the selected fragment with rendered-markdown UI chrome removed
 // (image/diagram Zoom pills, code-block copy buttons, language badges) and the
 // SVG stylesheets mermaid inlines into its output, which otherwise read back as
@@ -12416,6 +12447,7 @@ function cleanedSelectionFragment(range) {
   container.appendChild(snapped.cloneContents());
   container.querySelectorAll("button, .code-lang-badge, style, script").forEach((node) => node.remove());
   restoreSelectionTables(container, snapped);
+  restoreSelectionListItems(container, snapped);
   return container;
 }
 
@@ -12832,13 +12864,13 @@ function positionNotesSelectionButton() {
     if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
     if (imageMatches.length) parts.push(imageMatches.length === 1 ? "1 image" : `${imageMatches.length} images`);
     cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
-    // Both are hidden on THIS (floating-pill) control while raw-editing.
-    // Eraser: native Delete/Backspace already does its job in raw-edit mode.
-    // Highlight: the pill has no raw-editor counterpart, but the edit
-    // toolbar's own Highlight dropdown (createToolbarHtml, data-highlight)
-    // covers the same ground there via toggleMarkColorInText.
-    if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = true;
-    if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = true;
+    // Raw-edit mode: the pill's highlight/erase work there too now (see the
+    // pointerdown handlers — textarea selections survive a pill tap, so those
+    // read the live [start,end) directly; this capture only records WHICH
+    // editor holds the selection).
+    pillSelectionCapture = { targetName: editingTarget.name, editing: true, sel: null, markdown: text };
+    if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
+    if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
     button.hidden = false;
     if (mobile) return pinSelectionButtonToBottom(button);
     // Track the actual selection (same approach as the rendered-view branch
@@ -12881,9 +12913,18 @@ function positionNotesSelectionButton() {
   if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
   if (imageCount) parts.push(imageCount === 1 ? "1 image" : `${imageCount} images`);
   cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
-  // Both are Notes-only — hidden for a question/answer rendered selection.
-  if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = renderedTarget?.name !== "notes";
-  if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = renderedTarget?.name !== "notes";
+  // Snapshot everything the pill's buttons will need — tapping one can kill
+  // the live selection before its handler reads it (mobile).
+  pillSelectionCapture = {
+    targetName: renderedTarget.name,
+    editing: false,
+    sel: renderedSelectionStrings(renderedTarget.view),
+    markdown: cardBtn.dataset.selectionText,
+  };
+  // Highlight and erase work for every rendered face (notes AND card
+  // question/answer — renderTargetConfig handles all three).
+  if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
+  if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
   button.hidden = false;
   if (mobile) return pinSelectionButtonToBottom(button);
   const rect = range.getBoundingClientRect();
@@ -13425,19 +13466,38 @@ function clozeTextareaSelection(target) {
   showToast(result.text.startsWith("{{") ? "Cloze added" : "Cloze removed");
 }
 
+// Which selection a pill button should act on. The LIVE selection wins when
+// it's still there (desktop: pointerdown + preventDefault keeps it alive);
+// the position-time snapshot (pillSelectionCapture) is the fallback for touch
+// platforms where the tap itself dissolved it. Returns
+//   { kind:"rendered", name, sel } | { kind:"editing", target } | null
+function pillActionTarget() {
+  const rendered = activeRenderedTarget();
+  if (rendered) {
+    const sel = pillSelectionCapture && !pillSelectionCapture.editing && pillSelectionCapture.targetName === rendered.name
+      ? pillSelectionCapture.sel
+      : null;
+    return { kind: "rendered", name: rendered.name, sel };
+  }
+  const editing = activeEditingTarget();
+  if (editing) return { kind: "editing", target: editing };
+  if (pillSelectionCapture && !pillSelectionCapture.editing) {
+    return { kind: "rendered", name: pillSelectionCapture.targetName, sel: pillSelectionCapture.sel };
+  }
+  return null;
+}
+
 // The floater's cloze button: hide the selection as a fill-in-the-blank, in
 // place. Works whether the selection is in a rendered view or the raw editor.
 el.makeClozeFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
-  const rendered = activeRenderedTarget();
-  if (rendered) {
-    makeClozeFromSelection(renderTargetConfig(rendered.name));
-    hideNotesSelectionButton();
-    return;
+  const target = pillActionTarget();
+  if (target?.kind === "rendered") {
+    makeClozeFromSelection(renderTargetConfig(target.name), target.sel);
+  } else if (target?.kind === "editing") {
+    clozeTextareaSelection(target.target);
   }
-  const editing = activeEditingTarget();
-  if (editing) clozeTextareaSelection(editing);
   hideNotesSelectionButton();
 });
 
@@ -13447,7 +13507,7 @@ el.pinQuickNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   // preventDefault keeps the selection alive so we can read its markdown + anchor.
   event.preventDefault();
   event.stopPropagation();
-  const text = currentNotesSelectionMarkdown();
+  const text = currentNotesSelectionMarkdown() || pillSelectionCapture?.markdown || "";
   // Capture the source location (deck + note offset) while the selection is
   // still live, so the pinned card can offer a "Go to notes" jump back.
   const anchor = captureSourceAnchor();
@@ -13457,26 +13517,73 @@ el.pinQuickNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   saveQuickNote(text, button, anchor);
 });
 
-// The floater's highlight button: mark the rendered-view selection. Notes-
-// only, same gating as the eraser below.
+// Raw-editor (textarea) counterpart of the highlight button: the textarea
+// hands us an exact [start,end), so there's no source search — wrap, recolour
+// or strip the substring directly, same as the edit toolbar's Highlight
+// dropdown (toggleMarkColorInText) but as a one-tap apply of the shared
+// last-used swatch.
+function highlightTextareaSelection(target) {
+  const ta = target?.edit;
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  if (start === end) return;
+  const selected = ta.value.slice(start, end);
+  const wrapped = toggleMarkColorInText(selected, renderFormatDefaults.highlight);
+  ta.value = ta.value.slice(0, start) + wrapped + ta.value.slice(end);
+  ta.setSelectionRange(start, start + wrapped.length);
+  ta.focus();
+  // Persist through the editor's own input path, same as any other raw edit.
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  // wrapAcrossBlocks keeps list markers OUTSIDE the marks, so an added wrap
+  // doesn't necessarily start with "<mark" — length is the honest tell.
+  showToast(wrapped.length > selected.length ? "Highlighted" : "Highlight removed");
+}
+
+// Raw-editor counterpart of the eraser: splice the selection out of the
+// textarea. (Native Backspace already did this; the button exists so the pill
+// behaves the same in both modes — the reported bug was that it looked
+// available and did nothing.)
+function eraseTextareaSelection(target) {
+  const ta = target?.edit;
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  if (start === end) return;
+  ta.value = ta.value.slice(0, start) + ta.value.slice(end);
+  ta.setSelectionRange(start, start);
+  ta.focus();
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  showToast("Selection erased");
+}
+
+// The floater's highlight button: mark the selection with the shared last-used
+// swatch. Works on every face (notes, question, answer) in BOTH modes —
+// rendered via the source-search driver, raw via the textarea wrap above.
 el.highlightSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
-  const rendered = activeRenderedTarget();
-  if (rendered?.name === "notes") makeHighlightFromSelection(renderTargetConfig("notes"));
+  const target = pillActionTarget();
+  if (target?.kind === "rendered") {
+    makeHighlightFromSelection(renderTargetConfig(target.name), renderFormatDefaults.highlight, target.sel);
+  } else if (target?.kind === "editing") {
+    highlightTextareaSelection(target.target);
+  }
   hideNotesSelectionButton();
 });
 
-// The floater's eraser button: delete the rendered-view selection from the
-// notes source. Notes-only — this button is hidden for question/answer
-// selections (see positionNotesSelectionButton) and, unlike the other three,
-// has no raw-editor counterpart: native Delete/Backspace already does this
-// job in edit mode.
+// The floater's eraser button: delete the selection from the source — every
+// face, both modes (rendered via eraseNotesSelection's locate-then-splice,
+// raw via a plain textarea splice).
 el.eraseNotesSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
-  const rendered = activeRenderedTarget();
-  if (rendered?.name === "notes") eraseNotesSelection(renderTargetConfig("notes"));
+  const target = pillActionTarget();
+  if (target?.kind === "rendered") {
+    eraseNotesSelection(renderTargetConfig(target.name), target.sel);
+  } else if (target?.kind === "editing") {
+    eraseTextareaSelection(target.target);
+  }
   hideNotesSelectionButton();
 });
 
@@ -13573,7 +13680,27 @@ function nthIndexOf(haystack, needle, n) {
 // real spacing, not what was searched for.
 function fuzzyWhitespaceMatch(source, needle) {
   if (!needle) return null;
-  const pattern = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  // A line-initial list marker in the needle (Turndown always serializes
+  // "-   " / "1.  ") stands for whatever marker the source line actually
+  // uses: this app's own bullet toggle writes "- ", an imported note might
+  // use "*" or "+", and an ordered selection's numbers don't have to equal
+  // the source's own ("9. " when the list restarts). Match any of them —
+  // whitespace-only flexibility can't bridge a marker-CHARACTER difference,
+  // which is why "*"-lists and ordered lists never matched before this.
+  const MARKER = "\u0001";
+  const markedNeedle = needle.replace(/(^|\n)[ \t]*(?:[-*+]|\d+[.)])[ \t]+/g, (_m, br) => br + MARKER);
+  const markerPattern = "(?:[ \\t]*(?:[-*+]|\\d+[.)])[ \\t]+)";
+  let pattern = markedNeedle
+    .split(MARKER)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"))
+    .join(markerPattern);
+  // A needle that STARTS with a marker may carry one the restored list wrapper
+  // synthesized for a selection that began MID-item ("-   ha beta" for a drag
+  // that started at "ha"): the source's own "- " then sits BEFORE the match,
+  // not inside it, so a mandatory leading marker never matches. Optional it.
+  if (markedNeedle.startsWith(MARKER)) {
+    pattern = `${markerPattern}?${pattern.slice(markerPattern.length)}`;
+  }
   let re;
   try {
     re = new RegExp(pattern);
@@ -13592,15 +13719,16 @@ function fuzzyWhitespaceMatch(source, needle) {
 // verbatim as plain text still matches). Returns { idx, end, needle } or null
 // when the selection can't be located at all (e.g. it spans block boundaries).
 //
-// `fuzzy: true` adds a third retry, tolerant of whitespace differences (see
-// fuzzyWhitespaceMatch) — needed for a selection spanning list items, where
-// Turndown's padded "-   " markers never equal this app's own single-space
-// "- ". Opt-in, not the default: a caller that just wraps the match in a
-// simple pair (clozeToggleInSource, eraseSelectionFromSource, the bold/
-// italic/colour text formatters) would corrupt a multi-item list the same way
-// a bare <mark> across block boundaries used to — wrapAcrossBlocks exists
-// specifically so highlightToggleInSource can ask for this safely; the
-// others haven't been made block-boundary-safe, so they don't opt in.
+// `fuzzy: true` adds a third retry, tolerant of whitespace and list-marker
+// differences (see fuzzyWhitespaceMatch) — needed for a selection spanning
+// list items, where Turndown's padded "-   " markers never equal this app's
+// own single-space "- ". Opt-in, not the default: a caller that just wraps
+// the match in a simple pair (clozeToggleInSource, the bold/italic/colour
+// text formatters) would corrupt a multi-item list the same way a bare
+// <mark> across block boundaries used to — wrapAcrossBlocks exists so
+// highlightToggleInSource can ask for this safely, and eraseSelectionFrom-
+// Source opts in because REMOVING the whole match is marker-safe; the
+// wrapping callers that aren't block-boundary-safe still don't opt in.
 function locateSelectionInSource(source, sel, { fuzzy = false } = {}) {
   const attempts = [];
   if (sel.asText) attempts.push({ needle: sel.asText, occurrence: sel.occurrence || 0 });
@@ -13643,15 +13771,18 @@ function clozeToggleInSource(source, sel) {
 }
 
 // Shared driver for the three "make cloze from selection" header buttons.
-function makeClozeFromSelection({ view, label, getSource, setSource, rerender }) {
-  const sel = renderedSelectionStrings(view);
+// `selOverride` is the pill's position-time snapshot (see pillSelectionCapture)
+// — on touch screens the tap that fires this can have already dissolved the
+// live selection, so re-reading it here would find nothing.
+function makeClozeFromSelection({ view, label, getSource, setSource, rerender }, selOverride = null) {
+  const sel = selOverride || renderedSelectionStrings(view);
   if (!sel) {
-    setStatus(`Select some text in the ${label} first, then tap […] to hide it as a cloze.`, "error");
+    showToast(`Select some text in the ${label} first, then tap […] to hide it as a cloze.`, "error");
     return;
   }
   const result = clozeToggleInSource(getSource(), sel);
   if (!result) {
-    setStatus("Couldn't match that selection in the source — try selecting whole words, or use the editor to place the {{cloze}}.", "error");
+    showToast("Couldn't match that selection in the source — try selecting whole words, or use the editor to place the {{cloze}}.", "error");
     return;
   }
   if (result.action === "already") {
@@ -13673,12 +13804,24 @@ function makeClozeFromSelection({ view, label, getSource, setSource, rerender })
 // the same kind of single-block limit notesSelectionCodeFence already applies
 // to a selection spanning more than one <pre>.
 function eraseSelectionFromSource(source, sel) {
-  const loc = locateSelectionInSource(source, sel);
+  // fuzzy: the eraser REMOVES the whole match, markers included, so the
+  // block-boundary concern that keeps cloze/colour on strict matching doesn't
+  // apply — and without it a selection spanning list items (padded "-   "
+  // markers, "*" bullets, ordered numbers) could never be found, which is
+  // exactly the "delete does nothing on bullet points" case. The "\n\n"
+  // refusal below still guards the genuinely dangerous shape (a match that
+  // would merge paragraphs), since fuzzyWhitespaceMatch returns the ACTUAL
+  // matched source text, not the needle searched for.
+  const loc = locateSelectionInSource(source, sel, { fuzzy: true });
   if (!loc) return null;
   const { idx, end, needle } = loc;
   if (needle.includes("\n\n")) return null;
   const before = source.slice(0, idx);
   const after = source.slice(end);
+  // The match ran to the very start of the note but the item separators lived
+  // AFTER it — erasing list items from the top otherwise leaves a stray blank
+  // first line behind.
+  if (!before && after.startsWith("\n")) return after.slice(1);
   const beforeEndsWithSpace = /[ \t]$/.test(before);
   const afterStartsWithSpace = /^[ \t]/.test(after);
   // Both sides already carried their own separating space (the usual case —
@@ -13695,20 +13838,18 @@ function eraseSelectionFromSource(source, sel) {
 }
 
 // Driver for the eraser button — same shape as makeClozeFromSelection, but
-// splices the selection OUT of the source instead of wrapping it. Only ever
-// called with renderTargetConfig("notes") (see the pointerdown handler and
-// the visibility gate in positionNotesSelectionButton), so it never runs
-// against a card's question/answer even though renderTargetConfig itself
-// supports those targets too.
-function eraseNotesSelection({ view, label, getSource, setSource, rerender }) {
-  const sel = renderedSelectionStrings(view);
+// splices the selection OUT of the source instead of wrapping it. Runs against
+// whichever rendered face the selection is in (notes, question or answer —
+// renderTargetConfig handles all three).
+function eraseNotesSelection({ view, label, getSource, setSource, rerender }, selOverride = null) {
+  const sel = selOverride || renderedSelectionStrings(view);
   if (!sel) {
-    setStatus(`Select some text in the ${label} first, then tap the eraser to delete it.`, "error");
+    showToast(`Select some text in the ${label} first, then tap the eraser to delete it.`, "error");
     return;
   }
   const result = eraseSelectionFromSource(getSource(), sel);
   if (result == null) {
-    setStatus("Couldn't match that selection in the source — try selecting text within a single paragraph.", "error");
+    showToast("Couldn't match that selection in the source — try selecting text within a single paragraph.", "error");
     return;
   }
   setSource(result);
@@ -13877,15 +14018,15 @@ function toggleMarkColorInText(text, color) {
 // `color` defaults to the shared last-used swatch (renderFormatDefaults.highlight)
 // so a plain tap of the floating pill applies/toggles that colour; the render
 // toolbar's split-button menu passes a specific token instead.
-function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight) {
-  const sel = renderedSelectionStrings(view);
+function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight, selOverride = null) {
+  const sel = selOverride || renderedSelectionStrings(view);
   if (!sel) {
-    setStatus(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
+    showToast(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
     return;
   }
   const result = highlightToggleInSource(getSource(), sel, color);
   if (!result) {
-    setStatus("Couldn't match that selection in the source — try selecting whole words.", "error");
+    showToast("Couldn't match that selection in the source — try selecting whole words.", "error");
     return;
   }
   if (result.action === "already" || result.action === "not-highlighted") {
@@ -23336,21 +23477,45 @@ function registerServiceWorker() {
   // A worker that takes over a page which already had one has just swapped the
   // app's files underneath a page still running the PREVIOUS release's JS. The
   // markup can already be the new build while the behaviour is the old one, so
-  // half the app quietly does the old thing and there is nothing on screen to
-  // explain it — which is what makes "is my fix live yet?" unanswerable. Say so
-  // out loud, once, and let the user finish the update when they want to.
+  // half the app quietly does the old thing. It used to just show a toast and
+  // wait — but nobody reads it and everyone kept running the old release for
+  // days, which is exactly the "browsers serve the stale version" report.
+  // Reload straight into the new release instead; notes/cards autosave on
+  // input, so at most a keystroke is in flight. The sessionStorage guard keeps
+  // a flapping update (bad deploy, oscillating server) from reload-looping the
+  // tab: one automatic reload per minute at most.
   let hadController = Boolean(navigator.serviceWorker.controller);
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController) {
       hadController = true; // first-ever install: this page is already current
       return;
     }
-    showToast("Recall updated — reload to finish", "info");
+    let lastReload = 0;
+    try { lastReload = Number(sessionStorage.getItem("recall:updateReloadAt")) || 0; } catch (_) {}
+    if (Date.now() - lastReload < 60_000) {
+      showToast("Recall updated — reload to finish", "info");
+      return;
+    }
+    try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) {}
+    location.reload();
   });
 
   const register = () => {
-    navigator.serviceWorker.register("./sw.js")
-      .then(requestOfflineCacheRepair)
+    // updateViaCache: "none" — the browser's own HTTP cache must never answer
+    // the "is there a new sw.js?" check, or a host that serves the worker with
+    // cacheable headers delays every release by up to a day (the browser's
+    // forced re-check cap). The .update() calls below are the proactive half:
+    // without them the check only runs on navigation, so a tab left open for
+    // days never sees a release at all.
+    navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
+      .then((registration) => {
+        requestOfflineCacheRepair();
+        const checkForUpdate = () => registration.update().catch(() => {});
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") checkForUpdate();
+        });
+        setInterval(checkForUpdate, 30 * 60 * 1000);
+      })
       .catch((error) => {
         console.warn("Service worker registration failed", error);
       });
@@ -23841,19 +24006,12 @@ el.styleControls.addEventListener("click", (event) => {
   switchStyleEditProfile(button.dataset.styleProfile);
 });
 el.styleControls.addEventListener("input", (event) => {
-  if (event.target.matches("[data-style-slider]")) {
-    const input = el.styleControls.querySelector(`[data-style-key="${event.target.dataset.styleSlider}"]`);
-    if (input) input.value = sliderTextValue(event.target);
-    handleStyleControlChange();
-  }
   if (event.target.matches("[data-style-key]")) {
-    syncSliderFromText(event.target);
     handleStyleControlChange();
   }
 });
 el.styleControls.addEventListener("change", (event) => {
   if (event.target.matches("[data-style-key]")) {
-    syncSliderFromText(event.target);
     handleStyleControlChange();
   }
 });
@@ -26143,7 +26301,7 @@ const MATH_OPAQUE_MARK = "\u0000";
 // Subtrees the math scan must not look inside: their text is either code (where
 // "$" is not a delimiter) or math that already has its own Turndown rule.
 const MATH_OPAQUE_SELECTOR =
-  "code, pre, script, style, .katex, .MathJax, .MathJax_Preview, .MathJax_Display, mjx-container";
+  "code, pre, script, style, math, .katex, .MathJax, .MathJax_Preview, .MathJax_Display, mjx-container";
 
 // Elements Turndown renders as their own block — the boundary between two of
 // them is a line break in the markdown, so it has to be one in the flat text.
@@ -26586,6 +26744,55 @@ function buildTurndownService(options = {}) {
     }
   });
 
+  // Page chrome that is never content: scripts, styles, widgets, form fields,
+  // icon SVGs and buttons. Turndown's own tables keep SCRIPT around
+  // ("meaningful when blank"), so its text — "var x = 1;", ".a{color:red}",
+  // "Copy code" — used to leak into pasted notes as if it were prose. The
+  // selection-capture path already removes these from the fragment
+  // (cleanedSelectionFragment), so this just makes paste agree with it.
+  turndownService.addRule("page-chrome", {
+    filter: (node) =>
+      node.nodeType === 1 &&
+      /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|IFRAME|OBJECT|EMBED|CANVAS|SVG|SELECT|BUTTON|INPUT|TEXTAREA)$/.test(node.nodeName),
+    replacement: () => ""
+  });
+
+  // MathML with no usable glyph fallback: Wikipedia and pandoc put the TeX in
+  // an <annotation> or in alttext, and Turndown would otherwise serialize the
+  // presentation glyphs ("x=-b2a") — math destroyed on the way in. Recover the
+  // source, the same way the katex rule above recovers it for KaTeX markup.
+  turndownService.addRule("mathml-tex", {
+    filter: (node) => node.nodeType === 1 && node.nodeName.toLowerCase() === "math",
+    replacement: (content, node) => {
+      const annotation =
+        node.querySelector('annotation[encoding="application/x-tex"]') || node.querySelector("annotation");
+      const tex = (annotation?.textContent || node.getAttribute("alttext") || "").trim();
+      if (!tex) return content;
+      return node.getAttribute("display") === "block"
+        ? `\n\n$$\n${tex}\n$$\n\n`
+        : `$${tex}$`;
+    }
+  });
+
+  // AI chats (Claude/ChatGPT/Gemini/Copilot) wrap the <code> of a fenced block
+  // in extra divs, or put their header bar INSIDE the <pre>. Turndown's
+  // built-in fencedCodeBlock only fires when the <code> is the <pre>'s FIRST
+  // child, so those blocks used to collapse into a single inline-code line
+  // with the newlines flattened out. Same output shape as the built-in rule,
+  // just found deeper.
+  turndownService.addRule("fenced-code-nested", {
+    filter: (node) =>
+      node.nodeName === "PRE" &&
+      !(node.firstElementChild && node.firstElementChild.nodeName === "CODE") &&
+      Boolean(node.querySelector("code")),
+    replacement: (content, node) => {
+      const code = node.querySelector("code");
+      const language = ((code.getAttribute("class") || "").match(/language-([\w+-]+)/) || [])[1] || "";
+      const text = code.textContent.replace(/\n$/, "");
+      return `\n\n\`\`\`${language}\n${text}\n\`\`\`\n\n`;
+    }
+  });
+
   // Turndown 7.1.2's built-in listItem rule always indents a list item's
   // second+ line (a loose <li> with more than one <p>, e.g. an endnote's
   // citation followed by a "go to reference" link) by a hardcoded 4 spaces,
@@ -26618,13 +26825,41 @@ function buildTurndownService(options = {}) {
   return turndownService;
 }
 
+// Strips page chrome out of a parsed clipboard fragment before Turndown sees
+// it. Copied web/AI-chat HTML carries a lot of markup that is not content:
+// visually-hidden duplicate glyphs (aria-hidden), and code-block header bars
+// ("python  ⧉ Copy") sitting next to the <pre>. Turndown's default handling
+// keeps their TEXT as if it were prose, so a paste used to come out with
+// "pythonCopy" lines baked in.
+function cleanClipboardDom(root) {
+  // aria-hidden nodes duplicate what the visible nodes already say (KaTeX's
+  // glyph half, screen-reader spans) or are pure decoration (icon fonts).
+  root.querySelectorAll("[aria-hidden='true']").forEach((node) => node.remove());
+
+  // A code block's header bar is the <pre>'s immediate sibling and holds the
+  // language label plus a copy button. Once the button itself is dropped (the
+  // page-chrome rule below) only the stray label word would be left — remove
+  // the whole bar instead. The button is the evidence: a plain short div of
+  // prose in front of a <pre> is content and stays.
+  root.querySelectorAll("pre").forEach((pre) => {
+    const sibling = pre.previousElementSibling;
+    if (!sibling || /^(P|UL|OL|DL|H[1-6]|BLOCKQUOTE|TABLE)$/.test(sibling.nodeName)) return;
+    if (sibling.querySelector("a, img, pre, code")) return;
+    if (!sibling.querySelector("button, [role='button'], [class*='copy' i]")) return;
+    if (sibling.textContent.trim().length > 30) return;
+    sibling.remove();
+  });
+
+  return root;
+}
+
 function turndownWithService(turndownService, html, options = {}) {
   try {
     // Parsed here rather than handed to Turndown as a string, because the math
     // spans have to be lifted out of the DOM before conversion — see
     // protectMathInDom.
     const doc = new DOMParser().parseFromString(html, "text/html");
-    const markdown = turndownService.turndown(protectMathInDom(doc.body));
+    const markdown = turndownService.turndown(protectMathInDom(cleanClipboardDom(doc.body)));
     // Belt and braces. protectMathInDom works from the DOM, so it depends on
     // recognising how a given site lays its formulas out, and sites keep
     // inventing new ways — math split across elements the flattener treats as
@@ -26669,17 +26904,20 @@ document.addEventListener("paste", (event) => {
   const html = clipboardData.getData("text/html");
   if (!html) return;
 
-  const plainText = clipboardData.getData("text/plain");
-
-  // Prevent default paste behavior
-  event.preventDefault();
+  const plainText = clipboardData.getData("text/plain") || "";
 
   let markdown = htmlToMarkdown(html);
 
-  // Fallback to plain text if the markdown conversion was empty
-  if (!markdown.trim() && plainText.trim()) {
-    markdown = plainText;
-  }
+  // Fall back to plain text when the conversion comes back empty (a fragment
+  // that was all page chrome, or a converter that threw). Only then, when
+  // there is genuinely something to insert, suppress the native paste — the
+  // old order preventDefault-ed first, so a failed conversion swallowed the
+  // clipboard entirely and the paste simply never happened.
+  if (!markdown.trim()) markdown = plainText;
+  if (!markdown) return;
+
+  // Prevent default paste behavior
+  event.preventDefault();
 
   target.focus();
   const start = target.selectionStart;
