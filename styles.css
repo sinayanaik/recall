@@ -2162,67 +2162,94 @@ button:disabled {
   -webkit-user-select: text;
 }
 
-/* Headings sized close to body text (no giant browser-default jumps) but each
-   level still reads at a glance via its own color/weight/border/case combo —
-   big-and-bordered at the top tapering to small-caps "eyebrow" labels at the
-   bottom, rather than relying on font-size alone to carry the hierarchy. */
-.rendered h1 {
-  font-size: 1.15em;
-  font-weight: 800;
-  line-height: 1.3;
-  color: var(--accent-strong);
-  margin: 1.4em 0 0.6em;
-  padding-bottom: 0.25em;
-  border-bottom: 2px solid var(--accent);
+/* ── Headings: one system, six variations ──────────────────────────────────
+   Every level is body-sized (font-size: 1em) — deliberately. Size used to
+   carry the hierarchy (1.15em → 0.9em) alongside a grab-bag of one-off
+   decorations: only h1 had a rule, h4 was italic, h5/h6 were uppercase. Six
+   levels that each looked like a different idea.
+
+   Now they share ONE idea — a rule underneath the text — and the level is read
+   off that rule's LENGTH and STYLE: full-width and solid at h1, tapering to a
+   short dotted tick at h6. Weight (800→600) and colour (accent-strong → text →
+   muted) reinforce the same ladder without ever changing the type size, so a
+   heading never disturbs the line rhythm of the prose around it.
+
+   The rule is an ::after, not a border-bottom: a border always spans the whole
+   block box, and the varying lengths are the point. Anything that flattens
+   headings (card faces, cloze context) must therefore hide ::after too — see
+   `.card-question .rendered` and `.cloze-item .cloze-ctx` below. */
+.rendered :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  line-height: 1.4;
+  margin: 1.2em 0 0.45em;
 }
-/* No left rule here, deliberately. This used to carry
+.rendered :is(h1, h2, h3, h4, h5, h6)::after {
+  content: "";
+  display: block;
+  margin-top: 0.28em;
+  /* currentColor by default, so the rule tracks each level's own colour; h1/h2
+     override it to --accent for the two "chapter" levels. */
+  border-top-color: currentColor;
+}
+/* No left rule on any heading, deliberately. h2 used to carry
    `border-left: 4px solid var(--accent)` — byte for byte what
-   `.rendered blockquote` still carries — and at 1.08em against 1em body text
-   the size difference is only 8%, so the border was doing nearly all the work
-   of saying "heading". The result was that an h2 read as a `>` quote. The left
-   accent rule now belongs to blockquotes alone (see .rendered blockquote); h2
-   is told apart from h3 by colour, which is the scheme the other levels already
-   use. */
-.rendered h2 {
-  font-size: 1.08em;
+   `.rendered blockquote` still carries — and with the size difference gone
+   entirely the border did ALL the work of saying "heading". The result was
+   that an h2 read as a `>` quote. The left accent rule belongs to blockquotes
+   alone (see .rendered blockquote); headings are told apart by the underline
+   below them, which no other block element uses. */
+.rendered h1 {
   font-weight: 800;
-  line-height: 1.35;
+  color: var(--accent-strong);
+  margin-top: 1.4em;
+}
+.rendered h1::after {
+  width: 100%;
+  border-top: 2px solid var(--accent);
+}
+.rendered h2 {
+  font-weight: 800;
   color: var(--text);
-  margin: 1.3em 0 0.5em;
+  margin-top: 1.3em;
+}
+.rendered h2::after {
+  width: min(60%, 20em);
+  border-top: 2px solid var(--accent);
 }
 .rendered h3 {
-  font-size: 1em;
-  font-weight: 800;
-  line-height: 1.4;
+  font-weight: 700;
   color: var(--accent-strong);
-  margin: 1.1em 0 0.4em;
+}
+.rendered h3::after {
+  width: min(40%, 14em);
+  border-top: 1.5px solid;
 }
 .rendered h4 {
-  font-size: 1em;
   font-weight: 700;
-  font-style: italic;
-  line-height: 1.4;
   color: var(--text);
-  margin: 1em 0 0.35em;
+}
+.rendered h4::after {
+  width: min(28%, 10em);
+  border-top: 1.5px dashed;
 }
 .rendered h5 {
-  font-size: 0.95em;
-  font-weight: 700;
-  line-height: 1.4;
+  font-weight: 600;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin: 0.9em 0 0.3em;
+  margin-top: 1em;
+}
+.rendered h5::after {
+  width: min(20%, 7em);
+  border-top: 1.5px dotted;
 }
 .rendered h6 {
-  font-size: 0.9em;
-  font-weight: 700;
-  line-height: 1.4;
+  font-weight: 600;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  opacity: 0.85;
-  margin: 0.8em 0 0.3em;
+  margin-top: 1em;
+}
+.rendered h6::after {
+  width: min(14%, 5em);
+  border-top: 1.5px dotted;
+  opacity: 0.7;
 }
 
 /* Cloze deletion: hidden fill-in-the-blank that reveals on tap. */
@@ -2367,6 +2394,12 @@ button:disabled {
   margin: 0;
   padding: 0;
   border: 0;
+}
+/* The heading underline is an ::after (see the heading block above), which a
+   `border: 0` on the heading itself cannot reach — without this the rules
+   survive the flattening and eat vertical space the fit-height cap needs. */
+.card-question .rendered :is(h1, h2, h3, h4, h5, h6)::after {
+  display: none;
 }
 
 .rendered :is(strong, b),
@@ -4660,6 +4693,11 @@ svg.nomnoml-light-svg [fill="none"] {
   padding: 0;
   color: inherit;
 }
+/* As on the question face: the heading rule is an ::after, so `border: 0`
+   above doesn't remove it. One line of context per cloze has no room for it. */
+.cloze-item .cloze-ctx :is(h1, h2, h3, h4, h5, h6)::after {
+  display: none;
+}
 
 .category-choice-modal {
   position: fixed;
@@ -6935,6 +6973,15 @@ textarea {
   font-weight: 900;
 }
 
+/* h1/h2 draw their underline in --accent (a live theme colour); on paper that
+   has to become --print-accent, for the same reason the blockquote rule below
+   is restated — otherwise the active screen theme bleeds into a print that is
+   otherwise entirely in the print palette. h3-h6 use currentColor, which is
+   already --print-text here, so they need no restatement. */
+.cornell-print-row .rendered :is(h1, h2)::after {
+  border-top-color: var(--print-accent);
+}
+
 .cornell-print-row .rendered blockquote {
   border-left-color: var(--print-accent);
   /* The screen rule tints with --accent; on paper that has to become
@@ -8130,9 +8177,16 @@ textarea {
     line-height: 1.3;
   }
 
-  .cornell-print-row h1 { font-size: 13pt; margin-top: 0.5em; margin-bottom: 0.3em; }
-  .cornell-print-row h2 { font-size: 11.5pt; margin-top: 0.5em; margin-bottom: 0.3em; }
-  .cornell-print-row h3 { font-size: 10.5pt; margin-top: 0.4em; margin-bottom: 0.2em; }
+  /* Body-sized on paper too, matching the screen scheme: the underline ladder
+     (see the .rendered heading block) is what says which level this is, and it
+     survives print untouched. These used to be 13pt/11.5pt/10.5pt against 9.5pt
+     body text, which reintroduced on paper exactly the size hierarchy the
+     screen styles dropped. */
+  .cornell-print-row :is(h1, h2, h3, h4, h5, h6) {
+    font-size: 1em;
+    margin-top: 0.5em;
+    margin-bottom: 0.3em;
+  }
   .cornell-print-row p { margin: 0 0 0.5em; }
   .cornell-print-row p:last-child { margin-bottom: 0; }
 
@@ -9527,10 +9581,85 @@ textarea {
   min-height: inherit !important;
 }
 
+/* ── Editor guides: the reading line and the current line ──────────────────
+   Two marks that answer "where am I?" in the raw editor (see updateEditorGuides
+   in app.js).
+
+   Stacking, which is fiddly and load-bearing: the highlight backdrop paints an
+   OPAQUE --card background (it has to — it is the only thing painting the text),
+   so the guides cannot hide behind it. They go above the backdrop at z-index 1
+   and below the caret: .edit-textarea is also z-index 1 but comes later in the
+   DOM, so it still wins the tie and the caret stays on top of the band. Both
+   marks are pointer-transparent, so neither can eat a click or a drag-select. */
+.editor-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: var(--input-radius);
+  z-index: 1;
+}
+
+/* The line every jump in this app targets and every scroll sampler reads from
+   (notesReadingLineOffset). Faint on purpose: it is a landmark you notice when
+   looking for it, not a rule across the page. */
+.editor-reading-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+.editor-caret-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: none;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border-left: 3px solid var(--accent);
+}
+
+.editor-caret-line.is-visible {
+  display: block;
+}
+
+/* The ▸ sits in the left padding gutter (10px, see the shared metrics rule
+   above), outside the text column, so it never covers a character. */
+.editor-caret-mark {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  text-align: center;
+  font-size: 0.72em;
+  line-height: 1;
+  color: var(--accent);
+}
+
+/* After a jump (triple-click, heading link): a brief stronger wash so the
+   landing spot announces itself instead of having to be hunted for. */
+@keyframes editorCaretLineFlash {
+  from { background: color-mix(in srgb, var(--accent) 42%, transparent); }
+  to { background: color-mix(in srgb, var(--accent) 13%, transparent); }
+}
+
+.editor-caret-line.is-flash {
+  animation: editorCaretLineFlash 1.4s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-caret-line.is-flash {
+    animation: none;
+  }
+}
+
 .highlight-textarea-backdrop {
   position: absolute !important;
   top: 0 !important;
   left: 0 !important;
+  z-index: 0 !important;
   color: var(--text) !important;
   background: var(--card) !important;
   border: 1px solid var(--line) !important;
@@ -11353,6 +11482,10 @@ kbd {
 
 .notes-stage {
   display: none;
+  /* Declared here as well as on the active-stage rule below so the drawer's
+     width is defined even before .notes-mode applies — a `var()` that resolves
+     to nothing would make the whole declaration invalid, not fall back. */
+  --toc-width: min(300px, 82%);
 }
 
 .quiz-panel.notes-mode .notes-stage:not([hidden]) {
@@ -11367,6 +11500,9 @@ kbd {
   background: var(--card);
   box-shadow: var(--card-shadow);
   padding: var(--notes-stage-pad);
+  /* One definition of the TOC drawer's width, read by both the drawer itself
+     and the push rules that make room for it. */
+  --toc-width: min(300px, 82%);
 }
 
 /* Highlights tab — same card chrome as the notes stage (see .notes-mode
@@ -11759,6 +11895,15 @@ kbd {
   white-space: nowrap;
 }
 
+/* Heading mode ("[[Note#…"): the rows are sections of one note rather than
+   notes, so they are indented behind a rail — the same visual grammar the TOC
+   drawer uses for the same relationship. */
+.note-link-picker-row.is-heading {
+  padding-left: 16px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0 calc(var(--input-radius, 10px) - 3px) calc(var(--input-radius, 10px) - 3px) 0;
+}
+
 .note-link-picker-row.is-create {
   border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
   border-radius: 0 0 calc(var(--input-radius, 10px) - 3px) calc(var(--input-radius, 10px) - 3px);
@@ -11865,11 +12010,94 @@ kbd {
   color: var(--accent-strong);
 }
 
-/* Highlight — same quiet secondary treatment, tinted toward the highlight
-   colour below so the button hints at what it does. */
+/* ── Highlight: a live swatch, plus its own colour menu ────────────────────
+   This button used to be a 🔴 emoji with `color: color-mix(…#e0b400…)` on it —
+   a dead declaration, because a colour-font glyph ignores currentColor. So the
+   pill always showed red regardless of the six colours it might apply, which
+   read as "changing the colour does nothing". The swatch below is drawn, and
+   refreshRenderSwatches() paints it from renderFormatDefaults.highlight. */
+.selection-float-highlight {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
 .selection-float-btn.is-highlight {
   background: color-mix(in srgb, var(--panel-2) 82%, transparent);
-  color: color-mix(in srgb, #e0b400 65%, var(--accent));
+}
+
+/* The ▾ is a narrow companion to the swatch, not a full-size button of its own:
+   pill width is scarce, and it must never read as a seventh action. */
+.selection-float-btn.is-highlight-menu {
+  width: 18px;
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+
+.pill-swatch {
+  display: block;
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  /* A ring, because the palette runs from yellow to purple and several of those
+     vanish against one theme surface or another with no edge to hold them. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 45%, transparent);
+  background: var(--accent);
+}
+
+/* Opens upward: the pill itself is usually pinned near the bottom of the screen
+   on a phone (see .selection-float.is-pinned-bottom), where downward has no room. */
+.selection-float-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 94%, var(--accent));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+
+.selection-float-menu[hidden] {
+  display: none;
+}
+
+.pill-swatch-btn {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 32%, transparent);
+  border-radius: 999px;
+  background: var(--sw);
+  cursor: pointer;
+}
+
+.pill-swatch-clear {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px dashed color-mix(in srgb, var(--text) 42%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pill-swatch-btn:active,
+.pill-swatch-clear:active {
+  scale: 0.9;
 }
 
 .selection-float-btn:active {
@@ -11990,8 +12218,13 @@ kbd {
   transform: rotate(-45deg);
 }
 
-/* The drawer overlays the notes viewport from the left; the notes-stage is the
-   positioned ancestor. It slides in and never pushes the notes text around. */
+/* The drawer slides in from the left of the notes viewport; the notes-stage is
+   the positioned ancestor.
+   Whether it OVERLAYS the notes or pushes them aside depends on the room
+   available (see the .is-toc-open rules further down). Wide screens push, so
+   you can click through the contents and read what you landed on; phones keep
+   the overlay, because a 300px drawer plus a readable column does not fit in
+   400px and a shrunken strip of text is worse than a covered one. */
 .notes-toc-drawer {
   position: absolute;
   top: 0;
@@ -12000,7 +12233,10 @@ kbd {
   z-index: 40;
   display: flex;
   flex-direction: column;
-  width: min(300px, 82%);
+  /* --toc-width is declared on .notes-stage so the push rules below can reserve
+     exactly this much room. The two must never be able to drift apart: a stale
+     copy of the number would leave a strip of notes text under the drawer. */
+  width: var(--toc-width);
   border-right: 1px solid var(--line);
   border-top-left-radius: var(--card-radius, 14px);
   border-bottom-left-radius: var(--card-radius, 14px);
@@ -12019,6 +12255,37 @@ kbd {
    leave the drawer live (off-screen) while collapsed — pin it off with this. */
 .notes-toc-drawer[hidden] {
   display: none;
+}
+
+/* ── Push, on screens with room for it ─────────────────────────────────────
+   Above 720px the notes make way for the drawer instead of hiding under it.
+   Nothing is repositioned: the header gets a margin and the scroll box gets
+   extra left padding, both COMPOSED with what is already there rather than
+   replacing it. That matters for .notes-rendered in particular, whose padding
+   is paired with a negative margin that bleeds the scrollable box out to the
+   panel edges (see the comment on .notes-rendered) — overwriting the padding
+   would silently undo the "dragging the gutter doesn't scroll" fix.
+
+   Deliberately NOT transitioned. Every child of .notes-rendered is laid out
+   under `content-visibility: auto` with a measured height estimate; animating
+   the column width would re-measure every one of them on every frame of the
+   drawer's 260ms slide, and the reading position would visibly crawl. The
+   width snaps once while the drawer slides over the space it just vacated,
+   and openNotesToc/closeNotesToc restore the reading position around it. */
+@media (min-width: 721px) {
+  .notes-stage.is-toc-open > .notes-head {
+    margin-left: var(--toc-width);
+  }
+
+  .notes-stage.is-toc-open > .notes-rendered {
+    padding-left: calc(var(--notes-padding) + var(--notes-stage-pad) + var(--toc-width));
+  }
+
+  /* The editor gets the same treatment, so toggling raw mode with the TOC open
+     doesn't slide the text back under the drawer. */
+  .notes-stage.is-toc-open > .highlight-textarea-wrapper {
+    margin-left: var(--toc-width);
+  }
 }
 
 .notes-toc-head {
@@ -12295,8 +12562,11 @@ kbd {
   /* Notes TOC drawer: on a narrow screen the rail indentation eats most of
      the width, so ellipsis-truncating the heading text left only a handful
      of characters visible. Wrap instead so the full title is readable. */
-  .notes-toc-drawer {
-    width: min(320px, 88%);
+  /* Wider on a phone, where the drawer overlays rather than pushes and the
+     titles have to be readable in one go. Set on the variable, not on the
+     drawer's own width, so the push rules could never disagree with it. */
+  .notes-stage {
+    --toc-width: min(320px, 88%);
   }
 
   .notes-toc-link {

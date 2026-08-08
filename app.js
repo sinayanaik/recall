@@ -2632,6 +2632,8 @@ const el = {
   makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),
   pinQuickNoteFromSelectionBtn: document.querySelector("#pinQuickNoteFromSelectionBtn"),
   highlightSelectionBtn: document.querySelector("#highlightSelectionBtn"),
+  highlightSelectionMenuBtn: document.querySelector("#highlightSelectionMenuBtn"),
+  highlightSelectionMenu: document.querySelector("#highlightSelectionMenu"),
   eraseNotesSelectionBtn: document.querySelector("#eraseNotesSelectionBtn"),
   extractNoteFromSelectionBtn: document.querySelector("#extractNoteFromSelectionBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
@@ -9454,6 +9456,20 @@ function applyClozeMarkup(text) {
 // backticks leaves it alone, exactly as it does for {{cloze}} and $math$.
 const NOTE_LINK_PATTERN = /\[\[([^[\]\n|]+?)(?:\|([^[\]\n]*?))?\]\]/g;
 
+// What a pipe-less label READS as. "#" is syntax, not something to show: a
+// hand-written [[Chain Rule#Proof]] displays as "Chain Rule › Proof", and
+// [[#Proof]] (a heading in this same note) as just "Proof". The raw label is
+// still what goes into data-note-title, because that is what resolveNoteLink
+// parses back apart.
+function noteLinkDisplayLabel(label) {
+  const hash = label.indexOf("#");
+  if (hash === -1) return label;
+  const note = label.slice(0, hash).trim();
+  const heading = label.slice(hash + 1).trim();
+  if (!heading) return note || label;
+  return note ? `${note} › ${heading}` : heading;
+}
+
 function applyNoteLinkMarkup(text) {
   const source = String(text);
   // Ordinary prose has no "[[" in it at all; this keeps the regex off the hot
@@ -9463,13 +9479,16 @@ function applyNoteLinkMarkup(text) {
     const title = label.trim();
     if (!title) return match;
     const ref = (target || "").trim();
+    // A piped link's label was written deliberately (by the picker, or by hand)
+    // and is shown as-is; only the pipe-less form can contain "#" syntax.
+    const shown = ref ? title : noteLinkDisplayLabel(title);
     // No href, deliberately. enhanceRenderedMarkdown rewrites every a[href] to
     // open in a new tab, and an internal reference must not — leaving the href
     // off keeps this anchor invisible to that pass instead of needing an
     // exception carved into it. role/tabindex put the keyboard back.
     return `<a class="note-link" role="link" tabindex="0"`
       + ` data-note-target="${escapeHtml(ref)}"`
-      + ` data-note-title="${escapeHtml(title)}">${escapeHtml(title)}</a>`;
+      + ` data-note-title="${escapeHtml(title)}">${escapeHtml(shown)}</a>`;
   });
 }
 
@@ -10130,10 +10149,16 @@ function markMissingNoteLinks(scope) {
       // A quick_notes pin isn't in the deck index; leave it alone rather than
       // calling it broken on the strength of a lookup that never applied.
       if (parts.cardId) continue;
-      const title = (link.getAttribute("data-note-title") || "").trim().toLowerCase();
+      const label = (link.getAttribute("data-note-title") || "").trim();
+      // A pipe-less label may carry a "#Heading" (see resolveNoteLink), and
+      // "[[#Proof]]" names a heading in THIS note, which always exists as far
+      // as the deck index is concerned. Comparing the whole label against deck
+      // titles would grey out both as broken.
+      const hash = label.indexOf("#");
+      const title = (hash === -1 ? label : label.slice(0, hash)).trim().toLowerCase();
       const found = parts.id
         ? index.some((entry) => entry.localId === parts.id || entry.deckId === parts.id)
-        : index.some((entry) => entry.title.trim().toLowerCase() === title);
+        : !title || index.some((entry) => entry.title.trim().toLowerCase() === title);
       link.classList.toggle("is-missing", !found);
     }
   }).catch((error) => console.warn("Could not check note links", error));
@@ -11879,6 +11904,10 @@ function enterNotesEditing(cursorOffset = null) {
     : 0;
   el.notesEdit.setSelectionRange(pos, pos);
   scrollTextareaToOffset(el.notesEdit, pos);
+  // Say where the jump landed. Without this the caret is a 1px bar somewhere in
+  // a wall of monospace-ish markdown, and a correct landing is indistinguishable
+  // from a wrong one.
+  flashEditorCaretLine();
 }
 
 // ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
@@ -12185,18 +12214,111 @@ function lineIndexAtOffset(value, pos) {
   return count;
 }
 
+function textareaLineHeight(textarea) {
+  return parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+}
+
+// The syntax-highlight mirror, when there is one to measure against.
+//
+// A <textarea> will not report where a character sits, but the backdrop behind
+// it is a character-for-character copy under an identical metrics rule (see
+// .highlight-textarea-backdrop / .edit-textarea in styles.css — deliberately
+// ONE declaration for both), so a Range inside the mirror answers the question
+// exactly. Null whenever there is nothing trustworthy to measure: no mirror
+// yet, or plain mode (a note past HIGHLIGHT_MIRROR_MAX_CHARS, where the mirror
+// is emptied on purpose).
+function backdropForTextarea(textarea) {
+  const wrapper = textarea?.parentElement;
+  if (!wrapper || wrapper.classList.contains("is-plain")) return null;
+  return wrapper.querySelector(".highlight-textarea-backdrop") || null;
+}
+
+function caretRectInBackdrop(textarea, offset) {
+  const backdrop = backdropForTextarea(textarea);
+  if (!backdrop) return null;
+  const walker = document.createTreeWalker(backdrop, NodeFilter.SHOW_TEXT);
+  let seen = 0;
+  let node = walker.nextNode();
+  while (node) {
+    const len = node.nodeValue.length;
+    if (seen + len >= offset) {
+      try {
+        const range = document.createRange();
+        range.setStart(node, Math.max(0, offset - seen));
+        range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        if (rect && (rect.top || rect.left)) return { rect, backdrop };
+      } catch {
+        // A detached or mid-rebuild mirror; the caller's fallback is fine.
+      }
+      return null;
+    }
+    seen += len;
+    node = walker.nextNode();
+  }
+  return null;
+}
+
+// The reverse walk: a (node, offset) inside the mirror back to a character
+// offset in the textarea's value. The mirror's text content is the value
+// verbatim (only <span> colour wrappers are added — see enableSyntaxHighlighting,
+// which is forbidden from changing any metric), so summing the text nodes before
+// `node` is an exact conversion. Null when the node isn't in this mirror.
+function backdropTextOffset(backdrop, node, offsetInNode) {
+  const walker = document.createTreeWalker(backdrop, NodeFilter.SHOW_TEXT);
+  let seen = 0;
+  let current = walker.nextNode();
+  while (current) {
+    if (current === node) return seen + Math.max(0, offsetInNode);
+    seen += current.nodeValue.length;
+    current = walker.nextNode();
+  }
+  return null;
+}
+
+// Character offset -> its VISUAL top, in the textarea's own scroll coordinates.
+//
+// This is the fix for "triple-click takes me somewhere off-screen". The old
+// arithmetic counted "\n" characters and multiplied by the line height, but
+// both boxes are `white-space: pre-wrap` — a paragraph of prose occupies many
+// visual rows per hard line break, and every one of them was unaccounted for.
+// The result undershot monotonically, so the further into a note you clicked
+// the further BELOW the viewport the caret landed. Measuring the mirror counts
+// wrapped rows because the browser already laid them out.
+//
+// The \n-counting math survives only as the plain-mode fallback, where there is
+// no mirror to measure and an approximation is the only thing on offer.
+function visualLineTopForOffset(textarea, pos) {
+  const hit = caretRectInBackdrop(textarea, pos);
+  if (hit) {
+    const box = hit.backdrop.getBoundingClientRect();
+    // The backdrop scrolls in lockstep with the textarea (see syncScroll) and
+    // shares its padding, so subtracting the border and adding back the scroll
+    // converts a viewport rect straight into scroll-content space.
+    return hit.rect.top - box.top - hit.backdrop.clientTop + hit.backdrop.scrollTop;
+  }
+  const padTop = parseFloat(getComputedStyle(textarea).paddingTop) || 0;
+  return lineIndexAtOffset(textarea.value, pos) * textareaLineHeight(textarea) + padTop;
+}
+
 // setSelectionRange alone doesn't reliably re-scroll a long textarea in every
-// browser, so approximate the scroll from the line number of `pos`. Puts the
+// browser, so drive the scroll from the measured position of `pos`. Puts the
 // line on the same reading line the rendered view samples from and restores to
 // (notesReadingLineOffset) — previously this centred while the sampler read
 // from near the top, so a round trip drifted by half a viewport.
 function scrollTextareaToOffset(textarea, pos) {
-  const lineIndex = lineIndexAtOffset(textarea.value, pos);
-  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+  const top = visualLineTopForOffset(textarea, pos);
   const gap = textarea === el.notesEdit
     ? notesReadingLineOffset(textarea.clientHeight)
     : textarea.clientHeight / 2;
-  textarea.scrollTop = Math.max(0, lineIndex * lineHeight - gap);
+  const max = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+  textarea.scrollTop = Math.min(max, Math.max(0, top - gap));
+  // Writing scrollTop programmatically doesn't reliably fire a scroll event in
+  // every browser, and the mirror is the only thing painting visible text — so
+  // without this nudge the reader can end up looking at the OLD text with the
+  // caret sitting over it. (scrollNotesEditToHeadingIndex has carried this
+  // workaround on its own since before there were other callers.)
+  textarea.dispatchEvent(new Event("scroll"));
 }
 
 // Keep the caret off the bottom edge while writing at the END of a note.
@@ -12255,18 +12377,122 @@ function scheduleNotesCaretCheck() {
   notesCaretFrame = requestAnimationFrame(() => {
     notesCaretFrame = 0;
     keepNotesCaretVisible();
+    updateEditorGuides();
   });
 }
 
-// Arithmetic inverse of scrollTextareaToOffset: approximate the raw character
-// offset at the textarea's CURRENT scroll position, using the same
-// line-height heuristic in both directions so a round trip (scroll → offset
-// → scroll) is self-consistent rather than compounding error.
+// ── The editor guides (reading line + current line) ────────────────────────
+//
+// Two marks drawn over the raw editor, both answering "where am I?":
+//
+//   READING LINE  a hairline at notesReadingLineOffset — the line every jump in
+//                 this app targets and every scroll sampler reads from. It was
+//                 pure arithmetic before, invisible to the person it exists
+//                 for: a triple-click would land you correctly and still feel
+//                 like a guess, because nothing said where "correctly" was.
+//   CURRENT LINE  a tinted band on the caret's own visual row, with a ▸ in the
+//                 gutter. Wrapped rows included — it uses the same measured
+//                 visualLineTopForOffset the scroll restore does, so the band
+//                 and the scroll can never disagree.
+//
+// Both live inside .highlight-textarea-wrapper (already position: relative) and
+// are painted UNDER the transparent textarea, so they never take a pointer
+// event or interfere with selection.
+const EDITOR_GUIDE_FLASH_MS = 1400;
+
+function ensureEditorGuides(textarea) {
+  const wrapper = textarea?.parentElement;
+  if (!wrapper || !wrapper.classList.contains("highlight-textarea-wrapper")) return null;
+  let guides = wrapper.querySelector(".editor-guides");
+  if (!guides) {
+    guides = document.createElement("div");
+    guides.className = "editor-guides";
+    guides.setAttribute("aria-hidden", "true");
+    guides.innerHTML =
+      '<div class="editor-reading-line"></div>' +
+      '<div class="editor-caret-line"><span class="editor-caret-mark">▸</span></div>';
+    // First child, which matters: .edit-textarea shares z-index 1 with the
+    // guides and comes later in the DOM, so it wins the tie and the caret keeps
+    // painting on top of the band. See .editor-guides in styles.css.
+    wrapper.insertBefore(guides, wrapper.firstChild);
+  }
+  return guides;
+}
+
+function updateEditorGuides() {
+  const textarea = el.notesEdit;
+  if (!textarea || textarea.hidden) return;
+  const guides = ensureEditorGuides(textarea);
+  if (!guides) return;
+
+  const readingLine = guides.querySelector(".editor-reading-line");
+  const caretLine = guides.querySelector(".editor-caret-line");
+  const height = textarea.clientHeight;
+  if (readingLine) readingLine.style.top = `${Math.round(notesReadingLineOffset(height))}px`;
+
+  if (!caretLine) return;
+  // A range selection has no single "current line", and drawing a band over one
+  // end of it would fight the selection highlight the user is looking at.
+  if (textarea.selectionStart !== textarea.selectionEnd || document.activeElement !== textarea) {
+    caretLine.classList.remove("is-visible");
+    return;
+  }
+  const lineHeight = textareaLineHeight(textarea);
+  const top = visualLineTopForOffset(textarea, textarea.selectionStart) - textarea.scrollTop;
+  // Off-screen (the user scrolled away from the caret) — hide rather than clamp
+  // to an edge, where it would claim the caret is somewhere it isn't.
+  if (top + lineHeight < 0 || top > height) {
+    caretLine.classList.remove("is-visible");
+    return;
+  }
+  caretLine.style.top = `${Math.round(top)}px`;
+  caretLine.style.height = `${Math.round(lineHeight)}px`;
+  caretLine.classList.add("is-visible");
+}
+
+// Called right after a jump (triple-click, heading link) so the landing spot
+// announces itself instead of having to be hunted for.
+let editorGuideFlashTimer = 0;
+function flashEditorCaretLine() {
+  requestAnimationFrame(() => {
+    updateEditorGuides();
+    const caretLine = el.notesEdit?.parentElement?.querySelector(".editor-caret-line");
+    if (!caretLine) return;
+    caretLine.classList.remove("is-flash");
+    void caretLine.offsetWidth; // restart the animation on a repeat jump
+    caretLine.classList.add("is-flash");
+    clearTimeout(editorGuideFlashTimer);
+    editorGuideFlashTimer = setTimeout(() => caretLine.classList.remove("is-flash"), EDITOR_GUIDE_FLASH_MS);
+  });
+}
+
+// Inverse of scrollTextareaToOffset: the raw character offset sitting at the
+// textarea's CURRENT reading line. Both directions must use the SAME measure or
+// a round trip (scroll → offset → scroll) compounds error instead of cancelling
+// it — so this asks the mirror which character is painted on the reading line,
+// exactly as visualLineTopForOffset asks it where a character is painted, and
+// only falls back to the line-height arithmetic when there is no mirror.
 function textareaOffsetFromScroll(textarea) {
-  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+  const lineHeight = textareaLineHeight(textarea);
   const gap = textarea === el.notesEdit
     ? notesReadingLineOffset(textarea.clientHeight)
     : textarea.clientHeight / 2;
+
+  const backdrop = backdropForTextarea(textarea);
+  if (backdrop) {
+    const box = backdrop.getBoundingClientRect();
+    // A couple of pixels in from the text edge: dead on the padding edge can
+    // land outside every text node and report nothing.
+    const caret = caretFromPoint(
+      box.left + backdrop.clientLeft + 2,
+      box.top + backdrop.clientTop + gap
+    );
+    if (caret && backdrop.contains(caret.node)) {
+      const offset = backdropTextOffset(backdrop, caret.node, caret.offset);
+      if (offset != null) return Math.min(offset, textarea.value.length);
+    }
+  }
+
   const lineIndex = Math.max(0, Math.round((textarea.scrollTop + gap) / lineHeight));
   const value = textarea.value;
   // Walk to the start of the target line by scanning for newlines with
@@ -12379,7 +12605,10 @@ el.notesView?.addEventListener("scroll", () => {
 }, { passive: true });
 
 el.notesView?.addEventListener("click", (event) => {
-  if (event.detail !== 3 || isNotesEditing()) return;
+  // >= 3, not === 3, matching the card faces: a fast fourth click is still a
+  // "jump me to this text" gesture, and an exact test made it silently do
+  // nothing.
+  if (event.detail < 3 || isNotesEditing()) return;
   if (event.target.closest("button, a")) return;
   enterNotesEditing(findRawOffsetForRenderedPoint(el.notesView, state.notes, event.clientX, event.clientY));
 });
@@ -12445,8 +12674,21 @@ el.notesEdit?.addEventListener("input", () => {
 // can just as easily take you out of (or into) a "[[…" the picker cares about.
 el.notesEdit?.addEventListener("keyup", (event) => {
   if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") updateNoteLinkPicker();
+  scheduleNotesCaretCheck();
 });
-el.notesEdit?.addEventListener("click", () => updateNoteLinkPicker());
+el.notesEdit?.addEventListener("click", () => {
+  updateNoteLinkPicker();
+  scheduleNotesCaretCheck();
+});
+// The guides are drawn in viewport coordinates inside the wrapper, so they have
+// to be repositioned whenever the text moves under them. scheduleNotesCaretCheck
+// coalesces to one measure per frame, which is what keeps this off the hot path
+// of a scroll on a long note.
+el.notesEdit?.addEventListener("scroll", () => scheduleNotesCaretCheck());
+// Deferred a frame: during the blur event document.activeElement is still in
+// flux, and updateEditorGuides reads it to decide whether to draw the band.
+el.notesEdit?.addEventListener("blur", () => requestAnimationFrame(updateEditorGuides));
+el.notesEdit?.addEventListener("focus", () => scheduleNotesCaretCheck());
 
 el.viewModeToggle?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-view-mode]");
@@ -12847,10 +13089,11 @@ function scrollNotesEditToHeadingIndex(index) {
   const pos = lines.slice(0, targetLine).reduce((n, l) => n + l.length + 1, 0);
   textarea.focus();
   textarea.setSelectionRange(pos, pos);
+  // scrollTextareaToOffset nudges the highlight backdrop itself now — this call
+  // site used to carry that workaround alone, which is why the other two callers
+  // (enterNotesEditing, toggleEditMode) could leave the mirror stale.
   scrollTextareaToOffset(textarea, pos);
-  // Setting scrollTop programmatically doesn't reliably fire a scroll event in
-  // every browser, so nudge the syntax-highlight backdrop to follow.
-  textarea.dispatchEvent(new Event("scroll"));
+  if (textarea === el.notesEdit) flashEditorCaretLine();
 }
 
 // ── Why this is gated, and searched rather than swept ──────────────────────
@@ -12911,12 +13154,56 @@ function updateNotesTocActive() {
   notesTocActiveIndex = activeIndex;
 }
 
+// Above this width the notes make room for the drawer instead of hiding under
+// it. THE one definition — the CSS media query, the click-outside exemption and
+// the tap-to-close-after-jump behaviour all have to agree about which mode the
+// drawer is in, and three separate copies of "720" would eventually not.
+const TOC_PUSH_MIN_WIDTH = 721;
+
+function tocPushesNotes() {
+  return window.matchMedia(`(min-width: ${TOC_PUSH_MIN_WIDTH}px)`).matches;
+}
+
+// Opening or closing a pushing drawer changes the width of the notes column,
+// which re-wraps every line and re-estimates every deferred block height (see
+// content-visibility on .notes-rendered). Left alone, the reader's place slides
+// away under them. Capturing the block on the reading line and putting it back
+// afterwards makes the width change look like what it is: the text getting
+// narrower, not the note scrolling.
+function preserveNotesReadingPosition(mutate) {
+  const view = el.notesView;
+  if (!view || view.hidden || !tocPushesNotes()) {
+    mutate();
+    return;
+  }
+  const anchor = blockAtNotesReadingLine();
+  mutate();
+  if (!anchor) return;
+  // After layout has settled on the new width — the padding change and the
+  // re-measure both land in the next frame, not this one.
+  requestAnimationFrame(() => scrollNotesBlockToReadingLine(anchor, false));
+}
+
+// The rendered block currently sitting on the reading line, or null.
+function blockAtNotesReadingLine() {
+  const view = el.notesView;
+  if (!view) return null;
+  const rect = view.getBoundingClientRect();
+  const y = rect.top + notesReadingLineOffset(rect.height);
+  const hit = document.elementFromPoint(rect.left + rect.width / 2, y);
+  if (!hit || !view.contains(hit)) return null;
+  return hit.closest(NOTES_BLOCK_SELECTOR)?.closest(".notes-rendered > *") || hit.closest(".notes-rendered > *");
+}
+
 function openNotesToc() {
   if (!el.notesTocDrawer) return;
   el.notesTocDrawer.hidden = false;
   // Force reflow so the open transition runs from the hidden state.
   void el.notesTocDrawer.offsetWidth;
-  el.notesTocDrawer.classList.add("is-open");
+  preserveNotesReadingPosition(() => {
+    el.notesTocDrawer.classList.add("is-open");
+    el.notesStage?.classList.add("is-toc-open");
+  });
   el.notesTocBtn?.classList.add("is-active");
   el.notesTocBtn?.setAttribute("aria-expanded", "true");
   updateNotesTocActive();
@@ -12948,11 +13235,15 @@ async function findBacklinksToOpenNote() {
     if (!notes.includes("[[")) return;
     for (const match of notes.matchAll(NOTE_LINK_PATTERN)) {
       const target = parseNoteLinkTarget(match[2] || "");
+      // A pipe-less label may carry its own "#Heading" (see resolveNoteLink) —
+      // strip it, or "[[This Note#Proof]]" would compare "this note#proof"
+      // against the title and never register as a backlink.
+      const labelTitle = String(match[1]).split("#")[0].trim().toLowerCase();
       const points = target.id
         ? (target.id === localId || (deckId && target.id === deckId))
         // A title-form link only counts when it has no id at all — one that
         // names a different note is not pointing here.
-        : (title && String(match[1]).trim().toLowerCase() === title);
+        : (title && labelTitle === title);
       if (points) {
         hits.push({ localId: id, title: snapshot.deckTitle || "Untitled", category: normalizeDeckCategory(snapshot.deckCategory) });
         return;
@@ -13003,7 +13294,10 @@ async function renderNotesBacklinks() {
 
 function closeNotesToc() {
   if (!el.notesTocDrawer) return;
-  el.notesTocDrawer.classList.remove("is-open");
+  preserveNotesReadingPosition(() => {
+    el.notesTocDrawer.classList.remove("is-open");
+    el.notesStage?.classList.remove("is-toc-open");
+  });
   el.notesTocBtn?.classList.remove("is-active");
   el.notesTocBtn?.setAttribute("aria-expanded", "false");
   const drawer = el.notesTocDrawer;
@@ -13037,8 +13331,11 @@ el.notesTocList?.addEventListener("click", (event) => {
     heading?.classList.add("notes-heading-flash");
     setTimeout(() => heading?.classList.remove("notes-heading-flash"), 1200);
   }
-  // On narrow screens the drawer overlays the notes, so step out of the way.
-  if (window.matchMedia("(max-width: 720px)").matches) closeNotesToc();
+  // Only when the drawer overlays the notes: it has to step out of the way to
+  // show you what you just jumped to. When it pushes instead, the destination
+  // is already fully visible and closing would throw away the contents list
+  // you are working through.
+  if (!tocPushesNotes()) closeNotesToc();
 });
 
 el.notesView?.addEventListener(
@@ -13065,8 +13362,14 @@ el.notesView?.addEventListener(
 // Clicking anywhere outside the open drawer (including the notes themselves)
 // dismisses the TOC. The toggle button is excluded so its own click still
 // toggles rather than close-then-reopen.
+//
+// Only while the drawer OVERLAYS the notes, though. Once it pushes them aside
+// it is covering nothing, and dismiss-on-outside-click would mean that clicking
+// into the notes to read — the entire reason you opened the contents — shut the
+// contents. Use the ☰ or ✕ to close it there.
 document.addEventListener("pointerdown", (event) => {
   if (!el.notesTocDrawer?.classList.contains("is-open")) return;
+  if (tocPushesNotes()) return;
   if (el.notesTocDrawer.contains(event.target)) return;
   if (el.notesTocBtn?.contains(event.target)) return;
   closeNotesToc();
@@ -13137,6 +13440,12 @@ let pillSelectionCapture = null;
 function hideNotesSelectionButton() {
   if (el.selectionFloat) el.selectionFloat.hidden = true;
   if (el.makeCardFromSelectionBtn) el.makeCardFromSelectionBtn.dataset.selectionText = "";
+  // The colour menu is a child of the pill, so hiding the pill hides it too —
+  // but it would come back open on the next selection without this.
+  if (el.highlightSelectionMenu) {
+    el.highlightSelectionMenu.hidden = true;
+    el.highlightSelectionMenuBtn?.setAttribute("aria-expanded", "false");
+  }
   pillSelectionCapture = null;
 }
 
@@ -14178,6 +14487,7 @@ function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}) {
     edit.focus();
     edit.setSelectionRange(idx, idx + len);
     scrollTextareaToOffset(edit, idx);
+    if (flash) flashEditorCaretLine();
     return true;
   }
 
@@ -14391,10 +14701,39 @@ async function resolveNoteLink({ target, title }) {
     return null;
   }
 
-  const wanted = String(title || "").trim().toLowerCase();
+  // No pipe, so the whole thing is a label — but a label may itself carry a
+  // "#Heading". Written by hand, [[Chain Rule#Proof]] is the obvious way to
+  // reach a section, and it used to resolve to nothing at all: the "#Proof"
+  // stayed glued to the title, matched no deck, and the link greyed out as
+  // missing with an offer to create a note called "Chain Rule#Proof".
+  let wanted = String(title || "").trim();
+  let heading = parts.heading;
+  const hash = wanted.indexOf("#");
+  if (hash !== -1) {
+    heading = heading || wanted.slice(hash + 1).trim();
+    wanted = wanted.slice(0, hash).trim();
+    // [[#Proof]] — a heading in the note you are already in.
+    if (!wanted) {
+      return { localId: state.localDeckId, deckId: state.deckId, title: state.deckTitle, heading, cardId: "", sameNote: true };
+    }
+  }
   if (!wanted) return null;
-  const byTitle = index.find((entry) => entry.title.trim().toLowerCase() === wanted);
-  return byTitle ? { ...byTitle, heading: parts.heading, cardId: parts.cardId } : null;
+  const byTitle = index.find((entry) => entry.title.trim().toLowerCase() === wanted.toLowerCase());
+  return byTitle ? { ...byTitle, heading, cardId: parts.cardId } : null;
+}
+
+// Which heading a "#…" fragment means.
+//
+// Three forms are accepted, because three forms get written. The picker emits
+// the exact element id ("toc-chain-rule"); somebody reading that markdown back
+// reasonably drops the machine-looking prefix ("chain-rule"); and somebody
+// writing a link from scratch types what they can see on the page ("Chain
+// Rule"). Only the first used to work, and the "toc-" prefix was documented
+// nowhere, so a hand-written heading link essentially always failed.
+function matchesHeadingFragment(heading, fragment) {
+  if (heading.id === fragment) return true;
+  if (heading.id === `toc-${fragment}`) return true;
+  return heading.textContent.trim().toLowerCase() === fragment.trim().toLowerCase();
 }
 
 // Scroll to a heading in the note that is now open. Retried across a few frames
@@ -14403,7 +14742,7 @@ async function resolveNoteLink({ target, title }) {
 async function revealNoteHeading(slug) {
   if (!slug) return true;
   for (let attempt = 0; attempt < 12; attempt += 1) {
-    const heading = ensureNotesHeadingIds().find((h) => h.id === slug);
+    const heading = ensureNotesHeadingIds().find((h) => matchesHeadingFragment(h, slug));
     if (heading) {
       await scrollNotesHeadingIntoView(heading);
       heading.classList.add("notes-heading-flash");
@@ -14443,13 +14782,18 @@ async function followNoteLink(anchor) {
     const found = await resolveNoteLink({ target, title });
     if (!found) {
       anchor.classList.add("is-missing");
-      offerToCreateMissingNote(anchor, title);
+      // Offer to create the NOTE, not "Note#Heading" — a pipe-less label can
+      // carry a heading, and creating a note literally named "Nope#Missing" is
+      // never what was meant.
+      offerToCreateMissingNote(anchor, title.split("#")[0].trim() || title);
       return;
     }
 
     // Already here — a same-note heading jump. Don't reload the deck: that
-    // would discard the reading position for no reason.
-    const here = (found.localId && found.localId === state.localDeckId)
+    // would discard the reading position for no reason. "[[#Heading]]" says so
+    // outright; the id comparisons cover the case where the note names itself.
+    const here = found.sameNote
+      || (found.localId && found.localId === state.localDeckId)
       || (found.deckId && found.deckId === state.deckId);
     if (!here) {
       // The deck loaders record the back history themselves, so Back returns to
@@ -14511,7 +14855,10 @@ function rewriteNoteLinkTarget(title, entry) {
     // id is pointing somewhere on purpose.
     if (String(target || "").trim()) return match;
     changed = true;
-    return `[[${String(label).trim()}|${entry.localId || entry.deckId}]]`;
+    // Sanitized like every other written label: a deck title carrying "|" or a
+    // bracket would produce a link NOTE_LINK_PATTERN can no longer match, which
+    // renders as literal "[[…]]" text with no way back.
+    return `[[${sanitizeNoteLinkLabel(label)}|${entry.localId || entry.deckId}]]`;
   });
   if (!changed) return;
   state.notes = next;
@@ -14668,35 +15015,14 @@ function closeNoteLinkPicker() {
 // measure, and the popup is pinned to the bottom of the editor instead: a
 // predictable place beats a wrong one.
 function caretScreenRect(textarea, offset) {
-  const wrapper = textarea.parentElement;
-  const backdrop = wrapper?.querySelector(".highlight-textarea-backdrop");
+  // caretRectInBackdrop does the measuring — it is shared with
+  // visualLineTopForOffset, which needs the same answer in scroll coordinates
+  // rather than viewport ones. Keeping one walker means the popup and the
+  // scroll restore can never disagree about where a character is.
+  const hit = caretRectInBackdrop(textarea, offset);
+  if (hit) return { left: hit.rect.left, top: hit.rect.top, bottom: hit.rect.bottom };
   const box = textarea.getBoundingClientRect();
-  const fallback = { left: box.left + 12, top: box.bottom - 28, bottom: box.bottom - 8 };
-  if (!backdrop || wrapper.classList.contains("is-plain")) return fallback;
-
-  const walker = document.createTreeWalker(backdrop, NodeFilter.SHOW_TEXT);
-  let seen = 0;
-  let node = walker.nextNode();
-  while (node) {
-    const len = node.nodeValue.length;
-    if (seen + len >= offset) {
-      try {
-        const range = document.createRange();
-        range.setStart(node, Math.max(0, offset - seen));
-        range.collapse(true);
-        const rect = range.getBoundingClientRect();
-        if (rect && (rect.top || rect.left)) {
-          return { left: rect.left, top: rect.top, bottom: rect.bottom };
-        }
-      } catch {
-        // A detached or mid-rebuild mirror; the fallback is fine.
-      }
-      break;
-    }
-    seen += len;
-    node = walker.nextNode();
-  }
-  return fallback;
+  return { left: box.left + 12, top: box.bottom - 28, bottom: box.bottom - 8 };
 }
 
 function positionNoteLinkPicker(textarea, offset) {
@@ -14728,7 +15054,11 @@ function renderNoteLinkPicker(query) {
     item.dataset.pickerIndex = String(index);
     item.setAttribute("role", "option");
     item.setAttribute("aria-selected", index === noteLinkPickerIndex ? "true" : "false");
-    if (row.create) {
+    if (row.heading) {
+      item.classList.add("is-heading");
+      item.innerHTML = `<span class="note-link-picker-title">${escapeHtml(row.headingText)}</span>`
+        + `<span class="note-link-picker-path">heading in ${escapeHtml(row.entry.title)}</span>`;
+    } else if (row.create) {
       item.classList.add("is-create");
       item.innerHTML = `<span class="note-link-picker-title">Create “${escapeHtml(query)}” as a new note</span>`
         + `<span class="note-link-picker-path">You'll choose the folder</span>`;
@@ -14752,6 +15082,63 @@ function noteLinkPickerContext(value, caret) {
   return open;
 }
 
+// ── Heading mode ───────────────────────────────────────────────────────────
+//
+// Type "#" after a note's name and the picker switches from "which note?" to
+// "which heading in it?". The resolver has understood "id#slug" targets all
+// along; there was simply no way to WRITE one short of typing the internal
+// element id by hand, prefix and all. This is that way.
+//
+// The slugs offered here are generated with the same slugifyHeading() the
+// rendered view uses, over a fresh `used` set, so a duplicate title
+// disambiguates to "-2" identically on both sides and the link lands.
+const NOTE_LINK_HEADING_RE = /^ {0,3}#{1,6}[ \t]+(\S.*?)[ \t]*#*[ \t]*$/;
+
+async function headingRowsForEntry(entry, query) {
+  let notes = "";
+  if (entry?.sameNote || (entry?.localId && entry.localId === state.localDeckId)) {
+    // The note being typed in. Read live state, not the saved snapshot: the
+    // snapshot lags the editor, so a heading added a minute ago would not be
+    // offered. (sameNote also covers a note with no id at all — never saved.)
+    notes = state.notes || "";
+  } else if (entry?.localId) {
+    try {
+      notes = (await readDeckSnapshot(entry.localId))?.notes || "";
+    } catch (error) {
+      console.warn("Could not read that note's headings", error);
+      return [];
+    }
+  } else {
+    // A cloud-only deck has no local snapshot to read. Offering nothing beats
+    // erroring — the note-level link is still there to fall back on, the same
+    // way loadNoteLinkIndex degrades when the network is down.
+    return [];
+  }
+  const used = new Set();
+  const rows = [];
+  let inFence = false;
+  let fenceChar = "";
+  for (const line of notes.split("\n")) {
+    const fence = /^\s*(```|~~~)/.exec(line);
+    if (fence) {
+      if (!inFence) { inFence = true; fenceChar = fence[1][0]; }
+      else if (line.trim().startsWith(fenceChar)) { inFence = false; }
+      continue;
+    }
+    if (inFence) continue;
+    const match = NOTE_LINK_HEADING_RE.exec(line);
+    if (!match) continue;
+    // Strip the inline markdown the renderer would have removed before
+    // slugifying, so "## The **chain** rule" slugs the same on both sides.
+    const text = notesAnchorPlainText(match[1]).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    rows.push({ heading: true, entry, headingText: text, slug: slugifyHeading(text, used), title: `${entry.title} › ${text}` });
+  }
+  const needle = query.toLowerCase();
+  return (needle ? rows.filter((r) => r.headingText.toLowerCase().includes(needle)) : rows)
+    .slice(0, NOTE_LINK_PICKER_LIMIT);
+}
+
 async function updateNoteLinkPicker() {
   const textarea = el.notesEdit;
   if (!textarea || textarea.hidden) return closeNoteLinkPicker();
@@ -14761,12 +15148,35 @@ async function updateNoteLinkPicker() {
   const open = noteLinkPickerContext(textarea.value, caret);
   if (open === -1) return closeNoteLinkPicker();
 
-  const query = textarea.value.slice(open + 2, caret).trim();
+  const typed = textarea.value.slice(open + 2, caret);
   const index = await loadNoteLinkIndex();
   // Recheck: the index may have taken a cloud round trip, and the caret has had
   // time to move somewhere else entirely.
   if (noteLinkPickerContext(textarea.value, textarea.selectionStart) !== open) return closeNoteLinkPicker();
 
+  // "Note#head" — the note part is settled, so offer that note's headings.
+  const hash = typed.indexOf("#");
+  if (hash !== -1) {
+    const noteName = typed.slice(0, hash).trim().toLowerCase();
+    // "[[#" with no note named means a heading in THIS note. Prefix-matching an
+    // empty string would otherwise hand back whichever deck happens to sort
+    // first, which is never what was meant.
+    const entry = !noteName
+      ? { localId: state.localDeckId, deckId: state.deckId, title: state.deckTitle || "This note", sameNote: true }
+      : index.find((e) => e.title.trim().toLowerCase() === noteName)
+        || index.find((e) => e.title.toLowerCase().startsWith(noteName));
+    const headingQuery = typed.slice(hash + 1).trim();
+    noteLinkPickerRows = entry ? await headingRowsForEntry(entry, headingQuery) : [];
+    if (noteLinkPickerContext(textarea.value, textarea.selectionStart) !== open) return closeNoteLinkPicker();
+    if (!noteLinkPickerRows.length) return closeNoteLinkPicker();
+    noteLinkPickerStart = open;
+    noteLinkPickerIndex = Math.min(noteLinkPickerIndex, noteLinkPickerRows.length - 1);
+    renderNoteLinkPicker(headingQuery);
+    positionNoteLinkPicker(textarea, open);
+    return;
+  }
+
+  const query = typed.trim();
   const needle = query.toLowerCase();
   const matches = (needle
     ? index.filter((entry) => entry.title.toLowerCase().includes(needle))
@@ -14802,24 +15212,47 @@ function moveNoteLinkPicker(delta) {
   if (!noteLinkPickerRows.length) return;
   const count = noteLinkPickerRows.length;
   noteLinkPickerIndex = (noteLinkPickerIndex + delta + count) % count;
-  const query = el.notesEdit.value.slice(noteLinkPickerStart + 2, el.notesEdit.selectionStart).trim();
+  const typed = el.notesEdit.value.slice(noteLinkPickerStart + 2, el.notesEdit.selectionStart);
+  // In heading mode only the part after "#" is what the rows were matched on,
+  // and it is what renderNoteLinkPicker highlights.
+  const hash = typed.indexOf("#");
+  const query = (hash === -1 ? typed : typed.slice(hash + 1)).trim();
   renderNoteLinkPicker(query);
   noteLinkPickerEl.querySelector(".is-active")?.scrollIntoView({ block: "nearest" });
 }
 
+// The label sits between [[ and | in the source, so those characters cannot
+// appear inside it. A quick-note pin's label is a slice of somebody's prose and
+// a deck title is free text, so neither can be trusted to be clean.
+function sanitizeNoteLinkLabel(title) {
+  return String(title).replace(/[[\]|\n]+/g, " ").replace(/\s+/g, " ").trim() || "note";
+}
+
 // Replace the "[[query" the user has typed with a finished reference.
-function insertNoteLinkAtPicker(entry) {
+function insertNoteLinkAtPicker(entry, headingSlug = "") {
   const textarea = el.notesEdit;
   if (!textarea || noteLinkPickerStart < 0) return;
   const caret = textarea.selectionStart;
-  const id = entry.pinId ? `qn:${entry.pinId}` : (entry.localId || entry.deckId || "");
-  // The label sits between [[ and | in the source, so those characters cannot
-  // appear inside it. A quick-note pin's label is a slice of somebody's prose
-  // and a deck title is free text, so neither can be trusted to be clean.
-  const label = String(entry.title).replace(/[[\]|\n]+/g, " ").replace(/\s+/g, " ").trim() || "note";
-  const link = id ? `[[${label}|${id}]]` : `[[${label}]]`;
+  const baseId = entry.pinId ? `qn:${entry.pinId}` : (entry.localId || entry.deckId || "");
+  const id = baseId && headingSlug ? `${baseId}#${headingSlug}` : baseId;
+  const label = sanitizeNoteLinkLabel(
+    headingSlug && entry.headingText ? `${entry.title} › ${entry.headingText}` : entry.title
+  );
+  // A heading in a note with no id yet (never saved, so nothing to point at):
+  // fall back to the pipe-less same-note form, which resolveNoteLink reads as
+  // "a heading in whatever note this is" and so cannot go stale.
+  const link = !baseId && headingSlug && entry.headingText
+    ? `[[#${sanitizeNoteLinkLabel(entry.headingText)}]]`
+    : id ? `[[${label}|${id}]]` : `[[${label}]]`;
   const before = textarea.value.slice(0, noteLinkPickerStart);
-  const after = textarea.value.slice(caret);
+  // Swallow a closing "]]" the caret is sitting in front of. Typing "[" twice
+  // produces "[[]]" with the caret between them on any keyboard that
+  // auto-pairs brackets — which is most phone keyboards and several desktop
+  // IMEs — and this used to keep it, so picking a note gave "[[Note|ld_x]]]]".
+  // A lone "]" is eaten too, for the half-paired case.
+  const rest = textarea.value.slice(caret);
+  const trailing = rest.startsWith("]]") ? 2 : rest.startsWith("]") ? 1 : 0;
+  const after = rest.slice(trailing);
   textarea.value = before + link + after;
   const at = before.length + link.length;
   textarea.setSelectionRange(at, at);
@@ -14834,6 +15267,13 @@ function insertNoteLinkAtPicker(entry) {
 async function commitNoteLinkPicker() {
   const row = noteLinkPickerRows[noteLinkPickerIndex];
   if (!row) return;
+  if (row.heading) {
+    // headingText rides along so the written label reads "Note › Heading"
+    // rather than just the note's name, which would give two links to two
+    // different places in one note identical text.
+    insertNoteLinkAtPicker({ ...row.entry, headingText: row.headingText }, row.slug);
+    return;
+  }
   if (!row.create) {
     insertNoteLinkAtPicker(row);
     return;
@@ -14849,6 +15289,16 @@ async function commitNoteLinkPicker() {
   if (!created) {
     textarea.focus();
     textarea.setSelectionRange(caret, caret);
+    return;
+  }
+  // Both offsets were captured BEFORE awaiting a modal, and an autosave or a
+  // link rewrite can rewrite the textarea while it is open. Splicing at a stale
+  // offset would drop the reference into the middle of some other sentence, so
+  // re-check that the "[[" we opened on is still where we left it and give up
+  // quietly rather than corrupt the note.
+  if (textarea.value.slice(start, start + 2) !== "[[" || caret > textarea.value.length) {
+    textarea.focus();
+    showToast(`Created "${created.title}" — the note changed while it was being made, so no link was inserted`, "info");
     return;
   }
   noteLinkPickerStart = start;
@@ -15028,14 +15478,14 @@ el.pinQuickNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
 // or strip the substring directly, same as the edit toolbar's Highlight
 // dropdown (toggleMarkColorInText) but as a one-tap apply of the shared
 // last-used swatch.
-function highlightTextareaSelection(target) {
+function highlightTextareaSelection(target, color = renderFormatDefaults.highlight) {
   const ta = target?.edit;
   if (!ta) return;
   const start = ta.selectionStart;
   const end = ta.selectionEnd;
   if (start === end) return;
   const selected = ta.value.slice(start, end);
-  const wrapped = toggleMarkColorInText(selected, renderFormatDefaults.highlight);
+  const wrapped = toggleMarkColorInText(selected, color);
   ta.value = ta.value.slice(0, start) + wrapped + ta.value.slice(end);
   ta.setSelectionRange(start, start + wrapped.length);
   ta.focus();
@@ -15069,13 +15519,64 @@ function eraseTextareaSelection(target) {
 el.highlightSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
+  applyPillHighlight(renderFormatDefaults.highlight);
+});
+
+// ── The pill's own colour menu ─────────────────────────────────────────────
+//
+// Why it exists rather than sending you to the render toolbar: reaching the
+// toolbar means letting go of the selection, and on a touch device that ends
+// the selection outright. The pill is the one surface guaranteed to still be
+// there, so the choice has to be makeable from it.
+//
+// Everything here is pointerdown + preventDefault, exactly like the other pill
+// buttons, so no tap ever collapses the selection being acted on.
+function applyPillHighlight(color) {
   const target = pillActionTarget();
   if (target?.kind === "rendered") {
-    makeHighlightFromSelection(renderTargetConfig(target.name), renderFormatDefaults.highlight, target.sel);
+    makeHighlightFromSelection(renderTargetConfig(target.name), color, target.sel);
   } else if (target?.kind === "editing") {
-    highlightTextareaSelection(target.target);
+    highlightTextareaSelection(target.target, color);
   }
+  closePillHighlightMenu();
   hideNotesSelectionButton();
+}
+
+function closePillHighlightMenu() {
+  if (!el.highlightSelectionMenu) return;
+  el.highlightSelectionMenu.hidden = true;
+  el.highlightSelectionMenuBtn?.setAttribute("aria-expanded", "false");
+}
+
+function buildPillHighlightMenu() {
+  if (!el.highlightSelectionMenu || el.highlightSelectionMenu.childElementCount) return;
+  el.highlightSelectionMenu.innerHTML =
+    MARK_HIGHLIGHT_COLORS.map(
+      (c) =>
+        `<button type="button" class="pill-swatch-btn" data-pill-highlight="${c.value}" style="--sw:${c.swatch};" title="${c.name}" aria-label="${c.name}"></button>`
+    ).join("") +
+    '<button type="button" class="pill-swatch-clear" data-pill-highlight="clear" title="Remove highlight" aria-label="Remove highlight">&#10005;</button>';
+}
+
+el.highlightSelectionMenuBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  buildPillHighlightMenu();
+  const willOpen = el.highlightSelectionMenu.hidden;
+  el.highlightSelectionMenu.hidden = !willOpen;
+  el.highlightSelectionMenuBtn.setAttribute("aria-expanded", String(willOpen));
+});
+
+el.highlightSelectionMenu?.addEventListener("pointerdown", (event) => {
+  const btn = event.target.closest("[data-pill-highlight]");
+  if (!btn) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const value = btn.dataset.pillHighlight;
+  // "clear" is an action, not a default — setRenderDefault ignores it, and
+  // highlightToggleInSource reads it as "strip the marks off this selection".
+  setRenderDefault("highlight", value);
+  applyPillHighlight(value);
 });
 
 // The floater's eraser button: delete the selection from the source — every
@@ -15202,7 +15703,7 @@ async function extractSelectionToNote() {
 
   const created = await createLinkedNoteFlow(name, body);
   if (!created) return;
-  applyLink(`[[${created.title}|${created.localId}]]`);
+  applyLink(`[[${sanitizeNoteLinkLabel(created.title)}|${created.localId}]]`);
   showToast(`Moved into "${created.title}"`);
 }
 
@@ -15356,7 +15857,16 @@ function fuzzyWhitespaceMatch(source, needle) {
 // highlightToggleInSource can ask for this safely, and eraseSelectionFrom-
 // Source opts in because REMOVING the whole match is marker-safe; the
 // wrapping callers that aren't block-boundary-safe still don't opt in.
-function locateSelectionInSource(source, sel, { fuzzy = false } = {}) {
+// `boundedFuzzy: true` additionally rejects a fuzzy match that came back much
+// longer than what was searched for. fuzzyWhitespaceMatch turns every run of
+// whitespace in the needle into `\s+`, and across a paragraph gap that is
+// greedy enough to swallow whole blocks the reader never selected. Harmless
+// when the caller only wraps the match; not harmless for the eraser, which
+// DELETES it — so the one destructive caller asks for the check.
+const FUZZY_OVERMATCH_SLACK_CHARS = 40;
+const FUZZY_OVERMATCH_SLACK_RATIO = 1.15;
+
+function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = false } = {}) {
   const attempts = [];
   if (sel.asText) attempts.push({ needle: sel.asText, occurrence: sel.occurrence || 0 });
   if (sel.asMarkdown && sel.asMarkdown !== sel.asText) attempts.push({ needle: sel.asMarkdown, occurrence: 0 });
@@ -15370,7 +15880,12 @@ function locateSelectionInSource(source, sel, { fuzzy = false } = {}) {
   if (fuzzy) {
     for (const { needle } of attempts) {
       const match = fuzzyWhitespaceMatch(source, needle);
-      if (match) return match;
+      if (!match) continue;
+      if (boundedFuzzy) {
+        const budget = Math.max(needle.length * FUZZY_OVERMATCH_SLACK_RATIO, needle.length + FUZZY_OVERMATCH_SLACK_CHARS);
+        if (match.needle.length > budget) continue;
+      }
+      return match;
     }
   }
   return null;
@@ -15423,32 +15938,84 @@ function makeClozeFromSelection({ view, label, getSource, setSource, rerender },
   showToast(result.action === "removed" ? "Cloze removed" : "Cloze added");
 }
 
+// Repair the join after a splice that crossed a block boundary.
+//
+// Only the seam is touched — the rest of the note is left byte for byte alone,
+// so an intentional run of blank lines elsewhere in a long note isn't quietly
+// reflowed by an unrelated deletion.
+//
+// Whether the two leftovers become ONE paragraph or stay two turns on where the
+// cut began and ended. Mid-line at both ends means the reader cut the middle
+// out of a sentence that happened to span blocks, and the halves belong
+// together. If either end sat on a block boundary, the break the reader did NOT
+// select is theirs to keep.
+function tidyErasedSeam(before, after) {
+  const headRun = /(?:\n[ \t]*)+$/.exec(before);
+  const tailRun = /^(?:[ \t]*\n)+/.exec(after);
+  const head = before.replace(/[ \t\n]+$/, "");
+  const tail = after.replace(/^[ \t\n]+/, "");
+  if (!head) return tail;
+  if (!tail) return `${head}\n`;
+  // Neither end sat on a line break: the reader cut the middle out of a
+  // sentence that happened to span blocks, and the halves belong together.
+  if (!headRun && !tailRun) return `${head} ${tail}`;
+  // One or both ends did. Keep the SHORTER of the two surviving separators —
+  // the cut removed what sat between two breaks, and only one of them should
+  // remain. Taking the shorter is what keeps a deleted list item from turning
+  // its tight "\n"-separated list into a loose one, while a deleted paragraph
+  // still leaves the "\n\n" that separates blocks.
+  const newlines = (m) => (m ? (m[0].match(/\n/g) || []).length : Infinity);
+  const keep = Math.max(1, Math.min(newlines(headRun), newlines(tailRun)));
+  return head + "\n".repeat(keep) + tail;
+}
+
 // Delete the located occurrence from the source, same locate-then-splice
 // shape as clozeToggleInSource but removing instead of wrapping. Closes the
 // gap with a single space when leaving none would glue two words together.
-// A selection spanning multiple blocks (its plain text contains a paragraph
-// break) is refused rather than silently merging two paragraphs into one —
-// the same kind of single-block limit notesSelectionCodeFence already applies
-// to a selection spanning more than one <pre>.
+//
+// Multi-paragraph selections used to be REFUSED here (`needle.includes("\n\n")
+// → null`), which is what made "delete only works inside one paragraph" true:
+// drag across two paragraphs and the only response was an error toast. Raw mode
+// has always allowed it — eraseTextareaSelection just splices [start,end) — so
+// the same gesture succeeded or failed purely on which mode you were in.
+//
+// It is allowed now, and the leftovers of the first and last blocks merge into
+// one paragraph. That is not a compromise: it is what every text editor does
+// with a selection that starts mid-paragraph-1 and ends mid-paragraph-3, and it
+// is what this app's own raw editor already did.
 function eraseSelectionFromSource(source, sel) {
   // fuzzy: the eraser REMOVES the whole match, markers included, so the
   // block-boundary concern that keeps cloze/colour on strict matching doesn't
   // apply — and without it a selection spanning list items (padded "-   "
   // markers, "*" bullets, ordered numbers) could never be found, which is
-  // exactly the "delete does nothing on bullet points" case. The "\n\n"
-  // refusal below still guards the genuinely dangerous shape (a match that
-  // would merge paragraphs), since fuzzyWhitespaceMatch returns the ACTUAL
-  // matched source text, not the needle searched for.
-  const loc = locateSelectionInSource(source, sel, { fuzzy: true });
+  // exactly the "delete does nothing on bullet points" case.
+  const loc = locateSelectionInSource(source, sel, { fuzzy: true, boundedFuzzy: true });
   if (!loc) return null;
   const { idx, end, needle } = loc;
-  if (needle.includes("\n\n")) return null;
   const before = source.slice(0, idx);
   const after = source.slice(end);
+
+  // Crossed a block boundary: splice, then tidy the seam. The three
+  // single-line space rules below are about words running together inside one
+  // line and say nothing useful here — what matters instead is that removing
+  // the middle of "para1 … para3" must not leave a stray blank line or a run of
+  // three-plus newlines where two blocks used to be.
+  if (needle.includes("\n\n")) {
+    return tidyErasedSeam(before, after);
+  }
+  // The cut landed on a line break at BOTH ends, so it consumed a whole line or
+  // block and left the separators on either side of it stranded next to each
+  // other. Selecting one entire paragraph and deleting it is the most ordinary
+  // way to reach this, and it used to leave four newlines where two say the
+  // same thing.
+  if (/\n[ \t]*$/.test(before) && /^[ \t]*\n/.test(after)) {
+    return tidyErasedSeam(before, after);
+  }
   // The match ran to the very start of the note but the item separators lived
-  // AFTER it — erasing list items from the top otherwise leaves a stray blank
-  // first line behind.
-  if (!before && after.startsWith("\n")) return after.slice(1);
+  // AFTER it — erasing from the top otherwise leaves a stray blank first line
+  // behind. (This used to drop exactly one newline, which was one short
+  // whenever the cut ended at a paragraph break rather than a list one.)
+  if (!before) return tidyErasedSeam(before, after);
   const beforeEndsWithSpace = /[ \t]$/.test(before);
   const afterStartsWithSpace = /^[ \t]/.test(after);
   // Both sides already carried their own separating space (the usual case —
@@ -15476,7 +16043,7 @@ function eraseNotesSelection({ view, label, getSource, setSource, rerender }, se
   }
   const result = eraseSelectionFromSource(getSource(), sel);
   if (result == null) {
-    showToast("Couldn't match that selection in the source — try selecting text within a single paragraph.", "error");
+    showToast("Couldn't match that selection in the source — try selecting whole words, or use the raw editor.", "error");
     return;
   }
   setSource(result);
@@ -15641,12 +16208,35 @@ function toggleMarkColorInText(text, color) {
   return wrapAcrossBlocks(text, color);
 }
 
+// The selection an action should run against, in priority order: a snapshot the
+// caller already holds, the live selection, then the pill's position-time
+// capture.
+//
+// That last fallback is what makes the render toolbar usable on a touch screen.
+// Tapping ▾ to open a colour menu ends the selection on touch, so by the time a
+// swatch is tapped renderedSelectionStrings() has nothing to report — and
+// picking a colour failed with "select some text first" for a selection the
+// reader had only just made and could still see on screen. That is the "the
+// highlight colour buttons don't work" report. pillSelectionCapture is taken
+// when the pill is positioned, before any of that can happen; it is only
+// trusted when it belongs to the view being acted on.
+function selectionForRenderTarget(view, selOverride = null) {
+  if (selOverride) return selOverride;
+  const live = renderedSelectionStrings(view);
+  if (live) return live;
+  if (pillSelectionCapture && !pillSelectionCapture.editing && pillSelectionCapture.sel) {
+    const captured = SELECTION_TARGETS.find((t) => t.name === pillSelectionCapture.targetName);
+    if (captured && captured.view === view) return pillSelectionCapture.sel;
+  }
+  return null;
+}
+
 // Driver for the highlight button — same shape as makeClozeFromSelection.
 // `color` defaults to the shared last-used swatch (renderFormatDefaults.highlight)
 // so a plain tap of the floating pill applies/toggles that colour; the render
 // toolbar's split-button menu passes a specific token instead.
 function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight, selOverride = null) {
-  const sel = selOverride || renderedSelectionStrings(view);
+  const sel = selectionForRenderTarget(view, selOverride);
   if (!sel) {
     showToast(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
     return;
@@ -15887,7 +16477,7 @@ function applyRenderFormat(config, formatFn, opts = {}) {
     setStatus(`Switch the ${config.label} to preview to format a selection there.`, "error");
     return;
   }
-  const sel = renderedSelectionStrings(config.view);
+  const sel = selectionForRenderTarget(config.view);
   if (!sel) {
     setStatus(`Select some text in the ${config.label} first, then tap a formatting button.`, "error");
     return;
@@ -21623,7 +22213,15 @@ function exportExtraCss() {
 
     /* Rendered markdown prose (questions/answers/notes). */
     .rendered { color: var(--text, #17201c); }
-    .rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { color: var(--text, #17201c); margin: 0.5em 0 0.3em; }
+    /* Headings are NOT flattened here. This block is appended after the whole
+       inlined styles.css, so it wins — and it used to force every level to
+       --text with one margin, which erased the colour/weight/underline ladder
+       that tells h1 from h5 (see the .rendered heading block in styles.css).
+       The theme variables the ladder reads are inlined into the export too, so
+       there is nothing left for this to fix; only the fallback colour for a
+       viewer whose CSS variables somehow did not come through is restated, and
+       only where styles.css itself uses --text. */
+    .rendered h2, .rendered h4 { color: var(--text, #17201c); }
     .rendered p { margin: 0 0 0.6em; }
     .rendered ul, .rendered ol { margin: 0 0 0.6em; padding-left: 1.4em; }
     /* Kept in step with .rendered blockquote in styles.css — a quote reads as a
@@ -26106,6 +26704,9 @@ function tripleClickAllCardToEditor(item, rendered, clientX, clientY) {
   const pos = offset != null ? Math.max(0, Math.min(offset, textarea.value.length)) : 0;
   textarea.focus();
   textarea.setSelectionRange(pos, pos);
+  // scrollTextareaToOffset measures the highlight mirror, so it has to be
+  // painted first — the editor was only just opened with this card's text.
+  refreshHighlightBackdrop(textarea);
   scrollTextareaToOffset(textarea, pos);
 }
 
@@ -30699,6 +31300,11 @@ function handleToolbarClick(event) {
     formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "font-family", font);
   } else if (button.dataset.color) {
     const color = button.dataset.color;
+    // Same choice, same shared default. Without this the raw editor and the
+    // rendered view kept two different opinions about "the current colour":
+    // pick Green here and the floating pill's swatch (and its one-tap apply)
+    // still said yellow. setRenderDefault ignores "clear", which is an action.
+    setRenderDefault("color", color);
     if (color === "clear") {
       formatFn = (val, s, e) => clearInlineStyleProperty(val.slice(s, e), "color");
     } else {
@@ -30706,6 +31312,7 @@ function handleToolbarClick(event) {
     }
   } else if (button.dataset.highlight) {
     const highlight = button.dataset.highlight;
+    setRenderDefault("highlight", highlight);
     formatFn = (val, s, e) => toggleMarkColorInText(val.slice(s, e), highlight);
   }
 
