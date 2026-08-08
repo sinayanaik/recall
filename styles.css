@@ -3109,37 +3109,9 @@ svg.nomnoml-light-svg [fill="none"] {
     margin-top: 2px;
   }
 
-  /* Icon-only mode for narrow desktop windows. Width and padding compact; the
-     HEIGHT still comes from the setting, so the button-height control isn't
-     silently inert at this width the way it was on the whole mobile profile. */
-  .controls button {
-    min-width: 38px;
-    width: 38px;
-    height: var(--action-button-height);
-    min-height: var(--action-button-height);
-    padding: 0;
-    font-size: 0.88rem;
-  }
-
-  .controls button span:not([aria-hidden]) {
-    display: none;
-  }
-
   .deck-utility-actions {
     gap: 5px;
     margin-top: 5px;
-  }
-
-  .deck-utility-actions button {
-    min-width: 38px;
-    width: 38px;
-    min-height: 30px;
-    padding: 0;
-    font-size: 0.86rem;
-  }
-
-  .deck-utility-actions button span:not([aria-hidden]) {
-    display: none;
   }
 
   .replay-actions {
@@ -3154,6 +3126,45 @@ svg.nomnoml-light-svg [fill="none"] {
     padding: 0 8px;
     font-size: 0.72rem;
     line-height: 1;
+  }
+}
+
+/* Icon-only mode for NARROW desktop windows. The max-width is load-bearing:
+   without it this stripped the text label off every card-action and deck-utility
+   button at every desktop width, so a 27" monitor showed the same five bare
+   glyphs as a half-width window — and two of them (the appbar's Back and this
+   row's Prev) were the same bare arrow. 1080px is the same narrow-desktop
+   breakpoint the layout block further down already uses.
+
+   Width and padding compact; the HEIGHT still comes from the setting, so the
+   button-height control isn't silently inert at this width the way it was on
+   the whole mobile profile. Above 1080px the base rules take over: they already
+   give these buttons `width: auto`, `--action-button-min-width` and an
+   icon/label gap, so the labelled layout needs nothing of its own here. */
+@media (min-width: 721px) and (max-width: 1080px) {
+  .controls button {
+    min-width: 38px;
+    width: 38px;
+    height: var(--action-button-height);
+    min-height: var(--action-button-height);
+    padding: 0;
+    font-size: 0.88rem;
+  }
+
+  .controls button span:not([aria-hidden]) {
+    display: none;
+  }
+
+  .deck-utility-actions button {
+    min-width: 38px;
+    width: 38px;
+    min-height: 30px;
+    padding: 0;
+    font-size: 0.86rem;
+  }
+
+  .deck-utility-actions button span:not([aria-hidden]) {
+    display: none;
   }
 }
 
@@ -5282,6 +5293,99 @@ svg.nomnoml-light-svg [fill="none"] {
   line-height: 1.35;
 }
 
+/* ── Density preset ───────────────────────────────────────────────
+   Shaped like the profile toggle above it (same box, same button metrics) but
+   three-up, because it belongs to the same "pick one" family. Deliberately has
+   no persistent selected state: a preset writes eight real controls and then
+   stops mattering, so highlighting one would claim a mode the app doesn't
+   have — the moment you nudge Text size under Advanced, any highlight would be
+   a lie. */
+.style-density-field {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-2) 62%, transparent);
+  padding: 12px;
+}
+
+.style-density-head {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.style-density-toggle {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.style-density-toggle button {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--card);
+  color: var(--text);
+  font-size: var(--button-font-size);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.style-density-toggle button:hover {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--line));
+  color: var(--accent);
+}
+
+.style-density-field small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+/* ── Per-field reset ──────────────────────────────────────────────
+   Hidden until the value differs from this profile's default, so an untouched
+   panel shows none of these and a tuned one shows exactly which rows you
+   changed — the panel doubles as its own diff. */
+.style-field-reset {
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.style-field-reset:hover {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.style-field-reset[hidden] {
+  display: none;
+}
+
+/* A value CSS can't parse. applyStyleSettings has already fallen back to the
+   default, so the app still looks right — this is the only thing telling you
+   the box you're looking at isn't what's being drawn. */
+.style-field.is-invalid input[type="text"] {
+  border-color: #e0564a;
+  background: color-mix(in srgb, #e0564a 10%, var(--card));
+}
+
+.style-field.is-invalid > .style-field-name {
+  color: #e0564a;
+}
+
+.style-field.is-invalid small::after {
+  content: " Not a value CSS can use — the default is being drawn instead.";
+  color: #e0564a;
+  font-weight: 700;
+}
+
 .style-field strong {
   color: var(--text);
   font-weight: 900;
@@ -5575,6 +5679,18 @@ svg.nomnoml-light-svg [fill="none"] {
   border-color: color-mix(in srgb, var(--accent) 70%, var(--line));
   background: var(--accent);
   color: var(--accent-contrast);
+}
+
+/* Reset throws away work, so it reads as the cautious one of the three rather
+   than a peer of Sync Down. It still asks before doing anything. */
+.style-actions #resetStyleBtn {
+  border-color: color-mix(in srgb, #e0564a 34%, var(--line));
+  color: color-mix(in srgb, #e0564a 72%, var(--text));
+}
+
+.style-actions #resetStyleBtn:hover {
+  border-color: color-mix(in srgb, #e0564a 62%, var(--line));
+  background: color-mix(in srgb, #e0564a 12%, var(--panel-2));
 }
 
 .controls .review {
@@ -10244,6 +10360,25 @@ textarea {
 .app-info-row dd.is-outdated {
   color: var(--danger, #d64545);
   font-weight: 700;
+}
+
+/* The explanation under the rows. Carries the two things a bare version number
+   can't say: that the deployed build's five ?v= stamps disagree with each
+   other, or that there is genuinely nothing for the user to do because the
+   newest code is pushed but not yet published. */
+.app-info-warning {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger, #d64545) 34%, var(--line));
+  border-radius: var(--input-radius);
+  background: color-mix(in srgb, var(--danger, #d64545) 8%, var(--card));
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.app-info-warning[hidden] {
+  display: none;
 }
 
 .app-info-actions {

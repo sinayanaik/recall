@@ -315,6 +315,13 @@ const styleDefaults = defaultStyleProfiles.desktop;
 // disclosure so the panel opens as something you can read rather than 40-odd
 // sliders across seven accordions.
 //
+// `basic` is now Theme, Density and Font/Text size, and nothing else. It used to
+// carry eight fields, which meant the "short visible list" was still a wall of
+// textboxes before you'd expanded anything. The six that moved out (line
+// spacing, notes/answer/question sizes, the two width percents) are one click
+// away under Advanced → Text; no control was removed and no stored value
+// changed, so there is nothing to migrate.
+//
 // Nothing in here may write a CSS variable no stylesheet reads. Several
 // controls used to: "Code font size" drove --code-font-size while .rendered pre
 // was hardcoded to font-size:1em, and three of the four font pickers were
@@ -331,47 +338,53 @@ const styleControlGroups = [
     tier: "basic",
     fields: [
       { key: "fontFamily", label: "Font", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Typeface for the whole app — cards, notes and chrome." },
-      { key: "baseFontSize", label: "Text size", type: "text", unit: "px", hint: "General Markdown and interface text size." },
-      { key: "baseLineHeight", label: "Line spacing", type: "text", hint: "General reading spacing." },
-      { key: "notesFontSize", label: "Notes text size", type: "text", unit: "px", hint: "Body text size in the Study Notes view." },
-      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "text", hint: "Maximum width of the notes column as a percent of the notes area." },
-      { key: "answerFontSize", label: "Answer text size", type: "text", unit: "px", hint: "Main answer text size." },
-      { key: "questionMaxFontSize", label: "Question max text size", type: "text", unit: "px", hint: "Largest question text size. Small questions can still shrink without a floor." },
-      { key: "appWidthPercent", label: "App width %", type: "text", hint: "Width of the whole app as a percent of screen width." }
+      { key: "baseFontSize", label: "Text size", type: "text", unit: "px", probe: "font-size", hint: "General Markdown and interface text size." }
+    ]
+  },
+  {
+    title: "Text",
+    tier: "advanced",
+    fields: [
+      { key: "baseLineHeight", label: "Line spacing", type: "text", probe: "line-height", hint: "General reading spacing." },
+      { key: "notesFontSize", label: "Notes text size", type: "text", unit: "px", probe: "font-size", hint: "Body text size in the Study Notes view." },
+      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "text", probe: "number", hint: "Maximum width of the notes column as a percent of the notes area." },
+      { key: "answerFontSize", label: "Answer text size", type: "text", unit: "px", probe: "font-size", hint: "Main answer text size." },
+      { key: "questionMaxFontSize", label: "Question max text size", type: "text", unit: "px", probe: "font-size", hint: "Largest question text size. Small questions can still shrink without a floor." },
+      { key: "appWidthPercent", label: "App width %", type: "text", probe: "number", hint: "Width of the whole app as a percent of screen width." }
     ]
   },
   {
     title: "Layout",
     tier: "advanced",
     fields: [
-      { key: "appHeightPercent", label: "App height %", type: "text", hint: "Height of the whole app as a percent of screen height." },
-      { key: "cardWidthPercent", label: "Card width %", type: "text", hint: "Flashcard width as a percent of the middle study area." },
-      { key: "cardMaxHeightPercent", label: "Card max height %", type: "text", hint: "Maximum flashcard height as a percent of screen height." },
-      { key: "modalWidthPercent", label: "Modal width %", type: "text", hint: "Import and My Decks panel width as a percent of screen width." },
-      { key: "visualMaxWidthPercent", label: "Visual max width %", type: "text", hint: "Maximum width of images, videos, and diagrams as a percent of available space." }
+      { key: "appHeightPercent", label: "App height %", type: "text", probe: "number", hint: "Height of the whole app as a percent of screen height." },
+      { key: "cardWidthPercent", label: "Card width %", type: "text", probe: "number", hint: "Flashcard width as a percent of the middle study area." },
+      { key: "cardMaxHeightPercent", label: "Card max height %", type: "text", probe: "number", hint: "Maximum flashcard height as a percent of screen height." },
+      { key: "modalWidthPercent", label: "Modal width %", type: "text", probe: "number", hint: "Import and My Decks panel width as a percent of screen width." },
+      { key: "visualMaxWidthPercent", label: "Visual max width %", type: "text", probe: "number", hint: "Maximum width of images, videos, and diagrams as a percent of available space." }
     ]
   },
   {
     title: "Spacing and shape",
     tier: "advanced",
     fields: [
-      { key: "appGap", label: "Main gap", type: "text", unit: "px", hint: "Space between major app sections." },
-      { key: "panelPadding", label: "Panel padding", type: "text", unit: "px", hint: "Inside spacing for the study panel." },
-      { key: "cardPadding", label: "Card padding", type: "text", unit: "px", hint: "Inside spacing on question and answer faces." },
-      { key: "cardContentGap", label: "Card label gap", type: "text", unit: "px", hint: "Space between the Question/Answer label and content." },
-      { key: "buttonGap", label: "Button gap", type: "text", unit: "px", hint: "Space between buttons." },
-      { key: "cardCornerRadius", label: "Card corner radius", type: "text", unit: "px", hint: "Roundness of the flashcard corners." },
-      { key: "panelCornerRadius", label: "Panel corner radius", type: "text", unit: "px", hint: "Roundness of the study, import, and My Decks panels." },
-      { key: "buttonCornerRadius", label: "Control corner radius", type: "text", unit: "px", hint: "Roundness of buttons, textboxes and selects." },
-      { key: "cardBorderWidth", label: "Card border width", type: "text", unit: "px", hint: "Border thickness around the flashcard." }
+      { key: "appGap", label: "Main gap", type: "text", unit: "px", probe: "width", hint: "Space between major app sections." },
+      { key: "panelPadding", label: "Panel padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing for the study panel." },
+      { key: "cardPadding", label: "Card padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing on question and answer faces." },
+      { key: "cardContentGap", label: "Card label gap", type: "text", unit: "px", probe: "width", hint: "Space between the Question/Answer label and content." },
+      { key: "buttonGap", label: "Button gap", type: "text", unit: "px", probe: "width", hint: "Space between buttons." },
+      { key: "cardCornerRadius", label: "Card corner radius", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of the flashcard corners." },
+      { key: "panelCornerRadius", label: "Panel corner radius", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of the study, import, and My Decks panels." },
+      { key: "buttonCornerRadius", label: "Control corner radius", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of buttons, textboxes and selects." },
+      { key: "cardBorderWidth", label: "Card border width", type: "text", unit: "px", probe: "border-top-width", hint: "Border thickness around the flashcard." }
     ]
   },
   {
     title: "Question",
     tier: "advanced",
     fields: [
-      { key: "questionFillPercent", label: "Question fill %", type: "text", hint: "How much vertical card space the question tries to occupy." },
-      { key: "questionLineHeight", label: "Question line spacing", type: "text", hint: "Line spacing for question text." },
+      { key: "questionFillPercent", label: "Question fill %", type: "text", probe: "number", hint: "How much vertical card space the question tries to occupy." },
+      { key: "questionLineHeight", label: "Question line spacing", type: "text", probe: "line-height", hint: "Line spacing for question text." },
       { key: "questionAlign", label: "Question horizontal align", type: "select", options: ["left", "center", "right", "justify"], hint: "Question text alignment." },
       { key: "questionVerticalAlign", label: "Question vertical align", type: "select", options: ["start", "center", "end"], hint: "Question vertical position." },
       { key: "questionFontWeight", label: "Question weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Question text thickness." }
@@ -381,27 +394,46 @@ const styleControlGroups = [
     title: "Answer and notes",
     tier: "advanced",
     fields: [
-      { key: "answerLineHeight", label: "Answer line spacing", type: "text", hint: "Reading spacing on the answer side." },
+      { key: "answerLineHeight", label: "Answer line spacing", type: "text", probe: "line-height", hint: "Reading spacing on the answer side." },
       { key: "answerFontWeight", label: "Answer weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Answer text thickness." },
-      { key: "notesLineHeight", label: "Notes line spacing", type: "text", hint: "Reading spacing in the Study Notes view." },
+      { key: "notesLineHeight", label: "Notes line spacing", type: "text", probe: "line-height", hint: "Reading spacing in the Study Notes view." },
       { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
-      { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", hint: "Inside spacing around the Study Notes content." }
+      { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing around the Study Notes content." }
     ]
   },
   {
     title: "Controls and text",
     tier: "advanced",
     fields: [
-      { key: "toolbarButtonHeight", label: "Button height", type: "text", unit: "px", hint: "Height of icon buttons, Review/Prev/Next, and the replay buttons (slightly shorter). Menu rows keep their own size." },
-      { key: "buttonFontSize", label: "Button font size", type: "text", unit: "px", hint: "Text size inside buttons." },
-      { key: "inputHeight", label: "Input height", type: "text", unit: "px", hint: "Height of URL and style textboxes." },
-      { key: "modalPadding", label: "Modal padding", type: "text", unit: "px", hint: "Inside spacing for the import and My Decks panels." },
-      { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "text", unit: "px", hint: "Text size inside Markdown edit boxes." },
-      { key: "codeFontSize", label: "Code font size", type: "text", unit: "px", hint: "Text size inside code blocks." },
-      { key: "codeLineHeight", label: "Code line spacing", type: "text", hint: "Line spacing inside code blocks." }
+      { key: "toolbarButtonHeight", label: "Button height", type: "text", unit: "px", probe: "height", hint: "Height of icon buttons, Review/Prev/Next, and the replay buttons (slightly shorter). Menu rows keep their own size." },
+      { key: "buttonFontSize", label: "Button font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside buttons." },
+      { key: "inputHeight", label: "Input height", type: "text", unit: "px", probe: "height", hint: "Height of URL and style textboxes." },
+      { key: "modalPadding", label: "Modal padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing for the import and My Decks panels." },
+      { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside Markdown edit boxes." },
+      { key: "codeFontSize", label: "Code font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside code blocks." },
+      { key: "codeLineHeight", label: "Code line spacing", type: "text", probe: "line-height", hint: "Line spacing inside code blocks." }
     ]
   }
 ];
+
+// Density presets. A shortcut that writes several real controls at once, NOT a
+// stored setting: deliberately absent from defaultStyleProfiles, whose comment
+// above is explicit that a key there which no control maps to is a value the app
+// syncs, back-fills across profiles and does nothing with. Nothing reads these
+// back, so there is no "current preset" to get out of step with the controls —
+// pressing one is exactly equivalent to typing the eight values by hand.
+const styleDensityPresets = {
+  desktop: {
+    compact:     { baseFontSize: "16px", baseLineHeight: "1.45", cardPadding: "16px", appGap: "6px",  panelPadding: "6px",  cardContentGap: "10px", buttonGap: "6px",  toolbarButtonHeight: "34px" },
+    comfortable: { baseFontSize: "18px", baseLineHeight: "1.58", cardPadding: "24px", appGap: "10px", panelPadding: "10px", cardContentGap: "16px", buttonGap: "8px",  toolbarButtonHeight: "38px" },
+    large:       { baseFontSize: "21px", baseLineHeight: "1.7",  cardPadding: "32px", appGap: "14px", panelPadding: "14px", cardContentGap: "22px", buttonGap: "11px", toolbarButtonHeight: "44px" }
+  },
+  mobile: {
+    compact:     { baseFontSize: "11px", baseLineHeight: "1.15", cardPadding: "16px", appGap: "6px",  panelPadding: "6px",  cardContentGap: "10px", buttonGap: "6px",  toolbarButtonHeight: "30px" },
+    comfortable: { baseFontSize: "12px", baseLineHeight: "1.23", cardPadding: "24px", appGap: "10px", panelPadding: "10px", cardContentGap: "16px", buttonGap: "8px",  toolbarButtonHeight: "34px" },
+    large:       { baseFontSize: "15px", baseLineHeight: "1.45", cardPadding: "30px", appGap: "13px", panelPadding: "13px", cardContentGap: "20px", buttonGap: "10px", toolbarButtonHeight: "40px" }
+  }
+};
 
 const styleFieldByKey = styleControlGroups.reduce((fields, group) => {
   group.fields.forEach((field) => {
@@ -2373,7 +2405,7 @@ const el = {
   styleControls: document.querySelector("#styleControls"),
   closeStyleBtn: document.querySelector("#closeStyleBtn"),
   syncUpBtn: document.querySelector("#syncUpBtn"),
-  applyStyleBtn: document.querySelector("#applyStyleBtn"),
+  resetStyleBtn: document.querySelector("#resetStyleBtn"),
   syncDownBtn: document.querySelector("#syncDownBtn"),
   styleSyncStatus: document.querySelector("#styleSyncStatus"),
   themeBtn: document.querySelector("#themeBtn"),
@@ -2452,7 +2484,6 @@ const el = {
   questionEditToolbar: document.querySelector("#questionEditToolbar"),
   answerEditToolbar: document.querySelector("#answerEditToolbar"),
   viewModeToggle: document.querySelector("#viewModeToggle"),
-  notesBtn: document.querySelector("#notesBtn"),
   notesStage: document.querySelector("#notesStage"),
   notesView: document.querySelector("#notesView"),
   notesTocBtn: document.querySelector("#notesTocBtn"),
@@ -2945,6 +2976,49 @@ function normalizeStyleValue(key, value, customDefault) {
   return /^-?\d*\.?\d+$/.test(raw) ? `${raw}${field.unit}` : raw;
 }
 
+// Is `value` something CSS can actually use for this control?
+//
+// Custom properties accept ANY token — `--content-font-size: 2px4` is a
+// perfectly legal declaration — so an invalid value fails silently at the
+// consumer instead of here, and the symptom is a whole subsystem quietly
+// losing its sizing with nothing to connect it to what you typed. Probing a
+// REAL property (the `probe` on each field) is what turns that into an answer.
+//
+// `probe: "number"` is for the percent controls: they store a bare number that
+// applyStyleSettings turns into `${n}%`, and CSS.supports would reject the bare
+// number on its own.
+function isStyleValueUsable(field, value) {
+  if (!field || field.type === "select") return true;
+  const raw = String(value ?? "").trim();
+  if (!raw) return false;
+  if (field.probe === "number") return /^-?\d*\.?\d+$/.test(raw) && Number.isFinite(parseFloat(raw));
+  if (!field.probe || typeof CSS === "undefined" || typeof CSS.supports !== "function") return true;
+  try {
+    return CSS.supports(field.probe, raw);
+  } catch (_) {
+    return false;
+  }
+}
+
+// Paints the two per-field affordances: the invalid marker, and the ↺ that only
+// appears once a value differs from this profile's default.
+function updateStyleFieldStates() {
+  if (!el.styleControls) return;
+  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
+  el.styleControls.querySelectorAll("[data-style-key]").forEach((input) => {
+    const key = input.dataset.styleKey;
+    const field = styleFieldByKey[key];
+    const usable = isStyleValueUsable(field, input.value);
+    input.setAttribute("aria-invalid", usable ? "false" : "true");
+    const label = input.closest(".style-field");
+    if (!label) return;
+    label.classList.toggle("is-invalid", !usable);
+    const reset = label.querySelector(".style-field-reset");
+    if (reset) reset.hidden = normalizeStyleValue(key, input.value, defaults[key]) === defaults[key];
+  });
+}
+
 function migrateLegacyStyleSettings(raw = {}) {
   const migrated = { ...raw };
   if (Object.prototype.hasOwnProperty.call(raw, "appMaxWidth")) migrated.appWidthPercent = "100";
@@ -3098,6 +3172,13 @@ function setStyleProfileSettings(profile, rawSettings) {
 function styleProfilesPayload() {
   return {
     version: STYLE_SETTINGS_VERSION,
+    // The theme travels WITH the style. It sits at the top of the style panel,
+    // above the very Sync Up / Sync Down buttons that used to skip it — it lived
+    // only in its own localStorage key, so syncing your style to a second device
+    // brought every font and margin across and left it on whatever theme that
+    // device happened to be on. Top level, not inside a profile: one theme for
+    // the account, the way it has always behaved locally.
+    theme: currentThemeId(),
     desktop: getStyleProfileSettings("desktop"),
     mobile: getStyleProfileSettings("mobile")
   };
@@ -3142,6 +3223,32 @@ function renderStyleControls() {
   profileField.appendChild(profileHint);
   el.styleControls.appendChild(profileField);
 
+  // Density: one press for the eight size/spacing values almost everyone was
+  // opening Advanced to tune one at a time. It writes the real controls (see
+  // styleDensityPresets), so the fields underneath move with it and stay the
+  // thing that decides — this is a shortcut, not a mode.
+  const density = document.createElement("section");
+  density.className = "style-density-field";
+  density.setAttribute("aria-label", "Density");
+  const densityHead = document.createElement("div");
+  densityHead.className = "style-density-head";
+  densityHead.textContent = "Density";
+  density.appendChild(densityHead);
+  const densityButtons = document.createElement("div");
+  densityButtons.className = "style-density-toggle";
+  ["compact", "comfortable", "large"].forEach((preset) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.styleDensity = preset;
+    button.textContent = preset.charAt(0).toUpperCase() + preset.slice(1);
+    densityButtons.appendChild(button);
+  });
+  density.appendChild(densityButtons);
+  const densityHint = document.createElement("small");
+  densityHint.textContent = "Sets text size, line spacing, padding, gaps and button height together. Fine-tune any of them under Advanced.";
+  density.appendChild(densityHint);
+  el.styleControls.appendChild(density);
+
   // Everything past the basics goes inside ONE fold. Seven peer accordions read
   // as seven equally-important things to work through; a short visible list plus
   // "Advanced" reads as a setting you change and a drawer you can ignore.
@@ -3178,8 +3285,22 @@ function renderStyleControls() {
       const label = document.createElement("label");
       label.className = "style-field";
 
+      // Name row, so the per-field ↺ can sit opposite the label rather than
+      // pushing the control around. It's hidden until the value differs from
+      // this profile's default (updateStyleFieldStates), so an untouched panel
+      // shows no reset affordance at all.
       const name = document.createElement("span");
+      name.className = "style-field-name";
       name.textContent = field.label;
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "style-field-reset";
+      reset.dataset.styleReset = field.key;
+      reset.textContent = "↺";
+      reset.title = `Reset ${field.label.toLowerCase()} to its default`;
+      reset.setAttribute("aria-label", `Reset ${field.label} to its default`);
+      reset.hidden = true;
+      name.appendChild(reset);
       label.appendChild(name);
 
       let control;
@@ -3255,15 +3376,43 @@ function updateStyleControls() {
   const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
   updateStyleProfileUi();
   el.styleControls?.querySelectorAll("[data-style-key]").forEach((input) => {
+    // NEVER rewrite the field being typed in. This runs on every keystroke —
+    // the input listener applies the change, applyStyleSettings calls back in
+    // here, and this line used to overwrite the caret out from under you. The
+    // value it wrote was the NORMALIZED one, so typing "2" into a px field
+    // became "2px" with the caret at the end, and the next digit produced
+    // "2px4" — which normalizeStyleValue passes through verbatim into a custom
+    // property, taking out whatever read it. Two keystrokes to break the app's
+    // text sizing, with no way to type a two-digit number at all.
+    //
+    // The field is normalized on focusout instead (see the listener below), so
+    // "28" still becomes "28px" — just once you've finished saying it.
+    if (input === document.activeElement) {
+      input.placeholder = defaults[input.dataset.styleKey] || "";
+      return;
+    }
     input.value = settings[input.dataset.styleKey] ?? "";
     input.placeholder = defaults[input.dataset.styleKey] || "";
   });
+  updateStyleFieldStates();
 }
 
 function applyStyleSettings(rawSettings, options = {}) {
   const settings = normalizeStyleSettings(rawSettings);
   const activeProfile = state.activeStyleProfile || detectStyleProfile();
   state.styleSettings = settings;
+  // A value CSS can't use never reaches the page. The controls are free text on
+  // purpose (calc(), rem, vh all work), but "free text" also means "one typo
+  // away from a declaration that parses as garbage" — and a custom property
+  // accepts garbage happily, so the breakage surfaced somewhere else entirely.
+  // Fall back to this profile's default for anything that fails its probe; the
+  // field itself is marked invalid by updateStyleFieldStates, which is where
+  // the user finds out.
+  const profileDefaults = defaultStyleProfiles[activeProfile] || styleDefaults;
+  const usable = (key) => {
+    const field = styleFieldByKey[key];
+    return isStyleValueUsable(field, settings[key]) ? settings[key] : profileDefaults[key];
+  };
   const appWidthPercent = numericStyleValue(settings.appWidthPercent) ?? 100;
   const appHeightPercent = numericStyleValue(settings.appHeightPercent) ?? 100;
   const cardWidthPercent = numericStyleValue(settings.cardWidthPercent) ?? 96;
@@ -3282,14 +3431,16 @@ function applyStyleSettings(rawSettings, options = {}) {
   root.style.setProperty("--app-font-family", resolveFontFamily(settings.fontFamily));
   root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
   Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
-    root.style.setProperty(cssVariable, settings[key]);
+    root.style.setProperty(cssVariable, usable(key));
   });
   // --question-padding/--answer-padding and --textarea-min-height are NOT set
   // here: their controls were removed (the first padded inside cardPadding —
   // two ways to push the same text inward; the second only sized the import
   // box). The :root defaults in styles.css carry them now.
   root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
-  root.style.setProperty("--question-fill", `${settings.questionFillPercent}%`);
+  // The only percent that isn't run through numericStyleValue above, so it's the
+  // only one where a non-numeric entry would reach CSS as "abc%".
+  root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);
   root.style.setProperty("--app-width", `${appWidthPercent}vw`);
   root.style.setProperty("--app-height", `${appHeightPercent}vh`);
   root.style.setProperty("--app-mobile-width", `${appWidthPercent}vw`);
@@ -3354,6 +3505,20 @@ function styleSettingsFromControls() {
   return normalizeStyleSettings(settings, editProfile);
 }
 
+// The re-fit that the old "Apply" button existed to trigger. Every control has
+// always applied live on input; Apply's only remaining job was passing
+// { force: true } so the question auto-fit and table fits were recomputed from
+// scratch. That's a thing to do when you stop typing, not a button to hunt for,
+// so it runs on its own once the field has been quiet for a moment.
+let styleRefitTimer = null;
+function scheduleStyleRefit() {
+  clearTimeout(styleRefitTimer);
+  styleRefitTimer = setTimeout(() => {
+    styleRefitTimer = null;
+    if (state.styleEditProfile === detectStyleProfile()) forceStyleRefresh();
+  }, 200);
+}
+
 function handleStyleControlChange() {
   state.styleTouched = true;
   const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
@@ -3361,8 +3526,59 @@ function handleStyleControlChange() {
   if (editProfile === detectStyleProfile()) applyActiveStyleSettings();
   else updateStyleProfileUi();
   scheduleMarkdownTableFit();
+  scheduleStyleRefit();
+  updateStyleFieldStates();
   setStyleStatus(`Unsynced ${styleProfileLabel(editProfile).toLowerCase()} style`);
   return settings;
+}
+
+// ── Reset ──────────────────────────────────────────────────────────
+// The panel had no way back. With free-text controls and no clamping, a stray
+// "2" in Text size renders the whole app — including this panel — too small to
+// read, and the only recovery was clearing site data, which takes the user's
+// decks with it.
+function resetStyleField(key) {
+  if (!styleFieldByKey[key]) return;
+  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
+  const input = el.styleControls?.querySelector(`[data-style-key="${key}"]`);
+  if (!input) return;
+  input.value = defaults[key] ?? "";
+  handleStyleControlChange();
+}
+
+function resetStyleProfile() {
+  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const label = styleProfileLabel(editProfile);
+  const other = editProfile === "desktop" ? "mobile" : "desktop";
+  showConfirmModal(
+    `Put every ${label.toLowerCase()} style control back to its default? Your theme and your ${other} profile are left alone.`,
+    () => {
+      state.styleTouched = true;
+      setStyleProfileSettings(editProfile, { ...defaultStyleProfiles[editProfile] });
+      if (editProfile === detectStyleProfile()) applyActiveStyleSettings({ force: true });
+      updateStyleControls();
+      if (state.previewCard || state.cards[state.current]) showCard();
+      setStyleStatus(`${label} style reset to defaults`);
+      showToast(`${label} style reset`, "success");
+    },
+    { confirmLabel: "Reset" }
+  );
+}
+
+// Writes the preset's real control values, then hands off to the normal change
+// path so it saves, applies and re-paints exactly like typing them would.
+function applyStyleDensity(preset) {
+  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const values = styleDensityPresets[editProfile]?.[preset];
+  if (!values) return;
+  Object.entries(values).forEach(([key, value]) => {
+    const input = el.styleControls?.querySelector(`[data-style-key="${key}"]`);
+    if (input) input.value = value;
+  });
+  handleStyleControlChange();
+  if (editProfile === detectStyleProfile()) applyActiveStyleSettings({ force: true });
+  setStyleStatus(`${styleProfileLabel(editProfile)} density: ${preset}`);
 }
 
 function forceStyleRefresh() {
@@ -3386,20 +3602,10 @@ function forceStyleRefresh() {
   });
 }
 
-function applyCurrentStyleSettings(statusMessage = "Style applied") {
-  state.styleTouched = true;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  setStyleProfileSettings(editProfile, styleSettingsFromControls());
-  if (editProfile === detectStyleProfile()) {
-    applyActiveStyleSettings({ force: true });
-  } else {
-    updateStyleProfileUi();
-  }
-  if (state.previewCard || state.cards[state.current]) {
-    showCard();
-  }
-  setStyleStatus(`${styleProfileLabel(editProfile)} ${statusMessage.toLowerCase()}`);
-}
+// (applyCurrentStyleSettings lived here. It was the "Apply" button's handler,
+// and the button is gone: every control already applied live, so pressing it
+// re-ran what had happened on the last keystroke. Its one distinct effect —
+// the { force: true } re-fit — is now scheduleStyleRefit, off the edit path.)
 
 function lockPageScroll() {
   if (document.documentElement.classList.contains("modal-scroll-lock")) return;
@@ -3746,6 +3952,9 @@ async function loadStyleFromWeb(force = false) {
     }
 
     setStyleProfiles(data.settings);
+    // Pre-theme-sync rows have no `theme` key at all; leaving this device's
+    // theme alone is the right answer there, so only act when one is present.
+    if (data.settings.theme) setTheme(data.settings.theme);
     applyActiveStyleSettings({ force: true });
     state.styleTouched = false;
     updateStyleControls();
@@ -11068,7 +11277,6 @@ function updateMeta() {
   el.replayUncategorizedBtn.disabled = uncategorizedCards().length === 0;
   el.replayAllBtn.disabled = state.masterCards.length === 0;
   if (el.viewModeToggle) el.viewModeToggle.hidden = !hasDeck;
-  if (el.notesBtn) el.notesBtn.disabled = !hasDeck;
   if (el.exportNotesBtn) el.exportNotesBtn.disabled = !hasDeck || !state.notes.trim();
   if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
 }
@@ -11698,7 +11906,8 @@ el.viewModeToggle?.addEventListener("click", (event) => {
   if (button) setViewMode(button.dataset.viewMode);
 });
 
-el.notesBtn?.addEventListener("click", () => setViewMode("notes"));
+// (No drawer listener for the notes view: the Cards / Notes / Highlights toggle
+// above is the only way in, and it's always on screen when a deck is loaded.)
 
 // ── Reading room: collapsing the chrome ─────────────────────────────
 // On a phone the appbar (deck title, category, score, sync) plus the
@@ -24003,13 +24212,26 @@ el.storageBody?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-storage-action]");
   if (button && !button.disabled) runStorageAction(button.dataset.storageAction);
 });
-el.applyStyleBtn.addEventListener("click", () => applyCurrentStyleSettings());
+el.resetStyleBtn?.addEventListener("click", resetStyleProfile);
 el.syncUpBtn.addEventListener("click", syncStyleToWeb);
 el.syncDownBtn.addEventListener("click", () => loadStyleFromWeb(true));
+// `button[...]`, not a bare attribute selector. applyActiveStyleSettings puts
+// data-style-profile on <html>, and closest() walks all the way to the root —
+// so `closest("[data-style-profile]")` matched the DOCUMENT ELEMENT for every
+// click that landed anywhere in this panel. Two consequences, one of them old:
+// it silently called switchStyleEditProfile(<device profile>), so clicking a
+// label while editing the Mobile profile on a desktop screen bounced you back
+// to Desktop; and it made every branch below it unreachable, because the first
+// one always matched. The buttons are the only real targets here, so say so.
 el.styleControls.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-style-profile]");
-  if (!button) return;
-  switchStyleEditProfile(button.dataset.styleProfile);
+  const profileButton = event.target.closest("button[data-style-profile]");
+  if (profileButton) { switchStyleEditProfile(profileButton.dataset.styleProfile); return; }
+
+  const densityButton = event.target.closest("button[data-style-density]");
+  if (densityButton) { applyStyleDensity(densityButton.dataset.styleDensity); return; }
+
+  const resetButton = event.target.closest("button[data-style-reset]");
+  if (resetButton) { resetStyleField(resetButton.dataset.styleReset); return; }
 });
 el.styleControls.addEventListener("input", (event) => {
   if (event.target.matches("[data-style-key]")) {
@@ -24020,6 +24242,23 @@ el.styleControls.addEventListener("change", (event) => {
   if (event.target.matches("[data-style-key]")) {
     handleStyleControlChange();
   }
+});
+// Normalization happens HERE, not on every keystroke. updateStyleControls
+// refuses to touch the focused field (that's what fixed typing), so this is
+// where "28" finally becomes "28px" and a field left empty gets the default
+// put back into it.
+el.styleControls.addEventListener("focusout", (event) => {
+  if (!event.target.matches("[data-style-key]")) return;
+  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
+  const key = event.target.dataset.styleKey;
+  const normalized = normalizeStyleValue(key, event.target.value, defaults[key]);
+  // Leaving a field you didn't touch is not an edit. Without this, tabbing
+  // through the panel would mark the profile "Unsynced" and set styleTouched,
+  // which also makes Sync Down refuse to overwrite (see loadStyleFromWeb).
+  if (normalized === event.target.value) return;
+  event.target.value = normalized;
+  handleStyleControlChange();
 });
 el.stylePanel.addEventListener("touchstart", handleStylePanelTouchStart, { passive: true });
 el.stylePanel.addEventListener("touchmove", handleStylePanelTouchMove, { passive: false });
@@ -25062,11 +25301,109 @@ function runningAppVersion() {
   return src.match(/[?&]v=([^&]+)/)?.[1] || "unknown";
 }
 
-async function latestDeployedAppVersion() {
-  const response = await fetch("./sw.js", { cache: "no-store" });
-  if (!response.ok) throw new Error(`sw.js -> ${response.status}`);
-  const text = await response.text();
-  return text.match(/CACHE_NAME\s*=\s*"recall-v([^"]+)"/)?.[1] || "unknown";
+// Where the source of truth lives. One place, so a fork edits one line.
+const GITHUB_REPO = { owner: "sinayanaik", repo: "recall", branch: "main" };
+const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO.owner}/${GITHUB_REPO.repo}`;
+
+// The release stamp as it appears in index.html — the SAME string the running
+// page's <script src> carries, which is the whole point: the old check compared
+// index.html's ?v= against sw.js's CACHE_NAME, two hand-maintained numbers in
+// five different places. Whenever they drifted, the app announced "Update
+// available" forever and offered a Reload button that could not possibly fix
+// it, because there was no newer build to reload into.
+const RELEASE_STAMP_RE = /app\.js\?v=([^"'&\s]+)/;
+const CACHE_NAME_RE = /CACHE_NAME\s*=\s*"recall-v([^"]+)"/;
+
+function stampFromHtml(text) {
+  return text.match(RELEASE_STAMP_RE)?.[1] || null;
+}
+
+// Every ?v= in a served index.html, plus every one in sw.js (its CACHE_NAME and
+// both APP_SHELL entries). All five must agree for a release to be coherent.
+function releaseStampsIn(html, sw) {
+  const stamps = [];
+  if (html) {
+    for (const match of html.matchAll(/(?:app|styles)\.(?:js|css)\?v=([^"'&\s]+)/g)) {
+      stamps.push({ where: "index.html", stamp: match[1] });
+    }
+  }
+  if (sw) {
+    const cacheName = sw.match(CACHE_NAME_RE);
+    if (cacheName) stamps.push({ where: "sw.js CACHE_NAME", stamp: cacheName[1] });
+    for (const match of sw.matchAll(/\.\/(?:app|styles)\.(?:js|css)\?v=([^"'&\s]+)/g)) {
+      stamps.push({ where: "sw.js APP_SHELL", stamp: match[1] });
+    }
+  }
+  return stamps;
+}
+
+// Every request this check makes is bounded. Without it the modal's rows sit on
+// "checking…" for as long as the network cares to hang — and a version
+// indicator that can silently never finish is exactly the thing it exists not
+// to be. A timeout is a real answer ("couldn't reach it"); no answer is not.
+const UPDATE_CHECK_TIMEOUT_MS = 8000;
+
+function updateCheckSignal() {
+  try {
+    return AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS);
+  } catch (_) {
+    return undefined; // pre-2022 engine: fall back to an unbounded fetch
+  }
+}
+
+async function fetchText(url, options = {}) {
+  const response = await fetch(url, { signal: updateCheckSignal(), ...options });
+  if (!response.ok) throw new Error(`${url} -> ${response.status}`);
+  return response.text();
+}
+
+// What this origin would hand a visitor arriving right now. `no-store` keeps
+// both the browser's HTTP cache and the service worker's cached copy out of the
+// answer — and sw.js exempts itself from interception outright (see its fetch
+// handler), so neither file can come back stale.
+async function fetchLiveRelease() {
+  const [html, sw] = await Promise.all([
+    fetchText("./index.html", { cache: "no-store" }),
+    fetchText("./sw.js", { cache: "no-store" }).catch(() => null)
+  ]);
+  return { stamp: stampFromHtml(html), html, sw };
+}
+
+// The repo itself: the current uploaded commit, and the release stamp inside
+// the index.html at that commit. Cross-origin and not a CDN asset, so the
+// service worker's fetch handler returns early and never touches this.
+let githubReleaseCache = { at: 0, value: null };
+const GITHUB_CACHE_MS = 5 * 60 * 1000;
+
+async function fetchRepoRelease() {
+  if (githubReleaseCache.value && Date.now() - githubReleaseCache.at < GITHUB_CACHE_MS) {
+    return githubReleaseCache.value;
+  }
+  const headers = { Accept: "application/vnd.github+json" };
+  const commitResponse = await fetch(`${GITHUB_API}/commits/${GITHUB_REPO.branch}`, { headers, cache: "no-store", signal: updateCheckSignal() });
+  if (commitResponse.status === 403 || commitResponse.status === 429) {
+    throw Object.assign(new Error("rate limited"), { rateLimited: true });
+  }
+  if (!commitResponse.ok) throw new Error(`commits -> ${commitResponse.status}`);
+  const commit = await commitResponse.json();
+
+  // Raw file at that exact commit, so the stamp and the sha can never describe
+  // two different states of the repo.
+  const rawAt = (path) =>
+    fetchText(`https://raw.githubusercontent.com/${GITHUB_REPO.owner}/${GITHUB_REPO.repo}/${commit.sha}/${path}`, { cache: "no-store" })
+      .catch(() => null);
+  const [html, sw] = await Promise.all([rawAt("index.html"), rawAt("sw.js")]);
+
+  const value = {
+    sha: String(commit.sha || "").slice(0, 7),
+    date: commit.commit?.author?.date || commit.commit?.committer?.date || null,
+    subject: String(commit.commit?.message || "").split("\n")[0],
+    stamp: stampFromHtml(html || ""),
+    html,
+    sw
+  };
+  githubReleaseCache = { at: Date.now(), value };
+  return value;
 }
 
 const appInfoModal = document.getElementById("appInfoModal");
@@ -25075,6 +25412,9 @@ const appInfoCloseBtn = document.getElementById("appInfoCloseBtn");
 const appInfoVersion = document.getElementById("appInfoVersion");
 const appInfoLatest = document.getElementById("appInfoLatest");
 const appInfoStatus = document.getElementById("appInfoStatus");
+const appInfoRepo = document.getElementById("appInfoRepo");
+const appInfoCommit = document.getElementById("appInfoCommit");
+const appInfoWarning = document.getElementById("appInfoWarning");
 const appInfoCheckBtn = document.getElementById("appInfoCheckBtn");
 const appInfoReloadBtn = document.getElementById("appInfoReloadBtn");
 
@@ -25085,31 +25425,118 @@ function setAppInfoStatus(text, cls = "") {
   appInfoStatus.classList.toggle("is-outdated", cls === "outdated");
 }
 
-// Fills the Latest/Status rows. Also pokes the service worker's own update
-// check — when a new worker is already waiting, that alone finishes the
-// update (controllerchange then reloads the page; see registerServiceWorker).
+function setAppInfoWarning(text) {
+  if (!appInfoWarning) return;
+  appInfoWarning.textContent = text || "";
+  appInfoWarning.hidden = !text;
+}
+
+// Fills every row. Also pokes the service worker's own update check — when a
+// new worker is already waiting, that alone finishes the update
+// (controllerchange then reloads the page; see registerServiceWorker).
+//
+// Three facts get compared, not two:
+//   installed — the ?v= on the <script> this page actually loaded
+//   live      — the ?v= in the index.html the server is handing out right now
+//   repo      — the ?v= in the index.html at HEAD of the GitHub branch
+//
+// Which pair disagrees is what decides the message. installed ≠ live means
+// there IS a newer build sitting on the server and reloading gets it. live ≠
+// repo means the newest code is pushed but GitHub Pages hasn't published it —
+// reloading cannot help, and the old check's "Update available" was a nag that
+// no amount of reloading would ever clear.
+let appInfoCheckToken = 0;
+
 async function refreshAppInfo() {
   if (!appInfoLatest || !appInfoStatus) return;
+  const token = ++appInfoCheckToken;
+  const running = runningAppVersion();
+  if (appInfoVersion) appInfoVersion.textContent = running;
   appInfoLatest.textContent = "checking…";
+  if (appInfoRepo) appInfoRepo.textContent = "checking…";
+  if (appInfoCommit) appInfoCommit.textContent = "checking…";
   setAppInfoStatus("");
+  setAppInfoWarning("");
   if (appInfoReloadBtn) appInfoReloadBtn.hidden = true;
   if (serviceWorkerRegistration) serviceWorkerRegistration.update().catch(() => {});
-  try {
-    const latest = await latestDeployedAppVersion();
-    const running = runningAppVersion();
-    appInfoLatest.textContent = latest;
-    if (latest === "unknown" || running === "unknown") {
-      setAppInfoStatus("Couldn't compare versions");
-    } else if (latest === running) {
-      setAppInfoStatus("You're up to date ✓", "ok");
-    } else {
-      setAppInfoStatus("Update available", "outdated");
-      if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
-    }
-  } catch (_) {
-    appInfoLatest.textContent = "unknown";
-    setAppInfoStatus("Offline — can't check right now");
+
+  // Both start together, but the same-origin answer is painted the moment it
+  // lands rather than waiting on GitHub — it's the one that decides whether to
+  // offer Reload, and it must not be held hostage by a slow or blocked API.
+  // allSettled, not all: a GitHub outage or rate limit costs us the repo row
+  // and nothing else.
+  const livePromise = fetchLiveRelease();
+  const repoPromise = fetchRepoRelease();
+  livePromise
+    .then((live) => { if (token === appInfoCheckToken && appInfoLatest) appInfoLatest.textContent = live?.stamp || "unknown"; })
+    .catch(() => {});
+
+  const [liveResult, repoResult] = await Promise.allSettled([livePromise, repoPromise]);
+  // A second press while the first check is still in flight would otherwise
+  // finish later and repaint the rows with the older run's answers.
+  if (token !== appInfoCheckToken) return;
+
+  const live = liveResult.status === "fulfilled" ? liveResult.value : null;
+  const repo = repoResult.status === "fulfilled" ? repoResult.value : null;
+
+  appInfoLatest.textContent = live?.stamp || "unknown";
+  if (appInfoRepo) appInfoRepo.textContent = repo?.stamp || (repoResult.reason?.rateLimited ? "unavailable (rate limited)" : "unavailable");
+  if (appInfoCommit) {
+    appInfoCommit.textContent = repo
+      ? `${repo.sha}${repo.date ? ` · ${new Date(repo.date).toLocaleDateString()}` : ""}${repo.subject ? ` · ${repo.subject.slice(0, 60)}` : ""}`
+      : "—";
   }
+
+  // The failproof half. The stamp is hand-edited in five places; if they
+  // disagree, no comparison built on them means anything, so say THAT rather
+  // than dressing the inconsistency up as an update.
+  const stamps = releaseStampsIn(live?.html, live?.sw);
+  const distinct = [...new Set(stamps.map((entry) => entry.stamp))];
+  if (distinct.length > 1) {
+    // One line per distinct place-and-value; index.html and APP_SHELL each
+    // carry the stamp twice, and listing "index.html: X, index.html: X" makes
+    // the one entry that actually differs harder to spot, not easier.
+    const detail = [...new Set(stamps.map((entry) => `${entry.where}: ${entry.stamp}`))].join(", ");
+    setAppInfoWarning(`Release stamps disagree on the server — ${detail}. This build is inconsistent; bump every ?v= to the same value and redeploy.`);
+    setAppInfoStatus("Can't compare — the deployed build is inconsistent", "outdated");
+    return;
+  }
+
+  if (!live) {
+    setAppInfoStatus("Offline — can't check right now");
+    return;
+  }
+  if (!live.stamp || running === "unknown") {
+    setAppInfoStatus("Couldn't read a version to compare");
+    return;
+  }
+
+  if (running !== live.stamp) {
+    setAppInfoStatus("Update available — reload to update", "outdated");
+    if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
+    return;
+  }
+
+  // Running the newest build the server has. The only question left is whether
+  // the server has caught up with the repo — and, since a stamp is YYYYMMDD-NN,
+  // WHICH WAY round they differ. A server ahead of the branch is an ordinary
+  // local build or a deploy from somewhere else, not something to warn about;
+  // calling that "Pages hasn't published yet" would be exactly backwards.
+  if (repo?.stamp && repo.stamp !== live.stamp) {
+    const dated = /^\d{8}-\d+$/;
+    const serverAhead = dated.test(live.stamp) && dated.test(repo.stamp) && live.stamp > repo.stamp;
+    if (serverAhead) {
+      setAppInfoStatus("Up to date — this build is newer than the branch", "ok");
+      setAppInfoWarning(`What you're running (${live.stamp}) is ahead of ${GITHUB_REPO.branch} (${repo.stamp}) — a local or unpushed build. Nothing to update.`);
+    } else {
+      setAppInfoStatus(`Up to date with the live site — GitHub Pages hasn't published ${repo.sha} yet`, "outdated");
+      setAppInfoWarning("Nothing to do here: your browser already has the newest build that exists on the server. Pages usually publishes within a couple of minutes of a push.");
+    }
+    return;
+  }
+
+  setAppInfoStatus(repo ? "You're up to date ✓" : "Up to date with the live site ✓", "ok");
+  if (!repo) setAppInfoWarning("Couldn't reach GitHub, so this only compares against the live site.");
 }
 
 function openAppInfoModal() {
@@ -25120,6 +25547,14 @@ function openAppInfoModal() {
   refreshAppInfo();
 }
 
+// "Check for updates" should mean it. The 5-minute GitHub cache exists to keep
+// the modal's automatic refresh off the 60/hr budget — a deliberate press has
+// to be able to look past it.
+function forceRefreshAppInfo() {
+  githubReleaseCache = { at: 0, value: null };
+  return refreshAppInfo();
+}
+
 function closeAppInfoModal() {
   if (!appInfoModal) return;
   appInfoModal.hidden = true;
@@ -25128,7 +25563,7 @@ function closeAppInfoModal() {
 
 if (appInfoBtn) appInfoBtn.addEventListener("click", openAppInfoModal);
 if (appInfoCloseBtn) appInfoCloseBtn.addEventListener("click", closeAppInfoModal);
-if (appInfoCheckBtn) appInfoCheckBtn.addEventListener("click", refreshAppInfo);
+if (appInfoCheckBtn) appInfoCheckBtn.addEventListener("click", forceRefreshAppInfo);
 if (appInfoReloadBtn) appInfoReloadBtn.addEventListener("click", () => location.reload());
 if (appInfoModal) {
   appInfoModal.addEventListener("click", (e) => {

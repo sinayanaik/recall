@@ -199,6 +199,6 @@ SET settings = jsonb_build_object(
 );
 
 COMMENT ON TABLE app_style_settings IS
-  'Per-user Aa style settings (row id = auth.uid(), plus a legacy shared ''global'' row new accounts inherit) for layout, px font sizes, spacing, radius, and percent dimensions. Colors are intentionally not included.';
+  'Per-user Aa style settings (row id = auth.uid(), plus a legacy shared ''global'' row new accounts inherit) for layout, px font sizes, spacing, radius, and percent dimensions, plus the chosen theme ID. Colour VALUES are intentionally not included — those live in CSS, keyed off the theme ID.';
 COMMENT ON COLUMN app_style_settings.settings IS
-  'JSON object of { version, desktop: {…}, mobile: {…} }. Keys match the controls in styleControlGroups and are applied as CSS variables by app.js. The legacy flat (profile-less) shape is still read and migrated on load.';
+  'JSON object of { version, theme, desktop: {…}, mobile: {…} }. The profile keys match the controls in styleControlGroups and are applied as CSS variables by app.js; `theme` is a theme ID from themeCatalog (e.g. "dark-amoled") and is top-level because one theme covers both profiles. The legacy flat (profile-less) shape, and any row predating `theme`, are still read and migrated on load — a missing `theme` leaves the device''s own theme alone. The seed UPDATE above rebuilds only the ''global'' row and so does not carry a theme; per-user rows are written whole by the app, which always includes one.';

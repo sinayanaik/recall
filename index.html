@@ -15,7 +15,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260807-02">
+    <link rel="stylesheet" href="styles.css?v=20260808-01">
     <script>
       // ── Boot-click queue ────────────────────────────────────────────────
       // The whole toolbar is in the HTML, so it paints immediately — but every
@@ -67,9 +67,15 @@
         <!-- Universal back button. Like the back key on a remote: no wiring per
              feature and no destination name — it just steps back through the
              places you've been (decks, notes, the Quick Notes board). Always in
-             this slot; disabled when there's no history. See navHistory. -->
+             this slot; disabled when there's no history. See navHistory.
+
+             A chevron, NOT a plain ← : the card row's Prev button is also an
+             arrow, and on a narrow desktop window (where that row goes
+             icon-only) the two sat on screen together as the same glyph meaning
+             two different things. The chevron reads as "back" the way a phone's
+             does, and can't be mistaken for card navigation. -->
         <button class="app-back-btn" id="appBackBtn" type="button" aria-label="Back" title="Back" disabled>
-          <span aria-hidden="true">&#8592;</span>
+          <span aria-hidden="true">&#8249;</span>
         </button>
         <div class="toolbar" id="mainToolbar">
           <div class="toolbar-drawer-head">
@@ -98,7 +104,11 @@
           <span class="drawer-section-label">Study</span>
           <button class="tool-button" id="allCardsBtn" type="button">&#8801; Browse All Cards</button>
           <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all decks, sorted by subject">&#128209; Quick Notes</button>
-          <button class="tool-button" id="notesBtn" type="button" title="Freeform study notes for this deck">&#128221; Study Notes</button>
+          <!-- No "Study Notes" entry here. It ran setViewMode("notes") — byte for
+               byte what the always-visible Cards / Notes / Highlights toggle on
+               the quiz panel already does — so the drawer held a second 📝 that
+               led exactly where the first one did. The toggle is the one that
+               shows you which view you're in, so it's the one that stays. -->
           <div class="menu-wrap">
             <button class="tool-button" id="exportBtn" type="button">&#8659; Export Cards&#8230;</button>
             <div class="export-menu" id="exportMenu" hidden>
@@ -111,7 +121,10 @@
             </div>
           </div>
           <div class="menu-wrap">
-            <button class="tool-button" id="exportNotesBtn" type="button" title="Export this deck's study notes">&#8659; Export Notes&#8230;</button>
+            <!-- 📝⇓, not the bare ⇓ that Export Cards uses: these two sit as
+                 adjacent rows in the same drawer section, and with one glyph
+                 between them the only thing telling them apart was the word. -->
+            <button class="tool-button" id="exportNotesBtn" type="button" title="Export this deck's study notes">&#128221;&#8659; Export Notes&#8230;</button>
             <div class="export-menu" id="exportNotesMenu" hidden>
               <button type="button" data-export-notes="pdf">PDF</button>
               <button type="button" data-export-notes="html">Standalone HTML</button>
@@ -121,7 +134,7 @@
           </div>
 
           <span class="drawer-section-label">App</span>
-          <button class="tool-button" id="styleBtn" type="button" title="Edit style" aria-label="Edit style">&#9711; Themes</button>
+          <button class="tool-button" id="styleBtn" type="button" title="Themes &amp; Style" aria-label="Themes and style">&#9711; Themes &amp; Style</button>
           <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — decks, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
           <button class="tool-button" id="appInfoBtn" type="button" title="App version and update status" aria-label="App info">&#8505; App Info</button>
@@ -135,7 +148,10 @@
           </span>
           <span class="deck-meta-row2" id="deckMeta2Row" hidden>
             <span class="deck-category" id="deckCategory">Uncategorized</span>
-            <button class="deck-title-edit deck-category-edit" id="editDeckCategoryBtn" type="button" title="Edit deck category" aria-label="Edit deck category">&#9998;</button>
+            <!-- A tag, not the ✏ next to the deck title: the two buttons sit a
+                 few pixels apart in the same meta block and edit different
+                 things, so sharing a pencil made the pair unreadable. -->
+            <button class="deck-title-edit deck-category-edit" id="editDeckCategoryBtn" type="button" title="Edit deck category" aria-label="Edit deck category">&#127991;</button>
             <span class="deck-meta-sep" aria-hidden="true"></span>
             <span id="positionText">0/0</span>
             <strong id="scoreText">Known 0 / Review 0</strong>
@@ -323,8 +339,11 @@
             <button id="shuffleBtn" type="button" title="Shuffle" aria-label="Shuffle cards">
               <span aria-hidden="true">&#8644;</span><span>Shuffle</span>
             </button>
+            <!-- ⟲, not the ↻ that Sync Now uses. Restarting a quiz and syncing
+                 the cloud are the two most different things in the app, and on
+                 a narrow desktop window this row is icon-only. -->
             <button id="resetBtn" type="button" title="Restart" aria-label="Restart quiz">
-              <span aria-hidden="true">&#8635;</span><span>Restart</span>
+              <span aria-hidden="true">&#10226;</span><span>Restart</span>
             </button>
             <button id="clozeToggleBtn" type="button" aria-pressed="false" title="Reveal all fill-in-the-blank clozes" aria-label="Reveal or hide all clozes on this card">
               <svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg><span class="cloze-toggle-label">Reveal clozes</span>
@@ -528,7 +547,7 @@
       <div class="style-shell">
         <div class="style-head">
           <div>
-            <h1>Style</h1>
+            <h1>Themes &amp; Style</h1>
             <p id="styleSyncStatus">Local style</p>
           </div>
           <button class="icon-button" id="closeStyleBtn" type="button" aria-label="Close style settings">&#215;</button>
@@ -550,9 +569,16 @@
             </div>
           </label>
         </div>
+        <!-- No "Apply": every control already applies as you type, so the
+             button only ever re-ran what had already happened. Its one real job
+             — forcing the question/table re-fit — is now debounced off the live
+             edit path. What replaces it is the thing the panel actually lacked:
+             a way back. With free-text controls and no clamping, one bad value
+             (a stray "2" in Text size) could leave the UI too small to read the
+             panel you'd need to fix it in. -->
         <div class="style-actions">
           <button id="syncDownBtn" type="button">Sync Down</button>
-          <button id="applyStyleBtn" type="button">Apply</button>
+          <button id="resetStyleBtn" type="button" title="Put every control on this profile back to its default">Reset profile</button>
           <button id="syncUpBtn" type="button">Sync Up</button>
         </div>
       </div>
@@ -932,7 +958,7 @@ What year was the Eiffel Tower built?
 
           <section class="help-section">
             <h3 class="help-section-title">12. Themes &amp; Style</h3>
-            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">◯ Themes</button> to choose from 10 built-in themes, adjust font size, card radius, and more. Desktop and mobile save separate style profiles.</p>
+            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">◯ Themes &amp; Style</button> to choose from 10 built-in themes and a density preset. Everything else — font sizes, spacing, corner radii — lives under <strong>Advanced</strong>. <strong>Reset profile</strong> puts it all back. Desktop and mobile save separate style profiles, and your theme syncs with them.</p>
           </section>
 
         </div>
@@ -949,20 +975,35 @@ What year was the Eiffel Tower built?
           <button class="icon-button" id="appInfoCloseBtn" type="button" aria-label="Close app info">&#215;</button>
         </div>
         <div class="help-modal-body">
+          <!-- Three independent facts, not one comparison. "Installed" is what
+               this page is running, "Live site" is what the server would hand a
+               fresh visitor, and "Repo" is what has actually been pushed to
+               GitHub. Splitting them is what lets the app say "GitHub Pages
+               hasn't published your last commit yet" instead of nagging you to
+               reload into a build that doesn't exist on the server. -->
           <dl class="app-info-list">
             <div class="app-info-row">
               <dt>Installed version</dt>
               <dd id="appInfoVersion">—</dd>
             </div>
             <div class="app-info-row">
-              <dt>Latest available</dt>
+              <dt>Live site</dt>
               <dd id="appInfoLatest">—</dd>
+            </div>
+            <div class="app-info-row">
+              <dt>Repo (GitHub)</dt>
+              <dd id="appInfoRepo">—</dd>
+            </div>
+            <div class="app-info-row">
+              <dt>Latest commit</dt>
+              <dd id="appInfoCommit">—</dd>
             </div>
             <div class="app-info-row">
               <dt>Status</dt>
               <dd id="appInfoStatus">—</dd>
             </div>
           </dl>
+          <p class="app-info-warning" id="appInfoWarning" hidden></p>
           <div class="app-info-actions">
             <button type="button" class="sync-modal-btn" id="appInfoCheckBtn">Check for updates</button>
             <button type="button" class="sync-modal-btn is-primary" id="appInfoReloadBtn" hidden>Reload to update</button>
@@ -1071,6 +1112,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260807-02"></script>
+    <script src="app.js?v=20260808-01"></script>
   </body>
 </html>
