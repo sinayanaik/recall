@@ -25,7 +25,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260808-02">
+    <link rel="stylesheet" href="styles.css?v=20260808-03">
     <script>
       // ── Boot-click queue ────────────────────────────────────────────────
       // The whole toolbar is in the HTML, so it paints immediately — but every
@@ -66,11 +66,43 @@
           }
         };
       })();
+
+      // ── Early service-worker registration ───────────────────────────────
+      // Deliberately here rather than only in app.js. Registration used to live
+      // exclusively at the bottom of app.js, which runs after those same 15
+      // blocking CDN <script> tags — so a CDN that HANGS (a captive portal, a
+      // filtering proxy: the connection is up, it just never answers) meant
+      // app.js never executed, the worker was never registered, and the app had
+      // no offline support and no way to receive an update. Forever, on that
+      // device, because the same thing happened on every subsequent load.
+      //
+      // Registering from the head breaks that loop: the worker lands even if
+      // the page below it never finishes, so the next load is served from cache
+      // and the app actually starts. app.js still calls register() itself for
+      // the update listeners; registering the same URL twice is idempotent and
+      // resolves to the same registration.
+      //
+      // Skipped on localhost, matching registerServiceWorker() in app.js, which
+      // unregisters dev workers so edits aren't masked by a cache-first bundle.
+      (function () {
+        try {
+          var host = location.hostname;
+          if (host === "localhost" || host === "127.0.0.1") return;
+          if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
+          navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
+            .catch(function () { /* app.js retries and reports */ });
+        } catch (_) { /* never let this stop the page */ }
+      })();
     </script>
   </head>
   <body>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
-    <main class="app-shell">
+    <!-- hidden until bootApp() decides which of setup / login / app to show.
+         Without it the whole logged-out UI painted and accepted clicks for the
+         duration of initDeckStorage() + runEscapedMathRepair(), which on a phone
+         with a large library is seconds — and the boot-click queue would then
+         replay those presses against a client that had not authenticated yet. -->
+    <main class="app-shell" hidden>
       <div class="mobile-backdrop" id="mobileBackdrop" hidden></div>
       <header class="appbar">
         <button class="mobile-menu-btn" id="mobileMenuBtn" type="button" aria-label="Open menu" aria-expanded="false">&#9776;</button>
@@ -1037,6 +1069,22 @@ What year was the Eiffel Tower built?
             <button type="button" class="sync-modal-btn" id="appInfoCheckBtn">Check for updates</button>
             <button type="button" class="sync-modal-btn is-primary" id="appInfoReloadBtn" hidden>Reload to update</button>
           </div>
+
+          <!-- Everything above is about the APP's version. This is about the
+               user's own Supabase project, which is a separate thing that can
+               independently be wrong — and, because every user brings their own
+               project, is the far likelier of the two. A half-applied schema
+               produced no message anywhere: missing tables and columns were
+               detected correctly and then written to console.warn, which on the
+               phone this app mostly runs on is nowhere at all. -->
+          <div class="app-info-health">
+            <h3 class="app-info-health-title">Supabase project</h3>
+            <ul class="app-info-health-list" id="appInfoHealthList"></ul>
+            <p class="app-info-warning" id="appInfoHealthSummary" hidden></p>
+            <div class="app-info-actions">
+              <button type="button" class="sync-modal-btn" id="appInfoHealthBtn">Check my setup</button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1105,6 +1153,27 @@ What year was the Eiffel Tower built?
       </div>
     </div>
 
+    <!-- Shown when this device HAS a saved Supabase project but the sign-in
+         library (supabase-js, loaded from a CDN) didn't arrive. Previously that
+         case fell through to the setup screen above, which is actively harmful:
+         it tells a correctly-configured user their project is missing, and the
+         obvious next move — "Change Supabase project" — destroys the working
+         credentials that were never the problem. -->
+    <div id="offlineBootOverlay" class="login-overlay" hidden>
+      <div class="login-card">
+        <h1 class="login-title">Recall</h1>
+        <p class="setup-subtitle">Couldn't load the sign-in library</p>
+        <p class="setup-hint">
+          Recall needs one file from <code>cdn.jsdelivr.net</code> to sign in, and this device couldn't
+          fetch it. That's usually a connection, a proxy, or a content blocker — not your account.
+          Your saved project settings are untouched.
+        </p>
+        <p id="offlineBootError" class="login-error" aria-live="polite"></p>
+        <button id="offlineBootRetryBtn" class="login-btn-primary" type="button">Try again</button>
+        <button id="offlineBootChangeProjectBtn" class="login-btn-link" type="button">Change Supabase project</button>
+      </div>
+    </div>
+
     <div id="loginOverlay" class="login-overlay" hidden>
       <div class="login-card">
         <h1 class="login-title">Recall</h1>
@@ -1135,12 +1204,19 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Pinned, unlike every other CDN tag here, for a reason worth stating: the
+         service worker precaches this URL cache-first and never revalidates it,
+         so an unpinned "@2" froze whatever jsDelivr happened to resolve on the
+         day each user's cache was populated. Two people on identical code were
+         running different auth clients, and the developer — whose localhost
+         build unregisters the worker and refetches every load — always had the
+         newest. Bump this deliberately, with the release stamp. -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/@panzoom/panzoom@4.5.0/dist/panzoom.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/graphre/dist/graphre.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260808-02"></script>
+    <script src="app.js?v=20260808-03"></script>
   </body>
 </html>

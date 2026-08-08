@@ -565,7 +565,21 @@ button:disabled {
 }
 
 .sync-indicator[data-state="saved"] { color: var(--muted); }
+/* setSyncIndicator emits "saving"; this file only ever styled "syncing", so the
+   one state that means "something is happening right now" rendered in the
+   default colour and looked identical to idle. Both names are kept — the state
+   name is written in two places and silently diverged once already. */
+.sync-indicator[data-state="saving"],
 .sync-indicator[data-state="syncing"] { color: var(--accent); }
+/* A lapsed session is not the same thing as being offline, and until now it was
+   displayed as though it were — the one condition the user can actually fix,
+   wearing the badge of the one they can't. */
+.sync-indicator[data-state="signedout"] {
+  color: var(--review);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .sync-indicator[data-state="synced"] { color: var(--known); }
 .sync-indicator[data-state="offline"] { color: var(--review); }
 .sync-indicator[data-state="error"] { color: #ff6a6a; }
@@ -9823,6 +9837,13 @@ textarea {
   margin: 4px 0 12px;
 }
 
+/* Same slot, different meaning: "Account created, check your email" is a
+   successful outcome that happens to need saying, and colouring it as an error
+   would tell the user their sign-up failed when it didn't. */
+.login-error.is-notice {
+  color: var(--known, #4caf50);
+}
+
 .login-btn-primary {
   width: 100%;
   padding: 11px;
@@ -10418,6 +10439,56 @@ textarea {
 .app-info-warning[hidden] {
   display: none;
 }
+
+/* ── Supabase project health check ──────────────────────────────────────── */
+
+.app-info-health {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.app-info-health-title {
+  margin: 0 0 8px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.app-info-health-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.app-info-health-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.app-info-health-item strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.app-info-health-mark {
+  flex: none;
+  width: 1.15em;
+  text-align: center;
+  font-weight: 700;
+}
+
+.app-info-health-item.is-ok .app-info-health-mark { color: var(--known, #4caf50); }
+.app-info-health-item.is-warn .app-info-health-mark { color: var(--review, #d9534f); }
+.app-info-health-item.is-fail .app-info-health-mark { color: var(--danger, #d64545); }
+.app-info-health-item.is-skip .app-info-health-mark { color: var(--muted); }
 
 .app-info-actions {
   display: flex;
@@ -11133,6 +11204,87 @@ kbd {
   height: 8px;
   border-radius: 50%;
   background: var(--review, #d9534f);
+}
+
+
+/* ── Update banner ──────────────────────────────────────────────────────────
+   Persistent and dismissible, deliberately not a toast: "your app is out of
+   date" is not a message that should disappear before it can be acted on.
+   Anchored to the top because the offline pill already owns the bottom-left,
+   and it reserves notch space like every other fixed overlay here. */
+
+.update-banner {
+  position: fixed;
+  top: calc(12px + var(--safe-top));
+  left: calc(12px + var(--safe-left));
+  right: calc(12px + var(--safe-right));
+  z-index: 400;
+  margin: 0 auto;
+  max-width: 520px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--text);
+  font-size: 0.9rem;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 28%);
+}
+
+.update-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.update-banner-action {
+  flex: none;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-banner-dismiss {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.update-banner-dismiss:hover { color: var(--text); }
+
+/* The dot survives dismissing the bar: "not now" is not "pretend this build is
+   current". The hamburger is the one control always on screen, and App Info
+   lives behind it — this is what makes the modal findable at the moment it has
+   something to say. */
+.has-update {
+  position: relative;
+}
+
+.has-update::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--panel);
+  pointer-events: none;
 }
 
 

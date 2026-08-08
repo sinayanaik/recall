@@ -1,4 +1,16 @@
-const CACHE_NAME = "recall-v20260808-02";
+const CACHE_NAME = "recall-v20260808-03";
+
+// The release stamp, derived from CACHE_NAME rather than repeated. This file
+// used to carry it three times (here and twice in APP_SHELL) and index.html
+// carries it twice more; five hand-edited strings that had to agree, with
+// nothing checking that they did. They twice did not: commit d7a92e2 shipped
+// 177 lines of app.js/index.html/styles.css changes with the stamp left at
+// 20260807-02 and this file untouched, so CACHE_NAME never changed, no new
+// worker installed, and every existing install kept being served the previous
+// bundle cache-first. Deriving it here takes the count from five to three, and
+// .github/workflows/release-stamp.yml fails the push when those three disagree
+// or when a release forgets to bump them at all.
+const STAMP = CACHE_NAME.slice("recall-v".length);
 
 // How long a same-origin request may stall before the cached copy is served
 // instead. The failure this exists for is NOT being offline — that fails fast
@@ -12,6 +24,16 @@ const CACHE_NAME = "recall-v20260808-02";
 // lands — it just updates the cache in the background instead of holding the
 // page hostage.
 const NETWORK_TIMEOUT_MS = 2500;
+
+// A versioned asset (app.js?v=…, styles.css?v=…) that misses the cache gets a
+// much longer budget than the HTML does, because the two failures are not
+// comparable. Falling back on the HTML costs one launch of freshness; falling
+// back on app.js means there is no correct copy to serve at all — the only
+// other option is the PREVIOUS release's bundle under the new URL, which runs
+// old code inside new markup. 2.5s was routinely exceeded by a 1.4MB app.js on
+// mobile data while being unreachable on the developer's wifi, which is exactly
+// why this only ever broke for other people.
+const ASSET_NETWORK_TIMEOUT_MS = 15000;
 
 // Uploaded images live in the user's own Supabase Storage bucket, on a
 // different origin from both the app and the CDN — so nothing here used to
@@ -41,17 +63,23 @@ async function trimImageCache() {
   await Promise.all(keys.slice(0, keys.length - IMAGE_CACHE_LIMIT).map((key) => cache.delete(key)));
 }
 
-// Same-origin app shell — cached atomically on install (must all succeed).
+// Same-origin app shell, precached on install.
 //
-// The ?v= strings MUST match index.html's <link>/<script> exactly: the cache is
-// keyed by full URL, so a stale one here precaches a file the page never asks
-// for and leaves the real one to be picked up (or not) by the network-first
-// handler below. styles.css drifted to -7 while index.html moved to -9 and the
-// precached copy was dead weight for the whole of that release.
+// The ?v= strings must match index.html's <link>/<script> exactly — the cache
+// is keyed by full URL, so a stale one here precaches a file the page never
+// asks for and leaves the real one to the handlers below. They are now built
+// from STAMP rather than typed out, so the only way they can disagree with
+// index.html is if index.html itself was not bumped, which CI catches.
+//
+// Deliberately NOT cached with addAll. addAll is atomic: one 5xx on one icon
+// rejects the whole install, the new worker never activates, and that client
+// keeps being served the old release forever with the error swallowed by the
+// .catch() on registration.update(). Individual puts mean a flaky asset costs
+// that one asset, which the miss handler and repairCdnCache can both recover.
 const APP_SHELL = [
   "./",
-  "./styles.css?v=20260808-02",
-  "./app.js?v=20260808-02",
+  `./styles.css?v=${STAMP}`,
+  `./app.js?v=${STAMP}`,
   "./manifest.webmanifest",
   "./fevicon.png",
   "./icons/icon-192.png",
@@ -108,7 +136,11 @@ const CDN_ASSETS = [
   `${CDN}katex@0.16.11/dist/contrib/auto-render.min.js`,
   `${CDN}mermaid@10.9.1/dist/mermaid.min.js`,
   `${CDN}jszip@3.10.1/dist/jszip.min.js`,
-  `${CDN}@supabase/supabase-js@2`,
+  // Must stay byte-identical to the <script src> in index.html — the cache is
+  // keyed by URL, so a mismatch here precaches a file the page never asks for
+  // and leaves the auth client to the network on every load. See the comment at
+  // that tag for why it is pinned at all.
+  `${CDN}@supabase/supabase-js@2.112.2`,
   `${CDN}@panzoom/panzoom@4.5.0/dist/panzoom.min.js`,
   `${CDN}graphre/dist/graphre.js`,
   `${CDN}nomnoml/dist/nomnoml.js`,
@@ -154,25 +186,38 @@ async function repairCdnCache() {
 }
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(async (cache) => {
-        // App shell is same-origin and must all cache — fail install if not.
-        // "./" is handled separately: it is the one entry with no ?v= stamp, so
-        // addAll would take it from the browser's HTTP cache and precache the
-        // PREVIOUS release's HTML into this release's cache. Same reason as the
-        // no-store fetch in sameOriginNetworkFirst.
-        await cache.addAll(APP_SHELL.filter((asset) => asset !== "./"));
-        const shell = await fetch("./", { cache: "no-store", credentials: "same-origin" });
-        if (!shell.ok) throw new Error(`app shell fetch failed: ${shell.status}`);
-        await cache.put("./", shell);
-        // CDN assets are best-effort: one flaky/unavailable file must not abort
-        // the whole install and leave the app with no cache at all. What that
-        // drops, repairCdnCache picks up later.
-        await Promise.allSettled(CDN_ASSETS.map((url) => cacheCdnAsset(cache, url)));
-      })
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+
+    // "./" is fetched separately from the rest: it is the one entry with no ?v=
+    // stamp, so a default-cache fetch would take it from the browser's HTTP
+    // cache and precache the PREVIOUS release's HTML into this release's cache.
+    // Same reason as the no-store fetch in sameOriginNetworkFirst.
+    const stamped = APP_SHELL.filter((asset) => asset !== "./");
+    await Promise.allSettled(stamped.map(async (asset) => {
+      const response = await fetch(asset, { cache: "no-cache", credentials: "same-origin" });
+      if (!response.ok) throw new Error(`${asset} -> ${response.status}`);
+      await cache.put(asset, response);
+    }));
+
+    // The HTML is the one asset worth failing the install over. Everything else
+    // has a recovery path; this doesn't — a cache whose "./" is the previous
+    // release's markup would have the new worker serving old HTML, which is the
+    // precise mixed-build state the fetch handler below exists to prevent.
+    const shell = await fetch("./", { cache: "no-store", credentials: "same-origin" });
+    if (!shell.ok) throw new Error(`app shell fetch failed: ${shell.status}`);
+    await cache.put("./", shell);
+
+    // Take over NOW. The 83-asset CDN precache below is best-effort by design
+    // (allSettled) and already has a repair pass, so it has no business gating
+    // activation — yet it used to, and on a phone that meant a release could sit
+    // unactivated behind 3.2MB of mermaid and 20 KaTeX fonts until the browser
+    // killed the install, silently, permanently. Availability of the shell is
+    // what a release needs; the libraries can land afterwards or later.
+    await self.skipWaiting();
+
+    await Promise.allSettled(CDN_ASSETS.map((url) => cacheCdnAsset(cache, url)));
+  })());
 });
 
 self.addEventListener("activate", (event) => {
@@ -197,6 +242,16 @@ self.addEventListener("activate", (event) => {
 // happened to be on screen while online. Best-effort and chunked: a broken or
 // deleted URL must not abort the rest.
 self.addEventListener("message", (event) => {
+  // Sent by the update banner's Reload button. A worker that finished installing
+  // while the page still had a controller sits in "waiting" — and a plain reload
+  // does NOT promote it, because the old worker is still controlling the client.
+  // Without this the button would appear to do nothing on the first press, which
+  // is precisely the "I clicked reload and it's still the old version" report.
+  if (event.data && event.data.type === "skip-waiting") {
+    self.skipWaiting();
+    return;
+  }
+
   // The page asks for this when it comes back online (see registerServiceWorker),
   // because that's the moment a hole left by a bad install can actually be
   // filled. Cheap when there's nothing to do: a cache.match per asset, no
@@ -314,10 +369,51 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(sameOriginNetworkFirst(event, request));
 });
 
+// Does this HTML belong to the release this worker was built for? Compares the
+// ?v= stamp its <script src="app.js?v=…"> carries against our own STAMP.
+//
+// Only navigations are judged. A same-origin non-navigation that reaches the
+// network-first handler is not the app shell and has no stamp to check, and a
+// document with no recognisable stamp at all (a fork, an error page, a captive
+// portal) is passed through rather than blocked — this guards against a known
+// mismatch, not against the unknown.
+//
+// Also kicks off a worker update on a mismatch: the newer markup existing on
+// the server is the strongest possible evidence that a newer sw.js does too,
+// and holding this client on the old release is only correct if it is also
+// briefly held. Without it, a client whose 30-minute timer has just fired would
+// wait another 30 for a release it has already seen.
+async function htmlMatchesThisRelease(response, request) {
+  if (request.mode !== "navigate") return true;
+  let text;
+  try {
+    text = await response.clone().text();
+  } catch (_) {
+    return true; // unreadable (opaque, streaming failure) — don't block on it
+  }
+  const stamp = text.match(/app\.js\?v=([^"'&\s]+)/)?.[1];
+  if (!stamp) return true;
+  if (stamp === STAMP) return true;
+  try { self.registration.update(); } catch (_) { /* best effort */ }
+  return false;
+}
+
 // Content-addressed by URL, so a cache hit is always the right answer.
 function isVersionedAsset(url) {
   if (url.searchParams.has("v")) return true;
   return /\/(icons\/[^/]+\.png|fevicon\.png|manifest\.webmanifest)$/.test(url.pathname);
+}
+
+// Tell every open page that it is running a body whose version does not match
+// the URL it asked for. Without this the page cannot possibly know: the App Info
+// screen reads the ?v= off its own <script src> ATTRIBUTE, which is the request
+// URL, so a cross-version fallback made it report the new stamp while executing
+// the old bundle — announcing "You're up to date ✓" to a user who was not.
+async function announceMixedBuild(url) {
+  try {
+    const clients = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
+    for (const client of clients) client.postMessage({ type: "mixed-build", url: String(url), stamp: STAMP });
+  } catch (_) { /* nothing listening */ }
 }
 
 async function cacheFirstSameOrigin(event, request) {
@@ -325,10 +421,12 @@ async function cacheFirstSameOrigin(event, request) {
   const cached = await cache.match(request);
   if (cached) return cached;
 
-  // Miss: a release whose ?v= this cache predates, or an install that never
-  // finished. Fetch and keep it — but on a bounded wait, because hanging here
-  // would reintroduce the exact stall this file exists to prevent, just one
-  // release later.
+  // Miss. With version-coherent HTML (see sameOriginNetworkFirst) the page only
+  // ever asks for assets stamped like the markup it was served, and this
+  // worker's own install precached exactly those — so a miss here means the
+  // install was incomplete, not that a new release is being picked up
+  // piecemeal. Either way the network is the only source of a CORRECT copy, so
+  // it gets a long budget (see ASSET_NETWORK_TIMEOUT_MS) rather than the HTML's.
   const network = fetch(request).then(async (response) => {
     if (response && response.status === 200) {
       const copy = response.clone();
@@ -338,13 +436,20 @@ async function cacheFirstSameOrigin(event, request) {
   });
   event.waitUntil(network.catch(() => {}));
 
-  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS));
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), ASSET_NETWORK_TIMEOUT_MS));
   const winner = await Promise.race([network.catch(() => null), timeout]);
   if (winner && winner.ok) return winner;
 
-  // Last resort: the same path from a previous release (ignoreSearch drops the
-  // ?v=). An app one version behind is a working app; a hung fetch is not.
-  return (await cache.match(request, { ignoreSearch: true })) || (winner || Response.error());
+  // Genuinely nothing correct to serve. Falling back to the same path from a
+  // previous release (ignoreSearch drops the ?v=) keeps the app usable rather
+  // than handing back a hard error — but it is a MIXED BUILD, and the one thing
+  // that must not happen is the page believing otherwise, so say so out loud.
+  const stale = await cache.match(request, { ignoreSearch: true });
+  if (stale) {
+    event.waitUntil(announceMixedBuild(request.url));
+    return stale;
+  }
+  return winner || Response.error();
 }
 
 async function sameOriginNetworkFirst(event, request) {
@@ -382,6 +487,17 @@ async function sameOriginNetworkFirst(event, request) {
   // nothing.
   const network = fetch(request.url, { cache: "no-store", credentials: "same-origin" }).then(async (response) => {
     if (response && response.status === 200) {
+      // Version-coherent serving. An OLD worker must never hand out NEW HTML.
+      // If it does, the page asks for app.js?v=NEW, which this cache cannot
+      // have, and the miss handler above is left choosing between a long stall
+      // and last release's bundle — the mixed-build failure that made "stuck on
+      // an old version" both real and invisible (the page reports the new stamp
+      // either way). Refusing the newer markup keeps this client wholly on the
+      // release it already has; registration.update() fetches sw.js (never
+      // intercepted, see the fetch handler), the new worker installs,
+      // skipWaiting/claim run, and the version changes as one atomic step.
+      const coherent = await htmlMatchesThisRelease(response, request);
+      if (!coherent) return null;
       const copy = response.clone();
       try { await cache.put(request, copy); } catch (_) { /* quota, or evicted */ }
     }
@@ -392,9 +508,13 @@ async function sameOriginNetworkFirst(event, request) {
   if (!cached) {
     // Genuinely nothing to fall back to (a first visit, or an asset this build
     // never precached) — the network is the only answer there is, so wait for
-    // it however long it takes rather than failing the load outright.
+    // it however long it takes rather than failing the load outright. A `null`
+    // here is the coherence refusal above with no cached copy to refuse in
+    // favour of, which can only happen if this worker's own install never
+    // stored "./"; serving the newer markup is then strictly better than
+    // serving nothing.
     try {
-      return await network;
+      return (await network) || (await fetch(request.url, { cache: "no-store", credentials: "same-origin" }));
     } catch (_) {
       return Response.error();
     }

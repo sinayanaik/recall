@@ -507,12 +507,56 @@ let supabaseClient = null;
 // fires for signed-in users (and never tries to push while logged out).
 let isSignedIn = false;
 
+// Returns a REASON, not a boolean. The two failures it used to conflate need
+// opposite responses: "no-config" is a first run and the setup form is correct;
+// "no-library" is a configured device whose CDN fetch for supabase-js failed,
+// and showing that user the setup form tells them their project is missing when
+// it isn't — then offers them a button that deletes it. The developer never saw
+// this because localhost keeps the script warm and unregisters the worker.
 function initSupabaseClient() {
   const config = loadSupabaseConfig();
-  if (!config?.url || !config?.key) return false;
-  if (!window.supabase) return false;
-  supabaseClient = window.supabase.createClient(config.url, config.key);
-  return true;
+  if (!config?.url || !config?.key) return "no-config";
+  if (!window.supabase) return "no-library";
+  try {
+    supabaseClient = window.supabase.createClient(config.url, config.key);
+  } catch (error) {
+    // A malformed URL or key that passed the setup form's shape check can throw
+    // here. Treated as "no client" rather than allowed to abort boot.
+    console.warn("Could not create the Supabase client", error);
+    supabaseClient = null;
+    return "no-library";
+  }
+  return "ok";
+}
+
+// supabase-js is a blocking <script> before this file, so if it were coming at
+// all it would already be here — except when the browser gave up on it early,
+// or a slow CDN answered after the parser moved on. Cheap to keep looking for a
+// few seconds before declaring failure, and free when it's already loaded.
+async function waitForSupabaseLibrary(timeoutMs = 8000) {
+  if (window.supabase) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (window.supabase) return true;
+  }
+  return false;
+}
+
+// Re-fetch supabase-js by hand. The original <script> has already failed and
+// will not retry itself, so "Try again" has to actually go and get it — a bare
+// location.reload() would re-run the same blocked request through the same
+// blocked path and look identical to doing nothing.
+function reloadSupabaseLibrary() {
+  return new Promise((resolve) => {
+    if (window.supabase) return resolve(true);
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.2";
+    script.async = true;
+    script.onload = () => resolve(Boolean(window.supabase));
+    script.onerror = () => resolve(false);
+    document.head.appendChild(script);
+  });
 }
 
 // Reads the session straight from local storage — no network — so a user who
@@ -564,23 +608,92 @@ async function verifiedCloudUserId() {
 
 let explicitLogout = false;
 
+// Raw provider strings were shown verbatim, which is fine for "Invalid login
+// credentials" and useless for the rest. "Failed to fetch" reads like a bug in
+// the app; "Invalid API key" is a truthful message about a cause the user has no
+// reason to connect to the key they pasted on a different screen. The sync path
+// already translates the network case (see writeStyleToCloud) — this is the same
+// judgement applied where people actually hit it.
+function describeAuthError(error) {
+  const message = String(error?.message || error || "Something went wrong");
+  if (!navigator.onLine || /failed to fetch|networkerror|load failed|timed out/i.test(message)) {
+    return "Couldn't reach your Supabase project — check your connection, then try again.";
+  }
+  if (/invalid api key/i.test(message)) {
+    return "This project's anon key isn't valid. Use “Change Supabase project” below and paste it again.";
+  }
+  if (/email not confirmed/i.test(message)) {
+    return "This email hasn't been confirmed yet — check your inbox for the confirmation link.";
+  }
+  if (/email logins are disabled|signups not allowed|signup is disabled/i.test(message)) {
+    return "This Supabase project has email sign-in turned off. Enable it under Authentication → Providers → Email.";
+  }
+  return message;
+}
+
+// Every cloud data call is wrapped in withTimeout; these three never were, and
+// they are the ones a user is actively waiting on. On a network that accepts a
+// connection and then answers nothing — the exact failure the service worker's
+// whole design exists for — the promise never settles, so the submit button
+// stays disabled with no error and no spinner, and only a reload recovers.
+const AUTH_TIMEOUT_MS = 20000;
+
 async function handleLogin(email, password) {
-  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  const { data, error } = await withTimeout(
+    supabaseClient.auth.signInWithPassword({ email, password }),
+    AUTH_TIMEOUT_MS,
+    "sign in"
+  );
   if (error) throw error;
   return data.user;
 }
 
+// Returns what actually happened, because "no error" does not mean "signed in".
+// With Supabase's default "Confirm email" ON — a dashboard setting the app can't
+// see and that supabase_setup.sql only mentions in a closing comment — signUp
+// resolves with a user and a NULL session and no error at all. The old code
+// returned data.user, the caller treated that as success, no auth event fired,
+// and the button simply re-enabled: pressing "Create Account" did visibly
+// nothing. Supabase also deliberately obfuscates an already-registered address
+// by returning a fake user with an empty `identities` array, which looked
+// identical.
 async function handleSignup(email, password) {
-  const { data, error } = await supabaseClient.auth.signUp({ email, password });
+  const { data, error } = await withTimeout(
+    supabaseClient.auth.signUp({
+      email,
+      password,
+      // Without this, a confirmation mail points at the project's dashboard Site
+      // URL, which defaults to http://localhost:3000 — a dead page on the
+      // user's own machine. Sending them back where they signed up from is the
+      // only value that's right for every deployment.
+      options: { emailRedirectTo: location.href.split("#")[0] }
+    }),
+    AUTH_TIMEOUT_MS,
+    "create account"
+  );
   if (error) throw error;
-  return data.user;
+
+  if (data?.session) return { outcome: "signed-in", user: data.user };
+  if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+    return { outcome: "already-registered", user: data.user };
+  }
+  return { outcome: "confirm-email", user: data?.user || null };
 }
 
 async function handleLogout() {
   explicitLogout = true;
+  // The signed-in uid outlives the session unless it is cleared here: it is
+  // what styleSettingsRowId() and getQuickNotesDeckId() resolve against, so
+  // leaving it behind pointed the next account's style row and quick-notes deck
+  // at the previous user.
+  try { localStorage.removeItem(LAST_USER_STORAGE_KEY); } catch (_) {}
+  // Unscoped and replayed on the next reconcile by whoever is signed in then —
+  // on a shared device that uploaded one user's style into another's row. The
+  // quick-note queues are deck-scoped and self-discard; this one never was.
+  try { localStorage.removeItem(PENDING_STYLE_KEY); } catch (_) {}
   if (supabaseClient) {
     try {
-      await supabaseClient.auth.signOut();
+      await withTimeout(supabaseClient.auth.signOut(), AUTH_TIMEOUT_MS, "sign out");
     } catch (error) {
       // Offline sign-out still clears the local session below via the listener.
       console.warn("Sign-out network call failed (continuing locally)", error);
@@ -588,26 +701,28 @@ async function handleLogout() {
   }
 }
 
-function showSetupScreen() {
-  document.getElementById("setupOverlay").hidden = false;
-  document.getElementById("loginOverlay").hidden = true;
-  document.querySelector(".app-shell").hidden = true;
-  document.getElementById("logoutBtn").hidden = true;
+// One switch for the four mutually exclusive boot states, so a new one can't be
+// added by remembering to hide three things somewhere else and forgetting one.
+function showBootScreen(which) {
+  const overlays = {
+    setup: "setupOverlay",
+    login: "loginOverlay",
+    library: "offlineBootOverlay"
+  };
+  for (const [name, id] of Object.entries(overlays)) {
+    const node = document.getElementById(id);
+    if (node) node.hidden = name !== which;
+  }
+  const shell = document.querySelector(".app-shell");
+  if (shell) shell.hidden = which !== "app";
+  const logout = document.getElementById("logoutBtn");
+  if (logout) logout.hidden = which !== "app";
 }
 
-function showLoginScreen() {
-  document.getElementById("setupOverlay").hidden = true;
-  document.getElementById("loginOverlay").hidden = false;
-  document.querySelector(".app-shell").hidden = true;
-  document.getElementById("logoutBtn").hidden = true;
-}
-
-function showAuthenticatedUI() {
-  document.getElementById("setupOverlay").hidden = true;
-  document.getElementById("loginOverlay").hidden = true;
-  document.querySelector(".app-shell").hidden = false;
-  document.getElementById("logoutBtn").hidden = false;
-}
+function showSetupScreen() { showBootScreen("setup"); }
+function showLoginScreen() { showBootScreen("login"); }
+function showAuthenticatedUI() { showBootScreen("app"); }
+function showLibraryFailedScreen() { showBootScreen("library"); }
 
 
 // A deck's `category` is a "/"-delimited folder path (e.g. "Math/Calculus"):
@@ -1004,9 +1119,30 @@ function touchLocalDeckAccess(id) {
   writeLocalDeckIndex(index);
 }
 
+// A PostgREST UPDATE that matches NO rows is not an error — it is a successful
+// request that changed nothing. Under RLS that is the normal shape of "this row
+// isn't yours" and of "this row no longer exists", so these three writers
+// reported success for both. `.select("id")` makes the server return what it
+// actually touched, which is the only way to tell the difference. The decks.meta
+// writers already do this; these did not.
+async function updatedDeckRow(builder, label) {
+  const { data, error } = await builder.select("id");
+  if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error(
+      `Couldn't ${label} in the cloud — that deck isn't there, or it belongs to another account.`
+    );
+  }
+  return true;
+}
+
 async function touchWebDeckAccess(deckId) {
   if (!deckId || !supabaseClient) return false;
 
+  // The one exception: this is a background bookkeeping touch fired whenever a
+  // deck is opened or exported. A deck that only exists locally has no cloud row
+  // to touch, which is ordinary rather than a fault, so a zero-row result here
+  // stays quiet — nothing downstream depends on it having landed.
   const { error } = await supabaseClient
     .from("decks")
     .update({
@@ -1024,15 +1160,10 @@ async function updateWebDeckTitle(deckId, title) {
   if (!deckId || !supabaseClient) return false;
 
   const now = new Date().toISOString();
-  const { error } = await supabaseClient
-    .from("decks")
-    .update({
-      title,
-      updated_at: now
-    })
-    .eq("id", deckId);
-
-  if (error) throw error;
+  await updatedDeckRow(
+    supabaseClient.from("decks").update({ title, updated_at: now }).eq("id", deckId),
+    "rename that deck"
+  );
   await syncLocalLibraryMetaForDeck(deckId, { title, now });
   return true;
 }
@@ -1042,15 +1173,10 @@ async function updateWebDeckCategory(deckId, category) {
 
   const normalized = normalizeDeckCategory(category);
   const now = new Date().toISOString();
-  const { error } = await supabaseClient
-    .from("decks")
-    .update({
-      category: normalized,
-      updated_at: now
-    })
-    .eq("id", deckId);
-
-  if (error) throw error;
+  await updatedDeckRow(
+    supabaseClient.from("decks").update({ category: normalized, updated_at: now }).eq("id", deckId),
+    "move that deck"
+  );
   await syncLocalLibraryMetaForDeck(deckId, { category: normalized, now });
   return true;
 }
@@ -2093,7 +2219,12 @@ async function upsertCardRows(rows) {
   );
   const { error } = await upsert(rows, "save cards");
   if (!error) return;
-  if (!String(error.message || "").includes("category")) throw error;
+  // Checked by PG error code first, exactly as isMissingNotesColumnError does.
+  // Matching on the bare word "category" anywhere in the message could classify
+  // an unrelated failure that merely mentions the column — a check constraint,
+  // an RLS policy naming it — as "the migration hasn't run", silently strip the
+  // categories out of the payload, and report the push as a clean success.
+  if (!isMissingColumnError(error, "category")) throw error;
   console.warn("cards.category column missing — run supabase_setup.sql to sync quick-note categories");
   const stripped = rows.map(({ category: _omit, ...rest }) => rest);
   const { error: retryError } = await upsert(stripped, "save cards");
@@ -4514,7 +4645,13 @@ async function editCurrentDeckCategory() {
     setStatus("Deck category updated in the cloud.");
   } catch (error) {
     console.error("Failed to update web deck category", error);
-    setStatus("Deck category updated locally, but cloud category update failed. Run the deck category SQL migration first.", "error");
+    // Was a flat "run the deck category SQL migration first", which is only one
+    // of the reasons this fails — and since the write now reports a zero-row
+    // update instead of pretending it succeeded, it is no longer the likeliest.
+    setStatus(
+      `Deck category updated on this device, but the cloud copy didn't change — ${error?.message || "unknown error"}`,
+      "error"
+    );
   }
 }
 
@@ -7250,16 +7387,22 @@ function isMissingRelationError(error) {
 }
 
 // PostgREST reports an unknown column as 42703 ("undefined_column"), sometimes
-// as a bare message. Checked by code first — matching on the word "notes"
+// as a bare message. Checked by code first — matching on the column name
 // anywhere in the message (the old approach) could misclassify an unrelated
 // error that merely mentions the column (a check constraint, an RLS policy
-// naming it) as "the migration hasn't run", silently drop the notes payload,
-// and report the push as a clean success. See pushDeckRowsToCloud.
-function isMissingNotesColumnError(error) {
+// naming it) as "the migration hasn't run", silently drop the payload, and
+// report the push as a clean success. See pushDeckRowsToCloud.
+function isMissingColumnError(error, column) {
   if (!error) return false;
   if (String(error.code || "") === "42703") return true;
   const message = String(error.message || error).toLowerCase();
-  return message.includes("notes") && message.includes("column") && message.includes("does not exist");
+  return message.includes(String(column).toLowerCase())
+    && message.includes("column")
+    && message.includes("does not exist");
+}
+
+function isMissingNotesColumnError(error) {
+  return isMissingColumnError(error, "notes");
 }
 
 async function fetchDeletedDeckIds() {
@@ -7542,8 +7685,27 @@ function decksUnderFolder(path) {
 // rename, move (re-parent), and delete-into-parent.
 async function rewriteFolderPaths(fromPath, toPath) {
   const affected = decksUnderFolder(fromPath);
+  // Per-deck, not all-or-nothing. The cloud category write now reports a
+  // zero-row update as a failure instead of silently succeeding, so one deck
+  // whose cloud row is gone (or belongs to another account) would otherwise
+  // abort the whole rename part-way and leave the folder split across two
+  // names. Every deck that CAN move still moves; the rest keep their old path
+  // and are named.
+  const stuck = [];
   for (const item of affected) {
-    await setMyDeckCategory(item.sel, rewriteCategoryPrefix(item.category, fromPath, toPath));
+    try {
+      await setMyDeckCategory(item.sel, rewriteCategoryPrefix(item.category, fromPath, toPath));
+    } catch (error) {
+      console.warn(`Could not re-path deck "${item.title}"`, error);
+      stuck.push(item.title || "Untitled");
+    }
+  }
+  if (stuck.length) {
+    showToast(
+      `${stuck.length} deck${stuck.length === 1 ? "" : "s"} couldn't be moved: ${stuck.slice(0, 2).join(", ")}` +
+      `${stuck.length > 2 ? ` and ${stuck.length - 2} more` : ""}`,
+      "error"
+    );
   }
   writeKnownFolders(readKnownFolders().map((p) => rewriteCategoryPrefix(p, fromPath, toPath)));
   const nextExpanded = new Set();
@@ -17936,6 +18098,29 @@ const LAST_GLOBAL_SYNC_KEY = "flashcards_last_global_sync_at";
 // lets the welcome screen show "Sync failed" the same way the per-deck pill
 // (setSyncIndicator) would, even though no deck is loaded to attach it to.
 const LAST_GLOBAL_SYNC_ERROR_KEY = "flashcards_last_global_sync_error";
+
+// Which KIND of problem the last background sync hit. Every user-facing message
+// inside reconcileAllDecks was gated on `if (explicit)`, so a user who never
+// pressed "Sync Now" was told nothing at all — and the two states that most
+// needed saying (a lapsed session, a half-migrated schema) are exactly the ones
+// that persist across every subsequent attempt. Keyed by kind so the message
+// fires once per new problem rather than on every tick, which is what made
+// staying silent look like the lesser evil in the first place.
+const LAST_BG_SYNC_PROBLEM_KEY = "recall:lastBackgroundSyncProblem";
+
+function reportBackgroundSyncProblem(kind, message) {
+  let previous = null;
+  try { previous = localStorage.getItem(LAST_BG_SYNC_PROBLEM_KEY); } catch (_) {}
+  if (previous === kind) return;
+  try { localStorage.setItem(LAST_BG_SYNC_PROBLEM_KEY, kind); } catch (_) {}
+  showToast(message, "error");
+}
+
+// Called when a sync gets all the way through, so the next occurrence of the
+// same problem is reported again rather than suppressed forever.
+function clearBackgroundSyncProblem() {
+  try { localStorage.removeItem(LAST_BG_SYNC_PROBLEM_KEY); } catch (_) {}
+}
 // Cloud deck ids that were explicitly deleted on this device, mapped to the
 // time of deletion. A two-way mirror with no deletion record can never make a
 // delete "stick": deleting only the local copy lets the next pull re-download
@@ -18780,6 +18965,11 @@ function setSyncIndicator(stateName) {
     saving: "Syncing…",
     synced: "Synced",
     offline: "Offline · saved on device",
+    // A lapsed token is not a lapsed connection. This used to reuse "offline",
+    // so a phone whose refresh token had expired in a pocket showed an offline
+    // badge on a perfectly good network and never synced again — the one state
+    // the user could have fixed in two taps, dressed as the one they couldn't.
+    signedout: "Signed out · tap to sign in",
     error: "Sync failed · saved on device",
   };
   let resolvedState = stateName === "signin" ? "saved" : stateName;
@@ -18803,8 +18993,18 @@ function setSyncIndicator(stateName) {
   }
   node.dataset.state = resolvedState;
   node.textContent = text;
+  // Only the signed-out pill is actionable, and it says "tap to sign in", so it
+  // has to actually do that.
+  node.style.pointerEvents = resolvedState === "signedout" ? "auto" : "";
   renderSyncCountdown();
 }
+
+// Delegated once rather than re-bound on every pill repaint (setSyncIndicator
+// rewrites textContent constantly).
+el.syncIndicator?.addEventListener("click", () => {
+  if (el.syncIndicator.dataset.state !== "signedout") return;
+  showLoginScreen();
+});
 
 // Sets the resting state of the pill (used after a deck loads, when there are no
 // pending edits) based on where the deck currently lives.
@@ -19529,10 +19729,22 @@ async function reconcileAllDecks({ explicit = false } = {}) {
       // syncing — treat it exactly like being offline, which is the one state
       // this app already handles by leaving every local deck alone.
       console.warn("Sync skipped — no verified session; refusing to sync as an unauthenticated user.");
-      setSyncIndicator("offline");
+      // "signedout", not "offline". Refusing to sync here is correct and stays;
+      // what was wrong was reporting it as a network problem, which left the
+      // user with nothing to act on and no reason to think signing in would
+      // help. See the labels in setSyncIndicator.
+      setSyncIndicator("signedout");
       if (explicit) {
         setStatus("Couldn't confirm you're signed in — sign in again to sync. Your decks are safe on this device.", "error");
         showToast("Couldn't confirm your sign-in — your decks are safe on this device", "error");
+      } else {
+        // Background runs used to say nothing at all here, so a session that
+        // lapsed while the app was closed simply stopped syncing, silently,
+        // until the user happened to press Sign Now. Reported once per lapse.
+        reportBackgroundSyncProblem(
+          "signed-out",
+          "Signed out — sign in again to resume syncing. Your decks are safe on this device."
+        );
       }
       return;
     }
@@ -19626,8 +19838,19 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     // every other device still holding it pushes it back on its next sync and
     // the deck reappears everywhere. The user can't diagnose that from the app,
     // so say it — once per explicit sync, with the fix.
-    if (deckTombstoneTableMissing && explicit) {
-      showToast("Deck deletions can't sync — run supabase_setup.sql in Supabase", "error");
+    // A missing table is not a transient fault — it is permanent until somebody
+    // runs the SQL, so a background sync staying quiet about it meant the user
+    // could go on deleting decks that silently came back forever. Reported on
+    // background runs too, once, via the same per-kind gate.
+    if (deckTombstoneTableMissing) {
+      if (explicit) {
+        showToast("Deck deletions can't sync — run supabase_setup.sql in Supabase", "error");
+      } else {
+        reportBackgroundSyncProblem(
+          "tombstones-missing",
+          "Deck deletions can't sync — run supabase_setup.sql in Supabase"
+        );
+      }
     }
 
     // Cross-device delete: a deck this device never tombstoned locally, but
@@ -20068,6 +20291,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
     localStorage.setItem(LAST_GLOBAL_SYNC_KEY, new Date().toISOString());
     localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
+    clearBackgroundSyncProblem();
 
     // Lead with the direction (how many decks moved, which way), then name the
     // actual changes — "2 decks uploaded" alone never said WHAT was uploaded.
@@ -20157,6 +20381,19 @@ async function reconcileAllDecks({ explicit = false } = {}) {
     console.error("Reconcile failed", error);
     setSyncIndicator("error");
     localStorage.setItem(LAST_GLOBAL_SYNC_ERROR_KEY, "1");
+    if (!explicit) {
+      // A background failure used to leave nothing but a console line and a pill
+      // the user may not have on screen — so a sync that had been broken for
+      // weeks looked exactly like one that had never needed to do anything.
+      // Classified so a persistent schema fault reports once, not hourly.
+      const offlineNow = !navigator.onLine || /failed to fetch|networkerror|load failed/i.test(error?.message || "");
+      if (!offlineNow) {
+        reportBackgroundSyncProblem(
+          isMissingRelationError(error) || isMissingNotesColumnError(error) ? "schema" : "failed",
+          `Sync failed — ${isQuotaExceededError(error) ? describeSyncError(error) : (error?.message || "unknown error")}. Your decks are safe on this device.`
+        );
+      }
+    }
     if (explicit) {
       // A dropped connection mid-sync is by far the most common failure, and
       // the raw error for it ("Failed to fetch") reads like a bug rather than
@@ -24899,6 +25136,97 @@ let serviceWorkerRegistered = false;
 // demand (see refreshAppInfo).
 let serviceWorkerRegistration = null;
 
+// ── Update state, shared with the App Info modal ────────────────────────────
+// True once a newer worker has installed and is waiting to take over.
+let updateIsWaiting = false;
+// True once an install has been discarded before taking over — a release that
+// could not be downloaded. Distinct from "no update": the difference decides
+// whether the honest answer is "you're up to date" or "an update exists and
+// this device keeps failing to get it".
+let updateDownloadFailed = false;
+// Set by the service worker when it had to serve one release's bytes under
+// another release's URL (see announceMixedBuild in sw.js). Holds the URLs it
+// happened to, because the App Info screen otherwise CANNOT detect this: it
+// reads the ?v= off the <script> attribute, which is the URL that was
+// requested, not the bundle that actually ran.
+const mixedBuildUrls = new Set();
+
+function isMixedBuild() {
+  if (mixedBuildUrls.size > 0) return true;
+  // Self-detection, for the load where the worker's message never arrived: if
+  // the URL this file was fetched from carries a different stamp than the one
+  // compiled into it, the bytes running now are not the bytes that URL names.
+  const requested = requestedAppVersion();
+  return Boolean(requested && requested !== BUILD_STAMP);
+}
+
+let updateBannerEl = null;
+
+// A persistent, dismissible bar — deliberately not a toast. A toast for "your
+// app is out of date" is a message that disappears before it can be acted on,
+// which is how everyone stayed on the old release while the app believed it had
+// told them.
+function showUpdateBanner() {
+  updateIsWaiting = true;
+  updateDownloadFailed = false;
+  markUpdateAvailableInMenu();
+  if (updateBannerEl) return;
+
+  updateBannerEl = document.createElement("div");
+  updateBannerEl.className = "update-banner";
+  updateBannerEl.setAttribute("role", "status");
+
+  const text = document.createElement("span");
+  text.className = "update-banner-text";
+  text.textContent = "A new version of Recall is ready.";
+
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.className = "update-banner-action";
+  reload.textContent = "Reload";
+  reload.addEventListener("click", () => {
+    // Straight to the waiting worker if there is one: reloading alone does not
+    // promote it when the page still has a controller, so without this the
+    // button would appear to do nothing on the first press.
+    const waiting = serviceWorkerRegistration?.waiting;
+    if (waiting) {
+      try { waiting.postMessage({ type: "skip-waiting" }); } catch (_) { /* fall through */ }
+    }
+    location.reload();
+  });
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "update-banner-dismiss";
+  dismiss.setAttribute("aria-label", "Dismiss");
+  dismiss.textContent = "×";
+  dismiss.addEventListener("click", () => {
+    updateBannerEl?.remove();
+    updateBannerEl = null;
+    // The dot in the menu deliberately stays: dismissing the bar means "not
+    // now", not "pretend this build is current".
+  });
+
+  updateBannerEl.append(text, reload, dismiss);
+  document.body.appendChild(updateBannerEl);
+}
+
+function setUpdateFailedHint() {
+  // Only meaningful if nothing is waiting — a redundant worker that was simply
+  // superseded by a newer one is not a failure.
+  if (updateIsWaiting) return;
+  updateDownloadFailed = true;
+  markUpdateAvailableInMenu();
+}
+
+// A dot on the hamburger button, which is the one control always on screen.
+// The App Info modal is behind it, so this is what makes the modal findable at
+// the moment it has something to say.
+function markUpdateAvailableInMenu() {
+  document.getElementById("mobileMenuBtn")?.classList.add("has-update");
+  document.getElementById("appInfoBtn")?.classList.add("has-update");
+}
+
 function registerServiceWorker() {
   if (serviceWorkerRegistered) return;
   if (!pwaAssetsSupported()) return;
@@ -24958,6 +25286,20 @@ function registerServiceWorker() {
   // input, so at most a keystroke is in flight. The sessionStorage guard keeps
   // a flapping update (bad deploy, oscillating server) from reload-looping the
   // tab: one automatic reload per minute at most.
+  // The worker reporting that it served one release's bytes under another
+  // release's URL. This is the only way the page can learn it is running a mixed
+  // build — see mixedBuildUrls.
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type !== "mixed-build") return;
+    const known = mixedBuildUrls.size > 0;
+    mixedBuildUrls.add(String(event.data.url || ""));
+    // Say it once. Repeating it per asset would be three toasts for one fault.
+    if (!known) {
+      showToast("Some of this app didn't load in the right version — reload when you can", "error");
+      markUpdateAvailableInMenu();
+    }
+  });
+
   let hadController = Boolean(navigator.serviceWorker.controller);
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController) {
@@ -24974,6 +25316,29 @@ function registerServiceWorker() {
     location.reload();
   });
 
+  // A worker that reaches "installed" while this page already has a controller
+  // is a release waiting to take over; one that reaches "redundant" without ever
+  // installing is a release that FAILED to download. Both were previously
+  // invisible — the only automatic signal was controllerchange, which by
+  // definition never fires in the second case, and the only manual one was a
+  // modal buried in the hamburger drawer that most users never open. So a user
+  // whose install kept failing on a bad connection sat on an old build
+  // indefinitely with the app insisting nothing was wrong.
+  const watchInstallingWorker = (registration) => {
+    const worker = registration.installing;
+    if (!worker) return;
+    worker.addEventListener("statechange", () => {
+      if (worker.state === "installed" && navigator.serviceWorker.controller) {
+        showUpdateBanner();
+      } else if (worker.state === "redundant") {
+        // Discarded before it could take over: a failed precache, a quota
+        // rejection, or a newer worker superseding it. Only worth saying
+        // anything about in the first case, which is the one that repeats.
+        setUpdateFailedHint();
+      }
+    });
+  };
+
   const register = () => {
     // updateViaCache: "none" — the browser's own HTTP cache must never answer
     // the "is there a new sw.js?" check, or a host that serves the worker with
@@ -24985,6 +25350,11 @@ function registerServiceWorker() {
       .then((registration) => {
         serviceWorkerRegistration = registration;
         requestOfflineCacheRepair();
+        // A worker may already be waiting from a previous visit — updatefound
+        // has long since fired for it and will not fire again.
+        if (registration.waiting && navigator.serviceWorker.controller) showUpdateBanner();
+        watchInstallingWorker(registration);
+        registration.addEventListener("updatefound", () => watchInstallingWorker(registration));
         const checkForUpdate = () => registration.update().catch(() => {});
         document.addEventListener("visibilitychange", () => {
           if (document.visibilityState === "visible") checkForUpdate();
@@ -25090,9 +25460,55 @@ document.getElementById("setupForm")?.addEventListener("submit", (e) => {
   }
 
   saveSupabaseConfig(url, key);
-  initSupabaseClient();
+  // Checked, not discarded: initSupabaseClient leaves supabaseClient null when
+  // the library is missing, and setupAuthListener would then throw on
+  // `null.auth` — so showLoginScreen() below never ran and Connect looked
+  // permanently dead, with the real cause (a blocked CDN) never stated.
+  if (initSupabaseClient() !== "ok") {
+    showLibraryFailedScreen();
+    return;
+  }
   setupAuthListener();
   showLoginScreen();
+});
+
+document.getElementById("offlineBootRetryBtn")?.addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const errEl = document.getElementById("offlineBootError");
+  btn.disabled = true;
+  if (errEl) errEl.textContent = "";
+  try {
+    await reloadSupabaseLibrary();
+    if (initSupabaseClient() !== "ok") {
+      if (errEl) {
+        errEl.textContent = navigator.onLine
+          ? "Still couldn't load it. A content blocker or network proxy may be blocking cdn.jsdelivr.net."
+          : "You're offline — reconnect and try again.";
+      }
+      return;
+    }
+    setupAuthListener();
+    const session = await getCachedSession();
+    if (session?.user) {
+      isSignedIn = true;
+      await ensureLocalLibraryOwner(session.user.id);
+      showAuthenticatedUI();
+      if (!appInitialized) {
+        appInitialized = true;
+        initAppForUser();
+      }
+    } else {
+      showLoginScreen();
+    }
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("offlineBootChangeProjectBtn")?.addEventListener("click", () => {
+  clearSupabaseConfig();
+  supabaseClient = null;
+  showSetupScreen();
 });
 
 document.getElementById("loginForm")?.addEventListener("submit", async (e) => {
@@ -25103,15 +25519,27 @@ document.getElementById("loginForm")?.addEventListener("submit", async (e) => {
   const errEl = document.getElementById("loginError");
   const submitBtn = document.getElementById("loginSubmitBtn");
   errEl.textContent = "";
+  errEl.classList.remove("is-notice");
   submitBtn.disabled = true;
   try {
     if (isSignup) {
-      await handleSignup(email, password);
+      const { outcome } = await handleSignup(email, password);
+      if (outcome === "already-registered") {
+        errEl.textContent = "That email already has an account — switch to Sign In.";
+      } else if (outcome === "confirm-email") {
+        // Not an error: the account exists, it just can't sign in yet. Said
+        // plainly because the alternative — what this used to do — was nothing
+        // at all, which reads as a broken button.
+        errEl.textContent = "Account created. Check your email for a confirmation link, then sign in.";
+        errEl.classList.add("is-notice");
+      }
+      // "signed-in" needs no message: onAuthStateChange has already swapped the
+      // screen out from under this handler.
     } else {
       await handleLogin(email, password);
     }
   } catch (err) {
-    errEl.textContent = err.message;
+    errEl.textContent = describeAuthError(err);
   } finally {
     submitBtn.disabled = false;
   }
@@ -25180,13 +25608,26 @@ const AUTOSYNC_TICK_MS = 1000;
 let autoSyncTicker = null;
 let autoSyncNextAt = Infinity;
 
+// What a device that has never opened the setting gets. It used to be 0 — off —
+// which meant a new user's only syncs were: boot, reconnect, returning to the
+// foreground after a minute away, and the manual button. Nothing was broken;
+// nothing was scheduled either, and "my decks don't reach my other device" is
+// what that feels like. Anyone who once set an interval (including the
+// developer) had a completely different experience of the same build.
+const AUTOSYNC_DEFAULT_MINUTES = 5;
+
 function getAutoSyncMinutes() {
-  let v = 0;
+  let raw = null;
   try {
-    v = parseInt(localStorage.getItem(AUTOSYNC_KEY) || "0", 10);
+    raw = localStorage.getItem(AUTOSYNC_KEY);
   } catch (_) {
-    v = 0;
+    raw = null;
   }
+  // Absent means "never chosen", which is NOT the same as a stored 0. An
+  // explicit "Off" is a real preference and has to survive; only the untouched
+  // case gets the default.
+  if (raw === null) return AUTOSYNC_DEFAULT_MINUTES;
+  const v = parseInt(raw, 10);
   return AUTOSYNC_ALLOWED.has(v) ? v : 0;
 }
 
@@ -26049,7 +26490,52 @@ function initAppForUser() {
   // so the PWA has a full, up-to-date offline library. Runs in the background.
   if (navigator.onLine) {
     setTimeout(() => reconcileAllDecks({ explicit: false }), 1200);
+    // Once per account, well after the sync has had its turn. A project that
+    // never had supabase_setup.sql fully applied otherwise announces itself only
+    // as things quietly not working — and the person who would have to fix it is
+    // the same person who is about to conclude the app is broken.
+    setTimeout(() => announceProjectHealthOnce(), 6000);
   }
+}
+
+// The health check as a background nudge rather than a screen the user has to
+// go and find. Runs once per account per project: the answer only changes when
+// somebody runs SQL, so repeating it on every launch would be a network call
+// that exists to say the same thing forever.
+const HEALTH_CHECKED_KEY = "recall:projectHealthCheckedFor";
+
+async function announceProjectHealthOnce() {
+  let marker = null;
+  const config = loadSupabaseConfig();
+  const userId = (() => {
+    try { return localStorage.getItem(LAST_USER_STORAGE_KEY); } catch { return null; }
+  })();
+  if (!config?.url || !userId) return;
+  const signature = `${config.url}::${userId}`;
+  try { marker = localStorage.getItem(HEALTH_CHECKED_KEY); } catch (_) {}
+  if (marker === signature) return;
+
+  let results;
+  try {
+    results = await checkProjectHealth();
+  } catch (error) {
+    console.warn("Background project health check failed", error);
+    return;
+  }
+  // Don't remember a run that couldn't reach the project — it proved nothing,
+  // and marking it done would suppress the real check forever.
+  if (results.some((r) => r.status === "skip")) return;
+  if (results.length === 1 && results[0].status === "fail") return;
+
+  try { localStorage.setItem(HEALTH_CHECKED_KEY, signature); } catch (_) {}
+
+  const broken = results.filter((r) => r.status === "fail" || r.status === "warn");
+  if (!broken.length) return;
+  showToast(
+    `Your Supabase project needs attention — ${broken[0].label.toLowerCase()}. See ☰ → App Info.`,
+    "error"
+  );
+  markUpdateAvailableInMenu();
 }
 
 // The on-device deck library is a mirror of ONE account's cloud data. If a
@@ -26072,8 +26558,20 @@ async function ensureLocalLibraryOwner(userId) {
       localStorage.removeItem(MISSING_DECK_WATCH_KEY);
       localStorage.removeItem(LAST_GLOBAL_SYNC_KEY);
       localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
+      localStorage.removeItem(LAST_BG_SYNC_PROBLEM_KEY);
+      // Unscoped, unlike the quick-note queues, so it would be replayed by
+      // whoever signs in next — uploading one account's style into another's
+      // row on a shared device.
+      localStorage.removeItem(PENDING_STYLE_KEY);
       localStorage.removeItem(deckStorageKey);
+      // Persisted state was cleared but the OPEN DECK was not: state.deckId,
+      // masterCards and notes survived the switch in memory, so the next
+      // autosave filed the previous account's deck into this one's library and
+      // the next reconcile pushed it to their cloud.
       state.localDeckId = null;
+      state.deckId = null;
+      state.masterCards = [];
+      state.notes = "";
       console.log("Cleared local deck library — different account signed in.");
     }
     localStorage.setItem(LAST_USER_STORAGE_KEY, String(userId));
@@ -26081,6 +26579,55 @@ async function ensureLocalLibraryOwner(userId) {
     console.warn("Could not verify local library owner", error);
   }
 }
+
+// The other half of the offline-SIGNED_OUT forgiveness in setupAuthListener.
+// Being lenient about a refresh that failed with no network is only correct if
+// something tries again once there IS a network — otherwise `isSignedIn` stays
+// false, autoSyncTick and reconcileAllDecks both bail on it without a word, and
+// the app goes on looking signed in while never syncing again until a reload.
+// That is the shape of "sync just stopped working" for a phone that spent a
+// week in a pocket.
+let sessionRecoveryInFlight = false;
+
+async function recoverSessionIfPossible() {
+  if (sessionRecoveryInFlight) return;
+  if (isSignedIn || !supabaseClient || !navigator.onLine) return;
+  if (!loadSupabaseConfig()) return;
+  sessionRecoveryInFlight = true;
+  try {
+    // getSession() refreshes an expired access token when the refresh token is
+    // still good, which is exactly the case this exists for.
+    const session = await getCachedSession();
+    if (session?.user) {
+      isSignedIn = true;
+      await ensureLocalLibraryOwner(session.user.id);
+      showAuthenticatedUI();
+      if (!appInitialized) {
+        appInitialized = true;
+        initAppForUser();
+      }
+      refreshSyncIndicatorBaseline();
+      return;
+    }
+    // Genuinely signed out, and now demonstrably online — so say so instead of
+    // leaving the app in a state that looks signed in and syncs nothing.
+    if (!document.getElementById("loginOverlay")?.hidden) return; // already there
+    setSyncIndicator("signedout");
+    reportBackgroundSyncProblem(
+      "signed-out",
+      "Signed out — sign in again to resume syncing. Your decks are safe on this device."
+    );
+  } catch (error) {
+    console.warn("Session recovery attempt failed", error);
+  } finally {
+    sessionRecoveryInFlight = false;
+  }
+}
+
+window.addEventListener("online", () => { recoverSessionIfPossible(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") recoverSessionIfPossible();
+});
 
 let authListenerSubscription = null;
 
@@ -26100,11 +26647,18 @@ function setupAuthListener() {
       }
     } else if (event === "SIGNED_OUT") {
       isSignedIn = false;
+      const wasExplicit = explicitLogout;
+      // Reset unconditionally. It used to be cleared only past the offline
+      // guard below, so one sign-out attempt made while offline left it true for
+      // the life of the page — and the next failed refresh, which should have
+      // been forgiven, then threw the user out of their offline decks.
+      explicitLogout = false;
       // Only drop to the login screen for a real sign-out. A failed token
       // refresh while offline also emits SIGNED_OUT — ignore it so the user
-      // isn't locked out of their offline decks.
-      if (!explicitLogout && !navigator.onLine) return;
-      explicitLogout = false;
+      // isn't locked out of their offline decks. recoverSessionIfPossible()
+      // picks this back up when the connection returns; without it the session
+      // stayed dead and every subsequent sync no-opped in silence.
+      if (!wasExplicit && !navigator.onLine) return;
       appInitialized = false;
       showLoginScreen();
     }
@@ -26123,10 +26677,22 @@ async function bootApp() {
   requestPersistentStorage();
   await runEscapedMathRepair();
 
-  const hasConfig = initSupabaseClient();
+  let status = initSupabaseClient();
 
-  if (!hasConfig) {
+  // A configured device whose library didn't arrive gets one patient retry
+  // before being told anything: the script is a blocking tag, so if it is merely
+  // slow rather than blocked it will land within this window.
+  if (status === "no-library" && loadSupabaseConfig()) {
+    if (await waitForSupabaseLibrary()) status = initSupabaseClient();
+  }
+
+  if (status === "no-config") {
     showSetupScreen();
+    return;
+  }
+  if (status !== "ok") {
+    // Deliberately NOT the setup screen. See initSupabaseClient.
+    showLibraryFailedScreen();
     return;
   }
 
@@ -26558,13 +27124,30 @@ if (helpModal) {
 }
 
 // ── App Info modal ─────────────────────────────────────────────────────────
-// The running build's version, read off app.js's own ?v= stamp — the same
-// stamp that cache-busts this file, so it can never drift from what was
-// actually loaded. The latest DEPLOYED build's stamp is read off the server's
-// sw.js (its CACHE_NAME carries the same stamp), fetched cache-bypassed.
+// The stamp this build was released under, written into the file itself.
+//
+// This is the honest answer, and it is why it is a constant rather than a read
+// of the <script src> attribute the way it used to be. That attribute is the URL
+// the page ASKED for; it says nothing about the bytes that answered. When the
+// service worker had to fall back across releases it served the previous
+// bundle under the new URL, and the old function then reported the new stamp
+// while old code ran — so the modal cheerfully said "You're up to date ✓" to
+// exactly the users who were not. Bump this with the other three (CI enforces).
+const BUILD_STAMP = "20260808-03";
+
+// The running build's version. Normally the constant above; "unknown" only if
+// this file was somehow loaded without one.
 function runningAppVersion() {
+  return BUILD_STAMP || "unknown";
+}
+
+// What the page REQUESTED, as distinct from what it got. Compared against
+// BUILD_STAMP to catch a cross-release fallback the worker didn't report — the
+// message needs a controller and an open channel, and neither is guaranteed on
+// the very load that went wrong.
+function requestedAppVersion() {
   const src = document.querySelector('script[src*="app.js"]')?.getAttribute("src") || "";
-  return src.match(/[?&]v=([^&]+)/)?.[1] || "unknown";
+  return src.match(/[?&]v=([^&]+)/)?.[1] || null;
 }
 
 // Where the source of truth lives. One place, so a fork edits one line.
@@ -26584,8 +27167,15 @@ function stampFromHtml(text) {
   return text.match(RELEASE_STAMP_RE)?.[1] || null;
 }
 
-// Every ?v= in a served index.html, plus every one in sw.js (its CACHE_NAME and
-// both APP_SHELL entries). All five must agree for a release to be coherent.
+// Every ?v= in a served index.html, plus sw.js's CACHE_NAME. All must agree for
+// a release to be coherent.
+//
+// sw.js's APP_SHELL entries are deliberately NOT read any more: they are now
+// built from CACHE_NAME (`./app.js?v=${STAMP}`) rather than typed out, so there
+// is nothing left there to disagree. Scanning for them regardless was actively
+// wrong — the pattern matched the template literal and captured "${STAMP}`," as
+// a stamp, so every build reported itself inconsistent and the modal refused to
+// compare anything at all.
 function releaseStampsIn(html, sw) {
   const stamps = [];
   if (html) {
@@ -26596,7 +27186,11 @@ function releaseStampsIn(html, sw) {
   if (sw) {
     const cacheName = sw.match(CACHE_NAME_RE);
     if (cacheName) stamps.push({ where: "sw.js CACHE_NAME", stamp: cacheName[1] });
-    for (const match of sw.matchAll(/\.\/(?:app|styles)\.(?:js|css)\?v=([^"'&\s]+)/g)) {
+    // A literal stamp here means an older sw.js that still hand-maintains them,
+    // which is exactly the drift worth reporting. The template form contains
+    // "${" and is skipped.
+    for (const match of sw.matchAll(/\.\/(?:app|styles)\.(?:js|css)\?v=([^"'&\s`]+)/g)) {
+      if (match[1].includes("${")) continue;
       stamps.push({ where: "sw.js APP_SHELL", stamp: match[1] });
     }
   }
@@ -26783,6 +27377,33 @@ async function refreshAppInfo() {
     return;
   }
 
+  // Everything below this line compares stamps, and a stamp is only as honest as
+  // the assumption that the bundle which ran is the bundle the URL named. These
+  // two cases are where that assumption breaks, so they have to be answered
+  // before "up to date" is allowed to be said at all.
+  if (isMixedBuild()) {
+    setAppInfoStatus("Running a mixed build — reload to fix", "outdated");
+    setAppInfoWarning(
+      "Part of this app was served from an older release than the page itself, so the version above " +
+      "is the version that was requested, not the one that ran. Reloading on a working connection fixes it."
+    );
+    if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
+    return;
+  }
+  if (updateIsWaiting) {
+    setAppInfoStatus("Update downloaded — reload to finish", "outdated");
+    if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
+    return;
+  }
+  if (updateDownloadFailed) {
+    setAppInfoStatus("An update couldn't be downloaded — will retry", "outdated");
+    setAppInfoWarning(
+      "This device started downloading a newer version and didn't finish it. It retries automatically; " +
+      "a stronger connection, or freeing up storage, is what usually lets it through."
+    );
+    return;
+  }
+
   // Running the newest build the server has. The only question left is whether
   // the server has caught up with the repo — and, since a stamp is YYYYMMDD-NN,
   // WHICH WAY round they differ. A server ahead of the branch is an ordinary
@@ -26804,6 +27425,212 @@ async function refreshAppInfo() {
   setAppInfoStatus(repo ? "You're up to date ✓" : "Up to date with the live site ✓", "ok");
   if (!repo) setAppInfoWarning("Couldn't reach GitHub, so this only compares against the live site.");
 }
+
+// ── Supabase project health check ──────────────────────────────────────────
+// Every user connects their OWN Supabase project, and the setup form validates
+// only the SHAPE of the URL and key — never that the project behind them has the
+// schema this app needs. So a half-applied supabase_setup.sql, a storage policy
+// block that was skipped because the SQL Editor's role couldn't alter
+// storage.objects, or an upgrade from a pre-auth deployment whose rows have no
+// user_id all present as "sync just doesn't work", with the real cause reachable
+// only through a console the user does not have.
+//
+// Everything here is read-only: `limit(0)`/`limit(1)` reads and one storage
+// list. Nothing is written, so running it can never make a broken project worse.
+const HEALTH_TIMEOUT_MS = 12000;
+
+// PostgREST rejects a select naming a column that doesn't exist, so asking for
+// the full column list is itself the column check — no information_schema
+// access required (the anon role doesn't have it anyway).
+const HEALTH_TABLES = [
+  {
+    table: "decks",
+    columns: "id, title, category, notes, meta, updated_at, last_accessed_at, current_card_index",
+    label: "Decks table"
+  },
+  {
+    table: "cards",
+    columns: "id, deck_id, question, answer, position, status, category, updated_at",
+    label: "Cards table"
+  },
+  {
+    table: "deleted_decks",
+    columns: "deck_id",
+    label: "Delete tombstones",
+    // The app degrades to local-only deletes without this rather than failing,
+    // so it is a warning rather than a hard fault — but a deck deleted on one
+    // device silently returning on the next sync is not something a user can
+    // diagnose.
+    soft: true
+  },
+  {
+    table: "app_style_settings",
+    columns: "id",
+    label: "Style settings",
+    soft: true
+  }
+];
+
+const RERUN_SQL = "Re-run supabase_setup.sql in your Supabase project's SQL Editor.";
+
+async function checkProjectHealth() {
+  const results = [];
+  const add = (label, status, detail) => results.push({ label, status, detail });
+
+  if (!supabaseClient) {
+    add("Connection", "fail", "No Supabase project is connected on this device.");
+    return results;
+  }
+  if (!navigator.onLine) {
+    add("Connection", "skip", "You're offline — reconnect to check.");
+    return results;
+  }
+
+  const userId = await verifiedCloudUserId();
+  if (!userId) {
+    // Worth stopping for: under RLS every check below would come back
+    // empty-and-successful, so an unauthenticated run would report a perfectly
+    // healthy project as perfectly healthy while nothing actually worked.
+    add("Signed in", "fail", "Not signed in, so nothing below can be checked. Sign in and try again.");
+    return results;
+  }
+  add("Signed in", "ok", "Your session is valid.");
+
+  for (const spec of HEALTH_TABLES) {
+    try {
+      const { error } = await withTimeout(
+        abortable((signal) =>
+          supabaseClient.from(spec.table).select(spec.columns).limit(1).abortSignal(signal)
+        ),
+        HEALTH_TIMEOUT_MS,
+        `check ${spec.table}`
+      );
+      if (error) throw error;
+      add(spec.label, "ok", `\`${spec.table}\` is present with every column this version needs.`);
+    } catch (error) {
+      const status = spec.soft ? "warn" : "fail";
+      if (isMissingRelationError(error)) {
+        add(spec.label, status, `The \`${spec.table}\` table doesn't exist. ${RERUN_SQL}`);
+      } else if (String(error?.code || "") === "42703") {
+        // The message names the offending column; it is the single most useful
+        // string in the whole check, so pass it through rather than paraphrase.
+        add(spec.label, status, `A column is missing — ${error.message}. ${RERUN_SQL}`);
+      } else if (String(error?.code || "") === "42501") {
+        add(spec.label, status, `Permission denied by Row Level Security. ${RERUN_SQL}`);
+      } else {
+        add(spec.label, status, error?.message || "Couldn't read this table.");
+      }
+    }
+  }
+
+  // Storage. The setup SQL's storage block is wrapped in an EXCEPTION handler
+  // that downgrades insufficient_privilege to a NOTICE, so a project can finish
+  // setup "successfully" with no image policies at all — after which every
+  // upload fails and the outbox entry is discarded.
+  try {
+    const { error } = await withTimeout(
+      supabaseClient.storage.from("images").list("", { limit: 1 }),
+      HEALTH_TIMEOUT_MS,
+      "check images bucket"
+    );
+    if (error) throw error;
+    add("Image storage", "ok", "The `images` bucket is reachable.");
+  } catch (error) {
+    add(
+      "Image storage",
+      "warn",
+      `The \`images\` bucket isn't reachable (${error?.message || "unknown error"}), so pasted images can't upload. ` +
+      "Section 7 of supabase_setup.sql creates it and its policies."
+    );
+  }
+
+  // The pre-auth-upgrade case. Rows whose user_id is NULL are hidden by RLS, so
+  // the client cannot see them directly — it can only notice the shape they
+  // make: this device is holding decks it previously confirmed in the cloud,
+  // and the cloud now reports none at all.
+  try {
+    const { data, error } = await withTimeout(
+      abortable((signal) => supabaseClient.from("decks").select("id").limit(1).abortSignal(signal)),
+      HEALTH_TIMEOUT_MS,
+      "check deck visibility"
+    );
+    if (error) throw error;
+    const syncedLocally = readLocalDeckIndex().filter((entry) => entry.deckId && entry.lastSyncedAt).length;
+    if ((!data || data.length === 0) && syncedLocally > 0) {
+      add(
+        "Deck ownership",
+        "fail",
+        `This device has ${syncedLocally} deck${syncedLocally === 1 ? "" : "s"} it previously synced, but your account ` +
+        "can see none in the cloud. On a project upgraded from before sign-in existed, the existing rows have no owner " +
+        "and RLS hides them. Section 8 of supabase_setup.sql has the one-line UPDATE that claims them."
+      );
+    } else {
+      add("Deck ownership", "ok", "Your account can read its own decks.");
+    }
+  } catch (_) {
+    // The table checks above already reported whatever is wrong here.
+  }
+
+  return results;
+}
+
+const appInfoHealthList = document.getElementById("appInfoHealthList");
+const appInfoHealthSummary = document.getElementById("appInfoHealthSummary");
+const appInfoHealthBtn = document.getElementById("appInfoHealthBtn");
+
+function renderProjectHealth(results) {
+  if (!appInfoHealthList) return;
+  appInfoHealthList.textContent = "";
+  const glyph = { ok: "✓", warn: "!", fail: "✕", skip: "–" };
+  for (const row of results) {
+    const li = document.createElement("li");
+    li.className = `app-info-health-item is-${row.status}`;
+    const mark = document.createElement("span");
+    mark.className = "app-info-health-mark";
+    mark.textContent = glyph[row.status] || "–";
+    const body = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = row.label;
+    body.append(name, document.createTextNode(` — ${row.detail}`));
+    li.append(mark, body);
+    appInfoHealthList.appendChild(li);
+  }
+  if (!appInfoHealthSummary) return;
+  const failed = results.filter((r) => r.status === "fail").length;
+  const warned = results.filter((r) => r.status === "warn").length;
+  if (failed) {
+    appInfoHealthSummary.textContent =
+      `${failed} problem${failed === 1 ? "" : "s"} will stop syncing from working properly. ${RERUN_SQL} It is safe to re-run and safe on a project that already holds decks.`;
+    appInfoHealthSummary.hidden = false;
+  } else if (warned) {
+    appInfoHealthSummary.textContent =
+      `Syncing works, but ${warned} feature${warned === 1 ? " is" : "s are"} degraded. ${RERUN_SQL}`;
+    appInfoHealthSummary.hidden = false;
+  } else {
+    appInfoHealthSummary.hidden = true;
+  }
+}
+
+let healthCheckInFlight = false;
+
+async function runProjectHealthCheck() {
+  if (healthCheckInFlight) return;
+  healthCheckInFlight = true;
+  if (appInfoHealthBtn) setButtonLoading(appInfoHealthBtn, true, "Checking…");
+  if (appInfoHealthList) appInfoHealthList.textContent = "";
+  if (appInfoHealthSummary) appInfoHealthSummary.hidden = true;
+  try {
+    renderProjectHealth(await checkProjectHealth());
+  } catch (error) {
+    console.warn("Project health check failed", error);
+    renderProjectHealth([{ label: "Check", status: "fail", detail: error?.message || "Couldn't complete the check." }]);
+  } finally {
+    healthCheckInFlight = false;
+    if (appInfoHealthBtn) setButtonLoading(appInfoHealthBtn, false);
+  }
+}
+
+if (appInfoHealthBtn) appInfoHealthBtn.addEventListener("click", runProjectHealthCheck);
 
 function openAppInfoModal() {
   if (!appInfoModal) return;
@@ -30153,7 +30980,12 @@ async function writeQuickNoteCategoryOpsToCloud(deckId, ops) {
     const merged = applyCategoryOpsToList(quickNoteCategoriesFromMeta(base), ops);
     const meta = { ...base, quickNoteCategories: merged };
     let { data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id");
-    if (error && String(error.message || "").includes("meta")) {
+    // By error code first, not by the word "meta" appearing anywhere in the
+    // message — see isMissingColumnError. The loose check would read an
+    // unrelated failure that happened to name the column as "the migration
+    // hasn't run", discard the write, and report it as an ordinary local-only
+    // outcome that nothing ever retries.
+    if (error && isMissingColumnError(error, "meta")) {
       // Database hasn't run supabase_setup.sql — categories still work
       // locally; just can't sync until the column exists.
       console.warn("decks.meta column missing — quick-note categories are local-only until you run supabase_setup.sql");

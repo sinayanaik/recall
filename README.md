@@ -588,6 +588,9 @@ Five checks, in order. Each exercises a different part of what you just configur
 | 3 | Click **Sync Now** | The pill turns **Synced** | Step 3 — the SQL didn't run, or ran on a different project |
 | 4 | In Supabase, **Table Editor → decks** | Your deck is there, `user_id` filled in | Same as above |
 | 5 | Paste an image into a card or the notes | It uploads and renders within a second or two | Step 3 — section 7 of the SQL (the `images` bucket) |
+| 6 | **☰ → App Info → Check my setup** | Every row ticked | Each row names the missing table, column, policy or bucket and what to re-run |
+
+Step 6 is the fastest of the six: it probes the project directly — every table and column this version needs, the RLS policies, the `images` bucket, and whether your account can actually see its own decks — and tells you which part of `supabase_setup.sql` didn't take. It reads only; it never writes. It also runs itself once shortly after your first sign-in, so a half-applied schema announces itself instead of just quietly not working.
 
 Two more worth doing if you plan to use more than one device:
 
@@ -604,6 +607,12 @@ Two more worth doing if you plan to use more than one device:
 | Sign-in fails: **Invalid API key** | The anon key is truncated or from another project. Connect never verified it, so this is where a bad paste surfaces | **Change Supabase project**, re-paste both values |
 | Sign-in fails: **Invalid login credentials** | The key is fine — the email/password is wrong, or the account doesn't exist | Use **Create account**, or add the user under Authentication → Users |
 | Account created, but it says the email isn't confirmed | "Confirm email" is still on | Step 4 |
+| **Create account** says "Check your email for a confirmation link" | "Confirm email" is on, and the account genuinely exists but can't sign in yet | Step 4, or click the link. On a project with no SMTP configured that mail never arrives, so turning confirmation off is the real fix |
+| **Create account** says the email already has an account | It does — Supabase hides this behind a fake success, so the app infers it from an empty `identities` list | Switch to Sign In |
+| "Couldn't load the sign-in library" on launch | `cdn.jsdelivr.net` is blocked or unreachable, so `supabase-js` never loaded | Try again; check content blockers and proxies. **Don't** use "Change Supabase project" — your saved settings aren't the problem |
+| Pill reads **Signed out · tap to sign in** | The session lapsed (a refresh token expires after long disuse) | Tap it and sign in again. Nothing was lost — the decks are on the device |
+| Something says the app is running a "mixed build" | The service worker had to serve one release's files under another release's URL, usually after a release picked up on a poor connection | Reload on a working connection |
+| Sync seems to happen less often than expected | Auto-sync is per-device. It defaults to every 5 minutes, but an explicit **Off** is remembered | ☰ → the auto-sync interval control |
 | `NOTICE: … already exists, skipping` when running the SQL | The schema was already applied | Nothing to do — that's a successful re-run. Only `ERROR` lines matter |
 | `NOTICE: decks.user_id left nullable: N row(s) have no owner` | A pre-auth project's existing decks have no owner, so RLS hides them | See [Upgrading an existing install](#upgrading-an-existing-install) |
 | Library looks empty, but Table Editor shows decks | Those rows' `user_id` is NULL, or belongs to another account | Same as above |
@@ -672,10 +681,15 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
 ## Notes for self-hosters
 
-**If you edit the files, two things will bite you:**
+**If you edit the files, three things will bite you:**
 
-- **The `?v=` stamps must match.** `index.html` loads `styles.css?v=…` and `app.js?v=…`, and `sw.js` precaches those exact URLs in `APP_SHELL`. The cache is keyed on the full URL, so if they drift, the service worker precaches a file the page never requests and your change may never reach an offline user. Bump `CACHE_NAME` in `sw.js` **and** the `?v=` in both files together, to the same value.
-- **CDN libraries are pinned by version** in `index.html` and precached by `sw.js`. Change a version in one place and you must change it in the other, or that library won't be there offline.
+- **Every shipped change needs a new release stamp.** It lives in three places that must agree: `styles.css?v=…` and `app.js?v=…` in `index.html`, and `CACHE_NAME` in `sw.js`. (`sw.js`'s `APP_SHELL` entries build their own from `CACHE_NAME`, and `app.js` carries a matching `BUILD_STAMP` constant — so those are derived, not typed.) Versioned assets are cached first and never revalidated, which is what makes a release load instantly and also what makes a *forgotten* bump invisible: existing installs keep being served the bundle they already have, indefinitely. This has happened twice in this repo's history. `.github/workflows/release-stamp.yml` now fails the push when the stamps disagree, or when `app.js`/`styles.css`/`index.html` changed without one.
+
+  You cannot catch this locally. On `localhost` the app deliberately unregisters its service worker and deletes every `recall-v*` cache, so a stamp-less deploy always looks correct while you're building it — and only ever breaks for other people.
+
+- **CDN libraries are pinned by version** in `index.html` and precached by `sw.js`. Change a version in one place and you must change it in the other, or that library won't be there offline. This matters most for `@supabase/supabase-js`, which is deliberately pinned to an exact version rather than a floating `@2`: the service worker caches it cache-first and never revalidates, so a floating tag froze whatever the CDN happened to resolve on the day each user's cache was populated, leaving different people running different auth clients from identical code.
+
+- **A zero-row write is not an error.** PostgREST reports an `UPDATE` that matched nothing as a success, which under Row Level Security is also what "this row isn't yours" looks like. Writers that care use `.select("id")` and check what came back; if you add one, do the same.
 
 **Backups.** The library lives in two places, and neither is a backup of the other on its own:
 

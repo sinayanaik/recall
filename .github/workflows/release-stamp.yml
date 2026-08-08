@@ -1,0 +1,97 @@
+# Why this exists. The release stamp is hand-edited, and twice it has not been.
+# Commit d7a92e2 changed 177 lines across app.js, index.html and styles.css while
+# leaving the stamp at 20260807-02 and sw.js untouched — so CACHE_NAME never
+# changed, no new service worker installed, and every existing install kept being
+# served the previous bundle cache-first. The same happened at cb5962c. Neither is
+# visible on localhost, where the worker is deliberately unregistered.
+#
+# Since the worker now refuses to serve HTML from a different release than its
+# own, a forgotten bump no longer degrades quietly — it stops reaching users
+# entirely. That makes this check load-bearing rather than tidy.
+
+name: release stamp
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: All stamps agree, and shipped code bumped them
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The three remaining hand-maintained occurrences. sw.js builds its two
+          # APP_SHELL entries from CACHE_NAME, so it contributes one.
+          html_css=$(grep -oP 'styles\.css\?v=\K[^"]+' index.html | head -1)
+          html_js=$(grep -oP 'app\.js\?v=\K[^"]+' index.html | head -1)
+          sw_cache=$(grep -oP 'CACHE_NAME = "recall-v\K[^"]+' sw.js | head -1)
+
+          echo "index.html styles.css : ${html_css:-<none>}"
+          echo "index.html app.js     : ${html_js:-<none>}"
+          echo "sw.js CACHE_NAME      : ${sw_cache:-<none>}"
+
+          for v in "$html_css" "$html_js" "$sw_cache"; do
+            if [ -z "$v" ]; then
+              echo "::error::Could not read a release stamp from every location."
+              exit 1
+            fi
+          done
+
+          if [ "$html_css" != "$html_js" ] || [ "$html_js" != "$sw_cache" ]; then
+            echo "::error::Release stamps disagree. All three must match; bump them together."
+            exit 1
+          fi
+
+          # sw.js must not still be typing the stamp out by hand — that is the
+          # drift this collapse was meant to remove.
+          if grep -qP '\./(app|styles)\.(js|css)\?v=[0-9]' sw.js; then
+            echo "::error::sw.js has a literal ?v= stamp in APP_SHELL. Build it from STAMP instead."
+            exit 1
+          fi
+
+          # A shipped-code change must bump the stamp. Compared against the
+          # previous commit on a push; against the merge base on a PR.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            git fetch --depth=1 origin "$base"
+          else
+            base="${{ github.event.before }}"
+          fi
+
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "No comparable base commit (first push or new branch) — skipping the bump check."
+            exit 0
+          fi
+
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "Base commit $base is not available in this shallow clone — skipping the bump check."
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$base" HEAD -- app.js styles.css index.html sw.js || true)
+          if [ -z "$changed" ]; then
+            echo "No shipped files changed — nothing to bump."
+            exit 0
+          fi
+
+          previous=$(git show "$base:index.html" 2>/dev/null | grep -oP 'app\.js\?v=\K[^"]+' | head -1 || true)
+          echo "Changed: $(echo "$changed" | tr '\n' ' ')"
+          echo "Stamp was '${previous:-<none>}', now '$html_js'"
+
+          if [ -n "$previous" ] && [ "$previous" = "$html_js" ]; then
+            echo "::error::These files changed but the release stamp did not."
+            echo "::error::Cache-first serving means existing installs would never receive this build."
+            echo "::error::Bump index.html (x2) and sw.js CACHE_NAME to a new stamp, e.g. $(date -u +%Y%m%d)-01."
+            exit 1
+          fi
+
+          echo "Release stamp OK."
