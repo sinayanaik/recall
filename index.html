@@ -2,7 +2,17 @@
 <html lang="en" data-theme="dark-amoled">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <!-- interactive-widget=resizes-content is load-bearing for writing on a
+         phone. The default (resizes-visual) leaves the LAYOUT viewport at full
+         height when the on-screen keyboard opens, so 100dvh — which
+         --app-mobile-height and the whole notes stage are built from — still
+         claims the full screen while the bottom half of the note editor is
+         hidden behind the keyboard. The browser's own caret-into-view then
+         does nothing, because as far as layout is concerned the caret IS
+         visible. Text you typed at the end of a note simply went under the
+         keyboard. iOS ignores this hint, which is why app.js also tracks
+         visualViewport into --kb-inset; the two together cover every browser. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="theme-color" content="#0d1110">
     <meta name="application-name" content="Recall">
     <meta name="mobile-web-app-capable" content="yes">
@@ -15,7 +25,7 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
-    <link rel="stylesheet" href="styles.css?v=20260808-01">
+    <link rel="stylesheet" href="styles.css?v=20260808-02">
     <script>
       // ── Boot-click queue ────────────────────────────────────────────────
       // The whole toolbar is in the HTML, so it paints immediately — but every
@@ -307,6 +317,15 @@
               <div class="notes-toc-scroll">
                 <ol class="notes-toc-list" id="notesTocList"></ol>
                 <p class="notes-toc-empty" id="notesTocEmpty" hidden>No headings yet. Add <code>#</code> Markdown headings to your notes and they'll map out here.</p>
+                <!-- Which other notes point HERE. Lives in this drawer rather
+                     than in new chrome of its own because the drawer is already
+                     the "about this note" surface, and because it costs a sweep
+                     of every deck to work out — something that should only
+                     happen when someone actually asks to see it. -->
+                <section class="notes-backlinks" id="notesBacklinks" hidden>
+                  <h3 class="notes-backlinks-title">Linked from</h3>
+                  <ul class="notes-backlinks-list" id="notesBacklinksList"></ul>
+                </section>
               </div>
             </nav>
             <textarea class="edit-textarea notes-edit" id="notesEdit" hidden spellcheck="false" placeholder="Write your notes here…"></textarea>
@@ -325,6 +344,11 @@
             <button class="selection-float-btn is-cloze" id="makeClozeFromSelectionBtn" type="button" title="Hide the selection as a cloze" aria-label="Hide the selection as a cloze"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg></button>
             <button class="selection-float-btn is-quick-note" id="pinQuickNoteFromSelectionBtn" type="button" title="Pin the selection to quick_notes" aria-label="Pin the selection to quick_notes">&#128204;</button>
             <button class="selection-float-btn is-highlight" id="highlightSelectionBtn" type="button" title="Highlight the selection" aria-label="Highlight the selection">&#128308;</button>
+            <!-- Split the selection out into a note of its own, leaving a
+                 [[link]] behind. Sits next to the eraser because it is the
+                 other action that removes text from where you are — except
+                 this one keeps it, somewhere better. -->
+            <button class="selection-float-btn is-extract" id="extractNoteFromSelectionBtn" type="button" title="Move the selection into its own note" aria-label="Move the selection into its own note">&#8618;</button>
             <button class="selection-float-btn is-erase" id="eraseNotesSelectionBtn" type="button" title="Delete the selection" aria-label="Delete the selection">&#9003;</button>
           </div>
 
@@ -801,6 +825,10 @@
               <li><strong>Write notes first</strong> — full Markdown: headings, math, diagrams, code, pasted images</li>
               <li><strong>Highlight → + Make card</strong> — select any fact (text, images, math) in the rendered notes; the floating button shows how much is captured. Tap it to preview the selection as the card's <em>answer</em> and frame the <em>question</em> that should bring it to mind (Ctrl+Enter to add)</li>
               <li><strong>Code survives the trip</strong> — highlight part of a code block and the card keeps it as a code block, in the same language as the block you took it from. A block whose fence never named a language gets one worked out from the code itself, falling back to <code>TEXT</code> when it isn't recognisably any language — so every block ends up with a badge and a copy button. A dashed pill means the language was detected rather than declared</li>
+              <li><strong>Link one note to another</strong> — type <code>[[</code> while editing and every note in your library becomes searchable from where the cursor already is; pick one and a <span class="note-link-sample">◈ link</span> drops in. Links stay pointed at the right note even if you rename it, and a <strong>↗</strong> marks anything that leaves for the web, so you always know where a tap will take you</li>
+              <li><strong>Name a note that doesn't exist yet</strong> — type any name after <code>[[</code> and take <em>Create…</em>. You choose which folder it goes in, and you stay exactly where you were writing. Clicking a greyed-out link offers the same thing</li>
+              <li><strong>Split a note that got too long</strong> — select the part that has outgrown its home and tap <strong>↪</strong> in the selection strip. It moves into a note of its own and leaves a link in its place</li>
+              <li><strong>See what points here</strong> — open the <strong>☰ On this page</strong> drawer in the notes header; under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
               <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the deck title bar and Cards/Notes toggle fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
             </ul>
@@ -851,6 +879,7 @@
               <tr><td>Tap card</td><td>Flip to answer</td></tr>
             </table>
             <p>Use the <strong>✅ Known</strong> / <strong>❌ Review</strong> buttons (or <kbd>K</kbd> / <kbd>R</kbd>) to sort cards.</p>
+            <p><strong>Back</strong> — your phone's back gesture (and the browser's back button) works the way you'd expect: it closes whatever is open, one layer at a time, then walks back through the notes and decks you've been through, returning you to the paragraph you were reading. Only once there's nothing left does it leave Recall, and it asks first.</p>
           </section>
 
           <section class="help-section">
@@ -1112,6 +1141,6 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
-    <script src="app.js?v=20260808-01"></script>
+    <script src="app.js?v=20260808-02"></script>
   </body>
 </html>

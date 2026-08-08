@@ -9,6 +9,13 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
+  /* How much of the viewport the on-screen keyboard is currently covering.
+     Written by trackKeyboardInset() in app.js off visualViewport; 0 whenever no
+     keyboard is up, and on every desktop. Anything that has to keep content
+     clear of the keyboard composes this the way the --safe-* tokens above are
+     composed. Kept separate from --safe-bottom on purpose: the home indicator
+     is permanent, the keyboard comes and goes. */
+  --kb-inset: 0px;
   --app-width: 100vw;
   --app-height: 100vh;
   --app-mobile-width: 100vw;
@@ -2154,14 +2161,20 @@ button:disabled {
   padding-bottom: 0.25em;
   border-bottom: 2px solid var(--accent);
 }
+/* No left rule here, deliberately. This used to carry
+   `border-left: 4px solid var(--accent)` — byte for byte what
+   `.rendered blockquote` still carries — and at 1.08em against 1em body text
+   the size difference is only 8%, so the border was doing nearly all the work
+   of saying "heading". The result was that an h2 read as a `>` quote. The left
+   accent rule now belongs to blockquotes alone (see .rendered blockquote); h2
+   is told apart from h3 by colour, which is the scheme the other levels already
+   use. */
 .rendered h2 {
   font-size: 1.08em;
   font-weight: 800;
   line-height: 1.35;
   color: var(--text);
   margin: 1.3em 0 0.5em;
-  padding-left: 0.6em;
-  border-left: 4px solid var(--accent);
 }
 .rendered h3 {
   font-size: 1em;
@@ -2575,10 +2588,17 @@ button:disabled {
   border-color: rgba(74, 222, 128, 0.22);
 }
 
+/* A quote reads as a CONTAINER, not as a line of emphasised text: the left rule
+   plus a faint tint of the surface behind it. The tint is a color-mix over
+   transparent rather than a fixed colour on purpose — this app has ten
+   light/dark themes, and an opaque swatch that looked right on one would clash
+   with or vanish into another. Same reasoning as .rendered mark. */
 .rendered blockquote {
   margin: 1em 0;
   border-left: 4px solid var(--accent);
-  padding-left: 1em;
+  border-radius: 0 var(--input-radius) var(--input-radius) 0;
+  padding: 0.6em 1em;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
   color: var(--muted);
 }
 
@@ -6903,6 +6923,10 @@ textarea {
 
 .cornell-print-row .rendered blockquote {
   border-left-color: var(--print-accent);
+  /* The screen rule tints with --accent; on paper that has to become
+     --print-accent or the quote carries a colour from the active theme into a
+     print that is otherwise entirely in the print palette. */
+  background: color-mix(in srgb, var(--print-accent) 7%, #ffffff);
   color: var(--print-text);
 }
 
@@ -7079,9 +7103,18 @@ textarea {
     width: min(var(--app-mobile-width), 100vw);
     max-width: 100vw;
     /* Honour the "App height %" slider on mobile too (dvh-based). Default 100
-       keeps today's full-height behaviour. */
-    height: var(--app-mobile-height);
-    min-height: var(--app-mobile-height);
+       keeps today's full-height behaviour.
+
+       Minus --kb-inset so the whole shell sits ABOVE the on-screen keyboard
+       rather than half behind it. This is the one lever that does the job:
+       every scroll port inside (the notes editor, the rendered notes, the card
+       faces) is sized off the shell, so shrinking it here keeps all of them
+       fully visible without any of them having to know a keyboard exists. It
+       double-counts nothing — where the browser already resized the layout for
+       the keyboard (interactive-widget=resizes-content), window.innerHeight
+       shrank with it and trackKeyboardInset() reports ~0. */
+    height: calc(var(--app-mobile-height) - var(--kb-inset));
+    min-height: calc(var(--app-mobile-height) - var(--kb-inset));
     overflow: hidden;
     padding: 6px;
   }
@@ -9453,6 +9486,11 @@ textarea {
   flex-direction: column;
 }
 
+/* ONE rule for both, and it has to stay that way. The backdrop paints every
+   visible pixel (the textarea's own text is transparent — it supplies only the
+   caret), so the two must agree on every metric: font, line-height, padding,
+   wrapping. Divergence in any of them slides the painted text out from under
+   the caret. Only colour may differ between them. */
 .highlight-textarea-backdrop,
 .edit-textarea {
   box-sizing: border-box !important;
@@ -9462,7 +9500,7 @@ textarea {
   font-family: var(--app-font-family) !important;
   font-size: var(--raw-markdown-font-size) !important;
   line-height: 1.5 !important;
-  padding: 10px !important;
+  padding: 10px 10px var(--editor-pad-bottom, 10px) !important;
   margin: 0 !important;
   white-space: pre-wrap !important;
   word-wrap: break-word !important;
@@ -11409,9 +11447,194 @@ kbd {
 .rendered mark[data-color="orange"] { background: color-mix(in srgb, #f97316 33%, transparent); }
 .rendered mark[data-color="purple"] { background: color-mix(in srgb, #8b5cf6 30%, transparent); }
 
+/* Any link with a real href — the web, or an in-page jump. These had no colour
+   rule at all and fell back to the browser's blue/purple, which on the AMOLED
+   themes is close to unreadable against black and, in every theme, belongs to
+   no palette this app owns. Kept in the accent family but mixed toward the body
+   text so it stays quieter than a [[note reference]]: the two must not compete,
+   because telling them apart is the whole point of the ◈ / ↗ markers below. */
+.rendered a[href] {
+  color: color-mix(in srgb, var(--accent-strong) 72%, var(--text));
+  text-underline-offset: 2px;
+}
+
+.rendered a[href]:visited {
+  color: color-mix(in srgb, var(--accent-strong) 62%, var(--muted));
+}
+
+.rendered a[href]:hover,
+.rendered a[href]:focus-visible {
+  color: var(--accent-strong);
+}
+
+/* ── [[Note references]] ────────────────────────────────────────────────────
+   A link to another note in this library. The whole point of the marker and
+   the accent colour is that "stays in Recall" and "leaves for the web" must be
+   distinguishable BEFORE you tap, not after — so the two are given opposite
+   treatments: a leading ◈ in the accent colour here, a trailing ↗ in the muted
+   colour on anything with an http href below.
+
+   No underline: these appear in running prose, often several to a paragraph,
+   and underlining them all turns a note into a rule-covered mess. The marker
+   plus the colour is enough. */
+.rendered a.note-link {
+  color: var(--accent-strong);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.rendered a.note-link::before {
+  content: "\25C8";
+  margin-right: 0.28em;
+  font-size: 0.85em;
+  opacity: 0.75;
+  vertical-align: baseline;
+}
+
+.rendered a.note-link:hover,
+.rendered a.note-link:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
+}
+
+.rendered a.note-link:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Its target no longer exists (or was typed before the note did). Dashed and
+   muted rather than hidden: the words still carry meaning in the sentence, and
+   clicking is how you create what it names. */
+.rendered a.note-link.is-missing {
+  color: var(--muted);
+  font-weight: 500;
+  text-decoration: underline dashed currentColor 1px;
+  text-underline-offset: 3px;
+}
+
+.rendered a.note-link.is-missing::before {
+  content: "\25C7";
+  opacity: 0.6;
+}
+
+/* Leaves the app. Muted so it reads as a footnote to the sentence rather than
+   competing with the internal links, and marked so the difference is visible
+   without hovering for a status bar that phones do not have. */
+.rendered a[href^="http"]::after {
+  content: "\2197";
+  margin-left: 0.15em;
+  font-size: 0.8em;
+  color: var(--muted);
+  vertical-align: super;
+  line-height: 0;
+}
+
+/* An in-page jump (a "#heading" href). Neither of the above — it goes nowhere
+   at all, it just moves you within this note. */
+.rendered a.in-page-link {
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+/* The inline sample of a note link used in the Help guide — the real thing
+   lives under .rendered, which the help modal is not. */
+.note-link-sample {
+  color: var(--accent-strong);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── The [[ picker ──────────────────────────────────────────────────────────
+   Appears next to the caret in the raw notes editor. Fixed positioning and a
+   body-level host so it is never clipped by the editor's own overflow, and
+   above the panels (110-115) because it is summoned from inside one. */
+.note-link-picker {
+  position: fixed;
+  z-index: 300;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(46vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: var(--input-radius, 10px);
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+}
+
+.note-link-picker[hidden] {
+  display: none;
+}
+
+.note-link-picker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--input-radius, 10px) - 3px);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-link-picker-row.is-active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.note-link-picker-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The folder path. Always shown, never optional: two notes can share a title,
+   and without this the list would offer no way to tell them apart. */
+.note-link-picker-path {
+  font-size: 0.7rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-link-picker-row.is-create {
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 0 0 calc(var(--input-radius, 10px) - 3px) calc(var(--input-radius, 10px) - 3px);
+  margin-top: 3px;
+}
+
+.note-link-picker-row.is-create .note-link-picker-title {
+  color: var(--accent-strong);
+}
+
+/* [[…]] in the raw editor's highlight mirror. Colour only — the mirror has to
+   keep byte-identical metrics to the transparent textarea over it, so no
+   weight, size, family or spacing changes here. See enableSyntaxHighlighting. */
+.syntax-note-link {
+  color: var(--accent-strong) !important;
+}
+
 .notes-stage .highlight-textarea-wrapper {
   flex: 1 1 auto;
   min-height: 0;
+  /* Scroll-past-end, and ONLY for the notes editor — card faces are a few lines
+     in a small box and want the plain 10px. Writing at the end of a long note
+     used to leave the last line 10px off the bottom edge with nothing below it
+     to scroll into, so every new line appeared hard against the frame; the only
+     way to get breathing room was to type blank lines and scroll up by hand.
+     Costs nothing on a short note: the padding sits below content that already
+     fits, so the box never overflows and the space is simply never seen. */
+  --editor-pad-bottom: max(10px, 24vh);
 }
 
 /* Floating selection toolbar: compact, icon-only buttons (Make card + Cloze)
@@ -11480,6 +11703,14 @@ kbd {
 .selection-float-btn.is-erase {
   background: color-mix(in srgb, var(--panel-2) 82%, transparent);
   color: color-mix(in srgb, var(--danger, #d64545) 80%, var(--accent));
+}
+
+/* Split into its own note — same quiet secondary treatment, in the accent so it
+   reads as "this becomes a link" rather than as another destructive action
+   sitting beside the eraser. */
+.selection-float-btn.is-extract {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent-strong);
 }
 
 /* Highlight — same quiet secondary treatment, tinted toward the highlight
@@ -11806,6 +12037,72 @@ kbd {
 }
 .notes-toc-empty code {
   font-style: normal;
+}
+
+/* ── "Linked from" (backlinks), in the TOC drawer ────────────────────────── */
+.notes-backlinks {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.notes-backlinks[hidden] {
+  display: none;
+}
+
+.notes-backlinks-title {
+  margin: 0 4px 6px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notes-backlinks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notes-backlink {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.notes-backlink:hover,
+.notes-backlink:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
+
+.notes-backlink-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-backlink-path {
+  font-size: 0.68rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* A brief wash on the heading you jumped to, so the eye lands in the right

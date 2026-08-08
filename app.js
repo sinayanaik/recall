@@ -2488,6 +2488,8 @@ const el = {
   notesView: document.querySelector("#notesView"),
   notesTocBtn: document.querySelector("#notesTocBtn"),
   notesTocDrawer: document.querySelector("#notesTocDrawer"),
+  notesBacklinks: document.querySelector("#notesBacklinks"),
+  notesBacklinksList: document.querySelector("#notesBacklinksList"),
   notesTocList: document.querySelector("#notesTocList"),
   notesTocEmpty: document.querySelector("#notesTocEmpty"),
   notesTocCloseBtn: document.querySelector("#notesTocCloseBtn"),
@@ -2500,6 +2502,7 @@ const el = {
   pinQuickNoteFromSelectionBtn: document.querySelector("#pinQuickNoteFromSelectionBtn"),
   highlightSelectionBtn: document.querySelector("#highlightSelectionBtn"),
   eraseNotesSelectionBtn: document.querySelector("#eraseNotesSelectionBtn"),
+  extractNoteFromSelectionBtn: document.querySelector("#extractNoteFromSelectionBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
   highlightsStage: document.querySelector("#highlightsStage"),
   highlightsList: document.querySelector("#highlightsList"),
@@ -3470,6 +3473,54 @@ function applyActiveStyleSettings(options = {}) {
   return applyStyleSettings(getStyleProfileSettings(activeProfile), options);
 }
 
+// ── On-screen keyboard inset ────────────────────────────────────────────────
+//
+// How much of the viewport the software keyboard is covering right now, exposed
+// to CSS as --kb-inset (see the token in styles.css).
+//
+// Why it's needed at all: the layout viewport does not necessarily shrink when
+// the keyboard opens. index.html asks for interactive-widget=resizes-content,
+// which makes Chrome on Android do exactly that — but iOS Safari ignores the
+// hint, and there the page keeps its full height while the keyboard is drawn
+// over the bottom of it. The browser's own "scroll the caret into view" then
+// does nothing, because in layout terms the caret is already on screen. What
+// the user sees is text they just typed disappearing under the keyboard.
+//
+// visualViewport reports the region actually visible, so innerHeight minus it
+// is the covered strip. Where the browser DID resize the layout, innerHeight
+// shrank too and this reads ~0 — so the two mechanisms compose instead of
+// double-counting. Rounded and change-gated because visualViewport fires a
+// burst of events during the keyboard animation and each write invalidates
+// layout for the whole shell.
+let keyboardInsetPx = 0;
+
+function currentKeyboardInset() {
+  return keyboardInsetPx;
+}
+
+function trackKeyboardInset() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const update = () => {
+    // offsetTop matters: pinch-zoomed or scrolled-within-the-visual-viewport,
+    // the visible band is shorter AND displaced, and only the part below it is
+    // keyboard. A small floor keeps browser-chrome jitter from reading as a
+    // keyboard.
+    const covered = Math.round(window.innerHeight - (vv.height + vv.offsetTop));
+    const next = covered > 24 ? covered : 0;
+    if (next === keyboardInsetPx) return;
+    keyboardInsetPx = next;
+    document.documentElement.style.setProperty("--kb-inset", `${next}px`);
+    // The editor's own scroll has to be re-checked against the new usable
+    // height, or the caret is left behind the keyboard for as long as it stays
+    // still.
+    if (isNotesEditing()) scheduleNotesCaretCheck();
+  };
+  vv.addEventListener("resize", update);
+  vv.addEventListener("scroll", update);
+  update();
+}
+
 function loadLocalStyleSettings() {
   try {
     const stored = localStorage.getItem(styleStorageKey);
@@ -3724,10 +3775,29 @@ function currentNavLocation(hint = {}) {
       localId: state.localDeckId || null,
       deckId: state.deckId || null,
       current: Number.isFinite(state.current) ? state.current : 0,
-      viewMode: state.viewMode
+      viewMode: state.viewMode,
+      // Where in the note you were reading, so back lands on the paragraph you
+      // left rather than the top. Only captured when actually RECORDING a
+      // departure: currentNavLocation is also called by peekNavBack and
+      // refreshNavBack, which run on every overlay change, and
+      // captureCurrentReadingAnchor costs a caretPositionFromPoint plus a
+      // couple of snippet searches — not something to pay for on a question
+      // as cheap as "is the back button enabled?".
+      anchor: hint.captureAnchor ? freshReadingAnchor() : null
     };
   }
   return null;
+}
+
+// The reading anchor for the deck that is open RIGHT NOW, or null. The deck-key
+// check is the same guard deckSnapshot uses: an anchor captured while reading
+// deck A must never be attached to deck B just because no scroll has happened
+// in B yet.
+function freshReadingAnchor() {
+  if (state.viewMode !== "notes") return null;
+  captureCurrentReadingAnchor();
+  if (!currentReadingAnchor) return null;
+  return currentReadingAnchorDeckKey === currentDeckKey() ? currentReadingAnchor : null;
 }
 
 // Same place? Deck identity only — flipping cards inside a deck isn't a
@@ -3745,7 +3815,7 @@ function sameNavLocation(a, b) {
 // Each door calls refreshNavBack() once it has actually arrived.
 function recordNavHistory(hint) {
   if (navSuppressDepth) return;
-  const here = currentNavLocation(hint);
+  const here = currentNavLocation({ ...hint, captureAnchor: true });
   if (!here) return;
   const top = navHistory[navHistory.length - 1];
   if (top && sameNavLocation(top, here)) navHistory.pop(); // refresh, don't stack
@@ -3795,11 +3865,15 @@ async function goToNavLocation(location) {
 
 // Step back one place. Re-entrancy guarded: restoring is async (it may load a
 // deck), and a double-tap would otherwise skip two entries.
+//
+// Returns whether it actually went anywhere. The hardware Back key needs that
+// answer to decide between "handled — stay in the app" and "nothing left — let
+// the browser leave".
 let navBackBusy = false;
 async function goNavBack() {
-  if (navBackBusy) return;
+  if (navBackBusy) return false;
   const found = peekNavBack();
-  if (!found) return;
+  if (!found) return false;
   // Drop the target and anything above it, so back never revisits.
   navHistory.length = found.index;
   navBackBusy = true;
@@ -3812,6 +3886,7 @@ async function goNavBack() {
     navBackBusy = false;
     refreshNavBack();
   }
+  return true;
 }
 
 // Put the user back on the card and view they were on when they left.
@@ -3821,60 +3896,214 @@ function restoreDeckPosition(location) {
     showCard();
   }
   if (location.viewMode) setViewMode(location.viewMode);
+  // ...and at the paragraph they were reading, not the top of the note. Left
+  // until after setViewMode on purpose: setViewMode resets scrollTop before it
+  // renders whenever the note differs from the one currently laid out, so a
+  // jump scheduled before it would simply be undone. scheduleNoteJump does its
+  // own retrying across the frames the render takes.
+  if (location.anchor && location.viewMode === "notes") {
+    scheduleNoteJump(location.anchor, { flash: false, smooth: false });
+  }
 }
 
 // The global Escape handler. Closes the single frontmost overlay, reusing that
 // one's own Cancel/Close control so its cleanup (unbinding onclick handlers,
 // releasing the scroll lock) runs exactly as it would from a real click.
-function closeTopmostOverlay() {
-  // ONE layer per press, innermost first — the name is the contract. This used
-  // to fall through every branch and close the lot, so a single Escape aimed at
-  // a confirm dialog also took My Decks, the style panel, the import panel and
-  // the diagram modal with it.
-  //
-  // Order is the visual stack: transient popovers, then dialogs (which always
-  // sit above a panel), then the panels themselves.
-
+//
+// The stack, innermost first. This used to be the same list written as a chain
+// of `if (…) { close(); return; }` statements; it is a table now because the
+// hardware Back key needs to ask "is anything open?" as well as "close one
+// thing", and two hand-maintained copies of a twenty-entry list in visual-stack
+// order would drift apart the first time a panel was added.
+//
+// Order is the visual stack: transient popovers, then dialogs (which always sit
+// above a panel), then the panels themselves. Each entry closes via that
+// overlay's OWN Cancel/Close control wherever one exists, so its cleanup
+// (unbinding onclick handlers, releasing the scroll lock) runs exactly as it
+// would from a real click.
+//
+// The two menu-drawer entries are late additions. Both used to carry a private
+// `keydown` listener of their own instead of being in this list, which is why
+// Escape closed them but nothing else could — and why the hardware Back key
+// would have walked straight past an open drawer and exited the app.
+const OVERLAY_LAYERS = [
   // Popovers.
-  if (document.querySelector(".qn-cat-menu")) { closeQnCatMenu(); return; }
-  if (el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden) { closeMyDecksMoreMenu(); return; }
-  if (el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")) { closeAllDeckTileMenus(); return; }
-  if (document.querySelector(".web-deck-export-menu:not([hidden]), .bulk-export-menu:not([hidden])")) {
-    closeWebDeckExportMenus();
-    return;
-  }
-  if (el.exportMenu && !el.exportMenu.hidden) { el.exportMenu.hidden = true; return; }
-  if (el.exportNotesMenu && !el.exportNotesMenu.hidden) { el.exportNotesMenu.hidden = true; return; }
+  { isOpen: () => Boolean(document.querySelector(".qn-cat-menu")), close: () => closeQnCatMenu() },
+  { isOpen: () => Boolean(el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden), close: () => closeMyDecksMoreMenu() },
+  { isOpen: () => Boolean(el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")), close: () => closeAllDeckTileMenus() },
+  { isOpen: () => Boolean(document.querySelector(".web-deck-export-menu:not([hidden]), .bulk-export-menu:not([hidden])")), close: () => closeWebDeckExportMenus() },
+  { isOpen: () => Boolean(el.exportMenu && !el.exportMenu.hidden), close: () => { el.exportMenu.hidden = true; } },
+  { isOpen: () => Boolean(el.exportNotesMenu && !el.exportNotesMenu.hidden), close: () => { el.exportNotesMenu.hidden = true; } },
 
-  // Dialogs. Routed through each one's own Cancel/Close control so its cleanup
-  // (unbinding onclick handlers, releasing the scroll lock) runs exactly as it
-  // would from a real click.
-  if (el.confirmModal && !el.confirmModal.hidden) { el.confirmModalCancelBtn?.click(); return; }
-  if (el.promptModal && !el.promptModal.hidden) { el.promptModalCancelBtn?.click(); return; }
-  if (el.frameCardModal && !el.frameCardModal.hidden) { el.frameCardCancelBtn?.click(); return; }
-  if (el.qnCatModal && !el.qnCatModal.hidden) { closeQnCatModal(); return; }
-  if (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) { closeHelpModal(); return; }
-  if (typeof appInfoModal !== "undefined" && appInfoModal && !appInfoModal.hidden) { closeAppInfoModal(); return; }
-  if (el.syncModal && !el.syncModal.hidden) { el.syncModal.hidden = true; return; }
-  if (el.diagramModal && !el.diagramModal.hidden) { closeDiagramModal(); return; }
+  // The hamburger drawer sits here, above the dialogs, because it genuinely is
+  // above them: .toolbar is z-index 500 against the help modal's 240 and the
+  // confirm modal's 230. In practice the two rarely coexist — tapping anything
+  // in the drawer closes it — but when they do, the thing covering the screen
+  // is the thing a Back press means.
+  { isOpen: () => isMainMenuOpen(), close: () => closeMainMenu() },
+
+  // Dialogs.
+  { isOpen: () => Boolean(el.confirmModal && !el.confirmModal.hidden), close: () => el.confirmModalCancelBtn?.click() },
+  { isOpen: () => Boolean(el.promptModal && !el.promptModal.hidden), close: () => el.promptModalCancelBtn?.click() },
+  { isOpen: () => Boolean(el.frameCardModal && !el.frameCardModal.hidden), close: () => el.frameCardCancelBtn?.click() },
+  { isOpen: () => Boolean(el.qnCatModal && !el.qnCatModal.hidden), close: () => closeQnCatModal() },
+  // These two are read off the DOM rather than through their `helpModal` /
+  // `appInfoModal` bindings, which are top-level `const`s declared thousands of
+  // lines further down. hasOpenOverlay() can now be reached during script
+  // evaluation (the back-button setup runs near the bottom of the file but
+  // still above those declarations), and a `typeof` test does NOT make a
+  // let/const safe to touch early — reading one in its temporal dead zone
+  // throws from typeof exactly as it would from a plain reference, which would
+  // abort the rest of the file and leave half the app unbuilt.
+  { isOpen: () => Boolean(document.getElementById("helpModal")?.hidden === false), close: () => closeHelpModal() },
+  { isOpen: () => Boolean(document.getElementById("appInfoModal")?.hidden === false), close: () => closeAppInfoModal() },
+  { isOpen: () => Boolean(el.syncModal && !el.syncModal.hidden), close: () => { el.syncModal.hidden = true; } },
+  { isOpen: () => Boolean(el.diagramModal && !el.diagramModal.hidden), close: () => closeDiagramModal() },
 
   // Full-surface panels.
-  if (el.clozePanel && !el.clozePanel.hidden) { closeClozePanel(); return; }
-  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) { closeQuickNotesBoard(); return; }
-  if (el.allCardsPanel && !el.allCardsPanel.hidden) { closeAllCardsPanel(); return; }
-  if (el.stylePanel && !el.stylePanel.hidden) { closeStylePanel(); return; }
-  if (el.storagePanel && !el.storagePanel.hidden) { closeStoragePanel(); return; }
-  if (el.myDecksPanel && !el.myDecksPanel.hidden) { closeMyDecksPanel(); return; }
-  if (el.importPanel && el.importPanel.classList.contains("is-open")) { closeImportPanel(); return; }
+  { isOpen: () => Boolean(el.clozePanel && !el.clozePanel.hidden), close: () => closeClozePanel() },
+  { isOpen: () => Boolean(el.quickNotesBoard && !el.quickNotesBoard.hidden), close: () => closeQuickNotesBoard() },
+  { isOpen: () => Boolean(el.allCardsPanel && !el.allCardsPanel.hidden), close: () => closeAllCardsPanel() },
+  { isOpen: () => Boolean(el.stylePanel && !el.stylePanel.hidden), close: () => closeStylePanel() },
+  { isOpen: () => Boolean(el.storagePanel && !el.storagePanel.hidden), close: () => closeStoragePanel() },
+  { isOpen: () => Boolean(el.myDecksPanel && !el.myDecksPanel.hidden), close: () => closeMyDecksPanel() },
+  { isOpen: () => Boolean(el.importPanel && el.importPanel.classList.contains("is-open")), close: () => closeImportPanel() },
+
+  // The notes table-of-contents drawer is LAST, unlike the hamburger drawer
+  // above: at z-index 40 it is underneath every panel and dialog here, so any
+  // of them opened over it must take the press first.
+  { isOpen: () => isNotesTocOpen(), close: () => closeNotesToc() }
+];
+
+// Is there anything on screen that a Back press should dismiss rather than
+// navigate away from? Focus mode deliberately does NOT count: it is the absence
+// of chrome, not an overlay, and Back should leave the deck rather than unfold
+// the header.
+function hasOpenOverlay() {
+  return OVERLAY_LAYERS.some((layer) => layer.isOpen());
+}
+
+// Closes the single frontmost overlay and reports whether it found one. ONE
+// layer per press — the name is the contract. This used to fall through every
+// branch and close the lot, so a single Escape aimed at a confirm dialog also
+// took My Decks, the style panel, the import panel and the diagram modal with
+// it.
+function closeTopmostOverlay() {
+  const layer = OVERLAY_LAYERS.find((entry) => entry.isOpen());
+  if (layer) {
+    layer.close();
+    return true;
+  }
 
   // Focus mode last of all. It isn't an overlay — it's the absence of chrome —
   // so it must never eat the Escape that was aimed at something drawn on top of
   // it. On desktop this is also the escape hatch of last resort: the collapsed
   // appbar takes the ☰ menu and the back button with it.
-  if (chromeFocusPinned) { setFocusMode(false); return; }
+  if (chromeFocusPinned) { setFocusMode(false); return true; }
 
   // Nothing left open: make sure a scroll lock didn't outlive its owner.
   unlockPageScroll();
+  return false;
+}
+
+// ── The hardware / browser Back key ─────────────────────────────────────────
+//
+// Until this existed the app had no history integration at all: Back closed the
+// tab, or dropped straight out of the installed PWA, even with a modal open on
+// top of a deck you'd navigated three levels into. Everything the ← button
+// knows how to do was unreachable from the gesture people actually use.
+//
+// A popstate cannot be cancelled — by the time it fires the entry is already
+// gone — so "handle Back myself" has to be done by keeping a spare entry on the
+// stack to spend. That's the sentinel: whenever there is anything in the app
+// that Back should dismiss or step through, one extra entry sits above the real
+// one. Back consumes it, we do the work, and we push a fresh one if there is
+// still more to handle. When there is nothing left we don't re-push, and the
+// next press leaves for real.
+//
+// Deliberately NOT modelled as one history entry per overlay. Overlays open and
+// close from twenty different places, several of them async, and a stack that
+// has to stay numerically in step with the DOM would desynchronise the first
+// time something closed without going through Back — leaving phantom entries
+// that swallow presses. ONE sentinel, always armed, plus "ask the app what's
+// open at the moment of the press" cannot drift: nothing is remembered between
+// presses that could be wrong.
+//
+// Always armed, rather than only while something is open. An earlier version
+// armed on demand and had a hole in it: once the last overlay closed the guard
+// was dropped, so the very next press escaped unhandled and dumped the user out
+// of the app with no warning — the exact thing this is here to prevent.
+const BACK_STATE = "recall-guard";
+let backSentinelPushed = false;
+// Timestamp of the "are you sure" press, so the second one within the window
+// is let through. 0 when not armed.
+let backExitArmed = 0;
+
+function syncBackSentinel() {
+  if (backSentinelPushed) return;
+  try {
+    history.pushState({ [BACK_STATE]: true }, "");
+    backSentinelPushed = true;
+  } catch (error) {
+    // Sandboxed contexts can refuse pushState. Back then behaves exactly as it
+    // did before any of this existed; nothing else breaks.
+    console.warn("Could not arm the back-button guard", error);
+  }
+}
+
+async function handleBackGesture() {
+  // Whatever we had armed is what the press just consumed.
+  backSentinelPushed = false;
+
+  // 1. Anything on screen gets dismissed first, one layer per press.
+  if (closeTopmostOverlay()) {
+    backExitArmed = 0;
+    syncBackSentinel();
+    return;
+  }
+  // 2. Then step back through where the user has been. Awaited because it may
+  //    have to load a deck out of IndexedDB or the cloud; re-arming before the
+  //    await would arm against the location being left, not the one landed on.
+  if (await goNavBack()) {
+    backExitArmed = 0;
+    syncBackSentinel();
+    return;
+  }
+
+  // 3. Nothing left to dismiss or step back to. Rather than dropping out of the
+  //    app on one stray edge-swipe — easy to do on a phone, and it takes
+  //    whatever was on screen with it — the first press asks and only a second
+  //    one within the window is allowed through.
+  const now = Date.now();
+  if (backExitArmed && now - backExitArmed < BACK_EXIT_WINDOW_MS) {
+    backExitArmed = 0;
+    // Nothing re-armed above, so this lands on whatever preceded the app.
+    history.back();
+    return;
+  }
+  backExitArmed = now;
+  showToast("Press back again to leave Recall");
+  syncBackSentinel();
+}
+
+const BACK_EXIT_WINDOW_MS = 2500;
+
+function initBackGesture() {
+  // A base entry of our own, so the sentinel always has something beneath it
+  // and the first Back has somewhere to land.
+  try {
+    history.replaceState({ recall: "root" }, "");
+  } catch (error) {
+    console.warn("Could not initialise history", error);
+  }
+  window.addEventListener("popstate", () => { handleBackGesture(); });
+  // Re-arming is otherwise driven entirely by popstate; this is a cheap safety
+  // net (one boolean test per click) in case the initial push was refused or a
+  // bfcache restore dropped it.
+  document.addEventListener("click", () => syncBackSentinel(), true);
+  // Scheduled, never synchronous: initBackGesture runs during script
+  // evaluation, well above the point where much of the app is declared.
+  requestAnimationFrame(() => syncBackSentinel());
 }
 
 function openStylePanel() {
@@ -9038,6 +9267,50 @@ function applyClozeMarkup(text) {
   );
 }
 
+// ── Note references: [[Another note]] ───────────────────────────────────────
+//
+// One note pointing at another. The whole feature lives in the markdown — there
+// is no link table, no new column, nothing in the deck's meta bag. That is not
+// a shortcut: `decks.notes` is already part of the fingerprint that decides
+// whether a deck has changed (see deckContentMatches), so a link syncs, backs
+// up, exports and restores with the text around it and cannot fall out of step
+// with it. A links table would have needed all of that built again, and could
+// have gone stale against the very text it describes.
+//
+// Written as  [[Visible title|target]]  where target is one of
+//   ld_xxxxx           a deck in this device's library
+//   <uuid>             a deck that so far only exists in the cloud
+//   …#heading-slug     either of the above, scrolled to a heading
+//   qn:<cardId>        a single quick_notes pin
+// The target is optional: [[Chain Rule]] resolves by title instead, which is
+// what a link typed by hand looks like. The picker always writes the id form,
+// so links it makes survive the note being renamed.
+//
+// Nothing here has to worry about code: preprocessSpecialBlocks has already cut
+// ``` fences out of the text this ever sees, and protectInline (below) skips
+// inline `code` spans — so documenting the syntax by writing `[[x]]` in
+// backticks leaves it alone, exactly as it does for {{cloze}} and $math$.
+const NOTE_LINK_PATTERN = /\[\[([^[\]\n|]+?)(?:\|([^[\]\n]*?))?\]\]/g;
+
+function applyNoteLinkMarkup(text) {
+  const source = String(text);
+  // Ordinary prose has no "[[" in it at all; this keeps the regex off the hot
+  // render path for the overwhelming majority of blocks.
+  if (!source.includes("[[")) return source;
+  return source.replace(NOTE_LINK_PATTERN, (match, label, target) => {
+    const title = label.trim();
+    if (!title) return match;
+    const ref = (target || "").trim();
+    // No href, deliberately. enhanceRenderedMarkdown rewrites every a[href] to
+    // open in a new tab, and an internal reference must not — leaving the href
+    // off keeps this anchor invisible to that pass instead of needing an
+    // exception carved into it. role/tabindex put the keyboard back.
+    return `<a class="note-link" role="link" tabindex="0"`
+      + ` data-note-target="${escapeHtml(ref)}"`
+      + ` data-note-title="${escapeHtml(title)}">${escapeHtml(title)}</a>`;
+  });
+}
+
 // Apply the inline transforms (cloze, then math) that run on non-fenced text.
 // Inline code spans (`code`, or ``code`` etc. so a literal backtick can appear
 // inside — CommonMark closes on a run of exactly the same length as the
@@ -9086,7 +9359,7 @@ function protectInline(segment) {
       }
       if (closeAt !== -1) {
         const codeEnd = closeAt + ticks;
-        output += protectMath(applyClozeMarkup(segment.slice(i, codeStart)));
+        output += protectMath(applyClozeMarkup(applyNoteLinkMarkup(segment.slice(i, codeStart))));
         output += segment.slice(codeStart, codeEnd); // raw code span, untouched
         i = codeEnd;
         continue;
@@ -9098,7 +9371,7 @@ function protectInline(segment) {
     if (clozeStart !== -1) {
       const closeIdx = segment.indexOf("}}", clozeStart + 2);
       if (closeIdx !== -1) {
-        output += protectMath(applyClozeMarkup(segment.slice(i, clozeStart)));
+        output += protectMath(applyClozeMarkup(applyNoteLinkMarkup(segment.slice(i, clozeStart))));
         const inner = segment.slice(clozeStart + 2, closeIdx);
         output += `<span class="cloze" tabindex="0" role="button" aria-label="Hidden text, tap to reveal">${protectMath(inner)}</span>`;
         i = closeIdx + 2;
@@ -9109,7 +9382,7 @@ function protectInline(segment) {
     // Neither a valid code span nor a valid cloze from here on — process
     // whatever's left as plain text (any stray "`"/"{{" survive literally,
     // same as CommonMark treats an unmatched backtick) and stop.
-    output += protectMath(applyClozeMarkup(segment.slice(i)));
+    output += protectMath(applyClozeMarkup(applyNoteLinkMarkup(segment.slice(i))));
     break;
   }
 
@@ -9263,7 +9536,10 @@ function normalizeImageUrl(url) {
 
 const SANITIZE_CONFIG = {
   ADD_TAGS: ["foreignObject", "font", "u", "del", "kbd"],
-  ADD_ATTR: ["target", "rel", "class", "data-tex", "data-diagram", "style", "color", "face", "tabindex", "role", "aria-label"],
+  // data-note-target / data-note-title carry a [[note reference]] through to the
+  // click handler. Without them here DOMPurify strips both and the link renders
+  // as inert text — the failure is silent, which is why it is called out.
+  ADD_ATTR: ["target", "rel", "class", "data-tex", "data-diagram", "data-note-target", "data-note-title", "style", "color", "face", "tabindex", "role", "aria-label"],
   // DOMPurify's default URI allowlist would strip `recall-img:` and a
   // not-yet-uploaded image would render as a broken <img> with no src. This
   // is DOMPurify's default expression with exactly one scheme added — nothing
@@ -9600,6 +9876,17 @@ async function enhanceRenderedMarkdown(container, roots = null) {
   const scope = roots || [container];
 
   scopedQueryAll(scope, "a[href]").forEach((link) => {
+    // A bare "#foo" is a jump within this note, not a destination on the web.
+    // It used to be swept up here with everything else and opened a blank tab —
+    // now that notes can link to each other, "where will this take me" has to
+    // be answerable at a glance, and an in-page anchor that teleports you to an
+    // empty tab is the opposite of that.
+    const href = link.getAttribute("href") || "";
+    if (href.startsWith("#")) {
+      link.classList.add("in-page-link");
+      link.removeAttribute("target");
+      return;
+    }
     link.target = "_blank";
     link.rel = "noopener noreferrer";
   });
@@ -9660,7 +9947,34 @@ async function enhanceRenderedMarkdown(container, roots = null) {
   });
 
   fitMarkdownTables(container, roots);
+  markMissingNoteLinks(scope);
   await diagramWork;
+}
+
+// Grey out any [[reference]] whose target no longer exists, so a broken link is
+// visible while reading rather than only on the click that fails.
+//
+// Fire-and-forget and never awaited: it needs the deck index (and possibly a
+// cloud round trip on the very first call), and blocking the paint of a note on
+// that would be a poor trade for a styling detail. Links render in their normal
+// state and the broken ones fade a moment later.
+function markMissingNoteLinks(scope) {
+  const links = scopedQueryAll(scope, "a.note-link");
+  if (!links.length) return;
+  loadNoteLinkIndex().then((index) => {
+    for (const link of links) {
+      if (!link.isConnected) continue;
+      const parts = parseNoteLinkTarget(link.getAttribute("data-note-target") || "");
+      // A quick_notes pin isn't in the deck index; leave it alone rather than
+      // calling it broken on the strength of a lookup that never applied.
+      if (parts.cardId) continue;
+      const title = (link.getAttribute("data-note-title") || "").trim().toLowerCase();
+      const found = parts.id
+        ? index.some((entry) => entry.localId === parts.id || entry.deckId === parts.id)
+        : index.some((entry) => entry.title.trim().toLowerCase() === title);
+      link.classList.toggle("is-missing", !found);
+    }
+  }).catch((error) => console.warn("Could not check note links", error));
 }
 
 // Draws one batch of diagrams (mermaid and/or nomnoml). The source lives in
@@ -11723,6 +12037,65 @@ function scrollTextareaToOffset(textarea, pos) {
   textarea.scrollTop = Math.max(0, lineIndex * lineHeight - gap);
 }
 
+// Keep the caret off the bottom edge while writing at the END of a note.
+//
+// The complaint this fixes: type past the last visible line and the new text
+// went under the bottom of the box (on a phone, under the keyboard) with no
+// way to see it except adding blank lines and scrolling up by hand.
+//
+// Two things had to be true and neither was. There has to be somewhere to
+// scroll TO — that is the scroll-past-end padding on .notes-stage's editor
+// wrapper — and something has to scroll there. Browsers only scroll far enough
+// to make the caret *technically* visible, which lands it flush against the
+// bottom frame; the comfortable gap that every other editor leaves is ours to
+// add.
+//
+// Scoped deliberately to a caret with nothing but whitespace after it. That is
+// the reported case, it needs no line arithmetic at all (the content bottom is
+// just scrollHeight minus the padding), and it leaves the browser's own
+// behaviour alone when you are editing mid-document — where scrolling the line
+// you touched up to a fixed height would be a surprise, not a fix.
+//
+// Note the lower bound: this only ever scrolls DOWN. Scrolling back up would
+// fight the user the moment they deliberately scrolled away from the caret.
+const NOTES_CARET_TAIL_LINES = 3;
+
+function keepNotesCaretVisible() {
+  const textarea = el.notesEdit;
+  if (!textarea || textarea.hidden) return;
+  // A range selection isn't a typing caret; leave it where the user put it.
+  if (textarea.selectionStart !== textarea.selectionEnd) return;
+  // Anything of substance below the caret means there is context to read down
+  // there, and the native behaviour is already the right one.
+  if (textarea.value.slice(textarea.selectionEnd).trim()) return;
+
+  const styles = getComputedStyle(textarea);
+  const lineHeight = parseFloat(styles.lineHeight) || 20;
+  const padBottom = parseFloat(styles.paddingBottom) || 0;
+  // scrollHeight includes the scroll-past-end padding; the last line of actual
+  // text ends where that padding starts.
+  const contentBottom = textarea.scrollHeight - padBottom;
+  const maxScroll = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+  const want = Math.min(
+    maxScroll,
+    Math.max(0, contentBottom + lineHeight * NOTES_CARET_TAIL_LINES - textarea.clientHeight)
+  );
+  // Writing scrollTop fires the textarea's own scroll event, which is what the
+  // highlight backdrop listens to — the mirror follows on its own.
+  if (want > textarea.scrollTop) textarea.scrollTop = want;
+}
+
+// Coalesced to one check per frame: autorepeat and fast typing fire input far
+// faster than the box can be re-measured, and each measurement forces layout.
+let notesCaretFrame = 0;
+function scheduleNotesCaretCheck() {
+  if (notesCaretFrame) return;
+  notesCaretFrame = requestAnimationFrame(() => {
+    notesCaretFrame = 0;
+    keepNotesCaretVisible();
+  });
+}
+
 // Arithmetic inverse of scrollTextareaToOffset: approximate the raw character
 // offset at the textarea's CURRENT scroll position, using the same
 // line-height heuristic in both directions so a round trip (scroll → offset
@@ -11898,8 +12271,20 @@ el.notesEdit?.addEventListener("input", () => {
   // read as "different note" and throw away your place.
   notesScrolledSource = state.notes;
   if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
+  // Writing at the end of the note must not push what you just typed off the
+  // bottom of the box. See keepNotesCaretVisible.
+  scheduleNotesCaretCheck();
+  // "[[" anywhere on the current line opens the note picker.
+  updateNoteLinkPicker();
   scheduleDeckAutosave();
 });
+
+// Moving the caret with the arrow keys or a click fires no input event, but it
+// can just as easily take you out of (or into) a "[[…" the picker cares about.
+el.notesEdit?.addEventListener("keyup", (event) => {
+  if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") updateNoteLinkPicker();
+});
+el.notesEdit?.addEventListener("click", () => updateNoteLinkPicker());
 
 el.viewModeToggle?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-view-mode]");
@@ -12146,12 +12531,30 @@ function tocGuideContinues(depths, i, depth) {
   return false;
 }
 
-function buildNotesToc() {
-  if (!el.notesView || !el.notesTocList) return;
+// Give every heading in the rendered note a stable slug id, and hand back the
+// headings in document order.
+//
+// Split out of buildNotesToc because a [[Note#heading]] reference has to be
+// able to find its target whether or not the table of contents was ever opened
+// — and buildNotesToc, which used to be the only thing that assigned these ids,
+// returns early when there is no #notesTocList to draw into. Same slugs from
+// both callers, because it is the same code.
+function ensureNotesHeadingIds() {
+  if (!el.notesView) return [];
   const used = new Set();
-  notesTocHeadings = Array.from(
+  const headings = Array.from(
     el.notesView.querySelectorAll("h1, h2, h3, h4, h5, h6")
   ).filter((h) => h.textContent.trim() !== "");
+  headings.forEach((heading) => {
+    if (!heading.id) heading.id = slugifyHeading(heading.textContent, used);
+    else used.add(heading.id);
+  });
+  return headings;
+}
+
+function buildNotesToc() {
+  if (!el.notesView || !el.notesTocList) return;
+  notesTocHeadings = ensureNotesHeadingIds();
 
   el.notesTocList.innerHTML = "";
   // The list is being rebuilt, so every link reference updateNotesTocActive
@@ -12178,8 +12581,7 @@ function buildNotesToc() {
   const depths = notesTocHeadings.map((h) => Math.min(Number(h.tagName[1]) - minLevel, 4));
 
   notesTocHeadings.forEach((heading, index) => {
-    if (!heading.id) heading.id = slugifyHeading(heading.textContent, used);
-    else used.add(heading.id);
+    // Ids are already assigned by ensureNotesHeadingIds above.
     const level = Number(heading.tagName[1]);
     const depth = depths[index];
 
@@ -12356,6 +12758,85 @@ function openNotesToc() {
   el.notesTocBtn?.classList.add("is-active");
   el.notesTocBtn?.setAttribute("aria-expanded", "true");
   updateNotesTocActive();
+  // Built only from here, never on render and never on scroll: it reads every
+  // deck body in the library, which is far too much work to do speculatively
+  // for a panel that is closed almost all of the time.
+  renderNotesBacklinks();
+}
+
+// ── "Linked from" ───────────────────────────────────────────────────────────
+//
+// The other half of a reference. Without it a link is one-way, and a note you
+// arrived at gives you no idea what it belongs to — which for a note that was
+// split out of a longer one is the single most useful thing to know.
+//
+// Derived by scanning, not stored. A backlinks table would be a second copy of
+// something the markdown already says, and every edit anywhere would have to
+// keep it honest; a scan cannot disagree with the text.
+async function findBacklinksToOpenNote() {
+  const localId = state.localDeckId;
+  const deckId = state.deckId;
+  const title = String(state.deckTitle || "").trim().toLowerCase();
+  if (!localId && !deckId) return [];
+
+  const hits = [];
+  await forEachDeckSnapshot((id, snapshot) => {
+    if (id === localId) return; // a note linking to itself isn't a backlink
+    const notes = snapshot?.notes || "";
+    if (!notes.includes("[[")) return;
+    for (const match of notes.matchAll(NOTE_LINK_PATTERN)) {
+      const target = parseNoteLinkTarget(match[2] || "");
+      const points = target.id
+        ? (target.id === localId || (deckId && target.id === deckId))
+        // A title-form link only counts when it has no id at all — one that
+        // names a different note is not pointing here.
+        : (title && String(match[1]).trim().toLowerCase() === title);
+      if (points) {
+        hits.push({ localId: id, title: snapshot.deckTitle || "Untitled", category: normalizeDeckCategory(snapshot.deckCategory) });
+        return;
+      }
+    }
+  });
+  return hits.sort((a, b) => a.title.localeCompare(b.title));
+}
+
+let backlinksToken = 0;
+
+async function renderNotesBacklinks() {
+  const section = el.notesBacklinks;
+  const list = el.notesBacklinksList;
+  if (!section || !list) return;
+  // Opening the drawer, switching decks and opening it again can overlap; only
+  // the newest request may write to the list.
+  const token = ++backlinksToken;
+  list.innerHTML = "";
+  section.hidden = true;
+
+  let hits = [];
+  try {
+    hits = await findBacklinksToOpenNote();
+  } catch (error) {
+    console.warn("Could not work out backlinks", error);
+    return;
+  }
+  if (token !== backlinksToken || !hits.length) return;
+
+  for (const hit of hits) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "notes-backlink";
+    button.innerHTML = `<span class="notes-backlink-title"></span><span class="notes-backlink-path"></span>`;
+    button.querySelector(".notes-backlink-title").textContent = hit.title;
+    button.querySelector(".notes-backlink-path").textContent = hit.category;
+    button.addEventListener("click", async () => {
+      closeNotesToc();
+      await loadDeckFromLibrary(hit.localId);
+    });
+    li.appendChild(button);
+    list.appendChild(li);
+  }
+  section.hidden = false;
 }
 
 function closeNotesToc() {
@@ -12414,11 +12895,10 @@ el.notesView?.addEventListener(
   { passive: true }
 );
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && el.notesTocDrawer?.classList.contains("is-open")) {
-    closeNotesToc();
-  }
-});
+// No private Escape listener for the TOC drawer: it is an entry in
+// OVERLAY_LAYERS, which gives it the one global Escape handler in correct
+// stack order plus the hardware Back key. Click-outside stays local, since
+// that is genuinely this drawer's own behaviour and not part of any stack.
 
 // Clicking anywhere outside the open drawer (including the notes themselves)
 // dismisses the TOC. The toggle button is excluded so its own click still
@@ -13082,6 +13562,10 @@ function positionNotesSelectionButton() {
     pillSelectionCapture = { targetName: editingTarget.name, editing: true, sel: null, markdown: text };
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
+    // Splitting text into its own note only makes sense from a note. A card
+    // face would end up with a link on it that you cannot follow while
+    // studying, so the button is simply not offered there.
+    if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = editingTarget.name !== "notes";
     button.hidden = false;
     if (mobile) return pinSelectionButtonToBottom(button);
     // Track the actual selection (same approach as the rendered-view branch
@@ -13133,9 +13617,11 @@ function positionNotesSelectionButton() {
     markdown: cardBtn.dataset.selectionText,
   };
   // Highlight and erase work for every rendered face (notes AND card
-  // question/answer — renderTargetConfig handles all three).
+  // question/answer — renderTargetConfig handles all three). Splitting out a
+  // sub-note does not: see the editing branch above.
   if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
   if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
+  if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = renderedTarget.name !== "notes";
   button.hidden = false;
   if (mobile) return pinSelectionButtonToBottom(button);
   const rect = range.getBoundingClientRect();
@@ -13617,6 +14103,653 @@ async function jumpToNoteForCurrentCard() {
   setStatus("Couldn't open the source deck for this note — it isn't available on this device.", "error");
 }
 
+// ── Following a [[note reference]] ──────────────────────────────────────────
+//
+// The index behind the [[ picker and behind "does this link still point at
+// something?". Titles and ids only — deliberately NOT loadDeckNotesForSearch,
+// which pulls the full body of every deck in the library because it is
+// searching inside them. Nothing here needs a single word of any note's text,
+// and on a library of book chapters that difference is megabytes.
+let noteLinkIndexCache = null;
+let noteLinkIndexPromise = null;
+
+function invalidateNoteLinkIndex() {
+  noteLinkIndexCache = null;
+  noteLinkIndexPromise = null;
+}
+
+async function loadNoteLinkIndex() {
+  if (noteLinkIndexCache) return noteLinkIndexCache;
+  if (noteLinkIndexPromise) return noteLinkIndexPromise;
+  noteLinkIndexPromise = (async () => {
+    const seenCloud = new Set();
+    const entries = [];
+    for (const meta of listLocalDecks()) {
+      if (meta.deckId) seenCloud.add(String(meta.deckId));
+      entries.push({
+        localId: meta.id,
+        deckId: meta.deckId || null,
+        title: String(meta.title || "Untitled"),
+        category: normalizeDeckCategory(meta.category)
+      });
+    }
+    // Then anything that exists only in the account — a note written on another
+    // device and never opened here still has to be linkable, or the picker
+    // would quietly disagree with My Decks about what exists.
+    if (supabaseClient && isSignedIn && navigator.onLine) {
+      try {
+        const { data, error } = await supabaseClient.from("decks").select("id, title, category");
+        if (error) throw error;
+        for (const deck of data || []) {
+          if (!deck || seenCloud.has(String(deck.id))) continue;
+          entries.push({
+            localId: null,
+            deckId: String(deck.id),
+            title: String(deck.title || "Untitled"),
+            category: normalizeDeckCategory(deck.category)
+          });
+        }
+      } catch (error) {
+        // Offline or a failed round trip: the local half is still a useful
+        // index, so degrade rather than fail.
+        console.warn("Could not list cloud decks for note links", error);
+      }
+    }
+    // Quick Notes pins are linkable too — they are often the scrap a longer
+    // note is being written around. They come last and are labelled, so a
+    // library of a few hundred pins can never bury the notes in the picker.
+    for (const pin of await loadQuickNotePinIndex()) entries.push(pin);
+
+    noteLinkIndexCache = entries;
+    return entries;
+  })();
+  return noteLinkIndexPromise;
+}
+
+// The quick_notes deck's cards, as picker rows. One query, cached with the rest
+// of the index; an empty list whenever quick notes aren't available (signed
+// out, offline, or simply never used) rather than an error — the picker's job
+// is to offer what it can.
+async function loadQuickNotePinIndex() {
+  const deckId = getQuickNotesDeckId();
+  if (!deckId || !supabaseClient || !isSignedIn || !navigator.onLine) return [];
+  try {
+    const { data, error } = await supabaseClient
+      .from("cards")
+      .select("id, question")
+      .eq("deck_id", deckId)
+      .order("position");
+    if (error) throw error;
+    return (data || [])
+      .filter((card) => String(card.question || "").trim())
+      .map((card) => {
+        const text = notesAnchorPlainText(card.question).replace(/\s+/g, " ").trim();
+        return {
+          localId: null,
+          deckId: null,
+          pinId: String(card.id),
+          title: text.length > 70 ? `${text.slice(0, 67)}…` : text,
+          category: "Quick note"
+        };
+      });
+  } catch (error) {
+    console.warn("Could not list quick notes for note links", error);
+    return [];
+  }
+}
+
+// Split "ld_abc#some-heading" / "qn:card_1" / "" into its parts. Pure string
+// work, no lookups — resolveNoteLink does those.
+function parseNoteLinkTarget(target) {
+  const raw = String(target || "").trim();
+  if (!raw) return { id: "", heading: "", cardId: "" };
+  if (raw.startsWith("qn:")) return { id: "", heading: "", cardId: raw.slice(3) };
+  const hash = raw.indexOf("#");
+  if (hash === -1) return { id: raw, heading: "", cardId: "" };
+  return { id: raw.slice(0, hash), heading: raw.slice(hash + 1), cardId: "" };
+}
+
+// What a link points at, or null if nothing answers to it.
+//
+// The id is tried first and the title is only a fallback, which is what makes a
+// link survive a rename: the picker always writes an id, so renaming the target
+// changes the words shown in the link but not where it goes. A link typed by
+// hand has no id and resolves by title — and will break on a rename, which is
+// the honest trade for markdown that reads as plain [[Chain Rule]].
+async function resolveNoteLink({ target, title }) {
+  const parts = parseNoteLinkTarget(target);
+  const index = await loadNoteLinkIndex();
+
+  if (parts.id) {
+    const byId = index.find((entry) => entry.localId === parts.id || entry.deckId === parts.id);
+    if (byId) return { ...byId, heading: parts.heading, cardId: parts.cardId };
+    // An id that resolves to nothing means a deleted note, NOT an excuse to
+    // grab some other note that happens to share the title — silently landing
+    // on the wrong document is worse than saying the link is broken.
+    return null;
+  }
+
+  const wanted = String(title || "").trim().toLowerCase();
+  if (!wanted) return null;
+  const byTitle = index.find((entry) => entry.title.trim().toLowerCase() === wanted);
+  return byTitle ? { ...byTitle, heading: parts.heading, cardId: parts.cardId } : null;
+}
+
+// Scroll to a heading in the note that is now open. Retried across a few frames
+// because the click may have just triggered a deck load, and the headings only
+// exist once that render has landed.
+async function revealNoteHeading(slug) {
+  if (!slug) return true;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const heading = ensureNotesHeadingIds().find((h) => h.id === slug);
+    if (heading) {
+      await scrollNotesHeadingIntoView(heading);
+      heading.classList.add("notes-heading-flash");
+      setTimeout(() => heading.classList.remove("notes-heading-flash"), 1200);
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  return false;
+}
+
+// Guards against a second click landing while the first is still loading a
+// deck — two overlapping loads would leave the back history describing a route
+// the user never took.
+let followingNoteLink = false;
+
+async function followNoteLink(anchor) {
+  if (followingNoteLink) return;
+  const target = anchor.getAttribute("data-note-target") || "";
+  const title = anchor.getAttribute("data-note-title") || anchor.textContent || "";
+
+  // A quick_notes pin. The board is the destination, not a deck — and pointing
+  // at one card on it is something the back-history restore already knows how
+  // to do, so reuse that rather than inventing a second way to focus a pin.
+  const asPin = parseNoteLinkTarget(target);
+  if (asPin.cardId) {
+    qnReturnState = { cardId: asPin.cardId, filters: [], query: "", scrollTop: 0 };
+    openQuickNotesBoard({ restore: true }).catch((error) => {
+      console.warn("Could not open the quick notes board", error);
+      showToast("Couldn't open quick notes", "error");
+    });
+    return;
+  }
+
+  followingNoteLink = true;
+  try {
+    const found = await resolveNoteLink({ target, title });
+    if (!found) {
+      anchor.classList.add("is-missing");
+      offerToCreateMissingNote(anchor, title);
+      return;
+    }
+
+    // Already here — a same-note heading jump. Don't reload the deck: that
+    // would discard the reading position for no reason.
+    const here = (found.localId && found.localId === state.localDeckId)
+      || (found.deckId && found.deckId === state.deckId);
+    if (!here) {
+      // The deck loaders record the back history themselves, so Back returns to
+      // the note the link was in — at the paragraph it was in, via the anchor
+      // currentNavLocation now captures.
+      const opened = found.localId ? await loadDeckFromLibrary(found.localId) : false;
+      if (!opened) {
+        if (!found.deckId || !supabaseClient || !navigator.onLine) {
+          setStatus(`Couldn't open "${found.title}" — it isn't available on this device.`, "error");
+          showToast(`"${found.title}" isn't available offline`, "error");
+          return;
+        }
+        await loadWebDeck(found.deckId);
+      }
+    }
+
+    if (found.heading && !(await revealNoteHeading(found.heading))) {
+      showToast(`Opened "${found.title}" — that heading no longer exists`);
+    }
+  } catch (error) {
+    console.error("Could not follow the note link", error);
+    setStatus("Couldn't open that note.", "error");
+    showToast("Couldn't open that note", "error");
+  } finally {
+    followingNoteLink = false;
+  }
+}
+
+// A link whose target is gone, or one typed by hand before the note existed.
+// Rather than a dead end, it becomes the quickest way to create what it names.
+function offerToCreateMissingNote(anchor, title) {
+  const name = String(title || "").trim();
+  if (!name) {
+    showToast("That link doesn't point at anything", "error");
+    return;
+  }
+  showConfirmModal(
+    `There's no note called "${name}". Create it?`,
+    async () => {
+      const created = await createLinkedNoteFlow(name);
+      if (!created) return;
+      // Repoint the link in the SOURCE TEXT, not just in the DOM: the rendered
+      // anchor is rebuilt from the markdown on the next repaint, so a DOM-only
+      // fix would last exactly one render and the link would go broken again.
+      rewriteNoteLinkTarget(name, created);
+    },
+    { confirmLabel: "Create note" }
+  );
+}
+
+// Point every [[…]] in the OPEN note that names `title` at `entry`, and repaint.
+function rewriteNoteLinkTarget(title, entry) {
+  const wanted = String(title || "").trim().toLowerCase();
+  if (!wanted) return;
+  let changed = false;
+  const next = String(state.notes || "").replace(NOTE_LINK_PATTERN, (match, label, target) => {
+    if (String(label).trim().toLowerCase() !== wanted) return match;
+    // Only fill in links that have no target yet; one that names a different
+    // id is pointing somewhere on purpose.
+    if (String(target || "").trim()) return match;
+    changed = true;
+    return `[[${String(label).trim()}|${entry.localId || entry.deckId}]]`;
+  });
+  if (!changed) return;
+  state.notes = next;
+  if (el.notesEdit && !el.notesEdit.hidden) {
+    el.notesEdit.value = next;
+    refreshHighlightBackdrop(el.notesEdit);
+  }
+  notesScrolledSource = null; // force a real repaint rather than a cache hit
+  renderNotesView();
+  scheduleDeckAutosave();
+}
+
+// ── Creating a note from a reference ────────────────────────────────────────
+//
+// The constraint that shapes all of this: createNewDeck REPLACES the open deck
+// and navigates to the new one. That is right when you mean "start a new deck",
+// and completely wrong here — you are mid-sentence in a note and asking for
+// somewhere to put a thought. So this writes the new deck straight to storage
+// and leaves you exactly where you were, with a link now sitting in your text.
+//
+// Where it goes is asked, never assumed. Dropping new notes into the root would
+// turn a library that people have filed carefully into a flat heap within a
+// week. chooseDeckCategory is the same picker "Move to folder…" uses, so the
+// folder list and the "new category" affordance are already whatever the user
+// expects them to be; it just opens on the current note's folder.
+async function createLinkedNoteFlow(rawTitle, body = "") {
+  const title = String(rawTitle || "").trim();
+  if (!title) return null;
+
+  const category = await chooseDeckCategory(normalizeDeckCategory(state.deckCategory));
+  if (category === null) return null; // cancelled
+
+  try {
+    const entry = createLinkedNoteDeck({ title, category: normalizeDeckCategory(category), body });
+    const where = entry.category === defaultDeckCategory ? "" : ` in "${entry.category}"`;
+    showToast(`Created "${entry.title}"${where} — open it from the link`);
+    return entry;
+  } catch (error) {
+    console.error("Could not create the linked note", error);
+    showToast("Couldn't create that note", "error");
+    return null;
+  }
+}
+
+function createLinkedNoteDeck({ title, category, body = "" }) {
+  const localId = generateLocalDeckId();
+  const now = new Date().toISOString();
+  // Seeded with its own title as an H1, for two reasons: an empty deck is
+  // refused by saveDeckToLibrary (no cards AND no notes), and opening a brand
+  // new note to a blank page gives you nothing to confirm you landed in the
+  // right place. `body` is the text being moved here by the extract action.
+  const snapshot = {
+    app: "recall",
+    version: 1,
+    exportedAt: now,
+    deckTitle: title,
+    deckCategory: category,
+    notes: `# ${title}\n\n${String(body || "").trim()}${body ? "\n" : ""}`,
+    sourceTitle: title,
+    importTitleHint: title,
+    deckId: null,
+    localDeckId: localId,
+    current: 0,
+    cards: []
+  };
+  writeDeckSnapshot(localId, snapshot);
+  writeLocalDeckIndex([
+    {
+      id: localId,
+      title,
+      category,
+      cardCount: 0,
+      hasNotes: true,
+      updatedAt: now,
+      createdAt: now,
+      lastSyncedAt: null,
+      accessedAt: null,
+      notesConflicted: false,
+      notesSyncFailed: false,
+      deckId: null
+    },
+    ...readLocalDeckIndex()
+  ]);
+  invalidateNoteLinkIndex();
+
+  // Best-effort push. Failing here is not an error the user needs to see: the
+  // deck is already durable on this device and the next reconcile will carry it
+  // up, exactly as it would for a deck created any other way.
+  if (supabaseClient && isSignedIn && navigator.onLine) {
+    pushLibraryDeckToCloud({ id: localId, deckId: null })
+      .then(() => invalidateNoteLinkIndex())
+      .catch((error) => console.warn("Could not push the new linked note yet", error));
+  }
+
+  return { localId, deckId: null, title, category };
+}
+
+// ── The [[ picker ───────────────────────────────────────────────────────────
+//
+// Type "[[" in the raw notes editor and every note in the library becomes
+// searchable from where the caret already is. This is the only place that
+// writes the id form of a link, which is what makes picked links survive a
+// rename while hand-typed ones do not.
+//
+// The last row is always "create what you just typed". A reference to something
+// that does not exist yet is the normal way to write — you name the idea while
+// it is in your head and fill it in later — so that has to be one keystroke,
+// not a trip to My Decks and back.
+const NOTE_LINK_PICKER_LIMIT = 8;
+
+let noteLinkPickerEl = null;
+let noteLinkPickerRows = [];
+let noteLinkPickerIndex = 0;
+let noteLinkPickerStart = -1; // offset of the "[[" that opened it, or -1
+
+function isNoteLinkPickerOpen() {
+  return noteLinkPickerStart >= 0 && noteLinkPickerEl && !noteLinkPickerEl.hidden;
+}
+
+function ensureNoteLinkPickerEl() {
+  if (noteLinkPickerEl) return noteLinkPickerEl;
+  noteLinkPickerEl = document.createElement("div");
+  noteLinkPickerEl.className = "note-link-picker";
+  noteLinkPickerEl.id = "noteLinkPicker";
+  noteLinkPickerEl.hidden = true;
+  noteLinkPickerEl.setAttribute("role", "listbox");
+  noteLinkPickerEl.setAttribute("aria-label", "Link a note");
+  // pointerdown, not click: clicking moves focus out of the textarea and the
+  // selection/caret is what the insert is measured against.
+  noteLinkPickerEl.addEventListener("pointerdown", (event) => {
+    const row = event.target.closest("[data-picker-index]");
+    if (!row) return;
+    event.preventDefault();
+    noteLinkPickerIndex = Number(row.dataset.pickerIndex);
+    commitNoteLinkPicker();
+  });
+  document.body.appendChild(noteLinkPickerEl);
+  return noteLinkPickerEl;
+}
+
+function closeNoteLinkPicker() {
+  noteLinkPickerStart = -1;
+  noteLinkPickerRows = [];
+  noteLinkPickerIndex = 0;
+  if (noteLinkPickerEl) noteLinkPickerEl.hidden = true;
+}
+
+// Where the caret is on screen, so the popup opens next to what is being typed.
+//
+// A textarea will not report this, so the position is read off the highlight
+// backdrop — a character-for-character mirror of the same text with the same
+// metrics, which is exactly what is needed. On a note big enough for the mirror
+// to be switched off (see HIGHLIGHT_MIRROR_MAX_CHARS) there is nothing to
+// measure, and the popup is pinned to the bottom of the editor instead: a
+// predictable place beats a wrong one.
+function caretScreenRect(textarea, offset) {
+  const wrapper = textarea.parentElement;
+  const backdrop = wrapper?.querySelector(".highlight-textarea-backdrop");
+  const box = textarea.getBoundingClientRect();
+  const fallback = { left: box.left + 12, top: box.bottom - 28, bottom: box.bottom - 8 };
+  if (!backdrop || wrapper.classList.contains("is-plain")) return fallback;
+
+  const walker = document.createTreeWalker(backdrop, NodeFilter.SHOW_TEXT);
+  let seen = 0;
+  let node = walker.nextNode();
+  while (node) {
+    const len = node.nodeValue.length;
+    if (seen + len >= offset) {
+      try {
+        const range = document.createRange();
+        range.setStart(node, Math.max(0, offset - seen));
+        range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        if (rect && (rect.top || rect.left)) {
+          return { left: rect.left, top: rect.top, bottom: rect.bottom };
+        }
+      } catch {
+        // A detached or mid-rebuild mirror; the fallback is fine.
+      }
+      break;
+    }
+    seen += len;
+    node = walker.nextNode();
+  }
+  return fallback;
+}
+
+function positionNoteLinkPicker(textarea, offset) {
+  const el2 = ensureNoteLinkPickerEl();
+  const caret = caretScreenRect(textarea, offset);
+  el2.style.visibility = "hidden";
+  el2.hidden = false;
+  const size = el2.getBoundingClientRect();
+  const margin = 8;
+  let left = Math.min(caret.left, window.innerWidth - size.width - margin);
+  left = Math.max(margin, left);
+  // Below the caret by default, above it when that would run off the bottom —
+  // which on a phone with the keyboard up is most of the time.
+  let top = caret.bottom + 6;
+  const usableBottom = window.innerHeight - currentKeyboardInset() - margin;
+  if (top + size.height > usableBottom) top = Math.max(margin, caret.top - size.height - 6);
+  el2.style.left = `${Math.round(left)}px`;
+  el2.style.top = `${Math.round(top)}px`;
+  el2.style.visibility = "";
+}
+
+function renderNoteLinkPicker(query) {
+  const el2 = ensureNoteLinkPickerEl();
+  el2.innerHTML = "";
+  noteLinkPickerRows.forEach((row, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "note-link-picker-row" + (index === noteLinkPickerIndex ? " is-active" : "");
+    item.dataset.pickerIndex = String(index);
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", index === noteLinkPickerIndex ? "true" : "false");
+    if (row.create) {
+      item.classList.add("is-create");
+      item.innerHTML = `<span class="note-link-picker-title">Create “${escapeHtml(query)}” as a new note</span>`
+        + `<span class="note-link-picker-path">You'll choose the folder</span>`;
+    } else {
+      item.innerHTML = `<span class="note-link-picker-title">${escapeHtml(row.title)}</span>`
+        + `<span class="note-link-picker-path">${escapeHtml(row.category)}${row.localId ? "" : " · in the cloud"}</span>`;
+    }
+    el2.appendChild(item);
+  });
+}
+
+// Is the caret sitting inside an unclosed "[[…"? Returns the offset of the "["
+// pair, or -1. Bounded to one line so an old stray "[[" further up the note
+// cannot keep the picker permanently armed.
+function noteLinkPickerContext(value, caret) {
+  const lineStart = value.lastIndexOf("\n", caret - 1) + 1;
+  const open = value.lastIndexOf("[[", caret);
+  if (open < lineStart) return -1;
+  const between = value.slice(open + 2, caret);
+  if (between.includes("]]") || between.includes("[")) return -1;
+  return open;
+}
+
+async function updateNoteLinkPicker() {
+  const textarea = el.notesEdit;
+  if (!textarea || textarea.hidden) return closeNoteLinkPicker();
+  const caret = textarea.selectionStart;
+  if (caret !== textarea.selectionEnd) return closeNoteLinkPicker();
+
+  const open = noteLinkPickerContext(textarea.value, caret);
+  if (open === -1) return closeNoteLinkPicker();
+
+  const query = textarea.value.slice(open + 2, caret).trim();
+  const index = await loadNoteLinkIndex();
+  // Recheck: the index may have taken a cloud round trip, and the caret has had
+  // time to move somewhere else entirely.
+  if (noteLinkPickerContext(textarea.value, textarea.selectionStart) !== open) return closeNoteLinkPicker();
+
+  const needle = query.toLowerCase();
+  const matches = (needle
+    ? index.filter((entry) => entry.title.toLowerCase().includes(needle))
+    : index
+  )
+    // The note you are in is never a useful thing to link to.
+    .filter((entry) => !(entry.localId && entry.localId === state.localDeckId))
+    .sort((a, b) => {
+      // Whole notes before quick-note pins: a pin is a scrap, a note is a
+      // destination, and there can be far more of the former.
+      const aPin = a.pinId ? 1 : 0;
+      const bPin = b.pinId ? 1 : 0;
+      // Then titles that START with what was typed — almost always the one
+      // meant, and it stops a short query burying it under substring matches
+      // from elsewhere in the library.
+      const aStarts = a.title.toLowerCase().startsWith(needle) ? 0 : 1;
+      const bStarts = b.title.toLowerCase().startsWith(needle) ? 0 : 1;
+      return aPin - bPin || aStarts - bStarts || a.title.localeCompare(b.title);
+    })
+    .slice(0, NOTE_LINK_PICKER_LIMIT);
+
+  noteLinkPickerRows = matches.map((entry) => ({ ...entry, create: false }));
+  if (query) noteLinkPickerRows.push({ create: true, title: query });
+  if (!noteLinkPickerRows.length) return closeNoteLinkPicker();
+
+  noteLinkPickerStart = open;
+  noteLinkPickerIndex = Math.min(noteLinkPickerIndex, noteLinkPickerRows.length - 1);
+  renderNoteLinkPicker(query);
+  positionNoteLinkPicker(textarea, open);
+}
+
+function moveNoteLinkPicker(delta) {
+  if (!noteLinkPickerRows.length) return;
+  const count = noteLinkPickerRows.length;
+  noteLinkPickerIndex = (noteLinkPickerIndex + delta + count) % count;
+  const query = el.notesEdit.value.slice(noteLinkPickerStart + 2, el.notesEdit.selectionStart).trim();
+  renderNoteLinkPicker(query);
+  noteLinkPickerEl.querySelector(".is-active")?.scrollIntoView({ block: "nearest" });
+}
+
+// Replace the "[[query" the user has typed with a finished reference.
+function insertNoteLinkAtPicker(entry) {
+  const textarea = el.notesEdit;
+  if (!textarea || noteLinkPickerStart < 0) return;
+  const caret = textarea.selectionStart;
+  const id = entry.pinId ? `qn:${entry.pinId}` : (entry.localId || entry.deckId || "");
+  // The label sits between [[ and | in the source, so those characters cannot
+  // appear inside it. A quick-note pin's label is a slice of somebody's prose
+  // and a deck title is free text, so neither can be trusted to be clean.
+  const label = String(entry.title).replace(/[[\]|\n]+/g, " ").replace(/\s+/g, " ").trim() || "note";
+  const link = id ? `[[${label}|${id}]]` : `[[${label}]]`;
+  const before = textarea.value.slice(0, noteLinkPickerStart);
+  const after = textarea.value.slice(caret);
+  textarea.value = before + link + after;
+  const at = before.length + link.length;
+  textarea.setSelectionRange(at, at);
+  closeNoteLinkPicker();
+  // The input event is what keeps state.notes, the autosave and the highlight
+  // mirror in step — dispatching it means this edit is treated as any typed
+  // edit would be, rather than needing its own copy of all three.
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.focus();
+}
+
+async function commitNoteLinkPicker() {
+  const row = noteLinkPickerRows[noteLinkPickerIndex];
+  if (!row) return;
+  if (!row.create) {
+    insertNoteLinkAtPicker(row);
+    return;
+  }
+  // Creating: the folder picker is a modal, so remember where the reference
+  // goes before the caret can be disturbed, and put it back afterwards.
+  const textarea = el.notesEdit;
+  const start = noteLinkPickerStart;
+  const caret = textarea.selectionStart;
+  const title = row.title;
+  closeNoteLinkPicker();
+  const created = await createLinkedNoteFlow(title);
+  if (!created) {
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+    return;
+  }
+  noteLinkPickerStart = start;
+  textarea.setSelectionRange(caret, caret);
+  insertNoteLinkAtPicker(created);
+}
+
+// Capture phase, and before the editor's own handlers: while the picker is up
+// these keys belong to it. Arrow keys would otherwise move the caret out from
+// under the query, and Enter would break the line being typed.
+el.notesEdit?.addEventListener("keydown", (event) => {
+  if (!isNoteLinkPickerOpen()) return;
+  if (event.key === "ArrowDown") { event.preventDefault(); moveNoteLinkPicker(1); return; }
+  if (event.key === "ArrowUp") { event.preventDefault(); moveNoteLinkPicker(-1); return; }
+  if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); commitNoteLinkPicker(); return; }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    // Stopped here so the global Escape handler doesn't also close whatever is
+    // behind the editor — dismissing the popup is the whole of what was meant.
+    event.stopPropagation();
+    closeNoteLinkPicker();
+  }
+}, true);
+
+el.notesEdit?.addEventListener("blur", () => {
+  // Deferred: a pointerdown on a picker row blurs the textarea before the row's
+  // own handler runs, and closing here immediately would delete the row that is
+  // in the middle of being chosen.
+  setTimeout(() => {
+    if (document.activeElement !== el.notesEdit) closeNoteLinkPicker();
+  }, 150);
+});
+
+// ── Clicking a reference ────────────────────────────────────────────────────
+// Coexists with the triple-click-to-edit handler on the same element: that one
+// already ignores anything inside an <a>, and this one ignores everything that
+// isn't one.
+el.notesView?.addEventListener("click", (event) => {
+  const noteLink = event.target.closest?.("a.note-link");
+  if (noteLink) {
+    event.preventDefault();
+    followNoteLink(noteLink);
+    return;
+  }
+  // In-page anchors. enhanceRenderedMarkdown no longer forces these to open in
+  // a new tab, so something has to actually perform the jump.
+  const inPage = event.target.closest?.('a[href^="#"]');
+  if (inPage) {
+    event.preventDefault();
+    revealNoteHeading(decodeURIComponent(inPage.getAttribute("href").slice(1)));
+  }
+});
+
+// Keyboard equivalent — these anchors have no href, so Enter does nothing on
+// its own.
+el.notesView?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const noteLink = event.target.closest?.("a.note-link");
+  if (!noteLink) return;
+  event.preventDefault();
+  followNoteLink(noteLink);
+});
+
 document.addEventListener("selectionchange", scheduleNotesSelectionCheck);
 
 // Pay back a question refit that fitLiveQuestion skipped to avoid reflowing text
@@ -13796,6 +14929,127 @@ el.eraseNotesSelectionBtn?.addEventListener("pointerdown", (event) => {
     eraseTextareaSelection(target.target);
   }
   hideNotesSelectionButton();
+});
+
+// ── Split a note: selection → its own note, with a link left behind ─────────
+//
+// The "this has got too long" action. Select the section that has outgrown its
+// home, and it MOVES to a note of its own with a [[reference]] taking its place
+// — so the shape of the argument you were writing survives, one line long
+// instead of three pages.
+//
+// Notes only, in both modes. Extracting from a card face would leave a link on
+// a flashcard, which is not a thing you can follow while studying.
+function promptForText(title, hint, suggestion) {
+  return new Promise((resolve) => {
+    let answered = false;
+    // Empty field, suggestion as the placeholder — the convention every other
+    // prompt in this app follows, so there is nothing to delete before typing
+    // and pressing Enter accepts the suggestion.
+    showPromptModal(title, hint, "", (value) => {
+      answered = true;
+      resolve(value);
+    }, { placeholder: suggestion });
+    // showPromptModal has no cancel callback, so a dismissed dialog would leave
+    // this promise pending forever. Watch for the modal going away instead.
+    const watch = setInterval(() => {
+      if (answered) { clearInterval(watch); return; }
+      if (el.promptModal?.hidden) { clearInterval(watch); resolve(null); }
+    }, 200);
+  });
+}
+
+// A sensible name to offer: the selection's first heading, else its first line,
+// trimmed to something that reads as a title rather than a paragraph.
+function suggestedNoteTitle(body) {
+  const firstLine = String(body || "").split("\n").map((l) => l.trim()).find(Boolean) || "";
+  const heading = firstLine.match(/^#{1,6}\s+(.*)$/);
+  const text = (heading ? heading[1] : firstLine).replace(/[*_`>#]/g, "").trim();
+  if (!text) return "";
+  return text.length > 60 ? `${text.slice(0, 57).trimEnd()}…` : text;
+}
+
+async function extractSelectionToNote() {
+  if (state.viewMode !== "notes") {
+    showToast("Open a note first, then select the part to split out", "error");
+    return;
+  }
+  const target = pillActionTarget();
+
+  // Both modes end up as: the markdown being moved, plus a way to put the link
+  // back where it came from.
+  let body = "";
+  let applyLink = null;
+
+  if (target?.kind === "editing" && target.target?.edit === el.notesEdit) {
+    const textarea = el.notesEdit;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    if (start === end) {
+      showToast("Select the text to move into its own note first", "error");
+      return;
+    }
+    body = textarea.value.slice(start, end);
+    applyLink = (link) => {
+      textarea.value = textarea.value.slice(0, start) + link + textarea.value.slice(end);
+      const at = start + link.length;
+      textarea.setSelectionRange(at, at);
+      textarea.focus();
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+  } else if (target?.kind === "rendered" && target.name === "notes") {
+    const sel = target.sel || renderedSelectionStrings(el.notesView);
+    if (!sel) {
+      showToast("Select the text to move into its own note first", "error");
+      return;
+    }
+    // Same locate-then-splice the eraser uses, so a selection that spans list
+    // items or padded bullets is found the same way there as here.
+    const loc = locateSelectionInSource(state.notes || "", sel, { fuzzy: true });
+    if (!loc) {
+      showToast("Couldn't match that selection in the note — try selecting within one section.", "error");
+      return;
+    }
+    body = sel.asMarkdown || sel.asText || "";
+    applyLink = (link) => {
+      const notes = state.notes || "";
+      state.notes = notes.slice(0, loc.idx) + link + notes.slice(loc.end);
+      window.getSelection()?.removeAllRanges();
+      notesScrolledSource = null;
+      renderNotesView();
+      scheduleDeckAutosave();
+    };
+  } else {
+    showToast("Select the text to move into its own note first", "error");
+    return;
+  }
+
+  if (!body.trim()) {
+    showToast("Nothing selected to move", "error");
+    return;
+  }
+
+  hideNotesSelectionButton();
+  const title = await promptForText(
+    "Split into its own note",
+    "The selected text moves into a new note, and a link to it takes its place here.",
+    suggestedNoteTitle(body)
+  );
+  if (title === null) return;
+  const name = String(title || "").trim() || suggestedNoteTitle(body) || "Untitled note";
+
+  const created = await createLinkedNoteFlow(name, body);
+  if (!created) return;
+  applyLink(`[[${created.title}|${created.localId}]]`);
+  showToast(`Moved into "${created.title}"`);
+}
+
+el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
+  // pointerdown, not click: a click would have already destroyed the selection
+  // this reads. Same reason as every other button in this strip.
+  event.preventDefault();
+  event.stopPropagation();
+  extractSelectionToNote();
 });
 
 [el.notesView, el.questionView, el.answerView].forEach((view) => {
@@ -18946,6 +20200,10 @@ function readLocalDeckIndex() {
 function writeLocalDeckIndex(list) {
   try {
     localStorage.setItem(LOCAL_DECKS_INDEX_KEY, JSON.stringify(list));
+    // The one choke point for "what decks exist and what are they called", so
+    // it is also the one place the [[note]] link index can be invalidated
+    // without having to find every rename, delete, import and sync by hand.
+    invalidateNoteLinkIndex();
   } catch (error) {
     console.warn("Could not save the local deck index", error);
     throw error;
@@ -20131,7 +21389,9 @@ function exportExtraCss() {
     .rendered h1, .rendered h2, .rendered h3, .rendered h4, .rendered h5, .rendered h6 { color: var(--text, #17201c); margin: 0.5em 0 0.3em; }
     .rendered p { margin: 0 0 0.6em; }
     .rendered ul, .rendered ol { margin: 0 0 0.6em; padding-left: 1.4em; }
-    .rendered blockquote { margin: 0 0 0.6em; padding-left: 12px; border-left: 3px solid var(--accent, #16796c); color: var(--muted, #56645f); }
+    /* Kept in step with .rendered blockquote in styles.css — a quote reads as a
+       tinted container, not as emphasised text. */
+    .rendered blockquote { margin: 0 0 0.6em; padding: 0.6em 12px; border-left: 3px solid var(--accent, #16796c); border-radius: 0 6px 6px 0; background: color-mix(in srgb, var(--accent, #16796c) 6%, transparent); color: var(--muted, #56645f); }
     .rendered a { color: var(--accent-strong, #0d5e53); }
     .rendered code { background: var(--panel-2, #f0eee7); padding: 1px 5px; border-radius: 4px; font-family: "Courier New", monospace; }
     .rendered pre { background: var(--panel-2, #f0eee7); border: 1px solid var(--line, #b9c9c5); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
@@ -24896,6 +26156,12 @@ async function bootApp() {
 // are idempotent.)
 installManifestLink();
 registerServiceWorker();
+// Independent of auth and of any deck being open: the login screen has input
+// fields too, and the listener is two cheap handlers on visualViewport.
+trackKeyboardInset();
+// Must run before the first navigation, so history.replaceState stamps OUR
+// entry as the base rather than leaving whatever the page loaded with.
+initBackGesture();
 
 bootApp();
 
@@ -28205,6 +29471,13 @@ function enableSyntaxHighlighting(textarea) {
       '<span class="syntax-cloze"><span class="syntax-cloze-brace">$1</span>$2<span class="syntax-cloze-brace">$3</span></span>'
     );
 
+    // [[note reference]] — tinted so a link is visible in the raw text too.
+    // Colour only, for the same reason as the cloze rule above.
+    highlighted = highlighted.replace(
+      /\[\[[^[\]\n]*?\]\]/g,
+      '<span class="syntax-note-link">$&</span>'
+    );
+
     if (highlighted.endsWith("\n") || highlighted === "") {
       highlighted += " ";
     }
@@ -30045,6 +31318,12 @@ async function saveQuickNote(rawText, button, sourceAnchor = null) {
 }
 
 // ── Hamburger menu (side drawer, all screen sizes) ───────────────
+// The drawer's controls live inside the block below, but the overlay stack
+// (OVERLAY_LAYERS) and the Back key have to be able to see and close it from
+// outside. These two are the seam. They default to "there is no drawer" so
+// nothing has to null-check them if the markup is ever absent.
+let isMainMenuOpen = () => false;
+let closeMainMenu = () => {};
 {
   const menuBtn = document.getElementById("mobileMenuBtn");
   const toolbar = document.getElementById("mainToolbar");
@@ -30068,6 +31347,9 @@ async function saveQuickNote(rawText, button, sourceAnchor = null) {
       document.body.style.overflow = "";
     };
 
+    isMainMenuOpen = () => toolbar.classList.contains("mobile-open");
+    closeMainMenu = closeMenu;
+
     menuBtn.addEventListener("click", () => {
       toolbar.classList.contains("mobile-open") ? closeMenu() : openMenu();
     });
@@ -30084,9 +31366,11 @@ async function saveQuickNote(rawText, button, sourceAnchor = null) {
       setTimeout(closeMenu, 150);
     });
 
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && toolbar.classList.contains("mobile-open")) closeMenu();
-    });
+    // No private Escape listener here any more: the drawer is an entry in
+    // OVERLAY_LAYERS, so the one global Escape handler closes it in the right
+    // order relative to everything else (a dialog opened FROM the drawer used
+    // to lose its Escape to the drawer underneath it), and the hardware Back
+    // key gets the same behaviour for free.
   }
 }
 
