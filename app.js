@@ -16367,7 +16367,13 @@ function nthIndexOf(haystack, needle, n) {
 // Returns the ACTUAL matched text from source — never the needle's — so
 // whatever locates the match downstream (wrapAcrossBlocks etc.) works with
 // real spacing, not what was searched for.
-function fuzzyWhitespaceMatch(source, needle) {
+// `occurrence` targets the SAME copy sel.occurrence already identifies for the
+// exact-match stage above — without it this always took the first hit in the
+// whole note, so on a note where the dragged wording (or similar wording)
+// repeats earlier, the highlight landed on that earlier copy instead of the
+// one actually selected: a mark appearing somewhere else on screen while the
+// real selection stayed unmarked, which reads as an unwanted jump.
+function fuzzyWhitespaceMatch(source, needle, occurrence = 0) {
   if (!needle) return null;
   // A line-initial list marker in the needle (Turndown always serializes
   // "-   " / "1.  ") stands for whatever marker the source line actually
@@ -16392,11 +16398,23 @@ function fuzzyWhitespaceMatch(source, needle) {
   }
   let re;
   try {
-    re = new RegExp(pattern);
+    re = new RegExp(pattern, "g");
   } catch {
     return null;
   }
-  const m = re.exec(source);
+  let m = null;
+  for (let i = 0; i <= occurrence; i += 1) {
+    m = re.exec(source);
+    if (!m) break;
+    // A pattern that can match empty would never advance lastIndex.
+    if (m.index === re.lastIndex) re.lastIndex += 1;
+  }
+  if (!m) {
+    // occurrence miscounted (or this copy simply isn't the Nth) → first match,
+    // same fallback nthIndexOf's caller uses for the exact-match stage.
+    re.lastIndex = 0;
+    m = re.exec(source);
+  }
   return m ? { idx: m.index, end: m.index + m[0].length, needle: m[0] } : null;
 }
 
@@ -16643,7 +16661,11 @@ const FUZZY_OVERMATCH_SLACK_RATIO = 1.15;
 function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = false } = {}) {
   const attempts = [];
   if (sel.asText) attempts.push({ needle: sel.asText, occurrence: sel.occurrence || 0 });
-  if (sel.asMarkdown && sel.asMarkdown !== sel.asText) attempts.push({ needle: sel.asMarkdown, occurrence: 0 });
+  // asMarkdown has no occurrence count of its own, but repeats of the same
+  // markdown are highly correlated with repeats of the same plain text, so
+  // sel.occurrence (computed against asText) is a far better guess than
+  // always assuming the first copy in the note — which is what a flat 0 did.
+  if (sel.asMarkdown && sel.asMarkdown !== sel.asText) attempts.push({ needle: sel.asMarkdown, occurrence: sel.occurrence || 0 });
 
   for (const { needle, occurrence } of attempts) {
     let idx = nthIndexOf(source, needle, occurrence);
@@ -16652,8 +16674,8 @@ function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = fa
     return { idx, end: idx + needle.length, needle };
   }
   if (fuzzy) {
-    for (const { needle } of attempts) {
-      const match = fuzzyWhitespaceMatch(source, needle);
+    for (const { needle, occurrence } of attempts) {
+      const match = fuzzyWhitespaceMatch(source, needle, occurrence);
       if (!match) continue;
       if (boundedFuzzy) {
         const budget = Math.max(needle.length * FUZZY_OVERMATCH_SLACK_RATIO, needle.length + FUZZY_OVERMATCH_SLACK_CHARS);
@@ -17401,18 +17423,28 @@ function handleRenderToolbarAction(btn, toolbar) {
   }
 
   // A swatch (or Clear) inside a menu: set it as the new default, then apply.
+  // Resolve the selection BEFORE closeAllRenderMenus()/setRenderDefault() run
+  // and pass it through explicitly — the same eager resolve-then-pass shape
+  // applyPillHighlight() uses (see selectionForRenderTarget's doc comment).
+  // Left to its own default parameter, makeHighlightFromSelection would
+  // re-resolve the selection itself, one tick later and via the same
+  // live-selection-or-borrowed-pill-capture fallback that made this toolbar's
+  // highlight buttons unreliable compared to the pill.
   if (colorVal !== undefined) {
     const prop = btn.dataset.renderProp;
+    const sel = prop === "highlight" ? selectionForRenderTarget(config.view) : null;
     closeAllRenderMenus();
     setRenderDefault(prop, colorVal);
-    if (prop === "highlight") makeHighlightFromSelection(config, colorVal);
+    if (prop === "highlight") makeHighlightFromSelection(config, colorVal, sel);
     else applyRenderColor(config, prop, colorVal);
     return;
   }
 
   // One-click apply of the current default colour/highlight.
   if (action === "color-apply") return applyRenderColor(config, "color", renderFormatDefaults.color);
-  if (action === "highlight-apply") return makeHighlightFromSelection(config, renderFormatDefaults.highlight);
+  if (action === "highlight-apply") {
+    return makeHighlightFromSelection(config, renderFormatDefaults.highlight, selectionForRenderTarget(config.view));
+  }
 
   // The three selection actions below live in the notes HEADER, which stays put
   // when you tap ✎ — so unlike the formatting controls (whose whole toolbar is
@@ -17422,9 +17454,10 @@ function handleRenderToolbarAction(btn, toolbar) {
   const editing = config.isEditing?.() ? activeEditingTarget() : null;
 
   // Cloze reuses its dedicated driver (toggle + "already"/"removed" toasts).
+  // Same eager-resolve reasoning as the highlight branches above.
   if (action === "cloze") {
     if (editing) return clozeTextareaSelection(editing);
-    return makeClozeFromSelection(config);
+    return makeClozeFromSelection(config, selectionForRenderTarget(config.view));
   }
 
   // Turn the selection into a flashcard. captureNotesAnchor (not the deck-tagged
@@ -30726,15 +30759,31 @@ function buildTurndownService(options = {}) {
     }
   });
 
+  // <mark> carries its colour as data-color (see MARK_HIGHLIGHT_COLORS) — the
+  // generic keep-tag loop below would drop it, so a copied highlight would
+  // always turn yellow (or lose the highlight entirely) on the far side
+  // regardless of what it actually was. Unlike the preserveInlineStyles-gated
+  // rules below, this one is unconditional: a highlight is this app's own
+  // semantic markup, not web/Office style noise, so it must survive being
+  // copied and pasted anywhere in the app (including the general clipboard-
+  // paste path), not just the notes-selection path.
+  turndownService.addRule("keep-mark", {
+    filter: (node) => node.nodeName === "MARK",
+    replacement: (content, node) => {
+      const color = node.getAttribute("data-color");
+      return `${markOpenTag(color)}${content}${MARK_CLOSE_TAG}`;
+    }
+  });
+
   // Notes carry inline styling as raw HTML — colored/font-family text
   // (`<span style="…">` from the toolbar's color/font pickers), underline
-  // (`<u>`), highlight (`<mark>`) and keyboard keys (`<kbd>`). Turndown drops
-  // these by default, keeping only the text, so a card made from a styled
-  // notes selection lost its color/font/underline. When preserveInlineStyles
-  // is set (the notes-selection path), re-emit them so the styling survives
-  // into the card exactly as it looked in the notes. This is intentionally NOT
-  // enabled for the general clipboard-paste path, where preserving every
-  // web/Office `<span style>` would just litter pasted markdown.
+  // (`<u>`) and keyboard keys (`<kbd>`). Turndown drops these by default,
+  // keeping only the text, so a card made from a styled notes selection lost
+  // its color/font/underline. When preserveInlineStyles is set (the notes-
+  // selection path), re-emit them so the styling survives into the card
+  // exactly as it looked in the notes. This is intentionally NOT enabled for
+  // the general clipboard-paste path, where preserving every web/Office
+  // `<span style>` would just litter pasted markdown.
   if (options.preserveInlineStyles) {
     turndownService.addRule("styled-span", {
       filter: (node) =>
@@ -30751,16 +30800,6 @@ function buildTurndownService(options = {}) {
         filter: (node) => node.nodeName === nodeName,
         replacement: (content) => `<${tag}>${content}</${tag}>`
       });
-    });
-    // <mark> carries its colour as data-color (see MARK_HIGHLIGHT_COLORS) — the
-    // generic keep-tag loop above would drop it, so a copied highlight would
-    // always turn yellow on the far side regardless of what it actually was.
-    turndownService.addRule("keep-mark", {
-      filter: (node) => node.nodeName === "MARK",
-      replacement: (content, node) => {
-        const color = node.getAttribute("data-color");
-        return `${markOpenTag(color)}${content}${MARK_CLOSE_TAG}`;
-      }
     });
 
     // A rendered mermaid/nomnoml diagram is an <svg>, which carries no usable
