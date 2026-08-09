@@ -2055,6 +2055,12 @@ function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {
 async function restoreStashedNotes(localId) {
   const stash = await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
   if (!stash || !String(stash.notes || "").trim()) {
+    // Nothing to put back, so there is no longer a conflict to answer. Without
+    // this the flag outlived the stash and the deck advertised a conflict whose
+    // resolver could only ever say "nothing left to restore" — a dead end that
+    // no amount of syncing cleared.
+    clearNotesConflictFlag(localId);
+    await refreshAfterNotesConflictResolved(localId, { reload: false });
     showToast("Nothing left to restore", "info");
     return false;
   }
@@ -2083,10 +2089,201 @@ async function restoreStashedNotes(localId) {
     writeLocalDeckIndex(index);
   }
   deleteDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
-  // Reflect it immediately if that deck is the one on screen.
-  if (state.localDeckId === localId) await loadDeckFromLibrary(localId);
+  await refreshAfterNotesConflictResolved(localId);
   showToast("Your notes were added back at the end of the deck's notes", "success");
   return true;
+}
+
+// ── Notes conflicts: reaching, and answering, one ──────────────────────────
+// A conflict is a purely local condition — a stashed copy of the notes this
+// device lost, sitting beside the deck under NOTES_CONFLICT_SUFFIX. The status
+// pills (deckSyncStatus, setSyncIndicator) report it, and both now open the
+// resolver below.
+//
+// They previously did not, and there was no other way in: the only "Restore my
+// notes" button lived inside the post-sync report, which is built from the log
+// of ONE reconcile. Running "Sync Now" again — exactly what the pill told the
+// reader to do — found the deck already matching, logged nothing, and rendered
+// no report at all, while a background sync's report only ever painted on the
+// welcome screen and was gone on reload. So the pill said "notes conflict" and
+// offered nothing, permanently. The stash was intact the whole time; it just
+// had no door.
+
+function notesConflictStashKey(localId) {
+  return localId + NOTES_CONFLICT_SUFFIX;
+}
+
+// Clears the persisted flag. Deliberately does NOT touch the stash — callers
+// decide whether the losing copy is still wanted.
+function clearNotesConflictFlag(localId, { touch = false } = {}) {
+  const index = readLocalDeckIndex();
+  const entry = index.find((m) => m.id === localId);
+  if (!entry) return false;
+  entry.notesConflicted = false;
+  // Only when the resolution CHANGED the notes: a bumped updatedAt is what makes
+  // the next push carry the result up. Accepting the synced copy changes nothing
+  // locally and must not fake an edit.
+  if (touch) entry.updatedAt = new Date().toISOString();
+  writeLocalDeckIndex(index);
+  return true;
+}
+
+async function refreshAfterNotesConflictResolved(localId, { reload = true } = {}) {
+  if (reload && state.localDeckId === localId) await loadDeckFromLibrary(localId);
+  if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
+  refreshSyncIndicatorBaseline();
+}
+
+// "both" is restoreStashedNotes (append under a dated marker, nothing lost).
+// "mine" promotes the stashed copy to BE the notes. "synced" accepts what
+// arrived and drops the stash. All three clear the flag, because a conflict the
+// reader has answered must stop advertising itself — the flag used to be sticky
+// until the deck happened to be pulled again (only a pull recomputes it, and a
+// push never clears it), so a deck that was never pulled again showed "Notes
+// conflict" for good.
+async function resolveNotesConflict(localId, choice) {
+  if (choice === "both") return restoreStashedNotes(localId);
+
+  const snapshot = await readDeckSnapshot(localId);
+  if (!snapshot) {
+    showToast("That deck is no longer on this device", "error");
+    return false;
+  }
+
+  if (choice === "mine") {
+    const stash = await readDeckSnapshot(notesConflictStashKey(localId));
+    if (!stash || !String(stash.notes || "").trim()) {
+      clearNotesConflictFlag(localId);
+      await refreshAfterNotesConflictResolved(localId, { reload: false });
+      showToast("Nothing left to restore", "info");
+      return false;
+    }
+    snapshot.notes = String(stash.notes || "");
+    writeDeckSnapshot(localId, snapshot);
+    const index = readLocalDeckIndex();
+    const entry = index.find((m) => m.id === localId);
+    if (entry) entry.hasNotes = Boolean(snapshot.notes.trim());
+    writeLocalDeckIndex(index);
+    clearNotesConflictFlag(localId, { touch: true });
+  } else {
+    clearNotesConflictFlag(localId);
+  }
+
+  deleteDeckSnapshot(notesConflictStashKey(localId));
+  await refreshAfterNotesConflictResolved(localId, { reload: choice === "mine" });
+  showToast(
+    choice === "mine"
+      ? "Your version is back — it will upload on the next sync"
+      : "Kept the synced version; your saved copy was discarded",
+    "success"
+  );
+  return true;
+}
+
+// Enough of each version to tell them apart at a glance. Plain text, not
+// rendered markdown: the point is to identify a version, and a 300KB note
+// rendered into a modal would be neither quick nor readable.
+const NOTES_CONFLICT_PREVIEW_CHARS = 600;
+function notesConflictPreview(text) {
+  const body = String(text || "").trim();
+  if (!body) return `<p class="notes-conflict-empty">(empty)</p>`;
+  const clipped = body.slice(0, NOTES_CONFLICT_PREVIEW_CHARS);
+  const more = body.length > clipped.length ? "\n…" : "";
+  return `<pre class="notes-conflict-preview">${escapeHtml(clipped + more)}</pre>`;
+}
+
+// The resolver itself. Reuses the #syncModal chrome the same way showSyncReport
+// does — its footer Cancel becomes "Close", and the three real choices are
+// buttons in the body so they can carry their own explanation.
+async function showNotesConflictModal(localId) {
+  const modal = el.syncModal;
+  const content = el.syncDetailsContent;
+  if (!modal || !content || !localId) return;
+
+  const [snapshot, stash] = await Promise.all([
+    readDeckSnapshot(localId),
+    readDeckSnapshot(notesConflictStashKey(localId))
+  ]);
+
+  if (!stash || !String(stash.notes || "").trim()) {
+    clearNotesConflictFlag(localId);
+    await refreshAfterNotesConflictResolved(localId, { reload: false });
+    showToast("That conflict has already been dealt with", "info");
+    return;
+  }
+
+  const titleEl = document.getElementById("syncModalTitle");
+  const confirmBtn = document.getElementById("confirmSyncBtn");
+  const cancelBtn = document.getElementById("cancelSyncBtn");
+  if (titleEl) titleEl.textContent = "Notes conflict";
+  if (confirmBtn) confirmBtn.hidden = true;
+  if (cancelBtn) cancelBtn.textContent = "Decide later";
+
+  const when = stash.savedAt ? new Date(stash.savedAt).toLocaleString() : "an earlier sync";
+  const deckTitle = snapshot?.deckTitle || stash.deckTitle || "this deck";
+
+  content.innerHTML = `
+    <p class="notes-conflict-intro">
+      Another device saved a newer version of <strong>${escapeHtml(deckTitle)}</strong>'s notes, and
+      syncing replaced the copy on this device. Your copy was saved on ${escapeHtml(when)} and is still
+      here — choose which one to keep.
+    </p>
+    <div class="notes-conflict-versions">
+      <section class="notes-conflict-version">
+        <h3>Now on this device (from the other device)</h3>
+        ${notesConflictPreview(snapshot?.notes)}
+      </section>
+      <section class="notes-conflict-version">
+        <h3>Your saved copy</h3>
+        ${notesConflictPreview(stash.notes)}
+      </section>
+    </div>
+    <div class="notes-conflict-choices">
+      <button type="button" class="sync-modal-btn is-primary" data-conflict-choice="both">
+        Keep both
+        <span>Adds your copy to the end, under a dated heading. Nothing is lost.</span>
+      </button>
+      <button type="button" class="sync-modal-btn" data-conflict-choice="mine">
+        Keep mine
+        <span>Replaces the notes with your copy and uploads it on the next sync.</span>
+      </button>
+      <button type="button" class="sync-modal-btn" data-conflict-choice="synced">
+        Keep the synced version
+        <span>Discards your saved copy. This cannot be undone.</span>
+      </button>
+    </div>
+  `;
+
+  content.onclick = async (event) => {
+    const button = event.target.closest("[data-conflict-choice]");
+    if (!button) return;
+    const choice = button.dataset.conflictChoice;
+    // Both destructive answers are one tap from here, so the irreversible one
+    // asks first. "Keep both" and "Keep mine" leave every version recoverable.
+    // Disabled rather than put through setButtonLoading: these buttons carry a
+    // <span> of explanation, and that helper swaps textContent, which would
+    // flatten the span away and never bring it back.
+    const choices = Array.from(content.querySelectorAll("[data-conflict-choice]"));
+    const run = async () => {
+      choices.forEach((node) => { node.disabled = true; });
+      try {
+        if (await resolveNotesConflict(localId, choice)) modal.hidden = true;
+      } finally {
+        choices.forEach((node) => { node.disabled = false; });
+      }
+    };
+    if (choice === "synced") {
+      showConfirmModal(
+        "Discard your saved copy of these notes and keep the synced version? This cannot be undone.",
+        run,
+        { confirmLabel: "Discard my copy", danger: true }
+      );
+      return;
+    }
+    await run();
+  };
+
+  modal.hidden = false;
 }
 
 // Post-sync report modal for an EXPLICIT "Sync Now" click only — background
@@ -7468,6 +7665,21 @@ function deckSyncStatus(deck, cloudById, cloudOnly = false) {
   if (cloudOnly) {
     return { label: "Cloud only", cls: "sync-cloud-only", title: "In the cloud but not on this device yet — Load to pull it down." };
   }
+  // Checked first, and outside every network branch, because a stashed notes
+  // copy is a purely LOCAL condition: it sits beside the deck on this device
+  // whatever the cloud is doing, and it is the only status here the reader has
+  // to act on. It used to be tested last, inside the branch that needs a live
+  // cloud row AND exactly matching timestamps, so the pill vanished the moment
+  // the deck had any pending edit — taking the only route to the resolver with
+  // it, while the unanswered conflict stayed on disk.
+  if (deck.notesConflicted) {
+    return {
+      label: "Notes conflict",
+      cls: "sync-error",
+      title: "A newer notes edit from another device replaced yours here. Your copy was kept — tap to choose which version to keep.",
+      conflictId: deck.id
+    };
+  }
   const canCloud = Boolean(supabaseClient && isSignedIn);
   let label, cls, title;
   if (!canCloud) {
@@ -7505,9 +7717,6 @@ function deckSyncStatus(deck, cloudById, cloudOnly = false) {
         // exists to stop.
         label = "Notes not synced"; cls = "sync-error";
         title = "Cards synced, but notes did not — run supabase_setup.sql in Supabase.";
-      } else if (deck.notesConflicted) {
-        label = "Notes conflict"; cls = "sync-error";
-        title = "A newer notes edit from another device replaced yours here — your copy was kept, see Sync Now for details.";
       } else {
         label = "Synced"; cls = "sync-ok";
         title = "In sync with the cloud.";
@@ -7518,7 +7727,7 @@ function deckSyncStatus(deck, cloudById, cloudOnly = false) {
 }
 
 function deckSyncStatusCell(deck, cloudById) {
-  const { label, cls, title } = deckSyncStatus(deck, cloudById);
+  const { label, cls, title, conflictId } = deckSyncStatus(deck, cloudById);
   const td = document.createElement("td");
   td.dataset.label = "Sync";
   td.classList.add("my-deck-sync", cls);
@@ -7527,7 +7736,23 @@ function deckSyncStatusCell(deck, cloudById) {
   // cell instead of drawing a badge.
   const pill = document.createElement("span");
   pill.textContent = label;
-  td.append(pill);
+  // The one status that is an unanswered question rather than a report, so it's
+  // the one that opens something. A real <button> so it's reachable by keyboard
+  // and announced as actionable; stopPropagation because the row itself loads
+  // the deck, and picking a version is not that.
+  if (conflictId) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "my-deck-sync-action";
+    button.append(pill);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      showNotesConflictModal(conflictId);
+    });
+    td.append(button);
+  } else {
+    td.append(pill);
+  }
   td.title = title;
   return td;
 }
@@ -10153,6 +10378,43 @@ function enhanceCodeBlocks(roots) {
   });
 }
 
+// Flags every display equation that carries an equation number, because two
+// things in this app quietly break KaTeX's numbering and both of them are only
+// worth correcting where a number actually exists.
+//
+// 1. The number is drawn by a pure CSS counter — katex.css has
+//    `body{counter-reset:katexEqnNo}` and `.eqn-num:before{content:"("
+//    counter(katexEqnNo) ")";counter-increment:katexEqnNo}`. But
+//    `content-visibility: auto` on every top-level notes block (see
+//    .notes-rendered > * in styles.css) implies STYLE containment, and style
+//    containment scopes counters to the contained subtree. Each block therefore
+//    started its own katexEqnNo, so every numbered equation in a note rendered
+//    as "(1)". The block holding one opts out of content-visibility; blocks
+//    without equations keep it, and since they never touch the counter the
+//    numbering across the ones that do stays continuous.
+//
+// 2. KaTeX lays a multi-line environment's whole number column out as ONE
+//    absolutely-positioned `.tag` pinned to `right: 0` of `.katex-html`, which
+//    is a block and so only as wide as the visible container — not as wide as
+//    the (white-space: nowrap) formula. `.math-display` is an overflow-x scroll
+//    container, so on a narrow screen a formula wider than the viewport slid
+//    straight underneath its own equation numbers. See .katex-display.has-eqn-num
+//    in styles.css for the sizing that re-anchors them past the real content.
+function markNumberedEquations(scope) {
+  scopedQueryAll(scope, ".katex-display").forEach((display) => {
+    // .eqn-num is an auto-numbered row (align/gather/equation); a bare .tag
+    // holds a hand-written \tag{...}, which has the same overlap problem but
+    // no counter to fix.
+    if (!display.querySelector(".eqn-num, .katex-html > .tag")) return;
+    display.classList.add("has-eqn-num");
+    const surface = display.closest(".notes-rendered");
+    if (!surface) return;
+    let block = display;
+    while (block.parentElement && block.parentElement !== surface) block = block.parentElement;
+    block.classList.add("has-eqn-num-block");
+  });
+}
+
 // `roots` (optional) narrows every pass to the nodes the incremental renderer
 // just created; omit it to enhance the whole container, which is what the
 // export/print paths and every non-incremental surface do.
@@ -10204,6 +10466,10 @@ async function enhanceRenderedMarkdown(container, roots = null) {
       throwOnError: false
     });
   });
+
+  // After BOTH math passes, so a numbered equation is caught whether it came
+  // through protectMath or the \[…\] safety net above.
+  markNumberedEquations(scope);
 
   // Diagrams get their shell (and so their Zoom pill and resize grip) up front,
   // even when the drawing itself is deferred — the shell is what reserves the
@@ -11941,16 +12207,78 @@ function isProgrammaticNotesScroll() {
 // screen. Re-rendering the SAME note (an edit commit, a cloze toggle, an image
 // finishing its upload) deliberately leaves the scroll alone — you get put back
 // where you were reading.
-function renderNotesView() {
+//
+// `sameNote` says so explicitly, and it matters. The bookkeeping below used the
+// SOURCE STRING as a stand-in for note identity, which cannot tell "a different
+// note opened" from "this note was just edited in place" — every edit read as a
+// swap. That is what made highlighting jump: the measured block estimate was
+// thrown away and re-derived, which re-sized every off-screen block, including
+// the ones ABOVE the viewport, and the content the reader was looking at slid
+// out from under them (see the note on measureNotesBlockEstimate). Callers that
+// mutate the open note pass sameNote so the estimate and the deferred-work queue
+// survive an edit that changed one block out of hundreds.
+function renderNotesView({ sameNote = false } = {}) {
   if (!el.notesView) return Promise.resolve();
-  // A different note replaces every block, so everything queued against the old
-  // one describes nodes that are about to be detached. Released here, while we
-  // can still name the root, rather than left for the next render to notice.
-  if (notesScrolledSource !== state.notes) releaseDeferredWork(el.notesView);
-  notesScrolledSource = state.notes;
-  syncNotesBlockEstimateSource();
+  if (sameNote) {
+    // Same document, so the existing estimate still describes it and the queued
+    // work still points at live nodes. Both trackers are moved onto the new text
+    // so the next ordinary render doesn't mistake this edit for a swap. Nodes
+    // that DID get replaced are unobserved by releaseDetachedDeferredWork() on
+    // the next deferral pass, so skipping the wholesale release leaks nothing.
+    notesScrolledSource = state.notes;
+    notesBlockEstimateSource = state.notes;
+  } else {
+    // A different note replaces every block, so everything queued against the old
+    // one describes nodes that are about to be detached. Released here, while we
+    // can still name the root, rather than left for the next render to notice.
+    if (notesScrolledSource !== state.notes) releaseDeferredWork(el.notesView);
+    notesScrolledSource = state.notes;
+    syncNotesBlockEstimateSource();
+  }
   return renderMarkdown(el.notesView, state.notes, true)
     .then(() => resetClozeButton(el.clozeToggleNotesBtn));
+}
+
+// Repaint the open note without the reader appearing to move at all.
+//
+// Distinct from preserveNotesReadingPosition, which pulls its anchor TO the
+// reading line — right for a width change, wrong here: highlighting a sentence
+// must not also scroll the sentence to a different part of the screen. So this
+// measures where an anchor block sits, lets the render happen, and corrects
+// scrollTop by however far that same block moved. If nothing moved, nothing is
+// written.
+//
+// Two anchors are captured because the block under the reading line may be the
+// very one being edited, and an edited block is rebuilt rather than reused (see
+// patchRenderedBlocks) — its node is detached and its position unmeasurable
+// afterwards. The preceding sibling is unchanged by definition and stands in.
+function renderNotesViewPinned() {
+  const view = el.notesView;
+  if (!view || view.hidden) return renderNotesView({ sameNote: true });
+
+  const at = blockAtNotesReadingLine();
+  const anchors = [];
+  [at, at?.previousElementSibling].forEach((node) => {
+    if (node && view.contains(node)) anchors.push({ node, top: node.getBoundingClientRect().top });
+  });
+
+  const done = renderNotesView({ sameNote: true });
+  if (!anchors.length) return done;
+  return done.then(() => new Promise((resolve) => {
+    // A frame later: the patched blocks have been laid out, and any block whose
+    // content-visibility state changed has settled.
+    requestAnimationFrame(() => {
+      const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
+      if (anchor) {
+        const drift = anchor.node.getBoundingClientRect().top - anchor.top;
+        if (drift) {
+          markProgrammaticNotesScroll();
+          view.scrollTop += drift;
+        }
+      }
+      resolve();
+    });
+  }));
 }
 
 // UI-only exit from notes edit mode. Deliberately does NOT copy the textarea
@@ -16529,7 +16857,10 @@ function renderTargetConfig(target) {
         state.notes = v;
         if (el.notesEdit) el.notesEdit.value = v;
       },
-      rerender: () => renderNotesView(),
+      // Everything routed through here (highlight, erase, cloze, the rendered
+      // formatting toolbar) edits the note the reader is looking at, so it
+      // repaints in place and leaves them exactly where they were.
+      rerender: () => renderNotesViewPinned(),
     };
   }
   const side = target === "answer" ? "answer" : "question";
@@ -19826,6 +20157,11 @@ function setSyncIndicator(stateName) {
   if (!hasActiveDeck()) {
     node.textContent = "";
     node.dataset.state = "idle";
+    // An empty pill must not keep whatever the last deck left behind, or it
+    // stays clickable and opens a resolver for a deck nobody has open.
+    node.dataset.action = "";
+    node.dataset.conflictDeck = "";
+    node.style.pointerEvents = "";
     return;
   }
   const labels = {
@@ -19843,6 +20179,8 @@ function setSyncIndicator(stateName) {
   };
   let resolvedState = stateName === "signin" ? "saved" : stateName;
   let text = labels[stateName] || "";
+  // Which deck the pill would open the notes-conflict resolver for, if any.
+  let conflictId = "";
   if (stateName === "synced" && state.localDeckId) {
     const localMeta = readLocalDeckIndex().find((m) => m.id === state.localDeckId);
     // Timestamps alone (all this state normally reflects) can't tell "fully
@@ -19854,7 +20192,11 @@ function setSyncIndicator(stateName) {
       text = "Notes not synced";
     } else if (localMeta?.notesConflicted) {
       resolvedState = "error";
-      text = "Notes conflict — see Sync Now";
+      // Was "see Sync Now", which led nowhere: a second sync finds the deck
+      // already matching, so it logs nothing and renders no report — and the
+      // report was the only thing that ever carried a way out.
+      text = "Notes conflict — tap to fix";
+      conflictId = state.localDeckId;
     } else {
       const relative = formatRelativeTime(localMeta?.lastSyncedAt);
       if (relative) text += ` · ${relative}`;
@@ -19862,17 +20204,20 @@ function setSyncIndicator(stateName) {
   }
   node.dataset.state = resolvedState;
   node.textContent = text;
-  // Only the signed-out pill is actionable, and it says "tap to sign in", so it
-  // has to actually do that.
-  node.style.pointerEvents = resolvedState === "signedout" ? "auto" : "";
+  // Two pills say "tap to …", so both have to accept a tap. Everything else is
+  // a status report and stays inert.
+  node.dataset.action = resolvedState === "signedout" ? "signin" : (conflictId ? "notes-conflict" : "");
+  node.dataset.conflictDeck = conflictId;
+  node.style.pointerEvents = node.dataset.action ? "auto" : "";
   renderSyncCountdown();
 }
 
 // Delegated once rather than re-bound on every pill repaint (setSyncIndicator
 // rewrites textContent constantly).
 el.syncIndicator?.addEventListener("click", () => {
-  if (el.syncIndicator.dataset.state !== "signedout") return;
-  showLoginScreen();
+  const action = el.syncIndicator.dataset.action;
+  if (action === "signin") showLoginScreen();
+  else if (action === "notes-conflict") showNotesConflictModal(el.syncIndicator.dataset.conflictDeck);
 });
 
 // Sets the resting state of the pill (used after a deck loads, when there are no
@@ -20220,10 +20565,22 @@ async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     const notesBeingEmptied = String(oldSnapshot.notes || "").trim() && !snapshot.notes.trim();
     if ((localNotesEdited || notesBeingEmptied) && String(oldSnapshot.notes || "").trim()) {
       notesConflicted = true;
+      // There is one stash slot per deck, and this used to write straight over
+      // it — so a second conflict arriving before the first was answered
+      // silently destroyed the copy the first one had rescued, which is the one
+      // thing this whole mechanism exists to prevent. An unanswered stash is
+      // kept and the new losing copy appended below it, so the slot only ever
+      // grows until the reader resolves it.
+      const previous = await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
+      const carried = previous && String(previous.notes || "").trim() ? String(previous.notes) : "";
+      const losing = String(oldSnapshot.notes || "");
+      const when = previous?.savedAt ? new Date(previous.savedAt).toLocaleString() : "an earlier sync";
       writeDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX, {
         savedAt: new Date().toISOString(),
         deckTitle: oldSnapshot.deckTitle || "",
-        notes: oldSnapshot.notes || ""
+        notes: carried && carried.trim() !== losing.trim()
+          ? `${losing}\n\n---\n\n## Also replaced, on ${when}\n\n${carried}\n`
+          : losing
       });
     }
   }
@@ -20687,7 +21044,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
         // The rewrite touched state as well as the snapshots, so repaint — the
         // on-screen copy is otherwise still pointing at the blob placeholder.
         showCard();
-        renderNotesView();
+        renderNotesViewPinned();
       }
     } catch (error) {
       console.warn("Could not deliver queued images", error);
@@ -28074,7 +28431,7 @@ if (helpModal) {
 // bundle under the new URL, and the old function then reported the new stamp
 // while old code ran — so the modal cheerfully said "You're up to date ✓" to
 // exactly the users who were not. Bump this with the other three (CI enforces).
-const BUILD_STAMP = "20260808-05";
+const BUILD_STAMP = "20260809-01";
 
 // The running build's version. Normally the constant above; "unknown" only if
 // this file was somehow loaded without one.
@@ -31025,7 +31382,7 @@ function clozeNotesTableColumn(tableIndex, colIndex) {
   state.notes = lines.join("\n");
   if (el.notesEdit) el.notesEdit.value = state.notes;
   scheduleDeckAutosave();
-  renderNotesView();
+  renderNotesViewPinned();
   showToast(`Clozed ${changed} cell${changed === 1 ? "" : "s"}`);
   renderClozePanel();
 }

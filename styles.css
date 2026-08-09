@@ -1784,6 +1784,107 @@ button:disabled {
   background: color-mix(in srgb, var(--accent, #4a9eff) 24%, transparent);
 }
 
+/* ── Notes-conflict resolver (showNotesConflictModal in app.js) ──────────── */
+
+/* A bare wrapper: the pill inside keeps all the appearance, this only makes it
+   a real button so the conflict is reachable by keyboard as well as by tap.
+   inline-flex rather than a button's default inline-block because at the mobile
+   breakpoint the Sync cell itself becomes a flex container — a block-level
+   wrapper would be stretched to the row's cross size and the pill would float
+   inside a box taller than itself. */
+.my-deck-sync-action {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.my-deck-sync-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.notes-conflict-intro {
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.notes-conflict-versions {
+  display: grid;
+  gap: 12px;
+  /* Side by side where there's room to compare them, stacked on a phone. */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-bottom: 16px;
+}
+
+.notes-conflict-version h3 {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.notes-conflict-preview {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  /* The previews are raw markdown, so long lines have to wrap rather than push
+     the modal sideways. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.notes-conflict-empty {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 0.82rem;
+}
+
+.notes-conflict-choices {
+  display: grid;
+  gap: 8px;
+}
+
+/* .sync-modal-btn is built for a one-word footer button — centred, single line,
+   fixed height. These carry a title and a line of consequence underneath, so
+   they get laid out as blocks instead. */
+.notes-conflict-choices .sync-modal-btn {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-height: 0;
+  padding: 10px 12px;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.notes-conflict-choices .sync-modal-btn span {
+  font-weight: 500;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.notes-conflict-choices .sync-modal-btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 .sync-modal-btn {
   min-width: 80px;
 }
@@ -2700,6 +2801,41 @@ button:disabled {
   touch-action: pan-x pan-y;
 }
 
+/* Numbered display math (\begin{align}, \begin{equation}, \tag{…}), flagged by
+   markNumberedEquations() in app.js.
+
+   KaTeX draws the entire number column as ONE absolutely-positioned .tag pinned
+   to `right: 0` of .katex-html. That works while the formula fits, because
+   .katex-html is a block and its right edge is the container's right edge. It
+   fails on a phone: .math-display above is an overflow-x scroll container and
+   .katex is `white-space: nowrap`, so a multi-line environment wider than the
+   screen overflows PAST that anchor and the numbers end up sitting on top of the
+   equation instead of beside it (and don't move when you scroll it sideways).
+
+   Making the inner box shrink-to-fit re-anchors `right: 0` to the end of the
+   real content, while `min-width: 100%` keeps a formula that does fit centred
+   exactly as before. The symmetric gutter then keeps the number clear of the
+   longest row rather than butted against it — `right: 0` resolves against the
+   padding box, so the tag sits in the gutter and the formula stays centred
+   between the two. Scoped to .has-eqn-num so ordinary display math, which has no
+   tag to make room for, keeps the full width. */
+.katex-display.has-eqn-num > .katex {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.katex-display.has-eqn-num > .katex > .katex-html {
+  padding-inline: 3.4em;
+}
+
+/* Phones give up more of the line to that gutter than they can spare, and the
+   number itself only needs to clear the glyphs. */
+@media (max-width: 560px) {
+  .katex-display.has-eqn-num > .katex > .katex-html {
+    padding-inline: 2.6em;
+  }
+}
+
 .rendered img {
   max-width: var(--visual-max-width, 100%);
   height: auto;
@@ -3572,7 +3708,10 @@ svg.nomnoml-light-svg [fill="none"] {
   font-size: 0.72rem;
   white-space: nowrap;
 }
-.my-decks-table td.my-deck-sync > span,
+/* The pill is a direct child normally, and the child of a <button> when the
+   status is actionable (see deckSyncStatusCell — a notes conflict opens the
+   resolver), so this reaches through either. */
+.my-decks-table td.my-deck-sync span,
 .deck-tile-sync {
   display: inline-flex;
   align-items: center;
@@ -3588,7 +3727,7 @@ svg.nomnoml-light-svg [fill="none"] {
   color: var(--sync-tone, var(--muted));
   background: color-mix(in srgb, var(--sync-tone, var(--muted)) 14%, transparent);
 }
-.my-decks-table td.my-deck-sync > span::before,
+.my-decks-table td.my-deck-sync span::before,
 .deck-tile-sync::before {
   content: "";
   width: 6px;
@@ -11240,7 +11379,7 @@ kbd {
   .my-decks-table td[data-label="Sync"] {
     font-size: 0.68rem;
   }
-  .my-decks-table td.my-deck-sync > span {
+  .my-decks-table td.my-deck-sync span {
     padding: 1px 6px;
     font-size: 0.64rem;
   }
@@ -11700,8 +11839,20 @@ kbd {
    Deliberately NOT applied to diagrams (.diagram-shell) or tables
    (.markdown-table-wrap): both are already deferred in JS off their own
    IntersectionObserver, which needs their geometry to stay real, and paint
-   containment would clip an image mid-resize-drag. */
-.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap) {
+   containment would clip an image mid-resize-drag.
+
+   Nor to a block holding a numbered equation (.has-eqn-num-block, set by
+   markNumberedEquations() in app.js). content-visibility implies STYLE
+   containment, and style containment scopes counters — while KaTeX numbers
+   equations with a plain CSS counter rooted at <body>. Every contained block
+   therefore started the counter afresh and every equation in the note rendered
+   as "(1)". The exclusion lives in this selector rather than in a later
+   override because the :not()s above give this rule a specificity of (0,3,0),
+   which a separate `.notes-rendered > .has-eqn-num-block` rule (0,2,0) loses to
+   no matter where it sits. Blocks without equations keep their containment and
+   never touch the counter, so numbering across the ones that do stays
+   continuous. */
+.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block) {
   content-visibility: auto;
   contain-intrinsic-size: auto var(--notes-block-estimate, 120px);
 }
