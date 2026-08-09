@@ -28751,7 +28751,7 @@ if (helpModal) {
 // bundle under the new URL, and the old function then reported the new stamp
 // while old code ran — so the modal cheerfully said "You're up to date ✓" to
 // exactly the users who were not. Bump this with the other three (CI enforces).
-const BUILD_STAMP = "20260809-02";
+const BUILD_STAMP = "20260810-02";
 
 // The running build's version. Normally the constant above; "unknown" only if
 // this file was somehow loaded without one.
