@@ -17892,13 +17892,23 @@ function beginImageResize(event, shell, img, onCommit, refEl, bounds = null) {
   };
 
   shell.classList.add("is-resizing");
-  const onMove = (e) => {
-    const dx = e.clientX - startX;
+  // Native pointermove can fire well past 60/sec; writing style.width straight
+  // from the event forces a layout on every one of them. rAF-batch it to at
+  // most one write per rendered frame, keeping only the latest pointer x.
+  let pendingEvent = null;
+  let rafId = null;
+  const applyMove = () => {
+    rafId = null;
+    const dx = pendingEvent.clientX - startX;
     widthPx = Math.min(maxWidth, Math.max(minWidth, Math.round(startWidth + dx)));
     img.style.setProperty("--notes-img-w", `${widthPx}px`);
     img.style.width = `${widthPx}px`;
     img.classList.add("has-custom-size");
     paintBadge();
+  };
+  const onMove = (e) => {
+    pendingEvent = e;
+    if (rafId == null) rafId = requestAnimationFrame(applyMove);
   };
   // A single teardown for every way the drag can end. Without also handling
   // pointercancel (fired when a touch/pen gesture is interrupted — scroll
@@ -17910,6 +17920,7 @@ function beginImageResize(event, shell, img, onCommit, refEl, bounds = null) {
   const end = (commit) => {
     if (finished) return;
     finished = true;
+    if (rafId != null) cancelAnimationFrame(rafId);
     document.removeEventListener("pointermove", onMove);
     document.removeEventListener("pointerup", onUp);
     document.removeEventListener("pointercancel", onCancel);

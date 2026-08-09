@@ -869,7 +869,7 @@ button:disabled {
   gap: 0;
   background: color-mix(in srgb, var(--panel-2) 97%, var(--accent));
   border-right: 1px solid color-mix(in srgb, var(--line) 70%, var(--accent));
-  box-shadow: 6px 0 40px rgba(0, 0, 0, 0.55);
+  box-shadow: 6px 0 24px rgba(0, 0, 0, 0.55);
   transform: translateX(-110%);
   transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
   overflow-y: auto;
@@ -2108,7 +2108,6 @@ button:disabled {
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
   z-index: 499;
-  backdrop-filter: blur(2px);
 }
 
 .mobile-backdrop.is-open {
@@ -9736,6 +9735,12 @@ textarea {
   border-radius: var(--input-radius) !important;
   overflow: auto !important;
   pointer-events: none !important;
+  /* Own compositor layer: this is a second scroller kept in sync with the
+     textarea purely by JS writing scrollTop/scrollLeft (syncScroll in
+     app.js), so every scroll frame exposes new span-heavy content that has
+     to be painted. Without containment the browser can repaint more than
+     just the newly-exposed strip. */
+  contain: paint;
 }
 
 .edit-textarea {
