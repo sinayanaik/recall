@@ -1506,6 +1506,11 @@ async function loadWebDeck(deckId) {
     // flight — that newer load already owns the view. Applying this response
     // now would yank the screen back to the deck the user left.
     if (loadToken !== activeDeckLoadToken) return;
+    // Flush the outgoing deck's debounced keystrokes while `state` still
+    // describes it — see flushPendingDeckAutosave — then re-check the token,
+    // because that flush is another await.
+    await flushPendingDeckAutosave();
+    if (loadToken !== activeDeckLoadToken) return;
 
     const statusById = {};
     const categoryById = {};
@@ -1533,6 +1538,10 @@ async function loadWebDeck(deckId) {
     state.current = 0; // always start from the first card on fresh load
     state.deckTitle = deckData.title || "";
     state.deckCategory = normalizeDeckCategory(deckData.category);
+    // MUST come before state.notes is replaced — the loadDeckSnapshot sibling
+    // of this line explains why an open raw editor outlives a deck swap and
+    // what it overwrites when it does.
+    discardNotesEditingForDeckSwap();
     // Pre-migration databases have no notes column; select("*") just omits it.
     state.notes = String(deckData.notes || "");
     state.sourceTitle = deckData.title || "";
@@ -4105,7 +4114,19 @@ const OVERLAY_LAYERS = [
   // The notes table-of-contents drawer is LAST, unlike the hamburger drawer
   // above: at z-index 40 it is underneath every panel and dialog here, so any
   // of them opened over it must take the press first.
-  { isOpen: () => isNotesTocOpen(), close: () => closeNotesToc() }
+  { isOpen: () => isNotesTocOpen(), close: () => closeNotesToc() },
+
+  // The raw markdown editor, below even the TOC drawer — it is inline content,
+  // not an overlay, so everything above genuinely sits on top of it and takes
+  // the press first. It belongs in this list all the same: a Back press with
+  // the editor open used to walk straight past it into goNavBack(), loading
+  // another deck UNDERNEATH a textarea still showing the note being left. (The
+  // deck loaders now discard the editor on their own, so this is no longer the
+  // data-loss path it was — but "Back closes the thing on screen" is the right
+  // behaviour regardless, and it costs one extra press to leave a note you were
+  // editing.) commitNotesEditIfActive writes the textarea back, re-renders and
+  // schedules the save, which is exactly what a Back press should mean here.
+  { isOpen: () => isNotesEditing(), close: () => commitNotesEditIfActive() }
 ];
 
 // Is there anything on screen that a Back press should dismiss rather than
@@ -9442,19 +9463,101 @@ function applyClozeMarkup(text) {
 // have gone stale against the very text it describes.
 //
 // Written as  [[Visible title|target]]  where target is one of
-//   ld_xxxxx           a deck in this device's library
-//   <uuid>             a deck that so far only exists in the cloud
+//   <deckId>           a deck's CLOUD id — the portable form, always preferred
+//   ld_xxxxx           a deck in this device's library, when it has no cloud id
 //   …#heading-slug     either of the above, scrolled to a heading
 //   qn:<cardId>        a single quick_notes pin
 // The target is optional: [[Chain Rule]] resolves by title instead, which is
 // what a link typed by hand looks like. The picker always writes the id form,
 // so links it makes survive the note being renamed.
 //
+// ── Why the target has to prefer the cloud id ───────────────────────────────
+// A deck carries two ids, and only one of them means anything on a second
+// device. `localId` is minted by generateLocalDeckId() from Date.now() plus a
+// random suffix, per device, and a deck arriving by sync is given a DIFFERENT
+// one on the receiving device (`ld_cloud_<deckId>`, see
+// pullCloudDeckIntoLibraryLocked). `deckId` is `decks.id` and is the same
+// string everywhere.
+//
+// The picker used to write `entry.localId || entry.deckId` — i.e. the
+// device-local id whenever the deck existed locally, which is essentially
+// always. `decks.notes` syncs verbatim and nothing rewrites link targets, so
+// every such link resolved on exactly one device and greyed out as broken on
+// all the others (and took the "Linked from" backlinks with it). Two halves fix
+// it, and both are needed:
+//
+//   1. Write the portable id going forward — noteLinkMarkupFor / noteLinkIdFor
+//      below. A deck that has never been pushed still has no deckId, so the
+//      localId remains the fallback.
+//   2. Resolve the ids ALREADY written into people's notes, which no amount of
+//      writing new links can help. Each device records its own localId for a
+//      deck in that deck's `meta.linkIds`, which syncs with everything else in
+//      the meta bag; noteLinkEntryMatchesId then accepts any id the deck has
+//      ever been known by, on any device. This is why nothing has to rewrite
+//      the user's markdown to repair it.
+//
 // Nothing here has to worry about code: preprocessSpecialBlocks has already cut
 // ``` fences out of the text this ever sees, and protectInline (below) skips
 // inline `code` spans — so documenting the syntax by writing `[[x]]` in
 // backticks leaves it alone, exactly as it does for {{cloze}} and $math$.
 const NOTE_LINK_PATTERN = /\[\[([^[\]\n|]+?)(?:\|([^[\]\n]*?))?\]\]/g;
+
+// How many device-local ids one deck remembers. Each device contributes exactly
+// one, so this is "the last 8 devices to open this deck" — far past what anyone
+// syncs across, and small enough that the meta bag can't grow without bound on
+// a deck that has been around for years.
+const NOTE_LINK_ALIAS_LIMIT = 8;
+
+// Every id this deck answers to: the ids other devices minted for it
+// (meta.linkIds), plus this device's own. Deduped, and never containing a falsy
+// entry — an empty id would match every link with no target at all.
+//
+// SORTED, which matters more than it looks. The result is a pure function of the
+// SET of ids, so two devices holding the same set always produce a byte-identical
+// array. Keeping insertion order instead (this device's id first, as the obvious
+// version did) meant A wrote [A,B] and B rewrote it as [B,A] — the same set,
+// endlessly reordered, each rewrite dirtying the deck for the other to undo.
+// The cap is applied after sorting for the same reason: which ids survive must
+// not depend on who is doing the capping.
+function noteLinkAliasesFor(meta, localId) {
+  const seen = new Set();
+  const add = (id) => {
+    const value = String(id || "").trim();
+    if (value) seen.add(value);
+  };
+  add(localId);
+  const existing = meta && Array.isArray(meta.linkIds) ? meta.linkIds : [];
+  for (const id of existing) add(id);
+  return [...seen].sort().slice(0, NOTE_LINK_ALIAS_LIMIT);
+}
+
+// Does this link-index entry answer to `id`? The one place that question is
+// asked, so resolution, the broken-link styling and the backlinks panel cannot
+// drift into three different answers — which is precisely how a link could open
+// while still being drawn as broken.
+function noteLinkEntryMatchesId(entry, id) {
+  if (!entry || !id) return false;
+  if (entry.localId === id || entry.deckId === id) return true;
+  return Array.isArray(entry.aliasIds) && entry.aliasIds.includes(id);
+}
+
+// The target string to WRITE for a deck. Prefers the cloud id, which means the
+// same deck on every device; falls back to the local one only for a deck that
+// has never been pushed (and whose localId therefore syncs into meta.linkIds
+// the moment it is, keeping even those links resolvable elsewhere).
+function noteLinkIdFor(entry) {
+  if (!entry) return "";
+  if (entry.pinId) return `qn:${entry.pinId}`;
+  return String(entry.deckId || entry.localId || "");
+}
+
+// A complete `[[Label|id]]` for a deck, sanitized. Shared by every writer so
+// they cannot disagree about which id form gets recorded.
+function noteLinkMarkupFor(entry, label = null) {
+  const shown = sanitizeNoteLinkLabel(label != null ? label : entry?.title);
+  const id = noteLinkIdFor(entry);
+  return id ? `[[${shown}|${id}]]` : `[[${shown}]]`;
+}
 
 // What a pipe-less label READS as. "#" is syntax, not something to show: a
 // hand-written [[Chain Rule#Proof]] displays as "Chain Rule › Proof", and
@@ -10155,10 +10258,24 @@ function markMissingNoteLinks(scope) {
       // as the deck index is concerned. Comparing the whole label against deck
       // titles would grey out both as broken.
       const hash = label.indexOf("#");
-      const title = (hash === -1 ? label : label.slice(0, hash)).trim().toLowerCase();
+      const title = (hash === -1 ? label : label.slice(0, hash)).trim();
+      // Must reach the SAME verdict resolveNoteLink would, including its
+      // unique-title fallback — a link drawn as broken that opens perfectly
+      // well is its own bug, and the two tests drifting apart is how that
+      // happens. Both go through noteLinkEntryMatchesId / noteLinkEntriesByTitle.
       const found = parts.id
-        ? index.some((entry) => entry.localId === parts.id || entry.deckId === parts.id)
-        : !title || index.some((entry) => entry.title.trim().toLowerCase() === title);
+        ? index.some((entry) => noteLinkEntryMatchesId(entry, parts.id))
+          || noteLinkEntriesByTitle(index, label).length === 1
+        : !title || noteLinkEntriesByTitle(index, title).length > 0;
+      // An index that couldn't reach the account is missing every cloud-only
+      // deck, so it cannot say an id doesn't exist — only that it isn't in the
+      // half we have. Leave those links in their normal state: neutral is
+      // honest, grey is a claim. Title-form links are unaffected; they were
+      // never resolvable against decks this device has not pulled anyway.
+      if (!found && parts.id && !index.cloudComplete) {
+        link.classList.remove("is-missing");
+        continue;
+      }
       link.classList.toggle("is-missing", !found);
     }
   }).catch((error) => console.warn("Could not check note links", error));
@@ -11838,7 +11955,11 @@ function renderNotesView() {
 
 // UI-only exit from notes edit mode. Deliberately does NOT copy the textarea
 // into state.notes — the textarea's input listener keeps state in sync while
-// typing, and deck-load paths call this after state.notes was already replaced.
+// typing, so by the time anything calls this the two already agree.
+//
+// It also does NOT clear the textarea, because commitNotesEditIfActive reads
+// .value immediately before calling this. A deck swap needs the value gone as
+// well and must call discardNotesEditingForDeckSwap instead.
 function resetNotesEditingUI() {
   if (!isNotesEditing()) return;
   el.notesEdit.hidden = true;
@@ -11848,6 +11969,27 @@ function resetNotesEditingUI() {
   el.editNotesBtn.classList.remove("is-editing");
   el.editNotesBtn.title = "Edit notes";
   hideNotesSelectionButton();
+}
+
+// Leave raw edit mode because the note underneath is being REPLACED, not
+// because the user finished editing.
+//
+// A deck swap reassigns state.notes wholesale, but the <textarea> is not part
+// of `state` and nothing else resets it: setViewMode only calls
+// resetNotesEditingUI on the way to the CARDS view, and enterNotesEditing
+// returns immediately when the editor is already open, so the incoming note
+// never reaches the textarea. That left the editor showing the note being left
+// while state.localDeckId already pointed at the new deck — and the very next
+// keystroke (`state.notes = el.notesEdit.value`) copied the old note's whole
+// body into the new deck, which the autosave then made permanent. Clearing
+// .value is the load-bearing half: resetNotesEditingUI only hides the element.
+function discardNotesEditingForDeckSwap() {
+  if (!isNotesEditing()) return;
+  el.notesEdit.value = "";
+  // The mirror holds its own copy of the text (see refreshHighlightBackdrop);
+  // left alone it keeps painting the old note behind the empty textarea.
+  refreshHighlightBackdrop(el.notesEdit);
+  resetNotesEditingUI();
 }
 
 function commitNotesEditIfActive() {
@@ -12641,6 +12783,20 @@ function setViewMode(mode) {
     // then scrolls to the anchor a couple of frames later, and resetting on the
     // render's promise would yank that jump back to the top.
     if (el.notesView && state.notes !== notesScrolledSource) el.notesView.scrollTop = 0;
+    // Last-resort net for the deck-swap hazard described on
+    // discardNotesEditingForDeckSwap. The two deck loaders discard the editor
+    // explicitly and before the swap, which is strictly better — but several
+    // other paths replace state.notes wholesale too (import, "new deck",
+    // combine, delete-active-deck), and every one of them lands here. If the
+    // editor somehow survived holding different text, it is showing a note
+    // that is no longer open: re-seed it rather than let the next keystroke
+    // write it back. Normally an O(1) identity compare — the input listener
+    // makes these the very same string object.
+    if (isNotesEditing() && el.notesEdit.value !== state.notes) {
+      el.notesEdit.value = state.notes;
+      refreshHighlightBackdrop(el.notesEdit);
+      el.notesEdit.setSelectionRange(0, 0);
+    }
     renderNotesView();
     if (!state.notes.trim()) enterNotesEditing();
   } else if (highlightsActive) {
@@ -13227,6 +13383,16 @@ async function findBacklinksToOpenNote() {
   const deckId = state.deckId;
   const title = String(state.deckTitle || "").trim().toLowerCase();
   if (!localId && !deckId) return [];
+  // The open note as the link index sees it, so "does this link point here?"
+  // is the same question noteLinkEntryMatchesId answers everywhere else. Links
+  // written on another device carry an id only that device minted, and without
+  // the alias set every one of them was invisible here — "Linked from" came up
+  // empty on exactly the devices where the links themselves looked broken.
+  const self = {
+    localId,
+    deckId,
+    aliasIds: readLocalDeckIndex().find((entry) => entry.id === localId)?.linkIds || []
+  };
 
   const hits = [];
   await forEachDeckSnapshot((id, snapshot) => {
@@ -13240,7 +13406,7 @@ async function findBacklinksToOpenNote() {
       // against the title and never register as a backlink.
       const labelTitle = String(match[1]).split("#")[0].trim().toLowerCase();
       const points = target.id
-        ? (target.id === localId || (deckId && target.id === deckId))
+        ? noteLinkEntryMatchesId(self, target.id)
         // A title-form link only counts when it has no id at all — one that
         // names a different note is not pointing here.
         : (title && labelTitle === title);
@@ -14601,6 +14767,11 @@ async function loadNoteLinkIndex() {
       entries.push({
         localId: meta.id,
         deckId: meta.deckId || null,
+        // Every OTHER id this deck has been known by, on this device or any
+        // other — the ids already baked into links in people's notes. Without
+        // these, a link written on one device is unresolvable on the rest; see
+        // the note-reference header.
+        aliasIds: Array.isArray(meta.linkIds) ? meta.linkIds : [],
         title: String(meta.title || "Untitled"),
         category: normalizeDeckCategory(meta.category)
       });
@@ -14608,25 +14779,38 @@ async function loadNoteLinkIndex() {
     // Then anything that exists only in the account — a note written on another
     // device and never opened here still has to be linkable, or the picker
     // would quietly disagree with My Decks about what exists.
+    //
+    // Whether this half ran, and whether it succeeded, is recorded on the
+    // returned array: an index missing every cloud-only deck can still answer
+    // "which notes can I link to", but it CANNOT answer "does this id exist" —
+    // and markMissingNoteLinks must not grey out a perfectly good link on the
+    // strength of a lookup that never happened. Signed out is not a partial
+    // index: there is no cloud half to be missing.
+    let cloudComplete = !(supabaseClient && isSignedIn);
     if (supabaseClient && isSignedIn && navigator.onLine) {
       try {
-        const { data, error } = await supabaseClient.from("decks").select("id, title, category");
+        // `meta` comes back for the alias set — a cloud-only deck still has to
+        // answer to the ids other devices wrote into their links for it.
+        const { data, error } = await supabaseClient.from("decks").select("id, title, category, meta");
         if (error) throw error;
         for (const deck of data || []) {
           if (!deck || seenCloud.has(String(deck.id))) continue;
           entries.push({
             localId: null,
             deckId: String(deck.id),
+            aliasIds: Array.isArray(deck.meta?.linkIds) ? deck.meta.linkIds : [],
             title: String(deck.title || "Untitled"),
             category: normalizeDeckCategory(deck.category)
           });
         }
+        cloudComplete = true;
       } catch (error) {
         // Offline or a failed round trip: the local half is still a useful
         // index, so degrade rather than fail.
         console.warn("Could not list cloud decks for note links", error);
       }
     }
+    entries.cloudComplete = cloudComplete;
     // Quick Notes pins are linkable too — they are often the scrap a longer
     // note is being written around. They come last and are labelled, so a
     // library of a few hundred pins can never bury the notes in the picker.
@@ -14681,6 +14865,18 @@ function parseNoteLinkTarget(target) {
   return { id: raw.slice(0, hash), heading: raw.slice(hash + 1), cardId: "" };
 }
 
+// Index entries whose title is exactly `wanted`, case- and space-insensitively.
+// Returns all of them, because "how many" is the whole question at the fallback
+// below — one match is an answer, two is a coin toss.
+//
+// The picker writes "Note › Heading" as the label of a heading link, so the
+// displayed name is trimmed back to the note's own title before comparing.
+function noteLinkEntriesByTitle(index, wanted) {
+  const name = String(wanted || "").split("›")[0].trim().toLowerCase();
+  if (!name) return [];
+  return index.filter((entry) => entry.title.trim().toLowerCase() === name);
+}
+
 // What a link points at, or null if nothing answers to it.
 //
 // The id is tried first and the title is only a fallback, which is what makes a
@@ -14693,11 +14889,21 @@ async function resolveNoteLink({ target, title }) {
   const index = await loadNoteLinkIndex();
 
   if (parts.id) {
-    const byId = index.find((entry) => entry.localId === parts.id || entry.deckId === parts.id);
+    const byId = index.find((entry) => noteLinkEntryMatchesId(entry, parts.id));
     if (byId) return { ...byId, heading: parts.heading, cardId: parts.cardId };
-    // An id that resolves to nothing means a deleted note, NOT an excuse to
-    // grab some other note that happens to share the title — silently landing
-    // on the wrong document is worse than saying the link is broken.
+    // An id that answers to nothing usually means a deleted note, and grabbing
+    // just any note that shares the title would be worse than admitting the
+    // link is broken — landing silently on the wrong document is the one
+    // outcome there is no way to notice.
+    //
+    // But it can also mean a link written on a device whose ids this one has
+    // never been told about (see the note-reference header: the alias set
+    // repairs those, and only once the other device has pushed since). So try
+    // the title — and only accept it when EXACTLY ONE note has that name. At
+    // one match there is no wrong document to land on; at two or more there is,
+    // and the link stays broken exactly as before.
+    const named = noteLinkEntriesByTitle(index, title);
+    if (named.length === 1) return { ...named[0], heading: parts.heading, cardId: parts.cardId };
     return null;
   }
 
@@ -14718,7 +14924,7 @@ async function resolveNoteLink({ target, title }) {
     }
   }
   if (!wanted) return null;
-  const byTitle = index.find((entry) => entry.title.trim().toLowerCase() === wanted.toLowerCase());
+  const byTitle = noteLinkEntriesByTitle(index, wanted)[0];
   return byTitle ? { ...byTitle, heading, cardId: parts.cardId } : null;
 }
 
@@ -14830,11 +15036,19 @@ function offerToCreateMissingNote(anchor, title) {
     showToast("That link doesn't point at anything", "error");
     return;
   }
+  // Which note the broken link is IN. The confirm modal and the folder picker
+  // are both awaited below, and rewriteNoteLinkTarget edits whatever note is
+  // open when it finally runs — which needs to be this one.
+  const startedIn = currentDeckKey();
   showConfirmModal(
     `There's no note called "${name}". Create it?`,
     async () => {
       const created = await createLinkedNoteFlow(name);
       if (!created) return;
+      if (currentDeckKey() !== startedIn) {
+        showToast(`Made "${created.title}", but you'd moved on — the link wasn't repointed`, "info");
+        return;
+      }
       // Repoint the link in the SOURCE TEXT, not just in the DOM: the rendered
       // anchor is rebuilt from the markdown on the next repaint, so a DOM-only
       // fix would last exactly one render and the link would go broken again.
@@ -14857,8 +15071,9 @@ function rewriteNoteLinkTarget(title, entry) {
     changed = true;
     // Sanitized like every other written label: a deck title carrying "|" or a
     // bracket would produce a link NOTE_LINK_PATTERN can no longer match, which
-    // renders as literal "[[…]]" text with no way back.
-    return `[[${sanitizeNoteLinkLabel(label)}|${entry.localId || entry.deckId}]]`;
+    // renders as literal "[[…]]" text with no way back. noteLinkMarkupFor also
+    // picks the portable id, so a link repaired here resolves on every device.
+    return noteLinkMarkupFor(entry, label);
   });
   if (!changed) return;
   state.notes = next;
@@ -14921,6 +15136,13 @@ function createLinkedNoteDeck({ title, category, body = "" }) {
     importTitleHint: title,
     deckId: null,
     localDeckId: localId,
+    // This deck has no cloud id yet — the push below is what mints one, and it
+    // resolves long after the caller has already written a link pointing here.
+    // That link therefore carries `localId`, so the alias has to go up with the
+    // deck or the link is unresolvable on every other device. Written here
+    // rather than left to the first autosave (resolveSaveTarget) because this
+    // path writes the snapshot itself and pushes it straight away.
+    meta: { linkIds: noteLinkAliasesFor(null, localId) },
     current: 0,
     cards: []
   };
@@ -14938,7 +15160,8 @@ function createLinkedNoteDeck({ title, category, body = "" }) {
       accessedAt: null,
       notesConflicted: false,
       notesSyncFailed: false,
-      deckId: null
+      deckId: null,
+      linkIds: snapshot.meta.linkIds
     },
     ...readLocalDeckIndex()
   ]);
@@ -15233,7 +15456,11 @@ function insertNoteLinkAtPicker(entry, headingSlug = "") {
   const textarea = el.notesEdit;
   if (!textarea || noteLinkPickerStart < 0) return;
   const caret = textarea.selectionStart;
-  const baseId = entry.pinId ? `qn:${entry.pinId}` : (entry.localId || entry.deckId || "");
+  // noteLinkIdFor, not `entry.localId || entry.deckId` — that preference was
+  // backwards, and every link written through this picker went into the
+  // markdown addressed by an id no other device had ever heard of. See the
+  // note-reference header.
+  const baseId = noteLinkIdFor(entry);
   const id = baseId && headingSlug ? `${baseId}#${headingSlug}` : baseId;
   const label = sanitizeNoteLinkLabel(
     headingSlug && entry.headingText ? `${entry.title} › ${entry.headingText}` : entry.title
@@ -15284,6 +15511,7 @@ async function commitNoteLinkPicker() {
   const start = noteLinkPickerStart;
   const caret = textarea.selectionStart;
   const title = row.title;
+  const startedIn = currentDeckKey();
   closeNoteLinkPicker();
   const created = await createLinkedNoteFlow(title);
   if (!created) {
@@ -15295,8 +15523,10 @@ async function commitNoteLinkPicker() {
   // link rewrite can rewrite the textarea while it is open. Splicing at a stale
   // offset would drop the reference into the middle of some other sentence, so
   // re-check that the "[[" we opened on is still where we left it and give up
-  // quietly rather than corrupt the note.
-  if (textarea.value.slice(start, start + 2) !== "[[" || caret > textarea.value.length) {
+  // quietly rather than corrupt the note. The deck check is the coarser half of
+  // the same guard: if the open note changed outright, the offsets describe a
+  // document that is no longer loaded.
+  if (currentDeckKey() !== startedIn || textarea.value.slice(start, start + 2) !== "[[" || caret > textarea.value.length) {
     textarea.focus();
     showToast(`Created "${created.title}" — the note changed while it was being made, so no link was inserted`, "info");
     return;
@@ -15638,6 +15868,13 @@ async function extractSelectionToNote() {
     return;
   }
   const target = pillActionTarget();
+  // Which note this splice belongs to. Everything below — `start`/`end` in the
+  // textarea branch, `loc` in the rendered one — is an OFFSET INTO THIS NOTE,
+  // captured now but not applied until after two modals have been awaited. If
+  // the open note changed in between (a Back press, a sync pull reloading the
+  // active deck), those offsets address text that is no longer there and
+  // applyLink would splice a link into the middle of an unrelated note.
+  const startedIn = currentDeckKey();
 
   // Both modes end up as: the markdown being moved, plus a way to put the link
   // back where it came from.
@@ -15703,7 +15940,13 @@ async function extractSelectionToNote() {
 
   const created = await createLinkedNoteFlow(name, body);
   if (!created) return;
-  applyLink(`[[${sanitizeNoteLinkLabel(created.title)}|${created.localId}]]`);
+  // See startedIn. The new note has already been written and keeps the text, so
+  // nothing is lost — but the link must not be spliced into a different note.
+  if (currentDeckKey() !== startedIn) {
+    showToast(`Made "${created.title}", but you'd moved on — the link wasn't inserted`, "info");
+    return;
+  }
+  applyLink(noteLinkMarkupFor(created));
   showToast(`Moved into "${created.title}"`);
 }
 
@@ -18652,6 +18895,12 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     state.localDeckId = null;
     state.sourceTitle = String(payload.sourceTitle || "").trim() || sourceFileTitle(titleHint) || state.deckTitle;
     state.importTitleHint = String(payload.importTitleHint || "").trim() || titleHint;
+    // MUST come before state.notes is replaced. The raw editor's <textarea> is
+    // not part of `state` and survives a deck swap holding the note being left;
+    // the next keystroke then copies it into state.notes and the autosave
+    // writes the OLD note's body over the NEW deck's record. See the block
+    // comment on discardNotesEditingForDeckSwap.
+    discardNotesEditingForDeckSwap();
     state.notes = payloadNotes;
     setViewMode("notes");
     // Cross-device resume — see the identical call in loadWebDeck for why
@@ -19462,6 +19711,36 @@ function scheduleDeckAutosave() {
   }, 400);
 }
 
+// Write out an armed-but-unfired autosave for the deck that is open RIGHT NOW,
+// before something replaces it.
+//
+// The 400ms debounce means the last stretch of typing lives only in memory.
+// Nothing used to flush it on navigation, so following a wikilink (or pressing
+// Back) within 400ms of the last keystroke silently dropped those edits: the
+// timer fired afterwards, read a `state` that by then described a different
+// deck, and saved that one instead.
+//
+// Callers MUST await this while `state` still describes the outgoing deck, and
+// MUST re-check their load token afterwards — this introduces an await, and so
+// a fresh window in which the user can open something else.
+async function flushPendingDeckAutosave() {
+  if (!deckAutosaveTimer) return;
+  clearTimeout(deckAutosaveTimer);
+  deckAutosaveTimer = null;
+  persistWorkingDeck();
+  // Same no-op case the timer itself handles — an empty deck has nothing to
+  // save and this is not a storage failure.
+  if (!state.masterCards.length && !state.notes.trim()) return;
+  try {
+    const savedMeta = await saveDeckToLibrary({ silent: true });
+    setSyncIndicator(savedMeta ? "saved" : "error");
+  } catch (error) {
+    // Never let a failed flush block the navigation the user asked for.
+    console.error("Could not flush pending autosave before navigating", error);
+    setSyncIndicator("error");
+  }
+}
+
 // Coarse "Xm ago" style relative time, for the sync pill's last-synced suffix.
 function formatRelativeTime(iso) {
   if (!iso) return "";
@@ -19878,9 +20157,23 @@ async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     console.warn(`Deck ${cloud.id} arrived without a notes column — keeping this device's notes and meta instead of blanking them.`);
   }
   const incomingNotes = cloudCarriesBody ? String(cloud.notes || "") : String(oldSnapshot?.notes || "");
-  const incomingMeta = cloudCarriesBody
+  const cloudMeta = cloudCarriesBody
     ? (cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {})
     : (oldSnapshot?.meta && typeof oldSnapshot.meta === "object" ? oldSnapshot.meta : {});
+  // The meta bag is otherwise cloud-wins, and stays that way — but linkIds is the
+  // one key where every device holds a piece of the truth, and the cloud copy is
+  // only ever "what the last device to push happened to know". Taking it whole
+  // would drop the ids THIS device has minted for this deck, breaking the links
+  // written here on every other device — the exact bug this key exists to fix.
+  // Union instead, plus the localId being resolved right now, and let
+  // noteLinkAliasesFor sort and cap it so all devices converge on one array.
+  const incomingMeta = {
+    ...cloudMeta,
+    linkIds: noteLinkAliasesFor(
+      { linkIds: [...(Array.isArray(cloudMeta.linkIds) ? cloudMeta.linkIds : []), ...(Array.isArray(oldSnapshot?.meta?.linkIds) ? oldSnapshot.meta.linkIds : [])] },
+      localId
+    )
+  };
 
   const cloudIso = cloud.updated_at || new Date().toISOString();
   // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this
@@ -20005,6 +20298,10 @@ async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // or the cloud's (another device may have opened it more recently).
     accessedAt: laterIsoTimestamp(existing?.accessedAt, cloud.last_accessed_at),
     deckId: String(cloud.id),
+    // The merged alias set computed above — see incomingMeta. Mirrored onto the
+    // index for the same reason the save path does it: the link index reads
+    // this, not snapshots.
+    linkIds: incomingMeta.linkIds,
   };
   writeLocalDeckIndex([meta, ...readLocalDeckIndex().filter((m) => m.id !== localId)]);
   // A deck pulled on wifi should be fully readable on the train — including its
@@ -21282,6 +21579,14 @@ function resolveSaveTarget(id) {
   }
   localId = localId || generateLocalDeckId();
   snapshot.localDeckId = localId;
+  // Record the id THIS device knows the deck by, inside the deck's own meta bag
+  // so it syncs with everything else in there. Links written on this device
+  // carry this id (older ones certainly do — see the note-reference header), and
+  // no other device can resolve it without being told. Done here rather than in
+  // deckSnapshot() because this is where `localId` is authoritative: a
+  // first-ever save mints it a line above, and state.localDeckId is still null.
+  const aliases = noteLinkAliasesFor(snapshot.meta, localId);
+  snapshot.meta = { ...(snapshot.meta && typeof snapshot.meta === "object" ? snapshot.meta : {}), linkIds: aliases };
   // Deliberately does NOT return the index entry: the async save awaits a read
   // after this, and anything captured here would be stale by the time the
   // entry is rebuilt. finishSaveDeckToLibrary re-reads it instead.
@@ -21292,7 +21597,11 @@ function resolveSaveTarget(id) {
 // shared by the normal async save and the sync emergency-flush save below, so
 // the two can never drift into different behaviour. Returns the new index
 // entry, or null on a genuine failure.
-function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced }) {
+// `loadToken` is the value activeDeckLoadToken held when the caller decided
+// which deck it was saving. Omit it when the caller is fully synchronous (see
+// saveDeckToLibrarySync) — with no await in between there is nothing that could
+// have moved the user, and the check would only cost a comparison.
+function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced, loadToken }) {
   // Read the index entry HERE, not before the caller's await. Everything from
   // this line to writeLocalDeckIndex below is synchronous, so this is the only
   // point at which "what the index currently says" can be trusted to still be
@@ -21354,6 +21663,11 @@ function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, 
     notesConflicted: previousEntry?.notesConflicted || false,
     notesSyncFailed: previousEntry?.notesSyncFailed || false,
     deckId: snapshot.deckId || null,
+    // Mirrored out of the snapshot's meta bag purely so the link index can see
+    // it: loadNoteLinkIndex is built from this index (localStorage) and never
+    // reads snapshots, and making it read one per deck would turn opening the
+    // "[[" picker into a full library scan. See noteLinkEntryMatchesId.
+    linkIds: Array.isArray(snapshot.meta?.linkIds) ? snapshot.meta.linkIds : [],
   };
   try {
     writeLocalDeckIndex([meta, ...readLocalDeckIndex().filter((entry) => entry.id !== localId)]);
@@ -21370,8 +21684,18 @@ function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, 
     }
     return null;
   }
-  state.localDeckId = localId;
-  persistWorkingDeck();
+  // "The deck just saved is the deck now open" — true for an ordinary autosave,
+  // and false for a save that resolved after the user navigated. localId was
+  // captured before this call's caller awaited (a queued withDeckLock, a cold
+  // readDeckSnapshot), so assigning it unconditionally used to YANK the active
+  // deck id back to the note being left while the screen showed the new one —
+  // after which every autosave wrote the new note's body into the old note's
+  // record. loadWebDeck already guards its own call to this effect with the
+  // same token; the assignment itself was the hole.
+  if (loadToken === undefined || loadToken === activeDeckLoadToken) {
+    state.localDeckId = localId;
+    persistWorkingDeck();
+  }
   return meta;
 }
 
@@ -21390,6 +21714,11 @@ async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, 
     return null;
   }
   const { snapshot, localId } = resolveSaveTarget(id);
+  // Captured together with localId, before either await below. The snapshot and
+  // the id are a matched pair describing the deck open RIGHT NOW; this records
+  // which "right now" that was, so finishSaveDeckToLibrary can tell whether the
+  // user has since opened something else.
+  const loadToken = activeDeckLoadToken;
   // Serialised per deck: read-then-write, and a pull merging cloud cards into
   // the same deck must not land in between (see withDeckLock).
   return withDeckLock(localId, async () => {
@@ -21397,7 +21726,7 @@ async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, 
     // real content edit apart from a position-only / no-op save and keep the cloud
     // id from ever being dropped.
     const previousSnapshot = await readDeckSnapshot(localId);
-    return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced });
+    return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced, loadToken });
   });
 }
 
@@ -21473,6 +21802,13 @@ async function loadDeckFromLibrary(id) {
   }
   // A newer deck open (local or web) has taken over the view since this read
   // started — applying this one now would yank the screen back to it.
+  if (loadToken !== activeDeckLoadToken) return false;
+  // The deck we're about to leave may have unsaved keystrokes sitting in the
+  // 400ms debounce. Flush them HERE, while `state` still describes that deck —
+  // once loadDeckSnapshot runs there is no longer anywhere to save them to.
+  await flushPendingDeckAutosave();
+  // The flush is an await, so re-check: the user may have opened something else
+  // while it was writing.
   if (loadToken !== activeDeckLoadToken) return false;
   try {
     // A navigation door: remember where the user was before this deck replaces
@@ -27172,6 +27508,10 @@ async function ensureLocalLibraryOwner(userId) {
       state.localDeckId = null;
       state.deckId = null;
       state.masterCards = [];
+      // Nothing repaints on this path, so the setViewMode net never runs — the
+      // raw editor would sit there still holding the PREVIOUS account's note,
+      // ready to be typed back into whatever this account opens first.
+      discardNotesEditingForDeckSwap();
       state.notes = "";
       console.log("Cleared local deck library — different account signed in.");
     }
@@ -27734,7 +28074,7 @@ if (helpModal) {
 // bundle under the new URL, and the old function then reported the new stamp
 // while old code ran — so the modal cheerfully said "You're up to date ✓" to
 // exactly the users who were not. Bump this with the other three (CI enforces).
-const BUILD_STAMP = "20260808-03";
+const BUILD_STAMP = "20260808-05";
 
 // The running build's version. Normally the constant above; "unknown" only if
 // this file was somehow loaded without one.
