@@ -9720,35 +9720,10 @@ textarea {
   min-height: inherit !important;
 }
 
-/* ── Editor guides: the reading line ───────────────────────────────────────
-   The mark that answers "where am I?" in the raw editor (see
-   placeEditorReadingLine in app.js).
-
-   Stacking, which is fiddly and load-bearing: the highlight backdrop paints an
-   OPAQUE --card background (it has to — it is the only thing painting the text),
-   so the guides cannot hide behind it. They go above the backdrop at z-index 1
-   and below the caret: .edit-textarea is also z-index 1 but comes later in the
-   DOM, so it still wins the tie and the caret stays on top of the line. The mark
-   is pointer-transparent, so it can never eat a click or a drag-select. */
-.editor-guides {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  overflow: hidden;
-  border-radius: var(--input-radius);
-  z-index: 1;
-}
-
-/* The line every jump in this app targets and every scroll sampler reads from
-   (notesReadingLineOffset). Faint on purpose: it is a landmark you notice when
-   looking for it, not a rule across the page. */
-.editor-reading-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 0;
-  border-top: 1px dashed color-mix(in srgb, var(--accent) 38%, transparent);
-}
+/* The raw editor draws nothing over the text. A dashed "reading line" and a
+   tinted caret band used to live here; see the "No editor guides" comment in
+   app.js for why both are gone and why notesReadingLineOffset survives as pure
+   arithmetic. */
 
 .highlight-textarea-backdrop {
   position: absolute !important;

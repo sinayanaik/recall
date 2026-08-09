@@ -3852,12 +3852,8 @@ function trackKeyboardInset() {
     document.documentElement.style.setProperty("--kb-inset", `${next}px`);
     // The editor's own scroll has to be re-checked against the new usable
     // height, or the caret is left behind the keyboard for as long as it stays
-    // still — and the reading line is placed as a fraction of that height, so
-    // it moves with it.
-    if (isNotesEditing()) {
-      scheduleNotesCaretCheck();
-      placeEditorReadingLine();
-    }
+    // still.
+    if (isNotesEditing()) scheduleNotesCaretCheck();
   };
   vv.addEventListener("resize", update);
   vv.addEventListener("scroll", update);
@@ -12416,9 +12412,6 @@ function enterNotesEditing(cursorOffset = null) {
     : 0;
   el.notesEdit.setSelectionRange(pos, pos);
   scrollTextareaToOffset(el.notesEdit, pos);
-  // The editor has only just been un-hidden, so this is the first moment it has
-  // a height to measure the reading line against.
-  placeEditorReadingLine();
 }
 
 // ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
@@ -12906,52 +12899,18 @@ function scheduleNotesCaretCheck() {
   });
 }
 
-// ── The editor reading line ────────────────────────────────────────────────
+// ── No editor guides ───────────────────────────────────────────────────────
 //
-// A hairline at notesReadingLineOffset — the line every jump in this app targets
-// and every scroll sampler reads from. It was pure arithmetic before, invisible
-// to the person it exists for: a triple-click would land you correctly and still
-// feel like a guess, because nothing said where "correctly" was.
+// The raw editor draws NOTHING over the text. A "typewriter" pair of marks used
+// to live here — a dashed hairline on notesReadingLineOffset and a tinted band
+// on the caret's row — and both are gone. The band had to be re-measured against
+// the highlight mirror on every frame of every scroll, which is what made long
+// notes stutter; the hairline was cheap but read as a stray rule across the
+// page, pinned to an arbitrary height, with nothing to explain it.
 //
-// Its position depends on ONE thing, the editor's height, so it is placed when
-// the editor opens and when that height can change (window resize, the phone
-// keyboard) — never on scroll or on a keystroke. A caret-following band used to
-// live here too and was removed: it had to be re-measured against the mirror
-// every frame, which is what made scrolling a long note stutter.
-//
-// It lives inside .highlight-textarea-wrapper (already position: relative) and is
-// painted UNDER the transparent textarea, so it can never take a pointer event
-// or interfere with selection.
-function ensureEditorGuides(textarea) {
-  const wrapper = textarea?.parentElement;
-  if (!wrapper || !wrapper.classList.contains("highlight-textarea-wrapper")) return null;
-  let guides = wrapper.querySelector(".editor-guides");
-  if (!guides) {
-    guides = document.createElement("div");
-    guides.className = "editor-guides";
-    guides.setAttribute("aria-hidden", "true");
-    guides.innerHTML = '<div class="editor-reading-line"></div>';
-    // First child, which matters: .edit-textarea shares z-index 1 with the
-    // guides and comes later in the DOM, so it wins the tie and the caret keeps
-    // painting on top of the line. See .editor-guides in styles.css.
-    wrapper.insertBefore(guides, wrapper.firstChild);
-  }
-  return guides;
-}
-
-// Cheap by construction: one clientHeight read and one style write, and only
-// from the three places the editor's height can actually change. Kept in JS
-// rather than expressed as a CSS `min(64px, 33.33%)` because
-// notesReadingLineOffset is deliberately the single definition shared with the
-// jump and sampling code — a second copy in CSS could drift, and .editor-guides
-// is sized to the wrapper rather than the textarea's client box.
-function placeEditorReadingLine() {
-  const textarea = el.notesEdit;
-  if (!textarea || textarea.hidden) return;
-  const readingLine = ensureEditorGuides(textarea)?.querySelector(".editor-reading-line");
-  if (!readingLine) return;
-  readingLine.style.top = `${Math.round(notesReadingLineOffset(textarea.clientHeight))}px`;
-}
+// notesReadingLineOffset itself stays. It is arithmetic, not a mark: every jump
+// still targets that line and every scroll sampler still reads from it, so a
+// raw<->rendered round trip lands where you left. It is simply invisible again.
 
 // Inverse of scrollTextareaToOffset: the raw character offset sitting at the
 // textarea's CURRENT reading line. Both directions must use the SAME measure or
@@ -31694,10 +31653,6 @@ window.addEventListener("resize", () => {
     backdrop.scrollTop = textarea.scrollTop;
     backdrop.scrollLeft = textarea.scrollLeft;
   });
-  // The reading line is a fraction of the editor's height, and this is the only
-  // other place that height changes (the keyboard case is handled in
-  // trackKeyboardInset).
-  placeEditorReadingLine();
 });
 
 // Formatting helpers
