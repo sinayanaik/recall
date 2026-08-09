@@ -16400,6 +16400,219 @@ function fuzzyWhitespaceMatch(source, needle) {
   return m ? { idx: m.index, end: m.index + m[0].length, needle: m[0] } : null;
 }
 
+// ── Markup-tolerant matching: the last resort ──────────────────────────────
+// fuzzyWhitespaceMatch only bends WHITESPACE, so it fails the moment needle
+// and source disagree about a single markup CHARACTER — which they routinely
+// do, none of it the reader's doing:
+//   • Turndown ESCAPES the punctuation it re-emits, so a rendered
+//     `joint_state_publisher` comes back as "joint\_state\_publisher" and a
+//     "*-Config.cmake" as "\*-Config.cmake" — backslashes the source has no
+//     reason to contain. One such word anywhere in the drag and the whole
+//     markdown needle is unfindable.
+//   • The plain-text needle carries no markup at all, so it can't match a
+//     source span containing `code`, **bold** or a [link](…) either — and it
+//     is the ONLY needle when Turndown's own output is the thing that's off.
+//   • Style markers round-trip to a canonical form rather than the authored
+//     one: __x__ comes back as **x**, <mark data-color="yellow"> as <mark>.
+// Any one of those turned an ordinary multi-paragraph highlight into
+// "Couldn't match that selection in the source — try selecting whole words",
+// with no wording of the selection that could have worked.
+//
+// So: project BOTH sides through the same normaliser — drop the syntax
+// characters, keep the words, collapse whitespace — match there, and map the
+// hit back to real source offsets. Dropping a character that was genuinely
+// content (a literal * in prose) is harmless precisely because the needle
+// loses it too; the cost is a looser match, and these needles are whole
+// selections rather than single words.
+const NORMALIZE_TAG_RE = /<\/?(?:mark|u|kbd|span|b|i|em|strong|sub|sup|br|del|ins|small)\b[^>]*>/iy;
+// Consumed one at a time, repeatedly: "> - item" is a marker inside a quote.
+const NORMALIZE_LINE_PREFIX_RE = /(?:>[ \t]*|(?:[-*+]|\d+[.)])[ \t]+|#{1,6}[ \t]+)/y;
+const NORMALIZE_THEMATIC_BREAK_RE = /([-*_])[ \t]*(?:\1[ \t]*){2,}(?=\n|$)/y;
+// A table's "| --- | :-: |" row renders nothing, and turndown-gfm rewrites its
+// dashes to its own width, so it can never match the source verbatim anyway.
+const NORMALIZE_TABLE_DELIM_RE = /\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?(?=\n|$)/y;
+const NORMALIZE_LINK_TARGET_RE = /\]\([^)\n]*\)/y;
+// Markdown punctuation that carries no rendered text of its own. Both sides
+// lose it, so the projections still line up.
+const NORMALIZE_DROP_CHARS = new Set(["`", "*", "_", "~", "|", "{", "}", "[", "]"]);
+const NORMALIZE_ESCAPABLE_RE = /[!-/:-@[-`{-~]/;
+
+// { text, map } — map[k] is the index in `str` of normalized character k, so a
+// hit in `text` can be turned back into a real source range.
+function normalizeMarkupForMatch(str) {
+  const chars = [];
+  const map = [];
+  let pendingSpace = false;
+  let atLineStart = true;
+  let i = 0;
+  const emit = (ch, at) => {
+    if (pendingSpace) {
+      pendingSpace = false;
+      // Never leading: a normalized string starts at its first real character.
+      if (chars.length) {
+        chars.push(" ");
+        map.push(at);
+      }
+    }
+    chars.push(ch);
+    map.push(at);
+  };
+  const stickyAt = (re, at) => {
+    re.lastIndex = at;
+    return re.exec(str);
+  };
+  while (i < str.length) {
+    const ch = str[i];
+    if (ch === "\n" || ch === "\r") {
+      pendingSpace = true;
+      atLineStart = true;
+      i += 1;
+      continue;
+    }
+    if (ch === " " || ch === "\t") {
+      pendingSpace = true;
+      i += 1;
+      continue;
+    }
+    if (atLineStart) {
+      atLineStart = false;
+      if (stickyAt(NORMALIZE_THEMATIC_BREAK_RE, i)) {
+        // An <hr> renders no text, so neither needle has one to match.
+        i = NORMALIZE_THEMATIC_BREAK_RE.lastIndex;
+        continue;
+      }
+      if (stickyAt(NORMALIZE_TABLE_DELIM_RE, i)) {
+        i = NORMALIZE_TABLE_DELIM_RE.lastIndex;
+        continue;
+      }
+      let prefix = stickyAt(NORMALIZE_LINE_PREFIX_RE, i);
+      while (prefix) {
+        i += prefix[0].length;
+        prefix = stickyAt(NORMALIZE_LINE_PREFIX_RE, i);
+      }
+      continue;
+    }
+    if (ch === "\\" && i + 1 < str.length && NORMALIZE_ESCAPABLE_RE.test(str[i + 1])) {
+      emit(str[i + 1], i + 1); // the escape Turndown added; the source has the bare character
+      i += 2;
+      continue;
+    }
+    if (ch === "<" && stickyAt(NORMALIZE_TAG_RE, i)) {
+      i = NORMALIZE_TAG_RE.lastIndex;
+      continue;
+    }
+    // [[Note|id]] renders as "Note" — the id is invisible, so drop it (see
+    // the note-reference link format) rather than leaving it to mismatch.
+    if (ch === "[" && str[i + 1] === "[") {
+      const close = str.indexOf("]]", i + 2);
+      if (close !== -1) {
+        const pipe = str.indexOf("|", i + 2);
+        const labelEnd = pipe !== -1 && pipe < close ? pipe : close;
+        for (let k = i + 2; k < labelEnd; k += 1) {
+          if (!NORMALIZE_DROP_CHARS.has(str[k])) emit(str[k], k);
+        }
+        i = close + 2;
+        continue;
+      }
+    }
+    // ](target) — only the label is rendered.
+    if (ch === "]" && str[i + 1] === "(" && stickyAt(NORMALIZE_LINK_TARGET_RE, i)) {
+      i = NORMALIZE_LINK_TARGET_RE.lastIndex;
+      continue;
+    }
+    if (NORMALIZE_DROP_CHARS.has(ch)) {
+      i += 1;
+      continue;
+    }
+    emit(ch, i);
+    i += 1;
+  }
+  return { text: chars.join(""), map };
+}
+
+// Inline constructs a match must not be allowed to start or end HALFWAY
+// through. The normalized projection has no markup left in it, so a hit can
+// legitimately land between a code span's backticks or inside a **bold** run —
+// and wrapping THAT in <mark> yields `<mark>foo</mark>` (tags shown as literal
+// code) or "**foo <mark>bar** baz</mark>" (tags crossing the emphasis they
+// were opened inside). Widening the range to swallow the whole construct keeps
+// the markup balanced. Long/multi-block regions are ignored: a mispaired lone
+// `*` or `_` must not be able to drag a highlight across half the note.
+const INLINE_REGION_MAX_CHARS = 400;
+const INLINE_REGION_PATTERNS = [
+  /(`+)[^\n]*?\1/g,
+  /<(mark|u|kbd|span|b|i|em|strong|sub|sup|del|ins|small)\b[^>]*>[\s\S]*?<\/\1>/gi,
+  /\*\*[^\n]+?\*\*/g,
+  /__[^\n]+?__/g,
+  /~~[^\n]+?~~/g,
+  /\{\{[^\n]*?\}\}/g,
+  /!?\[[^\]\n]*\]\([^)\n]*\)/g,
+  /\$\$[\s\S]*?\$\$/g,
+  /\$[^\n$]+?\$/g,
+  /(^|[^*\w])(\*[^\s*][^\n*]*?\*)/g,
+  /(^|[^_\w])(_[^\s_][^\n_]*?_)/g
+];
+
+function inlineRegionsIn(source) {
+  const regions = [];
+  for (const pattern of INLINE_REGION_PATTERNS) {
+    pattern.lastIndex = 0;
+    let m;
+    while ((m = pattern.exec(source)) !== null) {
+      if (m[0].length === 0) {
+        pattern.lastIndex += 1;
+        continue;
+      }
+      // Patterns with a leading guard group report the construct in m[2].
+      const body = m[2] !== undefined ? m[2] : m[0];
+      const start = m.index + m[0].indexOf(body);
+      if (body.length <= INLINE_REGION_MAX_CHARS) regions.push({ start, end: start + body.length });
+    }
+  }
+  return regions;
+}
+
+function expandToBalancedBounds(source, start, end) {
+  const regions = inlineRegionsIn(source);
+  let s = start;
+  let e = end;
+  for (let pass = 0; pass < 4; pass += 1) {
+    let changed = false;
+    for (const region of regions) {
+      if (region.start < s && s < region.end) {
+        s = region.start;
+        changed = true;
+      }
+      if (region.start < e && e < region.end) {
+        e = region.end;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return { start: s, end: e };
+}
+
+// Locate `needle` in `source` through the normalized projection above.
+// `normalizedSource` is passed in so both needles reuse one pass over what can
+// be a very long note. Returns the same { idx, end, needle } shape as the other
+// matchers, with `needle` read back out of the SOURCE (never the projection).
+function looseMarkupMatch(source, normalizedSource, needle, occurrence, bounded) {
+  const target = normalizeMarkupForMatch(needle).text;
+  if (target.length < 3) return null; // too short to be sure it's the right copy
+  const { text, map } = normalizedSource;
+  let pos = nthIndexOf(text, target, occurrence || 0);
+  if (pos === -1) pos = text.indexOf(target);
+  if (pos === -1) return null;
+  const rawStart = map[pos];
+  const rawEnd = map[pos + target.length - 1] + 1;
+  const bounds = expandToBalancedBounds(source, rawStart, rawEnd);
+  // The eraser DELETES the match, so it doesn't get to lose much more than was
+  // selected to keeping the markup balanced (see boundedFuzzy).
+  if (bounded && (rawStart - bounds.start) + (bounds.end - rawEnd) > FUZZY_OVERMATCH_SLACK_CHARS) return null;
+  return { idx: bounds.start, end: bounds.end, needle: source.slice(bounds.start, bounds.end) };
+}
+
 // Locate the SELECTED occurrence of a rendered selection inside the markdown
 // source. Targets `sel.occurrence` (the copy the user actually highlighted)
 // rather than blindly the first match, so repeated words act in place. Tries
@@ -16447,6 +16660,12 @@ function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = fa
         if (match.needle.length > budget) continue;
       }
       return match;
+    }
+    // Still nothing: needle and source disagree about markup, not whitespace.
+    const normalizedSource = normalizeMarkupForMatch(source);
+    for (const { needle, occurrence } of attempts) {
+      const match = looseMarkupMatch(source, normalizedSource, needle, occurrence, boundedFuzzy);
+      if (match) return match;
     }
   }
   return null;
@@ -16685,25 +16904,92 @@ function markOpenTag(color) {
 // marks under the hood. Re-selecting that exact span later to toggle it off
 // doesn't work yet: locateSelectionInSource's plain-text search can't see
 // past the tags this leaves behind — clear each piece individually instead.
+// A list marker is not the only line prefix that must stay outside the mark:
+// a blockquote's "> " and a heading's "## " are read by marked at exactly the
+// same point in exactly the same way, so a <mark> in front of either stops the
+// line being a quote/heading at all. A selection that begins at a callout —
+// the shape that reaches this code most often, since a whole-passage drag
+// usually starts at one — turned the quote into a stray paragraph. Table rows
+// get the same treatment for their leading "|".
 const LIST_MARKER_RE = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/;
+// Nested markers are stripped too ("- 1. text"): a mark opened in front of the
+// inner "1. " stops it being a nested list and the marker shows up as text.
+const BLOCK_PREFIX_RE = /^[ \t]*(?:>[ \t]?)*(?:#{1,6}[ \t]+|(?:(?:[-*+]|\d+[.)])[ \t]+)*)/;
+const BLOCK_LINE_RE = /^[ \t]*(?:>[ \t]?)*(?:#{1,6}[ \t]+|(?:[-*+]|\d+[.)])[ \t]+|\|)/;
+const HEADING_LINE_RE = /^[ \t]*(?:>[ \t]?)*#{1,6}[ \t]+/;
+const TABLE_ROW_RE = /^[ \t]*(?:>[ \t]?)*\|/;
+// Lines that render no text of their own, so there is nothing to highlight and
+// wrapping them only turns markup into visible characters: "---", a table's
+// "| --- | :-: |" delimiter row, and a code fence.
+const NO_TEXT_LINE_RE = /^[ \t]{0,3}(?:(?:[-*_][ \t]*){3,}|\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?)[ \t]*$/;
+const FENCE_LINE_RE = /^[ \t]{0,3}(```+|~~~+)/;
+const CELL_TEXT_RE = /^([ \t]*)([\s\S]*?)([ \t]*)$/;
 
+// Fenced code is walked line by line rather than split on blank lines: a fence
+// with an empty line in the middle is ONE block that a blank-line split would
+// cut in two, and a <mark> dropped into the back half shows up as literal
+// "<mark>" text in the rendered code (marked escapes HTML inside a fence, and
+// no highlight is possible there at all).
 function wrapAcrossBlocks(source, color) {
-  return source
-    .split(/(\n{2,})/)
-    .map((part, i) => (i % 2 === 1 || !part ? part : wrapListItems(part, color)))
-    .join("");
+  const out = [];
+  let group = [];
+  let fence = null;
+  const flush = () => {
+    if (!group.length) return;
+    out.push(wrapKeepingPrefix(group.join("\n"), color));
+    group = [];
+  };
+  source.split("\n").forEach((line) => {
+    const fenceMatch = FENCE_LINE_RE.exec(line);
+    if (fence) {
+      out.push(line);
+      if (fenceMatch && fenceMatch[1][0] === fence[0] && fenceMatch[1].length >= fence.length) fence = null;
+      return;
+    }
+    if (fenceMatch) {
+      flush();
+      out.push(line);
+      fence = fenceMatch[1];
+      return;
+    }
+    if (!line.trim() || NO_TEXT_LINE_RE.test(line)) {
+      flush();
+      out.push(line);
+      return;
+    }
+    if (TABLE_ROW_RE.test(line)) {
+      // One mark per cell: a single mark spanning the row would swallow the
+      // "|" separators that tell marked where the cells are.
+      flush();
+      out.push(wrapTableRow(line, color));
+      return;
+    }
+    // A list item, heading or quote line starts a block of its own; ordinary
+    // wrapped lines share the mark of the run they belong to.
+    if (BLOCK_LINE_RE.test(line)) flush();
+    group.push(line);
+    if (HEADING_LINE_RE.test(line)) flush(); // and whatever follows is a block again
+  });
+  flush();
+  return out.join("\n");
 }
 
-function wrapListItems(text, color) {
-  return text
-    .split(/\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t]+)/)
-    .map((piece) => {
-      const marker = LIST_MARKER_RE.exec(piece);
-      if (!marker) return piece ? markOpenTag(color) + piece + MARK_CLOSE_TAG : piece;
-      const rest = piece.slice(marker[0].length);
-      return rest ? marker[0] + markOpenTag(color) + rest + MARK_CLOSE_TAG : piece;
+function wrapTableRow(line, color) {
+  return line
+    .split(/(?<!\\)\|/)
+    .map((cell) => {
+      if (!cell.trim()) return cell;
+      const [, lead, core, trail] = CELL_TEXT_RE.exec(cell);
+      return lead + markOpenTag(color) + core + MARK_CLOSE_TAG + trail;
     })
-    .join("\n");
+    .join("|");
+}
+
+function wrapKeepingPrefix(text, color) {
+  if (!text.trim()) return text;
+  const prefix = BLOCK_PREFIX_RE.exec(text)[0];
+  const rest = text.slice(prefix.length);
+  return rest ? prefix + markOpenTag(color) + rest + MARK_CLOSE_TAG : text;
 }
 
 // Wrap the located occurrence in <mark[ data-color]></mark>, strip it if the
