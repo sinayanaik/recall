@@ -3852,8 +3852,12 @@ function trackKeyboardInset() {
     document.documentElement.style.setProperty("--kb-inset", `${next}px`);
     // The editor's own scroll has to be re-checked against the new usable
     // height, or the caret is left behind the keyboard for as long as it stays
-    // still.
-    if (isNotesEditing()) scheduleNotesCaretCheck();
+    // still — and the reading line is placed as a fraction of that height, so
+    // it moves with it.
+    if (isNotesEditing()) {
+      scheduleNotesCaretCheck();
+      placeEditorReadingLine();
+    }
   };
   vv.addEventListener("resize", update);
   vv.addEventListener("scroll", update);
@@ -10155,6 +10159,8 @@ const DEFERRED_WORK_MARGIN = 1200;
 const deferredWorkRunners = new WeakMap(); // node -> run(batch)
 const deferredWorkObservers = new Map(); // scroll root -> IntersectionObserver
 const pendingDeferredWork = new Set(); // live nodes with queued work, for flushing
+const readyDeferredWork = new Set(); // came into view, not yet run — see drainReadyDeferredWork
+let deferredWorkDrainHandle = 0;
 
 function deferrableRenderRoot(container) {
   // el.notesView is its own scroll port (.notes-rendered), so it's both the
@@ -10162,33 +10168,66 @@ function deferrableRenderRoot(container) {
   return container === el.notesView ? el.notesView : null;
 }
 
+// Runs everything that has come into view. Batched per runner: one mermaid.run
+// for six diagrams costs far less than six.
+//
+// Split out of the IntersectionObserver callback deliberately. Rendering a
+// diagram or auto-fitting a table forces a layout of the whole notes document,
+// and doing that *inside* the observer callback meant a fling past a few
+// diagrams stalled the scroll for as long as they took to draw. DEFERRED_WORK_MARGIN
+// is 1200px of runway, so there is ample room to wait for an idle moment.
+function drainReadyDeferredWork() {
+  deferredWorkDrainHandle = 0;
+  if (!readyDeferredWork.size) return;
+  const due = Array.from(readyDeferredWork);
+  readyDeferredWork.clear();
+  const batches = new Map();
+  due.forEach((node) => {
+    const run = deferredWorkRunners.get(node);
+    // Gone already — flushDeferredWork got here first (print/export).
+    if (!run) return;
+    deferredWorkRunners.delete(node);
+    pendingDeferredWork.delete(node);
+    deferredWorkObservers.forEach((observer) => observer.unobserve(node));
+    const batch = batches.get(run);
+    if (batch) batch.push(node);
+    else batches.set(run, [node]);
+  });
+  batches.forEach((batch, run) => {
+    try {
+      Promise.resolve(run(batch)).catch((error) => console.warn("Deferred render failed", error));
+    } catch (error) {
+      console.warn("Deferred render failed", error);
+    }
+  });
+}
+
+function scheduleDeferredWorkDrain() {
+  if (deferredWorkDrainHandle) return;
+  if (typeof requestIdleCallback !== "function") {
+    deferredWorkDrainHandle = setTimeout(drainReadyDeferredWork, 0);
+    return;
+  }
+  // The timeout is the backstop: a continuous fling never yields an idle period,
+  // and the reader must not reach a diagram that is still a blank shell.
+  deferredWorkDrainHandle = requestIdleCallback(drainReadyDeferredWork, { timeout: 250 });
+}
+
 function deferredWorkObserver(root) {
   const existing = deferredWorkObservers.get(root);
   if (existing) return existing;
   const observer = new IntersectionObserver(
     (entries) => {
-      // Batch everything that came into view together and hand each runner its
-      // whole batch: one mermaid.run for six diagrams costs far less than six.
-      const batches = new Map();
+      // Record only. The node stays in pendingDeferredWork and in
+      // deferredWorkRunners until it is actually run, which is what keeps
+      // flushDeferredWork able to find it if a print/export happens in between.
+      let queued = false;
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
-        const node = entry.target;
-        const run = deferredWorkRunners.get(node);
-        observer.unobserve(node);
-        deferredWorkRunners.delete(node);
-        pendingDeferredWork.delete(node);
-        if (!run) return;
-        const batch = batches.get(run);
-        if (batch) batch.push(node);
-        else batches.set(run, [node]);
+        readyDeferredWork.add(entry.target);
+        queued = true;
       });
-      batches.forEach((batch, run) => {
-        try {
-          Promise.resolve(run(batch)).catch((error) => console.warn("Deferred render failed", error));
-        } catch (error) {
-          console.warn("Deferred render failed", error);
-        }
-      });
+      if (queued) scheduleDeferredWorkDrain();
     },
     { root, rootMargin: `${DEFERRED_WORK_MARGIN}px 0px` }
   );
@@ -10203,6 +10242,7 @@ function releaseDetachedDeferredWork() {
   pendingDeferredWork.forEach((node) => {
     if (node.isConnected) return;
     pendingDeferredWork.delete(node);
+    readyDeferredWork.delete(node);
     deferredWorkRunners.delete(node);
     deferredWorkObservers.forEach((observer) => observer.unobserve(node));
   });
@@ -10221,6 +10261,7 @@ function releaseDeferredWork(root) {
   pendingDeferredWork.forEach((node) => {
     if (root && node.isConnected && !(root === node || root.contains(node))) return;
     pendingDeferredWork.delete(node);
+    readyDeferredWork.delete(node);
     deferredWorkRunners.delete(node);
   });
 }
@@ -10285,6 +10326,7 @@ async function flushDeferredWork(root) {
     const run = deferredWorkRunners.get(node);
     deferredWorkRunners.delete(node);
     pendingDeferredWork.delete(node);
+    readyDeferredWork.delete(node);
     deferredWorkObservers.forEach((observer) => observer.unobserve(node));
     if (!run) return;
     const batch = batches.get(run);
@@ -12374,10 +12416,9 @@ function enterNotesEditing(cursorOffset = null) {
     : 0;
   el.notesEdit.setSelectionRange(pos, pos);
   scrollTextareaToOffset(el.notesEdit, pos);
-  // Say where the jump landed. Without this the caret is a 1px bar somewhere in
-  // a wall of monospace-ish markdown, and a correct landing is indistinguishable
-  // from a wrong one.
-  flashEditorCaretLine();
+  // The editor has only just been un-hidden, so this is the first moment it has
+  // a height to measure the reading line against.
+  placeEditorReadingLine();
 }
 
 // ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
@@ -12821,7 +12862,15 @@ function keepNotesCaretVisible() {
   if (textarea.selectionStart !== textarea.selectionEnd) return;
   // Anything of substance below the caret means there is context to read down
   // there, and the native behaviour is already the right one.
-  if (textarea.value.slice(textarea.selectionEnd).trim()) return;
+  //
+  // Scanned rather than `value.slice(selectionEnd).trim()`, which allocated a
+  // copy of everything below the caret AND a trimmed copy of that — on every
+  // keystroke, on a note that may be hundreds of KB. Same defect, same fix, as
+  // lineIndexAtOffset above.
+  const value = textarea.value;
+  for (let i = textarea.selectionEnd; i < value.length; i += 1) {
+    if (!/\s/.test(value[i])) return;
+  }
 
   const styles = getComputedStyle(textarea);
   const lineHeight = parseFloat(styles.lineHeight) || 20;
@@ -12841,35 +12890,38 @@ function keepNotesCaretVisible() {
 
 // Coalesced to one check per frame: autorepeat and fast typing fire input far
 // faster than the box can be re-measured, and each measurement forces layout.
+//
+// Deliberately NOT wired to the textarea's scroll event. It briefly was, to keep
+// a caret-following band drawn over the editor in step, and that single listener
+// put a getComputedStyle, a scrollHeight read and a walk of the highlight mirror
+// on every frame of every scroll — the cost growing with how far down the note
+// the caret sat. Scrolling is not typing: nothing here can change while the
+// reader is only moving the view.
 let notesCaretFrame = 0;
 function scheduleNotesCaretCheck() {
   if (notesCaretFrame) return;
   notesCaretFrame = requestAnimationFrame(() => {
     notesCaretFrame = 0;
     keepNotesCaretVisible();
-    updateEditorGuides();
   });
 }
 
-// ── The editor guides (reading line + current line) ────────────────────────
+// ── The editor reading line ────────────────────────────────────────────────
 //
-// Two marks drawn over the raw editor, both answering "where am I?":
+// A hairline at notesReadingLineOffset — the line every jump in this app targets
+// and every scroll sampler reads from. It was pure arithmetic before, invisible
+// to the person it exists for: a triple-click would land you correctly and still
+// feel like a guess, because nothing said where "correctly" was.
 //
-//   READING LINE  a hairline at notesReadingLineOffset — the line every jump in
-//                 this app targets and every scroll sampler reads from. It was
-//                 pure arithmetic before, invisible to the person it exists
-//                 for: a triple-click would land you correctly and still feel
-//                 like a guess, because nothing said where "correctly" was.
-//   CURRENT LINE  a tinted band on the caret's own visual row, with a ▸ in the
-//                 gutter. Wrapped rows included — it uses the same measured
-//                 visualLineTopForOffset the scroll restore does, so the band
-//                 and the scroll can never disagree.
+// Its position depends on ONE thing, the editor's height, so it is placed when
+// the editor opens and when that height can change (window resize, the phone
+// keyboard) — never on scroll or on a keystroke. A caret-following band used to
+// live here too and was removed: it had to be re-measured against the mirror
+// every frame, which is what made scrolling a long note stutter.
 //
-// Both live inside .highlight-textarea-wrapper (already position: relative) and
-// are painted UNDER the transparent textarea, so they never take a pointer
-// event or interfere with selection.
-const EDITOR_GUIDE_FLASH_MS = 1400;
-
+// It lives inside .highlight-textarea-wrapper (already position: relative) and is
+// painted UNDER the transparent textarea, so it can never take a pointer event
+// or interfere with selection.
 function ensureEditorGuides(textarea) {
   const wrapper = textarea?.parentElement;
   if (!wrapper || !wrapper.classList.contains("highlight-textarea-wrapper")) return null;
@@ -12878,62 +12930,27 @@ function ensureEditorGuides(textarea) {
     guides = document.createElement("div");
     guides.className = "editor-guides";
     guides.setAttribute("aria-hidden", "true");
-    guides.innerHTML =
-      '<div class="editor-reading-line"></div>' +
-      '<div class="editor-caret-line"><span class="editor-caret-mark">▸</span></div>';
+    guides.innerHTML = '<div class="editor-reading-line"></div>';
     // First child, which matters: .edit-textarea shares z-index 1 with the
     // guides and comes later in the DOM, so it wins the tie and the caret keeps
-    // painting on top of the band. See .editor-guides in styles.css.
+    // painting on top of the line. See .editor-guides in styles.css.
     wrapper.insertBefore(guides, wrapper.firstChild);
   }
   return guides;
 }
 
-function updateEditorGuides() {
+// Cheap by construction: one clientHeight read and one style write, and only
+// from the three places the editor's height can actually change. Kept in JS
+// rather than expressed as a CSS `min(64px, 33.33%)` because
+// notesReadingLineOffset is deliberately the single definition shared with the
+// jump and sampling code — a second copy in CSS could drift, and .editor-guides
+// is sized to the wrapper rather than the textarea's client box.
+function placeEditorReadingLine() {
   const textarea = el.notesEdit;
   if (!textarea || textarea.hidden) return;
-  const guides = ensureEditorGuides(textarea);
-  if (!guides) return;
-
-  const readingLine = guides.querySelector(".editor-reading-line");
-  const caretLine = guides.querySelector(".editor-caret-line");
-  const height = textarea.clientHeight;
-  if (readingLine) readingLine.style.top = `${Math.round(notesReadingLineOffset(height))}px`;
-
-  if (!caretLine) return;
-  // A range selection has no single "current line", and drawing a band over one
-  // end of it would fight the selection highlight the user is looking at.
-  if (textarea.selectionStart !== textarea.selectionEnd || document.activeElement !== textarea) {
-    caretLine.classList.remove("is-visible");
-    return;
-  }
-  const lineHeight = textareaLineHeight(textarea);
-  const top = visualLineTopForOffset(textarea, textarea.selectionStart) - textarea.scrollTop;
-  // Off-screen (the user scrolled away from the caret) — hide rather than clamp
-  // to an edge, where it would claim the caret is somewhere it isn't.
-  if (top + lineHeight < 0 || top > height) {
-    caretLine.classList.remove("is-visible");
-    return;
-  }
-  caretLine.style.top = `${Math.round(top)}px`;
-  caretLine.style.height = `${Math.round(lineHeight)}px`;
-  caretLine.classList.add("is-visible");
-}
-
-// Called right after a jump (triple-click, heading link) so the landing spot
-// announces itself instead of having to be hunted for.
-let editorGuideFlashTimer = 0;
-function flashEditorCaretLine() {
-  requestAnimationFrame(() => {
-    updateEditorGuides();
-    const caretLine = el.notesEdit?.parentElement?.querySelector(".editor-caret-line");
-    if (!caretLine) return;
-    caretLine.classList.remove("is-flash");
-    void caretLine.offsetWidth; // restart the animation on a repeat jump
-    caretLine.classList.add("is-flash");
-    clearTimeout(editorGuideFlashTimer);
-    editorGuideFlashTimer = setTimeout(() => caretLine.classList.remove("is-flash"), EDITOR_GUIDE_FLASH_MS);
-  });
+  const readingLine = ensureEditorGuides(textarea)?.querySelector(".editor-reading-line");
+  if (!readingLine) return;
+  readingLine.style.top = `${Math.round(notesReadingLineOffset(textarea.clientHeight))}px`;
 }
 
 // Inverse of scrollTextareaToOffset: the raw character offset sitting at the
@@ -13160,18 +13177,10 @@ el.notesEdit?.addEventListener("keyup", (event) => {
   if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") updateNoteLinkPicker();
   scheduleNotesCaretCheck();
 });
-el.notesEdit?.addEventListener("click", () => {
-  updateNoteLinkPicker();
-  scheduleNotesCaretCheck();
-});
-// The guides are drawn in viewport coordinates inside the wrapper, so they have
-// to be repositioned whenever the text moves under them. scheduleNotesCaretCheck
-// coalesces to one measure per frame, which is what keeps this off the hot path
-// of a scroll on a long note.
-el.notesEdit?.addEventListener("scroll", () => scheduleNotesCaretCheck());
-// Deferred a frame: during the blur event document.activeElement is still in
-// flux, and updateEditorGuides reads it to decide whether to draw the band.
-el.notesEdit?.addEventListener("blur", () => requestAnimationFrame(updateEditorGuides));
+// No caret check here: a click adds no text, so it cannot be what pushed the
+// caret under the bottom edge. (There is deliberately no `scroll` listener on
+// the editor either — see scheduleNotesCaretCheck.)
+el.notesEdit?.addEventListener("click", () => updateNoteLinkPicker());
 el.notesEdit?.addEventListener("focus", () => scheduleNotesCaretCheck());
 
 el.viewModeToggle?.addEventListener("click", (event) => {
@@ -13221,8 +13230,15 @@ let chromeAnchorTop = 0;
 let chromeScrollFrame = 0;
 let chromeSettleUntil = 0;
 
+// Cached, like styleMobileMedia at the top of the file. This is read from the
+// document-wide scroll handler below, and building a fresh MediaQueryList per
+// scroll event — which is faster than 60Hz on a fling — is pure garbage.
+const chromeMobileMedia = typeof window !== "undefined" && window.matchMedia
+  ? window.matchMedia(CHROME_MOBILE_QUERY)
+  : null;
+
 function isMobileChrome() {
-  return window.matchMedia(CHROME_MOBILE_QUERY).matches;
+  return Boolean(chromeMobileMedia?.matches);
 }
 
 // Any live (non-collapsed) selection in the study area — a rendered surface or
@@ -13329,10 +13345,13 @@ function trackChromeScroll(target) {
 document.addEventListener(
   "scroll",
   (event) => {
+    // Frame gate FIRST. A fling delivers scroll events faster than it delivers
+    // frames, and every one of the extra ones used to pay for a closest() walk
+    // up the tree before being thrown away here anyway.
+    if (chromeScrollFrame) return;
     if (chromeFocusPinned || !isMobileChrome()) return;
     const target = event.target;
     if (!(target instanceof Element) || !target.closest(".study-layout")) return;
-    if (chromeScrollFrame) return;
     chromeScrollFrame = requestAnimationFrame(() => {
       chromeScrollFrame = 0;
       trackChromeScroll(target);
@@ -13577,7 +13596,6 @@ function scrollNotesEditToHeadingIndex(index) {
   // site used to carry that workaround alone, which is why the other two callers
   // (enterNotesEditing, toggleEditMode) could leave the mirror stale.
   scrollTextareaToOffset(textarea, pos);
-  if (textarea === el.notesEdit) flashEditorCaretLine();
 }
 
 // ── Why this is gated, and searched rather than swept ──────────────────────
@@ -13932,6 +13950,17 @@ let notesSelectionTimer = null;
 let pillSelectionCapture = null;
 
 function hideNotesSelectionButton() {
+  // Called from every scroll event on the notes view and the raw editor, where
+  // "already fully hidden" is the overwhelmingly common case — make that a few
+  // property reads rather than half a dozen redundant DOM writes. The menu is
+  // tested separately on purpose: it is a child of the pill, so hiding the pill
+  // hides it visually while leaving its own `hidden` false, and skipping the
+  // reset below would spring it back open on the next selection.
+  if (el.selectionFloat?.hidden
+      && !pillSelectionCapture
+      && el.highlightSelectionMenu?.hidden !== false) {
+    return;
+  }
   if (el.selectionFloat) el.selectionFloat.hidden = true;
   if (el.makeCardFromSelectionBtn) el.makeCardFromSelectionBtn.dataset.selectionText = "";
   // The colour menu is a child of the pill, so hiding the pill hides it too —
@@ -14980,8 +15009,10 @@ function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}) {
     const edit = notesTarget.edit;
     edit.focus();
     edit.setSelectionRange(idx, idx + len);
+    // No flash in raw mode: the browser's own selection highlight over
+    // setSelectionRange's range already marks the spot. (`flash` still governs
+    // the rendered branch below, where there is no selection to see.)
     scrollTextareaToOffset(edit, idx);
-    if (flash) flashEditorCaretLine();
     return true;
   }
 
@@ -28431,7 +28462,7 @@ if (helpModal) {
 // bundle under the new URL, and the old function then reported the new stamp
 // while old code ran — so the modal cheerfully said "You're up to date ✓" to
 // exactly the users who were not. Bump this with the other three (CI enforces).
-const BUILD_STAMP = "20260809-01";
+const BUILD_STAMP = "20260809-02";
 
 // The running build's version. Normally the constant above; "unknown" only if
 // this file was somehow loaded without one.
@@ -31630,6 +31661,11 @@ function enableSyntaxHighlighting(textarea) {
     sync();
   }
 
+  // Deliberately synchronous, and deliberately NOT rAF-coalesced: the backdrop
+  // is the only thing painting visible text, so deferring this by even one frame
+  // would tear the text away from the scroll on a fling. Two property writes on
+  // an element whose styles are already clean is not what makes scrolling
+  // expensive — measuring the mirror was (see scheduleNotesCaretCheck).
   function syncScroll() {
     // Nothing to keep in step in plain mode, and skipping it keeps scrolling a
     // large note free of a per-event write that would force layout.
@@ -31639,7 +31675,7 @@ function enableSyntaxHighlighting(textarea) {
   }
 
   textarea.addEventListener("input", scheduleSync);
-  textarea.addEventListener("scroll", syncScroll);
+  textarea.addEventListener("scroll", syncScroll, { passive: true });
   highlightBackdropSync.set(textarea, syncNow);
 
   // Initialize
@@ -31658,6 +31694,10 @@ window.addEventListener("resize", () => {
     backdrop.scrollTop = textarea.scrollTop;
     backdrop.scrollLeft = textarea.scrollLeft;
   });
+  // The reading line is a fraction of the editor's height, and this is the only
+  // other place that height changes (the keyboard case is handled in
+  // trackKeyboardInset).
+  placeEditorReadingLine();
 });
 
 // Formatting helpers

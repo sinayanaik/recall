@@ -1,4 +1,4 @@
-const CACHE_NAME = "recall-v20260809-01";
+const CACHE_NAME = "recall-v20260809-02";
 
 // The release stamp, derived from CACHE_NAME rather than repeated. This file
 // used to carry it three times (here and twice in APP_SHELL) and index.html
