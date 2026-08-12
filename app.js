@@ -29252,19 +29252,6 @@ async function refreshAppInfo() {
   const running = runningAppVersion();
   if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
 
-  // An unstamped checkout has no version to compare, and comparing the literal
-  // placeholder against a real SHA would announce an update on every load of
-  // every local session. Say what it is instead.
-  if (IS_DEV_BUILD) {
-    appInfoLatest.textContent = "—";
-    if (appInfoRepo) appInfoRepo.textContent = "—";
-    if (appInfoCommit) appInfoCommit.textContent = "—";
-    if (appInfoReloadBtn) appInfoReloadBtn.hidden = true;
-    setAppInfoStatus("Development build — nothing to check");
-    setAppInfoWarning("This copy was served straight from a checkout, so it carries no build version. Deployed builds are stamped with the commit they were published from.");
-    return;
-  }
-
   appInfoLatest.textContent = "checking…";
   if (appInfoRepo) appInfoRepo.textContent = "checking…";
   if (appInfoCommit) appInfoCommit.textContent = "checking…";
@@ -29292,12 +29279,42 @@ async function refreshAppInfo() {
   const live = liveResult.status === "fulfilled" ? liveResult.value : null;
   const repo = repoResult.status === "fulfilled" ? repoResult.value : null;
 
-  appInfoLatest.textContent = live?.stamp || "unknown";
+  // An unstamped build has no version, so the "Live site" row would read
+  // "__BUILD__" — a placeholder, not an answer. Everything else on this panel
+  // is still a real fact and still worth showing: the repo rows say what has
+  // been pushed and when, which is the only checkable thing left.
+  appInfoLatest.textContent = IS_DEV_BUILD ? "not stamped" : (live?.stamp || "unknown");
   if (appInfoRepo) appInfoRepo.textContent = repo?.sha || (repoResult.reason?.rateLimited ? "unavailable (rate limited)" : "unavailable");
   if (appInfoCommit) {
     appInfoCommit.textContent = repo
       ? `${repo.sha}${repo.date ? ` · ${new Date(repo.date).toLocaleDateString()}` : ""}${repo.subject ? ` · ${repo.subject.slice(0, 60)}` : ""}`
       : "—";
+  }
+
+  // Nothing below can compare an unstamped build against anything, but WHY it
+  // is unstamped is the useful part, and the two causes are opposite. Served
+  // from localhost it is normal and expected. Served from a real host it is a
+  // deployment that skipped the stamping step — which is invisible in every
+  // other way, ships the same frozen ?v= to every future release, and is
+  // exactly the failure this panel should name rather than shrug at.
+  if (IS_DEV_BUILD) {
+    if (appInfoReloadBtn) appInfoReloadBtn.hidden = true;
+    const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    if (local) {
+      setAppInfoStatus("Running from a local checkout — nothing to compare");
+      setAppInfoWarning(
+        repo
+          ? `Files are served straight from disk, so there is no build version. Newest commit on ${GITHUB_REPO.branch} is ${repo.sha} — compare it against your working tree with git.`
+          : "Files are served straight from disk, so there is no build version."
+      );
+    } else {
+      setAppInfoStatus("This deploy was never stamped", "outdated");
+      setAppInfoWarning(
+        "The site was published without the deploy workflow's stamping step, so every asset URL is a literal placeholder and updates cannot be detected or cache-busted. " +
+        "Fix: repo Settings → Pages → Source → \"GitHub Actions\", then re-run the deploy workflow."
+      );
+    }
+    return;
   }
 
   // The failproof half. One deploy step writes every occurrence, so these can
