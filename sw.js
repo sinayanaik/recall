@@ -1,16 +1,19 @@
-const CACHE_NAME = "recall-v20260812-01";
+// The placeholder below is replaced with the deploying commit's short SHA by
+// .github/workflows/deploy.yml at publish time. It is never typed.
+//
+// It used to be a hand-edited YYYYMMDD-NN string in four files that all had to
+// agree, and twice they did not: commit d7a92e2 shipped 177 lines of
+// app.js/index.html/styles.css changes with the stamp left at 20260807-02 and
+// this file untouched, so CACHE_NAME never changed, no new worker installed,
+// and every existing install kept being served the previous bundle cache-first.
+// A CI check policed that, but a check that fires after you already typed the
+// wrong thing is a worse answer than not typing it: the commit SHA changes on
+// every commit by construction, so a release can no longer forget to bump.
+const CACHE_NAME = "recall-__BUILD__";
 
-// The release stamp, derived from CACHE_NAME rather than repeated. This file
-// used to carry it three times (here and twice in APP_SHELL) and index.html
-// carries it twice more; five hand-edited strings that had to agree, with
-// nothing checking that they did. They twice did not: commit d7a92e2 shipped
-// 177 lines of app.js/index.html/styles.css changes with the stamp left at
-// 20260807-02 and this file untouched, so CACHE_NAME never changed, no new
-// worker installed, and every existing install kept being served the previous
-// bundle cache-first. Deriving it here takes the count from five to three, and
-// .github/workflows/release-stamp.yml fails the push when those three disagree
-// or when a release forgets to bump them at all.
-const STAMP = CACHE_NAME.slice("recall-v".length);
+// The release stamp, derived from CACHE_NAME rather than repeated, so APP_SHELL
+// below cannot disagree with it.
+const STAMP = CACHE_NAME.slice("recall-".length);
 
 // How long a same-origin request may stall before the cached copy is served
 // instead. The failure this exists for is NOT being offline — that fails fast
@@ -67,9 +70,9 @@ async function trimImageCache() {
 //
 // The ?v= strings must match index.html's <link>/<script> exactly — the cache
 // is keyed by full URL, so a stale one here precaches a file the page never
-// asks for and leaves the real one to the handlers below. They are now built
-// from STAMP rather than typed out, so the only way they can disagree with
-// index.html is if index.html itself was not bumped, which CI catches.
+// asks for and leaves the real one to the handlers below. They are built from
+// STAMP rather than typed out, and index.html's two are substituted from the
+// same commit SHA by the same deploy step, so they cannot disagree.
 //
 // Deliberately NOT cached with addAll. addAll is atomic: one 5xx on one icon
 // rejects the whole install, the new worker never activates, and that client

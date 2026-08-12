@@ -1,0 +1,115 @@
+# Why this exists. The release version used to be a YYYYMMDD-NN string typed by
+# hand into four files that all had to agree. Twice it was not: commits d7a92e2
+# and cb5962c shipped real code with the stamp untouched, so sw.js's CACHE_NAME
+# never changed, no new worker installed, and every existing install kept being
+# served the previous bundle cache-first. Neither is visible on localhost, where
+# the worker is deliberately unregistered. A CI check policed that, but a check
+# that fires after you already typed the wrong thing is a worse answer than not
+# typing it at all — and the date inside the stamp was fiction regardless,
+# whatever the author happened to type rather than when anything shipped.
+#
+# So the repo carries placeholders and this job substitutes the real commit SHA
+# and the real commit timestamp at publish time. The version cannot drift (one
+# sed writes every occurrence), cannot be forgotten (the SHA changes on every
+# commit by construction), and identifies a commit you can actually look up.
+#
+# The stamped tree is uploaded, never committed back, so the SHA in the deployed
+# files is exactly the commit that produced them.
+#
+# NOTE: this requires repo Settings -> Pages -> Source = "GitHub Actions".
+# With Source still set to "Deploy from a branch", Pages serves the unstamped
+# repo files and every asset URL is literally "?v=__BUILD__".
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; a half-published release is a mixed build for
+# whoever loads during the overlap.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp the build with this commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha="${GITHUB_SHA:0:7}"
+          build_time="$(git show -s --format=%cI "$GITHUB_SHA")"
+
+          # An empty or malformed sha would sed the placeholders into nothing
+          # and ship a build whose version is the empty string — which compares
+          # unequal to everything and would put every install into a permanent
+          # "update available" loop. Refuse instead.
+          if ! printf '%s' "$sha" | grep -qE '^[0-9a-f]{7}$'; then
+            echo "::error::Refusing to deploy: '$sha' is not a 7-character commit sha."
+            exit 1
+          fi
+          if [ -z "$build_time" ]; then
+            echo "::error::Refusing to deploy: could not read the commit timestamp."
+            exit 1
+          fi
+
+          # Guard: every placeholder must still be a placeholder. If someone
+          # hand-wrote a version back into one of these, the files would ship
+          # disagreeing with each other and the whole point would be lost.
+          expected_html=2   # styles.css?v= and app.js?v=
+          expected_sw=1     # CACHE_NAME
+          expected_js=1     # BUILD_STAMP
+
+          got_html=$(grep -c '__BUILD__' index.html || true)
+          got_sw=$(grep -c '__BUILD__' sw.js || true)
+          got_js=$(grep -c '__BUILD__' app.js || true)
+          got_time=$(grep -c '__BUILD_TIME__' app.js || true)
+
+          echo "index.html placeholders: $got_html (want $expected_html)"
+          echo "sw.js placeholders:      $got_sw (want $expected_sw)"
+          echo "app.js placeholders:     $got_js (want $expected_js), time: $got_time (want 1)"
+
+          if [ "$got_html" -ne "$expected_html" ] || [ "$got_sw" -ne "$expected_sw" ] \
+             || [ "$got_js" -ne "$expected_js" ] || [ "$got_time" -ne 1 ]; then
+            echo "::error::Build placeholders are not where they should be."
+            echo "::error::index.html needs 2 x __BUILD__, sw.js 1, app.js 1 plus 1 x __BUILD_TIME__."
+            echo "::error::Do not write a version into these by hand — this job does it."
+            exit 1
+          fi
+
+          sed -i "s/__BUILD__/$sha/g" index.html sw.js app.js
+          sed -i "s|__BUILD_TIME__|$build_time|g" app.js
+
+          # Nothing may be left over anywhere in the deployed tree.
+          if grep -rn '__BUILD__\|__BUILD_TIME__' index.html sw.js app.js; then
+            echo "::error::A placeholder survived substitution."
+            exit 1
+          fi
+
+          echo "Deploying $sha ($build_time)"
+          grep -o '\(app\.js\|styles\.css\)?v=[^"]*' index.html
+          grep '^const CACHE_NAME' sw.js
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

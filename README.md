@@ -51,6 +51,8 @@ There is **no local-only mode.** The first screen asks for a Supabase URL and ke
 
 There's nothing to build. Deploy the folder as-is.
 
+The one thing a deploy has to do is give each release a version, because versioned assets (`app.js?v=…`) are cached first and never revalidated. On GitHub Pages that is handled for you by `.github/workflows/deploy.yml`, which stamps the commit SHA in at publish time — see [Notes for self-hosters](#notes-for-self-hosters) if you deploy some other way.
+
 > [!IMPORTANT]
 > **Don't open `index.html` by double-clicking it.** On a `file://` URL Supabase Auth rejects the origin *and* the service worker refuses to register, so you get neither sign-in nor offline support. It must be served over HTTP.
 
@@ -60,7 +62,7 @@ Pick whichever suits you:
 |---|---|---|---|
 | **Local** | `cd recall && python3 -m http.server 8080`, then open `http://localhost:8080` | no | **yes** — `localhost` counts as a secure context |
 | **Local, reached from your phone over Wi-Fi** | Same command, open `http://192.168.x.x:8080` | no | **no** — a bare LAN IP is not a secure context, so the service worker never registers |
-| **GitHub Pages** | Push the repo → **Settings → Pages** → pick the branch → `https://<user>.github.io/<repo>/` | yes | yes |
+| **GitHub Pages** | Push the repo → **Settings → Pages** → set **Source** to **GitHub Actions** → `https://<user>.github.io/<repo>/` | yes | yes |
 | **Netlify / Vercel** | Drag the folder into Netlify Drop, or connect the repo. Leave the build command and output directory **empty** | yes | yes |
 
 To try the installable PWA on a phone, use one of the HTTPS rows. The LAN-IP route looks like it works and then silently has no offline cache.
@@ -683,9 +685,19 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
 **If you edit the files, three things will bite you:**
 
-- **Every shipped change needs a new release stamp.** It lives in three places that must agree: `styles.css?v=…` and `app.js?v=…` in `index.html`, and `CACHE_NAME` in `sw.js`. (`sw.js`'s `APP_SHELL` entries build their own from `CACHE_NAME`, and `app.js` carries a matching `BUILD_STAMP` constant — so those are derived, not typed.) Versioned assets are cached first and never revalidated, which is what makes a release load instantly and also what makes a *forgotten* bump invisible: existing installs keep being served the bundle they already have, indefinitely. This has happened twice in this repo's history. `.github/workflows/release-stamp.yml` now fails the push when the stamps disagree, or when `app.js`/`styles.css`/`index.html` changed without one.
+- **Every shipped change needs a new version, and the deploy writes it — never type one.** Four places carry it, all as the placeholder `__BUILD__`: `styles.css?v=…` and `app.js?v=…` in `index.html`, `CACHE_NAME` in `sw.js`, and `BUILD_STAMP` in `app.js` (plus `BUILD_TIME`, the commit's timestamp). `.github/workflows/deploy.yml` substitutes the deploying commit's short SHA into all of them and publishes the result to Pages; nothing is committed back, so the version in the deployed files is exactly the commit that produced them.
 
-  You cannot catch this locally. On `localhost` the app deliberately unregisters its service worker and deletes every `recall-v*` cache, so a stamp-less deploy always looks correct while you're building it — and only ever breaks for other people.
+  This used to be a hand-edited `YYYYMMDD-NN` stamp, and the reason it isn't any more is that versioned assets are cached first and never revalidated. That makes a release load instantly, and makes a *forgotten* bump invisible: existing installs keep being served the bundle they already have, indefinitely. It happened twice in this repo's history, and you cannot catch it locally — on `localhost` the app deliberately unregisters its service worker and deletes every `recall-*` cache, so a version-less deploy always looks correct while you're building it and only ever breaks for other people. A commit SHA cannot be forgotten, because it changes on every commit whether you think about it or not.
+
+  **If you deploy somewhere other than GitHub Pages** (Netlify, Vercel, a plain server), your build step must do the same substitution or every asset ships as `?v=__BUILD__` and stays frozen at that one version forever. The whole of it is:
+
+  ```sh
+  sha=$(git rev-parse --short=7 HEAD)
+  sed -i "s/__BUILD__/$sha/g" index.html sw.js app.js
+  sed -i "s|__BUILD_TIME__|$(git show -s --format=%cI HEAD)|g" app.js
+  ```
+
+  An unsubstituted checkout is not broken, just unversioned: App Info reports it as a development build and skips the update check rather than comparing a placeholder against a real commit.
 
 - **CDN libraries are pinned by version** in `index.html` and precached by `sw.js`. Change a version in one place and you must change it in the other, or that library won't be there offline. This matters most for `@supabase/supabase-js`, which is deliberately pinned to an exact version rather than a floating `@2`: the service worker caches it cache-first and never revalidates, so a floating tag froze whatever the CDN happened to resolve on the day each user's cache was populated, leaving different people running different auth clients from identical code.
 

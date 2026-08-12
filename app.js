@@ -27090,8 +27090,11 @@ function registerServiceWorker() {
       .then((unregistered) => caches.keys()
         // Only the versioned app shell. The image cache holds the user's
         // uploaded pictures and is spared here for the same reason the worker
-        // spares it on every release — re-downloading them is pure waste.
-        .then((keys) => keys.filter((key) => key.startsWith("recall-v")))
+        // spares it on every release — re-downloading them is pure waste. It
+        // has to be named explicitly: it shares the "recall-" prefix, and back
+        // when shell caches were "recall-v…" the prefix alone happened to
+        // exclude it.
+        .then((keys) => keys.filter((key) => key.startsWith("recall-") && key !== "recall-images-v1"))
         .then((stale) => Promise.all(stale.map((key) => caches.delete(key))).then(() => stale.length))
         .then((cleared) => {
           // Reload only when something was actually removed, so this settles
@@ -28973,21 +28976,56 @@ if (helpModal) {
 }
 
 // ── App Info modal ─────────────────────────────────────────────────────────
-// The stamp this build was released under, written into the file itself.
+// The commit this build was deployed from, written into the file itself.
 //
-// This is the honest answer, and it is why it is a constant rather than a read
-// of the <script src> attribute the way it used to be. That attribute is the URL
-// the page ASKED for; it says nothing about the bytes that answered. When the
-// service worker had to fall back across releases it served the previous
-// bundle under the new URL, and the old function then reported the new stamp
-// while old code ran — so the modal cheerfully said "You're up to date ✓" to
-// exactly the users who were not. Bump this with the other three (CI enforces).
-const BUILD_STAMP = "20260812-01";
+// Both placeholders are substituted by .github/workflows/deploy.yml from the
+// commit being published, so neither is ever typed and neither can describe a
+// different build than the one running. The old scheme was a hand-edited
+// YYYYMMDD-NN stamp repeated in four files: it drifted, it got forgotten twice
+// in a way that stopped releases reaching users entirely, and the date inside
+// it was whatever the author happened to type rather than when anything shipped.
+//
+// It is still a constant rather than a read of the <script src> attribute. That
+// attribute is the URL the page ASKED for; it says nothing about the bytes that
+// answered. When the service worker had to fall back across releases it served
+// the previous bundle under the new URL, and reading the attribute reported the
+// new version while old code ran — so the modal cheerfully said "You're up to
+// date ✓" to exactly the users who were not.
+const BUILD_STAMP = "__BUILD__";
 
-// The running build's version. Normally the constant above; "unknown" only if
-// this file was somehow loaded without one.
+// When that commit was made, ISO-8601, from git rather than from a human.
+const BUILD_TIME = "__BUILD_TIME__";
+
+// True in any checkout the deploy workflow has not stamped: a local Live Server
+// session, a fork served straight off a branch, someone opening index.html from
+// disk. There is no version to compare in that case, and saying so is more use
+// than comparing the literal placeholder against a real SHA and announcing an
+// update that does not exist.
+const IS_DEV_BUILD = BUILD_STAMP === "__" + "BUILD__";
+
+// The running build's version. Normally the commit SHA above; "dev" for an
+// unstamped checkout, "unknown" only if this file was somehow loaded without one.
 function runningAppVersion() {
+  if (IS_DEV_BUILD) return "dev";
   return BUILD_STAMP || "unknown";
+}
+
+// The build time as a human would read it, or "" when there is nothing honest
+// to show — an unstamped checkout, or a value sed never reached.
+function runningBuildTime() {
+  if (IS_DEV_BUILD || !BUILD_TIME || BUILD_TIME.startsWith("__")) return "";
+  const when = new Date(BUILD_TIME);
+  if (Number.isNaN(when.getTime())) return "";
+  return when.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+// What the "Installed version" row says: the commit, and when that commit was
+// made. Both come from the deploy, so neither can be stale relative to the
+// other the way a typed stamp and a typed date could.
+function runningVersionLabel() {
+  const version = runningAppVersion();
+  const builtAt = runningBuildTime();
+  return builtAt ? `${version} · ${builtAt}` : version;
 }
 
 // What the page REQUESTED, as distinct from what it got. Compared against
@@ -29009,8 +29047,16 @@ const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO.owner}/${GITHUB_R
 // five different places. Whenever they drifted, the app announced "Update
 // available" forever and offered a Reload button that could not possibly fix
 // it, because there was no newer build to reload into.
+//
+// Since the deploy substitutes a commit SHA, that stamp IS the deployed commit,
+// which is why the repo half of this check no longer has to download a file to
+// read a version out of it.
 const RELEASE_STAMP_RE = /app\.js\?v=([^"'&\s]+)/;
-const CACHE_NAME_RE = /CACHE_NAME\s*=\s*"recall-v([^"]+)"/;
+// `const` is part of the pattern deliberately: the cache name no longer carries
+// a "v" prefix, so a bare `CACHE_NAME\s*=` would also match sw.js's
+// IMAGE_CACHE_NAME ("recall-images-v1") and report the image cache as a second,
+// disagreeing release version.
+const CACHE_NAME_RE = /const CACHE_NAME\s*=\s*"recall-([^"]+)"/;
 
 function stampFromHtml(text) {
   return text.match(RELEASE_STAMP_RE)?.[1] || null;
@@ -29078,41 +29124,82 @@ async function fetchLiveRelease() {
   return { stamp: stampFromHtml(html), html, sw };
 }
 
-// The repo itself: the current uploaded commit, and the release stamp inside
-// the index.html at that commit. Cross-origin and not a CDN asset, so the
-// service worker's fetch handler returns early and never touches this.
+// The repo itself: the newest commit on the branch. Cross-origin and not a CDN
+// asset, so the service worker's fetch handler returns early and never touches
+// this.
+//
+// This used to additionally download index.html and sw.js from
+// raw.githubusercontent.com at that commit, purely to read a hand-typed stamp
+// out of them. It no longer has to: the deployed version IS the short SHA, so
+// the commit listing already answers the question and two round-trips per check
+// disappeared with it.
 let githubReleaseCache = { at: 0, value: null };
 const GITHUB_CACHE_MS = 5 * 60 * 1000;
+
+function githubHeaders() {
+  return { Accept: "application/vnd.github+json" };
+}
+
+// 403 and 429 are the unauthenticated rate limit (60/hr, shared per IP), not a
+// broken repo — worth saying so rather than reporting the repo as unreachable.
+function throwIfRateLimited(response) {
+  if (response.status === 403 || response.status === 429) {
+    throw Object.assign(new Error("rate limited"), { rateLimited: true });
+  }
+}
 
 async function fetchRepoRelease() {
   if (githubReleaseCache.value && Date.now() - githubReleaseCache.at < GITHUB_CACHE_MS) {
     return githubReleaseCache.value;
   }
-  const headers = { Accept: "application/vnd.github+json" };
-  const commitResponse = await fetch(`${GITHUB_API}/commits/${GITHUB_REPO.branch}`, { headers, cache: "no-store", signal: updateCheckSignal() });
-  if (commitResponse.status === 403 || commitResponse.status === 429) {
-    throw Object.assign(new Error("rate limited"), { rateLimited: true });
-  }
+  const commitResponse = await fetch(`${GITHUB_API}/commits/${GITHUB_REPO.branch}`, { headers: githubHeaders(), cache: "no-store", signal: updateCheckSignal() });
+  throwIfRateLimited(commitResponse);
   if (!commitResponse.ok) throw new Error(`commits -> ${commitResponse.status}`);
   const commit = await commitResponse.json();
 
-  // Raw file at that exact commit, so the stamp and the sha can never describe
-  // two different states of the repo.
-  const rawAt = (path) =>
-    fetchText(`https://raw.githubusercontent.com/${GITHUB_REPO.owner}/${GITHUB_REPO.repo}/${commit.sha}/${path}`, { cache: "no-store" })
-      .catch(() => null);
-  const [html, sw] = await Promise.all([rawAt("index.html"), rawAt("sw.js")]);
-
   const value = {
+    // Seven characters, matching what the deploy writes into the files, so the
+    // two are directly comparable without normalising either side.
     sha: String(commit.sha || "").slice(0, 7),
     date: commit.commit?.author?.date || commit.commit?.committer?.date || null,
-    subject: String(commit.commit?.message || "").split("\n")[0],
-    stamp: stampFromHtml(html || ""),
-    html,
-    sw
+    subject: String(commit.commit?.message || "").split("\n")[0]
   };
   githubReleaseCache = { at: Date.now(), value };
   return value;
+}
+
+// Which way round two commits sit. Answers the one question that decides
+// between "Pages hasn't published your push yet" and "you're running something
+// that isn't on the branch at all" — and answers it from git's actual history
+// rather than, as the old code did, by comparing two YYYYMMDD-NN strings
+// lexically and hoping the author's typed dates ran in the right order.
+//
+// Returns GitHub's own status: "identical", "ahead" (deployed is an ancestor of
+// HEAD, i.e. the branch has moved on), "behind", or "diverged". Plus two of our
+// own, and the difference between them matters:
+//
+//   "absent"  — 404. The sha is not in this repo at all, which is a real answer.
+//   "unknown" — rate limited, offline, timed out. NOT an answer.
+//
+// Collapsing those two was tempting and wrong: the repo row can come from the
+// 5-minute cache while this call is the one that trips the 60/hr rate limit,
+// and reporting "this build isn't on the branch" because GitHub declined to
+// say is exactly the kind of confident-but-baseless claim this whole rewrite
+// exists to remove.
+async function compareCommits(base, head) {
+  try {
+    const response = await fetch(`${GITHUB_API}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`, {
+      headers: githubHeaders(),
+      cache: "no-store",
+      signal: updateCheckSignal()
+    });
+    if (response.status === 404) return "absent";
+    if (!response.ok) return "unknown";
+    const body = await response.json();
+    return body?.status || "unknown";
+  } catch (_) {
+    return "unknown";
+  }
 }
 
 const appInfoModal = document.getElementById("appInfoModal");
@@ -29144,23 +29231,40 @@ function setAppInfoWarning(text) {
 // new worker is already waiting, that alone finishes the update
 // (controllerchange then reloads the page; see registerServiceWorker).
 //
-// Three facts get compared, not two:
-//   installed — the ?v= on the <script> this page actually loaded
-//   live      — the ?v= in the index.html the server is handing out right now
-//   repo      — the ?v= in the index.html at HEAD of the GitHub branch
+// Three commits get compared, not two:
+//   installed — the build this page is actually running (BUILD_STAMP)
+//   live      — the build the server would hand a fresh visitor right now
+//   repo      — the newest commit on the GitHub branch
 //
 // Which pair disagrees is what decides the message. installed ≠ live means
 // there IS a newer build sitting on the server and reloading gets it. live ≠
 // repo means the newest code is pushed but GitHub Pages hasn't published it —
 // reloading cannot help, and the old check's "Update available" was a nag that
 // no amount of reloading would ever clear.
+//
+// All three are now commit SHAs written by the deploy, so "same build" is
+// literal identity rather than agreement between hand-typed strings.
 let appInfoCheckToken = 0;
 
 async function refreshAppInfo() {
   if (!appInfoLatest || !appInfoStatus) return;
   const token = ++appInfoCheckToken;
   const running = runningAppVersion();
-  if (appInfoVersion) appInfoVersion.textContent = running;
+  if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
+
+  // An unstamped checkout has no version to compare, and comparing the literal
+  // placeholder against a real SHA would announce an update on every load of
+  // every local session. Say what it is instead.
+  if (IS_DEV_BUILD) {
+    appInfoLatest.textContent = "—";
+    if (appInfoRepo) appInfoRepo.textContent = "—";
+    if (appInfoCommit) appInfoCommit.textContent = "—";
+    if (appInfoReloadBtn) appInfoReloadBtn.hidden = true;
+    setAppInfoStatus("Development build — nothing to check");
+    setAppInfoWarning("This copy was served straight from a checkout, so it carries no build version. Deployed builds are stamped with the commit they were published from.");
+    return;
+  }
+
   appInfoLatest.textContent = "checking…";
   if (appInfoRepo) appInfoRepo.textContent = "checking…";
   if (appInfoCommit) appInfoCommit.textContent = "checking…";
@@ -29189,16 +29293,18 @@ async function refreshAppInfo() {
   const repo = repoResult.status === "fulfilled" ? repoResult.value : null;
 
   appInfoLatest.textContent = live?.stamp || "unknown";
-  if (appInfoRepo) appInfoRepo.textContent = repo?.stamp || (repoResult.reason?.rateLimited ? "unavailable (rate limited)" : "unavailable");
+  if (appInfoRepo) appInfoRepo.textContent = repo?.sha || (repoResult.reason?.rateLimited ? "unavailable (rate limited)" : "unavailable");
   if (appInfoCommit) {
     appInfoCommit.textContent = repo
       ? `${repo.sha}${repo.date ? ` · ${new Date(repo.date).toLocaleDateString()}` : ""}${repo.subject ? ` · ${repo.subject.slice(0, 60)}` : ""}`
       : "—";
   }
 
-  // The failproof half. The stamp is hand-edited in five places; if they
-  // disagree, no comparison built on them means anything, so say THAT rather
-  // than dressing the inconsistency up as an update.
+  // The failproof half. One deploy step writes every occurrence, so these can
+  // only disagree if the site was published some other way — a half-finished
+  // upload, a fork deploying from a branch, a stale file behind a CDN. No
+  // comparison built on them would mean anything, so say THAT rather than
+  // dressing the inconsistency up as an update.
   const stamps = releaseStampsIn(live?.html, live?.sw);
   const distinct = [...new Set(stamps.map((entry) => entry.stamp))];
   if (distinct.length > 1) {
@@ -29206,7 +29312,7 @@ async function refreshAppInfo() {
     // carry the stamp twice, and listing "index.html: X, index.html: X" makes
     // the one entry that actually differs harder to spot, not easier.
     const detail = [...new Set(stamps.map((entry) => `${entry.where}: ${entry.stamp}`))].join(", ");
-    setAppInfoWarning(`Release stamps disagree on the server — ${detail}. This build is inconsistent; bump every ?v= to the same value and redeploy.`);
+    setAppInfoWarning(`Build versions disagree on the server — ${detail}. Every one of these is written from the same commit by the deploy workflow, so the site was published from something other than a completed deploy. Re-running it fixes this.`);
     setAppInfoStatus("Can't compare — the deployed build is inconsistent", "outdated");
     return;
   }
@@ -29254,19 +29360,34 @@ async function refreshAppInfo() {
   }
 
   // Running the newest build the server has. The only question left is whether
-  // the server has caught up with the repo — and, since a stamp is YYYYMMDD-NN,
-  // WHICH WAY round they differ. A server ahead of the branch is an ordinary
-  // local build or a deploy from somewhere else, not something to warn about;
-  // calling that "Pages hasn't published yet" would be exactly backwards.
-  if (repo?.stamp && repo.stamp !== live.stamp) {
-    const dated = /^\d{8}-\d+$/;
-    const serverAhead = dated.test(live.stamp) && dated.test(repo.stamp) && live.stamp > repo.stamp;
-    if (serverAhead) {
-      setAppInfoStatus("Up to date — this build is newer than the branch", "ok");
-      setAppInfoWarning(`What you're running (${live.stamp}) is ahead of ${GITHUB_REPO.branch} (${repo.stamp}) — a local or unpushed build. Nothing to update.`);
-    } else {
+  // the server has caught up with the repo — and, when it hasn't, WHICH WAY
+  // round they sit. A server serving something that isn't on the branch is an
+  // ordinary local build or a deploy from somewhere else, not something to warn
+  // about; calling that "Pages hasn't published yet" would be exactly backwards.
+  //
+  // git answers this, so ask git. The old code guessed from string ordering of
+  // two hand-typed YYYYMMDD-NN stamps, which was only ever right by convention
+  // and said nothing at all once two builds shared a date.
+  if (repo?.sha && repo.sha !== live.stamp) {
+    const relation = await compareCommits(live.stamp, repo.sha);
+    if (token !== appInfoCheckToken) return;
+    if (relation === "ahead") {
+      // The deployed commit is an ancestor of the branch head: the push landed,
+      // the deploy hasn't finished.
       setAppInfoStatus(`Up to date with the live site — GitHub Pages hasn't published ${repo.sha} yet`, "outdated");
       setAppInfoWarning("Nothing to do here: your browser already has the newest build that exists on the server. Pages usually publishes within a couple of minutes of a push.");
+    } else if (relation === "identical") {
+      // Different short SHAs for the same commit shouldn't happen, but if they
+      // do, the honest answer is that there is nothing to update.
+      setAppInfoStatus("You're up to date ✓", "ok");
+    } else if (relation === "unknown") {
+      // Couldn't reach GitHub for the comparison. Everything reloading could
+      // fix has already been ruled out above, so the useful half is still true.
+      setAppInfoStatus("Up to date with the live site ✓", "ok");
+      setAppInfoWarning(`Couldn't ask GitHub how ${live.stamp} relates to ${repo.sha}, so this only compares against the live site.`);
+    } else {
+      setAppInfoStatus("Up to date — this build isn't on the branch", "ok");
+      setAppInfoWarning(`What the server is serving (${live.stamp}) isn't an ancestor of ${GITHUB_REPO.branch} (${repo.sha}) — a build published from somewhere else, or a branch that has been rewritten. Nothing to update.`);
     }
     return;
   }
@@ -29483,7 +29604,7 @@ if (appInfoHealthBtn) appInfoHealthBtn.addEventListener("click", runProjectHealt
 
 function openAppInfoModal() {
   if (!appInfoModal) return;
-  if (appInfoVersion) appInfoVersion.textContent = runningAppVersion();
+  if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
   appInfoModal.hidden = false;
   lockPageScroll();
   refreshAppInfo();
