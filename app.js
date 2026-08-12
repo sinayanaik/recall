@@ -29279,10 +29279,10 @@ async function refreshAppInfo() {
   const live = liveResult.status === "fulfilled" ? liveResult.value : null;
   const repo = repoResult.status === "fulfilled" ? repoResult.value : null;
 
-  // An unstamped build has no version, so the "Live site" row would read
-  // "__BUILD__" — a placeholder, not an answer. Everything else on this panel
-  // is still a real fact and still worth showing: the repo rows say what has
-  // been pushed and when, which is the only checkable thing left.
+  // An unstamped build has no version, so the "Live site" row would read back
+  // the raw placeholder — not an answer. Everything else on this panel is still
+  // a real fact and still worth showing: the repo rows say what has been pushed
+  // and when, which is the only checkable thing left.
   appInfoLatest.textContent = IS_DEV_BUILD ? "not stamped" : (live?.stamp || "unknown");
   if (appInfoRepo) appInfoRepo.textContent = repo?.sha || (repoResult.reason?.rateLimited ? "unavailable (rate limited)" : "unavailable");
   if (appInfoCommit) {

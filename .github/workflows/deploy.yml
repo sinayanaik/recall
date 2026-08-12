@@ -45,7 +45,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Stamp the build with this commit
         shell: bash
@@ -68,27 +68,52 @@ jobs:
             exit 1
           fi
 
-          # Guard: every placeholder must still be a placeholder. If someone
-          # hand-wrote a version back into one of these, the files would ship
-          # disagreeing with each other and the whole point would be lost.
-          expected_html=2   # styles.css?v= and app.js?v=
-          expected_sw=1     # CACHE_NAME
-          expected_js=1     # BUILD_STAMP
+          # Guard: the placeholders must be exactly where they belong, and
+          # nowhere else.
+          #
+          # "Where they belong" catches someone hand-writing a version back into
+          # one of these — the files would then ship disagreeing with each other
+          # and the whole point would be lost.
+          #
+          # "Nowhere else" is the half that is easy to miss: the sed below is a
+          # blind global replace, so a code COMMENT that spells the placeholder
+          # out gets rewritten into a commit sha too. Harmless in prose, not
+          # harmless in `BUILD_STAMP === "__" + "BUILD__"`, which is written
+          # split precisely so it survives. Counting matching lines per file
+          # (the first version of this check) conflated the two and failed with
+          # a count nobody could act on.
+          # -a on every grep below, without exception. app.js contains two NUL
+          # bytes (the `.neq("id", "\0")` match-everything sentinels in the
+          # delete path), so grep classifies it as binary and, instead of
+          # reporting matches, prints "binary file matches" and moves on. That
+          # made the occurrence count silently read 4 when it was really 5 — on
+          # the single file most likely to gain a stray mention of a placeholder.
+          require_one() {
+            local file="$1" fragment="$2" n
+            n=$(grep -aFc -- "$fragment" "$file" || true)
+            if [ "$n" -ne 1 ]; then
+              echo "::error file=$file::Expected exactly one occurrence of: $fragment (found $n)"
+              echo "::error file=$file::Do not write a version into this by hand — this job does it."
+              exit 1
+            fi
+          }
 
-          got_html=$(grep -c '__BUILD__' index.html || true)
-          got_sw=$(grep -c '__BUILD__' sw.js || true)
-          got_js=$(grep -c '__BUILD__' app.js || true)
-          got_time=$(grep -c '__BUILD_TIME__' app.js || true)
+          require_one index.html 'styles.css?v=__BUILD__'
+          require_one index.html 'app.js?v=__BUILD__'
+          require_one sw.js     'const CACHE_NAME = "recall-__BUILD__";'
+          require_one app.js    'const BUILD_STAMP = "__BUILD__";'
+          require_one app.js    'const BUILD_TIME = "__BUILD_TIME__";'
 
-          echo "index.html placeholders: $got_html (want $expected_html)"
-          echo "sw.js placeholders:      $got_sw (want $expected_sw)"
-          echo "app.js placeholders:     $got_js (want $expected_js), time: $got_time (want 1)"
+          # -o counts occurrences rather than lines, so two on one line cannot
+          # hide. 4 x __BUILD__ (2 html, 1 sw, 1 js) and 1 x __BUILD_TIME__.
+          build_total=$(grep -ao '__BUILD__' index.html sw.js app.js | wc -l)
+          time_total=$(grep -ao '__BUILD_TIME__' index.html sw.js app.js | wc -l)
+          echo "placeholders: __BUILD__ x$build_total (want 4), __BUILD_TIME__ x$time_total (want 1)"
 
-          if [ "$got_html" -ne "$expected_html" ] || [ "$got_sw" -ne "$expected_sw" ] \
-             || [ "$got_js" -ne "$expected_js" ] || [ "$got_time" -ne 1 ]; then
-            echo "::error::Build placeholders are not where they should be."
-            echo "::error::index.html needs 2 x __BUILD__, sw.js 1, app.js 1 plus 1 x __BUILD_TIME__."
-            echo "::error::Do not write a version into these by hand — this job does it."
+          if [ "$build_total" -ne 4 ] || [ "$time_total" -ne 1 ]; then
+            echo "::error::A placeholder appears somewhere it should not — most likely spelled out in a comment."
+            echo "::error::sed would rewrite it into a commit sha. Reword it, or split the string as BUILD_STAMP's comparison does."
+            grep -an '__BUILD__\|__BUILD_TIME__' index.html sw.js app.js || true
             exit 1
           fi
 
@@ -96,7 +121,7 @@ jobs:
           sed -i "s|__BUILD_TIME__|$build_time|g" app.js
 
           # Nothing may be left over anywhere in the deployed tree.
-          if grep -rn '__BUILD__\|__BUILD_TIME__' index.html sw.js app.js; then
+          if grep -an '__BUILD__\|__BUILD_TIME__' index.html sw.js app.js; then
             echo "::error::A placeholder survived substitution."
             exit 1
           fi
@@ -105,11 +130,11 @@ jobs:
           grep -o '\(app\.js\|styles\.css\)?v=[^"]*' index.html
           grep '^const CACHE_NAME' sw.js
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: .
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
