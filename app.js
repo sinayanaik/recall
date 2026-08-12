@@ -1542,6 +1542,10 @@ async function loadWebDeck(deckId) {
     // of this line explains why an open raw editor outlives a deck swap and
     // what it overwrites when it does.
     discardNotesEditingForDeckSwap();
+    // The deck being left is the last thing that needed its queued images'
+    // blob URLs. See revokeLocalImageUrls for why the session can't wait for
+    // pagehide to release them.
+    revokeLocalImageUrls();
     // Pre-migration databases have no notes column; select("*") just omits it.
     state.notes = String(deckData.notes || "");
     state.sourceTitle = deckData.title || "";
@@ -12700,8 +12704,26 @@ function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
   // Fallback: we know which block was clicked but not the precise seam (widget,
   // failed fuzzy match, …). Land at the start of that block rather than leaving
   // the caret to snap to the very end of the source.
-  const blockStart = blockText.replace(/^\s+/, "").slice(0, 40).trim();
-  return matchSnippetInSource(source, blockStart, "", isCode, hint);
+  return rawOffsetForRenderedBlock(root, source, block, { isCode, hint });
+}
+
+// Where a whole rendered block begins in the raw source — block-level precision,
+// no click point involved. Split out of findRawOffsetForRenderedPoint's own
+// fallback so the reading-line resolver below can reach it directly, for the case
+// where there is no usable caret at all (the reading line sitting in the gap
+// between two blocks, or under a floating overlay).
+// `hint` is passed in when the caller already has it: approximateRawOffsetForBlock
+// walks the whole block cache, and this sits on the scroll-settle path (see
+// captureCurrentReadingAnchor), so it must not be computed twice.
+function rawOffsetForRenderedBlock(root, source, block, { isCode = null, hint } = {}) {
+  if (!root || !block || !source) return null;
+  const code = isCode == null
+    ? block.tagName === "PRE" || Boolean(block.querySelector?.("pre, code"))
+    : isCode;
+  const blockStart = (block.textContent || "").replace(/^\s+/, "").slice(0, 40).trim();
+  if (!blockStart) return null;
+  const at = hint === undefined ? approximateRawOffsetForBlock(root, source, block) : hint;
+  return matchSnippetInSource(source, blockStart, "", code, at);
 }
 
 // Counts newlines in value[0..pos) without materialising the prefix. The old
@@ -12975,12 +12997,89 @@ function notesReadingLineOffset(viewportHeight) {
   return Math.min(NOTES_READING_LINE_MAX_PX, height / 3);
 }
 
+// The top-level block the reading line falls on, found GEOMETRICALLY rather than
+// by hit-testing.
+//
+// blockAtNotesReadingLine (further down) asks elementFromPoint, which answers
+// nothing useful in two very ordinary situations: the reading line resting in the
+// margin gap between two blocks (elementFromPoint returns #notesView itself,
+// which is not one of its own children) and the line sitting under a floating
+// overlay, where the topmost element isn't inside the view at all. Both used to
+// make the raw-mode toggle land at offset 0.
+//
+// Binary searched, not swept: these are `content-visibility: auto` blocks, so
+// reading a rect forces the browser to lay one out — the same reason
+// findRenderedNoteRange searches for its window's first member this way instead
+// of testing every block from the top.
+function notesBlockAtReadingLineGeometric() {
+  const view = el.notesView;
+  if (!view || view.hidden) return null;
+  const blocks = view.children;
+  if (!blocks.length) return null;
+  const y = view.getBoundingClientRect().top + notesReadingLineOffset(view.clientHeight);
+  let low = 0;
+  let high = blocks.length - 1;
+  let found = null;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (blocks[mid].getBoundingClientRect().bottom < y) {
+      low = mid + 1;
+    } else {
+      found = blocks[mid];
+      high = mid - 1;
+    }
+  }
+  // Scrolled past the last block (the scroll-past-end padding) — that block is
+  // still where the reader is.
+  return found || blocks[blocks.length - 1];
+}
+
+// Nudge an approximate offset onto the start of a line, so the caret lands at a
+// line boundary rather than mid-word. Forward, because an offset derived from a
+// block's own position is a lower bound on where its text begins.
+function snapOffsetToLineStart(source, offset) {
+  if (!Number.isFinite(offset)) return null;
+  const at = Math.max(0, Math.min(Math.round(offset), source.length));
+  const next = source.indexOf("\n", at);
+  return next === -1 ? at : next + 1;
+}
+
+// A representative raw-markdown offset for what the reader is currently looking
+// at, resolved in four layers of decreasing precision. The layering is the fix
+// for "switching to raw mode takes me to the very beginning": every one of these
+// steps used to be a single all-or-nothing attempt whose failure returned null,
+// and enterNotesEditing(null) means offset 0 — the top of the note. A miss now
+// costs precision, never the reader's place.
 function rawOffsetForCurrentNotesScroll() {
-  if (!el.notesView || el.notesView.hidden) return null;
-  const rect = el.notesView.getBoundingClientRect();
+  const view = el.notesView;
+  if (!view || view.hidden) return null;
+  const notes = state.notes || "";
+  if (!notes) return null;
+  const rect = view.getBoundingClientRect();
   const x = rect.left + rect.width / 2;
   const y = rect.top + notesReadingLineOffset(rect.height);
-  return findRawOffsetForRenderedPoint(el.notesView, state.notes, x, y);
+
+  // 1. Exact: the caret under the reading line, matched by the text either side.
+  const precise = findRawOffsetForRenderedPoint(view, notes, x, y);
+  if (precise != null) return precise;
+
+  const block = notesBlockAtReadingLineGeometric();
+  if (block) {
+    const hint = approximateRawOffsetForBlock(view, notes, block);
+    // 2. Block-level: no usable caret, but we know which block it is.
+    const atBlock = rawOffsetForRenderedBlock(view, notes, block, { hint });
+    if (atBlock != null) return atBlock;
+    // 3. The hint itself. Coarse — it's a proportion of the block cache's key
+    // lengths — but it puts the reader in the right region of the note, which is
+    // the whole point.
+    const snapped = snapOffsetToLineStart(notes, hint);
+    if (snapped != null) return snapped;
+  }
+
+  // 4. Nothing measurable at all (no block cache yet): the scroll fraction.
+  const range = view.scrollHeight - view.clientHeight;
+  if (range <= 0) return 0;
+  return snapOffsetToLineStart(notes, (view.scrollTop / range) * notes.length);
 }
 
 // ── Cross-device reading-position resume ────────────────────────────────
@@ -13056,7 +13155,12 @@ el.notesView?.addEventListener("click", (event) => {
   // nothing.
   if (event.detail < 3 || isNotesEditing()) return;
   if (event.target.closest("button, a")) return;
-  enterNotesEditing(findRawOffsetForRenderedPoint(el.notesView, state.notes, event.clientX, event.clientY));
+  // ?? the reading-line resolver, not a bare null: an unmatchable click point
+  // (a widget, a phrase the snippet search can't place) would otherwise open the
+  // editor at offset 0, which is the same "took me to the top of the note"
+  // failure the toggle had.
+  const at = findRawOffsetForRenderedPoint(el.notesView, state.notes, event.clientX, event.clientY);
+  enterNotesEditing(at ?? rawOffsetForCurrentNotesScroll());
 });
 
 function setViewMode(mode) {
@@ -13772,12 +13876,22 @@ function closeNotesToc() {
   el.notesTocBtn?.classList.remove("is-active");
   el.notesTocBtn?.setAttribute("aria-expanded", "false");
   const drawer = el.notesTocDrawer;
+  // Torn down explicitly rather than with { once: true }, which only removes the
+  // listener if the event actually FIRES — and the whole reason for the timeout
+  // below is that it often doesn't (reduced motion, or a drawer that was already
+  // closed). On those devices every close left another listener on an element
+  // that is never recreated, so they accumulated for the whole session and then
+  // all ran on every unrelated transition on the drawer.
+  let timer = 0;
   const hideAfter = () => {
+    drawer.removeEventListener("transitionend", hideAfter);
+    if (timer) clearTimeout(timer);
+    timer = 0;
     if (!drawer.classList.contains("is-open")) drawer.hidden = true;
   };
-  drawer.addEventListener("transitionend", hideAfter, { once: true });
+  drawer.addEventListener("transitionend", hideAfter);
   // Fallback in case the transition never fires (e.g. reduced motion).
-  setTimeout(hideAfter, 260);
+  timer = setTimeout(hideAfter, 260);
 }
 
 function toggleNotesToc() {
@@ -14674,6 +14788,13 @@ function notesAnchorPlainText(src) {
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")        // images
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")     // links → label
     .replace(/\{\{|\}\}/g, "")                   // cloze braces
+    // Highlights are literal <mark>…</mark> pairs living in the markdown, so any
+    // snippet taken from highlighted text carries the tags. They have to go
+    // BEFORE the emphasis rule below, which eats a tag's ">" and leaves
+    // "<markAlpha beta</mark" — a needle that can never appear in the rendered
+    // text, so every jump built from it failed. Deliberately mark tags only, not
+    // a general tag strip: prose containing "a < b" must survive untouched.
+    .replace(/<\/?mark(?:\s[^>]*)?>/g, "")       // highlight tags
     .replace(/[*_~>#]+/g, "")                    // inline emphasis / heading / quote markers
     .replace(/\s+/g, " ")
     .trim();
@@ -14953,35 +15074,16 @@ function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
   requestAnimationFrame(() => attempt(2));
 }
 
-// Scroll to the anchor and briefly flash it. Handles both rendered and raw
-// notes. Returns true when it found and revealed the spot. `flash`/`smooth`
-// default to true (every existing caller — a deliberate jump-to-origin click)
-// so only an ambient landing (cross-device reading-position resume on load)
-// needs to opt out: no flash for something the reader didn't ask to jump to,
-// no animated scroll on every deck open.
-function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}) {
-  const notesTarget = SELECTION_TARGETS[0];
-  if (isTargetEditing(notesTarget)) {
-    const idx = resolveRawNoteIndex(anchor);
-    if (idx == null) return false;
-    const len = Math.max(1, (anchor.source || anchor.text || "").length);
-    const edit = notesTarget.edit;
-    edit.focus();
-    edit.setSelectionRange(idx, idx + len);
-    // No flash in raw mode: the browser's own selection highlight over
-    // setSelectionRange's range already marks the spot. (`flash` still governs
-    // the rendered branch below, where there is no selection to see.)
-    scrollTextareaToOffset(edit, idx);
-    return true;
-  }
-
-  const range = findRenderedNoteRange(anchor, anchor.offset);
-  if (!range) return false;
+// Put a rendered range on screen and (optionally) flash it. Shared by the
+// anchor-text jump below and the exact-<mark> jump above it, which differ only
+// in how they find the range.
+//
+// Centred, unlike the raw<->rendered restore: this is an explicit jump to
+// somewhere you weren't, so putting the target in the middle of the screen is
+// what you want. Restoring a reading position is the case that has to land on
+// the reading line instead.
+function revealRenderedNoteRange(range, { flash = true, smooth = true } = {}) {
   const block = blockForRange(range);
-  // Centred, unlike the raw<->rendered restore: this is an explicit jump to
-  // somewhere you weren't, so putting the target in the middle of the screen is
-  // what you want. Restoring a reading position is the case that has to land on
-  // the reading line instead.
   markProgrammaticNotesScroll(smooth ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
   (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
   if (!flash) return true;
@@ -14997,16 +15099,85 @@ function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}) {
   return true;
 }
 
+// Jump straight to the Nth <mark> in the rendered notes, no text search at all.
+//
+// A highlight is a literal <mark>…</mark> pair in state.notes, so the Highlights
+// panel already knows each entry's ordinal among all the marks in the source —
+// and marked/DOMPurify preserve document order, so the Nth mark in the source is
+// the Nth <mark> element in the view. That makes the jump exact, which the text
+// search fundamentally cannot be: it takes the FIRST occurrence of the
+// highlighted words inside a several-thousand-pixel window, so highlighting a
+// phrase that recurs nearby landed on the wrong copy of it.
+//
+// `markCount` is the gate. Marks are only produced from a selection, which never
+// wraps fenced code — but nothing stops a reader typing <mark> inside a fence in
+// the raw editor, and that one renders as literal TEXT rather than an element.
+// The source scan counts it and the DOM doesn't, so every ordinal after it would
+// be off by one. When the two counts disagree we know nothing about the mapping
+// and hand back false so the caller falls back to the text search.
+function revealNoteMark(locator, options) {
+  const view = el.notesView;
+  if (!view || view.hidden || !locator) return false;
+  const { markIndex, markCount } = locator;
+  if (!Number.isFinite(markIndex) || markIndex < 0) return false;
+  const marks = view.querySelectorAll("mark");
+  if (!Number.isFinite(markCount) || marks.length !== markCount) return false;
+  const node = marks[markIndex];
+  if (!node) return false;
+  let range;
+  try {
+    range = document.createRange();
+    range.selectNodeContents(node);
+  } catch (_) {
+    return false;
+  }
+  return revealRenderedNoteRange(range, options);
+}
+
+// Scroll to the anchor and briefly flash it. Handles both rendered and raw
+// notes. Returns true when it found and revealed the spot. `flash`/`smooth`
+// default to true (every existing caller — a deliberate jump-to-origin click)
+// so only an ambient landing (cross-device reading-position resume on load)
+// needs to opt out: no flash for something the reader didn't ask to jump to,
+// no animated scroll on every deck open.
+//
+// `locator` is the optional exact-<mark> shortcut described above; the anchor is
+// still required, because it's what the raw-editor branch and the fallback text
+// search work from.
+function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}, locator = null) {
+  const notesTarget = SELECTION_TARGETS[0];
+  if (isTargetEditing(notesTarget)) {
+    const idx = resolveRawNoteIndex(anchor);
+    if (idx == null) return false;
+    const len = Math.max(1, (anchor.source || anchor.text || "").length);
+    const edit = notesTarget.edit;
+    edit.focus();
+    edit.setSelectionRange(idx, idx + len);
+    // No flash in raw mode: the browser's own selection highlight over
+    // setSelectionRange's range already marks the spot. (`flash` still governs
+    // the rendered branch below, where there is no selection to see.)
+    scrollTextareaToOffset(edit, idx);
+    return true;
+  }
+
+  if (revealNoteMark(locator, { flash, smooth })) return true;
+
+  const range = findRenderedNoteRange(anchor, anchor.offset);
+  if (!range) return false;
+  return revealRenderedNoteRange(range, { flash, smooth });
+}
+
 // Switch to the notes view (if needed) and reveal the anchor. setViewMode
 // re-renders the notes markdown asynchronously, so retry across a few frames
 // before giving up. Two rAFs cover the initial render; the timeout loop is a
 // belt-and-braces fallback for slower renders / a just-loaded deck. `options`
-// (flash/smooth) is threaded straight through to revealNoteAnchor.
-function scheduleNoteJump(anchor, options) {
+// (flash/smooth) is threaded straight through to revealNoteAnchor, as is
+// `locator` (the exact-<mark> shortcut used by the Highlights panel).
+function scheduleNoteJump(anchor, options, locator = null) {
   if (state.viewMode !== "notes") setViewMode("notes");
   let estimatedOnce = false;
   const attempt = (retries) => {
-    if (revealNoteAnchor(anchor, options)) return;
+    if (revealNoteAnchor(anchor, options, locator)) return;
     // findRenderedNoteRange (inside revealNoteAnchor) does a text search over
     // the rendered DOM. Nudge toward a proportional estimate once so the
     // windowed search is centred near the target before retrying.
@@ -16153,19 +16324,22 @@ el.eraseNotesSelectionBtn?.addEventListener("pointerdown", (event) => {
 // a flashcard, which is not a thing you can follow while studying.
 function promptForText(title, hint, suggestion) {
   return new Promise((resolve) => {
-    let answered = false;
+    let watch = 0;
+    const settle = (value) => {
+      if (watch) clearInterval(watch);
+      watch = 0;
+      resolve(value);
+    };
     // Empty field, suggestion as the placeholder — the convention every other
     // prompt in this app follows, so there is nothing to delete before typing
     // and pressing Enter accepts the suggestion.
-    showPromptModal(title, hint, "", (value) => {
-      answered = true;
-      resolve(value);
-    }, { placeholder: suggestion });
+    // The watchdog is stopped HERE rather than left for its own next tick to
+    // notice: a submitted prompt has nothing left to watch for.
+    showPromptModal(title, hint, "", settle, { placeholder: suggestion });
     // showPromptModal has no cancel callback, so a dismissed dialog would leave
     // this promise pending forever. Watch for the modal going away instead.
-    const watch = setInterval(() => {
-      if (answered) { clearInterval(watch); return; }
-      if (el.promptModal?.hidden) { clearInterval(watch); resolve(null); }
+    watch = setInterval(() => {
+      if (el.promptModal?.hidden) settle(null);
     }, 200);
   });
 }
@@ -19552,6 +19726,9 @@ function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // writes the OLD note's body over the NEW deck's record. See the block
     // comment on discardNotesEditingForDeckSwap.
     discardNotesEditingForDeckSwap();
+    // See the identical call in loadWebDeck: the outgoing deck's queued-image
+    // blob URLs are released here rather than held until pagehide.
+    revokeLocalImageUrls();
     state.notes = payloadNotes;
     setViewMode("notes");
     // Cross-device resume — see the identical call in loadWebDeck for why
@@ -19764,8 +19941,7 @@ function handleDeckStorageQuotaError(error) {
 //
 // deckSnapshotCache is LAZY, not a full mirror: nothing loads at boot (see
 // initDeckStorage), and a deck enters the cache the first time it's read or
-// written and stays resident for the rest of the session — there is no
-// eviction. So RAM scales with how much of the library THIS session has
+// written. So RAM scales with how much of the library THIS session has
 // actually touched, not with total library size: opening one 20MB note out
 // of a 500MB library costs roughly 20MB (plus the small library index), not
 // 500MB. It also means readDeckSnapshot is ASYNC — a cold read costs one
@@ -19776,14 +19952,54 @@ function handleDeckStorageQuotaError(error) {
 // never stale — and persist to IndexedDB in the background; a persist
 // failure routes through handleDeckStorageQuotaError above, the same path
 // saveDeckToLibrary already used, so there's one messaging surface, not two.
-// (The session-long residency does mean RAM only ever grows, never shrinks,
-// across one very long session touching many decks — accepted trade for not
-// needing eviction bookkeeping, which is its own source of bugs; a page
-// reload is a full reset if that ever matters in practice.)
+//
+// ── Why residency is now bounded ───────────────────────────────────────────
+// This cache used to keep every deck it ever saw for the whole session, on the
+// grounds that eviction bookkeeping is its own source of bugs. The cost of that
+// showed up as "the app gets laggy after it's been open a while": each entry is
+// a whole deck body (notes up to ~1MB, plus every card), so a session that
+// browses twenty or thirty decks holds tens of MB it will never read again, and
+// the heap only ever grows — longer and more frequent major GCs, worse locality,
+// no recovery short of a reload.
+//
+// The bookkeeping is safe here because this is purely a READ cache: an evicted
+// key is simply a cache miss, and readDeckSnapshot already handles a miss by
+// re-reading IndexedDB. Two kinds of key are never evictable, and those are the
+// only invariants worth remembering —
+//   • anything in pendingDeckWrites: its newest version is not on disk yet, so
+//     dropping it would let the next read return the older stored copy;
+//   • the deck currently open: it's the one guaranteed to be read again.
+// Map iteration order is insertion order, so re-inserting on every hit
+// (touchDeckSnapshotCache) makes that order recency and the eviction a plain
+// walk from the front.
 const DECK_STORE_DB = "recall-decks";
 const DECK_STORE_NAME = "snapshots";
 const deckSnapshotCache = new Map();
+// Enough for the working set — the open deck, the one before it, and whatever a
+// sync pass is reconciling — without keeping a browsing session's whole history.
+const DECK_SNAPSHOT_CACHE_MAX = 6;
 let deckStoreDbPromise = null;
+
+function deckSnapshotCachePinned(key) {
+  if (pendingDeckWrites.has(key)) return true;
+  return key === String(state.localDeckId || "") || key === String(state.deckId || "");
+}
+
+// Mark `key` as the most recently used entry and evict the oldest evictable
+// entries beyond the cap. Called after every set and every cache hit.
+function touchDeckSnapshotCache(key) {
+  if (deckSnapshotCache.has(key)) {
+    const value = deckSnapshotCache.get(key);
+    deckSnapshotCache.delete(key);
+    deckSnapshotCache.set(key, value);
+  }
+  if (deckSnapshotCache.size <= DECK_SNAPSHOT_CACHE_MAX) return;
+  for (const candidate of deckSnapshotCache.keys()) {
+    if (deckSnapshotCache.size <= DECK_SNAPSHOT_CACHE_MAX) break;
+    if (candidate === key || deckSnapshotCachePinned(candidate)) continue;
+    deckSnapshotCache.delete(candidate);
+  }
+}
 
 // ── Unload durability journal ───────────────────────────────────────────────
 // The one thing localStorage did better: its writes were SYNCHRONOUS, so an
@@ -19854,8 +20070,12 @@ if (deckStoreChannel) {
     deckStoreRequest("readonly", (store) => store.get(String(id)))
       .then((row) => {
         if (pendingDeckWrites.has(String(id))) return; // raced with a local write
-        if (row && row.snapshot) deckSnapshotCache.set(String(id), row.snapshot);
-        else deckSnapshotCache.delete(String(id));
+        if (row && row.snapshot) {
+          deckSnapshotCache.set(String(id), row.snapshot);
+          touchDeckSnapshotCache(String(id));
+        } else {
+          deckSnapshotCache.delete(String(id));
+        }
       })
       .catch((error) => console.warn("Could not refresh a deck snapshot after another tab changed it", id, error));
   };
@@ -20159,7 +20379,11 @@ async function readDeckSnapshot(id) {
       return null;
     }
   }
-  if (deckSnapshotCache.has(key)) return cloneSnapshot(deckSnapshotCache.get(key));
+  if (deckSnapshotCache.has(key)) {
+    const hit = cloneSnapshot(deckSnapshotCache.get(key));
+    touchDeckSnapshotCache(key);
+    return hit;
+  }
   let row;
   try {
     row = await deckStoreRequest("readonly", (store) => store.get(key));
@@ -20172,11 +20396,16 @@ async function readDeckSnapshot(id) {
   // stale base to modify — and, worse, caching it would replace a newer
   // in-memory snapshot with an older one for every later reader. The live
   // value always wins.
-  if (deckSnapshotCache.has(key)) return cloneSnapshot(deckSnapshotCache.get(key));
+  if (deckSnapshotCache.has(key)) {
+    const live = cloneSnapshot(deckSnapshotCache.get(key));
+    touchDeckSnapshotCache(key);
+    return live;
+  }
   if (!row || !row.snapshot) return null; // confirmed absent — not a failure
-  // Warm the cache: this id is now "touched this session" and stays resident
-  // for the rest of it (no eviction — see the block comment above).
+  // Warm the cache — as the most recently used entry, which may evict the
+  // coldest deck past the cap (see the block comment above).
   deckSnapshotCache.set(key, row.snapshot);
+  touchDeckSnapshotCache(key);
   // A clone, never the cache's own object. Call sites throughout the app read
   // a snapshot, mutate it in memory, and only SOMETIMES call writeDeckSnapshot
   // to persist the result (e.g. a pre-push reconcile that decides nothing
@@ -20208,6 +20437,8 @@ function writeDeckSnapshot(id, snapshot) {
   if (!stored) return;
   deckSnapshotCache.set(key, stored);
   pendingDeckWrites.set(key, stored);
+  // After pendingDeckWrites, so this key is pinned against its own eviction.
+  touchDeckSnapshotCache(key);
   deckStoreRequest("readwrite", (store) => store.put({ id: key, snapshot: stored })).then(() => {
     // Identity-compared: a newer write for the same deck may have replaced this
     // one while the transaction was open, and that one is still unconfirmed.
@@ -28751,7 +28982,7 @@ if (helpModal) {
 // bundle under the new URL, and the old function then reported the new stamp
 // while old code ran — so the modal cheerfully said "You're up to date ✓" to
 // exactly the users who were not. Bump this with the other three (CI enforces).
-const BUILD_STAMP = "20260810-02";
+const BUILD_STAMP = "20260812-01";
 
 // The running build's version. Normally the constant above; "unknown" only if
 // this file was somehow loaded without one.
@@ -29628,6 +29859,15 @@ async function resolveLocalImageUrl(token) {
   }
 }
 
+// Every blob URL minted so far, released.
+//
+// Called on pagehide, on clear-this-device, and — the one that matters for a
+// session that never navigates — on every deck swap. Each entry pins a whole
+// image's bytes in memory for as long as the URL exists, and a PWA can go hours
+// without a pagehide, so holding them for the session meant image memory only
+// ever grew. Safe to do eagerly because resolveLocalImageUrl re-mints on demand
+// from the outbox: a revoked URL costs one lazy IndexedDB read, and the render
+// that follows a deck swap re-resolves every placeholder anyway.
 function revokeLocalImageUrls() {
   for (const url of localImageObjectUrls.values()) URL.revokeObjectURL(url);
   localImageObjectUrls.clear();
@@ -31555,12 +31795,73 @@ function precedingListMarker(source, start) {
   return match && match[0].length === prefix.length ? prefix : null;
 }
 
-// One entry per highlight: a self-contained markdown fragment (rendered as-is
-// in the Highlights tab, not flattened to plain text or cropped — see
-// renderHighlightsPanel) and a trimNoteAnchor-shaped anchor (offset + exact
-// source span + plain text) so "Go to →" can reuse scheduleNoteJump/
-// revealNoteAnchor exactly as the note-origin and cloze-jump features already
-// do — no separate jump logic.
+// A highlight is usually a FRAGMENT of a sentence — a phrase mid-clause, not a
+// whole line — and showing only the marked words left the panel full of rows
+// that read as gibberish out of context ("eigenvalue problem", "treating a song
+// as a list of air pressure readings"). Every part of a row is therefore widened
+// to whole sentences: the highlight is shown inside the complete sentence it
+// lives in, between the sentence before and the sentence after.
+//
+// The unit index is the cloze panel's (clozeUnitIndex / clozeUnitAt, which split
+// on sentence ends AND newlines and drop table rules): built once per panel
+// render rather than per highlight, and searched by bisection. Reusing it keeps
+// one definition of "a sentence" for both panels, including the awkward parts —
+// a cloze's own punctuation never splits a unit, and a lone |---|---| row is
+// never offered as context.
+//
+// Returns null when no unit covers the highlight (all-whitespace, or a dropped
+// table rule), and the caller falls back to the bare marked fragment.
+// clozeUnitIndex drops table rules but not code-fence markers, and a lone "```js"
+// offered as context opens a block that never closes — swallowing the rest of the
+// row into a code block. Neighbours therefore step outward past any unit that
+// isn't showable on its own.
+const HIGHLIGHT_CONTEXT_FENCE_RE = /^\s*(?:```|~~~)/;
+
+function highlightContextUnit(units, index, step) {
+  for (let i = index + step; i >= 0 && i < units.length; i += step) {
+    const text = clozeCleanUnit(units[i].text);
+    if (text && !HIGHLIGHT_CONTEXT_FENCE_RE.test(text)) return text;
+  }
+  return "";
+}
+
+function highlightSentenceParts(units, source, group) {
+  const first = clozeUnitAt(units, group.pieces[0].start);
+  if (first === -1) return null;
+  // A highlight can run past the end of its own sentence (a drag across two of
+  // them, or across a block boundary), so the closing unit is looked up
+  // separately and everything between the two is kept.
+  const lastFrom = clozeUnitAt(units, Math.max(group.pieces[0].start, group.end - 1));
+  const last = lastFrom === -1 ? first : Math.max(first, lastFrom);
+  const cur = source.slice(units[first].start, units[last].end);
+  // A slice that ends between a <mark> and its </mark> would render as an
+  // element the browser closes at the end of the row, highlighting all the
+  // context after it. Only reachable if the closing tag's own unit was dropped
+  // (a table rule), so the cheap answer is to decline and let the caller fall
+  // back to the bare fragment rather than to widen and guess.
+  if ((cur.match(/<mark\b/g) || []).length !== (cur.match(/<\/mark>/g) || []).length) return null;
+  return {
+    // Raw source, not a rebuilt fragment: the <mark> tags keep their colours and
+    // each line keeps its own list marker / quote / heading prefix, so a
+    // highlighted bullet still renders as a bullet here.
+    cur,
+    // Neighbours are normalised the way the cloze panel normalises its side
+    // context — a lone table row becomes "a · b", a heading loses its hashes —
+    // because a fragment of a construct is not valid standalone markdown.
+    prev: highlightContextUnit(units, first, -1),
+    next: highlightContextUnit(units, last, 1)
+  };
+}
+
+// One entry per highlight: the complete sentence it sits in (rendered as-is in
+// the Highlights tab, not flattened to plain text or cropped — see
+// renderHighlightsPanel), the sentences either side of it, and a
+// trimNoteAnchor-shaped anchor (offset + exact source span + plain text) so
+// "Go to →" can reuse scheduleNoteJump/revealNoteAnchor exactly as the
+// note-origin and cloze-jump features already do — no separate jump logic.
+//
+// `markIndex`/`markCount` are what make the jump EXACT: see revealNoteMark. The
+// anchor is still carried for the raw editor and as the fallback.
 //
 // Highlighting a selection that crosses a paragraph or list-item boundary
 // (wrapAcrossBlocks, see makeHighlightFromSelection) leaves several adjacent
@@ -31582,6 +31883,9 @@ function collectDeckHighlights() {
     const openTagLength = m[0].length - inner.length - MARK_CLOSE_TAG.length;
     const start = m.index;
     raw.push({
+      // Ordinal among ALL marks in the source, which is also this mark's
+      // position among the rendered <mark> elements (revealNoteMark).
+      markIndex: raw.length,
       start,
       end: start + m[0].length,
       offset: start + openTagLength,
@@ -31602,20 +31906,39 @@ function collectDeckHighlights() {
     }
   });
 
+  // One pass for the whole note, shared by every row below — see
+  // highlightSentenceParts, and clozeUnitIndex's own comment for why this is
+  // built once rather than per highlight.
+  const units = clozeUnitIndex(source);
+
   const items = [];
   groups.forEach((group) => {
-    // Marks are reapplied (not just the bare inner text) so a highlight's own
-    // colour still shows here exactly as it does in the notes.
-    const markdown = group.pieces.reduce((acc, piece, i) => {
+    const parts = highlightSentenceParts(units, source, group);
+    // Fallback only: no sentence unit covers this highlight. Marks are reapplied
+    // (not just the bare inner text) so a highlight's own colour still shows
+    // here, and each piece's list marker is restored so a highlighted list still
+    // LOOKS like a list rather than three plain-text lines.
+    const markdown = parts ? parts.cur : group.pieces.reduce((acc, piece, i) => {
       const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
       const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
       if (i === 0) return rendered;
       return acc + (piece.marker ? "\n" : "\n\n") + rendered;
     }, "");
-    const text = notesAnchorPlainText(markdown);
+    // The needle is the FIRST piece's own inner text, not the preview markdown:
+    // the preview carries <mark> tags and a restored list marker, neither of
+    // which appears in the rendered notes, so an anchor built from it could
+    // never be found again (that was the "Go to takes me somewhere else" bug —
+    // every match failed and the retry loop's proportional estimate is what the
+    // reader saw). The first piece is also the right place to land for a
+    // highlight that spans several blocks.
+    const text = notesAnchorPlainText(group.pieces[0].inner);
     if (!text) return;
     items.push({
       markdown,
+      prevSentence: parts ? parts.prev : "",
+      nextSentence: parts ? parts.next : "",
+      markIndex: group.pieces[0].markIndex,
+      markCount: raw.length,
       anchor: trimNoteAnchor({ offset: group.offset, source: group.pieces[0].inner, text, deckId: state.deckId, deckTitle: state.deckTitle })
     });
   });
@@ -31630,6 +31953,16 @@ function collectDeckHighlights() {
 // with an ellipsis — via the same synchronous safe-HTML pass renderMarkdown
 // itself is built on (markdownToSafeHtml), since a highlight preview is
 // always short enough not to need that function's viewport-deferral machinery.
+// The neighbouring source lines are rendered the same way, dimmed and clamped by
+// CSS (never truncated as a string — cutting markdown mid-syntax renders broken
+// output), so a row can be recognised without opening the note.
+function highlightContextNode(markdown) {
+  const node = document.createElement("div");
+  node.className = "highlight-ctx is-side rendered";
+  node.innerHTML = markdownToSafeHtml(markdown);
+  return node;
+}
+
 function renderHighlightsPanel() {
   const list = el.highlightsList;
   if (!list) return;
@@ -31639,17 +31972,26 @@ function renderHighlightsPanel() {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "highlight-row";
+    // The three stacked lines share one column so the jump button still sits
+    // BESIDE the highlight rather than under the context below it.
+    const body = document.createElement("div");
+    body.className = "highlight-body";
     const preview = document.createElement("div");
     preview.className = "highlight-preview rendered";
     preview.innerHTML = markdownToSafeHtml(item.markdown);
+    if (item.prevSentence) body.appendChild(highlightContextNode(item.prevSentence));
+    body.appendChild(preview);
+    if (item.nextSentence) body.appendChild(highlightContextNode(item.nextSentence));
     const jumpBtn = document.createElement("button");
     jumpBtn.type = "button";
     jumpBtn.className = "highlight-jump-btn";
     jumpBtn.title = "Go to this highlight in the notes";
     jumpBtn.setAttribute("aria-label", "Go to this highlight in the notes");
     jumpBtn.textContent = "Go to →";
-    jumpBtn.addEventListener("click", () => scheduleNoteJump(item.anchor));
-    row.append(preview, jumpBtn);
+    jumpBtn.addEventListener("click", () =>
+      scheduleNoteJump(item.anchor, undefined, { markIndex: item.markIndex, markCount: item.markCount })
+    );
+    row.append(body, jumpBtn);
     list.appendChild(row);
   });
 }

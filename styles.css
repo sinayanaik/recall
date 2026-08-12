@@ -11622,8 +11622,51 @@ kbd {
   background: var(--panel-2);
 }
 
-.highlight-preview {
+/* The highlight and its two context lines, stacked — so .highlight-jump-btn
+   stays beside the highlight instead of dropping below the line after it. */
+.highlight-body {
   flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* One source line either side of the highlight, dimmed exactly like the cloze
+   panel's side context (.cloze-ctx.is-side above). Clamped in CSS rather than by
+   cropping the markdown string: a cut mid-syntax renders as broken output. */
+.highlight-row .highlight-ctx {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+
+.highlight-row .highlight-ctx :is(p, h1, h2, h3, h4, h5, h6, li) {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  border: 0;
+  padding: 0;
+  color: inherit;
+}
+
+/* As in the cloze panel: the heading underline is an ::after, so `border: 0`
+   above doesn't remove it, and one line of context has no room for it. */
+.highlight-row .highlight-ctx :is(h1, h2, h3, h4, h5, h6)::after {
+  display: none;
+}
+
+.highlight-row .highlight-ctx :is(ul, ol) {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.highlight-preview {
   min-width: 0;
   font-size: 0.92rem;
   line-height: 1.4;
