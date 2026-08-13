@@ -956,17 +956,23 @@ button:disabled {
     transform 0.12s ease;
 }
 
-.tool-button:hover,
-.icon-button:hover,
-.sync-modal-btn:hover,
-.web-decks-refresh:hover,
-.web-deck-action:hover {
-  background-color: var(--panel-2);
-  border-color: var(--accent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent),
-    0 3px 9px rgba(0, 0, 0, 0.2);
-  transform: translateY(-1px);
+/* Gated on a real pointer. On touch, :hover STICKS after a tap — so the button
+   stayed lifted and highlighted long after the press, which reads as a press
+   that never completed. That is a large part of "the buttons feel laggy" on a
+   phone: the affordance says still-working when the work is long done. */
+@media (hover: hover) {
+  .tool-button:hover,
+  .icon-button:hover,
+  .sync-modal-btn:hover,
+  .web-decks-refresh:hover,
+  .web-deck-action:hover {
+    background-color: var(--panel-2);
+    border-color: var(--accent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent),
+      0 3px 9px rgba(0, 0, 0, 0.2);
+    transform: translateY(-1px);
+  }
 }
 
 .tool-button:active,

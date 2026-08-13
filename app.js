@@ -526,7 +526,26 @@ function initSupabaseClient() {
     supabaseClient = null;
     return "no-library";
   }
+  preconnectToStorageOrigin(config.url);
   return "ok";
+}
+
+// index.html can only preconnect to cdn.jsdelivr.net — every user brings their
+// own Supabase project, so the storage origin isn't known until the config is
+// read. Without this the first image of a session pays DNS + TLS on top of its
+// download, which is exactly the request the reader is waiting on.
+function preconnectToStorageOrigin(url) {
+  try {
+    const origin = new URL(url).origin;
+    if (document.querySelector(`link[rel="preconnect"][href="${CSS.escape(origin)}"]`)) return;
+    const link = document.createElement("link");
+    link.rel = "preconnect";
+    link.href = origin;
+    link.crossOrigin = "anonymous";
+    document.head.appendChild(link);
+  } catch {
+    // A malformed configured URL is already handled above; nothing to warm.
+  }
 }
 
 // supabase-js is a blocking <script> before this file, so if it were coming at
@@ -2633,6 +2652,9 @@ let allCardsFilter = localStorage.getItem("recall:allCardsFilter") || "all";
 if (!ALL_CARDS_FILTERS.has(allCardsFilter)) allCardsFilter = "all";
 const pdfPrintStyleId = "pdfPrintStyle";
 let liveQuestionFitFrame = 0;
+// Last answer fitLiveQuestion computed, and the inputs it was computed from.
+// One entry is enough: the question view only ever shows one question.
+const liveQuestionFitCache = { key: null, size: null };
 // A question refit that was skipped because text was selected (see
 // fitLiveQuestion), owed as soon as the selection is released.
 let questionFitDeferredBySelection = false;
@@ -5821,7 +5843,10 @@ async function readBackupAssetBlob(ref) {
   try {
     if (typeof caches !== "undefined") {
       const cache = await caches.open(OFFLINE_IMAGE_CACHE);
-      const hit = await cache.match(ref);
+      // ignoreVary: entries written by the service worker come from a CORS
+      // fetch, and Supabase Storage answers those with `Vary: Origin` — without
+      // this, a lookup keyed by the bare URL would miss every one of them.
+      const hit = await cache.match(ref, { ignoreVary: true });
       if (hit && hit.ok) {
         const blob = await hit.blob();
         if (blob.size) return blob;
@@ -10162,6 +10187,9 @@ const pendingDeferredWork = new Set(); // live nodes with queued work, for flush
 const readyDeferredWork = new Set(); // came into view, not yet run — see drainReadyDeferredWork
 let deferredWorkDrainHandle = 0;
 
+// How many images at the top of a note load eagerly, ahead of any intersection.
+const EAGER_IMAGE_COUNT = 3;
+
 function deferrableRenderRoot(container) {
   // el.notesView is its own scroll port (.notes-rendered), so it's both the
   // "is this deferrable" answer and the intersection root.
@@ -10525,6 +10553,17 @@ async function enhanceRenderedMarkdown(container, roots = null) {
   const lazyRoot = deferrableRenderRoot(container);
   const diagramWork = runNearViewportAndDefer(diagrams, lazyRoot, renderDiagramNodes);
 
+  // The first few images of a note are the ones the reader is already looking
+  // at, so they must not wait for an intersection to start downloading — with
+  // content-visibility: auto on every top-level block, a lazy image at the top
+  // of the note can be a blank box for a full round trip on open. Everything
+  // after them stays lazy, which is the whole point on a note carrying dozens
+  // of screenshots. Counted across calls because the notes view renders
+  // incrementally, block by block, into the same container.
+  let eagerBudget = lazyRoot
+    ? Math.max(0, EAGER_IMAGE_COUNT - lazyRoot.querySelectorAll("img[data-eager-image]").length)
+    : 0;
+
   scopedQueryAll(scope, "img").forEach((img) => {
     const rewritten = normalizeImageUrl(img.getAttribute("src"));
     if (rewritten !== img.getAttribute("src")) img.setAttribute("src", rewritten);
@@ -10532,7 +10571,14 @@ async function enhanceRenderedMarkdown(container, roots = null) {
     // the ones below the fold is the cheapest win available here. Card faces and
     // the print/export roots stay eager — both are measured right after render.
     if (lazyRoot) {
-      img.loading = "lazy";
+      if (eagerBudget > 0) {
+        eagerBudget -= 1;
+        img.dataset.eagerImage = "1";
+        img.loading = "eager";
+        img.setAttribute("fetchpriority", "high");
+      } else {
+        img.loading = "lazy";
+      }
       img.decoding = "async";
     }
     addDiagramZoomControl(img);
@@ -11880,9 +11926,39 @@ function updateAllCardEditButton(item) {
   button.setAttribute("aria-label", button.title);
 }
 
+// Built on first edit, not at render time.
+//
+// renderAllCards used to give every card its own editor up front, each carrying
+// a full copy of createToolbarHtml() — ~73 lines of markup per card, in a
+// container that starts hidden and that most cards never open. On a few-hundred
+// card deck that was the single biggest slice of the freeze when All Cards was
+// opened.
+function ensureAllCardEditor(item) {
+  const existing = item?.querySelector(".all-card-editor");
+  if (existing || !item) return existing || null;
+  const cell = item.querySelector(".cornell-answer-cell");
+  if (!cell) return null;
+  const editor = document.createElement("div");
+  editor.className = "all-card-editor";
+  editor.hidden = true;
+  editor.innerHTML = `
+    <label>
+      <div class="all-card-editor-header">
+        <span data-all-edit-label>Question</span>
+        <div class="edit-toolbar" data-all-card-toolbar>
+          ${createToolbarHtml()}
+        </div>
+      </div>
+      <textarea data-all-edit-value spellcheck="false"></textarea>
+    </label>
+  `;
+  cell.appendChild(editor);
+  return editor;
+}
+
 function openAllCardEditor(item, side = allCardVisibleSide(item)) {
   const card = allCardById(item?.dataset.cardId);
-  const editor = item?.querySelector(".all-card-editor");
+  const editor = ensureAllCardEditor(item);
   if (!card || !editor) return;
 
   closeAllCardEditors(item);
@@ -11967,15 +12043,22 @@ function flipAllCard(item) {
   updateAllCardEditButton(item);
 }
 
-function adjustCornellRowHeight(row) {
-  if (!row) return;
-  row.style.minHeight = "";
+// Sizing a Cornell row is a write (clear the min-height) followed by reads
+// (scrollHeight, a rect), so doing it row by row forces one full layout PER ROW.
+// Split into its three phases so a caller with many rows can reset them all,
+// measure them all, then write them all — three flushes instead of 3n.
+function resetCornellRowHeight(row) {
+  if (row) row.style.minHeight = "";
+}
+
+function measureCornellRowHeight(row) {
+  if (!row) return null;
   // Compact rows size to their content — no forced min-height.
-  if (row.closest(".all-cards-list.is-compact")) return;
+  if (row.closest(".all-cards-list.is-compact")) return null;
   const rail = row.querySelector(".cornell-question-rail");
   const question = rail?.querySelector(".rendered");
   const answerCell = row.querySelector(".cornell-answer-cell");
-  if (!rail || !question || !answerCell) return;
+  if (!rail || !question || !answerCell) return null;
 
   const railStyle = getComputedStyle(rail);
   const railPaddingY = (parseFloat(railStyle.paddingTop) || 0) + (parseFloat(railStyle.paddingBottom) || 0);
@@ -11986,11 +12069,25 @@ function adjustCornellRowHeight(row) {
   const questionHeight = question.scrollHeight + railPaddingY + badgeHeight + railGap + questionBuffer;
   const answerHeight = answerCell.scrollHeight;
   const minHeight = row.classList.contains("cornell-print-row") ? 72 : 108;
-  row.style.minHeight = `${Math.ceil(Math.max(minHeight, rail.scrollHeight, questionHeight, answerHeight))}px`;
+  return Math.ceil(Math.max(minHeight, rail.scrollHeight, questionHeight, answerHeight));
+}
+
+function applyCornellRowHeight(row, height) {
+  if (row && height != null) row.style.minHeight = `${height}px`;
+}
+
+function adjustCornellRowHeight(row) {
+  if (!row) return;
+  resetCornellRowHeight(row);
+  applyCornellRowHeight(row, measureCornellRowHeight(row));
 }
 
 function adjustCornellRows(container = document) {
-  container.querySelectorAll(".cornell-card, .cornell-print-row").forEach(adjustCornellRowHeight);
+  const rows = Array.from(container.querySelectorAll(".cornell-card, .cornell-print-row"));
+  if (!rows.length) return;
+  rows.forEach(resetCornellRowHeight);
+  const heights = rows.map(measureCornellRowHeight);
+  rows.forEach((row, at) => applyCornellRowHeight(row, heights[at]));
 }
 
 function updateAllAnswersToggleButton() {
@@ -12062,11 +12159,10 @@ async function setAllCardsAnswersVisible(visible) {
   const rows = Array.from(el.allCardsList.querySelectorAll(".cornell-card"));
   for (const row of rows) {
     row.classList.toggle("is-flipped", allCardsAnswersVisible);
-    if (allCardsAnswersVisible) {
-      await ensureAllCardAnswer(row);
-    } else {
-      adjustCornellRowHeight(row);
-    }
+    // Hiding answers needs no per-row measurement — the batched adjustCornellRows
+    // below re-sizes every row anyway, in three layout flushes instead of one
+    // per row.
+    if (allCardsAnswersVisible) await ensureAllCardAnswer(row);
   }
   await afterPaint();
   adjustCornellRows(el.allCardsList);
@@ -12081,6 +12177,24 @@ async function renderAllCards() {
   updateCompactToggleButton();
   applyAllCardsFilter();
 
+  // Built in chunks. Every card here is a full markdown render plus a forced
+  // layout to size its row, and awaiting enhanceRenderedMarkdown yields only a
+  // microtask — so the whole loop used to be ONE uninterrupted task and a deck
+  // of a few hundred cards froze the tab for seconds with nothing on screen.
+  // afterPaint() between chunks hands the frame back, so the first cards are
+  // readable while the rest arrive.
+  const CHUNK = 20;
+  let chunk = [];
+  const settleChunk = async () => {
+    if (!chunk.length) return;
+    // Read every row, then write every row. Interleaving them made each card
+    // invalidate the layout the next card was about to measure.
+    const heights = chunk.map(measureCornellRowHeight);
+    chunk.forEach((row, at) => applyCornellRowHeight(row, heights[at]));
+    chunk = [];
+    await afterPaint();
+  };
+
   for (const [index, card] of cards.entries()) {
     if (renderId !== allCardsRenderId) return;
 
@@ -12093,31 +12207,23 @@ async function renderAllCards() {
     dragHandle.setAttribute("aria-hidden", "true");
     dragHandle.textContent = "⠿";
     item.prepend(dragHandle);
-    const editor = document.createElement("div");
-    editor.className = "all-card-editor";
-    editor.hidden = true;
-    editor.innerHTML = `
-      <label>
-        <div class="all-card-editor-header">
-          <span data-all-edit-label>Question</span>
-          <div class="edit-toolbar" data-all-card-toolbar>
-            ${createToolbarHtml()}
-          </div>
-        </div>
-        <textarea data-all-edit-value spellcheck="false"></textarea>
-      </label>
-    `;
-    item.querySelector(".cornell-answer-cell").appendChild(editor);
     el.allCardsList.appendChild(item);
     await enhanceRenderedMarkdown(item.querySelector(".all-card-question .rendered"));
     if (allCardsAnswersVisible) {
       await enhanceRenderedMarkdown(item.querySelector(".cornell-answer-body"));
     }
-    adjustCornellRowHeight(item);
+    chunk.push(item);
+    if (chunk.length >= CHUNK) await settleChunk();
   }
+  if (renderId !== allCardsRenderId) return;
+  await settleChunk();
 
   updateAllCardStatuses();
   await afterPaint();
+  if (renderId !== allCardsRenderId) return;
+  // Final pass: a row measured while the rows after it did not yet exist can be
+  // off once everything has settled (a late web font, an image). Batched, so the
+  // whole sweep is three layout flushes rather than one per row.
   adjustCornellRows(el.allCardsList);
 }
 
@@ -18498,21 +18604,26 @@ async function showCard(direction = 0) {
   }
 }
 
+// Next / Prev / Known / Review all land here.
+//
+// There is deliberately no exit phase. This used to add a `transition-*-out`
+// class and then wait a full 210ms before even computing the new card — and the
+// 280ms `card-enter` animation still ran afterwards, so a press was ~490ms from
+// settled content, the first 210ms of which was nothing happening at all. On
+// the four most-pressed buttons in the app that is the whole "the controls feel
+// laggy" complaint. The enter animation on its own reads as the same motion
+// while the new card is on screen in the same frame as the press. (The card
+// flip already refused this exact trade — see the comment there.)
 function animateToCard(direction, updateState) {
-  const token = state.transitionToken + 1;
-  state.transitionToken = token;
-  const exitClass = transitionClassFor(direction, "out");
+  // Still bumped: it invalidates the enter-class cleanup timer showCard sets,
+  // so a fast run of presses can't have an earlier one strip the newest class.
+  state.transitionToken += 1;
   clearCardTransitionClasses();
   el.card.classList.remove("swipe-left", "swipe-right", "is-dragging", "drag-review", "drag-known", "drag-prev", "drag-next");
   el.card.style.transform = "";
-  if (exitClass) el.card.classList.add(exitClass);
-
-  window.setTimeout(() => {
-    if (state.transitionToken !== token) return;
-    commitEditIfActive();
-    updateState();
-    showCard(direction);
-  }, 210);
+  commitEditIfActive();
+  updateState();
+  showCard(direction);
 }
 
 // ── Import — one vocabulary, one flow ───────────────────────────────────────
@@ -23131,6 +23242,23 @@ function fitLiveQuestion() {
   if (face.clientHeight <= 0 || face.clientWidth <= 0) return;
 
   const settings = normalizeStyleSettings(state.styleSettings);
+
+  // The search below is a write-then-measure loop, and every measurement after a
+  // write forces a synchronous layout — so a fit costs ten of them, on the frame
+  // right after the press that triggered it. Nothing about the answer changes
+  // while the markup, the face's box and the three settings that feed the search
+  // are all the same, and they very often are: flipping back to a card already
+  // seen, a re-render of the same question, and the resize handler (which fires
+  // on a phone merely because the URL bar moved) all land here unchanged.
+  const fitKey = [
+    node.innerHTML,
+    face.clientWidth, face.clientHeight,
+    settings.questionLineHeight, settings.questionFillPercent, settings.questionMaxFontSize
+  ].join("|");
+  if (liveQuestionFitCache.key === fitKey) {
+    node.style.setProperty("--question-fit-font-size", liveQuestionFitCache.size);
+    return;
+  }
   const faceStyle = getComputedStyle(face);
   const paddingY = (parseFloat(faceStyle.paddingTop) || 0) + (parseFloat(faceStyle.paddingBottom) || 0);
   const paddingX = (parseFloat(faceStyle.paddingLeft) || 0) + (parseFloat(faceStyle.paddingRight) || 0);
@@ -23232,6 +23360,10 @@ function fitLiveQuestion() {
   };
 
   for (let index = 0; index < 10; index += 1) {
+    // The result is rounded to within 0.5px below, so once the bracket is that
+    // narrow the remaining iterations cost a forced layout each and cannot
+    // change the answer. On a typical ceiling this drops 2-3 of the 10.
+    if (high - low <= 0.5) break;
     const mid = (low + high) / 2;
     node.style.setProperty("--question-fit-font-size", `${mid}px`);
     if (fits()) {
@@ -23242,7 +23374,10 @@ function fitLiveQuestion() {
     }
   }
 
-  node.style.setProperty("--question-fit-font-size", `${Math.min(maxQuestionFontSize, Math.max(1, best - 0.5))}px`);
+  const fitted = `${Math.min(maxQuestionFontSize, Math.max(1, best - 0.5))}px`;
+  liveQuestionFitCache.key = fitKey;
+  liveQuestionFitCache.size = fitted;
+  node.style.setProperty("--question-fit-font-size", fitted);
 }
 
 function scheduleLiveQuestionFit() {
@@ -29707,13 +29842,61 @@ const IMAGE_MAX_DIMENSION = 1600; // longest edge, in px
 const IMAGE_QUALITY = 0.82;
 const IMAGE_MIME_EXT = { "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png" };
 
-function optimizeImage(file) {
-  return new Promise((resolve) => {
-    const type = (file && file.type) || "";
-    if (!type.startsWith("image/") || type === "image/gif" || type === "image/svg+xml") {
-      resolve(file);
-      return;
+// Count a GIF's frames by walking its block structure. Only an ANIMATED gif has
+// to skip optimization — the canvas path would flatten it to a still — but a
+// single-frame GIF is just a picture, and passing every GIF through untouched
+// meant a multi-megabyte one was stored and served at full size forever.
+// Anything unparseable returns 2, i.e. "treat as animated", which is the answer
+// that can only cost bytes rather than destroy the image.
+function gifFrameCount(bytes) {
+  if (bytes.length < 13 || bytes[0] !== 0x47 || bytes[1] !== 0x49 || bytes[2] !== 0x46) return 2;
+  let at = 10;
+  // Global colour table: flag is the high bit of the packed field at byte 10,
+  // and its size is 3 × 2^(N+1) where N is the low three bits.
+  if (bytes[at] & 0x80) at += 3 * (1 << ((bytes[at] & 0x07) + 1));
+  at += 3; // packed field + background colour index + pixel aspect ratio
+  const skipSubBlocks = () => {
+    while (at < bytes.length) {
+      const size = bytes[at++];
+      if (!size) return true;
+      at += size;
     }
+    return false;
+  };
+  let frames = 0;
+  while (at < bytes.length) {
+    const marker = bytes[at++];
+    if (marker === 0x3B) break;            // trailer
+    if (marker === 0x21) {                 // extension: label, then sub-blocks
+      at += 1;
+      if (!skipSubBlocks()) return 2;
+      continue;
+    }
+    if (marker !== 0x2C) return 2;         // not a valid block boundary
+    frames += 1;
+    if (frames > 1) return frames;         // animated — no need to finish
+    at += 8;                               // image descriptor, up to its packed field
+    const packed = bytes[at++];
+    if (packed & 0x80) at += 3 * (1 << ((packed & 0x07) + 1)); // local colour table
+    at += 1;                               // LZW minimum code size
+    if (!skipSubBlocks()) return 2;
+  }
+  return frames;
+}
+
+async function optimizeImage(file) {
+  const fileType = (file && file.type) || "";
+  // SVG is vector: already small, and rasterizing it would be a downgrade.
+  if (!fileType.startsWith("image/") || fileType === "image/svg+xml") return file;
+  if (fileType === "image/gif") {
+    try {
+      const head = new Uint8Array(await file.slice(0, 4 * 1024 * 1024).arrayBuffer());
+      if (gifFrameCount(head) > 1) return file;
+    } catch {
+      return file;
+    }
+  }
+  return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
@@ -29722,6 +29905,11 @@ function optimizeImage(file) {
       const w = img.naturalWidth, h = img.naturalHeight;
       if (!w || !h) { resolve(file); return; }
       const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(w, h));
+      // Whether the re-encode is allowed to lose on bytes alone. If the source
+      // is oversized, the downscale is the point: a 4000px JPEG that is already
+      // well compressed would otherwise be stored at 4000px and decoded at that
+      // size on every single view, on every device.
+      const wasDownscaled = scale < 1;
       const canvas = document.createElement("canvas");
       canvas.width = Math.round(w * scale);
       canvas.height = Math.round(h * scale);
@@ -29733,7 +29921,7 @@ function optimizeImage(file) {
       toBlob("image/webp")
         .then((blob) => blob || toBlob("image/jpeg"))
         .then((blob) => {
-          if (!blob || blob.size >= file.size) { resolve(file); return; }
+          if (!blob || (blob.size >= file.size && !wasDownscaled)) { resolve(file); return; }
           const ext = IMAGE_MIME_EXT[blob.type] || "img";
           const baseName = (file.name || "image").replace(/\.[^.]+$/, "");
           resolve(new File([blob], `${baseName}.${ext}`, { type: blob.type }));
@@ -29872,6 +30060,11 @@ async function uploadImageToSupabase(file, { folder = null, name = null } = {}) 
   const { error } = await withTimeout(
     supabaseClient.storage.from(IMAGE_BUCKET).upload(path, file, {
       contentType: file.type || "application/octet-stream",
+      // Without this Supabase serves max-age=3600, so the browser re-fetched
+      // every image in any session more than an hour after the last one. The
+      // path above is random and never overwritten (upsert: false), so the
+      // bytes at this URL cannot change and the cache can be permanent.
+      cacheControl: "31536000, immutable",
       upsert: false
     }),
     CLOUD_TIMEOUT_MS,
@@ -29989,6 +30182,14 @@ async function resolveLocalImageUrl(token) {
     const entry = await getOutboxImage(token);
     if (!entry?.blob) return null;
     const url = URL.createObjectURL(entry.blob);
+    // Resolves run in parallel now (see hydrateLocalImages), so the same token —
+    // the same image used twice in one note — can be read twice at once. Without
+    // this the loser's blob URL is overwritten in the map and never revoked,
+    // pinning the image's bytes for the life of the session.
+    if (localImageObjectUrls.has(token)) {
+      URL.revokeObjectURL(url);
+      return localImageObjectUrls.get(token);
+    }
     localImageObjectUrls.set(token, url);
     return url;
   } catch (error) {
@@ -30020,7 +30221,11 @@ async function hydrateLocalImages(root = document) {
     ? scopedQueryAll(root, `img[src^="${LOCAL_IMAGE_SCHEME}"]`)
     : root.querySelectorAll?.(`img[src^="${LOCAL_IMAGE_SCHEME}"]`);
   if (!nodes || !nodes.length) return;
-  for (const node of nodes) {
+  // In parallel, not one awaited IndexedDB read after another: revokeLocalImageUrls
+  // runs on every deck swap, so every render after a swap re-resolves each
+  // pending image from scratch and serialising them showed as the images
+  // appearing one by one.
+  await Promise.all(Array.from(nodes, async (node) => {
     const token = node.getAttribute("src").slice(LOCAL_IMAGE_SCHEME.length);
     const url = await resolveLocalImageUrl(token);
     if (url) {
@@ -30028,7 +30233,7 @@ async function hydrateLocalImages(root = document) {
       node.dataset.pendingUpload = "1";
       node.title = "Waiting to upload — will sync when you're back online";
     }
-  }
+  }));
 }
 
 // Upload everything the outbox is holding and rewrite the markdown that points
@@ -32094,16 +32299,51 @@ function collectDeckHighlights() {
 // The neighbouring source lines are rendered the same way, dimmed and clamped by
 // CSS (never truncated as a string — cutting markdown mid-syntax renders broken
 // output), so a row can be recognised without opening the note.
+// The markdown each pending context node is waiting to render, keyed by the node
+// so nothing large ends up in a dataset attribute.
+const pendingHighlightContext = new WeakMap();
+let highlightContextObserver = null;
+
+// A context line, left EMPTY until it is near the viewport.
+//
+// Each of these is a full marked + DOMPurify pass, and there are two per
+// highlight on top of the preview — so a note with a couple of hundred
+// highlights paid six hundred parses on the single tap that opens this panel,
+// nearly all of them for rows nobody had scrolled to yet.
 function highlightContextNode(markdown) {
   const node = document.createElement("div");
   node.className = "highlight-ctx is-side rendered";
-  node.innerHTML = markdownToSafeHtml(markdown);
+  if (!highlightContextObserver && typeof IntersectionObserver !== "undefined") {
+    highlightContextObserver = new IntersectionObserver((entries, observer) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        observer.unobserve(entry.target);
+        renderPendingHighlightContext(entry.target);
+      });
+    }, { rootMargin: "600px 0px" });
+  }
+  if (!highlightContextObserver) {
+    node.innerHTML = markdownToSafeHtml(markdown);
+    return node;
+  }
+  pendingHighlightContext.set(node, markdown);
+  highlightContextObserver.observe(node);
   return node;
+}
+
+function renderPendingHighlightContext(node) {
+  const markdown = pendingHighlightContext.get(node);
+  if (markdown == null) return;
+  pendingHighlightContext.delete(node);
+  node.innerHTML = markdownToSafeHtml(markdown);
 }
 
 function renderHighlightsPanel() {
   const list = el.highlightsList;
   if (!list) return;
+  // Rows from the previous render are about to be discarded; drop their
+  // observations rather than leaving the observer holding detached nodes.
+  highlightContextObserver?.disconnect();
   list.innerHTML = "";
   const items = collectDeckHighlights();
   if (el.highlightsEmpty) el.highlightsEmpty.hidden = items.length > 0;

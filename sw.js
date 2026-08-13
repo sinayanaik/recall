@@ -50,9 +50,27 @@ const IMAGE_CACHE_NAME = "recall-images-v1";
 // Objects are written at immutable, randomly-named paths (see
 // uploadImageToSupabase), so a cache hit is always correct and there is no
 // revalidation to do. Keep a ceiling anyway — an image-heavy EPUB import is
-// hundreds of uploads and this would otherwise grow without limit. Cache
-// entries are appended in fetch order, so the oldest keys are the coldest.
-const IMAGE_CACHE_LIMIT = 400;
+// hundreds of uploads and this would otherwise grow without limit.
+//
+// The trim below drops the oldest INSERTED keys, not the least recently used,
+// which makes a ceiling below the size of the library actively harmful: warming
+// deck B evicts deck A's images, opening A re-warms and evicts B, and no deck is
+// ever warm. The old 400 was well inside that range. Images are stored
+// downscaled to 1600px WebP (see optimizeImage) at roughly 200-400KB each, so
+// this ceiling is a few hundred MB — comfortably inside what a browser grants a
+// persisted origin.
+const IMAGE_CACHE_LIMIT = 1500;
+
+// trimImageCache materialises every key in the cache, so calling it after each
+// individual put is O(n) work per image on the one thread every image request
+// is routed through. Batch it.
+const IMAGE_TRIM_INTERVAL = 50;
+let imagePutsSinceTrim = 0;
+
+// How many warm fetches run at once. Serial warming held the connection pool
+// while the user was looking at a note whose images needed those same
+// connections; unbounded parallelism would be just as bad the other way.
+const IMAGE_WARM_CONCURRENCY = 5;
 
 function isSupabaseImageUrl(url) {
   return url.hostname.endsWith(".supabase.co")
@@ -60,10 +78,31 @@ function isSupabaseImageUrl(url) {
 }
 
 async function trimImageCache() {
+  imagePutsSinceTrim = 0;
   const cache = await caches.open(IMAGE_CACHE_NAME);
   const keys = await cache.keys();
   if (keys.length <= IMAGE_CACHE_LIMIT) return;
   await Promise.all(keys.slice(0, keys.length - IMAGE_CACHE_LIMIT).map((key) => cache.delete(key)));
+}
+
+function maybeTrimImageCache() {
+  imagePutsSinceTrim += 1;
+  if (imagePutsSinceTrim < IMAGE_TRIM_INTERVAL) return Promise.resolve();
+  return trimImageCache();
+}
+
+// Fetch an image in a form that can actually be stored.
+//
+// The rendered <img> carries no crossorigin attribute, so its request is
+// no-cors and fetching IT yields an opaque response: status 0, ok === false,
+// and cache.put throws on it. That is why this cache was, in practice, only
+// ever written by the upload and warm paths — every image viewed on a device
+// that had not uploaded it went to the network on every single load, forever.
+// Re-requesting the same URL in CORS mode gets a real, inspectable, cacheable
+// response (Supabase Storage sends Access-Control-Allow-Origin: *), and a CORS
+// response renders in an <img> just fine.
+function fetchImageForCache(url) {
+  return fetch(new Request(url, { mode: "cors", credentials: "omit" }));
 }
 
 // Same-origin app shell, precached on install.
@@ -270,13 +309,23 @@ self.addEventListener("message", (event) => {
   if (!Array.isArray(urls) || !urls.length) return;
   event.waitUntil(
     caches.open(IMAGE_CACHE_NAME).then(async (cache) => {
-      for (const url of urls.slice(0, IMAGE_CACHE_LIMIT)) {
-        try {
-          if (await cache.match(url)) continue;
-          const response = await fetch(url, { mode: "cors" });
-          if (response.ok) await cache.put(url, response);
-        } catch (_) { /* offline or gone — nothing to warm */ }
-      }
+      // Deduped: the same image can appear in several decks, and this message
+      // arrives once per pulled deck.
+      const pending = [...new Set(urls)].slice(0, IMAGE_CACHE_LIMIT);
+      let next = 0;
+      const worker = async () => {
+        while (next < pending.length) {
+          const url = pending[next++];
+          try {
+            if (await cache.match(url, { ignoreVary: true })) continue;
+            const response = await fetchImageForCache(url);
+            if (response.ok) await cache.put(url, response);
+          } catch (_) { /* offline or gone — nothing to warm */ }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(IMAGE_WARM_CONCURRENCY, pending.length) }, worker)
+      );
       await trimImageCache();
     })
   );
@@ -299,19 +348,32 @@ self.addEventListener("fetch", (event) => {
   if (isImage) {
     // Cache-first, in the image cache. The path is immutable, so a hit needs no
     // revalidation — and cache-first is what makes the image render at all with
-    // no connection. A miss falls through to the network and stores a copy.
+    // no connection. A miss fetches a CORS copy (see fetchImageForCache: the
+    // <img>'s own no-cors request is opaque and unstorable), serves it, and
+    // keeps it.
+    //
+    // Keyed by URL STRING, and matched with ignoreVary. Supabase Storage
+    // answers CORS requests with `Vary: Origin`, so an entry stored from a
+    // request that carried an Origin header would not match the rendered
+    // <img>'s request, which carries none — every warmed image would miss and
+    // the whole warm-on-pull feature would quietly be a no-op.
+    //
     // Never let a failed fetch reject: an <img> that 404s should show as a
     // broken image, not take the request down with an uncaught error.
     event.respondWith(
       caches.open(IMAGE_CACHE_NAME).then((cache) =>
-        cache.match(request).then((cached) => {
+        cache.match(request.url, { ignoreVary: true }).then((cached) => {
           if (cached) return cached;
-          return fetch(request)
+          return fetchImageForCache(request.url)
             .then((response) => {
-              if (response.ok) cache.put(request, response.clone()).then(trimImageCache).catch(() => {});
+              if (response.ok) cache.put(request.url, response.clone()).then(maybeTrimImageCache).catch(() => {});
               return response;
             })
-            .catch(() => cached || Response.error());
+            // A CORS fetch can fail where the plain one would not (a
+            // misconfigured bucket, a proxy stripping the header). Showing the
+            // image still beats caching it, so fall back to the request as the
+            // page made it and simply store nothing.
+            .catch(() => fetch(request).catch(() => Response.error()));
         })
       )
     );
