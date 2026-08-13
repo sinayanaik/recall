@@ -14,12 +14,11 @@
 -- Requires Supabase Auth to be enabled (it is, by default). Each account sees
 -- only its own decks, cards, notes, tombstones and images.
 --
--- This supersedes the older per-feature files, which still ship only so that
--- anyone following older setup notes finds what they reference:
---   supabase_schema.sql · supabase_image_storage.sql · supabase_deck_notes.sql
---   supabase_deck_categories.sql · supabase_deck_tombstones.sql
---   supabase_quick_notes.sql · supabase_style_settings.sql
--- You do not need any of them. Running one afterwards is a no-op.
+-- This is the only SQL file in the repo. It replaced seven per-feature files
+-- (supabase_schema, _image_storage, _deck_notes, _deck_categories,
+-- _deck_tombstones, _quick_notes, _style_settings) and is a strict superset of
+-- all of them, so an older setup note that names one of those just means: run
+-- this instead.
 --
 -- Upgrading a deployment old enough to predate authentication? Run this file,
 -- then read section 8 at the bottom — there is one manual step.
@@ -64,6 +63,13 @@ ALTER TABLE decks ADD COLUMN IF NOT EXISTS current_card_index INT DEFAULT 0;
 ALTER TABLE decks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
 ALTER TABLE decks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
 ALTER TABLE decks ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+-- Paired with the ADD above for the same reason category/notes/meta/user_id are:
+-- ADD COLUMN IF NOT EXISTS is a no-op on a project that already has the column,
+-- so it cannot give one a default it never had. The superseded
+-- supabase_deck_categories.sql carried this line and this file did not, which is
+-- the one thing that stopped it being a strict superset of the older per-feature
+-- files it replaces.
+ALTER TABLE decks ALTER COLUMN last_accessed_at SET DEFAULT NOW();
 
 -- Added WITHOUT NOT NULL, deliberately. auth.uid() is NULL in the SQL Editor
 -- (there is no request context), so on a table that already has rows a NOT NULL

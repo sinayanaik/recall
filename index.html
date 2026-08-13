@@ -20,7 +20,11 @@
     <meta name="apple-mobile-web-app-title" content="Recall">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Recall</title>
-    <link rel="icon" type="image/png" href="fevicon.png">
+    <!-- 192px, not the 512: this is a 16-32px tab icon. It used to point at
+         fevicon.png, which was a byte-identical copy of icons/icon-512.png —
+         so the same 234KB shipped twice and was precached twice, to render a
+         favicon. -->
+    <link rel="icon" type="image/png" href="icons/icon-192.png">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">

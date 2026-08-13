@@ -123,7 +123,6 @@ const APP_SHELL = [
   `./styles.css?v=${STAMP}`,
   `./app.js?v=${STAMP}`,
   "./manifest.webmanifest",
-  "./fevicon.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/icon-maskable-512.png",
@@ -473,7 +472,7 @@ async function htmlMatchesThisRelease(response, request) {
 // Content-addressed by URL, so a cache hit is always the right answer.
 function isVersionedAsset(url) {
   if (url.searchParams.has("v")) return true;
-  return /\/(icons\/[^/]+\.png|fevicon\.png|manifest\.webmanifest)$/.test(url.pathname);
+  return /\/(icons\/[^/]+\.png|manifest\.webmanifest)$/.test(url.pathname);
 }
 
 // Tell every open page that it is running a body whose version does not match
