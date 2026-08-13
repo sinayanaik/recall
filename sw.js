@@ -131,6 +131,7 @@ const APP_SHELL = [
   // this list against the files on disk.
   `./src/main.js?v=${STAMP}`,
   `./src/core/build.js?v=${STAMP}`,
+  `./src/core/text.js?v=${STAMP}`,
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

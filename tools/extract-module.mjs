@@ -1,0 +1,250 @@
+// Move declarations out of src/main.js into a module, and wire the imports.
+//
+//   node tools/extract-module.mjs src/render/math.js protectMath findMathRanges …
+//   node tools/extract-module.mjs --plan plans/render.json
+//   node tools/extract-module.mjs … --dry
+//
+// Splitting 1,665 declarations across ~50 files by hand is not a careful job,
+// it is a typing job with 1,665 chances to drop a line. So the moves are
+// mechanical: this takes a target file and a list of top-level symbols, lifts
+// each declaration WITH the comment block above it, writes them out with
+// `export`, and computes every import both sides now need from the symbol table.
+//
+// It never edits a declaration's body. That is what lets tools/split-parity.mjs
+// prove afterwards that the code is byte-identical to the baseline — a
+// guarantee no amount of careful hand-editing could offer.
+//
+// Cycles are expected during the transition: main.js imports the new module,
+// and the new module imports what it still needs back from main.js. That is
+// safe here because an extracted module contains only DECLARATIONS — nothing
+// runs at import time, so a function body that reaches back into main.js is
+// evaluated at call time, long after both modules are initialised. The tool
+// refuses to move a declaration that would break that (see --dry output).
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  topLevelDecls, blankLiterals, referencedIdentifiers, parseImports, locallyBound, GLOBALS
+} from "./js-scan.mjs";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SRC = path.join(ROOT, "src");
+const MAIN = path.join(SRC, "main.js");
+const STAMP = "?v=__BUILD__";
+
+const argv = process.argv.slice(2);
+const DRY = argv.includes("--dry");
+const args = argv.filter((a) => a !== "--dry");
+
+let jobs = [];
+const planIdx = args.indexOf("--plan");
+if (planIdx !== -1) {
+  // [{ target: "src/render/math.js", symbols: [...] }, …] — applied in order.
+  jobs = JSON.parse(readFileSync(path.resolve(ROOT, args[planIdx + 1]), "utf8"));
+} else {
+  const [target, ...symbols] = args;
+  if (!target || !symbols.length) {
+    console.error("usage: extract-module.mjs <src/dir/file.js> <symbol...> [--dry]");
+    console.error("       extract-module.mjs --plan <plan.json> [--dry]");
+    process.exit(2);
+  }
+  jobs = [{ target, symbols }];
+}
+
+function walk(dir, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const e of readdirSync(dir).sort()) {
+    const full = path.join(dir, e);
+    if (statSync(full).isDirectory()) walk(full, out);
+    else if (e.endsWith(".js")) out.push(full);
+  }
+  return out;
+}
+
+// A declaration's comment block: the run of comment lines immediately above it,
+// stopping at a blank line, at code, or at the previous declaration's end. This
+// is why the moves stay readable — the comments in this codebase carry most of
+// the reasoning, and a symbol that arrives without its explanation has lost the
+// thing that made it maintainable.
+function commentStart(src, declStart, floor) {
+  const before = src.slice(0, declStart);
+  const lines = before.split("\n");
+  // lines[lines.length-1] is the (empty) partial line the decl starts on.
+  let i = lines.length - 2;
+  let taken = 0;
+  let inBlock = false;
+  while (i >= 0) {
+    const line = lines[i];
+    const t = line.trim();
+    if (inBlock) {
+      taken++;
+      if (t.startsWith("/*")) inBlock = false;
+      i--;
+      continue;
+    }
+    if (t.endsWith("*/")) { inBlock = true; taken++; i--; continue; }
+    if (t.startsWith("//")) { taken++; i--; continue; }
+    break;
+  }
+  if (!taken) return declStart;
+  const start = lines.slice(0, lines.length - 1 - taken).join("\n").length + (lines.length - 1 - taken > 0 ? 1 : 0);
+  return Math.max(start, floor);
+}
+
+// Import lines for `needed`, grouped by owning file, as text.
+function importLines(fromFile, needed, owner) {
+  const byFile = new Map();
+  for (const name of [...needed].sort()) {
+    const own = owner.get(name);
+    if (!own) continue;
+    if (!byFile.has(own.file)) byFile.set(own.file, []);
+    byFile.get(own.file).push(name);
+  }
+  const out = [];
+  for (const [file, names] of [...byFile].sort()) {
+    let rel = path.relative(path.dirname(fromFile), path.join(ROOT, file)).replace(/\\/g, "/");
+    if (!rel.startsWith(".")) rel = "./" + rel;
+    out.push(`import { ${names.sort().join(", ")} } from "${rel}${STAMP}";`);
+  }
+  return out;
+}
+
+const IMPORT_LINE = /^import\s.+from\s*["'][^"']+["'];\s*$/;
+
+// Recompute, for one file's text, which foreign symbols it references.
+//
+// Called on text with the import lines ALREADY STRIPPED, deliberately. Deriving
+// the full set every time is what keeps main.js's import block correct as
+// symbols leave it: an earlier version excluded anything already imported and so
+// silently dropped the build.js import the moment a second module was extracted.
+function neededBy(text, ownNames, owner, selfFile) {
+  const blanked = blankLiterals(text);
+  const bound = locallyBound(blanked);
+  for (const n of ownNames) bound.add(n);
+  const need = new Set();
+  for (const name of referencedIdentifiers(text)) {
+    if (bound.has(name) || GLOBALS.has(name)) continue;
+    const own = owner.get(name);
+    if (own && own.file !== selfFile) need.add(name);
+  }
+  return need;
+}
+
+// Put the import block below the file's opening comment banner and above
+// everything else. Inserting at "the first line that isn't a comment" instead
+// wedged it between a comment and the function that comment explains.
+function withImports(text, importLines) {
+  const lines = text.split("\n").filter((l) => !IMPORT_LINE.test(l));
+  let i = 0;
+  while (i < lines.length && lines[i].trim().startsWith("//")) i++;   // banner
+  while (i < lines.length && !lines[i].trim()) i++;                   // its blank line
+  const head = lines.slice(0, i);
+  const rest = lines.slice(i);
+  while (head.length && !head[head.length - 1].trim()) head.pop();
+  const block = importLines.length ? [...importLines, ""] : [];
+  return [...head, ...(head.length ? [""] : []), ...block, ...rest].join("\n");
+}
+
+for (const job of jobs) {
+  const targetAbs = path.resolve(ROOT, job.target);
+  const targetRel = path.relative(ROOT, targetAbs).replace(/\\/g, "/");
+  let main = readFileSync(MAIN, "utf8");
+  const decls = topLevelDecls(main);
+  const byName = new Map(decls.map((d) => [d.name, d]));
+
+  const wanted = [];
+  for (const name of job.symbols) {
+    const d = byName.get(name);
+    if (!d) { console.error(`  ! ${targetRel}: '${name}' is not a top-level declaration of src/main.js`); process.exit(1); }
+    wanted.push(d);
+  }
+  wanted.sort((a, b) => a.start - b.start);
+
+  // Slice each declaration out with its comment block, walking backwards so
+  // earlier offsets stay valid.
+  const pieces = [];
+  const cuts = [];
+  let floor = 0;
+  for (const d of wanted) {
+    const cStart = commentStart(main, d.start, floor);
+    pieces.push({ name: d.name, kind: d.kind, text: main.slice(cStart, d.end) });
+    cuts.push([cStart, d.end]);
+    floor = d.end;
+  }
+  for (let i = cuts.length - 1; i >= 0; i--) {
+    const [a, b] = cuts[i];
+    // Swallow one trailing blank line so the file doesn't fill with gaps.
+    let end = b;
+    while (main[end] === "\n" && main[end + 1] === "\n") end++;
+    main = main.slice(0, a) + main.slice(end);
+  }
+  main = main.replace(/\n{4,}/g, "\n\n\n");
+
+  const movedNames = new Set(pieces.map((p) => p.name));
+  const body = pieces
+    .map((p) => p.text.replace(/^(async function|function|const|let|var|class)\b/m, "export $1"))
+    .join("\n\n");
+
+  // Rebuild the symbol table with the move applied, so both sides' imports are
+  // computed against where things actually are now.
+  const owner = new Map();
+  for (const f of walk(SRC)) {
+    const rel = path.relative(ROOT, f).replace(/\\/g, "/");
+    const text = rel === "src/main.js" ? main : readFileSync(f, "utf8");
+    for (const d of topLevelDecls(text)) {
+      if (movedNames.has(d.name) && rel === "src/main.js") continue;
+      if (!owner.has(d.name)) owner.set(d.name, { file: rel, line: d.line });
+    }
+  }
+  for (const name of movedNames) owner.set(name, { file: targetRel, line: 0 });
+
+  // Extracting into a module that already exists APPENDS. Overwriting it lost
+  // three functions outright the first time this ran twice against one target —
+  // caught by split-parity, which is the entire reason that check exists.
+  const existing = existsSync(targetAbs) ? readFileSync(targetAbs, "utf8") : "";
+  const existingBody = existing.split("\n").filter((l) => !IMPORT_LINE.test(l)).join("\n").trim();
+  const header = job.header ? `${job.header.trimEnd()}\n\n` : "";
+  const combined = existingBody ? `${existingBody}\n\n${body}` : `${header}${body}`;
+  const targetOwn = new Set(topLevelDecls(combined).map((d) => d.name));
+  const targetNeeds = neededBy(combined, targetOwn, owner, targetRel);
+  const targetImports = importLines(targetAbs, targetNeeds, owner);
+  const targetText = withImports(combined, targetImports).replace(/\n*$/, "\n");
+
+  // main.js must now import back whatever it still uses of what left — and its
+  // whole import block is recomputed from scratch, not appended to.
+  const mainStripped = main.split("\n").filter((l) => !IMPORT_LINE.test(l)).join("\n");
+  const mainOwn = new Set(topLevelDecls(mainStripped).map((d) => d.name));
+  const mainNeeds = neededBy(mainStripped, mainOwn, owner, "src/main.js");
+  const mainText = withImports(main, importLines(MAIN, mainNeeds, owner));
+
+  console.log(`${DRY ? "[dry] " : ""}${targetRel}  ${pieces.length} symbols, ${targetImports.length} import line(s)`);
+  for (const l of targetImports) console.log(`    ${l}`);
+  if (!DRY) {
+    mkdirSync(path.dirname(targetAbs), { recursive: true });
+    writeFileSync(targetAbs, targetText);
+    writeFileSync(MAIN, mainText);
+  }
+}
+
+// Keep sw.js's APP_SHELL in step with what is actually on disk. Doing this by
+// hand ~50 times is a guaranteed omission, and an omitted module is invisible
+// until someone opens the app offline for the first time.
+function syncAppShell() {
+  const swPath = path.join(ROOT, "sw.js");
+  const sw = readFileSync(swPath, "utf8");
+  const entries = walk(SRC)
+    .map((f) => path.relative(ROOT, f).replace(/\\/g, "/"))
+    .sort((a, b) => (a === "src/main.js" ? -1 : b === "src/main.js" ? 1 : a.localeCompare(b)))
+    .map((rel) => "  `./" + rel + "?v=${STAMP}`,");
+  const block = /(\n)(  `\.\/src\/[^\n]*\n)+/;
+  if (!block.test(sw)) { console.error("  ! could not find the src/ block in sw.js APP_SHELL"); return; }
+  const next = sw.replace(block, "\n" + entries.join("\n") + "\n");
+  if (next !== sw) writeFileSync(swPath, next);
+  console.log(`sw.js APP_SHELL: ${entries.length} module(s)`);
+}
+
+if (!DRY) {
+  syncAppShell();
+  console.log("Now run: node tools/split-parity.mjs && node tools/module-symbols.mjs");
+}

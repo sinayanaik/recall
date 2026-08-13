@@ -23,43 +23,11 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { topLevelDecls, blankLiterals, referencedIdentifiers } from "./js-scan.mjs";
+import { topLevelDecls, blankLiterals, referencedIdentifiers, parseImports, locallyBound, GLOBALS } from "./js-scan.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = path.join(ROOT, "src");
 const SHOW_UNUSED = process.argv.includes("--unused");
-
-// Real globals: the platform, plus the CDN libraries index.html loads and the
-// ones core/lib-loader.js injects on demand. Anything here is never "missing".
-const GLOBALS = new Set([
-  // language
-  "globalThis", "undefined", "NaN", "Infinity", "Object", "Array", "String", "Number",
-  "Boolean", "Symbol", "BigInt", "Math", "JSON", "Date", "RegExp", "Error", "TypeError",
-  "RangeError", "SyntaxError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Proxy",
-  "Reflect", "Intl", "Function", "parseInt", "parseFloat", "isNaN", "isFinite", "escape",
-  "unescape", "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
-  "ArrayBuffer", "Uint8Array", "Uint16Array", "Uint32Array", "Int8Array", "Int16Array",
-  "Int32Array", "Float32Array", "Float64Array", "DataView", "TextEncoder", "TextDecoder",
-  "structuredClone", "queueMicrotask", "AggregateError",
-  // DOM / BOM
-  "window", "document", "navigator", "location", "history", "screen", "console",
-  "localStorage", "sessionStorage", "indexedDB", "caches", "crypto", "performance",
-  "fetch", "Request", "Response", "Headers", "FormData", "URL", "URLSearchParams",
-  "Blob", "File", "FileReader", "FileList", "AbortController", "AbortSignal",
-  "Image", "Audio", "Option", "Node", "Element", "HTMLElement", "HTMLInputElement",
-  "HTMLTextAreaElement", "HTMLCanvasElement", "HTMLImageElement", "DocumentFragment",
-  "Range", "Selection", "NodeFilter", "DOMParser", "XMLSerializer", "XMLHttpRequest",
-  "MutationObserver", "IntersectionObserver", "ResizeObserver", "CustomEvent", "Event",
-  "PointerEvent", "MouseEvent", "KeyboardEvent", "TouchEvent", "DragEvent", "WheelEvent",
-  "BroadcastChannel", "MessageChannel", "Worker", "OffscreenCanvas", "CSS", "matchMedia",
-  "setTimeout", "clearTimeout", "setInterval", "clearInterval",
-  "requestAnimationFrame", "cancelAnimationFrame", "requestIdleCallback", "cancelIdleCallback",
-  "getComputedStyle", "alert", "confirm", "prompt", "atob", "btoa", "isSecureContext",
-  "visualViewport", "getSelection", "customElements", "IDBKeyRange", "StorageManager",
-  // CDN libraries (index.html up front, or core/lib-loader.js on demand)
-  "marked", "DOMPurify", "katex", "renderMathInElement", "Prism", "mermaid",
-  "JSZip", "TurndownService", "turndownPluginGfm", "nomnoml", "graphre", "supabase"
-]);
 
 function walk(dir, out = []) {
   if (!existsSync(dir)) return out;
@@ -69,66 +37,6 @@ function walk(dir, out = []) {
     else if (entry.endsWith(".js")) out.push(full);
   }
   return out;
-}
-
-// Names this module's `import` statements bring into scope, and the specifiers
-// they came from.
-function parseImports(blanked, raw) {
-  const names = new Map(); // local name -> source
-  const sources = [];
-  const re = /^\s*import\s+([^;]*?)\s+from\s*$/gm;
-  // Work off the raw text for the specifier, the blanked text for structure.
-  const stmt = /^\s*import\s+(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)\s*)?(?:\{([^}]*)\})?\s*from\s*["']([^"']+)["']/gm;
-  let m;
-  while ((m = stmt.exec(raw))) {
-    const [, def, ns, braced, source] = m;
-    sources.push({ source, index: m.index });
-    if (def) names.set(def, source);
-    if (ns) names.set(ns, source);
-    if (braced) {
-      for (const part of braced.split(",")) {
-        const t = part.trim();
-        if (!t) continue;
-        const as = t.split(/\s+as\s+/);
-        names.set((as[1] || as[0]).trim(), source);
-      }
-    }
-  }
-  void re; void blanked;
-  return { names, sources };
-}
-
-// Every name bound anywhere in the file, at any nesting level: declarations,
-// destructuring, function and catch parameters, arrow parameters, loop bindings.
-// Over-inclusive on purpose — see the note at the top.
-function locallyBound(blanked) {
-  const bound = new Set();
-  const add = (n) => { if (n && /^[A-Za-z_$][\w$]*$/.test(n)) bound.add(n); };
-  const addPattern = (text) => {
-    // `{ a, b: c, d = 1, ...rest }` / `[a, , b]` / `a`
-    for (const t of text.split(/[,{}[\]]/)) {
-      const name = t.replace(/\.\.\./, "").split(/[:=]/).pop().trim();
-      // For `a: b` the BOUND name is b; for `a = 1` it is a. Add both halves —
-      // over-inclusion is the safe direction here.
-      const first = t.replace(/\.\.\./, "").split(/[:=]/)[0].trim();
-      add(name);
-      add(first);
-    }
-  };
-
-  // const/let/var/function/class at any indentation
-  for (const m of blanked.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) add(m[1]);
-  // destructuring declarations
-  for (const m of blanked.matchAll(/\b(?:const|let|var)\s*([{[][^;=]*?[}\]])\s*=/g)) addPattern(m[1]);
-  // function / method parameter lists
-  for (const m of blanked.matchAll(/(?:function\s*[A-Za-z_$\w$]*\s*|\b[A-Za-z_$][\w$]*\s*)\(([^()]*)\)\s*(?:\{|=>)/g)) addPattern(m[1]);
-  // single-argument arrows: `x => …`
-  for (const m of blanked.matchAll(/(^|[^\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) add(m[2]);
-  // catch (e)
-  for (const m of blanked.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) add(m[1]);
-  // for (const x of …) / labels
-  for (const m of blanked.matchAll(/\bfor\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s+(?:of|in)\b/g)) add(m[1]);
-  return bound;
 }
 
 const files = walk(SRC);
@@ -164,7 +72,7 @@ const unused = [];
 const badSpecifiers = [];
 
 for (const [rel, { raw, blanked, decls }] of parsed) {
-  const { names: imported, sources } = parseImports(blanked, raw);
+  const { names: imported, sources } = parseImports(raw);
   const bound = locallyBound(blanked);
   for (const d of decls) bound.add(d.name);
 

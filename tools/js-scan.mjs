@@ -263,6 +263,121 @@ export function referencedIdentifiers(src) {
   return found;
 }
 
+/**
+ * The names a module's `import` statements bring into scope.
+ * Returns { names: Map<localName, source>, sources: [{ source, index }] }.
+ */
+export function parseImports(raw) {
+  const names = new Map();
+  const sources = [];
+  const stmt = /^\s*import\s+(?:([A-Za-z_$][\w$]*)\s*,?\s*)?(?:\*\s+as\s+([A-Za-z_$][\w$]*)\s*)?(?:\{([^}]*)\})?\s*from\s*["']([^"']+)["']/gm;
+  let m;
+  while ((m = stmt.exec(raw))) {
+    const [, def, ns, braced, source] = m;
+    sources.push({ source, index: m.index });
+    if (def) names.set(def, source);
+    if (ns) names.set(ns, source);
+    if (braced) {
+      for (const part of braced.split(",")) {
+        const t = part.trim();
+        if (!t) continue;
+        const as = t.split(/\s+as\s+/);
+        names.set((as[1] || as[0]).trim(), source);
+      }
+    }
+  }
+  return { names, sources };
+}
+
+/**
+ * Every name bound anywhere in the file, at any nesting level: declarations,
+ * destructuring, function/catch/arrow parameters, loop bindings.
+ *
+ * Over-inclusive on purpose. A name wrongly counted as local means a
+ * cross-module reference goes unreported — so this is checked against the
+ * browser, not trusted alone — but under-inclusion would bury every caller in
+ * false positives and make the report useless, which is worse in practice.
+ */
+export function locallyBound(blanked) {
+  const bound = new Set();
+  const add = (n) => { if (n && /^[A-Za-z_$][\w$]*$/.test(n)) bound.add(n); };
+  const addPattern = (text) => {
+    for (const t of text.split(/[,{}[\]]/)) {
+      const stripped = t.replace(/\.\.\./, "");
+      add(stripped.split(/[:=]/).pop().trim());   // `a: b` binds b
+      add(stripped.split(/[:=]/)[0].trim());      // `a = 1` binds a
+    }
+  };
+  for (const m of blanked.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) add(m[1]);
+  // Second and later declarators: `let a = "", b = "";` — missing these reported
+  // b as an implicit global, which under strict mode would be a real crash.
+  for (const m of blanked.matchAll(/\b(?:const|let|var)\s+([^;\n]+)/g)) {
+    let depth = 0, piece = "";
+    for (const ch of m[1]) {
+      if ("([{".includes(ch)) depth++;
+      else if (")]}".includes(ch)) depth--;
+      if (ch === "," && depth === 0) { add(piece.split("=")[0].trim()); piece = ""; continue; }
+      piece += ch;
+    }
+    add(piece.split("=")[0].trim());
+  }
+  for (const m of blanked.matchAll(/\b(?:const|let|var)\s*([{[][^;=]*?[}\]])\s*=/g)) addPattern(m[1]);
+
+  // Parameter lists. This used to be one loose pattern, `NAME(params) {`, which
+  // also matched `if (IS_DEV_BUILD) {` — so every control-flow condition in the
+  // file was recorded as a bound parameter, and any symbol tested by an `if`
+  // was silently treated as local. That is a FALSE NEGATIVE in a checker whose
+  // whole job is to catch missing imports: it greenlit a main.js that used
+  // IS_DEV_BUILD without importing it. Hence the keyword guard below.
+  for (const m of blanked.matchAll(/\bfunction\s*\*?\s*(?:[A-Za-z_$][\w$]*)?\s*\(([^()]*)\)/g)) addPattern(m[1]);
+  for (const m of blanked.matchAll(/\(([^()]*)\)\s*=>/g)) addPattern(m[1]);
+  for (const m of blanked.matchAll(/(^|[^\w$.)\]])([A-Za-z_$][\w$]*)\s*=>/g)) add(m[2]);
+  // Object/class method shorthand: `name(params) {` on its own line.
+  for (const m of blanked.matchAll(/^\s*(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\(([^()]*)\)\s*\{/gm)) {
+    if (NOT_A_FUNCTION_NAME.has(m[1])) continue;
+    addPattern(m[2]);
+  }
+  for (const m of blanked.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) add(m[1]);
+  for (const m of blanked.matchAll(/\bfor\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s+(?:of|in)\b/g)) add(m[1]);
+  return bound;
+}
+
+// Words that can precede `( … ) {` without it being a parameter list.
+const NOT_A_FUNCTION_NAME = new Set([
+  "if", "for", "while", "switch", "catch", "with", "do", "else", "return",
+  "typeof", "instanceof", "new", "delete", "void", "await", "yield", "throw",
+  "function", "class", "try", "finally", "case", "default", "in", "of"
+]);
+
+// Real globals: the platform, plus the CDN libraries index.html loads and the
+// ones core/lib-loader.js injects on demand.
+export const GLOBALS = new Set([
+  "globalThis", "undefined", "NaN", "Infinity", "Object", "Array", "String", "Number",
+  "Boolean", "Symbol", "BigInt", "Math", "JSON", "Date", "RegExp", "Error", "TypeError",
+  "RangeError", "SyntaxError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Proxy",
+  "Reflect", "Intl", "Function", "parseInt", "parseFloat", "isNaN", "isFinite", "escape",
+  "unescape", "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
+  "ArrayBuffer", "Uint8Array", "Uint16Array", "Uint32Array", "Int8Array", "Int16Array",
+  "Int32Array", "Float32Array", "Float64Array", "DataView", "TextEncoder", "TextDecoder",
+  "structuredClone", "queueMicrotask", "AggregateError", "Iterator",
+  "window", "document", "navigator", "location", "history", "screen", "console",
+  "localStorage", "sessionStorage", "indexedDB", "caches", "crypto", "performance",
+  "fetch", "Request", "Response", "Headers", "FormData", "URL", "URLSearchParams",
+  "Blob", "File", "FileReader", "FileList", "AbortController", "AbortSignal",
+  "Image", "Audio", "Option", "Node", "Element", "HTMLElement", "HTMLInputElement",
+  "HTMLTextAreaElement", "HTMLCanvasElement", "HTMLImageElement", "DocumentFragment",
+  "Range", "Selection", "NodeFilter", "DOMParser", "XMLSerializer", "XMLHttpRequest",
+  "MutationObserver", "IntersectionObserver", "ResizeObserver", "CustomEvent", "Event",
+  "PointerEvent", "MouseEvent", "KeyboardEvent", "TouchEvent", "DragEvent", "WheelEvent",
+  "BroadcastChannel", "MessageChannel", "Worker", "OffscreenCanvas", "CSS", "matchMedia",
+  "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+  "requestAnimationFrame", "cancelAnimationFrame", "requestIdleCallback", "cancelIdleCallback",
+  "getComputedStyle", "alert", "confirm", "prompt", "atob", "btoa", "isSecureContext",
+  "visualViewport", "getSelection", "customElements", "IDBKeyRange", "StorageManager",
+  "marked", "DOMPurify", "katex", "renderMathInElement", "Prism", "mermaid",
+  "JSZip", "TurndownService", "turndownPluginGfm", "nomnoml", "graphre", "supabase"
+]);
+
 // ── port-sync.mjs originals, unchanged ─────────────────────────────────────
 // These are the exact functions port-sync has always used. Kept byte-for-byte
 // so moving it onto this module cannot change what it reports.

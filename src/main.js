@@ -3,7 +3,9 @@
 // main.js against a browser- or worker-cached copy of an old dependency — the
 // mixed-build failure this repo has already shipped twice. deploy.yml and
 // tools/module-symbols.mjs both refuse a relative import without it.
+
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
+import { encodeAttribute, escapeHtml, escapeRegExp, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
 
 // Run `fn` once the DOM is parsed AND this module has finished evaluating.
 //
@@ -1336,7 +1338,6 @@ async function touchWebDeckAccess(deckId) {
   if (error) throw error;
   return true;
 }
-
 
 
 async function updateWebDeckTitle(deckId, title) {
@@ -3485,9 +3486,6 @@ function styleValue(source, key, defaults = styleDefaults) {
   return Object.prototype.hasOwnProperty.call(source, key) ? String(source[key]) : defaults[key];
 }
 
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 function normalizeStyleValue(key, value, customDefault) {
   const field = styleFieldByKey[key];
@@ -9479,22 +9477,6 @@ function resetStudyDeck(cards = state.masterCards, { keepStatuses = false } = {}
   resetCardUndoHistory();
 }
 
-
-// Coerces first: callers pass deck titles, statuses and error messages straight
-// through, any of which can be undefined on a partial record — and a throw here
-// takes down whichever list/report was being built around it.
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function encodeAttribute(value) {
-  return escapeHtml(encodeURIComponent(value));
-}
 
 function isEscaped(source, index) {
   let slashes = 0;
@@ -24355,20 +24337,6 @@ function buildZipArchive(files) {
   return result;
 }
 
-function escapeXml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
-}
-
-function hex6(value, fallback) {
-  const clean = String(value || "").replace(/^#/, "").trim();
-  return /^[0-9a-fA-F]{6}$/.test(clean) ? clean.toUpperCase() : fallback;
-}
 
 function bytesToBase64(bytes) {
   let binary = "";
@@ -27772,7 +27740,6 @@ function newDeckInFolder(folderPath = "") {
     showToast(`New deck "${name}"${where} — add notes or cards to save it`);
   }, { placeholder: "New Deck" });
 }
-
 
 
 document.getElementById("setupForm")?.addEventListener("submit", (e) => {
