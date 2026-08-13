@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS decks (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  -- app.js never sets user_id explicitly — it relies on this default. Without
+  -- the app never sets user_id explicitly — it relies on this default. Without
   -- it every insert would leave user_id NULL and be rejected by the WITH CHECK
   -- of the "Users manage own decks" policy in section 6.
   user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE
@@ -354,11 +354,11 @@ ON CONFLICT (id) DO NOTHING;
 DO $$
 BEGIN
   -- A signed-in user may write only into a folder named after their own uid
-  -- (app.js prefixes every upload path with auth.uid()), so one account's
+  -- (the app prefixes every upload path with auth.uid()), so one account's
   -- session can never write into — or, via the delete policy, remove from —
   -- another account's images.
   --
-  -- Only the FIRST path segment is checked, which is what lets app.js file
+  -- Only the FIRST path segment is checked, which is what lets the app file
   -- uploads into per-source subfolders underneath it:
   --   {uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp   (EPUB import)
   --   {uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp   (paste/drop)

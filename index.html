@@ -1257,6 +1257,20 @@ What year was the Eiffel Tower built?
          build unregisters the worker and refetches every load — always had the
          newest. Bump this deliberately, and match it in sw.js's CDN_ASSETS. -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.2"></script>
-    <script src="app.js?v=__BUILD__"></script>
+    <!-- type="module" so the app can be split into src/**. Two consequences
+         worth knowing, both verified rather than assumed:
+
+         1. A module script is deferred. It no longer executes between the CDN
+            <script> tags above and DOMContentLoaded, but AFTER the parser
+            finishes and BEFORE DOMContentLoaded fires — so the
+            addEventListener("DOMContentLoaded", …) registrations inside still
+            catch the event, and the `el` DOM map at the top still finds its
+            elements. It also means this file no longer blocks the parser,
+            which shortens the window the boot-click queue above exists for.
+
+         2. Module scoping would break inline on* handlers. There are none in
+            this file or in any markup the app generates — checked before the
+            switch, and worth re-checking before adding one. -->
+    <script type="module" src="src/main.js?v=__BUILD__"></script>
   </body>
 </html>

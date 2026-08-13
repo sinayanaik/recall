@@ -82,12 +82,13 @@ jobs:
           # split precisely so it survives. Counting matching lines per file
           # (the first version of this check) conflated the two and failed with
           # a count nobody could act on.
-          # -a on every grep below, without exception. app.js contains two NUL
-          # bytes (the `.neq("id", "\0")` match-everything sentinels in the
-          # delete path), so grep classifies it as binary and, instead of
-          # reporting matches, prints "binary file matches" and moves on. That
-          # made the occurrence count silently read 4 when it was really 5 — on
-          # the single file most likely to gain a stray mention of a placeholder.
+          # -a on every grep below, without exception. The app source contains
+          # two NUL bytes (the `.neq("id", "\0")` match-everything sentinels in
+          # the delete path), so grep classifies that file as binary and,
+          # instead of reporting matches, prints "binary file matches" and moves
+          # on. That made the occurrence count silently read 4 when it was
+          # really 5 — on the single file most likely to gain a stray mention of
+          # a placeholder.
           require_one() {
             local file="$1" fragment="$2" n
             n=$(grep -aFc -- "$fragment" "$file" || true)
@@ -98,36 +99,83 @@ jobs:
             fi
           }
 
+          # Every file the substitution touches. app.js became src/main.js and
+          # then a tree of modules, so this is a glob rather than a fixed list.
+          mapfile -t STAMPED < <(printf '%s\n' index.html sw.js; find src -name '*.js' | sort)
+          echo "stamping ${#STAMPED[@]} files"
+
           require_one index.html 'styles.css?v=__BUILD__'
-          require_one index.html 'app.js?v=__BUILD__'
-          require_one sw.js     'const CACHE_NAME = "recall-__BUILD__";'
-          require_one app.js    'const BUILD_STAMP = "__BUILD__";'
-          require_one app.js    'const BUILD_TIME = "__BUILD_TIME__";'
+          require_one index.html 'src/main.js?v=__BUILD__'
+          require_one sw.js             'const CACHE_NAME = "recall-__BUILD__";'
+          require_one src/core/build.js 'export const BUILD_STAMP = "__BUILD__";'
+          require_one src/core/build.js 'export const BUILD_TIME = "__BUILD_TIME__";'
 
-          # -o counts occurrences rather than lines, so two on one line cannot
-          # hide. 4 x __BUILD__ (2 html, 1 sw, 1 js) and 1 x __BUILD_TIME__.
-          build_total=$(grep -ao '__BUILD__' index.html sw.js app.js | wc -l)
-          time_total=$(grep -ao '__BUILD_TIME__' index.html sw.js app.js | wc -l)
-          echo "placeholders: __BUILD__ x$build_total (want 4), __BUILD_TIME__ x$time_total (want 1)"
-
-          if [ "$build_total" -ne 4 ] || [ "$time_total" -ne 1 ]; then
-            echo "::error::A placeholder appears somewhere it should not — most likely spelled out in a comment."
-            echo "::error::sed would rewrite it into a commit sha. Reword it, or split the string as BUILD_STAMP's comparison does."
-            grep -an '__BUILD__\|__BUILD_TIME__' index.html sw.js app.js || true
+          # Every relative import in src/ must carry the stamp. This is the half
+          # that a fixed occurrence count can no longer do, and it matters more
+          # than the count ever did: an unstamped `import "./notes/toc.js"` has a
+          # URL that does not change between releases, so a cache-first worker
+          # (or the browser's own HTTP cache) can serve the PREVIOUS release's
+          # copy of it to the current release's main.js. That is the mixed-build
+          # failure this repo has already shipped twice, and it would be silent.
+          if unstamped=$(grep -rniE 'from[[:space:]]*"\.\.?/[^"]*\.js"' src/ 2>/dev/null); then
+            echo "::error::A relative import in src/ is missing ?v=__BUILD__:"
+            echo "$unstamped"
+            echo "::error::Write it as: from \"./thing.js?v=__BUILD__\""
             exit 1
           fi
 
-          sed -i "s/__BUILD__/$sha/g" index.html sw.js app.js
-          sed -i "s|__BUILD_TIME__|$build_time|g" app.js
+          # "Nowhere else": every __BUILD__ must be in one of the three shapes
+          # the substitution is meant to produce. A count can't do this any more
+          # (the number of imports changes with every module added) and this is
+          # a stronger check regardless — it catches a placeholder spelled out in
+          # a comment, which sed would blindly rewrite into a commit sha.
+          # `?v=__BUILD__` (asset + import URLs), `recall-__BUILD__` (CACHE_NAME)
+          # and `"__BUILD__"` (build.js). The split form in build.js's
+          # IS_DEV_BUILD comparison is invisible here by construction.
+          stray=$(grep -aon '__BUILD__' "${STAMPED[@]}" \
+            | while IFS=: read -r f l _; do
+                sed -n "${l}p" "$f" | grep -aq '?v=__BUILD__\|recall-__BUILD__\|"__BUILD__"' || echo "$f:$l"
+              done)
+          if [ -n "$stray" ]; then
+            echo "::error::__BUILD__ appears somewhere it should not — most likely spelled out in a comment."
+            echo "::error::sed would rewrite it into a commit sha. Reword it, or split the string as IS_DEV_BUILD's comparison does."
+            echo "$stray"
+            exit 1
+          fi
+
+          build_total=$(grep -ao '__BUILD__' "${STAMPED[@]}" | wc -l)
+          time_total=$(grep -ao '__BUILD_TIME__' "${STAMPED[@]}" | wc -l)
+          echo "placeholders: __BUILD__ x$build_total, __BUILD_TIME__ x$time_total (want 1)"
+          if [ "$time_total" -ne 1 ]; then
+            echo "::error::__BUILD_TIME__ must appear exactly once (in src/core/build.js)."
+            grep -an '__BUILD_TIME__' "${STAMPED[@]}" || true
+            exit 1
+          fi
+
+          sed -i "s/__BUILD__/$sha/g" "${STAMPED[@]}"
+          sed -i "s|__BUILD_TIME__|$build_time|g" src/core/build.js
 
           # Nothing may be left over anywhere in the deployed tree.
-          if grep -an '__BUILD__\|__BUILD_TIME__' index.html sw.js app.js; then
+          if grep -an '__BUILD__\|__BUILD_TIME__' "${STAMPED[@]}"; then
             echo "::error::A placeholder survived substitution."
             exit 1
           fi
 
+          # Every module on disk must be precached by the worker. A module the
+          # worker does not know about still WORKS — the miss handler fetches
+          # and caches it — but it is absent on a first offline launch, which is
+          # the one case the precache exists for.
+          missing=""
+          while read -r f; do
+            grep -qF "./$f?v=" sw.js || missing="$missing $f"
+          done < <(find src -name '*.js' | sort)
+          if [ -n "$missing" ]; then
+            echo "::error::These modules are not in sw.js APP_SHELL:$missing"
+            exit 1
+          fi
+
           echo "Deploying $sha ($build_time)"
-          grep -o '\(app\.js\|styles\.css\)?v=[^"]*' index.html
+          grep -o '\(src/main\.js\|styles\.css\)?v=[^"]*' index.html
           grep '^const CACHE_NAME' sw.js
 
       - uses: actions/configure-pages@v6

@@ -121,7 +121,16 @@ function fetchImageForCache(url) {
 const APP_SHELL = [
   "./",
   `./styles.css?v=${STAMP}`,
-  `./app.js?v=${STAMP}`,
+  // The module entry point. Everything it imports is stamped with the same
+  // ?v=, so those URLs change with every release too — which is what lets the
+  // cache-first handler below serve them without revalidating and still never
+  // mix a new entry point with an old dependency. As the split proceeds, each
+  // new module must be added here: a module missing from this list still works
+  // (the miss handler fetches and caches it) but is absent on a first offline
+  // launch, which is precisely the case this precache exists for. CI compares
+  // this list against the files on disk.
+  `./src/main.js?v=${STAMP}`,
+  `./src/core/build.js?v=${STAMP}`,
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
@@ -441,7 +450,7 @@ self.addEventListener("fetch", (event) => {
 });
 
 // Does this HTML belong to the release this worker was built for? Compares the
-// ?v= stamp its <script src="app.js?v=…"> carries against our own STAMP.
+// ?v= stamp its <script src="src/main.js?v=…"> carries against our own STAMP.
 //
 // Only navigations are judged. A same-origin non-navigation that reaches the
 // network-first handler is not the app shell and has no stamp to check, and a
@@ -462,7 +471,7 @@ async function htmlMatchesThisRelease(response, request) {
   } catch (_) {
     return true; // unreadable (opaque, streaming failure) — don't block on it
   }
-  const stamp = text.match(/app\.js\?v=([^"'&\s]+)/)?.[1];
+  const stamp = text.match(/src\/main\.js\?v=([^"'&\s]+)/)?.[1];
   if (!stamp) return true;
   if (stamp === STAMP) return true;
   try { self.registration.update(); } catch (_) { /* best effort */ }

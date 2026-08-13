@@ -1,3 +1,38 @@
+// Every relative import in src/ carries ?v=__BUILD__, substituted by
+// .github/workflows/deploy.yml. Without it, a release could serve a new
+// main.js against a browser- or worker-cached copy of an old dependency — the
+// mixed-build failure this repo has already shipped twice. deploy.yml and
+// tools/module-symbols.mjs both refuse a relative import without it.
+import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
+
+// Run `fn` once the DOM is parsed AND this module has finished evaluating.
+//
+// The second half is the part that is easy to get wrong, and it broke the app
+// the moment this file became a module. The old shape was written inline at
+// each call site:
+//
+//   if (document.readyState === "loading") addEventListener("DOMContentLoaded", fn);
+//   else fn();
+//
+// As a classic <script> at the end of <body>, readyState is "loading" — the
+// parser has not finished — so the listener branch always won and `fn` ran after
+// the whole file had evaluated. A module script is deferred: it runs AFTER
+// parsing, so readyState is already "interactive" and the else branch fires
+// immediately, partway down the file. initToolbars() then reached a `const`
+// declared 700 lines further on and threw "Cannot access
+// 'highlightBackdropSync' before initialization" — a temporal-dead-zone error
+// that aborted the rest of the module, on every load.
+//
+// queueMicrotask is what makes the else branch honest: it runs after the current
+// synchronous execution — this entire module body — so every top-level binding
+// is initialised, while still being earlier than any timer or event. The
+// boot-click replay at the bottom of this file depends on that ordering: it
+// hands its click to setTimeout, a macrotask, which is necessarily later.
+function onDomReady(fn) {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn, { once: true });
+  else queueMicrotask(fn);
+}
+
 const delimitedCardBoundaryPattern = /(?:^|\n)\s*::/;
 const cardSideSeparatorPattern = /^\s*---(?!-)/;
 
@@ -17867,11 +17902,7 @@ function initRenderToolbars() {
   if (el.notesRenderToolbar) el.notesRenderToolbar.innerHTML = createRenderToolbarHtml({ actions: false });
   refreshRenderSwatches();
 }
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initRenderToolbars);
-} else {
-  initRenderToolbars();
-}
+onDomReady(initRenderToolbars);
 
 function closeAllRenderMenus() {
   document.querySelectorAll(".render-color-menu").forEach((m) => (m.hidden = true));
@@ -25469,8 +25500,23 @@ function handleExportNotesAction(format) {
   exportNotesFlat(format);
 }
 
-async function fetchText(url) {
-  const direct = await fetch(url, { mode: "cors" });
+// Fetch a page the user asked to import. Named for its caller because there is
+// a second, unrelated text fetch further down for the release check — and when
+// both were called `fetchText`, the later declaration silently won for these
+// callers too. That handed every URL import the release check's 8-second abort,
+// which is far too short for a large page on a slow connection: the fetch was
+// aborted, the reader-proxy retry was aborted the same way, and the user was
+// told "Could not fetch this URL" about a URL that was fine.
+//
+// Bounded, but on this job's own terms. Unbounded was the original intent here
+// and is its own bug — the Fetch button would sit on "Fetching…" for as long as
+// a dead connection cared to stall.
+const IMPORT_FETCH_TIMEOUT_MS = 45000;
+
+async function fetchImportText(url) {
+  let signal;
+  try { signal = AbortSignal.timeout(IMPORT_FETCH_TIMEOUT_MS); } catch (_) { /* pre-2022 engine */ }
+  const direct = await fetch(url, { mode: "cors", signal });
   if (!direct.ok) throw new Error(`HTTP ${direct.status}`);
   return direct.text();
 }
@@ -25518,9 +25564,9 @@ async function fetchUrl() {
 
     try {
       if (isNotionUrl) throw new Error("Use Reader for Notion pages");
-      text = await fetchText(url);
+      text = await fetchImportText(url);
     } catch {
-      text = await fetchText(readerUrlFor(url));
+      text = await fetchImportText(readerUrlFor(url));
     }
 
     const source = stripReaderMetadata(text);
@@ -29423,32 +29469,10 @@ if (helpModal) {
 }
 
 // ── App Info modal ─────────────────────────────────────────────────────────
-// The commit this build was deployed from, written into the file itself.
-//
-// Both placeholders are substituted by .github/workflows/deploy.yml from the
-// commit being published, so neither is ever typed and neither can describe a
-// different build than the one running. The old scheme was a hand-edited
-// YYYYMMDD-NN stamp repeated in four files: it drifted, it got forgotten twice
-// in a way that stopped releases reaching users entirely, and the date inside
-// it was whatever the author happened to type rather than when anything shipped.
-//
-// It is still a constant rather than a read of the <script src> attribute. That
-// attribute is the URL the page ASKED for; it says nothing about the bytes that
-// answered. When the service worker had to fall back across releases it served
-// the previous bundle under the new URL, and reading the attribute reported the
-// new version while old code ran — so the modal cheerfully said "You're up to
-// date ✓" to exactly the users who were not.
-const BUILD_STAMP = "__BUILD__";
-
-// When that commit was made, ISO-8601, from git rather than from a human.
-const BUILD_TIME = "__BUILD_TIME__";
-
-// True in any checkout the deploy workflow has not stamped: a local Live Server
-// session, a fork served straight off a branch, someone opening index.html from
-// disk. There is no version to compare in that case, and saying so is more use
-// than comparing the literal placeholder against a real SHA and announcing an
-// update that does not exist.
-const IS_DEV_BUILD = BUILD_STAMP === "__" + "BUILD__";
+// BUILD_STAMP / BUILD_TIME / IS_DEV_BUILD now live in core/build.js — see the
+// import at the top of this file. They moved because deploy.yml substitutes
+// them, and a placeholder is far easier to reason about in a 35-line leaf
+// module than at line 29,441 of a 35,000-line one.
 
 // The running build's version. Normally the commit SHA above; "dev" for an
 // unstamped checkout, "unknown" only if this file was somehow loaded without one.
@@ -29480,7 +29504,7 @@ function runningVersionLabel() {
 // message needs a controller and an open channel, and neither is guaranteed on
 // the very load that went wrong.
 function requestedAppVersion() {
-  const src = document.querySelector('script[src*="app.js"]')?.getAttribute("src") || "";
+  const src = document.querySelector('script[src*="main.js"]')?.getAttribute("src") || "";
   return src.match(/[?&]v=([^&]+)/)?.[1] || null;
 }
 
@@ -29498,7 +29522,7 @@ const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO.owner}/${GITHUB_R
 // Since the deploy substitutes a commit SHA, that stamp IS the deployed commit,
 // which is why the repo half of this check no longer has to download a file to
 // read a version out of it.
-const RELEASE_STAMP_RE = /app\.js\?v=([^"'&\s]+)/;
+const RELEASE_STAMP_RE = /src\/main\.js\?v=([^"'&\s]+)/;
 // `const` is part of the pattern deliberately: the cache name no longer carries
 // a "v" prefix, so a bare `CACHE_NAME\s*=` would also match sw.js's
 // IMAGE_CACHE_NAME ("recall-images-v1") and report the image cache as a second,
@@ -29553,7 +29577,10 @@ function updateCheckSignal() {
   }
 }
 
-async function fetchText(url, options = {}) {
+// Same-origin fetch for the update check, on UPDATE_CHECK_TIMEOUT_MS. Renamed
+// from `fetchText` because a second function of that name existed 4,000 lines
+// up for URL imports; see fetchImportText for what that collision cost.
+async function fetchReleaseText(url, options = {}) {
   const response = await fetch(url, { signal: updateCheckSignal(), ...options });
   if (!response.ok) throw new Error(`${url} -> ${response.status}`);
   return response.text();
@@ -29565,8 +29592,8 @@ async function fetchText(url, options = {}) {
 // handler), so neither file can come back stale.
 async function fetchLiveRelease() {
   const [html, sw] = await Promise.all([
-    fetchText("./index.html", { cache: "no-store" }),
-    fetchText("./sw.js", { cache: "no-store" }).catch(() => null)
+    fetchReleaseText("./index.html", { cache: "no-store" }),
+    fetchReleaseText("./sw.js", { cache: "no-store" }).catch(() => null)
   ]);
   return { stamp: stampFromHtml(html), html, sw };
 }
@@ -32210,11 +32237,7 @@ function initToolbars() {
   refreshRenderSwatches();
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initToolbars);
-} else {
-  initToolbars();
-}
+onDomReady(initToolbars);
 
 // Global click delegation for any formatting toolbar button
 document.addEventListener("click", (e) => {
@@ -34917,15 +34940,14 @@ let closeMainMenu = () => {};
   if (!id) return;
   const target = document.getElementById(id);
   if (!target) return;
-  // Must wait for DOMContentLoaded, not just a task tick: several controls
-  // (notably the ☰ drawer, which every toolbar action lives behind) are wired
-  // by initToolbars on DOMContentLoaded, and this file finishes parsing BEFORE
-  // that fires. Replaying earlier would click a button whose handler still
-  // doesn't exist — the exact failure this is here to fix.
+  // Must land after initToolbars, which wires several controls — notably the ☰
+  // drawer, which every toolbar action lives behind. Replaying before that would
+  // click a button whose handler does not exist yet: the exact failure this is
+  // here to fix.
+  //
+  // Both halves of onDomReady put initToolbars first (it registers earlier, on
+  // the same listener or the same microtask queue), and setTimeout is a
+  // macrotask, so it is later than either. Belt and braces, cheaply.
   const fire = () => window.setTimeout(() => target.click(), 0);
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", fire, { once: true });
-  } else {
-    fire();
-  }
+  onDomReady(fire);
 })();

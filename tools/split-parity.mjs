@@ -38,7 +38,25 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // Declarations that are ALLOWED to differ, and why. Keep this short — every
 // entry is a place where the "pure movement" guarantee was deliberately spent.
 const ACCEPTED = {
-  // name: "reason"
+  requestedAppVersion:
+    "reads the ?v= off its own <script src>, which moved from app.js to src/main.js",
+  RELEASE_STAMP_RE:
+    "matches the <script src> in fetched HTML, which moved from app.js to src/main.js",
+  fetchUrl:
+    "calls fetchImportText, the URL-import half of the split fetchText — see REMOVED",
+  fetchLiveRelease:
+    "calls fetchReleaseText, the update-check half of the split fetchText — see REMOVED"
+};
+
+// Baseline symbols that are intentionally gone, and why. A rename lands here
+// (the old name) and in the ADDED list (the new one), which is the honest way
+// to show it — the tool matches by name and cannot know the two are related.
+const REMOVED = {
+  fetchText:
+    "declared TWICE in the baseline (app.js:25472 and app.js:29556). Legal in a " +
+    "classic script, where the second silently won for every caller; a hard " +
+    "SyntaxError in a module, so the app did not boot at all. Split into " +
+    "fetchImportText (URL import, 45s) and fetchReleaseText (update check, 8s)."
 };
 
 function walk(dir, out = []) {
@@ -105,7 +123,11 @@ const accepted = [];
 
 for (const [name, base] of baseDecls) {
   const cur = currentDecls.get(name);
-  if (!cur) { missing.push(name); continue; }
+  if (!cur) {
+    if (REMOVED[name]) accepted.push(`${name} (removed) — ${REMOVED[name]}`);
+    else missing.push(name);
+    continue;
+  }
   if (normalize(base.text) === normalize(cur.text)) continue;
   if (ACCEPTED[name]) { accepted.push(`${name} — ${ACCEPTED[name]}`); continue; }
   // Where do they first diverge? Far more useful than "these differ".
