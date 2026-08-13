@@ -35,10 +35,16 @@
       // ── Boot-click queue ────────────────────────────────────────────────
       // The whole toolbar is in the HTML, so it paints immediately — but every
       // one of its listeners is attached at the END of app.js, which itself
-      // runs after 15 blocking CDN libraries. Measured cold, that left ~5s
-      // (much longer on a slow connection) where Import, New Deck and the rest
-      // looked perfectly ready and did absolutely nothing when pressed. The app
-      // read as broken, and the only cure was to keep clicking until it wasn't.
+      // runs after the blocking CDN libraries below. Measured cold when there
+      // were 15 of them, that left ~5s (much longer on a slow connection) where
+      // Import, New Deck and the rest looked perfectly ready and did absolutely
+      // nothing when pressed. The app read as broken, and the only cure was to
+      // keep clicking until it wasn't.
+      //
+      // That set is now down to the ones the first render actually needs (the
+      // rest load on demand from app.js — see the note above the tags), which
+      // shrinks the window a great deal but does not close it: app.js is still
+      // 1.5MB and still blocking. This queue stays.
       //
       // This runs first, before any of that, and remembers the last control the
       // user pressed while the app was still booting. app.js replays it the
@@ -1220,8 +1226,25 @@ What year was the Eiffel Tower built?
     <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <!-- mermaid, jszip, graphre+nomnoml, turndown+its gfm plugin and an unused
+         zoom library used to sit here. Together they were ~3.6MB of blocking
+         JS that had to download AND execute before app.js could start — and since
+         every listener in app.js attaches at module scope, that was measured as
+         a 5.4-second window on a cold load in which the entire UI was painted,
+         looked ready, and did nothing at all. They are render-, import- and
+         export-only, so none of them has any business being on that path; they
+         are now injected on demand from app.js (see loadScriptOnce /
+         ensureMermaid / ensureJsZip / ensureNomnoml / ensureTurndown) and warmed
+         at idle once the app is interactive. The zoom library that used to sit
+         alongside them was simply deleted: no code had referenced it in a long
+         time and it was being downloaded on every load for nothing.
+
+         The URLs live in LIB_URLS in app.js and must stay byte-identical to
+         sw.js's CDN_ASSETS, which is what keeps them available offline.
+
+         What remains below is the set the FIRST render genuinely needs
+         (dompurify, marked, prism, katex) plus supabase-js, which bootApp
+         needs. Do not add to it without checking whether the feature can wait. -->
     <!-- Pinned, unlike every other CDN tag here, for a reason worth stating: the
          service worker precaches this URL cache-first and never revalidates it,
          so an unpinned "@2" froze whatever jsDelivr happened to resolve on the
@@ -1230,11 +1253,6 @@ What year was the Eiffel Tower built?
          build unregisters the worker and refetches every load — always had the
          newest. Bump this deliberately, and match it in sw.js's CDN_ASSETS. -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.2"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@panzoom/panzoom@4.5.0/dist/panzoom.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/graphre/dist/graphre.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/nomnoml/dist/nomnoml.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js"></script>
     <script src="app.js?v=__BUILD__"></script>
   </body>
 </html>

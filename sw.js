@@ -165,8 +165,14 @@ const PRISM_LANGS = [
   "nginx", "http"
 ].map((l) => `${CDN}prismjs@1.30.0/components/prism-${l}.min.js`);
 
+// NOTE: this list is deliberately WIDER than index.html's <script> tags. Most
+// of these are now injected on demand by app.js (LIB_URLS / loadScriptOnce)
+// rather than loaded up front, and precaching them here is exactly what keeps
+// "on demand" working with no connection — an offline first-render of a diagram
+// gets mermaid from this cache. Every URL must therefore stay byte-identical to
+// its counterpart in app.js.
 const CDN_ASSETS = [
-  // Stylesheets + scripts referenced directly by index.html.
+  // Stylesheets + scripts index.html loads up front.
   `${CDN}katex@0.16.11/dist/katex.min.css`,
   `${CDN}prismjs@1.30.0/themes/prism-tomorrow.min.css`,
   `${CDN}dompurify@3.1.6/dist/purify.min.js`,
@@ -176,6 +182,8 @@ const CDN_ASSETS = [
   `${CDN}prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js`,
   `${CDN}katex@0.16.11/dist/katex.min.js`,
   `${CDN}katex@0.16.11/dist/contrib/auto-render.min.js`,
+  // Injected on demand by app.js rather than loaded up front (LIB_URLS), which
+  // is precisely why they must be precached here — see the note above.
   `${CDN}mermaid@10.9.1/dist/mermaid.min.js`,
   `${CDN}jszip@3.10.1/dist/jszip.min.js`,
   // Must stay byte-identical to the <script src> in index.html — the cache is
@@ -183,7 +191,6 @@ const CDN_ASSETS = [
   // and leaves the auth client to the network on every load. See the comment at
   // that tag for why it is pinned at all.
   `${CDN}@supabase/supabase-js@2.112.2`,
-  `${CDN}@panzoom/panzoom@4.5.0/dist/panzoom.min.js`,
   `${CDN}graphre/dist/graphre.js`,
   `${CDN}nomnoml/dist/nomnoml.js`,
   `${CDN}turndown@7.1.2/dist/turndown.js`,

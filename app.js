@@ -578,6 +578,135 @@ function reloadSupabaseLibrary() {
   });
 }
 
+// ── Deferred third-party libraries ──────────────────────────────────────────
+//
+// index.html used to load 5.8MB of blocking CDN JavaScript before app.js, and
+// every listener in this file attaches at module scope — so until all of that
+// had downloaded AND executed, the whole UI was painted and completely inert.
+// Measured cold: controls on screen at 56ms, listeners live at 5421ms. That is
+// the real reason the app "felt laggy": the first press of a session genuinely
+// did nothing. (The boot-click queue in index.html covers that window by
+// replaying the press; it is a mitigation, not a fix.)
+//
+// Six of those libraries — mermaid (3.3MB on its own), jszip, nomnoml+graphre
+// and turndown+its gfm plugin — are render-, import- or export-only. They now
+// load from here instead.
+//
+// Why injected rather than `defer`: deferred scripts still block
+// DOMContentLoaded, and initToolbars — which wires the ☰ drawer that every
+// toolbar action lives behind — waits on that event, so `defer` would have
+// moved the stall rather than removed it. `async` would not block it, but
+// loses the ordering graphre→nomnoml and turndown→its plugin both require.
+//
+// What stays blocking in index.html: dompurify, marked, prism and katex (the
+// first render needs them) and supabase-js (bootApp needs it).
+//
+// OFFLINE CONTRACT: these URLs must stay byte-identical to the entries in
+// sw.js's CDN_ASSETS. The worker precaches them at install and serves
+// cdn.jsdelivr.net cache-first, so an injected <script> for the same URL is
+// still answered from the cache with no connection. A typo here doesn't fail
+// loudly — it quietly turns "works offline" into "worked offline on the
+// machine it was tested on".
+const CDN_BASE = "https://cdn.jsdelivr.net/npm/";
+const LIB_URLS = {
+  mermaid: `${CDN_BASE}mermaid@10.9.1/dist/mermaid.min.js`,
+  jszip: `${CDN_BASE}jszip@3.10.1/dist/jszip.min.js`,
+  graphre: `${CDN_BASE}graphre/dist/graphre.js`,
+  nomnoml: `${CDN_BASE}nomnoml/dist/nomnoml.js`,
+  turndown: `${CDN_BASE}turndown@7.1.2/dist/turndown.js`,
+  turndownGfm: `${CDN_BASE}turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js`
+};
+
+// url -> Promise<boolean>. Cached by URL so concurrent callers (a note with
+// twelve diagrams in it) share one <script>, and so a failed load isn't retried
+// on a loop — it resolves false and the caller degrades.
+const loadedScripts = new Map();
+
+function loadScriptOnce(url) {
+  let pending = loadedScripts.get(url);
+  if (pending) return pending;
+  pending = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = url;
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => {
+      // Drop the rejection from the cache so a later attempt (back online, or
+      // after the worker's CDN repair pass) can succeed.
+      loadedScripts.delete(url);
+      console.warn("Could not load", url);
+      resolve(false);
+    };
+    document.head.appendChild(script);
+  });
+  loadedScripts.set(url, pending);
+  return pending;
+}
+
+async function ensureMermaid() {
+  if (typeof mermaid !== "undefined") return true;
+  if (!(await loadScriptOnce(LIB_URLS.mermaid))) return false;
+  // setTheme() ran at boot and its configureMermaid() call was a no-op with no
+  // library to configure. Apply the current theme now, or the first diagram
+  // would draw in mermaid's own default palette.
+  configureMermaid(currentThemeId());
+  return true;
+}
+
+async function ensureJsZip() {
+  if (window.JSZip) return true;
+  return loadScriptOnce(LIB_URLS.jszip);
+}
+
+async function ensureNomnoml() {
+  if (typeof nomnoml !== "undefined") return true;
+  // Sequential, not Promise.all: nomnoml reads graphre off the global at
+  // evaluation time.
+  if (!(await loadScriptOnce(LIB_URLS.graphre))) return false;
+  return loadScriptOnce(LIB_URLS.nomnoml);
+}
+
+async function ensureTurndown() {
+  if (typeof TurndownService !== "undefined") return true;
+  if (!(await loadScriptOnce(LIB_URLS.turndown))) return false;
+  // The gfm plugin augments TurndownService, so it must come second. Its
+  // absence is survivable (tables and strikethrough convert less well), so a
+  // failure here doesn't fail the whole thing.
+  await loadScriptOnce(LIB_URLS.turndownGfm);
+  return true;
+}
+
+// Called once the app is interactive. The ensureX() guards above are the
+// correctness backstop, but they make the caller wait; warming the libraries
+// while the user is still reading their first card means that by the time
+// anyone renders a diagram, runs a backup or pastes rich text, the library is
+// already there. Idle-time and unawaited, so it cannot get in front of
+// anything the user is doing.
+//
+// This also covers htmlToMarkdown's paste path, which reads clipboardData
+// synchronously and so genuinely cannot await a loader mid-event.
+let deferredLibrariesWarmed = false;
+function warmDeferredLibraries() {
+  if (deferredLibrariesWarmed) return;
+  deferredLibrariesWarmed = true;
+  const warm = () => {
+    ensureMermaid();
+    ensureJsZip();
+    ensureNomnoml();
+    ensureTurndown();
+  };
+  // Held back a couple of seconds and THEN made to wait for an idle moment.
+  // Both halves matter: the app is still rendering its first deck when this is
+  // armed, and requestIdleCallback alone would happily fire during one of
+  // boot's IndexedDB awaits — dropping a 3.3MB mermaid parse straight into the
+  // window this whole change exists to clear. Anyone who reaches a diagram
+  // before then simply loads it through the ensureX() guard instead.
+  setTimeout(() => {
+    if (typeof requestIdleCallback === "function") requestIdleCallback(warm, { timeout: 5000 });
+    else warm();
+  }, 2000);
+}
+
 // Reads the session straight from local storage — no network — so a user who
 // has signed in at least once can keep using the app while offline.
 async function getCachedSession() {
@@ -3208,6 +3337,10 @@ function applyThemePreviewStyles(node, theme) {
 }
 
 function configureMermaid(themeId) {
+  // mermaid is loaded on demand (see ensureMermaid), and setTheme calls this at
+  // boot — long before any diagram exists to draw. Nothing to configure yet;
+  // ensureMermaid re-invokes this with the live theme the moment it lands.
+  if (typeof mermaid === "undefined") return;
   const theme = themeById(themeId);
   const isPrintTheme = themeId === "print";
   const card = isPrintTheme ? cssVariableColor("--print-surface", "#ffffff") : cssVariableColor("--card", theme.colors.panel);
@@ -4314,7 +4447,7 @@ const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(el.qnCatModal && !el.qnCatModal.hidden), close: () => closeQnCatModal() },
   // These two are read off the DOM rather than through their `helpModal` /
   // `appInfoModal` bindings, which are top-level `const`s declared thousands of
-  // lines further down. hasOpenOverlay() can now be reached during script
+  // lines further down. This list can be walked during script
   // evaluation (the back-button setup runs near the bottom of the file but
   // still above those declarations), and a `typeof` test does NOT make a
   // let/const safe to touch early — reading one in its temporal dead zone
@@ -4352,14 +4485,6 @@ const OVERLAY_LAYERS = [
   { isOpen: () => isNotesEditing(), close: () => commitNotesEditIfActive() }
 ];
 
-// Is there anything on screen that a Back press should dismiss rather than
-// navigate away from? Focus mode deliberately does NOT count: it is the absence
-// of chrome, not an overlay, and Back should leave the deck rather than unfold
-// the header.
-function hasOpenOverlay() {
-  return OVERLAY_LAYERS.some((layer) => layer.isOpen());
-}
-
 // Closes the single frontmost overlay and reports whether it found one. ONE
 // layer per press — the name is the contract. This used to fall through every
 // branch and close the lot, so a single Escape aimed at a confirm dialog also
@@ -4372,10 +4497,19 @@ function closeTopmostOverlay() {
     return true;
   }
 
-  // Focus mode last of all. It isn't an overlay — it's the absence of chrome —
-  // so it must never eat the Escape that was aimed at something drawn on top of
-  // it. On desktop this is also the escape hatch of last resort: the collapsed
-  // appbar takes the ☰ menu and the back button with it.
+  // Focus mode last of all, and NOT in OVERLAY_LAYERS above. It isn't an
+  // overlay — it's the absence of chrome — so it must never eat the Escape (or
+  // the Back press) that was aimed at something drawn on top of it.
+  //
+  // Reached only once nothing else is open, this is the escape hatch of last
+  // resort, and it is the ONLY one in some states: the ⤢ button that turns
+  // focus mode on lives in the notes header, which doesn't exist in Cards view,
+  // while the pin is remembered across sessions — and a collapsed appbar takes
+  // the ☰ menu and the back chevron with it. Launch into Cards view with a
+  // remembered pin and this branch is the whole way out. On desktop that's
+  // Escape; on a phone (no Escape key) it is the hardware Back / edge swipe,
+  // which lands here through handleBackGesture. Do not "tidy" focus mode into
+  // OVERLAY_LAYERS — it would then eat a press aimed at a real overlay.
   if (chromeFocusPinned) { setFocusMode(false); return true; }
 
   // Nothing left open: make sure a scroll lock didn't outlive its owner.
@@ -6023,7 +6157,9 @@ async function exportLibraryBackupZip({
   // its panel gets out of the way on success instead of waiting to be dismissed.
   autoClosePanel = false
 } = {}) {
-  if (!window.JSZip) {
+  // jszip loads on demand now (see ensureJsZip); it is export-only, so it has
+  // no business blocking the app's boot.
+  if (!(await ensureJsZip())) {
     setStatus("Backup needs the zip library, which failed to load.", "error");
     return false;
   }
@@ -6266,7 +6402,7 @@ async function readBackupArchive(file) {
 
   const decks = [];
   if (looksZip) {
-    if (!window.JSZip) throw new Error("the zip library failed to load, so this .zip can't be read");
+    if (!(await ensureJsZip())) throw new Error("the zip library failed to load, so this .zip can't be read");
     const zip = await JSZip.loadAsync(file);
     const files = Object.keys(zip.files).filter((path) => !zip.files[path].dir && !isArchiveJunkPath(path));
     // Our own archives (and anything shaped like them): every .json under a
@@ -7161,12 +7297,18 @@ function deckCardInfo(deck, kind) {
 // fires would drop them.
 async function loadDeckEntry(deck, kind) {
   flushWorkingDeck();
+  // Closed BEFORE the load in both branches. The cloud branch always did; the
+  // local one — the common path — closed it only after `await
+  // loadDeckFromLibrary`, which itself awaits an IndexedDB read and an
+  // autosave flush. So pressing Load on a local deck left the panel sitting
+  // there, unchanged, for the whole load: the press looked ignored right up
+  // until the deck appeared. Nothing about the load needs the panel open, and
+  // the failure path below re-reports through the same toast either way.
+  closeMyDecksPanel();
   if (kind === "cloud") {
-    closeMyDecksPanel();
     loadWebDeck(deck.id);
   } else if (await loadDeckFromLibrary(deck.id)) {
     touchLocalDeckAccess(deck.id);
-    closeMyDecksPanel();
     showToast(`Loaded "${deck.title || "deck"}"`);
   }
 }
@@ -10648,7 +10790,7 @@ async function renderDiagramNodes(nodes) {
     node.classList.remove("is-diagram-pending");
   });
 
-  if (mermaidNodes.length) {
+  if (mermaidNodes.length && await ensureMermaid()) {
     // One diagram mermaid can't lay out rejects the whole batch, so a bad
     // diagram must not take its neighbours' drawings down with it: retry the
     // batch one node at a time and let only the broken one fail.
@@ -10667,23 +10809,25 @@ async function renderDiagramNodes(nodes) {
     }
   }
 
-  nomnomlNodes.forEach((node) => {
-    try {
-      const printTheme = Boolean(node.closest(".print-root"));
-      const svg = nomnoml.renderSvg(sourceWithNomnomlTheme(node.textContent, printTheme));
-      node.classList.add("nomnoml-light-theme");
-      node.innerHTML = svg;
-      node.querySelector("svg")?.classList.add("nomnoml-light-svg");
-      // The shell is created before the diagram is drawn now, so it can't pick
-      // nomnoml's light background up from the class it used to wait for.
-      if (node.parentElement?.classList.contains("diagram-shell")) {
-        node.parentElement.classList.add("nomnoml-light-shell");
+  if (nomnomlNodes.length && await ensureNomnoml()) {
+    nomnomlNodes.forEach((node) => {
+      try {
+        const printTheme = Boolean(node.closest(".print-root"));
+        const svg = nomnoml.renderSvg(sourceWithNomnomlTheme(node.textContent, printTheme));
+        node.classList.add("nomnoml-light-theme");
+        node.innerHTML = svg;
+        node.querySelector("svg")?.classList.add("nomnoml-light-svg");
+        // The shell is created before the diagram is drawn now, so it can't pick
+        // nomnoml's light background up from the class it used to wait for.
+        if (node.parentElement?.classList.contains("diagram-shell")) {
+          node.parentElement.classList.add("nomnoml-light-shell");
+        }
+      } catch (err) {
+        console.warn("Nomnoml render error:", err);
+        node.textContent = "Error rendering Nomnoml: " + err.message;
       }
-    } catch (err) {
-      console.warn("Nomnoml render error:", err);
-      node.textContent = "Error rendering Nomnoml: " + err.message;
-    }
-  });
+    });
+  }
 }
 
 // Notes frequently start at ## (or deeper) because the top-level # is reserved
@@ -13269,7 +13413,20 @@ el.notesView?.addEventListener("click", (event) => {
   enterNotesEditing(at ?? rawOffsetForCurrentNotesScroll());
 });
 
-function setViewMode(mode) {
+// Bumped on every deferred switch so a superseded paint (two fast taps on the
+// toggle) is dropped rather than rendering a view that is no longer chosen.
+let viewModePaintToken = 0;
+
+// `options.deferRender` yields one frame between flipping the toggle's own
+// classes and doing the work behind them. Only the user-facing toggle passes
+// it: renderNotesView() runs a full marked parse + DOMPurify sanitize of the
+// whole note before its first await, so on a cold switch into a large note the
+// `is-active` pill could not reach the screen until that finished — the button
+// with the heaviest synchronous work in the app looked like it had missed the
+// press. Every programmatic caller (deck load, import, scheduleNoteJump, …)
+// keeps the original synchronous ordering, because several of them read the
+// rendered DOM straight afterwards.
+function setViewMode(mode, options = {}) {
   const next = mode === "notes" ? "notes" : mode === "highlights" ? "highlights" : "cards";
   if (!el.notesStage || !el.viewModeToggle) {
     state.viewMode = next;
@@ -13311,12 +13468,27 @@ function setViewMode(mode) {
       refreshHighlightBackdrop(el.notesEdit);
       el.notesEdit.setSelectionRange(0, 0);
     }
-    renderNotesView();
-    if (!state.notes.trim()) enterNotesEditing();
-  } else if (highlightsActive) {
-    renderHighlightsPanel();
-  } else if (changed) {
-    showCard();
+  }
+
+  const token = ++viewModePaintToken;
+  const paint = () => {
+    if (notesActive) {
+      renderNotesView();
+      if (!state.notes.trim()) enterNotesEditing();
+    } else if (highlightsActive) {
+      renderHighlightsPanel();
+    } else if (changed) {
+      showCard();
+    }
+  };
+
+  if (options.deferRender) {
+    requestAnimationFrame(() => {
+      if (token !== viewModePaintToken) return;
+      paint();
+    });
+  } else {
+    paint();
   }
 }
 
@@ -13354,7 +13526,7 @@ el.notesEdit?.addEventListener("focus", () => scheduleNotesCaretCheck());
 
 el.viewModeToggle?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-view-mode]");
-  if (button) setViewMode(button.dataset.viewMode);
+  if (button) setViewMode(button.dataset.viewMode, { deferRender: true });
 });
 
 // (No drawer listener for the notes view: the Cards / Notes / Highlights toggle
@@ -13385,7 +13557,11 @@ const CHROME_SHOW_DELTA = 28; // px back up before it returns — deliberately
                               // larger, so overscroll bounce and the odd
                               // thumb wobble don't flap the header
 const CHROME_TOP_ZONE = 24; // within this much of the top, always show
-const CHROME_SETTLE_MS = 320; // matches the CSS collapse transition
+const CHROME_SETTLE_MS = 260; // the CSS collapse transition (220ms) plus a
+                              // couple of frames. Was 320 with a comment
+                              // claiming it matched — 100ms of extra dead time
+                              // in which a genuine upward flick right after a
+                              // toggle was thrown away.
 
 let chromeFocusPinned = false;
 try {
@@ -13429,19 +13605,101 @@ function hasStudyTextSelection() {
   return Boolean(element?.closest?.(".study-layout"));
 }
 
+// ── Measuring what the collapse actually has to travel ─────────────────────
+// The CSS animates `max-height` (not `height`) because the appbar's natural
+// height depends on how many lines the deck title wraps to — there is no fixed
+// value to animate from. That was implemented as a hard-coded 300px, and it is
+// the reason focus mode never felt seamless: the real appbar is ~45-70px tall,
+// so a 300px→0 tween spends roughly its first 80% shrinking a box that is
+// still taller than its own content. Nothing moves, then everything moves at
+// once in the last few frames — a stall followed by a snap, on both the way in
+// and the way out.
+//
+// So measure it. The observer below publishes the live heights as custom
+// properties and the CSS animates between the real value and 0, which makes
+// the 220ms buy 220ms of visible motion.
+
+// The raw write. Only ever called when the chrome is expanded and still.
+function readChromeHeights() {
+  const root = document.documentElement;
+  const appbar = document.querySelector(".appbar");
+  if (appbar?.offsetHeight) root.style.setProperty("--appbar-h", `${appbar.offsetHeight}px`);
+  const toggle = el.viewModeToggle;
+  if (toggle && !toggle.hidden && toggle.offsetHeight) {
+    root.style.setProperty("--view-toggle-h", `${toggle.offsetHeight}px`);
+  }
+}
+
+// Two guards, both load-bearing:
+//  • collapsed — the box is 0 tall by definition; recording that would make 0
+//    the value the expand animates TO, and the header could never come back.
+//  • mid-transition — the observer fires on every frame of an expand, and
+//    adopting one of those intermediate heights as the new target would leave
+//    the header settling short of its real size, a little shorter each time.
+function measureChromeHeights() {
+  if (document.body.classList.contains("chrome-collapsed")) return;
+  if (performance.now() < chromeSettleUntil) return;
+  readChromeHeights();
+}
+
+if (typeof ResizeObserver === "function") {
+  const chromeSizeObserver = new ResizeObserver(() => measureChromeHeights());
+  const appbarEl = document.querySelector(".appbar");
+  if (appbarEl) chromeSizeObserver.observe(appbarEl);
+  if (el.viewModeToggle) chromeSizeObserver.observe(el.viewModeToggle);
+}
+
+// One refit after the fold has settled, shared by every toggle. Collapsing
+// hands the card face ~100-130px it did not have, and fitLiveQuestion's memo
+// key includes that box — but a class toggle fires no resize event, so nothing
+// invalidated it and the question stayed sized for the old viewport until the
+// next flip. Re-armed rather than stacked, so holding the shortcut down costs
+// one refit, not one per press.
+let chromeRefitTimer = 0;
+function scheduleChromeRefit() {
+  clearTimeout(chromeRefitTimer);
+  chromeRefitTimer = setTimeout(() => {
+    chromeRefitTimer = 0;
+    // Straight to the unguarded read: the settle window has just expired and
+    // this is the one moment we know the chrome is expanded AND still, so
+    // measureChromeHeights' now-stale timing guard must not veto it.
+    if (!document.body.classList.contains("chrome-collapsed")) readChromeHeights();
+    if (state.viewMode === "cards") scheduleLiveQuestionFit();
+    adjustCornellRows();
+    scheduleMarkdownTableFit();
+  }, CHROME_SETTLE_MS + 40);
+}
+
+// What #focusModeBtn currently says. Starts null (not false) so the first call
+// always paints it, including a session restored with the pin already on.
+let focusBtnShowsPinned = null;
+
 function applyChromeCollapse() {
   // The pin applies at any width; only the scroll-driven half is phone-gated,
   // so resizing a window up past the breakpoint restores an auto-hidden header
   // without disturbing a deliberate pin.
   const collapsed = chromeFocusPinned || (isMobileChrome() && chromeAutoHidden);
   const changed = document.body.classList.contains("chrome-collapsed") !== collapsed;
+  // Measured while still expanded — after the class flip the guard in
+  // measureChromeHeights (correctly) refuses to read anything.
+  if (changed && collapsed) measureChromeHeights();
   document.body.classList.toggle("chrome-collapsed", collapsed);
   // Collapsing makes the notes viewport taller, which can clamp scrollTop when
   // you're near the bottom — that clamp fires a scroll event that looks like a
   // big upward flick and would immediately un-collapse (then re-collapse, then
   // …). Ignore scrolling until the transition has settled.
-  if (changed) chromeSettleUntil = performance.now() + CHROME_SETTLE_MS;
-  if (el.focusModeBtn) {
+  if (changed) {
+    chromeSettleUntil = performance.now() + CHROME_SETTLE_MS;
+    scheduleChromeRefit();
+  }
+  // Gated on the PIN changing, not on `changed`. This used to run on every
+  // call, which on a phone means every scroll-driven auto-hide tick rewriting
+  // three attributes on a button that is hidden in Cards view anyway — but it
+  // cannot be gated on `collapsed` changing either: pinning while the phone
+  // has already auto-hidden the chrome leaves `collapsed` true throughout, and
+  // the button would keep showing ⤢ for a mode that is now on.
+  if (chromeFocusPinned !== focusBtnShowsPinned && el.focusModeBtn) {
+    focusBtnShowsPinned = chromeFocusPinned;
     el.focusModeBtn.setAttribute("aria-pressed", chromeFocusPinned ? "true" : "false");
     el.focusModeBtn.textContent = chromeFocusPinned ? "⤡" : "⤢";
     el.focusModeBtn.title = chromeFocusPinned
@@ -13539,8 +13797,21 @@ function setFocusMode(pinned) {
   } catch (_) {
     /* private mode — the toggle still works for this session */
   }
-  // Leaving focus mode should actually show the header, even mid-scroll.
-  if (!chromeFocusPinned) chromeAutoHidden = false;
+  // Leaving focus mode should actually show the header, even mid-scroll — and
+  // it has to stay shown.
+  //
+  // Resetting chromeAutoHidden alone was not enough, and this was the single
+  // biggest reason the toggle read as "broken". The scroll listener bails on
+  // `chromeFocusPinned` BEFORE it updates the anchor, so chromeAnchorTop stays
+  // frozen at wherever you were when focus mode was switched on. Read 2000px
+  // further down the note, tap ⤡, then nudge the page: delta comes out as
+  // ~2000, sails past CHROME_HIDE_DELTA, and the header you just asked for
+  // folds straight back away. Drop the anchor with it, exactly as
+  // resetChromeAutoHide does — the next scroll then re-anchors from where you
+  // actually are.
+  chromeAutoHidden = false;
+  chromeAnchorEl = null;
+  chromeAnchorTop = 0;
   applyChromeCollapse();
 }
 
@@ -13548,7 +13819,7 @@ el.focusModeBtn?.addEventListener("click", () => setFocusMode(!chromeFocusPinned
 
 // Rotating to landscape (or resizing a desktop window down) crosses the mobile
 // breakpoint, which turns the scroll-driven half on or off; re-evaluate.
-window.matchMedia(CHROME_MOBILE_QUERY).addEventListener("change", applyChromeCollapse);
+chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
 
 // Restore a remembered focus-mode pin before the first paint, then arm the CSS
 // transitions a frame later — otherwise every launch in focus mode would open
@@ -23791,6 +24062,12 @@ async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
   try {
     await afterPaint();
     el.printRoot.innerHTML = buildNotesFlatPrintDocument(title, sections);
+    // Must precede configureMermaid("print"): with mermaid loaded on demand,
+    // an unloaded library makes that call a silent no-op, and the
+    // enhanceRenderedMarkdown below would then load mermaid itself and
+    // configure it with the SCREEN theme — exporting every diagram in the
+    // dark palette onto white paper.
+    await ensureMermaid();
     configureMermaid("print");
     try {
       await enhanceRenderedMarkdown(el.printRoot);
@@ -23875,6 +24152,12 @@ async function prepareExportRoot(bodyHtml) {
   el.printRoot.classList.remove("is-preview");
   el.printRoot.classList.add("is-preparing");
   el.printRoot.setAttribute("aria-hidden", "true");
+  // Must precede configureMermaid("print"): with mermaid loaded on demand,
+  // an unloaded library makes that call a silent no-op, and the
+  // enhanceRenderedMarkdown below would then load mermaid itself and
+  // configure it with the SCREEN theme — exporting every diagram in the
+  // dark palette onto white paper.
+  await ensureMermaid();
   configureMermaid("print");
   try {
     await enhanceRenderedMarkdown(el.printRoot);
@@ -25020,6 +25303,12 @@ async function exportCardsPdf(sourceTitle, cards, options = {}) {
   try {
     await afterPaint();
     el.printRoot.innerHTML = buildCornellPrintDocument(title, cards, "all", { sourceTitle, statusById });
+    // Must precede configureMermaid("print"): with mermaid loaded on demand,
+    // an unloaded library makes that call a silent no-op, and the
+    // enhanceRenderedMarkdown below would then load mermaid itself and
+    // configure it with the SCREEN theme — exporting every diagram in the
+    // dark palette onto white paper.
+    await ensureMermaid();
     configureMermaid("print");
     try {
       await enhanceRenderedMarkdown(el.printRoot);
@@ -25066,6 +25355,12 @@ async function exportPdf(scope = "all") {
   try {
     await afterPaint();
     el.printRoot.innerHTML = buildCornellPrintDocument(title, cards, scope);
+    // Must precede configureMermaid("print"): with mermaid loaded on demand,
+    // an unloaded library makes that call a silent no-op, and the
+    // enhanceRenderedMarkdown below would then load mermaid itself and
+    // configure it with the SCREEN theme — exporting every diagram in the
+    // dark palette onto white paper.
+    await ensureMermaid();
     configureMermaid("print");
     try {
       await enhanceRenderedMarkdown(el.printRoot);
@@ -25134,6 +25429,12 @@ async function exportNotesPdf() {
   try {
     await afterPaint();
     el.printRoot.innerHTML = buildNotesPrintDocument(title, notes);
+    // Must precede configureMermaid("print"): with mermaid loaded on demand,
+    // an unloaded library makes that call a silent no-op, and the
+    // enhanceRenderedMarkdown below would then load mermaid itself and
+    // configure it with the SCREEN theme — exporting every diagram in the
+    // dark palette onto white paper.
+    await ensureMermaid();
     configureMermaid("print");
     try {
       await enhanceRenderedMarkdown(el.printRoot);
@@ -26449,7 +26750,7 @@ function reportEpubImportCrash(error) {
 // Entry point wired to the "Import EPUB" button's file input.
 async function importEpubFile(file, folderPath = null) {
   if (!file) return;
-  if (!window.JSZip) {
+  if (!(await ensureJsZip())) {
     setStatus("Zip support did not load — cannot read EPUB files.", "error");
     return;
   }
@@ -26558,7 +26859,7 @@ async function collectMarkdownFromZip(input, prefix = "", depth = 0) {
 // import source, so a zipped export folder behaves exactly like selecting those
 // files by hand.
 async function readZipSources(file) {
-  if (!window.JSZip) {
+  if (!(await ensureJsZip())) {
     setStatus("Zip support did not load. Extract the zip and upload the .md files.", "error");
     return [];
   }
@@ -26878,7 +27179,18 @@ function finishSwipe() {
       || (absX >= swipeConfig.flickDistance && averageVelocity >= swipeConfig.flickVelocity)
     );
 
-  if (state.dragMoved || state.dragging) {
+  // Gated on `dragging` — a gesture that showed real directional intent (see
+  // hasHorizontalIntent/hasVerticalIntent in updateSwipe) — and NOT on
+  // `dragMoved`, which is merely ">6px of travel". A finger tap is rarely
+  // pixel-perfect, so the old condition swallowed the click of any tap that
+  // wobbled 7px for a full 360ms: the card did not flip and nothing on screen
+  // acknowledged the press. That is the purest form of "I clicked and nothing
+  // happened", and it was reachable on every tap.
+  //
+  // The card's own click handler still has an independent 8px isDrag guard, so
+  // dropping the low-threshold case here loses no protection against a real
+  // swipe being read as a tap.
+  if (state.dragging) {
     state.suppressClickUntil = performance.now() + 360;
   }
 
@@ -28062,24 +28374,28 @@ el.allCardsFilter?.addEventListener("click", (event) => {
 el.closeAllCardsBtn.addEventListener("click", closeAllCardsPanel);
 // ── Triple-click a rendered card → open its editor, caret at that spot ──────
 // Mirrors the notes triple-click-to-edit, reusing findRawOffsetForRenderedPoint.
-// A single click on the rendered area flips the card, so we defer that flip and
-// cancel it once a multi-click is under way — otherwise the first click of the
-// triple would flip the card and the third would land on the wrong side.
-let allCardFlipTimer = 0;
-
-function clearAllCardFlipTimer() {
-  if (allCardFlipTimer) {
-    clearTimeout(allCardFlipTimer);
-    allCardFlipTimer = 0;
-  }
-}
-
+//
+// The flip is NOT deferred while we wait to see whether a second and third
+// click follow. It used to be — a 250ms setTimeout on EVERY single click of
+// every card in this list — which is a quarter-second of nothing after each
+// tap, paid by everyone, to smooth over a gesture almost nobody uses. The
+// study card had already made the opposite call for exactly this reason (see
+// tripleClickCardToEditor); this list simply never got the same treatment.
+//
+// Clicks 1 and 2 cancel out, so on click 3 the face under the pointer IS the
+// face the user started on — which is what makes `side` below correct without
+// any deferral. The card is then flipped back to it before the editor opens,
+// because clicks 1 and 2 leave the DOM mid-gesture.
 function tripleClickAllCardToEditor(item, rendered, clientX, clientY) {
   const card = allCardById(item.dataset.cardId);
   if (!card) return;
   const side = rendered.closest(".all-card-answer") ? "answer" : "question";
   const source = side === "answer" ? card.answer : card.question;
   const offset = findRawOffsetForRenderedPoint(rendered, source, clientX, clientY);
+  // openAllCardEditor only ever ADDS is-flipped (for the answer side), so an
+  // odd number of preceding flips would leave the item showing the wrong face
+  // behind the editor. Settle it here, as the study card does.
+  item.classList.toggle("is-flipped", side === "answer");
   openAllCardEditor(item, side);
   const textarea = item.querySelector(".all-card-editor [data-all-edit-value]");
   if (!textarea) return;
@@ -28134,20 +28450,13 @@ el.allCardsList.addEventListener("click", (event) => {
     const rendered = event.target.closest(".all-card-question .rendered, .all-card-answer .rendered");
     if (rendered && !item.classList.contains("is-editing")) {
       if (event.detail >= 3) {
-        // Triple-click: cancel the pending flip and jump into the raw editor.
-        clearAllCardFlipTimer();
+        // Triple-click: jump into the raw editor. The two flips this gesture
+        // already performed cancel out, so we are back on the clicked face.
         tripleClickAllCardToEditor(item, rendered, event.clientX, event.clientY);
-      } else if (event.detail === 1) {
-        // Lone click flips, but only after a short grace period so a triple-click
-        // (detail 2/3, below) can cancel it first.
-        clearAllCardFlipTimer();
-        allCardFlipTimer = setTimeout(() => {
-          allCardFlipTimer = 0;
-          flipAllCard(item);
-        }, 250);
       } else {
-        // detail === 2: part of a multi-click; drop the pending flip and wait.
-        clearAllCardFlipTimer();
+        // Clicks 1 and 2 both flip, immediately. Flipping is this list's main
+        // gesture and must never wait on a maybe-triple-click.
+        flipAllCard(item);
       }
       return;
     }
@@ -28696,6 +29005,9 @@ async function bootApp() {
       appInitialized = true;
       initAppForUser();
     }
+    // Only on the signed-in path: the setup, library-failed and login screens
+    // have no diagrams to draw, no archives to write and nothing to paste into.
+    warmDeferredLibraries();
   } else {
     showLoginScreen();
   }
@@ -31308,7 +31620,16 @@ function turndownServiceFor(options) {
 }
 
 function htmlToMarkdown(html, options = {}) {
-  if (typeof TurndownService === "undefined") return "";
+  // Synchronous by contract — its callers run inside paste and selection
+  // handlers that cannot await. turndown loads on demand (ensureTurndown) and
+  // is warmed at idle right after boot, so in practice it is always here by
+  // the time a human has selected or pasted anything. In the window where it
+  // isn't, this returns "" exactly as it did before and every caller already
+  // falls back to plain text; kick off the load so the next attempt works.
+  if (typeof TurndownService === "undefined") {
+    ensureTurndown();
+    return "";
+  }
   const turndownService = turndownServiceFor(options);
   return turndownWithService(turndownService, html, options);
 }
@@ -31724,7 +32045,13 @@ document.addEventListener("paste", (event) => {
     return;
   }
 
-  if (typeof TurndownService === "undefined") return;
+  // See htmlToMarkdown: nothing here can await (clipboardData dies with the
+  // handler), so an unloaded converter means the browser's own plain-text
+  // paste happens, which is what used to happen when the CDN failed anyway.
+  if (typeof TurndownService === "undefined") {
+    ensureTurndown();
+    return;
+  }
 
   const types = clipboardData.types || [];
   if (!types.includes("text/html")) return;
@@ -34549,8 +34876,17 @@ let closeMainMenu = () => {};
       if (!btn) return;
       // Export menus have inline expansion inside the drawer — don't close for them
       if (btn.id === "exportBtn" || btn.id === "exportNotesBtn") return;
-      // Close button, section-label clicks, and all other actions close the drawer
-      setTimeout(closeMenu, 150);
+      // Close button, section-label clicks, and all other actions close the
+      // drawer — SYNCHRONOUSLY. This used to be setTimeout(closeMenu, 150), and
+      // that 150ms was the single largest source of "I press a button and
+      // nothing happens". The button's own listener runs first (target phase)
+      // and has already opened its panel by the time this bubble handler fires
+      // — but every one of those panels is z-indexed 70-240, i.e. UNDER the
+      // backdrop (499) and the drawer (500). So the work was done in frame 1
+      // and then hidden behind a 55%-black scrim for 150ms before the drawer
+      // even began its 220ms slide. Closing here puts the panel on screen in
+      // the same frame as the press.
+      closeMenu();
     });
 
     // No private Escape listener here any more: the drawer is an entry in

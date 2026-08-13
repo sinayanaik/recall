@@ -871,7 +871,11 @@ button:disabled {
   border-right: 1px solid color-mix(in srgb, var(--line) 70%, var(--accent));
   box-shadow: 6px 0 24px rgba(0, 0, 0, 0.55);
   transform: translateX(-110%);
-  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Shorter than the 0.22s used elsewhere: the drawer now closes in the same
+     frame as the press (see the toolbar click handler in app.js), so this
+     slide is the only thing still moving over the panel the press just
+     opened. The backdrop is removed outright, so nothing else is waiting. */
+  transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1);
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -1151,7 +1155,12 @@ button:disabled {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent),
     0 1px 2px rgba(0, 0, 0, 0.22);
-  transition: all 0.15s ease;
+  /* Explicit list, not `all`: `all` animates layout properties too, so any
+     class change on this button cost 150ms of layout+paint. */
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
   font-size: var(--button-font-size);
 }
 
@@ -1372,7 +1381,11 @@ button:disabled {
   font-size: var(--button-font-size);
   font-weight: 800;
   cursor: pointer;
-  transition: all 0.15s ease;
+  /* Explicit list, not `all` — see .import-action-btn above. */
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .import-choice-btn:hover:not(:disabled) {
@@ -1440,7 +1453,11 @@ button:disabled {
   font-size: 0.78rem;
   font-weight: 800;
   cursor: pointer;
-  transition: all 0.15s ease;
+  /* Explicit list, not `all` — see .import-action-btn above. */
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .import-folder-change:hover {
@@ -9884,7 +9901,11 @@ textarea {
   font-size: 0.74rem;
   font-weight: 800;
   white-space: nowrap;
-  transition: all 0.15s ease;
+  /* Explicit list, not `all` — see .import-action-btn above. */
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .bulk-action-btn:hover {
@@ -12776,10 +12797,26 @@ kbd {
    the deck title wraps to — there is no fixed value to animate from.
    Gated on .chrome-ready (set one frame after boot): focus mode is
    remembered across sessions, and without the gate every launch would open
-   with the header up and visibly fold it away. */
-.appbar,
+   with the header up and visibly fold it away.
+
+   --appbar-h / --view-toggle-h are MEASURED and published by app.js (see
+   measureChromeHeights). This used to be a flat 300px, and that single number
+   is why focus mode never felt seamless: the appbar is really ~45-70px tall,
+   so a 300px→0 tween spent roughly its first 80% shrinking a box that was
+   still taller than its own content. Nothing appeared to happen, then
+   everything happened in the last few frames — a stall followed by a snap,
+   in both directions. Animating between the real height and 0 spends the
+   whole 220ms on motion you can actually see.
+
+   The 300px fallback is what applies before the first measurement (the shell
+   is `hidden` during boot, so nothing has a box yet) and is deliberately
+   generous — a max-height that is too large merely fails to clip. */
+.appbar {
+  max-height: var(--appbar-h, 300px);
+}
+
 .quiz-panel .view-mode-toggle:not([hidden]) {
-  max-height: 300px;
+  max-height: var(--view-toggle-h, 300px);
 }
 
 body.chrome-ready .appbar,
@@ -12789,7 +12826,17 @@ body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]) {
     opacity 0.16s linear,
     margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
     padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    /* border-width was missing, so the toggle's top and bottom rules snapped
+       to zero on frame 1 while the box was still folding. */
+    border-width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* The shell's 10px row gap is part of the same fold and has to move with it.
+   Untransitioned, it vanished on the first frame — the study panel jumped
+   10px upward instantly and then sat there waiting ~180ms for the header to
+   catch up, which is a jolt at the start of every collapse and every expand. */
+body.chrome-ready .app-shell {
+  transition: gap 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* Collapsed: the appbar is zero-height and inert, so the study area starts at
@@ -12802,10 +12849,18 @@ body.chrome-collapsed .app-shell {
   gap: 0;
 }
 
+/* No `transform` here, deliberately. It used to carry translateY(-6px), and a
+   non-`none` transform makes the element the containing block for any
+   position:fixed DESCENDANT — which .toolbar, the full-height side drawer, is
+   at every width. The :has() guard above removes the transform when the drawer
+   opens, but it removes it over a 220ms transition, so for those 220ms the
+   drawer was being laid out against an appbar box animating from 0 to full
+   height instead of against the viewport: open ☰ in focus mode and the drawer
+   arrived squashed, then snapped to size. With the collapse now animating over
+   the real height, the 6px nudge added nothing worth that. */
 body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .appbar {
   max-height: 0;
   opacity: 0;
-  transform: translateY(-6px);
   overflow: hidden;
   pointer-events: none;
 }
@@ -12857,7 +12912,11 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .quiz-panel .view-mode
 
 @media (prefers-reduced-motion: reduce) {
   body.chrome-ready .appbar,
-  body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden])  {
+  body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]),
+  /* The shell's gap has to lose its transition too, or reduced motion would
+     get the one thing that used to jump plus none of the fold that explained
+     it — strictly worse than either. */
+  body.chrome-ready .app-shell {
     transition: none;
   }
 }
@@ -13633,4 +13692,93 @@ html.app-booting .tool-button,
 html.app-booting .deck-empty-action,
 html.app-booting .icon-button {
   cursor: progress;
+}
+
+/* ── Instant press feedback ────────────────────────────────────────────────
+   Lives at the very end of the file on purpose: it has to win on source order
+   against the half-dozen per-component :active rules of equal specificity
+   scattered above (.tool-button:active, .edit-card-btn:active,
+   .notes-toc-toggle:active, …), which it supersedes rather than replaces.
+
+   Why it exists. The old press state changed exactly one property —
+   box-shadow — and the shared button rule puts box-shadow on a 0.18s
+   transition. Its other half, `transform: translateY(0)`, is a no-op unless
+   :hover had already lifted the button, and :hover is (correctly) gated behind
+   @media (hover: hover). So on a touch device a press produced NO visible
+   change for the first ~180ms. That is well past the ~100ms at which a press
+   still reads as instantaneous, and it is a large part of why every button in
+   the app felt like it was thinking before it acted — the work was usually
+   already done; nothing on screen said so.
+
+   Three deliberate choices:
+   • `transition: none` — a press cue that eases in is not a press cue. This is
+     the whole point of the rule.
+   • `scale`, the individual property, NOT `transform: scale(…)`. Several of
+     these buttons already carry a `transform`/`translate` for layout (see the
+     pinned selection floater), and the shorthand would overwrite it and fling
+     the button across the screen. The individual properties compose.
+   • The tint is an inset box-shadow with a huge spread rather than a
+     background change. It lands on top of whatever the button already has —
+     gradient, solid accent fill, or nothing — so one rule covers every button
+     without needing to know its background, and it reads on light and dark
+     themes alike because it is mixed from --accent.
+
+   :not(:disabled) throughout: a disabled button must not pretend it took the
+   press. */
+.tool-button:active:not(:disabled),
+.icon-button:active:not(:disabled),
+.sync-modal-btn:active:not(:disabled),
+.web-decks-refresh:active:not(:disabled),
+.web-deck-action:active:not(:disabled),
+.controls button:active:not(:disabled),
+.edit-card-btn:active:not(:disabled),
+.notes-toc-toggle:active:not(:disabled),
+.toolbar-close-btn:active:not(:disabled),
+.mobile-menu-btn:active:not(:disabled),
+.app-back-btn:active:not(:disabled),
+.view-mode-toggle button:active:not(:disabled),
+.import-choice-btn:active:not(:disabled),
+.import-folder-change:active:not(:disabled),
+.import-action-btn:active:not(:disabled),
+.bulk-action-btn:active:not(:disabled),
+.deck-tile-overflow-btn:active:not(:disabled),
+.deck-empty-action:active:not(:disabled),
+.deck-menu button:active:not(:disabled),
+.export-menu button:active:not(:disabled),
+.url-row button:active:not(:disabled),
+.import-actions button:active:not(:disabled) {
+  transition: none;
+  scale: 0.96;
+  box-shadow:
+    inset 0 0 0 200px color-mix(in srgb, var(--accent) 20%, transparent),
+    inset 0 2px 5px rgba(0, 0, 0, 0.26);
+}
+
+/* Reduced motion still gets the tint — it is information, not decoration —
+   but not the squeeze. */
+@media (prefers-reduced-motion: reduce) {
+  .tool-button:active:not(:disabled),
+  .icon-button:active:not(:disabled),
+  .sync-modal-btn:active:not(:disabled),
+  .web-decks-refresh:active:not(:disabled),
+  .web-deck-action:active:not(:disabled),
+  .controls button:active:not(:disabled),
+  .edit-card-btn:active:not(:disabled),
+  .notes-toc-toggle:active:not(:disabled),
+  .toolbar-close-btn:active:not(:disabled),
+  .mobile-menu-btn:active:not(:disabled),
+  .app-back-btn:active:not(:disabled),
+  .view-mode-toggle button:active:not(:disabled),
+  .import-choice-btn:active:not(:disabled),
+  .import-folder-change:active:not(:disabled),
+  .import-action-btn:active:not(:disabled),
+  .bulk-action-btn:active:not(:disabled),
+  .deck-tile-overflow-btn:active:not(:disabled),
+  .deck-empty-action:active:not(:disabled),
+  .deck-menu button:active:not(:disabled),
+  .export-menu button:active:not(:disabled),
+  .url-row button:active:not(:disabled),
+  .import-actions button:active:not(:disabled) {
+    scale: 1;
+  }
 }
