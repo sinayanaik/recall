@@ -6,7 +6,7 @@
 // refit is skipped entirely while text is selected (and owed afterwards).
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { hasStudyTextSelection } from "../ui/chrome.js?v=__BUILD__";
 import { styleDefaults } from "../ui/style-schema.js?v=__BUILD__";
 import { normalizeStyleSettings, numericStyleValue } from "../ui/style-settings.js?v=__BUILD__";

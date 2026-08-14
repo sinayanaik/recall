@@ -6,8 +6,8 @@
 // separate per-device list of known folder paths.
 
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { setMyDecksCwd } from "./my-decks-prefs.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 
 // A deck's `category` is a "/"-delimited folder path (e.g. "Math/Calculus"):
 // each segment is a folder, nesting is arbitrary depth. Legacy flat categories

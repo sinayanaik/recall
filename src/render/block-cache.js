@@ -7,9 +7,9 @@
 // the scrollbar jump around while you read.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { buildNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";

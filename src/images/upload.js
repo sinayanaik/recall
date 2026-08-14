@@ -7,7 +7,7 @@
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 
 // ----- Image upload (Supabase Storage) -------------------------------------
 // Insert `text` at the textarea's caret and fire an input event so card state saves.

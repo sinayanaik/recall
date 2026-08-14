@@ -1,5 +1,11 @@
 // Importing from a URL, through a reader proxy when the page needs one.
 
+import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
+import { countQuestionHeadings, parseCards, stripReaderMetadata } from "./parse-cards.js?v=__BUILD__";
+import { stageMarkdownImport } from "./staging.js?v=__BUILD__";
+import { setButtonLoading, setStatus } from "../ui/feedback.js?v=__BUILD__";
+
 // Fetch a page the user asked to import. Named for its caller because there is
 // a second, unrelated text fetch further down for the release check — and when
 // both were called `fetchText`, the later declaration silently won for these
@@ -45,4 +51,45 @@ export function cleanImportUrl(rawUrl) {
 
 export function readerUrlFor(url) {
   return `https://r.jina.ai/${url}`;
+}
+
+export async function fetchUrl() {
+  const url = cleanImportUrl(el.urlInput.value);
+  if (!url) {
+    setStatus("Enter a URL first.", "error");
+    return;
+  }
+
+  state.importTitleHint = url;
+  setButtonLoading(el.fetchBtn, true, "Fetching…");
+  setStatus("Fetching source...");
+
+  try {
+    let text;
+    const isNotionUrl = /\/\/[^/]*(notion\.site|notion\.so)\//i.test(url);
+
+    try {
+      if (isNotionUrl) throw new Error("Use Reader for Notion pages");
+      text = await fetchImportText(url);
+    } catch {
+      text = await fetchImportText(readerUrlFor(url));
+    }
+
+    const source = stripReaderMetadata(text);
+
+    // A public Notion page renders its toggles collapsed, so the fetch comes
+    // back as question headings with nothing under them. Say so instead of
+    // staging a page that would import as a list of empty prompts.
+    if (!parseCards(source).length && countQuestionHeadings(source)) {
+      setStatus("This public Notion URL only exposes collapsed question headings, not answers. Use Export -> Markdown & CSV, then upload the zip or paste the exported Markdown.", "error");
+      return;
+    }
+
+    setStatus("Fetched. Checking what's in it...");
+    stageMarkdownImport(text, { name: url, folder: null });
+  } catch (error) {
+    setStatus("Could not fetch this URL. If it is private Notion content, export Markdown or paste the page content.", "error");
+  } finally {
+    setButtonLoading(el.fetchBtn, false);
+  }
 }

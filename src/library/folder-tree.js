@@ -8,6 +8,7 @@ import { newDeckInFolder } from "../cards/new-deck.js?v=__BUILD__";
 import { deckSyncStatus } from "../cloud/deck-list.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { buildFolderTree } from "./categories.js?v=__BUILD__";
 import { buildCloudDeckRow, buildDeckDeleteButton, buildDeckLoadButton } from "./deck-rows.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, folderSegments, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./folders.js?v=__BUILD__";
@@ -17,7 +18,6 @@ import { importIntoFolder } from "./my-decks-menu.js?v=__BUILD__";
 import { setMyDecksCwd } from "./my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./my-decks-render.js?v=__BUILD__";
 import { createDeckSelectControl, createFolderSelectControl, renameMyDeck, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { showConfirmModal, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseDeckCategory } from "../ui/pickers.js?v=__BUILD__";
 

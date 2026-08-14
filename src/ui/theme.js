@@ -6,7 +6,7 @@ import { bumpAllCardsRenderId, renderAllCards } from "../cards/all-cards.js?v=__
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { themeStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { invalidateRenderedBlockCache } from "../render/block-cache.js?v=__BUILD__";
 import { themeAliases, themeCatalog } from "./theme-catalog.js?v=__BUILD__";
 

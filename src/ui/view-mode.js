@@ -2,8 +2,8 @@
 
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
-import { state, viewModePaintToken } from "../main.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderHighlightsPanel } from "../panels/highlights-panel.js?v=__BUILD__";
@@ -103,3 +103,7 @@ export function setViewMode(mode, options = {}) {
 // Only the auto layer listens to scrolling; pinning short-circuits it, which
 // is what makes "pinned" mean pinned.
 export const FOCUS_MODE_KEY = "recall:focusMode";
+
+// Bumped on every deferred switch so a superseded paint (two fast taps on the
+// toggle) is dropped rather than rendering a view that is no longer chosen.
+export let viewModePaintToken = 0;

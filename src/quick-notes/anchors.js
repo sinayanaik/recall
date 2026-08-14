@@ -1,9 +1,9 @@
 // Where each quick note was pinned from, so it can jump back to its source.
 
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { ensureQuickNotesDeck, qnBoard, renderQuickNotesBoard } from "./board.js?v=__BUILD__";
 import { cachedUserId, ensureLocalQuickNotesSnapshot, getQuickNotesDeckId, isQuickNotesDeck, quickNotesLocalId } from "./categories.js?v=__BUILD__";

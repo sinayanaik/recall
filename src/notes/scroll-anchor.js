@@ -2,7 +2,7 @@
 // through the deck's meta bag, on the others.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 

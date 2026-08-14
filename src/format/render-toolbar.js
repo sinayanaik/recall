@@ -3,6 +3,7 @@
 
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { applyInlineStyleProperty, clearInlineStyleProperty, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../editor/text-transforms.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { makeClozeFromSelection } from "./cloze.js?v=__BUILD__";
@@ -10,7 +11,6 @@ import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } fro
 import { makeHighlightFromSelection, selectionForRenderTarget } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { clozeTextareaSelection } from "./selection-tools.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
 import { isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";

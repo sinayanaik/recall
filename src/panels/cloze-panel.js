@@ -2,7 +2,7 @@
 // it out of context.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { commitNotesEditIfActive, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";

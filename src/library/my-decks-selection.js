@@ -5,6 +5,7 @@ import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { applyWebDeckCategory, fetchWebDeckPayload, normalizeWebDeckPayload, updateWebDeckTitle } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { categoriesFromDecks, setKnownWebDeckCategories, webDeckCategories } from "./categories.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
@@ -12,7 +13,6 @@ import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "./local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { renameDeckInLibrary } from "./tombstones.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 

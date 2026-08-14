@@ -3,17 +3,22 @@
 // no access to the app's own.
 
 import { cardStatusLabel } from "../cards/card-status.js?v=__BUILD__";
+import { afterPaint } from "../cards/question-fit.js?v=__BUILD__";
 import { syncResults, uncategorizedCards } from "../cards/study.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { exportBaseName, formatCardList, normalizeCardStatus } from "./markdown.js?v=__BUILD__";
+import { installPdfPrintStyle, printPreparedDocument, revealPrintRootClozes } from "./run.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { deckSnapshot } from "../storage/deck-snapshot.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
+import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
 
 export function cardsForScope(scope) {
   syncResults();
@@ -460,3 +465,55 @@ export function setPrintTitleBeforeExport(value) {
 export let printPreviewOpen = false;
 
 export const pdfPrintStyleId = "pdfPrintStyle";
+
+// Bulk counterpart of exportNotesPdf() — combines every selected deck's notes
+// into one print-preview document instead of the single active deck's own.
+export async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
+  const sections = payloads.map((payload) => ({
+    title: payload.deck.title || "Untitled",
+    category: payload.deck.category,
+    notes: payload.deck.notes || ""
+  }));
+  if (!sections.some((section) => section.notes.trim())) {
+    setStatus("No notes to export as PDF.", "error");
+    return;
+  }
+
+  setStatus(`Preparing ${title} notes PDF...`);
+  el.printRoot.innerHTML = "";
+  el.printRoot.classList.add("is-preparing");
+  el.printRoot.classList.remove("is-preview");
+  el.printRoot.setAttribute("aria-hidden", "true");
+  setPrintTitleBeforeExport(document.title);
+  document.title = fileBaseName;
+  try {
+    await afterPaint();
+    el.printRoot.innerHTML = buildNotesFlatPrintDocument(title, sections);
+    // Must precede configureMermaid("print"): with mermaid loaded on demand,
+    // an unloaded library makes that call a silent no-op, and the
+    // enhanceRenderedMarkdown below would then load mermaid itself and
+    // configure it with the SCREEN theme — exporting every diagram in the
+    // dark palette onto white paper.
+    await ensureMermaid();
+    configureMermaid("print");
+    try {
+      await enhanceRenderedMarkdown(el.printRoot);
+    } finally {
+      configureMermaid(currentThemeId());
+    }
+    revealPrintRootClozes();
+    await (document.fonts?.ready || Promise.resolve());
+    await afterPaint();
+
+    installPdfPrintStyle();
+    const opened = printPreparedDocument();
+    setStatus(opened
+      ? `Opening ${title} notes PDF — choose Save as PDF in the dialog.`
+      : "Could not prepare the notes PDF export.", opened ? undefined : "error");
+  } catch (error) {
+    console.error("Notes PDF export failed", error);
+    setStatus("Could not prepare the notes PDF export.", "error");
+  } finally {
+    closePrintPreview();
+  }
+}

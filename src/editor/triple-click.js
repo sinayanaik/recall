@@ -3,8 +3,8 @@
 
 import { allCardById, openAllCardEditor } from "../cards/all-cards.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "./highlight-mirror.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "../notes/caret.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "../notes/raw-offset.js?v=__BUILD__";
 import { toggleEditMode } from "../ui/edit-mode.js?v=__BUILD__";

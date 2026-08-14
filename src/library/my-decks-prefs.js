@@ -3,8 +3,8 @@
 // laptop want different answers — so none of it syncs.
 
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 
 // ── My Decks view + display preferences (persisted per device) ──────────────
 export const MYDECKS_VIEW_KEY = "flashcards_mydecks_view_v1";

@@ -1,7 +1,7 @@
 // The My Decks overflow menu, and importing straight into a folder.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 
 // ── The toolbar's "⋯" menu ──────────────────────────────────────────────────
 // Holds Refresh, Expand all, Import EPUB, Restore and every Export All format,
@@ -42,4 +42,12 @@ export function importIntoFolder(folderPath = "") {
   closeMyDecksMoreMenu();
   input.value = ""; // re-picking the same file must still fire `change`
   input.click();
+}
+
+// Title search (debounced) — filters the cached set, no refetch.
+export let myDecksSearchTimer = null;
+
+// Setter: an imported binding is read-only, and the search box listener in main.js debounces through it.
+export function setMyDecksSearchTimer(value) {
+  myDecksSearchTimer = value;
 }

@@ -4,6 +4,7 @@
 import { fetchCloudDeckList, populateMyDecksCategoryFilter } from "../cloud/deck-list.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { buildFolderTree, categoriesFromDecks, setKnownWebDeckCategories, webDeckCategories } from "./categories.js?v=__BUILD__";
 import { buildCloudDeckRow } from "./deck-rows.js?v=__BUILD__";
 import { allFoldersExpanded, buildDeckTile, buildFolderNavRow, buildFolderTile, buildRootDropRow, findTreeNode, makeDeckDraggable, myDecksSortComparator, renderFolderChildren, renderFolderDecks, renderMyDecksBreadcrumb, setMyDecksRendered, sortedFolderChildren } from "./folder-tree.js?v=__BUILD__";
@@ -14,7 +15,6 @@ import { hydrateMyDecksIcons } from "./my-decks-icons.js?v=__BUILD__";
 import { setMyDecksCwd } from "./my-decks-prefs.js?v=__BUILD__";
 import { myDeckMatchesSearch, myDecksSearchTerm, updateMyDecksBulkBar } from "./my-decks-selection.js?v=__BUILD__";
 import { isDeckTombstoned } from "./tombstones.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 
 // ── Empty states ────────────────────────────────────────────────────────────
 export function myDecksEmptyMessage(ctx) {

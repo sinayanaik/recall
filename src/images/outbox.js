@@ -6,9 +6,9 @@
 // real URL — in the deck, and in any other deck that quoted it.
 
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { deckImageFolder, insertAtCursor, optimizeImage, replaceInTextarea, uploadImageToSupabase } from "./upload.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { forEachDeckSnapshot, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 

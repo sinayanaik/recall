@@ -2,10 +2,10 @@
 // fresh Supabase project without going through the app.
 
 import { downloadTextFile, quickNoteCategoryForCard } from "../cloud/web-decks.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { exportBaseName, normalizeCardStatus, slugifyFileName } from "./markdown.js?v=__BUILD__";
 import { cardsForScope } from "./pdf.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 

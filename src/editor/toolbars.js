@@ -138,3 +138,22 @@ export function toggleClozes(container, button) {
 export function resetClozeButton(button) {
   setClozeButtonState(button, false);
 }
+
+// ── Hamburger menu (side drawer, all screen sizes) ───────────────
+// The drawer's controls live inside the block below, but the overlay stack
+// (OVERLAY_LAYERS) and the Back key have to be able to see and close it from
+// outside. These two are the seam. They default to "there is no drawer" so
+// nothing has to null-check them if the markup is ever absent.
+export let isMainMenuOpen = () => false;
+
+// Setter: an imported binding is read-only, and initToolbars in main.js installs the drawer's real implementation.
+export function setIsMainMenuOpen(value) {
+  isMainMenuOpen = value;
+}
+
+export let closeMainMenu = () => {};
+
+// Setter: an imported binding is read-only, and initToolbars in main.js installs the drawer's real implementation.
+export function setCloseMainMenu(value) {
+  closeMainMenu = value;
+}

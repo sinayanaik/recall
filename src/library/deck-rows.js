@@ -1,6 +1,7 @@
 // One row of the My Decks list: its buttons, its card count, its notes marker.
 
 import { deckSyncStatus, deckSyncStatusCell } from "../cloud/deck-list.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { webDeckCategories } from "./categories.js?v=__BUILD__";
 import { buildDeckOverflowMenu } from "./folder-tree.js?v=__BUILD__";
 import { createDeckExportControl, deckCardInfo, deckSelOf, loadDeckEntry } from "./my-decks-actions.js?v=__BUILD__";
@@ -8,7 +9,6 @@ import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { createDeckCategoryControl, createDeckSelectCell, formatLocalDeckSavedDate, formatLocalDeckSavedDateShort, renameMyDeck } from "./my-decks-selection.js?v=__BUILD__";
 import { deleteDeckEverywhere } from "./tombstones.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Tile actions carry an icon plus a label the phone layout drops, so a tile

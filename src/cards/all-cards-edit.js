@@ -7,7 +7,7 @@ import { showCard } from "./card-view.js?v=__BUILD__";
 import { syncResults } from "./study.js?v=__BUILD__";
 import { closestElement } from "./swipe.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { draggedAllCardId, setDraggedAllCardId, state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showConfirmModal } from "../ui/feedback.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -299,4 +299,11 @@ export function handleAllCardDrop(event) {
   setDraggedAllCardId("");
   clearAllCardDropTargets();
   reorderMasterCard(droppedCardId, item.dataset.cardId, placement);
+}
+
+export let draggedAllCardId = "";
+
+// Setter: an imported binding is read-only, and the All Cards drag handlers in cards/all-cards-edit.js set it.
+export function setDraggedAllCardId(value) {
+  draggedAllCardId = value;
 }

@@ -1,7 +1,7 @@
 // Page-scroll locking while an overlay is up, and knowing whether one is.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { appInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { helpModal } from "./help.js?v=__BUILD__";
 

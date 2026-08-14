@@ -12,20 +12,21 @@ import { allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDrag
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
 import { flipCard, moveCard, navigateCard, replayDeck, resetQuiz, shuffleCards } from "./cards/deck-actions.js?v=__BUILD__";
 import { createNewDeck, newDeckInFolder } from "./cards/new-deck.js?v=__BUILD__";
-import { afterPaint, questionFitDeferredBySelection, scheduleLiveQuestionFit } from "./cards/question-fit.js?v=__BUILD__";
+import { questionFitDeferredBySelection, scheduleLiveQuestionFit } from "./cards/question-fit.js?v=__BUILD__";
 import { handleDiagramPointerDown, handleDiagramPointerEnd, handleDiagramPointerMove, handleDiagramWheel, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp, handleStylePanelTouchMove, handleStylePanelTouchStart, handleStylePanelWheel, handleTouchCancel, handleTouchEnd, handleTouchMove, handleTouchStart, hasCardTextSelection, isCardActionTarget } from "./cards/swipe.js?v=__BUILD__";
 import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup } from "./cloud/auth.js?v=__BUILD__";
 import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
-import { el } from "./core/dom.js?v=__BUILD__";
-import { ensureMermaid, ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
+import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
+import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
+import { state } from "./core/state.js?v=__BUILD__";
 import { handleToolbarClick } from "./editor/toolbar-actions.js?v=__BUILD__";
-import { initToolbars, toggleClozes } from "./editor/toolbars.js?v=__BUILD__";
+import { initToolbars, setCloseMainMenu, setIsMainMenuOpen, toggleClozes } from "./editor/toolbars.js?v=__BUILD__";
 import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/triple-click.js?v=__BUILD__";
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
-import { buildNotesFlatPrintDocument, closePrintPreview, printPreviewOpen, setPrintTitleBeforeExport } from "./export/pdf.js?v=__BUILD__";
-import { generatePdfDirectly, handleExportAction, handleExportNotesAction, installPdfPrintStyle, printPreparedDocument, revealPrintRootClozes } from "./export/run.js?v=__BUILD__";
+import { closePrintPreview, printPreviewOpen } from "./export/pdf.js?v=__BUILD__";
+import { generatePdfDirectly, handleExportAction, handleExportNotesAction } from "./export/run.js?v=__BUILD__";
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
@@ -35,14 +36,13 @@ import { imagePickerActive } from "./images/upload.js?v=__BUILD__";
 import { importEpubFile, isEpubName, reportEpubImportCrash } from "./import/epub.js?v=__BUILD__";
 import { loadFiles, loadSample, showImportSourceDrawer, stagePastedMarkdown } from "./import/files.js?v=__BUILD__";
 import { htmlToMarkdown } from "./import/html-to-markdown.js?v=__BUILD__";
-import { countQuestionHeadings, parseCards, stripReaderMetadata } from "./import/parse-cards.js?v=__BUILD__";
-import { clearImportStaging, commitStagedImport, importDestinationFolder, importStaging, renderImportReview, setPendingImportFolder, stageMarkdownImport } from "./import/staging.js?v=__BUILD__";
-import { cleanImportUrl, fetchImportText, readerUrlFor } from "./import/url.js?v=__BUILD__";
+import { clearImportStaging, commitStagedImport, importDestinationFolder, importStaging, renderImportReview, setPendingImportFolder } from "./import/staging.js?v=__BUILD__";
+import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
-import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
+import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
@@ -61,7 +61,6 @@ import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHid
 import { installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { addQuickNoteCategory, assignQuickNoteCategory, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, copyQuickNote, deleteQuickNoteCategory, jumpToQuickNoteSource, layoutQuickNotesGrid, openQnCatMenu, openQnCatModal, openQnRecolorMenu, openQuickNotesBoard, qnBoard, qnNewColor, renameQuickNoteCategory, renderQnColorPicker, renderQuickNotesBoard, saveQuickNote, setQnNewColor } from "./quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__BUILD__";
-import { enhanceRenderedMarkdown } from "./render/enhance.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
@@ -75,7 +74,7 @@ import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetu
 import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, isMobileChrome, measureChromeHeights, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
-import { setButtonLoading, setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
+import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
 import { goNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen } from "./ui/overlays.js?v=__BUILD__";
@@ -83,141 +82,8 @@ import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
-import { configureMermaid, currentThemeId, setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
+import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
-
-// Run `fn` once the DOM is parsed AND this module has finished evaluating.
-//
-// The second half is the part that is easy to get wrong, and it broke the app
-// the moment this file became a module. The old shape was written inline at
-// each call site:
-//
-//   if (document.readyState === "loading") addEventListener("DOMContentLoaded", fn);
-//   else fn();
-//
-// As a classic <script> at the end of <body>, readyState is "loading" — the
-// parser has not finished — so the listener branch always won and `fn` ran after
-// the whole file had evaluated. A module script is deferred: it runs AFTER
-// parsing, so readyState is already "interactive" and the else branch fires
-// immediately, partway down the file. initToolbars() then reached a `const`
-// declared 700 lines further on and threw "Cannot access
-// 'highlightBackdropSync' before initialization" — a temporal-dead-zone error
-// that aborted the rest of the module, on every load.
-//
-// queueMicrotask is what makes the else branch honest: it runs after the current
-// synchronous execution — this entire module body — so every top-level binding
-// is initialised, while still being earlier than any timer or event. The
-// boot-click replay at the bottom of this file depends on that ordering: it
-// hands its click to setTimeout, a macrotask, which is necessarily later.
-function onDomReady(fn) {
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn, { once: true });
-  else queueMicrotask(fn);
-}
-
-
-export const sampleMarkdown = `::
-## What is the derivative of $x^2$?
-
----
-
-The derivative is $2x$.
-
-$$
-\\frac{d}{dx}x^2 = 2x
-$$
-::
-
-::
-## What does this Mermaid graph show?
-
----
-
-It shows a simple spaced-repetition loop.
-
-\`\`\`mermaid
-flowchart LR
-  A[Read note] --> B[Answer card]
-  B --> C{Remembered?}
-  C -->|Yes| D[Known]
-  C -->|No| E[Review]
-\`\`\`
-::
-
-::
-## How do Markdown flashcards become cards?
-
----
-
-Each \`::\` block becomes one flashcard. The \`---\` line separates the front from the back.
-::`;
-
-
-export const state = {
-  deckId: null,
-  localDeckId: null,
-  cards: [],
-  masterCards: [],
-  statusById: {},
-  // Per-card subject label for quick_notes cards (id -> category id). Parallel
-  // to statusById; only populated when the active deck is the quick_notes deck.
-  categoryById: {},
-  // Managed category set for the quick_notes deck: [{ id, name, color }].
-  quickNoteCategories: [],
-  // The open deck's meta bag, carried forward from load so per-deck fields
-  // (quick_notes categories, a synced reading position, …) survive autosave.
-  meta: {},
-  previewCard: null,
-  deckTitle: "",
-  deckCategory: "Uncategorized",
-  notes: "",
-  viewMode: "cards",
-  // My Decks library UI preferences (persisted per device).
-  myDecksView: (() => { try { const v = localStorage.getItem("flashcards_mydecks_view_v1"); return ["grid", "folder", "tree"].includes(v) ? v : "folder"; } catch (_) { return "folder"; } })(),
-  myDecksDisplay: (() => { try { const v = localStorage.getItem("flashcards_mydecks_display_v1"); return ["tiles", "list"].includes(v) ? v : "list"; } catch (_) { return "list"; } })(),
-  myDecksSort: (() => { try { const v = localStorage.getItem("flashcards_mydecks_sort_v1"); return ["recent", "title-asc", "title-desc", "updated-desc", "created-desc", "size-desc"].includes(v) ? v : "recent"; } catch (_) { return "recent"; } })(),
-  // Always start at Home (root) on app open, even though the current folder
-  // is persisted per navigation below — the persisted value is only there so
-  // helpers like currentMyDecksFolder() have something to read mid-session.
-  myDecksCwd: "",
-  myDecksSearch: "",
-  sourceTitle: "",
-  importTitleHint: "",
-  results: {
-    known: [],
-    review: []
-  },
-  current: 0,
-  known: 0,
-  review: 0,
-  flipped: false,
-  dragStartX: 0,
-  dragStartY: 0,
-  dragCurrentX: 0,
-  dragCurrentY: 0,
-  dragPointerId: null,
-  dragPointerType: "",
-  dragCaptured: false,
-  dragStartTime: 0,
-  dragLastX: 0,
-  dragLastY: 0,
-  dragLastTime: 0,
-  dragging: false,
-  dragMoved: false,
-  suppressClickUntil: 0,
-  transitionToken: 0,
-  styleSettings: {},
-  styleProfiles: {
-    desktop: {},
-    mobile: {}
-  },
-  activeStyleProfile: "desktop",
-  styleEditProfile: "desktop",
-  styleEditProfileFollowsDevice: true,
-  styleTouched: false,
-  stylePanelScrollY: 0,
-  stylePanelTouchY: 0
-};
-
 
        // grid | folder | tree
  // tiles | list
@@ -260,30 +126,6 @@ export const state = {
 // offered nothing, permanently. The stash was intact the whole time; it just
 // had no door.
 
-
-export const swipeConfig = {
-  intentDistance: 12,
-  intentRatio: 1.12,
-  commitRatio: 1.18,
-  minCommitDistance: 66,
-  maxCommitDistance: 142,
-  widthCommitRatio: 0.18,
-  flickDistance: 34,
-  flickVelocity: 0.42,
-  resistance: 0.74,
-  maxPreviewOffset: 128,
-  // A finger that has rested this long without travelling is pressing, not
-  // swiping — Android's long-press selection is about to fire. See updateSwipe.
-  longPressGraceMs: 340
-};
-
-
-export let draggedAllCardId = "";
-
-// Setter: an imported binding is read-only, and the All Cards drag handlers in cards/all-cards-edit.js set it.
-export function setDraggedAllCardId(value) {
-  draggedAllCardId = value;
-}
 
 marked.setOptions({
   breaks: true,
@@ -398,10 +240,6 @@ el.notesView?.addEventListener("click", (event) => {
   const at = findRawOffsetForRenderedPoint(el.notesView, state.notes, event.clientX, event.clientY);
   enterNotesEditing(at ?? rawOffsetForCurrentNotesScroll());
 });
-
-// Bumped on every deferred switch so a superseded paint (two fast taps on the
-// toggle) is dropped rather than rendering a view that is no longer chosen.
-export let viewModePaintToken = 0;
 
 
 el.editNotesBtn?.addEventListener("click", () => {
@@ -939,59 +777,6 @@ el.syncIndicator?.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 
-// Bulk counterpart of exportNotesPdf() — combines every selected deck's notes
-// into one print-preview document instead of the single active deck's own.
-export async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
-  const sections = payloads.map((payload) => ({
-    title: payload.deck.title || "Untitled",
-    category: payload.deck.category,
-    notes: payload.deck.notes || ""
-  }));
-  if (!sections.some((section) => section.notes.trim())) {
-    setStatus("No notes to export as PDF.", "error");
-    return;
-  }
-
-  setStatus(`Preparing ${title} notes PDF...`);
-  el.printRoot.innerHTML = "";
-  el.printRoot.classList.add("is-preparing");
-  el.printRoot.classList.remove("is-preview");
-  el.printRoot.setAttribute("aria-hidden", "true");
-  setPrintTitleBeforeExport(document.title);
-  document.title = fileBaseName;
-  try {
-    await afterPaint();
-    el.printRoot.innerHTML = buildNotesFlatPrintDocument(title, sections);
-    // Must precede configureMermaid("print"): with mermaid loaded on demand,
-    // an unloaded library makes that call a silent no-op, and the
-    // enhanceRenderedMarkdown below would then load mermaid itself and
-    // configure it with the SCREEN theme — exporting every diagram in the
-    // dark palette onto white paper.
-    await ensureMermaid();
-    configureMermaid("print");
-    try {
-      await enhanceRenderedMarkdown(el.printRoot);
-    } finally {
-      configureMermaid(currentThemeId());
-    }
-    revealPrintRootClozes();
-    await (document.fonts?.ready || Promise.resolve());
-    await afterPaint();
-
-    installPdfPrintStyle();
-    const opened = printPreparedDocument();
-    setStatus(opened
-      ? `Opening ${title} notes PDF — choose Save as PDF in the dialog.`
-      : "Could not prepare the notes PDF export.", opened ? undefined : "error");
-  } catch (error) {
-    console.error("Notes PDF export failed", error);
-    setStatus("Could not prepare the notes PDF export.", "error");
-  } finally {
-    closePrintPreview();
-  }
-}
-
-
 // ── Real .docx export ───────────────────────────────────────────────────
 // Word's HTML filter never evaluates var(...), and — separately, the actual
 // root cause of the "Read Error" image placeholder — it's notoriously
@@ -1006,48 +791,6 @@ export async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
 // code blocks, links, bold/italic/underline/strike, and images/diagrams —
 // each raster-decoded once via canvas and embedded as a real media part
 // referenced by relationship id, never as inline base64 text).
-
-
-async function fetchUrl() {
-  const url = cleanImportUrl(el.urlInput.value);
-  if (!url) {
-    setStatus("Enter a URL first.", "error");
-    return;
-  }
-
-  state.importTitleHint = url;
-  setButtonLoading(el.fetchBtn, true, "Fetching…");
-  setStatus("Fetching source...");
-
-  try {
-    let text;
-    const isNotionUrl = /\/\/[^/]*(notion\.site|notion\.so)\//i.test(url);
-
-    try {
-      if (isNotionUrl) throw new Error("Use Reader for Notion pages");
-      text = await fetchImportText(url);
-    } catch {
-      text = await fetchImportText(readerUrlFor(url));
-    }
-
-    const source = stripReaderMetadata(text);
-
-    // A public Notion page renders its toggles collapsed, so the fetch comes
-    // back as question headings with nothing under them. Say so instead of
-    // staging a page that would import as a list of empty prompts.
-    if (!parseCards(source).length && countQuestionHeadings(source)) {
-      setStatus("This public Notion URL only exposes collapsed question headings, not answers. Use Export -> Markdown & CSV, then upload the zip or paste the exported Markdown.", "error");
-      return;
-    }
-
-    setStatus("Fetched. Checking what's in it...");
-    stageMarkdownImport(text, { name: url, folder: null });
-  } catch (error) {
-    setStatus("Could not fetch this URL. If it is private Notion content, export Markdown or paste the page content.", "error");
-  } finally {
-    setButtonLoading(el.fetchBtn, false);
-  }
-}
 
 
 // ── EPUB import: one folder per book, one deck per chapter ─────────────────
@@ -1297,12 +1040,11 @@ el.myDecksTreeToggleAll?.addEventListener("click", () => {
   closeMyDecksMoreMenu();
 });
 
-// Title search (debounced) — filters the cached set, no refetch.
-let myDecksSearchTimer = null;
+
 el.myDecksSearch?.addEventListener("input", (e) => {
   const value = e.target.value;
   clearTimeout(myDecksSearchTimer);
-  myDecksSearchTimer = setTimeout(() => { state.myDecksSearch = value; repaintMyDecks(); }, 160);
+  setMyDecksSearchTimer(setTimeout(() => { state.myDecksSearch = value; repaintMyDecks(); }, 160));
 });
 
 // Close any open deck-tile overflow menu on an outside click or Escape.
@@ -2041,9 +1783,7 @@ if (el.deleteCardBtn) {
   });
 }
 
-const deckEmptyNewBtn = document.getElementById("deckEmptyNewBtn");
-const deckEmptyImportBtn2 = document.getElementById("deckEmptyImportBtn");
-const deckEmptyWebBtn = document.getElementById("deckEmptyWebBtn");
+
 if (deckEmptyNewBtn) deckEmptyNewBtn.addEventListener("click", () => createNewDeck());
 if (deckEmptyImportBtn2) deckEmptyImportBtn2.addEventListener("click", () => openImportPanel());
 if (deckEmptyWebBtn) deckEmptyWebBtn.addEventListener("click", () => openMyDecksPanel());
@@ -2337,13 +2077,6 @@ document.addEventListener("click", (e) => {
 // from then on. Same idea as resolveCardNoteAnchor's content fallback.
 
 
-// ── Hamburger menu (side drawer, all screen sizes) ───────────────
-// The drawer's controls live inside the block below, but the overlay stack
-// (OVERLAY_LAYERS) and the Back key have to be able to see and close it from
-// outside. These two are the seam. They default to "there is no drawer" so
-// nothing has to null-check them if the markup is ever absent.
-export let isMainMenuOpen = () => false;
-export let closeMainMenu = () => {};
 {
   const menuBtn = document.getElementById("mobileMenuBtn");
   const toolbar = document.getElementById("mainToolbar");
@@ -2367,8 +2100,8 @@ export let closeMainMenu = () => {};
       document.body.style.overflow = "";
     };
 
-    isMainMenuOpen = () => toolbar.classList.contains("mobile-open");
-    closeMainMenu = closeMenu;
+    setIsMainMenuOpen(() => toolbar.classList.contains("mobile-open"));
+    setCloseMainMenu(closeMenu);
 
     menuBtn.addEventListener("click", () => {
       toolbar.classList.contains("mobile-open") ? closeMenu() : openMenu();

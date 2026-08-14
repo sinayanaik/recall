@@ -3,7 +3,7 @@
 
 import { navigateCard } from "./deck-actions.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state, swipeConfig } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { applyDiagramTransform, beginDiagramPan, beginDiagramPinch, clampDiagramScale, currentDiagramZoom, diagramLocalPoint, diagramPointers, pointerCenter, pointerDistance, zoomDiagramTo } from "../render/diagram-zoom.js?v=__BUILD__";
 import { dismissSwipeHint } from "../ui/deck-header.js?v=__BUILD__";
 
@@ -403,3 +403,19 @@ export function handleDiagramPointerEnd(event) {
     el.diagramModalBody.classList.remove("is-panning");
   }
 }
+
+export const swipeConfig = {
+  intentDistance: 12,
+  intentRatio: 1.12,
+  commitRatio: 1.18,
+  minCommitDistance: 66,
+  maxCommitDistance: 142,
+  widthCommitRatio: 0.18,
+  flickDistance: 34,
+  flickVelocity: 0.42,
+  resistance: 0.74,
+  maxPreviewOffset: 128,
+  // A finger that has rested this long without travelling is pressing, not
+  // swiping — Android's long-press selection is about to fire. See updateSwipe.
+  longPressGraceMs: 340
+};

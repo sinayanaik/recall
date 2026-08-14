@@ -225,3 +225,37 @@ export const el = {
   syncDetailsContent: document.querySelector("#syncDetailsContent"),
   logoutBtn: document.querySelector("#logoutBtn"),
 };
+
+// Run `fn` once the DOM is parsed AND this module has finished evaluating.
+//
+// The second half is the part that is easy to get wrong, and it broke the app
+// the moment this file became a module. The old shape was written inline at
+// each call site:
+//
+//   if (document.readyState === "loading") addEventListener("DOMContentLoaded", fn);
+//   else fn();
+//
+// As a classic <script> at the end of <body>, readyState is "loading" — the
+// parser has not finished — so the listener branch always won and `fn` ran after
+// the whole file had evaluated. A module script is deferred: it runs AFTER
+// parsing, so readyState is already "interactive" and the else branch fires
+// immediately, partway down the file. initToolbars() then reached a `const`
+// declared 700 lines further on and threw "Cannot access
+// 'highlightBackdropSync' before initialization" — a temporal-dead-zone error
+// that aborted the rest of the module, on every load.
+//
+// queueMicrotask is what makes the else branch honest: it runs after the current
+// synchronous execution — this entire module body — so every top-level binding
+// is initialised, while still being earlier than any timer or event. The
+// boot-click replay at the bottom of this file depends on that ordering: it
+// hands its click to setTimeout, a macrotask, which is necessarily later.
+export function onDomReady(fn) {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fn, { once: true });
+  else queueMicrotask(fn);
+}
+
+export const deckEmptyNewBtn = document.getElementById("deckEmptyNewBtn");
+
+export const deckEmptyImportBtn2 = document.getElementById("deckEmptyImportBtn");
+
+export const deckEmptyWebBtn = document.getElementById("deckEmptyWebBtn");

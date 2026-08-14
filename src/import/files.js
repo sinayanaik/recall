@@ -4,8 +4,8 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { importEpubFile, isEpubName, isJsonName, isMarkdownName, isZipName, reportEpubImportCrash } from "./epub.js?v=__BUILD__";
+import { sampleMarkdown } from "./sample.js?v=__BUILD__";
 import { setPendingImportFolder, stageImportSources, stageMarkdownImport } from "./staging.js?v=__BUILD__";
-import { sampleMarkdown } from "../main.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 
 export async function collectMarkdownFromZip(input, prefix = "", depth = 0) {

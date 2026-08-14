@@ -1,6 +1,6 @@
 // Deck -> markdown, and the filename it gets.
 
-import { state } from "../main.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 
 // A card's question/answer can legitimately contain a standalone "---" line
 // (a Markdown horizontal rule — "Both sides support Markdown" per

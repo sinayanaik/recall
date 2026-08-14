@@ -6,9 +6,9 @@
 
 import { activeDeckLoadToken } from "../cloud/web-decks.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { setPendingImportFolder } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
-import { state } from "../main.js?v=__BUILD__";
 import { invalidateNoteLinkIndex } from "../notes/note-links.js?v=__BUILD__";
 import { repairEscapedMathMarkdown } from "../render/math.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
