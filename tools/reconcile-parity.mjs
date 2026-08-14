@@ -25,7 +25,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=main").slice(7);
+// The baseline is the TAG pre-modular, not a branch. It used to default to
+// `main`, which stopped meaning anything the moment the restructure landed
+// there — main became the thing under test, and the comparison had nothing
+// left to compare against.
+const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 
 const CHROME = [
   "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",

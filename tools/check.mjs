@@ -52,7 +52,7 @@ const checks = [
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
   ...(QUICK ? [] : [
-    ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "main"], ROOT]],
+    ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
     ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
     ["reconcile     ", ["node", ["tools/reconcile-parity.mjs"], ROOT]],

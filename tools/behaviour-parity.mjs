@@ -1,6 +1,6 @@
 // Does the split code still PRODUCE the same output as the code it came from?
 //
-//   node tools/behaviour-parity.mjs            # compare against main
+//   node tools/behaviour-parity.mjs            # compare against the pre-modular tag
 //   node tools/behaviour-parity.mjs --base=REF
 //
 // split-parity proves the source text is unchanged. module-symbols proves the
@@ -26,7 +26,11 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const BASE_REF = (args.find((a) => a.startsWith("--base=")) || "--base=main").slice(7);
+// The baseline is the TAG pre-modular, not a branch. It used to default to
+// `main`, which stopped meaning anything the moment the restructure landed
+// there — main became the thing under test, and the comparison had nothing
+// left to compare against.
+const BASE_REF = (args.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 const CASES = JSON.parse(readFileSync(path.join(ROOT, "tools/behaviour-cases.json"), "utf8"));
 
 const CHROME = [

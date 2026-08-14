@@ -1,6 +1,6 @@
 // Did the restructure change any code?
 //
-//   node tools/split-parity.mjs                 # compare against main
+//   node tools/split-parity.mjs                 # compare against the pre-modular tag
 //   node tools/split-parity.mjs --base=<ref>    # ...or any git ref
 //   node tools/split-parity.mjs --show <name>   # print both sides of one symbol
 //
@@ -31,7 +31,11 @@ import { topLevelDecls, normalize } from "./js-scan.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const baseRef = (args.find((a) => a.startsWith("--base=")) || "--base=main").slice(7);
+// The baseline is the TAG pre-modular, not a branch. It used to default to
+// `main`, which stopped meaning anything the moment the restructure landed
+// there — main became the thing under test, and the comparison had nothing
+// left to compare against.
+const baseRef = (args.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 const showIdx = args.indexOf("--show");
 const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 

@@ -50,7 +50,11 @@ const SECTIONS = [
 // styles.css itself is gone once the split has been applied, so the baseline
 // comes from git — the point of the check is that styles/ still reassembles to
 // the stylesheet the app shipped with before any of this began.
-const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=main").slice(7);
+// The baseline is the TAG pre-modular, not a branch. It used to default to
+// `main`, which stopped meaning anything the moment the restructure landed
+// there — main became the thing under test, and the comparison had nothing
+// left to compare against.
+const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 const source = existsSync(SOURCE)
   ? readFileSync(SOURCE, "utf8")
   : execFileSync("git", ["show", `${BASE_REF}:styles.css`], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }).toString();
