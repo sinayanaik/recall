@@ -10,6 +10,7 @@ import { normalizeCardStatus, slugifyFileName } from "./markdown.js?v=__BUILD__"
 import { buildCornellFlatDocument, buildNotesFlatDocument, exportNotesFlatPdf } from "./pdf.js?v=__BUILD__";
 import { exportCardsPdf, imageEmbedSuffix } from "./run.js?v=__BUILD__";
 import { buildDeckSql } from "./sql.js?v=__BUILD__";
+import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { listLocalDecks } from "../library/local-library.js?v=__BUILD__";
 import { myDeckPayload } from "../library/my-decks-selection.js?v=__BUILD__";
 import { isDeckTombstoned } from "../library/tombstones.js?v=__BUILD__";

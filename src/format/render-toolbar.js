@@ -13,7 +13,7 @@ import { locateSelectionInSource, renderedSelectionStrings } from "./locate-sele
 import { clozeTextareaSelection } from "./selection-tools.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
 import { isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
-import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
+import { activeEditingTarget, hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";

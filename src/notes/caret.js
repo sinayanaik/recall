@@ -6,6 +6,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { caretFromPoint } from "./raw-offset.js?v=__BUILD__";
+import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 
 // Counts newlines in value[0..pos) without materialising the prefix. The old
 // `value.slice(0, pos).match(/\n/g).length` allocated a copy of everything above

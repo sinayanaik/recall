@@ -12,6 +12,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { exportBaseName, formatCardList, normalizeCardStatus } from "./markdown.js?v=__BUILD__";
 import { installPdfPrintStyle, printPreparedDocument, revealPrintRootClozes } from "./run.js?v=__BUILD__";
+import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";

@@ -335,8 +335,19 @@ export function referencedIdentifiers(src) {
   while ((m = re.exec(blanked))) {
     const name = m[0];
     const before = blanked.slice(Math.max(0, m.index - 40), m.index);
-    // Property access: `.foo`, `?.foo`
-    if (/[.?]\s*$/.test(before) && !/\.\.\.\s*$/.test(before)) continue;
+    // Property access: `.foo`, `?.foo` — and NOT a ternary's `cond ? foo : bar`.
+    //
+    // This used to test /[.?]\s*$/, which treats a bare `?` as optional
+    // chaining. Every identifier appearing straight after a ternary's question
+    // mark was therefore skipped, and so was every conclusion drawn from it:
+    // card-status.js calls `card ? normalizeCardStatus(…) : ""` without
+    // importing normalizeCardStatus, and module-symbols called the file clean.
+    // It is a ReferenceError the moment a status badge updates.
+    //
+    // Optional chaining is `?.` with the dot attached; a ternary always has
+    // something between the `?` and the name.
+    if (/\?\s*\.\s*$/.test(before)) continue;
+    if (/\.\s*$/.test(before) && !/\.\.\.\s*$/.test(before)) continue;
     // Object-literal key or label: `foo:` but not `? foo :` and not `case foo:`
     const after = blanked.slice(m.index + name.length, m.index + name.length + 3);
     if (/^\s*:/.test(after) && /[{,]\s*$/.test(before)) continue;

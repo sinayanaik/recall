@@ -1,7 +1,7 @@
 // Moving through the deck: flip, next/previous, known/review, shuffle, replay.
 
 import { animateToCard, showCard } from "./card-view.js?v=__BUILD__";
-import { resetStudyDeck, syncResults } from "./study.js?v=__BUILD__";
+import { resetStudyDeck, syncResults, uncategorizedCards } from "./study.js?v=__BUILD__";
 import { resetCardDrag } from "./swipe.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";

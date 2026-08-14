@@ -13,7 +13,7 @@ import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
-import { NOTE_LINK_PATTERN } from "../render/note-links.js?v=__BUILD__";
+import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
 import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 
 // ── Notes table of contents ────────────────────────────────────────

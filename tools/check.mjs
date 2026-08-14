@@ -25,6 +25,9 @@
 //                   is not passing the other)
 //   reconcile       does the whole two-way sync behave identically end to end,
 //                   driven against a stand-in backend?
+//   ui-smoke        does the APP still work? 18 real actions — import, flip,
+//                   mark known, All Cards, notes, export, sync — driven through
+//                   the DOM on both builds and compared step by step
 //   release-check   (--full) does a release reach an existing install, and
 //                   does it work offline?
 
@@ -50,6 +53,7 @@ const checks = [
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
     ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
     ["reconcile     ", ["node", ["tools/reconcile-parity.mjs"], ROOT]],
+    ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];
