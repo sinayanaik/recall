@@ -6,8 +6,11 @@
 
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { blockAtNotesReadingLine, closeNotesToc, hideNotesSelectionButton, refreshHighlightBackdrop, resetClozeButton, scheduleDeckAutosave, scrollRenderedNotesToRawOffset, state } from "../main.js?v=__BUILD__";
+import { refreshHighlightBackdrop, resetClozeButton, scheduleDeckAutosave, state } from "../main.js?v=__BUILD__";
+import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
+import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
+import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
 import { renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource } from "../render/block-cache.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
 
