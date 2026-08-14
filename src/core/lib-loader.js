@@ -6,7 +6,7 @@
 // network that may not be there. That contract is the whole reason these can
 // be deferred without giving up offline support.
 
-import { configureMermaid, currentThemeId } from "../main.js?v=__BUILD__";
+import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
 
 // ── Deferred third-party libraries ──────────────────────────────────────────
 //

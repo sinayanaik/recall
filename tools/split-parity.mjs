@@ -53,7 +53,10 @@ const ACCEPTED = {
   // unchanged — a live binding still shows every reader the current value.
   recoverSessionIfPossible: "isSignedIn = true -> setSignedIn(true)",
   setupAuthListener: "isSignedIn = true/false -> setSignedIn(true/false)",
-  bootApp: "isSignedIn = true -> setSignedIn(true)"
+  bootApp: "isSignedIn = true -> setSignedIn(true)",
+  setTheme:
+    "allCardsRenderId += 1 -> bumpAllCardsRenderId(). The counter is main.js's, " +
+    "and an imported binding cannot be incremented from ui/theme.js."
 };
 
 // Baseline symbols that are intentionally gone, and why. A rename lands here

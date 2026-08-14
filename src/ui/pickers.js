@@ -1,6 +1,7 @@
 // Two modal choosers that resolve to the user's answer: which folder a deck
 // should go in, and which of notes/cards an export should contain.
 
+import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { categoriesFromDecks, refreshKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory, readKnownFolders } from "../library/folders.js?v=__BUILD__";
 import { readLocalDeckIndex, setStatus } from "../main.js?v=__BUILD__";

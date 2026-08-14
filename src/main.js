@@ -5,24 +5,30 @@
 // tools/module-symbols.mjs both refuse a relative import without it.
 
 import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, abortable, isTransientCloudError, mapWithConcurrency, withRetry, withTimeout } from "./cloud/net.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, loadSupabaseConfig, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
-import { applyDeckMetaCategories, applyWebDeckCategory, closeWebDeckExportMenus, deckPayloadSnapshot, downloadTextFile, fetchWebDeckPayload, laterIsoTimestamp, normalizeWebDeckPayload, quickNoteCategoryForCard, statusByIdFromCards, touchLocalDeckAccess, touchWebDeckAccess, updateWebDeckTitle, webDeckPayloadMarkdown } from "./cloud/web-decks.js?v=__BUILD__";
+import { activeDeckLoadToken, applyDeckMetaCategories, applyWebDeckCategory, closeWebDeckExportMenus, deckPayloadSnapshot, downloadTextFile, fetchWebDeckPayload, laterIsoTimestamp, loadWebDeck, normalizeWebDeckPayload, quickNoteCategoryForCard, statusByIdFromCards, touchLocalDeckAccess, touchWebDeckAccess, updateWebDeckTitle, webDeckPayloadMarkdown } from "./cloud/web-decks.js?v=__BUILD__";
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
-import { cardSideSeparatorPattern, deckStorageKey, delimitedCardBoundaryPattern, styleStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
+import { cardSideSeparatorPattern, deckStorageKey, defaultDeckCategory, delimitedCardBoundaryPattern, themeStorageKey } from "./core/constants.js?v=__BUILD__";
+import { el } from "./core/dom.js?v=__BUILD__";
 import { ensureJsZip, ensureMermaid, ensureNomnoml, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { encodeAttribute, escapeHtml, escapeRegExp, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
 import { buildDeckSql, exportSql } from "./export/sql.js?v=__BUILD__";
-import { buildFolderTree, categoriesFromDecks, setKnownWebDeckCategories } from "./library/categories.js?v=__BUILD__";
+import { buildFolderTree, categoriesFromDecks, setKnownWebDeckCategories, webDeckCategories } from "./library/categories.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, folderSegments, forgetFolderTree, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./library/folders.js?v=__BUILD__";
 import { setMyDecksCwd, setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { codeLanguageAliases, codeLanguageOrGeneric, configurePrismLanguages, inferCodeLanguage } from "./render/code-language.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, dropTombstonesForLiveCards, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush, recordDeletedCardIds, stampCardSyncState } from "./sync/cards.js?v=__BUILD__";
 import { calculateSyncDiff, normalizeSyncText, syncTextChanged } from "./sync/diff.js?v=__BUILD__";
+import { restoreStashedNotes, showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
+import { pushDeckRowsToCloud } from "./sync/push.js?v=__BUILD__";
+import { buildSyncReportHtml, showSyncReport } from "./sync/report.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { chooseDeckCategory, chooseExportContent } from "./ui/pickers.js?v=__BUILD__";
-import { defaultStyleProfiles, styleControlGroups, styleCssVariables, styleDensityPresets, styleFieldByKey } from "./ui/style-schema.js?v=__BUILD__";
+import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
+import { applyActiveStyleSettings, applyStyleDensity, currentKeyboardInset, detectStyleProfile, handleStyleControlChange, hasMeaningfulStyleSettings, loadLocalStyleSettings, normalizeStyleSettings, normalizeStyleValue, numericStyleValue, resetStyleField, resetStyleProfile, setStyleProfileSettings, setStyleProfiles, setStyleStatus, styleProfileLabel, styleProfilesPayload, styleSettingsFromControls, trackKeyboardInset, updateStyleControls, updateStyleProfileUi } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
-import { fontFamilyChoices, themeAliases, themeCatalog } from "./ui/theme-catalog.js?v=__BUILD__";
+import { configureMermaid, cssVariableColor, currentThemeId, renderThemeMenu, setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 
 // Run `fn` once the DOM is parsed AND this module has finished evaluating.
 //
@@ -162,131 +168,6 @@ export const state = {
          // Folder-view path
 
 
-// Bumped by every deck-open attempt (web or local), so an in-flight one can
-// tell whether it's still the load the user actually wants applied. A big
-// note's web fetch can take long enough that the user opens a different deck
-// from My Decks before it resolves — without this, the slower response lands
-// LAST and silently overwrites whatever the user navigated to with the deck
-// they left. See the checks in loadWebDeck and loadDeckFromLibrary below.
-let activeDeckLoadToken = 0;
-
-async function loadWebDeck(deckId) {
-  if (!deckId || !supabaseClient) return;
-  if (!navigator.onLine) {
-    setStatus("Offline — can't load web decks. Try “My Decks” for device copies.", "error");
-    showToast("Offline — can't load web deck", "info");
-    return;
-  }
-
-  setStatus("Loading deck from web...");
-  // A navigation door — see recordNavHistory. Recorded synchronously, before
-  // the await below can let anything else move the user.
-  recordNavHistory();
-  const loadToken = ++activeDeckLoadToken;
-
-  try {
-    const [deckResult, cardsResult] = await Promise.all([
-      withTimeout(abortable((signal) => supabaseClient.from("decks").select("*").eq("id", deckId).single().abortSignal(signal)), CLOUD_TIMEOUT_MS, "load deck"),
-      withTimeout(abortable((signal) => supabaseClient.from("cards").select("*").eq("deck_id", deckId).order("position", { ascending: true }).abortSignal(signal)), CLOUD_TIMEOUT_MS, "load cards")
-    ]);
-
-    const { data: deckData, error: deckError } = deckResult;
-    if (deckError) throw deckError;
-
-    const { data: cardsData, error: cardsError } = cardsResult;
-    if (cardsError) throw cardsError;
-
-    // The user opened a different deck (local or web) while this fetch was in
-    // flight — that newer load already owns the view. Applying this response
-    // now would yank the screen back to the deck the user left.
-    if (loadToken !== activeDeckLoadToken) return;
-    // Flush the outgoing deck's debounced keystrokes while `state` still
-    // describes it — see flushPendingDeckAutosave — then re-check the token,
-    // because that flush is another await.
-    await flushPendingDeckAutosave();
-    if (loadToken !== activeDeckLoadToken) return;
-
-    const statusById = {};
-    const categoryById = {};
-    const cards = cardsData.map((rawCard, index) => {
-      const id = String(rawCard.id || `${index}-${rawCard.question.slice(0, 32)}`);
-      const status = normalizeCardStatus(rawCard.status);
-      if (status) {
-        statusById[id] = status;
-      }
-      if (rawCard.category) categoryById[id] = String(rawCard.category);
-      return { id, question: rawCard.question, answer: rawCard.answer };
-    });
-
-    state.deckId = deckData.id;
-    state.masterCards = cards.slice();
-    resetStudyDeck(state.masterCards);
-    state.statusById = statusById;
-    state.categoryById = categoryById;
-    // Managed category set lives on the deck's meta bag (quick_notes only).
-    applyDeckMetaCategories(deckData.meta, deckData.id, deckData.title);
-    // Carry the whole meta bag forward (not just the quick_notes categories
-    // pulled out above) so per-deck fields like a synced reading position
-    // survive the next autosave instead of being silently dropped.
-    state.meta = deckData.meta && typeof deckData.meta === "object" ? deckData.meta : {};
-    state.current = 0; // always start from the first card on fresh load
-    state.deckTitle = deckData.title || "";
-    state.deckCategory = normalizeDeckCategory(deckData.category);
-    // MUST come before state.notes is replaced — the loadDeckSnapshot sibling
-    // of this line explains why an open raw editor outlives a deck swap and
-    // what it overwrites when it does.
-    discardNotesEditingForDeckSwap();
-    // The deck being left is the last thing that needed its queued images'
-    // blob URLs. See revokeLocalImageUrls for why the session can't wait for
-    // pagehide to release them.
-    revokeLocalImageUrls();
-    // Pre-migration databases have no notes column; select("*") just omits it.
-    state.notes = String(deckData.notes || "");
-    state.sourceTitle = deckData.title || "";
-    state.importTitleHint = deckData.title || "";
-    setViewMode("notes");
-    // Cross-device resume: this deck's meta may carry a reading position
-    // synced from another device. Ambient landing, not a deliberate jump —
-    // no flash, no animated scroll. scheduleNoteJump no-ops quietly if the
-    // anchor can't be found (notes changed since, or this is the first time
-    // this deck has ever had a position saved).
-    if (state.meta?.readingPosition) scheduleNoteJump(state.meta.readingPosition, { flash: false, smooth: false });
-
-    syncResults();
-    touchWebDeckAccess(deckData.id).catch((error) => console.error("Failed to touch deck access", error));
-    closeAllCardsPanel();
-    setStatus(`Loaded ${cards.length} cards from web successfully.`);
-    showToast(`Loaded "${state.deckTitle || "deck"}" · ${cards.length} cards`);
-    if (el.myDecksPanel) el.myDecksPanel.hidden = true;
-    unlockPageScroll();
-    closeImportPanel();
-    showCard();
-    // Mirror the freshly-loaded web deck into the on-device library (deduped by
-    // cloud id) so it stays readable offline without an extra manual save. Align
-    // its timestamps to the cloud copy so it reads as already in-sync — otherwise
-    // it would look "newer" and trigger a redundant re-push on the next reconcile.
-    // Skipped entirely once superseded: saveDeckToLibrary assigns state.localDeckId
-    // as a side effect, and running that for a deck the user has since navigated
-    // away from would yank state.localDeckId back to it out from under whatever
-    // deck is actually on screen now.
-    if (loadToken === activeDeckLoadToken) {
-      state.localDeckId = null;
-      const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
-      if (loadToken === activeDeckLoadToken) {
-        if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
-        refreshSyncIndicatorBaseline();
-        refreshNavBack(); // arrived — now the button knows where "here" is
-        resetChromeAutoHide(); // a new deck starts at the top, header showing
-      }
-    }
-  } catch (error) {
-    setStatus("Failed to load deck from web.", "error");
-    showToast("Couldn't load deck", "error");
-    console.error(error);
-  }
-}
-
-
 // ── Per-card sync bookkeeping ───────────────────────────────────────────────
 // Deck-level last-write-wins used to be the whole conflict story: a pull
 // replaced the local snapshot wholesale, so every card this device had changed
@@ -308,92 +189,6 @@ async function loadWebDeck(deckId) {
 // predate this change.
 
 
-// Shared HTML for a sync report — every deck reconcileAllDecks() touched,
-// what direction it went, and exactly what changed (cards added/updated/
-// deleted, notes). Used both by the explicit-sync modal and the inline
-// startup report on the welcome screen.
-function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
-  const describeCounts = (entry) => {
-    const parts = describeSyncStats(entry);
-    return parts.length ? parts.join(", ") : "no per-card changes (deck metadata only)";
-  };
-
-  const rows = deckLog.map((entry) => {
-    if (entry.direction === "failed") {
-      return `<li class="sync-report-row sync-report-row-error">
-        <strong>${escapeHtml(entry.title)}</strong> — sync failed
-        <div class="sync-report-detail">${escapeHtml(entry.error || "Unknown error")}</div>
-      </li>`;
-    }
-    const dirLabel = entry.direction === "pulled"
-      ? "⬇ Downloaded from cloud"
-      : entry.direction === "removed"
-        ? "🗑 Removed from this device"
-        : "⬆ Uploaded to cloud";
-    // A replaced notes body is the one thing sync can still overwrite, so it
-    // gets an actual way out rather than only a line of prose saying it happened.
-    const recover = entry.notesConflicted && entry.localId
-      ? `<button type="button" class="sync-report-recover" data-recover-notes="${escapeHtml(entry.localId)}">Restore my notes</button>`
-      : "";
-    return `<li class="sync-report-row">
-      <strong>${escapeHtml(entry.title)}</strong> — ${dirLabel}
-      <div class="sync-report-detail">${describeCounts(entry)}</div>
-      ${recover}
-    </li>`;
-  }).join("");
-
-  return `
-    <p class="sync-report-summary">${pulled} deck${pulled === 1 ? "" : "s"} downloaded, ${pushed} deck${pushed === 1 ? "" : "s"} uploaded${failed ? `, ${failed} failed` : ""}</p>
-    <ul class="sync-report-list">${rows}</ul>
-  `;
-}
-
-// Put back the deck-notes body a pull replaced. The stash holds the copy this
-// device had; restoring appends it below the incoming text under a marker
-// rather than replacing it, so neither version is lost and the user can edit
-// the two together. Bumps updatedAt so the merged result is what gets pushed.
-async function restoreStashedNotes(localId) {
-  const stash = await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
-  if (!stash || !String(stash.notes || "").trim()) {
-    // Nothing to put back, so there is no longer a conflict to answer. Without
-    // this the flag outlived the stash and the deck advertised a conflict whose
-    // resolver could only ever say "nothing left to restore" — a dead end that
-    // no amount of syncing cleared.
-    clearNotesConflictFlag(localId);
-    await refreshAfterNotesConflictResolved(localId, { reload: false });
-    showToast("Nothing left to restore", "info");
-    return false;
-  }
-
-  const snapshot = await readDeckSnapshot(localId);
-  if (!snapshot) {
-    showToast("That deck is no longer on this device", "error");
-    return false;
-  }
-
-  const when = stash.savedAt ? new Date(stash.savedAt).toLocaleString() : "an earlier sync";
-  const marker = `\n\n---\n\n## Your notes from before ${when}\n\n${stash.notes}\n`;
-  snapshot.notes = String(snapshot.notes || "") + marker;
-  const now = new Date().toISOString();
-  writeDeckSnapshot(localId, snapshot);
-  const index = readLocalDeckIndex();
-  const entry = index.find((m) => m.id === localId);
-  if (entry) {
-    entry.updatedAt = now;
-    entry.hasNotes = true;
-    // The conflict is resolved — both versions are now in the notes body, and
-    // the stash below is about to be deleted. Without clearing this the deck
-    // would keep showing "Notes conflict" forever, pointing at a stash that no
-    // longer exists.
-    entry.notesConflicted = false;
-    writeLocalDeckIndex(index);
-  }
-  deleteDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
-  await refreshAfterNotesConflictResolved(localId);
-  showToast("Your notes were added back at the end of the deck's notes", "success");
-  return true;
-}
-
 // ── Notes conflicts: reaching, and answering, one ──────────────────────────
 // A conflict is a purely local condition — a stashed copy of the notes this
 // device lost, sitting beside the deck under NOTES_CONFLICT_SUFFIX. The status
@@ -408,492 +203,6 @@ async function restoreStashedNotes(localId) {
 // welcome screen and was gone on reload. So the pill said "notes conflict" and
 // offered nothing, permanently. The stash was intact the whole time; it just
 // had no door.
-
-function notesConflictStashKey(localId) {
-  return localId + NOTES_CONFLICT_SUFFIX;
-}
-
-// Clears the persisted flag. Deliberately does NOT touch the stash — callers
-// decide whether the losing copy is still wanted.
-function clearNotesConflictFlag(localId, { touch = false } = {}) {
-  const index = readLocalDeckIndex();
-  const entry = index.find((m) => m.id === localId);
-  if (!entry) return false;
-  entry.notesConflicted = false;
-  // Only when the resolution CHANGED the notes: a bumped updatedAt is what makes
-  // the next push carry the result up. Accepting the synced copy changes nothing
-  // locally and must not fake an edit.
-  if (touch) entry.updatedAt = new Date().toISOString();
-  writeLocalDeckIndex(index);
-  return true;
-}
-
-async function refreshAfterNotesConflictResolved(localId, { reload = true } = {}) {
-  if (reload && state.localDeckId === localId) await loadDeckFromLibrary(localId);
-  if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
-  refreshSyncIndicatorBaseline();
-}
-
-// "both" is restoreStashedNotes (append under a dated marker, nothing lost).
-// "mine" promotes the stashed copy to BE the notes. "synced" accepts what
-// arrived and drops the stash. All three clear the flag, because a conflict the
-// reader has answered must stop advertising itself — the flag used to be sticky
-// until the deck happened to be pulled again (only a pull recomputes it, and a
-// push never clears it), so a deck that was never pulled again showed "Notes
-// conflict" for good.
-async function resolveNotesConflict(localId, choice) {
-  if (choice === "both") return restoreStashedNotes(localId);
-
-  const snapshot = await readDeckSnapshot(localId);
-  if (!snapshot) {
-    showToast("That deck is no longer on this device", "error");
-    return false;
-  }
-
-  if (choice === "mine") {
-    const stash = await readDeckSnapshot(notesConflictStashKey(localId));
-    if (!stash || !String(stash.notes || "").trim()) {
-      clearNotesConflictFlag(localId);
-      await refreshAfterNotesConflictResolved(localId, { reload: false });
-      showToast("Nothing left to restore", "info");
-      return false;
-    }
-    snapshot.notes = String(stash.notes || "");
-    writeDeckSnapshot(localId, snapshot);
-    const index = readLocalDeckIndex();
-    const entry = index.find((m) => m.id === localId);
-    if (entry) entry.hasNotes = Boolean(snapshot.notes.trim());
-    writeLocalDeckIndex(index);
-    clearNotesConflictFlag(localId, { touch: true });
-  } else {
-    clearNotesConflictFlag(localId);
-  }
-
-  deleteDeckSnapshot(notesConflictStashKey(localId));
-  await refreshAfterNotesConflictResolved(localId, { reload: choice === "mine" });
-  showToast(
-    choice === "mine"
-      ? "Your version is back — it will upload on the next sync"
-      : "Kept the synced version; your saved copy was discarded",
-    "success"
-  );
-  return true;
-}
-
-// Enough of each version to tell them apart at a glance. Plain text, not
-// rendered markdown: the point is to identify a version, and a 300KB note
-// rendered into a modal would be neither quick nor readable.
-const NOTES_CONFLICT_PREVIEW_CHARS = 600;
-function notesConflictPreview(text) {
-  const body = String(text || "").trim();
-  if (!body) return `<p class="notes-conflict-empty">(empty)</p>`;
-  const clipped = body.slice(0, NOTES_CONFLICT_PREVIEW_CHARS);
-  const more = body.length > clipped.length ? "\n…" : "";
-  return `<pre class="notes-conflict-preview">${escapeHtml(clipped + more)}</pre>`;
-}
-
-// The resolver itself. Reuses the #syncModal chrome the same way showSyncReport
-// does — its footer Cancel becomes "Close", and the three real choices are
-// buttons in the body so they can carry their own explanation.
-async function showNotesConflictModal(localId) {
-  const modal = el.syncModal;
-  const content = el.syncDetailsContent;
-  if (!modal || !content || !localId) return;
-
-  const [snapshot, stash] = await Promise.all([
-    readDeckSnapshot(localId),
-    readDeckSnapshot(notesConflictStashKey(localId))
-  ]);
-
-  if (!stash || !String(stash.notes || "").trim()) {
-    clearNotesConflictFlag(localId);
-    await refreshAfterNotesConflictResolved(localId, { reload: false });
-    showToast("That conflict has already been dealt with", "info");
-    return;
-  }
-
-  const titleEl = document.getElementById("syncModalTitle");
-  const confirmBtn = document.getElementById("confirmSyncBtn");
-  const cancelBtn = document.getElementById("cancelSyncBtn");
-  if (titleEl) titleEl.textContent = "Notes conflict";
-  if (confirmBtn) confirmBtn.hidden = true;
-  if (cancelBtn) cancelBtn.textContent = "Decide later";
-
-  const when = stash.savedAt ? new Date(stash.savedAt).toLocaleString() : "an earlier sync";
-  const deckTitle = snapshot?.deckTitle || stash.deckTitle || "this deck";
-
-  content.innerHTML = `
-    <p class="notes-conflict-intro">
-      Another device saved a newer version of <strong>${escapeHtml(deckTitle)}</strong>'s notes, and
-      syncing replaced the copy on this device. Your copy was saved on ${escapeHtml(when)} and is still
-      here — choose which one to keep.
-    </p>
-    <div class="notes-conflict-versions">
-      <section class="notes-conflict-version">
-        <h3>Now on this device (from the other device)</h3>
-        ${notesConflictPreview(snapshot?.notes)}
-      </section>
-      <section class="notes-conflict-version">
-        <h3>Your saved copy</h3>
-        ${notesConflictPreview(stash.notes)}
-      </section>
-    </div>
-    <div class="notes-conflict-choices">
-      <button type="button" class="sync-modal-btn is-primary" data-conflict-choice="both">
-        Keep both
-        <span>Adds your copy to the end, under a dated heading. Nothing is lost.</span>
-      </button>
-      <button type="button" class="sync-modal-btn" data-conflict-choice="mine">
-        Keep mine
-        <span>Replaces the notes with your copy and uploads it on the next sync.</span>
-      </button>
-      <button type="button" class="sync-modal-btn" data-conflict-choice="synced">
-        Keep the synced version
-        <span>Discards your saved copy. This cannot be undone.</span>
-      </button>
-    </div>
-  `;
-
-  content.onclick = async (event) => {
-    const button = event.target.closest("[data-conflict-choice]");
-    if (!button) return;
-    const choice = button.dataset.conflictChoice;
-    // Both destructive answers are one tap from here, so the irreversible one
-    // asks first. "Keep both" and "Keep mine" leave every version recoverable.
-    // Disabled rather than put through setButtonLoading: these buttons carry a
-    // <span> of explanation, and that helper swaps textContent, which would
-    // flatten the span away and never bring it back.
-    const choices = Array.from(content.querySelectorAll("[data-conflict-choice]"));
-    const run = async () => {
-      choices.forEach((node) => { node.disabled = true; });
-      try {
-        if (await resolveNotesConflict(localId, choice)) modal.hidden = true;
-      } finally {
-        choices.forEach((node) => { node.disabled = false; });
-      }
-    };
-    if (choice === "synced") {
-      showConfirmModal(
-        "Discard your saved copy of these notes and keep the synced version? This cannot be undone.",
-        run,
-        { confirmLabel: "Discard my copy", danger: true }
-      );
-      return;
-    }
-    await run();
-  };
-
-  modal.hidden = false;
-}
-
-// Post-sync report modal for an EXPLICIT "Sync Now" click only — background
-// startup/reconnect syncs render their report inline on the welcome screen
-// instead (see renderWelcomeSyncReport) rather than popping a modal.
-// Reuses the (otherwise-dead, since the manual "Sync to Cloud" button it was
-// written for no longer exists) #syncModal chrome, repurposed as a plain
-// report instead of a confirm-before-you-sync prompt.
-function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
-  const modal = el.syncModal;
-  const content = el.syncDetailsContent;
-  if (!modal || !content) return;
-
-  const titleEl = document.getElementById("syncModalTitle");
-  const confirmBtn = document.getElementById("confirmSyncBtn");
-  const cancelBtn = document.getElementById("cancelSyncBtn");
-  if (titleEl) titleEl.textContent = "Sync Report";
-  if (confirmBtn) confirmBtn.hidden = true;
-  if (cancelBtn) cancelBtn.textContent = "Close";
-
-  content.innerHTML = buildSyncReportHtml(deckLog, { pulled, pushed, failed });
-  // Delegated so the buttons keep working across re-renders of the report.
-  content.onclick = async (event) => {
-    const button = event.target.closest("[data-recover-notes]");
-    if (!button) return;
-    if (await restoreStashedNotes(button.dataset.recoverNotes)) button.remove();
-  };
-  modal.hidden = false;
-}
-
-// How long any single cloud read/write is allowed to hang before we give up.
-// A Supabase call over a dropped/stalled connection otherwise never settles,
-// wedging sync (reconcileInFlight never resets) or an EPUB import (whose
-// Cancel only polls between steps, not during a hung await).
-const CLOUD_TIMEOUT_MS = 20000;
-
-// Where withTimeout looks for the AbortController belonging to a request (see
-// abortable() below).
-const CLOUD_ABORT = Symbol("cloudAbort");
-
-// Reject a hangable network promise after `ms` so a stalled connection fails
-// cleanly instead of hanging forever. The message carries "load failed" so it
-// classifies as offline through the existing detection regex (see the reconcile
-// catch) and the user sees "Couldn't reach the cloud" rather than a spinner
-// that never stops. The underlying request may still complete server-side; we
-// only wrap idempotent upserts/reads/uploads, so a late success is harmless.
-export function withTimeout(promise, ms = CLOUD_TIMEOUT_MS, label = "") {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      // supabase-js query builders are thenable and expose .abortSignal(), but
-      // by the time we get here the request is already in flight — so cancel it
-      // through the AbortController the caller attached, if any. Racing a timer
-      // alone left the connection open and consuming one of the browser's very
-      // few per-host sockets, which on a flaky mobile link is what turned one
-      // stalled request into a whole sync crawling behind it.
-      try { promise?.[CLOUD_ABORT]?.abort(); } catch (_) { /* already settled */ }
-      reject(new Error(`Load failed — request timed out${label ? ` (${label})` : ""}`));
-    }, ms);
-  });
-  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
-}
-
-// Wrap a supabase-js query so a withTimeout on it actually cancels the request
-// instead of just giving up on the answer. Kept separate from withTimeout
-// because not every awaitable it wraps is a query builder — Storage uploads,
-// for one, take no signal in supabase-js v2.
-function abortable(buildQuery) {
-  const controller = new AbortController();
-  const query = buildQuery(controller.signal);
-  try { query[CLOUD_ABORT] = controller; } catch (_) { /* frozen thenable */ }
-  return query;
-}
-
-// Is this the network giving out, as opposed to the server saying no? Only the
-// former is worth retrying — replaying an RLS rejection or a schema error just
-// burns time and ends in the same place. Matches the same shapes the reconcile
-// catch already classifies as "offline".
-function isTransientCloudError(error) {
-  const message = String(error?.message || error || "");
-  if (/failed to fetch|networkerror|load failed|timed out|aborted/i.test(message)) return true;
-  // PostgREST/PostgreSQL surface real refusals with a code; those are final.
-  return !error?.code && /network|connection|socket|econn|timeout/i.test(message);
-}
-
-// Retry an IDEMPOTENT cloud operation through a transient network failure.
-// Every call site is a select, an upsert, or a delete-by-id — replaying any of
-// them lands in the same final state, which is what makes this safe. A single
-// dropped packet used to mark a whole deck "failed" for the run and leave the
-// user to notice and re-sync by hand.
-async function withRetry(operation, { tries = 2, baseMs = 500, label = "" } = {}) {
-  let lastError;
-  for (let attempt = 0; attempt < tries; attempt++) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (attempt === tries - 1 || !isTransientCloudError(error)) throw error;
-      // Don't sit through a backoff for a connection that's simply gone.
-      if (!navigator.onLine) throw error;
-      console.warn(`Retrying ${label || "cloud request"} after a transient failure`, error);
-      await new Promise((resolve) => setTimeout(resolve, baseMs * (attempt + 1)));
-    }
-  }
-  throw lastError;
-}
-
-// Run `worker` over `items` with at most `limit` in flight. Pushing decks one
-// at a time meant a 20-deck sync paid 60+ sequential round trips — on a phone,
-// almost all of it spent waiting rather than transferring. Results come back in
-// input order. `worker` must never throw: each call site wraps its own body so
-// one deck's failure is recorded and the rest continue.
-async function mapWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length);
-  let next = 0;
-  const runners = new Array(Math.min(limit, items.length)).fill(null).map(async () => {
-    while (true) {
-      const index = next++;
-      if (index >= items.length) return;
-      results[index] = await worker(items[index], index);
-    }
-  });
-  await Promise.all(runners);
-  return results;
-}
-
-// Upsert one chunk of card rows, retrying without `category` if the database
-// hasn't run supabase_setup.sql yet (no cards.category column). Mirrors
-// the deck-level `notes` fallback: never lose card edits over a missing
-// optional column.
-async function upsertCardRows(rows) {
-  if (!rows.length) return;
-  // Retried on a transient network failure: an upsert of the same rows lands in
-  // the same state, so replaying it is safe, and one dropped packet mid-sync
-  // used to fail the whole deck.
-  const upsert = (payload, label) => withRetry(
-    () => withTimeout(abortable((signal) => supabaseClient.from("cards").upsert(payload).abortSignal(signal)), CLOUD_TIMEOUT_MS, label),
-    { label }
-  );
-  const { error } = await upsert(rows, "save cards");
-  if (!error) return;
-  // Checked by PG error code first, exactly as isMissingNotesColumnError does.
-  // Matching on the bare word "category" anywhere in the message could classify
-  // an unrelated failure that merely mentions the column — a check constraint,
-  // an RLS policy naming it — as "the migration hasn't run", silently strip the
-  // categories out of the payload, and report the push as a clean success.
-  if (!isMissingColumnError(error, "category")) throw error;
-  console.warn("cards.category column missing — run supabase_setup.sql to sync quick-note categories");
-  const stripped = rows.map(({ category: _omit, ...rest }) => rest);
-  const { error: retryError } = await upsert(stripped, "save cards");
-  if (retryError) throw retryError;
-}
-
-// Core cloud writer shared by the active-deck sync and the headless
-// library-reconcile sync. Upserts the deck row and diff-upserts its cards from
-// an explicit payload (never touches `state`). Throws on failure.
-// `cards`: [{ id, question, answer, status, category }] in display order.
-// `webCards`: this deck's existing cloud rows if the caller already fetched
-// them (reconcileAllDecks fetches every deck's in one batched request), else
-// null to fetch them here.
-async function pushDeckRowsToCloud({ deckId, title, category, notes, meta, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, say = () => {} }) {
-  const deckData = {
-    id: deckId,
-    title,
-    category,
-    notes: notes || "",
-    // Symmetric with the pull side (pullCloudDeckToLibrary), which already
-    // reads cloud.meta generically for any deck — this was the missing half:
-    // meta only ever reached Supabase via the quick_notes-scoped writers, so
-    // a normal deck's meta (e.g. a synced reading position) never left the
-    // device. Whole-column last-write-wins, same as notes; this does add one
-    // more writer against that column alongside the quick-notes-scoped ones,
-    // accepted as the same class of risk as two devices pushing concurrently.
-    meta: meta && typeof meta === "object" ? meta : {},
-    current_card_index: Number.isFinite(currentIndex) ? currentIndex : 0,
-    updated_at: now,
-    last_accessed_at: now
-  };
-
-  // Crash-safe ordering: write the deck row FIRST (a new deck's row must exist
-  // to satisfy the cards.deck_id foreign key) but with a stale `updated_at`, so
-  // an interrupted push leaves the deck looking un-synced and retriable rather
-  // than "current" with missing cards. The real `now` timestamp is stamped last
-  // (deckBumpData below), only after every card chunk has landed.
-  const PENDING_TS = new Date(0).toISOString();
-  const deckDataPending = { ...deckData, updated_at: PENDING_TS };
-
-  let { error: deckError } = await withRetry(
-    () => withTimeout(abortable((signal) => supabaseClient.from("decks").upsert(deckDataPending).abortSignal(signal)), CLOUD_TIMEOUT_MS, "save deck"),
-    { label: "save deck" }
-  );
-  // This deck is NOT fully synced if we fall into this branch — cards may
-  // still go through below, but the notes text stays cloud-side stale. The
-  // caller must know that, not just see a console warning: this flag rides
-  // in pushStats all the way to the sync report and the "Synced" pill, so the
-  // deck stops silently reading as fully synced. See isMissingNotesColumnError
-  // for why this is keyed on the error code, not a loose message match.
-  let notesSyncFailed = false;
-  if (deckError && isMissingNotesColumnError(deckError)) {
-    // Database hasn't run supabase_setup.sql yet — sync everything else so
-    // the user doesn't lose card changes, but warn about notes.
-    const { notes: _omit, ...deckDataWithoutNotes } = deckDataPending;
-    ({ error: deckError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").upsert(deckDataWithoutNotes).abortSignal(signal)), CLOUD_TIMEOUT_MS, "save deck"));
-    if (!deckError && String(notes || "").trim()) {
-      notesSyncFailed = true;
-      // A data-loss-relevant warning, unlike routine save-confirmation toasts
-      // that only make sense for an explicit action — this must fire on a
-      // background sync too, or it never reaches the user at all (the only
-      // caller always pushes in the background).
-      showToast("Notes not synced — run supabase_setup.sql in Supabase", "error");
-    }
-  }
-  if (deckError) throw deckError;
-
-  let webCardsById = new Map();
-  let cardsDeleted = 0;
-  if (overwrite) {
-    say("Syncing... (2/3) Replacing existing web cards");
-    const { error } = await withTimeout(abortable((signal) => supabaseClient.from("cards").delete().eq("deck_id", deckId).abortSignal(signal)), CLOUD_TIMEOUT_MS, "replace cards");
-    if (error) throw error;
-  } else if (!isNewDeck) {
-    say("Syncing... (2/3) Checking for changes");
-    let existing = webCards;
-    if (!existing) {
-      const { data, error } = await withTimeout(
-        supabaseClient
-          .from("cards")
-          .select("id, question, answer, position, status, category")
-          .eq("deck_id", deckId),
-        CLOUD_TIMEOUT_MS,
-        "read cards"
-      );
-      if (error) console.warn("Could not read cloud cards before push", deckId, error);
-      existing = error ? null : data;
-    }
-    if (existing) {
-      webCardsById = new Map(existing.map((wc) => [String(wc.id), wc]));
-      const localIds = new Set(cards.map((c) => String(c.id)));
-      const idsToDelete = existing.filter((wc) => !localIds.has(String(wc.id))).map((wc) => wc.id);
-      cardsDeleted = idsToDelete.length;
-      if (idsToDelete.length > 0) {
-        const { error: deleteError } = await withTimeout(
-          supabaseClient.from("cards").delete().eq("deck_id", deckId).in("id", idsToDelete),
-          CLOUD_TIMEOUT_MS,
-          "prune cards"
-        );
-        if (deleteError) throw deleteError;
-      }
-    }
-  }
-
-  // Tally WHICH kind of change each row represents, not just that it changed —
-  // the report names them individually (see describeSyncStats).
-  const pushStats = emptySyncStats();
-  const cardsData = cards
-    .map((card, index) => {
-      const status = normalizeCardStatus(card.status);
-      const category = card.category ? String(card.category) : null;
-      const webCard = webCardsById.get(String(card.id));
-      if (!webCard) {
-        // isNewDeck/overwrite wiped the web side, so there's nothing to diff
-        // against and every row legitimately counts as an addition.
-        pushStats.cardsAdded += 1;
-        return { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, category, updated_at: now };
-      }
-      const edited = syncTextChanged(card.question, webCard.question) || syncTextChanged(card.answer, webCard.answer);
-      const moved = Number(webCard.position) !== index;
-      const restacked = normalizeCardStatus(webCard.status) !== status;
-      const recategorised = (webCard.category || null) !== category;
-      if (!edited && !moved && !restacked && !recategorised) return null;
-      if (edited) pushStats.cardsEdited += 1;
-      if (moved) pushStats.cardsMoved += 1;
-      if (restacked) pushStats.statusChanges += 1;
-      if (recategorised) pushStats.categoryChanges += 1;
-      // `category` is sent on EVERY row, never conditionally. PostgREST requires
-      // all objects in a bulk upsert to share one key set (PGRST102, "All object
-      // keys must match"), so omitting it on the uncategorised rows failed the
-      // whole batch for any deck with a mix — and made clearing a category
-      // impossible to push. Databases without the column are handled by the
-      // retry in upsertCardRows.
-      return { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, category, updated_at: now };
-    })
-    .filter(Boolean);
-
-  say(`Syncing... (3/3) Saving ${cardsData.length} of ${cards.length} cards`);
-  const chunkSize = 50;
-  // Upload chunks sequentially — parallel Promise.all could leave the cloud
-  // in a partial state if chunk N fails while chunk N+1 already succeeded,
-  // silently dropping the cards in the failed chunk.
-  for (let i = 0; i < cardsData.length; i += chunkSize) {
-    await upsertCardRows(cardsData.slice(i, i + chunkSize));
-  }
-
-  // Every card is in — NOW advance the deck's `updated_at` (and last-accessed)
-  // to the real timestamp. This is the last write of the push, so a crash any
-  // time before here leaves the deck stamped at PENDING_TS and therefore
-  // re-pushed on the next sync, never falsely current. The caller marks the
-  // local deck's lastSyncedAt only after this whole function resolves, and it
-  // throws on any failure above, so a partial push is never marked synced.
-  const { error: bumpError } = await withTimeout(
-    supabaseClient.from("decks").update({ updated_at: now, last_accessed_at: now }).eq("id", deckId),
-    CLOUD_TIMEOUT_MS,
-    "finalize deck"
-  );
-  if (bumpError) throw bumpError;
-
-  pushStats.cardsDeleted = cardsDeleted;
-  pushStats.notesSyncFailed = notesSyncFailed;
-  return pushStats;
-}
 
 
 const swipeConfig = {
@@ -912,7 +221,15 @@ const swipeConfig = {
   longPressGraceMs: 340
 };
 
-let allCardsRenderId = 0;
+export let allCardsRenderId = 0;
+
+// Bumping the render generation cancels any in-flight All Cards render, and
+// callers outside this module cannot assign to an imported binding. Theme
+// changes need it: a rendered card carries the old theme's colours baked in.
+export function bumpAllCardsRenderId() {
+  allCardsRenderId += 1;
+  return allCardsRenderId;
+}
 let draggedAllCardId = "";
 let printTitleBeforeExport = "";
 let printPreviewOpen = false;
@@ -937,227 +254,6 @@ const liveQuestionFitCache = { key: null, size: null };
 let questionFitDeferredBySelection = false;
 let markdownTableFitFrame = 0;
 
-const el = {
-  sourceInput: document.querySelector("#sourceInput"),
-  urlInput: document.querySelector("#urlInput"),
-  fileInput: document.querySelector("#fileInput"),
-  fetchBtn: document.querySelector("#fetchBtn"),
-  pasteMarkdownInput: document.querySelector("#pasteMarkdownInput"),
-  importSourceStep: document.querySelector("#importSourceStep"),
-  importFilePick: document.querySelector("#importFilePick"),
-  importPasteSourceBtn: document.querySelector("#importPasteSourceBtn"),
-  importUrlSourceBtn: document.querySelector("#importUrlSourceBtn"),
-  importUrlRow: document.querySelector("#importUrlRow"),
-  importPasteRow: document.querySelector("#importPasteRow"),
-  importPasteContinueBtn: document.querySelector("#importPasteContinueBtn"),
-  importPasteCancelBtn: document.querySelector("#importPasteCancelBtn"),
-  importReviewStep: document.querySelector("#importReviewStep"),
-  importDetect: document.querySelector("#importDetect"),
-  importContentOptions: document.querySelector("#importContentOptions"),
-  importContentHint: document.querySelector("#importContentHint"),
-  importTargetOptions: document.querySelector("#importTargetOptions"),
-  importTargetHint: document.querySelector("#importTargetHint"),
-  importFolderRow: document.querySelector("#importFolderRow"),
-  importFolderPath: document.querySelector("#importFolderPath"),
-  importFolderChangeBtn: document.querySelector("#importFolderChangeBtn"),
-  importDeckList: document.querySelector("#importDeckList"),
-  importDeckListLabel: document.querySelector("#importDeckListLabel"),
-  importDeckListRows: document.querySelector("#importDeckListRows"),
-  importDeckSelectAll: document.querySelector("#importDeckSelectAll"),
-  importPreviewSummary: document.querySelector("#importPreviewSummary"),
-  importPreviewBody: document.querySelector("#importPreviewBody"),
-  importConfirmBtn: document.querySelector("#importConfirmBtn"),
-  importStartOverBtn: document.querySelector("#importStartOverBtn"),
-  sampleBtn: document.querySelector("#sampleBtn"),
-  newDeckBtn: document.querySelector("#newDeckBtn"),
-  importBtn: document.querySelector("#importBtn"),
-  myDecksBtn: document.querySelector("#myDecksBtn"),
-  syncNowBtn: document.querySelector("#syncNowBtn"),
-  autoSyncSelect: document.querySelector("#autoSyncSelect"),
-  myDecksPanel: document.querySelector("#myDecksPanel"),
-  myDecksListTable: document.querySelector("#myDecksListTable"),
-  myDecksBody: document.querySelector("#myDecksBody"),
-  myDecksTableWrap: document.querySelector("#myDecksTableWrap"),
-  myDecksGrid: document.querySelector("#myDecksGrid"),
-  myDecksViewSwitch: document.querySelector("#myDecksViewSwitch"),
-  myDecksDisplayToggle: document.querySelector("#myDecksDisplayToggle"),
-  myDecksBreadcrumb: document.querySelector("#myDecksBreadcrumb"),
-  myDecksSearch: document.querySelector("#myDecksSearch"),
-  myDecksNewDeckBtn: document.querySelector("#myDecksNewDeckBtn"),
-  myDecksTreeToggleAll: document.querySelector("#myDecksTreeToggleAll"),
-  myDecksCategoryFilter: document.querySelector("#myDecksCategoryFilter"),
-  myDecksSort: document.querySelector("#myDecksSort"),
-  myDecksFilterWrap: document.querySelector("#myDecksFolderFilterWrap"),
-  myDecksSelectAllCheckbox: document.querySelector("#myDecksSelectAllCheckbox"),
-  myDecksBulkActions: document.querySelector("#myDecksBulkActions"),
-  myDecksSelectedCount: document.querySelector("#myDecksSelectedCount"),
-  myDecksCount: document.querySelector("#myDecksCount"),
-  myDecksMoreBtn: document.querySelector("#myDecksMoreBtn"),
-  myDecksMoreMenu: document.querySelector("#myDecksMoreMenu"),
-  closeMyDecksBtn: document.querySelector("#closeMyDecksBtn"),
-  myDecksRefreshBtn: document.querySelector("#myDecksRefreshBtn"),
-  myDecksNewFolderBtn: document.querySelector("#myDecksNewFolderBtn"),
-  myDecksImportBtn: document.querySelector("#myDecksImportBtn"),
-  myDecksImportInput: document.querySelector("#myDecksImportInput"),
-  myDecksImportEpubInput: document.querySelector("#myDecksImportEpubInput"),
-  closeImportBtn: document.querySelector("#closeImportBtn"),
-  importPanel: document.querySelector("#importPanel"),
-  quickNotesBoardBtn: document.querySelector("#quickNotesBoardBtn"),
-  quickNotesBoard: document.querySelector("#quickNotesBoard"),
-  qnSummary: document.querySelector("#qnSummary"),
-  qnSearch: document.querySelector("#qnSearch"),
-  appBackBtn: document.querySelector("#appBackBtn"),
-  qnFilters: document.querySelector("#qnFilters"),
-  qnBody: document.querySelector("#qnBody"),
-  qnManageBtn: document.querySelector("#qnManageBtn"),
-  qnCloseBtn: document.querySelector("#qnCloseBtn"),
-  qnCatModal: document.querySelector("#qnCatModal"),
-  qnCatModalClose: document.querySelector("#qnCatModalClose"),
-  qnCatList: document.querySelector("#qnCatList"),
-  qnCatColorPicker: document.querySelector("#qnCatColorPicker"),
-  qnCatNewName: document.querySelector("#qnCatNewName"),
-  qnCatAddBtn: document.querySelector("#qnCatAddBtn"),
-  printRoot: document.querySelector("#printRoot"),
-  diagramModal: document.querySelector("#diagramModal"),
-  diagramModalBody: document.querySelector("#diagramModalBody"),
-  closeDiagramBtn: document.querySelector("#closeDiagramBtn"),
-  diagramZoomInBtn: document.querySelector("#diagramZoomInBtn"),
-  diagramZoomOutBtn: document.querySelector("#diagramZoomOutBtn"),
-  exportBtn: document.querySelector("#exportBtn"),
-  exportMenu: document.querySelector("#exportMenu"),
-  exportNotesBtn: document.querySelector("#exportNotesBtn"),
-  exportNotesMenu: document.querySelector("#exportNotesMenu"),
-  allCardsBtn: document.querySelector("#allCardsBtn"),
-  allCardsPanel: document.querySelector("#allCardsPanel"),
-  allCardsList: document.querySelector("#allCardsList"),
-  allCardsSummary: document.querySelector("#allCardsSummary"),
-  toggleAllAnswersBtn: document.querySelector("#toggleAllAnswersBtn"),
-  toggleCompactBtn: document.querySelector("#toggleCompactBtn"),
-  allCardsFilter: document.querySelector("#allCardsFilter"),
-  closeAllCardsBtn: document.querySelector("#closeAllCardsBtn"),
-  storageBtn: document.querySelector("#storageBtn"),
-  storagePanel: document.querySelector("#storagePanel"),
-  storageBody: document.querySelector("#storageBody"),
-  storageRefreshBtn: document.querySelector("#storageRefreshBtn"),
-  closeStorageBtn: document.querySelector("#closeStorageBtn"),
-  styleBtn: document.querySelector("#styleBtn"),
-  stylePanel: document.querySelector("#stylePanel"),
-  styleControls: document.querySelector("#styleControls"),
-  closeStyleBtn: document.querySelector("#closeStyleBtn"),
-  syncUpBtn: document.querySelector("#syncUpBtn"),
-  resetStyleBtn: document.querySelector("#resetStyleBtn"),
-  syncDownBtn: document.querySelector("#syncDownBtn"),
-  styleSyncStatus: document.querySelector("#styleSyncStatus"),
-  themeBtn: document.querySelector("#themeBtn"),
-  themeMenu: document.querySelector("#themeMenu"),
-  themeCurrentLabel: document.querySelector("#themeCurrentLabel"),
-  deckTitleWrap: document.querySelector("#deckTitleWrap"),
-  deckMeta2Row: document.querySelector("#deckMeta2Row"),
-  deckTitle: document.querySelector("#deckTitle"),
-  editDeckTitleBtn: document.querySelector("#editDeckTitleBtn"),
-  deckCategory: document.querySelector("#deckCategory"),
-  editDeckCategoryBtn: document.querySelector("#editDeckCategoryBtn"),
-  shuffleBtn: document.querySelector("#shuffleBtn"),
-  resetBtn: document.querySelector("#resetBtn"),
-  clozeToggleBtn: document.querySelector("#clozeToggleBtn"),
-  clozeToggleNotesBtn: document.querySelector("#clozeToggleNotesBtn"),
-  clozeReviewBtn: document.querySelector("#clozeReviewBtn"),
-  clozePanel: document.querySelector("#clozePanel"),
-  closeClozeBtn: document.querySelector("#closeClozeBtn"),
-  clozeBulkBtn: document.querySelector("#clozeBulkBtn"),
-  clozeReviewBody: document.querySelector("#clozeReviewBody"),
-  clozeReviewSummary: document.querySelector("#clozeReviewSummary"),
-  questionRenderToolbar: document.querySelector("#questionRenderToolbar"),
-  answerRenderToolbar: document.querySelector("#answerRenderToolbar"),
-  notesRenderToolbar: document.querySelector("#notesRenderToolbar"),
-  card: document.querySelector("#card"),
-  questionView: document.querySelector("#questionView"),
-  answerView: document.querySelector("#answerView"),
-  questionStatusBadge: document.querySelector("#questionStatusBadge"),
-  answerStatusBadge: document.querySelector("#answerStatusBadge"),
-  editQuestionBtn: document.querySelector("#editQuestionBtn"),
-  editAnswerBtn: document.querySelector("#editAnswerBtn"),
-  questionEdit: document.querySelector("#questionEdit"),
-  answerEdit: document.querySelector("#answerEdit"),
-  deleteCardBtn: document.querySelector("#deleteCardBtn"),
-  goToNotesBtn: document.querySelector("#goToNotesBtn"),
-  addCardBtn: document.querySelector("#addCardBtn"),
-  positionText: document.querySelector("#positionText"),
-  scoreText: document.querySelector("#scoreText"),
-  syncIndicator: document.querySelector("#syncIndicator"),
-  progressBar: document.querySelector("#progressBar"),
-  progressKnown: document.querySelector("#progressKnown"),
-  progressReview: document.querySelector("#progressReview"),
-  deckEmptyState: document.querySelector("#deckEmptyState"),
-  deckEmptyPanel: document.querySelector("#deckEmptyPanel"),
-  deckEmptySyncValue: document.querySelector("#deckEmptySyncValue"),
-  deckEmptyLibraryValue: document.querySelector("#deckEmptyLibraryValue"),
-  deckEmptyIcon: document.querySelector("#deckEmptyIcon"),
-  deckEmptyTitle: document.querySelector("#deckEmptyTitle"),
-  deckEmptyBody: document.querySelector("#deckEmptyBody"),
-  deckEmptyActionsNone: document.querySelector("#deckEmptyActionsNone"),
-  deckEmptyActionsActive: document.querySelector("#deckEmptyActionsActive"),
-  deckEmptyAddCardBtn: document.querySelector("#deckEmptyAddCardBtn"),
-  deckEmptyGoNotesBtn: document.querySelector("#deckEmptyGoNotesBtn"),
-  deckEmptySyncReport: document.querySelector("#deckEmptySyncReport"),
-  swipeHint: document.querySelector("#swipeHint"),
-  confirmModal: document.querySelector("#confirmModal"),
-  confirmModalMessage: document.querySelector("#confirmModalMessage"),
-  confirmModalOkBtn: document.querySelector("#confirmModalOkBtn"),
-  confirmModalCancelBtn: document.querySelector("#confirmModalCancelBtn"),
-  promptModal: document.querySelector("#promptModal"),
-  promptModalTitle: document.querySelector("#promptModalTitle"),
-  promptModalHint: document.querySelector("#promptModalHint"),
-  promptModalInput: document.querySelector("#promptModalInput"),
-  promptModalOkBtn: document.querySelector("#promptModalOkBtn"),
-  promptModalCancelBtn: document.querySelector("#promptModalCancelBtn"),
-  statusText: document.querySelector("#statusText"),
-  prevCardBtn: document.querySelector("#prevCardBtn"),
-  nextCardBtn: document.querySelector("#nextCardBtn"),
-  knownBtn: document.querySelector("#knownBtn"),
-  reviewBtn: document.querySelector("#reviewBtn"),
-  replayReviewBtn: document.querySelector("#replayReviewBtn"),
-  replayKnownBtn: document.querySelector("#replayKnownBtn"),
-  replayUncategorizedBtn: document.querySelector("#replayUncategorizedBtn"),
-  replayAllBtn: document.querySelector("#replayAllBtn"),
-  deckSummary: document.querySelector("#deckSummary"),
-  questionEditToolbar: document.querySelector("#questionEditToolbar"),
-  answerEditToolbar: document.querySelector("#answerEditToolbar"),
-  viewModeToggle: document.querySelector("#viewModeToggle"),
-  notesStage: document.querySelector("#notesStage"),
-  notesView: document.querySelector("#notesView"),
-  notesTocBtn: document.querySelector("#notesTocBtn"),
-  notesTocDrawer: document.querySelector("#notesTocDrawer"),
-  notesBacklinks: document.querySelector("#notesBacklinks"),
-  notesBacklinksList: document.querySelector("#notesBacklinksList"),
-  notesTocList: document.querySelector("#notesTocList"),
-  notesTocEmpty: document.querySelector("#notesTocEmpty"),
-  notesTocCloseBtn: document.querySelector("#notesTocCloseBtn"),
-  notesEdit: document.querySelector("#notesEdit"),
-  notesEditToolbar: document.querySelector("#notesEditToolbar"),
-  editNotesBtn: document.querySelector("#editNotesBtn"),
-  focusModeBtn: document.querySelector("#focusModeBtn"),
-  makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
-  makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),
-  pinQuickNoteFromSelectionBtn: document.querySelector("#pinQuickNoteFromSelectionBtn"),
-  highlightSelectionBtn: document.querySelector("#highlightSelectionBtn"),
-  highlightSelectionMenuBtn: document.querySelector("#highlightSelectionMenuBtn"),
-  highlightSelectionMenu: document.querySelector("#highlightSelectionMenu"),
-  eraseNotesSelectionBtn: document.querySelector("#eraseNotesSelectionBtn"),
-  extractNoteFromSelectionBtn: document.querySelector("#extractNoteFromSelectionBtn"),
-  selectionFloat: document.querySelector("#selectionFloat"),
-  highlightsStage: document.querySelector("#highlightsStage"),
-  highlightsList: document.querySelector("#highlightsList"),
-  highlightsEmpty: document.querySelector("#highlightsEmpty"),
-  frameCardModal: document.querySelector("#frameCardModal"),
-  frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
-  frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
-  frameCardAddBtn: document.querySelector("#frameCardAddBtn"),
-  frameCardCancelBtn: document.querySelector("#frameCardCancelBtn"),
-  syncModal: document.querySelector("#syncModal"),
-  syncDetailsContent: document.querySelector("#syncDetailsContent"),
-  logoutBtn: document.querySelector("#logoutBtn"),
-};
 
 marked.setOptions({
   breaks: true,
@@ -1180,847 +276,6 @@ if (window.Prism?.plugins?.autoloader) {
 }
 
 
-function themeById(themeId) {
-  const normalized = normalizeThemeId(themeId);
-  return themeCatalog.find((theme) => theme.id === normalized) || themeCatalog[0];
-}
-
-function normalizeThemeId(themeId) {
-  const requested = String(themeId || "").trim();
-  const normalized = themeAliases[requested] || requested;
-  return themeCatalog.some((theme) => theme.id === normalized) ? normalized : "dark-amoled";
-}
-
-export function currentThemeId() {
-  return normalizeThemeId(document.documentElement.dataset.theme || "dark-amoled");
-}
-
-function cssVariableColor(name, fallback) {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return value || fallback;
-}
-
-function applyThemePreviewStyles(node, theme) {
-  if (!node) return;
-  node.style.setProperty("--theme-bg", theme.colors.bg);
-  node.style.setProperty("--theme-panel", theme.colors.panel);
-  node.style.setProperty("--theme-text", theme.colors.text);
-  node.style.setProperty("--theme-line", theme.colors.line);
-  node.style.setProperty("--theme-accent", theme.colors.accent);
-}
-
-export function configureMermaid(themeId) {
-  // mermaid is loaded on demand (see ensureMermaid), and setTheme calls this at
-  // boot — long before any diagram exists to draw. Nothing to configure yet;
-  // ensureMermaid re-invokes this with the live theme the moment it lands.
-  if (typeof mermaid === "undefined") return;
-  const theme = themeById(themeId);
-  const isPrintTheme = themeId === "print";
-  const card = isPrintTheme ? cssVariableColor("--print-surface", "#ffffff") : cssVariableColor("--card", theme.colors.panel);
-  const panel = isPrintTheme ? cssVariableColor("--print-panel", "#ffffff") : cssVariableColor("--panel", theme.colors.panel);
-  const bg = isPrintTheme ? cssVariableColor("--print-bg", "#eef2f2") : cssVariableColor("--bg", theme.colors.bg);
-  const text = isPrintTheme ? cssVariableColor("--print-text", "#17201c") : cssVariableColor("--text", theme.colors.text);
-  const line = isPrintTheme ? cssVariableColor("--print-line", "#b9c9c5") : cssVariableColor("--line", theme.colors.line);
-  const muted = isPrintTheme ? cssVariableColor("--print-muted", "#56645f") : cssVariableColor("--muted", theme.colors.text);
-  const accent = isPrintTheme ? cssVariableColor("--print-accent", theme.colors.accent) : cssVariableColor("--accent", theme.colors.accent);
-  mermaid.initialize({
-    startOnLoad: false,
-    // "strict" — deck markdown can come from arbitrary URLs/files, and "loose"
-    // lets diagram source register click callbacks / unsanitized labels that
-    // bypass the DOMPurify pipeline every other rendered surface goes through.
-    securityLevel: "strict",
-    theme: "base",
-    themeVariables: {
-      primaryColor: card,
-      primaryTextColor: text,
-      primaryBorderColor: accent,
-      lineColor: muted,
-      secondaryColor: panel,
-      tertiaryColor: bg,
-      edgeLabelBackground: panel,
-      clusterBkg: panel,
-      clusterBorder: line
-    }
-  });
-}
-
-function setTheme(theme) {
-  const themeId = normalizeThemeId(theme);
-  document.documentElement.dataset.theme = themeId;
-  updateThemeControl(themeId);
-  configureMermaid(themeId);
-  // Diagrams are drawn with the theme's colours baked into their SVG, so every
-  // cached rendered block is now stale even though its markdown didn't change.
-  invalidateRenderedBlockCache();
-  const metaThemeColor = document.querySelector('meta[name="theme-color"]');
-  if (metaThemeColor) metaThemeColor.setAttribute("content", themeById(themeId).colors.bg);
-  if (state.cards[state.current]) showCard();
-  if (el.allCardsPanel && !el.allCardsPanel.hidden) {
-    allCardsRenderId += 1;
-    renderAllCards();
-  }
-  try {
-    localStorage.setItem(themeStorageKey, themeId);
-  } catch (error) {
-    console.warn("Could not save theme", error);
-  }
-}
-
-function renderThemeMenu() {
-  if (!el.themeMenu) return;
-  el.themeMenu.innerHTML = "";
-  ["dark", "light"].forEach((mode) => {
-    const label = document.createElement("div");
-    label.className = "theme-group-label";
-    label.textContent = mode === "light" ? "Light themes" : "Dark themes";
-    el.themeMenu.appendChild(label);
-
-    themeCatalog.filter((theme) => theme.mode === mode).forEach((theme) => {
-      const button = document.createElement("button");
-      button.className = "theme-option";
-      button.type = "button";
-      button.setAttribute("role", "option");
-      button.dataset.themeOption = theme.id;
-      applyThemePreviewStyles(button, theme);
-      button.innerHTML = `
-        <span class="theme-preview" aria-hidden="true"><span></span><span></span><span></span></span>
-        <span><strong>${theme.label}</strong><small>${theme.description}</small></span>
-        <span class="theme-check" aria-hidden="true"></span>
-      `;
-      applyThemePreviewStyles(button.querySelector(".theme-preview"), theme);
-      el.themeMenu.appendChild(button);
-    });
-  });
-}
-
-function updateThemeControl(themeId = currentThemeId()) {
-  const theme = themeById(themeId);
-  if (el.themeCurrentLabel) el.themeCurrentLabel.textContent = theme.label;
-  if (el.themeBtn) {
-    el.themeBtn.title = `Theme: ${theme.label}`;
-    el.themeBtn.setAttribute("aria-label", `Theme: ${theme.label}. Choose theme.`);
-    applyThemePreviewStyles(el.themeBtn.querySelector(".theme-preview"), theme);
-  }
-  el.themeMenu?.querySelectorAll("[data-theme-option]").forEach((button) => {
-    const selected = button.dataset.themeOption === theme.id;
-    button.setAttribute("aria-selected", selected ? "true" : "false");
-    const check = button.querySelector(".theme-check");
-    if (check) check.textContent = selected ? "*" : "";
-  });
-}
-
-function setThemeMenuOpen(open) {
-  if (!el.themeMenu || !el.themeBtn) return;
-  el.themeMenu.hidden = !open;
-  el.themeBtn.setAttribute("aria-expanded", open ? "true" : "false");
-}
-
-function resolveFontFamily(value) {
-  return fontFamilyChoices[value] || value;
-}
-
-function styleValue(source, key, defaults = styleDefaults) {
-  return Object.prototype.hasOwnProperty.call(source, key) ? String(source[key]) : defaults[key];
-}
-
-
-function normalizeStyleValue(key, value, customDefault) {
-  const field = styleFieldByKey[key];
-  const defaultValue = customDefault ?? styleDefaults[key];
-  const raw = String(value ?? defaultValue ?? "").trim();
-
-  if (!field) return raw || defaultValue;
-
-  if (field.type === "select") {
-    return field.options.includes(raw) ? raw : defaultValue;
-  }
-
-  // Text controls: no clamping, no range checks — whatever was typed wins.
-  // The only fix-up is unit completion: a bare number in a px field means px.
-  if (!raw) return defaultValue;
-  if (!field.unit) return raw;
-
-  const repeatedUnit = new RegExp(`^(-?\\d*\\.?\\d+)(${escapeRegExp(field.unit)})+$`, "i");
-  const repeatedUnitMatch = raw.match(repeatedUnit);
-  if (repeatedUnitMatch) return `${repeatedUnitMatch[1]}${field.unit}`;
-
-  return /^-?\d*\.?\d+$/.test(raw) ? `${raw}${field.unit}` : raw;
-}
-
-// Is `value` something CSS can actually use for this control?
-//
-// Custom properties accept ANY token — `--content-font-size: 2px4` is a
-// perfectly legal declaration — so an invalid value fails silently at the
-// consumer instead of here, and the symptom is a whole subsystem quietly
-// losing its sizing with nothing to connect it to what you typed. Probing a
-// REAL property (the `probe` on each field) is what turns that into an answer.
-//
-// `probe: "number"` is for the percent controls: they store a bare number that
-// applyStyleSettings turns into `${n}%`, and CSS.supports would reject the bare
-// number on its own.
-function isStyleValueUsable(field, value) {
-  if (!field || field.type === "select") return true;
-  const raw = String(value ?? "").trim();
-  if (!raw) return false;
-  if (field.probe === "number") return /^-?\d*\.?\d+$/.test(raw) && Number.isFinite(parseFloat(raw));
-  if (!field.probe || typeof CSS === "undefined" || typeof CSS.supports !== "function") return true;
-  try {
-    return CSS.supports(field.probe, raw);
-  } catch (_) {
-    return false;
-  }
-}
-
-// Paints the two per-field affordances: the invalid marker, and the ↺ that only
-// appears once a value differs from this profile's default.
-function updateStyleFieldStates() {
-  if (!el.styleControls) return;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
-  el.styleControls.querySelectorAll("[data-style-key]").forEach((input) => {
-    const key = input.dataset.styleKey;
-    const field = styleFieldByKey[key];
-    const usable = isStyleValueUsable(field, input.value);
-    input.setAttribute("aria-invalid", usable ? "false" : "true");
-    const label = input.closest(".style-field");
-    if (!label) return;
-    label.classList.toggle("is-invalid", !usable);
-    const reset = label.querySelector(".style-field-reset");
-    if (reset) reset.hidden = normalizeStyleValue(key, input.value, defaults[key]) === defaults[key];
-  });
-}
-
-function migrateLegacyStyleSettings(raw = {}) {
-  const migrated = { ...raw };
-  if (Object.prototype.hasOwnProperty.call(raw, "appMaxWidth")) migrated.appWidthPercent = "100";
-  if (Object.prototype.hasOwnProperty.call(raw, "cardWidth")) migrated.cardWidthPercent = "96";
-  if (Object.prototype.hasOwnProperty.call(raw, "cardMaxHeight")) migrated.cardMaxHeightPercent = "74";
-  if (Object.prototype.hasOwnProperty.call(raw, "modalWidth")) migrated.modalWidthPercent = "60";
-  if (Object.prototype.hasOwnProperty.call(raw, "textareaMinHeight")) migrated.markdownBoxHeightPercent = "30";
-  if (Object.prototype.hasOwnProperty.call(raw, "questionFill")) migrated.questionFillPercent = String(raw.questionFill);
-  if (Object.prototype.hasOwnProperty.call(raw, "answerFont")) migrated.answerFontSize = `${Math.round(Number(raw.answerFont) * 16)}px`;
-  if (Object.prototype.hasOwnProperty.call(raw, "bodyFont")) migrated.baseFontSize = `${Math.round(Number(raw.bodyFont) * 16)}px`;
-  if (Object.prototype.hasOwnProperty.call(raw, "lineHeight")) {
-    migrated.baseLineHeight = String(raw.lineHeight);
-    migrated.answerLineHeight = String(raw.lineHeight);
-    migrated.questionLineHeight = String(raw.lineHeight);
-  }
-  // The legacy cardPadding was a bare NUMBER; only those get the px appended.
-  // Anything already carrying its own unit (or any free-form CSS, now that the
-  // controls are textboxes) must pass through untouched — this append used to
-  // mangle "calc(20px + 1vw)" into "calc(20px + 1vw)px" on every pass, and the
-  // repeated-unit collapse in normalizeStyleValue could only heal the plain
-  // "24pxpx" shape.
-  if (Object.prototype.hasOwnProperty.call(raw, "cardPadding") && /^-?\d*\.?\d+$/.test(String(raw.cardPadding).trim())) {
-    migrated.cardPadding = `${String(raw.cardPadding).trim()}px`;
-  }
-  if (Object.prototype.hasOwnProperty.call(raw, "bodyFontSize")) migrated.baseFontSize = raw.bodyFontSize;
-  if (Object.prototype.hasOwnProperty.call(raw, "bodyLineHeight")) migrated.baseLineHeight = raw.bodyLineHeight;
-  if (Object.prototype.hasOwnProperty.call(raw, "cardFacePadding")) migrated.cardPadding = raw.cardFacePadding;
-  if (Object.prototype.hasOwnProperty.call(raw, "cardFaceGap")) migrated.cardContentGap = raw.cardFaceGap;
-  if (Object.prototype.hasOwnProperty.call(raw, "toolbarGap")) migrated.buttonGap = raw.toolbarGap;
-  if (Object.prototype.hasOwnProperty.call(raw, "quizPanelPadding")) migrated.panelPadding = raw.quizPanelPadding;
-  if (Object.prototype.hasOwnProperty.call(raw, "quizPanelRadius")) migrated.panelCornerRadius = raw.quizPanelRadius;
-  if (Object.prototype.hasOwnProperty.call(raw, "cardRadius")) migrated.cardCornerRadius = raw.cardRadius;
-  if (Object.prototype.hasOwnProperty.call(raw, "toolbarButtonRadius")) migrated.buttonCornerRadius = raw.toolbarButtonRadius;
-  if (Object.prototype.hasOwnProperty.call(raw, "actionButtonFontSize")) migrated.buttonFontSize = raw.actionButtonFontSize;
-
-  // Merged controls. Each of these used to be its own slider writing its own
-  // variable; the survivor takes the old value so nobody's tuned theme resets.
-  // inputCornerRadius (and the legacy inputRadius before it) → buttonCornerRadius:
-  //   --input-radius is now an alias of --toolbar-button-radius.
-  if (Object.prototype.hasOwnProperty.call(raw, "inputRadius")) migrated.buttonCornerRadius = raw.inputRadius;
-  if (Object.prototype.hasOwnProperty.call(raw, "inputCornerRadius")) migrated.buttonCornerRadius = raw.inputCornerRadius;
-  // questionPadding/answerPadding → cardTextPadding. Question wins: it was the
-  // one with a non-zero default, so it's the one people actually moved.
-  if (Object.prototype.hasOwnProperty.call(raw, "answerPadding")) migrated.cardTextPadding = raw.answerPadding;
-  if (Object.prototype.hasOwnProperty.call(raw, "questionPadding")) migrated.cardTextPadding = raw.questionPadding;
-  // actionButtonHeight/replayButtonHeight → toolbarButtonHeight. Those two were
-  // dead on the Mobile profile (hardcoded 34px/24px overrides, now removed) and
-  // both are derived from the toolbar height in :root, so only take them as a
-  // fallback — an explicitly-set toolbar height still wins.
-  if (!Object.prototype.hasOwnProperty.call(raw, "toolbarButtonHeight")
-      && Object.prototype.hasOwnProperty.call(raw, "actionButtonHeight")) {
-    migrated.toolbarButtonHeight = raw.actionButtonHeight;
-  }
-
-  return migrated;
-}
-
-function normalizeStyleSettings(raw = {}, profile = "desktop") {
-  const source = migrateLegacyStyleSettings(raw || {});
-  const defaults = defaultStyleProfiles[profile] || styleDefaults;
-  return Object.keys(styleDefaults).reduce((normalized, key) => {
-    normalized[key] = normalizeStyleValue(key, styleValue(source, key, defaults), defaults[key]);
-    return normalized;
-  }, {});
-}
-
-function detectStyleProfile() {
-  return styleMobileMedia?.matches ? "mobile" : "desktop";
-}
-
-function styleProfileLabel(profile) {
-  return profile === "mobile" ? "Mobile" : "Desktop";
-}
-
-// Bumped to 3 when the panel was trimmed to only controls that do something,
-// to 4 when sliders were dropped for plain textboxes and the two dead
-// controls (cardTextPadding, markdownBoxHeightPercent) were removed. Carried
-// on the stored blob (not just the cloud payload) so one-shot migrations run
-// exactly once per device rather than on every load.
-const STYLE_SETTINGS_VERSION = 4;
-
-function normalizeStyleProfiles(raw = {}) {
-  const source = raw && typeof raw === "object" ? raw : {};
-  const profileSource = source.profiles && typeof source.profiles === "object" ? source.profiles : source;
-  const hasProfiles = Boolean(profileSource.desktop || profileSource.mobile);
-  const storedVersion = Number(source.version) || 1;
-
-  // v3 pointed --code-font-size at a real CSS rule for the first time; before
-  // it, .rendered pre was font-size:1em and the slider was decoration. Honouring
-  // a pre-v3 stored value would shrink every existing user's code blocks to a
-  // number they never saw the effect of choosing, so drop it once and let the
-  // new default (which equals the base text size, i.e. today's rendering) win.
-  const dropPreV3 = (settings) => {
-    if (storedVersion >= 3 || !settings || typeof settings !== "object") return settings;
-    const { codeFontSize, ...rest } = settings;
-    return rest;
-  };
-
-  if (!hasProfiles) {
-    const legacySource = dropPreV3(source);
-    const legacy = normalizeStyleSettings(legacySource, "desktop");
-    const mobileLegacySource = { ...defaultStyleProfiles.mobile, ...migrateLegacyStyleSettings(legacySource) };
-    return {
-      desktop: { ...legacy },
-      mobile: normalizeStyleSettings(mobileLegacySource, "mobile"),
-      version: STYLE_SETTINGS_VERSION
-    };
-  }
-
-  const desktopSource = profileSource.desktop || profileSource.mobile || defaultStyleProfiles.desktop;
-  const mobileSource = profileSource.mobile || profileSource.desktop || defaultStyleProfiles.mobile;
-  return {
-    desktop: normalizeStyleSettings(dropPreV3(desktopSource), "desktop"),
-    mobile: normalizeStyleSettings(dropPreV3(mobileSource), "mobile"),
-    version: STYLE_SETTINGS_VERSION
-  };
-}
-
-function setStyleProfiles(raw = {}) {
-  state.styleProfiles = normalizeStyleProfiles(raw);
-  try {
-    localStorage.setItem(styleStorageKey, JSON.stringify(state.styleProfiles));
-  } catch (error) {
-    console.warn("Could not save style profiles", error);
-  }
-  return state.styleProfiles;
-}
-
-function getStyleProfileSettings(profile = state.styleEditProfile) {
-  const normalizedProfile = styleProfiles.includes(profile) ? profile : detectStyleProfile();
-  const settings = state.styleProfiles?.[normalizedProfile] || defaultStyleProfiles[normalizedProfile];
-  return normalizeStyleSettings(settings, normalizedProfile);
-}
-
-function setStyleProfileSettings(profile, rawSettings) {
-  const normalizedProfile = styleProfiles.includes(profile) ? profile : detectStyleProfile();
-  const settings = normalizeStyleSettings(rawSettings, normalizedProfile);
-  state.styleProfiles = {
-    ...state.styleProfiles,
-    [normalizedProfile]: settings
-  };
-  if (normalizedProfile === state.activeStyleProfile) state.styleSettings = settings;
-  try {
-    localStorage.setItem(styleStorageKey, JSON.stringify(state.styleProfiles));
-  } catch (error) {
-    console.warn("Could not save style profiles", error);
-  }
-  return settings;
-}
-
-function styleProfilesPayload() {
-  return {
-    version: STYLE_SETTINGS_VERSION,
-    // The theme travels WITH the style. It sits at the top of the style panel,
-    // above the very Sync Up / Sync Down buttons that used to skip it — it lived
-    // only in its own localStorage key, so syncing your style to a second device
-    // brought every font and margin across and left it on whatever theme that
-    // device happened to be on. Top level, not inside a profile: one theme for
-    // the account, the way it has always behaved locally.
-    theme: currentThemeId(),
-    desktop: getStyleProfileSettings("desktop"),
-    mobile: getStyleProfileSettings("mobile")
-  };
-}
-
-function setStyleStatus(message) {
-  if (el.styleSyncStatus) el.styleSyncStatus.textContent = message;
-}
-
-function renderStyleControls() {
-  if (!el.styleControls || el.styleControls.dataset.rendered === "true") return;
-  const themeField = el.styleControls.querySelector(".style-field");
-  el.styleControls.innerHTML = "";
-  if (themeField) el.styleControls.appendChild(themeField);
-
-  const profileField = document.createElement("section");
-  profileField.className = "style-profile-field";
-  profileField.setAttribute("aria-label", "Style profile");
-
-  const profileHeader = document.createElement("div");
-  profileHeader.className = "style-profile-head";
-  const profileTitle = document.createElement("span");
-  profileTitle.textContent = "Editing profile";
-  const profileBadge = document.createElement("strong");
-  profileBadge.id = "styleProfileBadge";
-  profileHeader.append(profileTitle, profileBadge);
-  profileField.appendChild(profileHeader);
-
-  const profileButtons = document.createElement("div");
-  profileButtons.className = "style-profile-toggle";
-  styleProfiles.forEach((profile) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.styleProfile = profile;
-    button.textContent = styleProfileLabel(profile);
-    profileButtons.appendChild(button);
-  });
-  profileField.appendChild(profileButtons);
-
-  const profileHint = document.createElement("small");
-  profileHint.id = "styleProfileHint";
-  profileField.appendChild(profileHint);
-  el.styleControls.appendChild(profileField);
-
-  // Density: one press for the eight size/spacing values almost everyone was
-  // opening Advanced to tune one at a time. It writes the real controls (see
-  // styleDensityPresets), so the fields underneath move with it and stay the
-  // thing that decides — this is a shortcut, not a mode.
-  const density = document.createElement("section");
-  density.className = "style-density-field";
-  density.setAttribute("aria-label", "Density");
-  const densityHead = document.createElement("div");
-  densityHead.className = "style-density-head";
-  densityHead.textContent = "Density";
-  density.appendChild(densityHead);
-  const densityButtons = document.createElement("div");
-  densityButtons.className = "style-density-toggle";
-  ["compact", "comfortable", "large"].forEach((preset) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.styleDensity = preset;
-    button.textContent = preset.charAt(0).toUpperCase() + preset.slice(1);
-    densityButtons.appendChild(button);
-  });
-  density.appendChild(densityButtons);
-  const densityHint = document.createElement("small");
-  densityHint.textContent = "Sets text size, line spacing, padding, gaps and button height together. Fine-tune any of them under Advanced.";
-  density.appendChild(densityHint);
-  el.styleControls.appendChild(density);
-
-  // Everything past the basics goes inside ONE fold. Seven peer accordions read
-  // as seven equally-important things to work through; a short visible list plus
-  // "Advanced" reads as a setting you change and a drawer you can ignore.
-  const advanced = document.createElement("details");
-  advanced.className = "style-advanced";
-  advanced.open = false;
-  const advancedHeading = document.createElement("summary");
-  advancedHeading.textContent = "Advanced";
-  advanced.appendChild(advancedHeading);
-  const advancedBody = document.createElement("div");
-  advancedBody.className = "style-advanced-body";
-  advanced.appendChild(advancedBody);
-
-  styleControlGroups.forEach((group) => {
-    const isBasic = group.tier === "basic";
-    // Basics render as a plain list — no summary, nothing to expand. A
-    // disclosure you always want open is just a click in the way.
-    const section = document.createElement(isBasic ? "section" : "details");
-    section.className = isBasic ? "style-basics" : "style-section";
-
-    if (isBasic) {
-      section.setAttribute("aria-label", group.title);
-    } else {
-      section.open = false;
-      const heading = document.createElement("summary");
-      heading.textContent = group.title;
-      section.appendChild(heading);
-    }
-
-    const body = document.createElement("div");
-    body.className = "style-section-body";
-
-    group.fields.forEach((field) => {
-      const label = document.createElement("label");
-      label.className = "style-field";
-
-      // Name row, so the per-field ↺ can sit opposite the label rather than
-      // pushing the control around. It's hidden until the value differs from
-      // this profile's default (updateStyleFieldStates), so an untouched panel
-      // shows no reset affordance at all.
-      const name = document.createElement("span");
-      name.className = "style-field-name";
-      name.textContent = field.label;
-      const reset = document.createElement("button");
-      reset.type = "button";
-      reset.className = "style-field-reset";
-      reset.dataset.styleReset = field.key;
-      reset.textContent = "↺";
-      reset.title = `Reset ${field.label.toLowerCase()} to its default`;
-      reset.setAttribute("aria-label", `Reset ${field.label} to its default`);
-      reset.hidden = true;
-      name.appendChild(reset);
-      label.appendChild(name);
-
-      let control;
-      if (field.type === "select") {
-        control = document.createElement("select");
-        field.options.forEach((value) => {
-          const option = document.createElement("option");
-          option.value = value;
-          option.textContent = value.charAt(0).toUpperCase() + value.slice(1);
-          control.appendChild(option);
-        });
-        control.dataset.styleKey = field.key;
-        label.appendChild(control);
-      } else {
-        // Plain textbox, no slider companion and no min/max — see the comment
-        // on styleControlGroups.
-        control = document.createElement("input");
-        control.type = "text";
-        control.spellcheck = false;
-        control.placeholder = styleDefaults[field.key] || "";
-        control.dataset.styleKey = field.key;
-        control.dataset.unit = field.unit || "";
-        label.appendChild(control);
-      }
-
-      const hint = document.createElement("small");
-      hint.textContent = field.hint;
-      label.appendChild(hint);
-
-      body.appendChild(label);
-    });
-
-    section.appendChild(body);
-    (isBasic ? el.styleControls : advancedBody).appendChild(section);
-  });
-
-  el.styleControls.appendChild(advanced);
-  el.styleControls.dataset.rendered = "true";
-}
-
-function numericStyleValue(value) {
-  const number = parseFloat(String(value ?? "").match(/-?\d*\.?\d+/)?.[0] ?? "");
-  return Number.isFinite(number) ? number : null;
-}
-
-function updateStyleProfileUi() {
-  if (!el.styleControls) return;
-  const activeProfile = detectStyleProfile();
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : activeProfile;
-  const badge = el.styleControls.querySelector("#styleProfileBadge");
-  const hint = el.styleControls.querySelector("#styleProfileHint");
-  if (badge) badge.textContent = styleProfileLabel(editProfile);
-  if (hint) {
-    const activeLabel = styleProfileLabel(activeProfile);
-    const editLabel = styleProfileLabel(editProfile);
-    hint.textContent = editProfile === activeProfile
-      ? `${activeLabel} values are active on this screen.`
-      : `Editing ${editLabel} values. This screen is currently using ${activeLabel}.`;
-  }
-  el.styleControls.querySelectorAll("[data-style-profile]").forEach((button) => {
-    const isEditProfile = button.dataset.styleProfile === editProfile;
-    const isActiveProfile = button.dataset.styleProfile === activeProfile;
-    button.classList.toggle("is-active", isEditProfile);
-    button.classList.toggle("is-device", isActiveProfile);
-    button.setAttribute("aria-pressed", String(isEditProfile));
-  });
-}
-
-function updateStyleControls() {
-  renderStyleControls();
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const settings = getStyleProfileSettings(editProfile);
-  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
-  updateStyleProfileUi();
-  el.styleControls?.querySelectorAll("[data-style-key]").forEach((input) => {
-    // NEVER rewrite the field being typed in. This runs on every keystroke —
-    // the input listener applies the change, applyStyleSettings calls back in
-    // here, and this line used to overwrite the caret out from under you. The
-    // value it wrote was the NORMALIZED one, so typing "2" into a px field
-    // became "2px" with the caret at the end, and the next digit produced
-    // "2px4" — which normalizeStyleValue passes through verbatim into a custom
-    // property, taking out whatever read it. Two keystrokes to break the app's
-    // text sizing, with no way to type a two-digit number at all.
-    //
-    // The field is normalized on focusout instead (see the listener below), so
-    // "28" still becomes "28px" — just once you've finished saying it.
-    if (input === document.activeElement) {
-      input.placeholder = defaults[input.dataset.styleKey] || "";
-      return;
-    }
-    input.value = settings[input.dataset.styleKey] ?? "";
-    input.placeholder = defaults[input.dataset.styleKey] || "";
-  });
-  updateStyleFieldStates();
-}
-
-function applyStyleSettings(rawSettings, options = {}) {
-  const settings = normalizeStyleSettings(rawSettings);
-  const activeProfile = state.activeStyleProfile || detectStyleProfile();
-  state.styleSettings = settings;
-  // A value CSS can't use never reaches the page. The controls are free text on
-  // purpose (calc(), rem, vh all work), but "free text" also means "one typo
-  // away from a declaration that parses as garbage" — and a custom property
-  // accepts garbage happily, so the breakage surfaced somewhere else entirely.
-  // Fall back to this profile's default for anything that fails its probe; the
-  // field itself is marked invalid by updateStyleFieldStates, which is where
-  // the user finds out.
-  const profileDefaults = defaultStyleProfiles[activeProfile] || styleDefaults;
-  const usable = (key) => {
-    const field = styleFieldByKey[key];
-    return isStyleValueUsable(field, settings[key]) ? settings[key] : profileDefaults[key];
-  };
-  const appWidthPercent = numericStyleValue(settings.appWidthPercent) ?? 100;
-  const appHeightPercent = numericStyleValue(settings.appHeightPercent) ?? 100;
-  const cardWidthPercent = numericStyleValue(settings.cardWidthPercent) ?? 96;
-  const cardMaxHeightPercent = numericStyleValue(settings.cardMaxHeightPercent) ?? 74;
-  const modalWidthPercent = numericStyleValue(settings.modalWidthPercent) ?? 60;
-  const visualMaxWidthPercent = numericStyleValue(settings.visualMaxWidthPercent) ?? (activeProfile === "mobile" ? 90 : 50);
-
-  const notesMaxWidthPercent = numericStyleValue(settings.notesMaxWidthPercent) ?? 100;
-
-  const root = document.documentElement;
-  // ONE font variable. --question/answer/notes-font-family are declared in
-  // :root as `var(--app-font-family)`, so they inherit from this for free.
-  // Setting all four here (from four separate pickers that all defaulted to
-  // "system") meant the inheritance never took effect, and "Base font family"
-  // appeared to do nothing to any card or note — it only reached app chrome.
-  root.style.setProperty("--app-font-family", resolveFontFamily(settings.fontFamily));
-  root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
-  Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
-    root.style.setProperty(cssVariable, usable(key));
-  });
-  // --question-padding/--answer-padding and --textarea-min-height are NOT set
-  // here: their controls were removed (the first padded inside cardPadding —
-  // two ways to push the same text inward; the second only sized the import
-  // box). The :root defaults in styles.css carry them now.
-  root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
-  // The only percent that isn't run through numericStyleValue above, so it's the
-  // only one where a non-numeric entry would reach CSS as "abc%".
-  root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);
-  root.style.setProperty("--app-width", `${appWidthPercent}vw`);
-  root.style.setProperty("--app-height", `${appHeightPercent}vh`);
-  root.style.setProperty("--app-mobile-width", `${appWidthPercent}vw`);
-  root.style.setProperty("--app-mobile-height", `${appHeightPercent}dvh`);
-  root.style.setProperty("--card-width", `${cardWidthPercent}%`);
-  root.style.setProperty("--card-mobile-width", `${cardWidthPercent}%`);
-  root.style.setProperty("--card-max-height", `${cardMaxHeightPercent}vh`);
-  root.style.setProperty("--card-mobile-max-height", `${cardMaxHeightPercent}dvh`);
-  root.style.setProperty("--modal-width", `${modalWidthPercent}vw`);
-  root.style.setProperty("--visual-max-width", `${visualMaxWidthPercent}%`);
-
-  if (!el.stylePanel || el.stylePanel.hidden || state.styleEditProfile === state.activeStyleProfile) {
-    updateStyleControls();
-  } else {
-    updateStyleProfileUi();
-  }
-  scheduleLiveQuestionFit();
-  if (options.force) forceStyleRefresh();
-
-  return settings;
-}
-
-function applyActiveStyleSettings(options = {}) {
-  const activeProfile = detectStyleProfile();
-  state.activeStyleProfile = activeProfile;
-  document.documentElement.dataset.styleProfile = activeProfile;
-  return applyStyleSettings(getStyleProfileSettings(activeProfile), options);
-}
-
-// ── On-screen keyboard inset ────────────────────────────────────────────────
-//
-// How much of the viewport the software keyboard is covering right now, exposed
-// to CSS as --kb-inset (see the token in styles.css).
-//
-// Why it's needed at all: the layout viewport does not necessarily shrink when
-// the keyboard opens. index.html asks for interactive-widget=resizes-content,
-// which makes Chrome on Android do exactly that — but iOS Safari ignores the
-// hint, and there the page keeps its full height while the keyboard is drawn
-// over the bottom of it. The browser's own "scroll the caret into view" then
-// does nothing, because in layout terms the caret is already on screen. What
-// the user sees is text they just typed disappearing under the keyboard.
-//
-// visualViewport reports the region actually visible, so innerHeight minus it
-// is the covered strip. Where the browser DID resize the layout, innerHeight
-// shrank too and this reads ~0 — so the two mechanisms compose instead of
-// double-counting. Rounded and change-gated because visualViewport fires a
-// burst of events during the keyboard animation and each write invalidates
-// layout for the whole shell.
-let keyboardInsetPx = 0;
-
-function currentKeyboardInset() {
-  return keyboardInsetPx;
-}
-
-function trackKeyboardInset() {
-  const vv = window.visualViewport;
-  if (!vv) return;
-  const update = () => {
-    // offsetTop matters: pinch-zoomed or scrolled-within-the-visual-viewport,
-    // the visible band is shorter AND displaced, and only the part below it is
-    // keyboard. A small floor keeps browser-chrome jitter from reading as a
-    // keyboard.
-    const covered = Math.round(window.innerHeight - (vv.height + vv.offsetTop));
-    const next = covered > 24 ? covered : 0;
-    if (next === keyboardInsetPx) return;
-    keyboardInsetPx = next;
-    document.documentElement.style.setProperty("--kb-inset", `${next}px`);
-    // The editor's own scroll has to be re-checked against the new usable
-    // height, or the caret is left behind the keyboard for as long as it stays
-    // still.
-    if (isNotesEditing()) scheduleNotesCaretCheck();
-  };
-  vv.addEventListener("resize", update);
-  vv.addEventListener("scroll", update);
-  update();
-}
-
-function loadLocalStyleSettings() {
-  try {
-    const stored = localStorage.getItem(styleStorageKey);
-    if (stored) {
-      return JSON.parse(stored);
-    }
-  } catch (error) {
-    console.warn("Could not load style settings from local storage", error);
-  }
-  return defaultStyleProfiles;
-}
-
-function hasMeaningfulStyleSettings(settings) {
-  return Boolean(settings && typeof settings === "object" && Object.keys(settings).length > 0);
-}
-
-function questionJustifyItems(align) {
-  if (align === "right") return "end";
-  if (align === "center") return "center";
-  if (align === "justify") return "stretch";
-  return "start";
-}
-
-function styleSettingsFromControls() {
-  const settings = {};
-  el.styleControls?.querySelectorAll("[data-style-key]").forEach((input) => {
-    settings[input.dataset.styleKey] = input.value;
-  });
-  // Normalize against the profile being EDITED. Without the argument this
-  // defaulted to "desktop", so anything the controls didn't supply was
-  // back-filled with desktop values while you were editing the Mobile profile.
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  return normalizeStyleSettings(settings, editProfile);
-}
-
-// The re-fit that the old "Apply" button existed to trigger. Every control has
-// always applied live on input; Apply's only remaining job was passing
-// { force: true } so the question auto-fit and table fits were recomputed from
-// scratch. That's a thing to do when you stop typing, not a button to hunt for,
-// so it runs on its own once the field has been quiet for a moment.
-let styleRefitTimer = null;
-function scheduleStyleRefit() {
-  clearTimeout(styleRefitTimer);
-  styleRefitTimer = setTimeout(() => {
-    styleRefitTimer = null;
-    if (state.styleEditProfile === detectStyleProfile()) forceStyleRefresh();
-  }, 200);
-}
-
-function handleStyleControlChange() {
-  state.styleTouched = true;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const settings = setStyleProfileSettings(editProfile, styleSettingsFromControls());
-  if (editProfile === detectStyleProfile()) applyActiveStyleSettings();
-  else updateStyleProfileUi();
-  scheduleMarkdownTableFit();
-  scheduleStyleRefit();
-  updateStyleFieldStates();
-  setStyleStatus(`Unsynced ${styleProfileLabel(editProfile).toLowerCase()} style`);
-  return settings;
-}
-
-// ── Reset ──────────────────────────────────────────────────────────
-// The panel had no way back. With free-text controls and no clamping, a stray
-// "2" in Text size renders the whole app — including this panel — too small to
-// read, and the only recovery was clearing site data, which takes the user's
-// decks with it.
-function resetStyleField(key) {
-  if (!styleFieldByKey[key]) return;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
-  const input = el.styleControls?.querySelector(`[data-style-key="${key}"]`);
-  if (!input) return;
-  input.value = defaults[key] ?? "";
-  handleStyleControlChange();
-}
-
-function resetStyleProfile() {
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const label = styleProfileLabel(editProfile);
-  const other = editProfile === "desktop" ? "mobile" : "desktop";
-  showConfirmModal(
-    `Put every ${label.toLowerCase()} style control back to its default? Your theme and your ${other} profile are left alone.`,
-    () => {
-      state.styleTouched = true;
-      setStyleProfileSettings(editProfile, { ...defaultStyleProfiles[editProfile] });
-      if (editProfile === detectStyleProfile()) applyActiveStyleSettings({ force: true });
-      updateStyleControls();
-      if (state.previewCard || state.cards[state.current]) showCard();
-      setStyleStatus(`${label} style reset to defaults`);
-      showToast(`${label} style reset`, "success");
-    },
-    { confirmLabel: "Reset" }
-  );
-}
-
-// Writes the preset's real control values, then hands off to the normal change
-// path so it saves, applies and re-paints exactly like typing them would.
-function applyStyleDensity(preset) {
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const values = styleDensityPresets[editProfile]?.[preset];
-  if (!values) return;
-  Object.entries(values).forEach(([key, value]) => {
-    const input = el.styleControls?.querySelector(`[data-style-key="${key}"]`);
-    if (input) input.value = value;
-  });
-  handleStyleControlChange();
-  if (editProfile === detectStyleProfile()) applyActiveStyleSettings({ force: true });
-  setStyleStatus(`${styleProfileLabel(editProfile)} density: ${preset}`);
-}
-
-function forceStyleRefresh() {
-  [el.questionView, el.answerView].forEach((node) => {
-    if (!node) return;
-    node.style.fontSize = "";
-    node.style.transform = "";
-    node.style.width = "";
-    node.style.removeProperty("--question-fit-font-size");
-  });
-  document.querySelectorAll(".rendered table").forEach((table) => {
-    table.style.fontSize = "";
-    delete table.dataset.baseFontSize;
-  });
-  scheduleMarkdownTableFit();
-  scheduleLiveQuestionFit();
-  requestAnimationFrame(() => {
-    scheduleMarkdownTableFit();
-    scheduleLiveQuestionFit();
-    if (!el.allCardsPanel?.hidden) renderAllCards();
-  });
-}
-
 // (applyCurrentStyleSettings lived here. It was the "Apply" button's handler,
 // and the button is gone: every control already applied live, so pressing it
 // re-ran what had happened on the last keystroke. Its one distinct effect —
@@ -2034,7 +289,7 @@ function lockPageScroll() {
   document.body.classList.add("modal-scroll-lock");
 }
 
-function unlockPageScroll() {
+export function unlockPageScroll() {
   if (!document.documentElement.classList.contains("modal-scroll-lock")) return;
   // Something else is STILL on screen (a rename prompt opened from My Decks, a
   // delete confirm over the style panel, …). lockPageScroll is a no-op when the
@@ -2181,7 +436,7 @@ function sameNavLocation(a, b) {
 // Deliberately does NOT refresh the button: at this instant the user is still
 // at the old location, so "is there anywhere to go back to?" would answer no.
 // Each door calls refreshNavBack() once it has actually arrived.
-function recordNavHistory(hint) {
+export function recordNavHistory(hint) {
   if (navSuppressDepth) return;
   const here = currentNavLocation({ ...hint, captureAnchor: true });
   if (!here) return;
@@ -2202,7 +457,7 @@ function peekNavBack() {
   return null;
 }
 
-function refreshNavBack() {
+export function refreshNavBack() {
   if (el.appBackBtn) el.appBackBtn.disabled = !peekNavBack();
 }
 
@@ -2688,7 +943,7 @@ export function setStatus(message, type = "info") {
 // Transient toast notification, anchored top-center, used to confirm that
 // web-sync actions (sync, load, delete, rename, export, quick note) actually
 // completed — visible regardless of where the triggering button lives.
-function showToast(message, type = "success") {
+export function showToast(message, type = "success") {
   let container = document.getElementById("toastContainer");
   if (!container) {
     container = document.createElement("div");
@@ -2737,7 +992,7 @@ function setButtonLoading(btn, loading, text = "…") {
   }
 }
 
-function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm", danger = false } = {}) {
+export function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm", danger = false } = {}) {
   if (!el.confirmModal) return onConfirm();
   el.confirmModalMessage.textContent = message;
   el.confirmModalOkBtn.textContent = confirmLabel;
@@ -2912,7 +1167,7 @@ function openImportPanel() {
 
 // Closing throws away anything staged but not committed: a half-chosen import
 // must not be waiting the next time the panel opens.
-function closeImportPanel() {
+export function closeImportPanel() {
   clearImportStaging();
   showImportSourceDrawer(null);
   if (el.pasteMarkdownInput) el.pasteMarkdownInput.value = "";
@@ -5653,7 +3908,7 @@ function isMissingRelationError(error) {
 // error that merely mentions the column (a check constraint, an RLS policy
 // naming it) as "the migration hasn't run", silently drop the payload, and
 // report the push as a clean success. See pushDeckRowsToCloud.
-function isMissingColumnError(error, column) {
+export function isMissingColumnError(error, column) {
   if (!error) return false;
   if (String(error.code || "") === "42703") return true;
   const message = String(error.message || error).toLowerCase();
@@ -5662,7 +3917,7 @@ function isMissingColumnError(error, column) {
     && message.includes("does not exist");
 }
 
-function isMissingNotesColumnError(error) {
+export function isMissingNotesColumnError(error) {
   return isMissingColumnError(error, "notes");
 }
 
@@ -6719,7 +4974,7 @@ function paintMyDecks(localDecks, cloudById, { cloudOnly = [], categories = webD
 // Guards against a stale cloud fetch overwriting a newer render.
 let myDecksRenderSeq = 0;
 
-async function renderMyDecksList() {
+export async function renderMyDecksList() {
   if (!el.myDecksBody) return;
   const seq = ++myDecksRenderSeq;
 
@@ -7256,7 +5511,7 @@ function parseCards(markdown, { allowHeuristicHeadings = true } = {}) {
   }));
 }
 
-function syncResults() {
+export function syncResults() {
   state.results = {
     known: state.masterCards.filter((card) => state.statusById[card.id] === "known"),
     review: state.masterCards.filter((card) => state.statusById[card.id] === "review")
@@ -7303,7 +5558,7 @@ function resetResults() {
 // that is merely restarting the CURRENT deck must pass true. Every deck-LOAD
 // caller leaves it false: those want a clean statusById and assign the incoming
 // deck's own immediately afterwards.
-function resetStudyDeck(cards = state.masterCards, { keepStatuses = false } = {}) {
+export function resetStudyDeck(cards = state.masterCards, { keepStatuses = false } = {}) {
   state.transitionToken += 1;
   state.cards = cards.slice();
   state.current = 0;
@@ -8741,7 +6996,7 @@ const renderSequence = new WeakMap(); // view -> number, so a superseded render 
 // produce (the mermaid theme), which retires every cached block.
 let renderGeneration = 0;
 
-function invalidateRenderedBlockCache() {
+export function invalidateRenderedBlockCache() {
   renderGeneration += 1;
 }
 
@@ -9346,7 +7601,7 @@ function fitMarkdownTables(container, roots = null) {
 const MARKDOWN_TABLE_FIT_DEBOUNCE_MS = 120;
 let markdownTableFitTimer = 0;
 
-function scheduleMarkdownTableFit() {
+export function scheduleMarkdownTableFit() {
   cancelAnimationFrame(markdownTableFitFrame);
   if (markdownTableFitTimer) clearTimeout(markdownTableFitTimer);
   markdownTableFitTimer = setTimeout(() => {
@@ -9578,7 +7833,7 @@ function closeDiagramModal() {
   unlockPageScroll();
 }
 
-function closeAllCardsPanel() {
+export function closeAllCardsPanel() {
   allCardsRenderId += 1;
   el.allCardsPanel.hidden = true;
   unlockPageScroll();
@@ -10166,7 +8421,7 @@ async function setAllCardsAnswersVisible(visible) {
   adjustCornellRows(el.allCardsList);
 }
 
-async function renderAllCards() {
+export async function renderAllCards() {
   const cards = state.masterCards;
   const renderId = allCardsRenderId;
   el.allCardsList.innerHTML = "";
@@ -10316,7 +8571,7 @@ export function updateMeta() {
 // notes first, then distill them into flashcards (or skip notes entirely).
 const quizPanel = document.querySelector(".quiz-panel");
 
-function isNotesEditing() {
+export function isNotesEditing() {
   return Boolean(el.notesEdit && !el.notesEdit.hidden);
 }
 
@@ -10457,7 +8712,7 @@ function resetNotesEditingUI() {
 // keystroke (`state.notes = el.notesEdit.value`) copied the old note's whole
 // body into the new deck, which the autosave then made permanent. Clearing
 // .value is the load-bearing half: resetNotesEditingUI only hides the element.
-function discardNotesEditingForDeckSwap() {
+export function discardNotesEditingForDeckSwap() {
   if (!isNotesEditing()) return;
   el.notesEdit.value = "";
   // The mirror holds its own copy of the text (see refreshHighlightBackdrop);
@@ -11017,7 +9272,7 @@ function keepNotesCaretVisible() {
 // the caret sat. Scrolling is not typing: nothing here can change while the
 // reader is only moving the view.
 let notesCaretFrame = 0;
-function scheduleNotesCaretCheck() {
+export function scheduleNotesCaretCheck() {
   if (notesCaretFrame) return;
   notesCaretFrame = requestAnimationFrame(() => {
     notesCaretFrame = 0;
@@ -11280,7 +9535,7 @@ let viewModePaintToken = 0;
 // press. Every programmatic caller (deck load, import, scheduleNoteJump, …)
 // keeps the original synchronous ordering, because several of them read the
 // rendered DOM straight afterwards.
-function setViewMode(mode, options = {}) {
+export function setViewMode(mode, options = {}) {
   const next = mode === "notes" ? "notes" : mode === "highlights" ? "highlights" : "cards";
   if (!el.notesStage || !el.viewModeToggle) {
     state.viewMode = next;
@@ -11564,7 +9819,7 @@ function applyChromeCollapse() {
 
 // Called when the user navigates rather than reads (deck load, Cards⇄Notes):
 // arriving somewhere new should start from the top, with the header visible.
-function resetChromeAutoHide() {
+export function resetChromeAutoHide() {
   chromeAutoHidden = false;
   chromeAnchorEl = null;
   chromeAnchorTop = 0;
@@ -13404,7 +11659,7 @@ function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}, locator 
 // belt-and-braces fallback for slower renders / a just-loaded deck. `options`
 // (flash/smooth) is threaded straight through to revealNoteAnchor, as is
 // `locator` (the exact-<mark> shortcut used by the Highlights panel).
-function scheduleNoteJump(anchor, options, locator = null) {
+export function scheduleNoteJump(anchor, options, locator = null) {
   if (state.viewMode !== "notes") setViewMode("notes");
   let estimatedOnce = false;
   const attempt = (retries) => {
@@ -16663,7 +14918,7 @@ function buildDeckSummaryHtml() {
   </div>`;
 }
 
-async function showCard(direction = 0) {
+export async function showCard(direction = 0) {
   hideNotesSelectionButton();
   scheduleDeckAutosave();
   // A raw/rendered choice belongs to the card it was made on — arriving at a
@@ -17988,7 +16243,7 @@ const LOCAL_DECK_PREFIX = "flashcards_local_deck_v1:";
 // while this device had unsynced edits of its own. Deck notes are free markdown
 // and stay last-write-wins (the per-card merge can't help there), so the losing
 // text is stashed here rather than destroyed. See pullCloudDeckToLibrary.
-const NOTES_CONFLICT_SUFFIX = ":notes-conflict";
+export const NOTES_CONFLICT_SUFFIX = ":notes-conflict";
 // Timestamp of the last reconcile that completed without throwing (whether or
 // not it found anything to change) — survives reloads so the startup screen
 // can say "last checked Xm ago" even before the next reconcile finishes.
@@ -18600,7 +16855,7 @@ function cloneSnapshot(snapshot) {
 // per-deck catch, or a try/catch around the old localStorage.getItem this
 // replaced) and only need `await` added — this is called out explicitly at
 // each call site rather than swallowed here.
-async function readDeckSnapshot(id) {
+export async function readDeckSnapshot(id) {
   if (!id) return null;
   const key = String(id);
   if (indexedDbUnavailable) {
@@ -18654,7 +16909,7 @@ async function readDeckSnapshot(id) {
 // for why that's an acceptable trade for keeping ~48 call sites synchronous.
 // Clones before storing too, so a caller that keeps mutating its own
 // `snapshot` variable after calling this can't reach back into the cache.
-function writeDeckSnapshot(id, snapshot) {
+export function writeDeckSnapshot(id, snapshot) {
   if (!id) return;
   const key = String(id);
   if (indexedDbUnavailable) {
@@ -18687,7 +16942,7 @@ function writeDeckSnapshot(id, snapshot) {
   });
 }
 
-function deleteDeckSnapshot(id) {
+export function deleteDeckSnapshot(id) {
   if (!id) return;
   const key = String(id);
   if (indexedDbUnavailable) {
@@ -18837,7 +17092,7 @@ function scheduleDeckAutosave() {
 // Callers MUST await this while `state` still describes the outgoing deck, and
 // MUST re-check their load token afterwards — this introduces an await, and so
 // a fresh window in which the user can open something else.
-async function flushPendingDeckAutosave() {
+export async function flushPendingDeckAutosave() {
   if (!deckAutosaveTimer) return;
   clearTimeout(deckAutosaveTimer);
   deckAutosaveTimer = null;
@@ -19005,7 +17260,7 @@ el.syncIndicator?.addEventListener("click", () => {
 
 // Sets the resting state of the pill (used after a deck loads, when there are no
 // pending edits) based on where the deck currently lives.
-function refreshSyncIndicatorBaseline() {
+export function refreshSyncIndicatorBaseline() {
   if (!hasActiveDeck()) return setSyncIndicator("idle");
   if (!supabaseClient || !isSignedIn) return setSyncIndicator("saved");
   if (!navigator.onLine) return setSyncIndicator("offline");
@@ -19113,7 +17368,7 @@ export function tsMs(value) {
 // change kind can never be silently invisible just because the side that
 // detected it had nowhere to put it (recategorising a quick note used to land
 // in exactly that gap, and the sync then claimed "nothing to sync").
-function emptySyncStats() {
+export function emptySyncStats() {
   return {
     cardsAdded: 0,
     cardsDeleted: 0,
@@ -19160,7 +17415,7 @@ const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", 
 // Human phrases for a diff, most consequential first. Returns an array so
 // callers can join, count, or truncate it. With `asTotals`, the deck-level
 // booleans have been summed into deck counts by totalSyncStats and say so.
-function describeSyncStats(stats = {}, { asTotals = false } = {}) {
+export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const parts = [];
   if (stats.cardsAdded) parts.push(`${plural(stats.cardsAdded, "card", "cards")} added`);
@@ -20839,7 +19094,7 @@ function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, 
   return meta;
 }
 
-async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false } = {}) {
+export async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false } = {}) {
   if (!state.masterCards.length && !state.notes.trim()) {
     if (!silent) setStatus("Add some cards or notes before saving a deck.", "error");
     return null;
@@ -20911,7 +19166,7 @@ function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
   return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt: null, lastSyncedAt: undefined, synced: false });
 }
 
-async function loadDeckFromLibrary(id) {
+export async function loadDeckFromLibrary(id) {
   // Opening a saved deck is never an import, so it must not adopt a folder left
   // over from an "Import here" whose file picker was dismissed — that would
   // silently refile an existing deck.
@@ -21501,7 +19756,7 @@ function fitLiveQuestion() {
   node.style.setProperty("--question-fit-font-size", fitted);
 }
 
-function scheduleLiveQuestionFit() {
+export function scheduleLiveQuestionFit() {
   cancelAnimationFrame(liveQuestionFitFrame);
   liveQuestionFitFrame = requestAnimationFrame(() => {
     liveQuestionFitFrame = requestAnimationFrame(fitLiveQuestion);
@@ -28350,7 +26605,7 @@ async function resolveLocalImageUrl(token) {
 // ever grew. Safe to do eagerly because resolveLocalImageUrl re-mints on demand
 // from the outbox: a revoked URL costs one lazy IndexedDB read, and the render
 // that follows a deck swap re-resolves every placeholder anyway.
-function revokeLocalImageUrls() {
+export function revokeLocalImageUrls() {
   for (const url of localImageObjectUrls.values()) URL.revokeObjectURL(url);
   localImageObjectUrls.clear();
 }

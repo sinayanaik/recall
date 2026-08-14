@@ -1,10 +1,12 @@
 // Reading and writing the deck rows in the user's Supabase project, and the
 // payload shape both sides of the sync agree on.
 
+import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./net.js?v=__BUILD__";
 import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
+import { el } from "../core/dom.js?v=__BUILD__";
 import { setKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { formatCardList, isQuickNotesDeck, normalizeCardStatus, notesExportBlock, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, state, syncLocalLibraryMetaForDeck, updateMeta, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { closeAllCardsPanel, closeImportPanel, discardNotesEditingForDeckSwap, flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, notesExportBlock, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, recordNavHistory, refreshNavBack, refreshSyncIndicatorBaseline, resetChromeAutoHide, resetStudyDeck, revokeLocalImageUrls, saveDeckToLibrary, scheduleNoteJump, setStatus, setViewMode, showCard, showToast, state, syncLocalLibraryMetaForDeck, syncResults, unlockPageScroll, updateMeta, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
 
 // Whichever of two ISO timestamps (either may be null/undefined) is later,
 // or null if neither parses.
@@ -251,4 +253,128 @@ export function webDeckPayloadMarkdown(payload) {
     notesBlock ? "" : null,
     notesBlock || null
   ].filter((line) => line !== null).join("\n");
+}
+
+// Bumped by every deck-open attempt (web or local), so an in-flight one can
+// tell whether it's still the load the user actually wants applied. A big
+// note's web fetch can take long enough that the user opens a different deck
+// from My Decks before it resolves — without this, the slower response lands
+// LAST and silently overwrites whatever the user navigated to with the deck
+// they left. See the checks in loadWebDeck and loadDeckFromLibrary below.
+export let activeDeckLoadToken = 0;
+
+export async function loadWebDeck(deckId) {
+  if (!deckId || !supabaseClient) return;
+  if (!navigator.onLine) {
+    setStatus("Offline — can't load web decks. Try “My Decks” for device copies.", "error");
+    showToast("Offline — can't load web deck", "info");
+    return;
+  }
+
+  setStatus("Loading deck from web...");
+  // A navigation door — see recordNavHistory. Recorded synchronously, before
+  // the await below can let anything else move the user.
+  recordNavHistory();
+  const loadToken = ++activeDeckLoadToken;
+
+  try {
+    const [deckResult, cardsResult] = await Promise.all([
+      withTimeout(abortable((signal) => supabaseClient.from("decks").select("*").eq("id", deckId).single().abortSignal(signal)), CLOUD_TIMEOUT_MS, "load deck"),
+      withTimeout(abortable((signal) => supabaseClient.from("cards").select("*").eq("deck_id", deckId).order("position", { ascending: true }).abortSignal(signal)), CLOUD_TIMEOUT_MS, "load cards")
+    ]);
+
+    const { data: deckData, error: deckError } = deckResult;
+    if (deckError) throw deckError;
+
+    const { data: cardsData, error: cardsError } = cardsResult;
+    if (cardsError) throw cardsError;
+
+    // The user opened a different deck (local or web) while this fetch was in
+    // flight — that newer load already owns the view. Applying this response
+    // now would yank the screen back to the deck the user left.
+    if (loadToken !== activeDeckLoadToken) return;
+    // Flush the outgoing deck's debounced keystrokes while `state` still
+    // describes it — see flushPendingDeckAutosave — then re-check the token,
+    // because that flush is another await.
+    await flushPendingDeckAutosave();
+    if (loadToken !== activeDeckLoadToken) return;
+
+    const statusById = {};
+    const categoryById = {};
+    const cards = cardsData.map((rawCard, index) => {
+      const id = String(rawCard.id || `${index}-${rawCard.question.slice(0, 32)}`);
+      const status = normalizeCardStatus(rawCard.status);
+      if (status) {
+        statusById[id] = status;
+      }
+      if (rawCard.category) categoryById[id] = String(rawCard.category);
+      return { id, question: rawCard.question, answer: rawCard.answer };
+    });
+
+    state.deckId = deckData.id;
+    state.masterCards = cards.slice();
+    resetStudyDeck(state.masterCards);
+    state.statusById = statusById;
+    state.categoryById = categoryById;
+    // Managed category set lives on the deck's meta bag (quick_notes only).
+    applyDeckMetaCategories(deckData.meta, deckData.id, deckData.title);
+    // Carry the whole meta bag forward (not just the quick_notes categories
+    // pulled out above) so per-deck fields like a synced reading position
+    // survive the next autosave instead of being silently dropped.
+    state.meta = deckData.meta && typeof deckData.meta === "object" ? deckData.meta : {};
+    state.current = 0; // always start from the first card on fresh load
+    state.deckTitle = deckData.title || "";
+    state.deckCategory = normalizeDeckCategory(deckData.category);
+    // MUST come before state.notes is replaced — the loadDeckSnapshot sibling
+    // of this line explains why an open raw editor outlives a deck swap and
+    // what it overwrites when it does.
+    discardNotesEditingForDeckSwap();
+    // The deck being left is the last thing that needed its queued images'
+    // blob URLs. See revokeLocalImageUrls for why the session can't wait for
+    // pagehide to release them.
+    revokeLocalImageUrls();
+    // Pre-migration databases have no notes column; select("*") just omits it.
+    state.notes = String(deckData.notes || "");
+    state.sourceTitle = deckData.title || "";
+    state.importTitleHint = deckData.title || "";
+    setViewMode("notes");
+    // Cross-device resume: this deck's meta may carry a reading position
+    // synced from another device. Ambient landing, not a deliberate jump —
+    // no flash, no animated scroll. scheduleNoteJump no-ops quietly if the
+    // anchor can't be found (notes changed since, or this is the first time
+    // this deck has ever had a position saved).
+    if (state.meta?.readingPosition) scheduleNoteJump(state.meta.readingPosition, { flash: false, smooth: false });
+
+    syncResults();
+    touchWebDeckAccess(deckData.id).catch((error) => console.error("Failed to touch deck access", error));
+    closeAllCardsPanel();
+    setStatus(`Loaded ${cards.length} cards from web successfully.`);
+    showToast(`Loaded "${state.deckTitle || "deck"}" · ${cards.length} cards`);
+    if (el.myDecksPanel) el.myDecksPanel.hidden = true;
+    unlockPageScroll();
+    closeImportPanel();
+    showCard();
+    // Mirror the freshly-loaded web deck into the on-device library (deduped by
+    // cloud id) so it stays readable offline without an extra manual save. Align
+    // its timestamps to the cloud copy so it reads as already in-sync — otherwise
+    // it would look "newer" and trigger a redundant re-push on the next reconcile.
+    // Skipped entirely once superseded: saveDeckToLibrary assigns state.localDeckId
+    // as a side effect, and running that for a deck the user has since navigated
+    // away from would yank state.localDeckId back to it out from under whatever
+    // deck is actually on screen now.
+    if (loadToken === activeDeckLoadToken) {
+      state.localDeckId = null;
+      const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
+      if (loadToken === activeDeckLoadToken) {
+        if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
+        refreshSyncIndicatorBaseline();
+        refreshNavBack(); // arrived — now the button knows where "here" is
+        resetChromeAutoHide(); // a new deck starts at the top, header showing
+      }
+    }
+  } catch (error) {
+    setStatus("Failed to load deck from web.", "error");
+    showToast("Couldn't load deck", "error");
+    console.error(error);
+  }
 }

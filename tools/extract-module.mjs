@@ -123,9 +123,23 @@ const IMPORT_LINE = /^import\s.+from\s*["'][^"']+["'];\s*$/;
 // the full set every time is what keeps main.js's import block correct as
 // symbols leave it: an earlier version excluded anything already imported and so
 // silently dropped the build.js import the moment a second module was extracted.
+// "Bound" here means declared AT TOP LEVEL of this file — deliberately not the
+// file-wide locallyBound(), which counts every nested parameter and local.
+//
+// locallyBound has no idea about scope, so one `list.forEach((el) => …)`
+// anywhere in 31,000 lines made it believe `el` was this file's own, and the
+// import of the DOM map was never written. The app died on `el is not defined`
+// in a module-scope listener.
+//
+// Importing a name that some inner scope also binds is harmless: the local
+// shadows the import inside that scope, exactly as it shadowed the old
+// script-wide binding, and every outer reference resolves to the import. The
+// only thing that genuinely cannot coexist with an import is a TOP-LEVEL
+// declaration of the same name, which is a duplicate-declaration SyntaxError.
+// So erring toward more imports is both safe and correct; the cost is the
+// occasional unused one, which `module-symbols --unused` lists.
 function neededBy(text, ownNames, owner, selfFile) {
-  const blanked = blankLiterals(text);
-  const bound = locallyBound(blanked);
+  const bound = new Set(topLevelDecls(text).map((d) => d.name));
   for (const n of ownNames) bound.add(n);
   const need = new Set();
   for (const name of referencedIdentifiers(text)) {

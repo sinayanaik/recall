@@ -71,6 +71,7 @@ const notExported = [];
 const unused = [];
 const badSpecifiers = [];
 const assignedImports = [];
+const shadowed = [];
 
 for (const [rel, { raw, blanked, decls }] of parsed) {
   const { names: imported, sources } = parseImports(raw);
@@ -116,14 +117,29 @@ for (const [rel, { raw, blanked, decls }] of parsed) {
     assignedImports.push(`${rel}:${line} assigns to ${m[2]}, which it imports from ${imported.get(m[2])}`);
   }
 
+  // Two levels of "is this name this file's own?".
+  //
+  // topBound — declared at top level here — is the only thing that genuinely
+  // rules out an import (a top-level declaration and an import of the same name
+  // is a duplicate-declaration SyntaxError). `bound` is the file-wide,
+  // scope-blind set, which counts every nested parameter and local.
+  //
+  // Judging by `bound` alone is what let `el` go unimported: one
+  // `list.forEach((el) => …)` somewhere in the file was enough to mark the DOM
+  // map as local, and the page died on "el is not defined". So a name that is
+  // only nested-bound is still reported — as a WARNING, since a genuinely local
+  // variable that happens to share a name with another module's export is
+  // common and harmless.
+  const topBound = new Set(decls.map((d) => d.name));
   const used = new Set();
   for (const name of referencedIdentifiers(raw)) {
     if (imported.has(name)) { used.add(name); continue; }
-    if (bound.has(name) || GLOBALS.has(name)) continue;
+    if (topBound.has(name) || GLOBALS.has(name)) continue;
     const own = owner.get(name);
     if (!own || own.file === rel) continue;
-    missing.push(`${rel} uses ${name}, owned by ${own.file}:${own.line}`);
     if (!own.exported) notExported.push(`${own.file}:${own.line} — ${name} is referenced by ${rel} but not exported`);
+    if (bound.has(name)) shadowed.push(`${rel} references ${name} (owned by ${own.file}) but also binds it locally — check no outer use needs the import`);
+    else missing.push(`${rel} uses ${name}, owned by ${own.file}:${own.line}`);
   }
   if (SHOW_UNUSED) {
     for (const name of imported.keys()) if (!used.has(name)) unused.push(`${rel} imports ${name} but never uses it`);
@@ -142,6 +158,8 @@ report("MISSING IMPORT", missing, 60);
 report("NOT EXPORTED", [...new Set(notExported)], 40);
 report("UNSTAMPED IMPORT — relative import without ?v=__BUILD__", badSpecifiers, 40);
 report("ASSIGNS TO AN IMPORT — read-only binding; move it or add a setter", assignedImports, 40);
+if (SHOW_UNUSED) report("shadowed (warning, not counted)", shadowed, 30);
+else if (shadowed.length) console.log(`\n${shadowed.length} shadowed-name warning(s) — run with --unused to list them`);
 if (SHOW_UNUSED) report("unused imports", unused, 60);
 
 const fail = duplicates.length + missing.length + badSpecifiers.length
