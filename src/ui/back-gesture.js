@@ -12,13 +12,15 @@ import { closeWebDeckExportMenus } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { closeAllDeckTileMenus } from "../library/folder-tree.js?v=__BUILD__";
 import { closeMyDecksMoreMenu } from "../library/my-decks-menu.js?v=__BUILD__";
-import { closeAppInfoModal, closeClozePanel, closeHelpModal, closeMainMenu, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, closeStoragePanel, isMainMenuOpen } from "../main.js?v=__BUILD__";
+import { closeClozePanel, closeMainMenu, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, closeStoragePanel, isMainMenuOpen } from "../main.js?v=__BUILD__";
 import { commitNotesEditIfActive, isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { closeNotesToc, isNotesTocOpen } from "../notes/toc.js?v=__BUILD__";
+import { closeAppInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { closeDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { chromeFocusPinned, setFocusMode } from "./chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { showToast } from "./feedback.js?v=__BUILD__";
+import { closeHelpModal } from "./help.js?v=__BUILD__";
 import { goNavBack } from "./nav-history.js?v=__BUILD__";
 import { unlockPageScroll } from "./overlays.js?v=__BUILD__";
 

@@ -13,8 +13,9 @@ import { initSupabaseClient, isSignedIn, loadSupabaseConfig, setSignedIn, supaba
 import { deckStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { pruneOrphanedDeckSnapshots, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
-import { checkProjectHealth, state } from "./main.js?v=__BUILD__";
+import { state } from "./main.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "./notes/notes-view.js?v=__BUILD__";
+import { checkProjectHealth } from "./pwa/app-info.js?v=__BUILD__";
 import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
 import { clearAllDeckSnapshots, initDeckStorage, requestPersistentStorage } from "./storage/deck-store.js?v=__BUILD__";

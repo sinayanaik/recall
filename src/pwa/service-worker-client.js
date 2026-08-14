@@ -5,7 +5,7 @@
 // every edit behind the previously cached bundle.
 
 import { BUILD_STAMP } from "../core/build.js?v=__BUILD__";
-import { requestedAppVersion } from "../main.js?v=__BUILD__";
+import { requestedAppVersion } from "./release-info.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Every Supabase Storage image URL referenced by a deck's markdown. Used to

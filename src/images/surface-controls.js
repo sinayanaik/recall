@@ -7,7 +7,8 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
-import { deleteSupabaseImage, state } from "../main.js?v=__BUILD__";
+import { deleteSupabaseImage } from "./upload.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, fencePattern, normalizeImageUrl, parseDiagramWidth } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 

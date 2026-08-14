@@ -7,20 +7,19 @@
 import { BACKUP_IMAGE_REF_RE, decodeImageRefEntities, exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
 import { LAST_USER_STORAGE_KEY, appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
-import { clearAllCardDropTargets, closeAllCardsPanel, createBlankCard, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
+import { clearAllCardDropTargets, closeAllCardsPanel, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
 import { allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
 import { flipCard, moveCard, navigateCard, replayDeck, resetQuiz, shuffleCards } from "./cards/deck-actions.js?v=__BUILD__";
 import { createNewDeck, newDeckInFolder } from "./cards/new-deck.js?v=__BUILD__";
 import { afterPaint, questionFitDeferredBySelection, scheduleLiveQuestionFit } from "./cards/question-fit.js?v=__BUILD__";
 import { handleDiagramPointerDown, handleDiagramPointerEnd, handleDiagramPointerMove, handleDiagramWheel, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp, handleStylePanelTouchMove, handleStylePanelTouchStart, handleStylePanelWheel, handleTouchCancel, handleTouchEnd, handleTouchMove, handleTouchStart, hasCardTextSelection, isCardActionTarget } from "./cards/swipe.js?v=__BUILD__";
-import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
-import { isMissingColumnError, isMissingRelationError } from "./cloud/deck-list.js?v=__BUILD__";
-import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./cloud/net.js?v=__BUILD__";
+import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup } from "./cloud/auth.js?v=__BUILD__";
+import { isMissingColumnError } from "./cloud/deck-list.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, withTimeout } from "./cloud/net.js?v=__BUILD__";
 import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus, loadWebDeck } from "./cloud/web-decks.js?v=__BUILD__";
-import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
 import { defaultDeckCategory } from "./core/constants.js?v=__BUILD__";
 import { el } from "./core/dom.js?v=__BUILD__";
 import { ensureMermaid, ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
@@ -34,6 +33,7 @@ import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v
 import { LIST_MARKER_RE, MARK_CLOSE_TAG, MARK_HIGHLIGHT_DEFAULT, markHighlightSwatchButtonsHtml, markOpenTag, toggleMarkColorInText } from "./format/highlight.js?v=__BUILD__";
 import { CLOZE_MAKE_ICON, RENDER_HIGHLIGHT_GLYPH, closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, refreshRenderSwatches, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
+import { IMAGE_BUCKET, OFFLINE_IMAGE_CACHE, deckImageFolder, imagePickerActive, insertAtCursor, optimizeImage, replaceInTextarea, setImagePickerActive, uploadImageToSupabase } from "./images/upload.js?v=__BUILD__";
 import { importEpubFile, isEpubName, reportEpubImportCrash } from "./import/epub.js?v=__BUILD__";
 import { loadFiles, loadSample, showImportSourceDrawer, stagePastedMarkdown } from "./import/files.js?v=__BUILD__";
 import { countQuestionHeadings, parseCards, stripReaderMetadata } from "./import/parse-cards.js?v=__BUILD__";
@@ -41,7 +41,7 @@ import { clearImportStaging, commitStagedImport, importDestinationFolder, import
 import { cleanImportUrl, fetchImportText, readerUrlFor } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
-import { appendCardToLocalLibraryDeck, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrarySync, writeLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
+import { appendCardToLocalLibraryDeck, loadDeckFromLibrary, readLocalDeckIndex, writeLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
@@ -50,7 +50,7 @@ import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { resetActiveDeckAfterDelete } from "./library/tombstones.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard, notesAnchorPlainText, onAnchorSourceDeck, scheduleNoteJump } from "./notes/anchors.js?v=__BUILD__";
-import { scheduleNotesCaretCheck, scrollTextareaToOffset } from "./notes/caret.js?v=__BUILD__";
+import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
@@ -58,14 +58,15 @@ import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
 import { currentNotesSelectionMarkdown, hideNotesSelectionButton, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
 import { closeNotesToc, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
-import { installManifestLink, isMixedBuild, registerServiceWorker, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./pwa/service-worker-client.js?v=__BUILD__";
-import { renderMarkdown } from "./render/block-cache.js?v=__BUILD__";
+import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
+import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
+import { installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "./render/enhance.js?v=__BUILD__";
 import { findMathRanges, repairEscapedMathMarkdown } from "./render/math.js?v=__BUILD__";
 import { markdownToSafeHtml } from "./render/preprocess.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
-import { allDeckSnapshotIds, clearAllDeckSnapshots, deckSnapshotCache, deckStoreChannel, deckStoreRequest, forEachDeckSnapshot, indexedDbUnavailable, journalPendingDeckWrites, pendingDeckWrites, readDeckSnapshot, scheduleDeckAutosave, setDeckStoreChannel, storagePersisted, touchDeckSnapshotCache, withDeckLock, writeDeckSnapshot } from "./storage/deck-store.js?v=__BUILD__";
+import { allDeckSnapshotIds, clearAllDeckSnapshots, deckSnapshotCache, deckStoreChannel, deckStoreRequest, forEachDeckSnapshot, indexedDbUnavailable, pendingDeckWrites, readDeckSnapshot, scheduleDeckAutosave, setDeckStoreChannel, storagePersisted, touchDeckSnapshotCache, withDeckLock, writeDeckSnapshot } from "./storage/deck-store.js?v=__BUILD__";
 import { LOCAL_DECKS_INDEX_KEY } from "./storage/keys.js?v=__BUILD__";
 import { isQuotaExceededError, setDeckAutosaveStorageFailed } from "./storage/quota.js?v=__BUILD__";
 import { applyAutoSyncInterval, autoSyncTick, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
@@ -77,7 +78,9 @@ import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__B
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, isMobileChrome, measureChromeHeights, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
+import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
+import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack, suppressNavRecording } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
@@ -1914,38 +1917,7 @@ initBackGesture();
 
 bootApp();
 
-// Commit any in-progress edit into the session before the tab is hidden or closed.
-export function flushWorkingDeck() {
-  try {
-    commitEditIfActive();
-  } catch (error) {
-    console.warn("Could not commit active edit before save", error);
-  }
-  // The working-deck localStorage snapshot that used to be taken here is gone —
-  // it was write-only (see persistWorkingDeck) and on a large deck it meant a
-  // multi-megabyte synchronous JSON.stringify on every single app switch, which
-  // on a phone PWA is constant. The durable save below is the one that matters.
-  //
-  // If the tab/process is killed right after this — the whole reason this
-  // handler exists — an edit committed above but not yet flushed by the
-  // debounced scheduleDeckAutosave() timer would otherwise never reach the
-  // library, and the next reconcile wouldn't even know it happened.
-  //
-  // saveDeckToLibrarySync, deliberately NOT the async saveDeckToLibrary: this
-  // runs from pagehide/visibilitychange, and there is no guarantee an awaited
-  // IndexedDB round trip gets to complete before the page is torn down — an
-  // OS killing a backgrounded phone app doesn't wait for pending disk I/O.
-  // The sync version reads the (already cache-resident, see its own comment)
-  // previous snapshot with zero I/O, so by the time this line returns the
-  // write has genuinely been issued — pendingDeckWrites already reflects it —
-  // and journalPendingDeckWrites below has something real to write down.
-  saveDeckToLibrarySync({ silent: true });
-  // That write itself still reaches IndexedDB asynchronously in the
-  // background. Mirror it into a synchronous localStorage journal so the next
-  // boot can replay it — without this, the last edit before a phone kills the
-  // backgrounded app is lost.
-  journalPendingDeckWrites();
-}
+
 // Deck storage is asynchronous now (IndexedDB), so a large amount of this app
 // runs in promises — and a promise nobody awaited that rejects is completely
 // silent by default. That is the worst possible failure mode for something
@@ -1969,15 +1941,10 @@ window.addEventListener("pagehide", () => {
   revokeLocalImageUrls();
 });
 
-// How long the app has to have been in the background before returning to it is
-// worth a sync. Short enough that picking the phone back up gets fresh data;
-// long enough that flicking between apps doesn't fire one every few seconds.
-const FOREGROUND_SYNC_IDLE_MS = 60000;
-let lastHiddenAt = 0;
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
-    lastHiddenAt = Date.now();
+    setLastHiddenAt(Date.now());
     flushWorkingDeck();
     return;
   }
@@ -1987,17 +1954,12 @@ document.addEventListener("visibilitychange", () => {
   // sit unseen indefinitely. reconcileAllDecks self-gates on sign-in and
   // connectivity and dedupes overlapping runs, so this is safe to just call.
   if (!lastHiddenAt || Date.now() - lastHiddenAt < FOREGROUND_SYNC_IDLE_MS) return;
-  lastHiddenAt = 0;
+  setLastHiddenAt(0);
   if (!isSignedIn || !navigator.onLine) return;
   reconcileAllDecks({ explicit: false });
 });
 
-// Surface connectivity so it's obvious cloud actions are paused while offline.
-function updateOnlineIndicator() {
-  const indicator = document.getElementById("offlineIndicator");
-  if (indicator) indicator.hidden = navigator.onLine;
-}
-let onlineReconcileTimer = null;
+
 window.addEventListener("online", () => {
   updateOnlineIndicator();
   updateDeckEmptyStatus();
@@ -2005,10 +1967,10 @@ window.addEventListener("online", () => {
   // Connectivity returned — reconcile the local mirror with the cloud. Debounced
   // so a flaky connection flapping doesn't kick off overlapping syncs.
   if (onlineReconcileTimer) clearTimeout(onlineReconcileTimer);
-  onlineReconcileTimer = setTimeout(() => {
-    onlineReconcileTimer = null;
+  setOnlineReconcileTimer(setTimeout(() => {
+    setOnlineReconcileTimer(null);
     reconcileAllDecks({ explicit: false });
-  }, 1500);
+  }, 1500));
 });
 window.addEventListener("offline", () => {
   updateOnlineIndicator();
@@ -2017,171 +1979,6 @@ window.addEventListener("offline", () => {
 });
 updateOnlineIndicator();
 
-export function commitEditIfActive() {
-  const sides = [
-    { side: "question", view: el.questionView, edit: el.questionEdit, toolbar: el.questionEditToolbar, renderToolbar: el.questionRenderToolbar, btn: el.editQuestionBtn },
-    { side: "answer",   view: el.answerView,   edit: el.answerEdit,   toolbar: el.answerEditToolbar,   renderToolbar: el.answerRenderToolbar,   btn: el.editAnswerBtn },
-  ];
-  const card = state.cards[state.current];
-  let committed = false;
-  for (const { side, view, edit, toolbar, renderToolbar, btn } of sides) {
-    if (view.hidden === false) continue; // not in edit mode for this side
-    committed = true;
-    if (card) {
-      const newValue = edit.value.trim();
-      // A card with no question is dropped outright by loadDeckSnapshot on the
-      // next deck load, so committing a blank one destroys the card — and the
-      // next push then deletes it from the cloud too. Discard the empty edit and
-      // keep what was there. (A blank ANSWER is legitimate: every quick_notes
-      // pin is front-only, which is why only the question is guarded.)
-      if (side === "question" && !newValue) {
-        setStatus("Question cannot be empty — kept the previous text.", "error");
-      } else {
-        if (side === "question") card.question = newValue;
-        else card.answer = newValue;
-        const masterIndex = state.masterCards.findIndex(c => c.id === card.id);
-        if (masterIndex > -1) {
-          if (side === "question") state.masterCards[masterIndex].question = newValue;
-          else state.masterCards[masterIndex].answer = newValue;
-        }
-      }
-    }
-    view.hidden = false;
-    edit.hidden = true;
-    edit.value = "";
-    if (toolbar) toolbar.hidden = true;
-    if (renderToolbar) renderToolbar.hidden = false;
-    if (btn) {
-      btn.classList.remove('is-editing');
-      btn.title = side === "question" ? "Edit question" : "Edit answer";
-    }
-  }
-  return committed;
-}
-
-// Whether the user has explicitly asked to see the card as raw markdown. Every
-// flip used to drop back to the rendered view, so editing both sides of a card
-// meant re-tapping ✎ after each flip. Only the EXPLICIT toggles (the ✎ buttons,
-// Ctrl+E, triple-click) write this — never the blur-driven commit, which is
-// exactly what tapping the card to flip triggers on the way out of the side you
-// were editing, and which would otherwise clear the preference every time.
-// Reset in showCard, so arriving at a different card always starts rendered.
-export let cardRawModePreferred = false;
-
-// Setter: an imported binding is read-only, and cards/card-view.js records the preference when a card is shown.
-export function setCardRawModePreferred(value) {
-  cardRawModePreferred = value;
-}
-
-// Carries that choice across a flip: the newly-shown side opens in whichever
-// mode was last chosen instead of always resetting to rendered.
-export function applyCardRawModePreference() {
-  if (!state.cards[state.current]) return;
-  const shownSide = state.flipped ? "answer" : "question";
-  const hiddenSide = state.flipped ? "question" : "answer";
-  const viewFor = (side) => (side === "answer" ? el.answerView : el.questionView);
-
-  // Commit the side we just turned away from. Tapping the card to flip normally
-  // blurs its textarea and the blur handler does this, but a flip from anywhere
-  // that doesn't move focus (Ctrl+E, a swipe, the nav buttons) would otherwise
-  // leave that editor open behind the now-hidden face — so it reappeared, still
-  // open, the next time the card was flipped back.
-  if (viewFor(hiddenSide)?.hidden) toggleEditMode(hiddenSide, { remember: false });
-
-  if (!cardRawModePreferred) return;
-  const view = viewFor(shownSide);
-  if (!view || view.hidden) return; // already raw on this side
-  toggleEditMode(shownSide, { remember: false });
-}
-
-// `cursorOffset` (raw-markdown character index) places the caret there instead
-// of at the start of the text — used by the triple-click handler so switching to
-// raw mode doesn't lose your place, the same way enterNotesEditing does it.
-// `remember: false` opts out of updating cardRawModePreferred, for the toggles
-// that are a side effect of something else (a blur, a flip) rather than a
-// deliberate choice.
-export function toggleEditMode(side, { cursorOffset = null, remember = true } = {}) {
-  const isQuestion = side === 'question';
-  const btn = isQuestion ? el.editQuestionBtn : el.editAnswerBtn;
-  const view = isQuestion ? el.questionView : el.answerView;
-  const edit = isQuestion ? el.questionEdit : el.answerEdit;
-  const toolbar = isQuestion ? el.questionEditToolbar : el.answerEditToolbar;
-  const renderToolbar = isQuestion ? el.questionRenderToolbar : el.answerRenderToolbar;
-  const currentCard = state.cards[state.current];
-
-  if (!currentCard) return;
-
-  const isEditing = view.hidden;
-  hideNotesSelectionButton();
-  if (remember) cardRawModePreferred = !isEditing;
-
-  if (!isEditing) {
-    view.hidden = true;
-    edit.hidden = false;
-    if (toolbar) toolbar.hidden = false;
-    if (renderToolbar) renderToolbar.hidden = true;
-    edit.value = isQuestion ? currentCard.question : currentCard.answer;
-    if (btn) {
-      btn.classList.add('is-editing');
-      btn.title = 'Back to preview';
-    }
-    refreshHighlightBackdrop(edit);
-    edit.focus();
-    // Assigning .value leaves the caret at the very end in most browsers, so
-    // always place it explicitly — a matched offset when we have one, otherwise
-    // the top of the text. Never let a failed match silently dump you at the end.
-    const pos = cursorOffset != null
-      ? Math.max(0, Math.min(cursorOffset, edit.value.length))
-      : 0;
-    edit.setSelectionRange(pos, pos);
-    scrollTextareaToOffset(edit, pos);
-  } else {
-    const typed = edit.value.trim();
-    // A card with no question is dropped by loadDeckSnapshot on the next deck
-    // load, so committing a blank one silently destroys the card — and the next
-    // push deletes it from the cloud too. This path also runs on BLUR, so it
-    // discards the empty edit and keeps the existing question rather than
-    // refusing to close and trapping focus in the textarea. (A blank ANSWER is
-    // legitimate: every quick_notes pin is front-only.)
-    const rejected = isQuestion && !typed;
-    const newValue = rejected ? currentCard.question : typed;
-
-    if (!rejected) {
-      if (isQuestion) {
-        currentCard.question = newValue;
-      } else {
-        currentCard.answer = newValue;
-      }
-
-      const masterIndex = state.masterCards.findIndex(c => c.id === currentCard.id);
-      if (masterIndex > -1) {
-        if (isQuestion) state.masterCards[masterIndex].question = newValue;
-        else state.masterCards[masterIndex].answer = newValue;
-      }
-    }
-
-    view.hidden = false;
-    edit.hidden = true;
-    if (toolbar) toolbar.hidden = true;
-    if (renderToolbar) renderToolbar.hidden = false;
-    if (btn) {
-      btn.classList.remove('is-editing');
-      btn.title = isQuestion ? 'Edit question' : 'Edit answer';
-    }
-
-    renderMarkdown(view, newValue, true).then(() => {
-      if (isQuestion) scheduleLiveQuestionFit();
-    });
-
-    if (rejected) {
-      setStatus("Question cannot be empty — kept the previous text.", "error");
-      return;
-    }
-
-    scheduleDeckAutosave();
-    setStatus(state.deckId ? "Card updated locally. Sync to update the web deck." : "Card updated.");
-  }
-}
 
 el.editQuestionBtn.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -2202,10 +1999,6 @@ el.goToNotesBtn?.addEventListener('click', (e) => {
 el.questionEdit.addEventListener('click', (e) => e.stopPropagation());
 el.answerEdit.addEventListener('click', (e) => e.stopPropagation());
 
-// True while the toolbar image file picker is open. Opening the native file dialog
-// blurs the textarea; without this guard the blur handler would exit edit mode before
-// the picked image is inserted, so the insertion would land in a reset textarea.
-let imagePickerActive = false;
 
 // Auto-save when focus leaves the textarea (blur), unless focus moved to the edit button (which handles its own toggle)
 // remember:false — a blur is not a decision to go back to the rendered view. It
@@ -2225,29 +2018,6 @@ if (el.newDeckBtn) {
   el.newDeckBtn.addEventListener("click", () => createNewDeck());
 }
 
-function addBlankCardAtCursor() {
-  if (!state.masterCards.length && !state.deckTitle) {
-    setStatus("Create a new deck or import one first.", "error");
-    return;
-  }
-  // From zero cards there's no "current" card to navigate from — land
-  // directly on the new sole card instead of animating navigateCard(1),
-  // which assumes a real current card and would overshoot to the
-  // deck-complete summary.
-  const wasEmpty = state.masterCards.length === 0;
-  pushCardUndoSnapshot(snapshotCardsState());
-  const newCard = createBlankCard();
-  const insertAt = wasEmpty ? 0 : state.current + 1;
-  state.masterCards.splice(insertAt, 0, newCard);
-  state.cards.splice(insertAt, 0, newCard);
-  if (wasEmpty) {
-    state.current = 0;
-    showCard();
-  } else {
-    navigateCard(1, "next");
-  }
-  setStatus("Card added. Click the edit icon to modify it.");
-}
 
 if (el.addCardBtn) {
   el.addCardBtn.addEventListener("click", addBlankCardAtCursor);
@@ -2282,22 +2052,6 @@ if (deckEmptyNewBtn) deckEmptyNewBtn.addEventListener("click", () => createNewDe
 if (deckEmptyImportBtn2) deckEmptyImportBtn2.addEventListener("click", () => openImportPanel());
 if (deckEmptyWebBtn) deckEmptyWebBtn.addEventListener("click", () => openMyDecksPanel());
 
-export const helpModal = document.getElementById("helpModal");
-const helpBtn = document.getElementById("helpBtn");
-const helpModalCloseBtn = document.getElementById("helpModalCloseBtn");
-const helpModalCloseFootBtn = document.getElementById("helpModalCloseFootBtn");
-
-function openHelpModal() {
-  if (!helpModal) return;
-  helpModal.hidden = false;
-  lockPageScroll();
-}
-
-export function closeHelpModal() {
-  if (!helpModal) return;
-  helpModal.hidden = true;
-  unlockPageScroll();
-}
 
 if (helpBtn) helpBtn.addEventListener("click", openHelpModal);
 if (helpModalCloseBtn) helpModalCloseBtn.addEventListener("click", closeHelpModal);
@@ -2317,646 +2071,9 @@ if (helpModal) {
 // them, and a placeholder is far easier to reason about in a 35-line leaf
 // module than at line 29,441 of a 35,000-line one.
 
-// The running build's version. Normally the commit SHA above; "dev" for an
-// unstamped checkout, "unknown" only if this file was somehow loaded without one.
-function runningAppVersion() {
-  if (IS_DEV_BUILD) return "dev";
-  return BUILD_STAMP || "unknown";
-}
-
-// The build time as a human would read it, or "" when there is nothing honest
-// to show — an unstamped checkout, or a value sed never reached.
-function runningBuildTime() {
-  if (IS_DEV_BUILD || !BUILD_TIME || BUILD_TIME.startsWith("__")) return "";
-  const when = new Date(BUILD_TIME);
-  if (Number.isNaN(when.getTime())) return "";
-  return when.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-}
-
-// What the "Installed version" row says: the commit, and when that commit was
-// made. Both come from the deploy, so neither can be stale relative to the
-// other the way a typed stamp and a typed date could.
-function runningVersionLabel() {
-  const version = runningAppVersion();
-  const builtAt = runningBuildTime();
-  return builtAt ? `${version} · ${builtAt}` : version;
-}
-
-// What the page REQUESTED, as distinct from what it got. Compared against
-// BUILD_STAMP to catch a cross-release fallback the worker didn't report — the
-// message needs a controller and an open channel, and neither is guaranteed on
-// the very load that went wrong.
-export function requestedAppVersion() {
-  const src = document.querySelector('script[src*="main.js"]')?.getAttribute("src") || "";
-  return src.match(/[?&]v=([^&]+)/)?.[1] || null;
-}
-
-// Where the source of truth lives. One place, so a fork edits one line.
-const GITHUB_REPO = { owner: "sinayanaik", repo: "recall", branch: "main" };
-const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO.owner}/${GITHUB_REPO.repo}`;
-
-// The release stamp as it appears in index.html — the SAME string the running
-// page's <script src> carries, which is the whole point: the old check compared
-// index.html's ?v= against sw.js's CACHE_NAME, two hand-maintained numbers in
-// five different places. Whenever they drifted, the app announced "Update
-// available" forever and offered a Reload button that could not possibly fix
-// it, because there was no newer build to reload into.
-//
-// Since the deploy substitutes a commit SHA, that stamp IS the deployed commit,
-// which is why the repo half of this check no longer has to download a file to
-// read a version out of it.
-const RELEASE_STAMP_RE = /src\/main\.js\?v=([^"'&\s]+)/;
-// `const` is part of the pattern deliberately: the cache name no longer carries
-// a "v" prefix, so a bare `CACHE_NAME\s*=` would also match sw.js's
-// IMAGE_CACHE_NAME ("recall-images-v1") and report the image cache as a second,
-// disagreeing release version.
-const CACHE_NAME_RE = /const CACHE_NAME\s*=\s*"recall-([^"]+)"/;
-
-function stampFromHtml(text) {
-  return text.match(RELEASE_STAMP_RE)?.[1] || null;
-}
-
-// Every ?v= in a served index.html, plus sw.js's CACHE_NAME. All must agree for
-// a release to be coherent.
-//
-// sw.js's APP_SHELL entries are deliberately NOT read any more: they are now
-// built from CACHE_NAME (`./app.js?v=${STAMP}`) rather than typed out, so there
-// is nothing left there to disagree. Scanning for them regardless was actively
-// wrong — the pattern matched the template literal and captured "${STAMP}`," as
-// a stamp, so every build reported itself inconsistent and the modal refused to
-// compare anything at all.
-function releaseStampsIn(html, sw) {
-  const stamps = [];
-  if (html) {
-    for (const match of html.matchAll(/(?:app|styles)\.(?:js|css)\?v=([^"'&\s]+)/g)) {
-      stamps.push({ where: "index.html", stamp: match[1] });
-    }
-  }
-  if (sw) {
-    const cacheName = sw.match(CACHE_NAME_RE);
-    if (cacheName) stamps.push({ where: "sw.js CACHE_NAME", stamp: cacheName[1] });
-    // A literal stamp here means an older sw.js that still hand-maintains them,
-    // which is exactly the drift worth reporting. The template form contains
-    // "${" and is skipped.
-    for (const match of sw.matchAll(/\.\/(?:app|styles)\.(?:js|css)\?v=([^"'&\s`]+)/g)) {
-      if (match[1].includes("${")) continue;
-      stamps.push({ where: "sw.js APP_SHELL", stamp: match[1] });
-    }
-  }
-  return stamps;
-}
-
-// Every request this check makes is bounded. Without it the modal's rows sit on
-// "checking…" for as long as the network cares to hang — and a version
-// indicator that can silently never finish is exactly the thing it exists not
-// to be. A timeout is a real answer ("couldn't reach it"); no answer is not.
-const UPDATE_CHECK_TIMEOUT_MS = 8000;
-
-function updateCheckSignal() {
-  try {
-    return AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS);
-  } catch (_) {
-    return undefined; // pre-2022 engine: fall back to an unbounded fetch
-  }
-}
-
-// Same-origin fetch for the update check, on UPDATE_CHECK_TIMEOUT_MS. Renamed
-// from `fetchText` because a second function of that name existed 4,000 lines
-// up for URL imports; see fetchImportText for what that collision cost.
-async function fetchReleaseText(url, options = {}) {
-  const response = await fetch(url, { signal: updateCheckSignal(), ...options });
-  if (!response.ok) throw new Error(`${url} -> ${response.status}`);
-  return response.text();
-}
-
-// What this origin would hand a visitor arriving right now. `no-store` keeps
-// both the browser's HTTP cache and the service worker's cached copy out of the
-// answer — and sw.js exempts itself from interception outright (see its fetch
-// handler), so neither file can come back stale.
-async function fetchLiveRelease() {
-  const [html, sw] = await Promise.all([
-    fetchReleaseText("./index.html", { cache: "no-store" }),
-    fetchReleaseText("./sw.js", { cache: "no-store" }).catch(() => null)
-  ]);
-  return { stamp: stampFromHtml(html), html, sw };
-}
-
-// The repo itself: the newest commit on the branch. Cross-origin and not a CDN
-// asset, so the service worker's fetch handler returns early and never touches
-// this.
-//
-// This used to additionally download index.html and sw.js from
-// raw.githubusercontent.com at that commit, purely to read a hand-typed stamp
-// out of them. It no longer has to: the deployed version IS the short SHA, so
-// the commit listing already answers the question and two round-trips per check
-// disappeared with it.
-let githubReleaseCache = { at: 0, value: null };
-const GITHUB_CACHE_MS = 5 * 60 * 1000;
-
-function githubHeaders() {
-  return { Accept: "application/vnd.github+json" };
-}
-
-// 403 and 429 are the unauthenticated rate limit (60/hr, shared per IP), not a
-// broken repo — worth saying so rather than reporting the repo as unreachable.
-function throwIfRateLimited(response) {
-  if (response.status === 403 || response.status === 429) {
-    throw Object.assign(new Error("rate limited"), { rateLimited: true });
-  }
-}
-
-async function fetchRepoRelease() {
-  if (githubReleaseCache.value && Date.now() - githubReleaseCache.at < GITHUB_CACHE_MS) {
-    return githubReleaseCache.value;
-  }
-  const commitResponse = await fetch(`${GITHUB_API}/commits/${GITHUB_REPO.branch}`, { headers: githubHeaders(), cache: "no-store", signal: updateCheckSignal() });
-  throwIfRateLimited(commitResponse);
-  if (!commitResponse.ok) throw new Error(`commits -> ${commitResponse.status}`);
-  const commit = await commitResponse.json();
-
-  const value = {
-    // Seven characters, matching what the deploy writes into the files, so the
-    // two are directly comparable without normalising either side.
-    sha: String(commit.sha || "").slice(0, 7),
-    date: commit.commit?.author?.date || commit.commit?.committer?.date || null,
-    subject: String(commit.commit?.message || "").split("\n")[0]
-  };
-  githubReleaseCache = { at: Date.now(), value };
-  return value;
-}
-
-// Which way round two commits sit. Answers the one question that decides
-// between "Pages hasn't published your push yet" and "you're running something
-// that isn't on the branch at all" — and answers it from git's actual history
-// rather than, as the old code did, by comparing two YYYYMMDD-NN strings
-// lexically and hoping the author's typed dates ran in the right order.
-//
-// Returns GitHub's own status: "identical", "ahead" (deployed is an ancestor of
-// HEAD, i.e. the branch has moved on), "behind", or "diverged". Plus two of our
-// own, and the difference between them matters:
-//
-//   "absent"  — 404. The sha is not in this repo at all, which is a real answer.
-//   "unknown" — rate limited, offline, timed out. NOT an answer.
-//
-// Collapsing those two was tempting and wrong: the repo row can come from the
-// 5-minute cache while this call is the one that trips the 60/hr rate limit,
-// and reporting "this build isn't on the branch" because GitHub declined to
-// say is exactly the kind of confident-but-baseless claim this whole rewrite
-// exists to remove.
-async function compareCommits(base, head) {
-  try {
-    const response = await fetch(`${GITHUB_API}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`, {
-      headers: githubHeaders(),
-      cache: "no-store",
-      signal: updateCheckSignal()
-    });
-    if (response.status === 404) return "absent";
-    if (!response.ok) return "unknown";
-    const body = await response.json();
-    return body?.status || "unknown";
-  } catch (_) {
-    return "unknown";
-  }
-}
-
-export const appInfoModal = document.getElementById("appInfoModal");
-const appInfoBtn = document.getElementById("appInfoBtn");
-const appInfoCloseBtn = document.getElementById("appInfoCloseBtn");
-const appInfoVersion = document.getElementById("appInfoVersion");
-const appInfoLatest = document.getElementById("appInfoLatest");
-const appInfoStatus = document.getElementById("appInfoStatus");
-const appInfoRepo = document.getElementById("appInfoRepo");
-const appInfoCommit = document.getElementById("appInfoCommit");
-const appInfoWarning = document.getElementById("appInfoWarning");
-const appInfoCheckBtn = document.getElementById("appInfoCheckBtn");
-const appInfoReloadBtn = document.getElementById("appInfoReloadBtn");
-
-function setAppInfoStatus(text, cls = "") {
-  if (!appInfoStatus) return;
-  appInfoStatus.textContent = text;
-  appInfoStatus.classList.toggle("is-ok", cls === "ok");
-  appInfoStatus.classList.toggle("is-outdated", cls === "outdated");
-}
-
-function setAppInfoWarning(text) {
-  if (!appInfoWarning) return;
-  appInfoWarning.textContent = text || "";
-  appInfoWarning.hidden = !text;
-}
-
-// Fills every row. Also pokes the service worker's own update check — when a
-// new worker is already waiting, that alone finishes the update
-// (controllerchange then reloads the page; see registerServiceWorker).
-//
-// Three commits get compared, not two:
-//   installed — the build this page is actually running (BUILD_STAMP)
-//   live      — the build the server would hand a fresh visitor right now
-//   repo      — the newest commit on the GitHub branch
-//
-// Which pair disagrees is what decides the message. installed ≠ live means
-// there IS a newer build sitting on the server and reloading gets it. live ≠
-// repo means the newest code is pushed but GitHub Pages hasn't published it —
-// reloading cannot help, and the old check's "Update available" was a nag that
-// no amount of reloading would ever clear.
-//
-// All three are now commit SHAs written by the deploy, so "same build" is
-// literal identity rather than agreement between hand-typed strings.
-let appInfoCheckToken = 0;
-
-async function refreshAppInfo() {
-  if (!appInfoLatest || !appInfoStatus) return;
-  const token = ++appInfoCheckToken;
-  const running = runningAppVersion();
-  if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
-
-  appInfoLatest.textContent = "checking…";
-  if (appInfoRepo) appInfoRepo.textContent = "checking…";
-  if (appInfoCommit) appInfoCommit.textContent = "checking…";
-  setAppInfoStatus("");
-  setAppInfoWarning("");
-  if (appInfoReloadBtn) appInfoReloadBtn.hidden = true;
-  if (serviceWorkerRegistration) serviceWorkerRegistration.update().catch(() => {});
-
-  // Both start together, but the same-origin answer is painted the moment it
-  // lands rather than waiting on GitHub — it's the one that decides whether to
-  // offer Reload, and it must not be held hostage by a slow or blocked API.
-  // allSettled, not all: a GitHub outage or rate limit costs us the repo row
-  // and nothing else.
-  const livePromise = fetchLiveRelease();
-  const repoPromise = fetchRepoRelease();
-  livePromise
-    .then((live) => { if (token === appInfoCheckToken && appInfoLatest) appInfoLatest.textContent = live?.stamp || "unknown"; })
-    .catch(() => {});
-
-  const [liveResult, repoResult] = await Promise.allSettled([livePromise, repoPromise]);
-  // A second press while the first check is still in flight would otherwise
-  // finish later and repaint the rows with the older run's answers.
-  if (token !== appInfoCheckToken) return;
-
-  const live = liveResult.status === "fulfilled" ? liveResult.value : null;
-  const repo = repoResult.status === "fulfilled" ? repoResult.value : null;
-
-  // An unstamped build has no version, so the "Live site" row would read back
-  // the raw placeholder — not an answer. Everything else on this panel is still
-  // a real fact and still worth showing: the repo rows say what has been pushed
-  // and when, which is the only checkable thing left.
-  appInfoLatest.textContent = IS_DEV_BUILD ? "not stamped" : (live?.stamp || "unknown");
-  if (appInfoRepo) appInfoRepo.textContent = repo?.sha || (repoResult.reason?.rateLimited ? "unavailable (rate limited)" : "unavailable");
-  if (appInfoCommit) {
-    appInfoCommit.textContent = repo
-      ? `${repo.sha}${repo.date ? ` · ${new Date(repo.date).toLocaleDateString()}` : ""}${repo.subject ? ` · ${repo.subject.slice(0, 60)}` : ""}`
-      : "—";
-  }
-
-  // Nothing below can compare an unstamped build against anything, but WHY it
-  // is unstamped is the useful part, and the two causes are opposite. Served
-  // from localhost it is normal and expected. Served from a real host it is a
-  // deployment that skipped the stamping step — which is invisible in every
-  // other way, ships the same frozen ?v= to every future release, and is
-  // exactly the failure this panel should name rather than shrug at.
-  if (IS_DEV_BUILD) {
-    if (appInfoReloadBtn) appInfoReloadBtn.hidden = true;
-    const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-    if (local) {
-      setAppInfoStatus("Running from a local checkout — nothing to compare");
-      setAppInfoWarning(
-        repo
-          ? `Files are served straight from disk, so there is no build version. Newest commit on ${GITHUB_REPO.branch} is ${repo.sha} — compare it against your working tree with git.`
-          : "Files are served straight from disk, so there is no build version."
-      );
-    } else {
-      setAppInfoStatus("This deploy was never stamped", "outdated");
-      setAppInfoWarning(
-        "The site was published without the deploy workflow's stamping step, so every asset URL is a literal placeholder and updates cannot be detected or cache-busted. " +
-        "Fix: repo Settings → Pages → Source → \"GitHub Actions\", then re-run the deploy workflow."
-      );
-    }
-    return;
-  }
-
-  // The failproof half. One deploy step writes every occurrence, so these can
-  // only disagree if the site was published some other way — a half-finished
-  // upload, a fork deploying from a branch, a stale file behind a CDN. No
-  // comparison built on them would mean anything, so say THAT rather than
-  // dressing the inconsistency up as an update.
-  const stamps = releaseStampsIn(live?.html, live?.sw);
-  const distinct = [...new Set(stamps.map((entry) => entry.stamp))];
-  if (distinct.length > 1) {
-    // One line per distinct place-and-value; index.html and APP_SHELL each
-    // carry the stamp twice, and listing "index.html: X, index.html: X" makes
-    // the one entry that actually differs harder to spot, not easier.
-    const detail = [...new Set(stamps.map((entry) => `${entry.where}: ${entry.stamp}`))].join(", ");
-    setAppInfoWarning(`Build versions disagree on the server — ${detail}. Every one of these is written from the same commit by the deploy workflow, so the site was published from something other than a completed deploy. Re-running it fixes this.`);
-    setAppInfoStatus("Can't compare — the deployed build is inconsistent", "outdated");
-    return;
-  }
-
-  if (!live) {
-    setAppInfoStatus("Offline — can't check right now");
-    return;
-  }
-  if (!live.stamp || running === "unknown") {
-    setAppInfoStatus("Couldn't read a version to compare");
-    return;
-  }
-
-  if (running !== live.stamp) {
-    setAppInfoStatus("Update available — reload to update", "outdated");
-    if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
-    return;
-  }
-
-  // Everything below this line compares stamps, and a stamp is only as honest as
-  // the assumption that the bundle which ran is the bundle the URL named. These
-  // two cases are where that assumption breaks, so they have to be answered
-  // before "up to date" is allowed to be said at all.
-  if (isMixedBuild()) {
-    setAppInfoStatus("Running a mixed build — reload to fix", "outdated");
-    setAppInfoWarning(
-      "Part of this app was served from an older release than the page itself, so the version above " +
-      "is the version that was requested, not the one that ran. Reloading on a working connection fixes it."
-    );
-    if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
-    return;
-  }
-  if (updateIsWaiting) {
-    setAppInfoStatus("Update downloaded — reload to finish", "outdated");
-    if (appInfoReloadBtn) appInfoReloadBtn.hidden = false;
-    return;
-  }
-  if (updateDownloadFailed) {
-    setAppInfoStatus("An update couldn't be downloaded — will retry", "outdated");
-    setAppInfoWarning(
-      "This device started downloading a newer version and didn't finish it. It retries automatically; " +
-      "a stronger connection, or freeing up storage, is what usually lets it through."
-    );
-    return;
-  }
-
-  // Running the newest build the server has. The only question left is whether
-  // the server has caught up with the repo — and, when it hasn't, WHICH WAY
-  // round they sit. A server serving something that isn't on the branch is an
-  // ordinary local build or a deploy from somewhere else, not something to warn
-  // about; calling that "Pages hasn't published yet" would be exactly backwards.
-  //
-  // git answers this, so ask git. The old code guessed from string ordering of
-  // two hand-typed YYYYMMDD-NN stamps, which was only ever right by convention
-  // and said nothing at all once two builds shared a date.
-  if (repo?.sha && repo.sha !== live.stamp) {
-    const relation = await compareCommits(live.stamp, repo.sha);
-    if (token !== appInfoCheckToken) return;
-    if (relation === "ahead") {
-      // The deployed commit is an ancestor of the branch head: the push landed,
-      // the deploy hasn't finished.
-      setAppInfoStatus(`Up to date with the live site — GitHub Pages hasn't published ${repo.sha} yet`, "outdated");
-      setAppInfoWarning("Nothing to do here: your browser already has the newest build that exists on the server. Pages usually publishes within a couple of minutes of a push.");
-    } else if (relation === "identical") {
-      // Different short SHAs for the same commit shouldn't happen, but if they
-      // do, the honest answer is that there is nothing to update.
-      setAppInfoStatus("You're up to date ✓", "ok");
-    } else if (relation === "unknown") {
-      // Couldn't reach GitHub for the comparison. Everything reloading could
-      // fix has already been ruled out above, so the useful half is still true.
-      setAppInfoStatus("Up to date with the live site ✓", "ok");
-      setAppInfoWarning(`Couldn't ask GitHub how ${live.stamp} relates to ${repo.sha}, so this only compares against the live site.`);
-    } else {
-      setAppInfoStatus("Up to date — this build isn't on the branch", "ok");
-      setAppInfoWarning(`What the server is serving (${live.stamp}) isn't an ancestor of ${GITHUB_REPO.branch} (${repo.sha}) — a build published from somewhere else, or a branch that has been rewritten. Nothing to update.`);
-    }
-    return;
-  }
-
-  setAppInfoStatus(repo ? "You're up to date ✓" : "Up to date with the live site ✓", "ok");
-  if (!repo) setAppInfoWarning("Couldn't reach GitHub, so this only compares against the live site.");
-}
-
-// ── Supabase project health check ──────────────────────────────────────────
-// Every user connects their OWN Supabase project, and the setup form validates
-// only the SHAPE of the URL and key — never that the project behind them has the
-// schema this app needs. So a half-applied supabase_setup.sql, a storage policy
-// block that was skipped because the SQL Editor's role couldn't alter
-// storage.objects, or an upgrade from a pre-auth deployment whose rows have no
-// user_id all present as "sync just doesn't work", with the real cause reachable
-// only through a console the user does not have.
-//
-// Everything here is read-only: `limit(0)`/`limit(1)` reads and one storage
-// list. Nothing is written, so running it can never make a broken project worse.
-const HEALTH_TIMEOUT_MS = 12000;
-
-// PostgREST rejects a select naming a column that doesn't exist, so asking for
-// the full column list is itself the column check — no information_schema
-// access required (the anon role doesn't have it anyway).
-const HEALTH_TABLES = [
-  {
-    table: "decks",
-    columns: "id, title, category, notes, meta, updated_at, last_accessed_at, current_card_index",
-    label: "Decks table"
-  },
-  {
-    table: "cards",
-    columns: "id, deck_id, question, answer, position, status, category, updated_at",
-    label: "Cards table"
-  },
-  {
-    table: "deleted_decks",
-    columns: "deck_id",
-    label: "Delete tombstones",
-    // The app degrades to local-only deletes without this rather than failing,
-    // so it is a warning rather than a hard fault — but a deck deleted on one
-    // device silently returning on the next sync is not something a user can
-    // diagnose.
-    soft: true
-  },
-  {
-    table: "app_style_settings",
-    columns: "id",
-    label: "Style settings",
-    soft: true
-  }
-];
-
-const RERUN_SQL = "Re-run supabase_setup.sql in your Supabase project's SQL Editor.";
-
-export async function checkProjectHealth() {
-  const results = [];
-  const add = (label, status, detail) => results.push({ label, status, detail });
-
-  if (!supabaseClient) {
-    add("Connection", "fail", "No Supabase project is connected on this device.");
-    return results;
-  }
-  if (!navigator.onLine) {
-    add("Connection", "skip", "You're offline — reconnect to check.");
-    return results;
-  }
-
-  const userId = await verifiedCloudUserId();
-  if (!userId) {
-    // Worth stopping for: under RLS every check below would come back
-    // empty-and-successful, so an unauthenticated run would report a perfectly
-    // healthy project as perfectly healthy while nothing actually worked.
-    add("Signed in", "fail", "Not signed in, so nothing below can be checked. Sign in and try again.");
-    return results;
-  }
-  add("Signed in", "ok", "Your session is valid.");
-
-  for (const spec of HEALTH_TABLES) {
-    try {
-      const { error } = await withTimeout(
-        abortable((signal) =>
-          supabaseClient.from(spec.table).select(spec.columns).limit(1).abortSignal(signal)
-        ),
-        HEALTH_TIMEOUT_MS,
-        `check ${spec.table}`
-      );
-      if (error) throw error;
-      add(spec.label, "ok", `\`${spec.table}\` is present with every column this version needs.`);
-    } catch (error) {
-      const status = spec.soft ? "warn" : "fail";
-      if (isMissingRelationError(error)) {
-        add(spec.label, status, `The \`${spec.table}\` table doesn't exist. ${RERUN_SQL}`);
-      } else if (String(error?.code || "") === "42703") {
-        // The message names the offending column; it is the single most useful
-        // string in the whole check, so pass it through rather than paraphrase.
-        add(spec.label, status, `A column is missing — ${error.message}. ${RERUN_SQL}`);
-      } else if (String(error?.code || "") === "42501") {
-        add(spec.label, status, `Permission denied by Row Level Security. ${RERUN_SQL}`);
-      } else {
-        add(spec.label, status, error?.message || "Couldn't read this table.");
-      }
-    }
-  }
-
-  // Storage. The setup SQL's storage block is wrapped in an EXCEPTION handler
-  // that downgrades insufficient_privilege to a NOTICE, so a project can finish
-  // setup "successfully" with no image policies at all — after which every
-  // upload fails and the outbox entry is discarded.
-  try {
-    const { error } = await withTimeout(
-      supabaseClient.storage.from("images").list("", { limit: 1 }),
-      HEALTH_TIMEOUT_MS,
-      "check images bucket"
-    );
-    if (error) throw error;
-    add("Image storage", "ok", "The `images` bucket is reachable.");
-  } catch (error) {
-    add(
-      "Image storage",
-      "warn",
-      `The \`images\` bucket isn't reachable (${error?.message || "unknown error"}), so pasted images can't upload. ` +
-      "Section 7 of supabase_setup.sql creates it and its policies."
-    );
-  }
-
-  // The pre-auth-upgrade case. Rows whose user_id is NULL are hidden by RLS, so
-  // the client cannot see them directly — it can only notice the shape they
-  // make: this device is holding decks it previously confirmed in the cloud,
-  // and the cloud now reports none at all.
-  try {
-    const { data, error } = await withTimeout(
-      abortable((signal) => supabaseClient.from("decks").select("id").limit(1).abortSignal(signal)),
-      HEALTH_TIMEOUT_MS,
-      "check deck visibility"
-    );
-    if (error) throw error;
-    const syncedLocally = readLocalDeckIndex().filter((entry) => entry.deckId && entry.lastSyncedAt).length;
-    if ((!data || data.length === 0) && syncedLocally > 0) {
-      add(
-        "Deck ownership",
-        "fail",
-        `This device has ${syncedLocally} deck${syncedLocally === 1 ? "" : "s"} it previously synced, but your account ` +
-        "can see none in the cloud. On a project upgraded from before sign-in existed, the existing rows have no owner " +
-        "and RLS hides them. Section 8 of supabase_setup.sql has the one-line UPDATE that claims them."
-      );
-    } else {
-      add("Deck ownership", "ok", "Your account can read its own decks.");
-    }
-  } catch (_) {
-    // The table checks above already reported whatever is wrong here.
-  }
-
-  return results;
-}
-
-const appInfoHealthList = document.getElementById("appInfoHealthList");
-const appInfoHealthSummary = document.getElementById("appInfoHealthSummary");
-const appInfoHealthBtn = document.getElementById("appInfoHealthBtn");
-
-function renderProjectHealth(results) {
-  if (!appInfoHealthList) return;
-  appInfoHealthList.textContent = "";
-  const glyph = { ok: "✓", warn: "!", fail: "✕", skip: "–" };
-  for (const row of results) {
-    const li = document.createElement("li");
-    li.className = `app-info-health-item is-${row.status}`;
-    const mark = document.createElement("span");
-    mark.className = "app-info-health-mark";
-    mark.textContent = glyph[row.status] || "–";
-    const body = document.createElement("span");
-    const name = document.createElement("strong");
-    name.textContent = row.label;
-    body.append(name, document.createTextNode(` — ${row.detail}`));
-    li.append(mark, body);
-    appInfoHealthList.appendChild(li);
-  }
-  if (!appInfoHealthSummary) return;
-  const failed = results.filter((r) => r.status === "fail").length;
-  const warned = results.filter((r) => r.status === "warn").length;
-  if (failed) {
-    appInfoHealthSummary.textContent =
-      `${failed} problem${failed === 1 ? "" : "s"} will stop syncing from working properly. ${RERUN_SQL} It is safe to re-run and safe on a project that already holds decks.`;
-    appInfoHealthSummary.hidden = false;
-  } else if (warned) {
-    appInfoHealthSummary.textContent =
-      `Syncing works, but ${warned} feature${warned === 1 ? " is" : "s are"} degraded. ${RERUN_SQL}`;
-    appInfoHealthSummary.hidden = false;
-  } else {
-    appInfoHealthSummary.hidden = true;
-  }
-}
-
-let healthCheckInFlight = false;
-
-async function runProjectHealthCheck() {
-  if (healthCheckInFlight) return;
-  healthCheckInFlight = true;
-  if (appInfoHealthBtn) setButtonLoading(appInfoHealthBtn, true, "Checking…");
-  if (appInfoHealthList) appInfoHealthList.textContent = "";
-  if (appInfoHealthSummary) appInfoHealthSummary.hidden = true;
-  try {
-    renderProjectHealth(await checkProjectHealth());
-  } catch (error) {
-    console.warn("Project health check failed", error);
-    renderProjectHealth([{ label: "Check", status: "fail", detail: error?.message || "Couldn't complete the check." }]);
-  } finally {
-    healthCheckInFlight = false;
-    if (appInfoHealthBtn) setButtonLoading(appInfoHealthBtn, false);
-  }
-}
 
 if (appInfoHealthBtn) appInfoHealthBtn.addEventListener("click", runProjectHealthCheck);
 
-function openAppInfoModal() {
-  if (!appInfoModal) return;
-  if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
-  appInfoModal.hidden = false;
-  lockPageScroll();
-  refreshAppInfo();
-}
-
-// "Check for updates" should mean it. The 5-minute GitHub cache exists to keep
-// the modal's automatic refresh off the 60/hr budget — a deliberate press has
-// to be able to look past it.
-function forceRefreshAppInfo() {
-  githubReleaseCache = { at: 0, value: null };
-  return refreshAppInfo();
-}
-
-export function closeAppInfoModal() {
-  if (!appInfoModal) return;
-  appInfoModal.hidden = true;
-  unlockPageScroll();
-}
 
 if (appInfoBtn) appInfoBtn.addEventListener("click", openAppInfoModal);
 if (appInfoCloseBtn) appInfoCloseBtn.addEventListener("click", closeAppInfoModal);
@@ -2971,322 +2088,8 @@ if (appInfoModal) {
   });
 }
 
-// ----- Image upload (Supabase Storage) -------------------------------------
-// Insert `text` at the textarea's caret and fire an input event so card state saves.
-// `atPos` overrides the live caret — needed for the toolbar image button, where the
-// file picker blurs the textarea and resets its selection before insertion.
-function insertAtCursor(textarea, text, atPos) {
-  textarea.focus();
-  if (typeof atPos === "number") {
-    const p = Math.max(0, Math.min(atPos, textarea.value.length));
-    textarea.selectionStart = textarea.selectionEnd = p;
-  }
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  const val = textarea.value;
-  textarea.value = val.substring(0, start) + text + val.substring(end);
-  textarea.selectionStart = textarea.selectionEnd = start + text.length;
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
-}
 
-// Replace the first occurrence of `find` with `replace` in the textarea (used to swap the
-// "uploading…" placeholder for the final markdown once the upload resolves).
-// Used to swap an "uploading…" placeholder for the final markdown once an
-// async image upload resolves. The caret is preserved relative to the
-// replaced region rather than always snapped to right after the replacement
-// — the upload is async, so the user may have kept typing further down in
-// the textarea while it was in flight; without this, the caret would jump
-// back and split their in-progress typing as soon as the upload finished.
-function replaceInTextarea(textarea, find, replace) {
-  const idx = textarea.value.indexOf(find);
-  if (idx === -1) return;
-  const findEnd = idx + find.length;
-  const delta = replace.length - find.length;
-  const adjust = (pos) => {
-    if (pos <= idx) return pos;
-    if (pos >= findEnd) return pos + delta;
-    return idx + replace.length; // caret was inside the placeholder itself
-  };
-  const newStart = adjust(textarea.selectionStart);
-  const newEnd = adjust(textarea.selectionEnd);
-
-  textarea.value = textarea.value.slice(0, idx) + replace + textarea.value.slice(findEnd);
-  textarea.selectionStart = newStart;
-  textarea.selectionEnd = newEnd;
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-// Downscale + re-encode an image before upload to cut file size (screenshots are
-// often huge PNGs). Animated GIFs and SVGs are passed through untouched — canvas
-// would flatten/rasterize them. Falls back to the original file on any error or if
-// the "optimized" result isn't actually smaller.
-const IMAGE_MAX_DIMENSION = 1600; // longest edge, in px
-const IMAGE_QUALITY = 0.82;
-const IMAGE_MIME_EXT = { "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png" };
-
-// Count a GIF's frames by walking its block structure. Only an ANIMATED gif has
-// to skip optimization — the canvas path would flatten it to a still — but a
-// single-frame GIF is just a picture, and passing every GIF through untouched
-// meant a multi-megabyte one was stored and served at full size forever.
-// Anything unparseable returns 2, i.e. "treat as animated", which is the answer
-// that can only cost bytes rather than destroy the image.
-function gifFrameCount(bytes) {
-  if (bytes.length < 13 || bytes[0] !== 0x47 || bytes[1] !== 0x49 || bytes[2] !== 0x46) return 2;
-  let at = 10;
-  // Global colour table: flag is the high bit of the packed field at byte 10,
-  // and its size is 3 × 2^(N+1) where N is the low three bits.
-  if (bytes[at] & 0x80) at += 3 * (1 << ((bytes[at] & 0x07) + 1));
-  at += 3; // packed field + background colour index + pixel aspect ratio
-  const skipSubBlocks = () => {
-    while (at < bytes.length) {
-      const size = bytes[at++];
-      if (!size) return true;
-      at += size;
-    }
-    return false;
-  };
-  let frames = 0;
-  while (at < bytes.length) {
-    const marker = bytes[at++];
-    if (marker === 0x3B) break;            // trailer
-    if (marker === 0x21) {                 // extension: label, then sub-blocks
-      at += 1;
-      if (!skipSubBlocks()) return 2;
-      continue;
-    }
-    if (marker !== 0x2C) return 2;         // not a valid block boundary
-    frames += 1;
-    if (frames > 1) return frames;         // animated — no need to finish
-    at += 8;                               // image descriptor, up to its packed field
-    const packed = bytes[at++];
-    if (packed & 0x80) at += 3 * (1 << ((packed & 0x07) + 1)); // local colour table
-    at += 1;                               // LZW minimum code size
-    if (!skipSubBlocks()) return 2;
-  }
-  return frames;
-}
-
-export async function optimizeImage(file) {
-  const fileType = (file && file.type) || "";
-  // SVG is vector: already small, and rasterizing it would be a downgrade.
-  if (!fileType.startsWith("image/") || fileType === "image/svg+xml") return file;
-  if (fileType === "image/gif") {
-    try {
-      const head = new Uint8Array(await file.slice(0, 4 * 1024 * 1024).arrayBuffer());
-      if (gifFrameCount(head) > 1) return file;
-    } catch {
-      return file;
-    }
-  }
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const w = img.naturalWidth, h = img.naturalHeight;
-      if (!w || !h) { resolve(file); return; }
-      const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(w, h));
-      // Whether the re-encode is allowed to lose on bytes alone. If the source
-      // is oversized, the downscale is the point: a 4000px JPEG that is already
-      // well compressed would otherwise be stored at 4000px and decoded at that
-      // size on every single view, on every device.
-      const wasDownscaled = scale < 1;
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(w * scale);
-      canvas.height = Math.round(h * scale);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) { resolve(file); return; }
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const toBlob = (mime) => new Promise((res) => canvas.toBlob(res, mime, IMAGE_QUALITY));
-      // WebP keeps transparency and compresses better; fall back to JPEG if it's unsupported.
-      toBlob("image/webp")
-        .then((blob) => blob || toBlob("image/jpeg"))
-        .then((blob) => {
-          if (!blob || (blob.size >= file.size && !wasDownscaled)) { resolve(file); return; }
-          const ext = IMAGE_MIME_EXT[blob.type] || "img";
-          const baseName = (file.name || "image").replace(/\.[^.]+$/, "");
-          resolve(new File([blob], `${baseName}.${ext}`, { type: blob.type }));
-        })
-        .catch(() => resolve(file));
-    };
-    img.src = url;
-  });
-}
-
-// Storage bucket for uploaded images (see supabase_setup.sql, section 7). Public
-// read so a rendered `![](url)` works with no signed-in context; writes are
-// scoped per-user by RLS, keyed on the user.id folder prefix used below.
-const IMAGE_BUCKET = "images";
-
-// Extension for the stored object's filename. Superset of IMAGE_MIME_EXT (which
-// only ever sees optimized webp/jpeg/png blobs) so GIF/SVG — passed through
-// un-optimized — get a real extension instead of ".img". Purely cosmetic:
-// Storage serves the content-type set at upload, not one inferred from the name.
-const IMAGE_STORAGE_EXT = {
-  "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
-  "image/gif": "gif", "image/svg+xml": "svg"
-};
-
-// ── Where an uploaded image lands in the bucket ────────────────────────────
-// Everything used to go straight into one flat `{uid}/` folder with a
-// timestamp-random filename, which made a bucket of thousands of images
-// impossible to read: you couldn't tell which book or deck any object came
-// from, and you couldn't clear out one import without picking objects off
-// one at a time. Uploads are now filed as:
-//
-//   {uid}/books/{book-slug}--{importId}/{NNN}-{original-name}.{ext}
-//   {uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.{ext}
-//   {uid}/unfiled/{ts}-{rand}.{ext}
-//
-// The `--{id}` suffix is what makes each folder unique: two imports of the
-// same book, or two same-titled decks, never share a folder, so one can be
-// deleted without touching the other. It's a suffix (not a prefix) so a
-// rename-tolerant lookup can still find every folder belonging to one deck by
-// matching on the id, while the human-readable slug stays in front where it's
-// useful in the Storage browser.
-//
-// Only NEW uploads are affected. Images already in notes are absolute URLs and
-// keep working wherever they sit — supabaseImagePathFromUrl below reads a path
-// of any depth, so deleting an old flat-path image still works too.
-const UNFILED_IMAGE_FOLDER = "unfiled";
-const MAX_STORAGE_SLUG_LENGTH = 48;
-
-// One path segment, safe for a Storage object key and readable in the Storage
-// browser: lowercase a-z0-9 and dashes only. Storage accepts more than this,
-// but spaces and non-ASCII turn into percent-escapes in every URL and log line
-// that mentions the object, which defeats the point of naming the folder.
-export function storageFolderSlug(value, fallback = "untitled") {
-  const slug = String(value || "")
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "") // strip accents left by NFKD
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, MAX_STORAGE_SLUG_LENGTH)
-    .replace(/-+$/, "");
-  return slug || fallback;
-}
-
-// Short, collision-resistant id for one upload group (one EPUB import run).
-// Timestamp-first so folders sort chronologically in the Storage browser.
-export function storageGroupId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-// Folder for images pasted/dropped into a deck's notes. Keyed on the deck's
-// local id, which is stable for the deck's whole life, so every image a deck
-// accumulates stays together. Returns null before the deck has ever been saved
-// (no id to key on yet) — those go to `unfiled/`.
-function deckImageFolder() {
-  const localId = state.localDeckId;
-  if (!localId) return null;
-  const slug = storageFolderSlug(state.deckTitle || state.sourceTitle, "untitled-deck");
-  return `decks/${slug}--${localId}`;
-}
-
-// Resolves a Supabase public-storage URL back to its object path within
-// IMAGE_BUCKET, or null if `url` isn't one of ours (a legacy ImgBB/Drive/
-// external link) — the signal deleteSupabaseImage uses to know whether
-// there's anything it can actually delete.
-export function supabaseImagePathFromUrl(url) {
-  if (!supabaseClient || !url) return null;
-  const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("");
-  const prefix = data?.publicUrl || "";
-  if (!prefix || !url.startsWith(prefix)) return null;
-  return url.slice(prefix.length).replace(/^\/+/, "");
-}
-
-// Best-effort delete of an uploaded image's underlying storage object. A no-op
-// for URLs we didn't host (nothing to delete) or once the reference is already
-// gone — this only ever runs after the note-side removal already succeeded, so
-// a failure here is logged, not surfaced, rather than undoing that removal.
-export async function deleteSupabaseImage(url) {
-  const path = supabaseImagePathFromUrl(url);
-  if (!path) return;
-  try {
-    const { error } = await supabaseClient.storage.from(IMAGE_BUCKET).remove([path]);
-    if (error) console.warn("Could not delete image from storage", error);
-  } catch (error) {
-    console.warn("Could not delete image from storage", error);
-  }
-}
-
-// Upload an image File/Blob to the signed-in user's own Supabase Storage
-// bucket, returning its permanent public URL. Unlike ImgBB there's no separate
-// API key to manage — the same login that unlocks sync also unlocks uploads,
-// and because it's the user's own project, the image can later be deleted too
-// (deleteSupabaseImage), which ImgBB's plain public-link API never allowed.
-//
-// `folder` is the per-book / per-deck subfolder the object is filed under (see
-// the path scheme above); null means "no known owner" and lands in unfiled/.
-// `name` is an optional extension-less basename — the EPUB importer passes the
-// book's own image filename so a figure is recognisable in the bucket instead
-// of being another anonymous timestamp.
-export async function uploadImageToSupabase(file, { folder = null, name = null } = {}) {
-  if (!navigator.onLine) throw new Error("OFFLINE");
-  if (!supabaseClient || !isSignedIn) throw new Error("NOT_SIGNED_IN");
-  // Read the id from the cached session (no network) rather than getUser()
-  // (a round-trip per call) — a bulk EPUB import is hundreds of uploads
-  // back-to-back, and one auth request each would dominate the import time.
-  const session = await getCachedSession();
-  const userId = session?.user?.id;
-  if (!userId) throw new Error("NOT_SIGNED_IN");
-  const ext = IMAGE_STORAGE_EXT[file.type] || "img";
-  // The first segment stays the raw auth.uid() — the storage RLS policies match
-  // on (storage.foldername(name))[1], so anything else here is rejected. Deeper
-  // segments are unconstrained, which is why this nesting needs no SQL change.
-  const dir = `${userId}/${folder || UNFILED_IMAGE_FOLDER}`;
-  const base = name || `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const path = `${dir}/${base}.${ext}`;
-  const { error } = await withTimeout(
-    supabaseClient.storage.from(IMAGE_BUCKET).upload(path, file, {
-      contentType: file.type || "application/octet-stream",
-      // Without this Supabase serves max-age=3600, so the browser re-fetched
-      // every image in any session more than an hour after the last one. The
-      // path above is random and never overwritten (upsert: false), so the
-      // bytes at this URL cannot change and the cache can be permanent.
-      cacheControl: "31536000, immutable",
-      upsert: false
-    }),
-    CLOUD_TIMEOUT_MS,
-    "upload image"
-  );
-  if (error) {
-    const err = new Error(error.message || "Upload failed");
-    // An RLS rejection is permanent for this session the same way a bad ImgBB
-    // key was — retrying identically-forbidden uploads would just burn through
-    // the rest of an EPUB import's images for nothing.
-    err.authFailed = /permission|policy|not.*authoriz|row-level security/i.test(error.message || "");
-    throw err;
-  }
-  const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path);
-  await cacheUploadedImageOffline(data.publicUrl, file);
-  return data.publicUrl;
-}
-
-// The service worker's image cache is populated by FETCHING images — which
-// means an image the user just added was the one image guaranteed to be missing
-// from it: the markdown now points at a public URL, but the only copy that ever
-// existed on this device was the file they picked, and it was uploaded, never
-// downloaded. Going offline right after adding an image showed it as broken.
-// We already hold the bytes, so write them straight into the same cache the
-// worker reads (same name as sw.js's IMAGE_CACHE_NAME — it is deliberately not
-// versioned, so this survives app updates). Best-effort: a failure here costs a
-// re-download later, nothing more.
-export const OFFLINE_IMAGE_CACHE = "recall-images-v1";
-
-export async function cacheUploadedImageOffline(url, blob) {
-  if (!url || !blob || typeof caches === "undefined") return;
-  try {
-    const cache = await caches.open(OFFLINE_IMAGE_CACHE);
-    await cache.put(url, new Response(blob, {
-      headers: { "Content-Type": blob.type || "application/octet-stream" }
-    }));
-  } catch (error) {
-    console.warn("Could not pre-cache the uploaded image for offline use", error);
-  }
-}
+ // longest edge, in px
 
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.
 // Dropped in wherever the caret is — no surrounding blank-line padding needed:
@@ -4259,7 +3062,7 @@ function openImagePicker(textarea, atPos) {
     imagePickerInput.style.display = "none";
     document.body.appendChild(imagePickerInput);
     imagePickerInput.addEventListener("change", () => {
-      imagePickerActive = false;
+      setImagePickerActive(false);
       const target = imagePickerInput._targetTextarea;
       const pos = imagePickerInput._targetPos;
       const files = Array.from(imagePickerInput.files || [])
@@ -4276,8 +3079,8 @@ function openImagePicker(textarea, atPos) {
   imagePickerInput._targetPos = atPos;
   // Keep edit mode alive across the file-dialog blur; the change handler (or a
   // cancelled dialog's window refocus) clears it again.
-  imagePickerActive = true;
-  window.addEventListener("focus", () => { imagePickerActive = false; }, { once: true });
+  setImagePickerActive(true);
+  window.addEventListener("focus", () => { setImagePickerActive(false); }, { once: true });
   imagePickerInput.click();
 }
 

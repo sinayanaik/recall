@@ -3,9 +3,10 @@
 
 import { allCardById, openAllCardEditor } from "../cards/all-cards.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { refreshHighlightBackdrop, state, toggleEditMode } from "../main.js?v=__BUILD__";
+import { refreshHighlightBackdrop, state } from "../main.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "../notes/caret.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "../notes/raw-offset.js?v=__BUILD__";
+import { toggleEditMode } from "../ui/edit-mode.js?v=__BUILD__";
 
 // ── Triple-click a rendered card → open its editor, caret at that spot ──────
 // Mirrors the notes triple-click-to-edit, reusing findRawOffsetForRenderedPoint.

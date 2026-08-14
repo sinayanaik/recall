@@ -20,7 +20,7 @@ import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { deleteDeckFromLibrary, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrary, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { TOMBSTONE_ORIGIN_INFERRED, TOMBSTONE_ORIGIN_USER, clearDeckTombstone, deckTombstoneOrigin, flushPendingUntombstones, isDeckTombstoned, readDeckTombstones, removeDecksMissingFromCloud, resetActiveDeckAfterDelete, tombstoneDeck } from "../library/tombstones.js?v=__BUILD__";
-import { QUICK_NOTES_DECK_TITLE, commitEditIfActive, flushPendingImageUploads, flushPendingQuickNoteAnchors, flushPendingQuickNoteCategories, state } from "../main.js?v=__BUILD__";
+import { QUICK_NOTES_DECK_TITLE, flushPendingImageUploads, flushPendingQuickNoteAnchors, flushPendingQuickNoteCategories, state } from "../main.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { warmDeckImageCache } from "../pwa/service-worker-client.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
@@ -34,6 +34,7 @@ import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, u
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
 import { describeSyncStats, emptySyncStats, isNoOpStats, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
+import { commitEditIfActive } from "../ui/edit-mode.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setStyleStatus } from "../ui/style-settings.js?v=__BUILD__";
 

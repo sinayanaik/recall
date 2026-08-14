@@ -10,9 +10,10 @@ import { deckPayloadSnapshot } from "../cloud/web-decks.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { allMyDeckSelections } from "../export/decks.js?v=__BUILD__";
 import { normalizeCardStatus, slugifyFileName } from "../export/markdown.js?v=__BUILD__";
+import { OFFLINE_IMAGE_CACHE } from "../images/upload.js?v=__BUILD__";
 import { FOLDER_SEP, folderSegments, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { myDeckPayload } from "../library/my-decks-selection.js?v=__BUILD__";
-import { LOCAL_IMAGE_SCHEME, OFFLINE_IMAGE_CACHE, getOutboxImage, noteAnchorsFromMeta, quickNoteCategoriesFromMeta } from "../main.js?v=__BUILD__";
+import { LOCAL_IMAGE_SCHEME, getOutboxImage, noteAnchorsFromMeta, quickNoteCategoriesFromMeta } from "../main.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 export const BACKUP_SCHEMA = "recall-backup";
