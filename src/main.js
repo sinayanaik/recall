@@ -6,15 +6,23 @@
 
 import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, loadSupabaseConfig, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
+import { applyDeckMetaCategories, applyWebDeckCategory, closeWebDeckExportMenus, deckPayloadSnapshot, downloadTextFile, fetchWebDeckPayload, laterIsoTimestamp, normalizeWebDeckPayload, quickNoteCategoryForCard, statusByIdFromCards, touchLocalDeckAccess, touchWebDeckAccess, updateWebDeckTitle, webDeckPayloadMarkdown } from "./cloud/web-decks.js?v=__BUILD__";
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
 import { cardSideSeparatorPattern, deckStorageKey, delimitedCardBoundaryPattern, styleStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { ensureJsZip, ensureMermaid, ensureNomnoml, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { encodeAttribute, escapeHtml, escapeRegExp, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
-import { buildFolderTree, categoriesFromDecks, refreshKnownWebDeckCategories, setKnownWebDeckCategories } from "./library/categories.js?v=__BUILD__";
+import { buildDeckSql, exportSql } from "./export/sql.js?v=__BUILD__";
+import { buildFolderTree, categoriesFromDecks, setKnownWebDeckCategories } from "./library/categories.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, folderSegments, forgetFolderTree, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./library/folders.js?v=__BUILD__";
 import { setMyDecksCwd, setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { codeLanguageAliases, codeLanguageOrGeneric, configurePrismLanguages, inferCodeLanguage } from "./render/code-language.js?v=__BUILD__";
+import { cardIsDirty, cardSyncSignature, dropTombstonesForLiveCards, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush, recordDeletedCardIds, stampCardSyncState } from "./sync/cards.js?v=__BUILD__";
+import { calculateSyncDiff, normalizeSyncText, syncTextChanged } from "./sync/diff.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
+import { chooseDeckCategory, chooseExportContent } from "./ui/pickers.js?v=__BUILD__";
+import { defaultStyleProfiles, styleControlGroups, styleCssVariables, styleDensityPresets, styleFieldByKey } from "./ui/style-schema.js?v=__BUILD__";
+import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
+import { fontFamilyChoices, themeAliases, themeCatalog } from "./ui/theme-catalog.js?v=__BUILD__";
 
 // Run `fn` once the DOM is parsed AND this module has finished evaluating.
 //
@@ -81,9 +89,6 @@ flowchart LR
 Each \`::\` block becomes one flashcard. The \`---\` line separates the front from the back.
 ::`;
 
-const styleProfiles = ["desktop", "mobile"];
-const styleMobileQuery = "(max-width: 720px)";
-const styleMobileMedia = typeof window !== "undefined" && window.matchMedia ? window.matchMedia(styleMobileQuery) : null;
 
 export const state = {
   deckId: null,
@@ -152,905 +157,10 @@ export const state = {
 };
 
 
-const themeCatalog = [
-  {
-    id: "dark-amoled",
-    label: "AMOLED Black",
-    mode: "dark",
-    description: "Pure black with cyan focus",
-    colors: { bg: "#000000", panel: "#050606", text: "#f4fbfb", line: "#1a2424", accent: "#27e0d0" }
-  },
-  {
-    id: "dark-amoled-emerald",
-    label: "AMOLED Emerald",
-    mode: "dark",
-    description: "Pure black with green accents",
-    colors: { bg: "#000000", panel: "#040705", text: "#f2fbf5", line: "#16251b", accent: "#34d96f" }
-  },
-  {
-    id: "dark-amoled-violet",
-    label: "AMOLED Violet",
-    mode: "dark",
-    description: "Pure black with violet accents",
-    colors: { bg: "#000000", panel: "#070408", text: "#fbf5ff", line: "#25172a", accent: "#c084fc" }
-  },
-  {
-    id: "dark-forest",
-    label: "Forest Dark",
-    mode: "dark",
-    description: "Deep green-black panels",
-    colors: { bg: "#0d1110", panel: "#131917", text: "#eef5f1", line: "#2b3933", accent: "#55d6bf" }
-  },
-  {
-    id: "dark-graphite",
-    label: "Graphite Dark",
-    mode: "dark",
-    description: "Neutral charcoal and cyan",
-    colors: { bg: "#101113", panel: "#181a1d", text: "#f1f3f4", line: "#333841", accent: "#7cc7d8" }
-  },
-  {
-    id: "dark-navy",
-    label: "Navy Dark",
-    mode: "dark",
-    description: "Low-glare blue workspace",
-    colors: { bg: "#0b1020", panel: "#121a2b", text: "#eef3fb", line: "#2b3a55", accent: "#8ab4ff" }
-  },
-  {
-    id: "dark-bronze",
-    label: "Bronze Dark",
-    mode: "dark",
-    description: "Dark neutral with amber focus",
-    colors: { bg: "#12110d", panel: "#1b1913", text: "#f3f0e7", line: "#3a3427", accent: "#e1b86b" }
-  },
-  {
-    id: "light-paper",
-    label: "Paper Light",
-    mode: "light",
-    description: "Warm paper with teal accents",
-    colors: { bg: "#f4f2ec", panel: "#fffdf8", text: "#161a18", line: "#d8d4c8", accent: "#16796c" }
-  },
-  {
-    id: "light-snow",
-    label: "Snow Light",
-    mode: "light",
-    description: "Clean neutral workspace",
-    colors: { bg: "#f6f8f9", panel: "#ffffff", text: "#172026", line: "#d8e0e5", accent: "#2c6f91" }
-  },
-  {
-    id: "light-ink",
-    label: "Ink Light",
-    mode: "light",
-    description: "Cool blue-gray contrast",
-    colors: { bg: "#f3f5fb", panel: "#ffffff", text: "#151b2a", line: "#d3dbea", accent: "#3f63b5" }
-  }
-];
-
-const themeAliases = {
-  dark: "dark-amoled",
-  light: "light-paper"
-};
-
-const fontFamilyChoices = {
-  system: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
-  serif: "Georgia, \"Times New Roman\", Times, serif",
-  mono: "\"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
-  rounded: "ui-rounded, \"Avenir Next\", \"Nunito Sans\", Inter, ui-sans-serif, system-ui, sans-serif"
-};
-
-// One entry per control in styleControlGroups, per profile — nothing more.
-// Keys the panel doesn't expose used to accumulate here (stackCard*,
-// sidePanelWidthPercent, the per-face font families) and normalizeStyleSettings
-// iterates THIS object, so a stale key is a setting the app carries around, syncs
-// to Supabase and back-fills from the wrong profile, while doing nothing at all.
-// Ordered to match the panel so the two can be checked against each other.
-const defaultStyleProfiles = {
-  "mobile": {
-    // Basics
-    "fontFamily": "system",
-    "baseFontSize": "12px",
-    "baseLineHeight": "1.23",
-    "notesFontSize": "15px",
-    "notesMaxWidthPercent": "100",
-    "answerFontSize": "13px",
-    "questionMaxFontSize": "23px",
-    "appWidthPercent": "100",
-    // Layout
-    "appHeightPercent": "100",
-    "cardWidthPercent": "96",
-    "cardMaxHeightPercent": "80",
-    "modalWidthPercent": "60",
-    "visualMaxWidthPercent": "90",
-    // Spacing and shape
-    "appGap": "10px",
-    "panelPadding": "10px",
-    "cardPadding": "24px",
-    "cardContentGap": "16px",
-    "buttonGap": "8px",
-    "cardCornerRadius": "14px",
-    "panelCornerRadius": "14px",
-    "buttonCornerRadius": "8px",
-    "cardBorderWidth": "1px",
-    // Question
-    "questionFillPercent": "75",
-    "questionLineHeight": "1.17",
-    "questionAlign": "left",
-    "questionVerticalAlign": "center",
-    "questionFontWeight": "500",
-    // Answer and notes
-    "answerLineHeight": "1.58",
-    "answerFontWeight": "300",
-    "notesLineHeight": "1.5",
-    "notesFontWeight": "400",
-    "notesPadding": "4px",
-    // Controls and text
-    // 34px, not desktop's 38: this now drives the Review/Prev/Next row too,
-    // which the old hardcoded mobile override pinned at exactly 34px.
-    "toolbarButtonHeight": "34px",
-    "buttonFontSize": "14px",
-    "inputHeight": "40px",
-    "modalPadding": "18px",
-    "rawMarkdownFontSize": "16px",
-    // Matches baseFontSize: --code-font-size had NO consumer until now, so every
-    // stored value for it is noise — see migrateLegacyStyleSettings, which
-    // rewrites it rather than letting anyone's code blocks suddenly shrink.
-    "codeFontSize": "12px",
-    "codeLineHeight": "1.17"
-  },
-  "desktop": {
-    // Basics
-    "fontFamily": "system",
-    "baseFontSize": "18px",
-    "baseLineHeight": "1.58",
-    "notesFontSize": "18px",
-    "notesMaxWidthPercent": "100",
-    "answerFontSize": "23px",
-    "questionMaxFontSize": "19px",
-    "appWidthPercent": "100",
-    // Layout
-    "appHeightPercent": "100",
-    "cardWidthPercent": "100",
-    "cardMaxHeightPercent": "84",
-    "modalWidthPercent": "60",
-    "visualMaxWidthPercent": "50",
-    // Spacing and shape
-    "appGap": "10px",
-    "panelPadding": "10px",
-    "cardPadding": "24px",
-    "cardContentGap": "16px",
-    "buttonGap": "8px",
-    "cardCornerRadius": "14px",
-    "panelCornerRadius": "14px",
-    "buttonCornerRadius": "8px",
-    "cardBorderWidth": "1px",
-    // Question
-    "questionFillPercent": "58",
-    "questionLineHeight": "1.18",
-    "questionAlign": "center",
-    "questionVerticalAlign": "center",
-    "questionFontWeight": "500",
-    // Answer and notes
-    "answerLineHeight": "1.58",
-    "answerFontWeight": "400",
-    "notesLineHeight": "1.58",
-    "notesFontWeight": "400",
-    "notesPadding": "6px",
-    // Controls and text
-    "toolbarButtonHeight": "38px",
-    "buttonFontSize": "14px",
-    "inputHeight": "40px",
-    "modalPadding": "18px",
-    "rawMarkdownFontSize": "18px",
-    "codeFontSize": "18px",
-    "codeLineHeight": "1.55"
-  },
-  "version": 2
-};
-
-const styleDefaults = defaultStyleProfiles.desktop;
-
-// The panel is two tiers. `basic` groups render as a plain always-visible list
-// at the top — the handful of settings people actually reach for. Everything
-// else is `advanced`: still here, still per-profile, but folded behind one
-// disclosure so the panel opens as something you can read rather than 40-odd
-// sliders across seven accordions.
-//
-// `basic` is now Theme, Density and Font/Text size, and nothing else. It used to
-// carry eight fields, which meant the "short visible list" was still a wall of
-// textboxes before you'd expanded anything. The six that moved out (line
-// spacing, notes/answer/question sizes, the two width percents) are one click
-// away under Advanced → Text; no control was removed and no stored value
-// changed, so there is nothing to migrate.
-//
-// Nothing in here may write a CSS variable no stylesheet reads. Several
-// controls used to: "Code font size" drove --code-font-size while .rendered pre
-// was hardcoded to font-size:1em, and three of the four font pickers were
-// overwritten by resolveFontFamily before anything could inherit them. A
-// control that silently does nothing is worse than a missing one, because you
-// spend your time deciding it's your eyes rather than the app.
-// Every numeric control is a plain textbox (type "text") — no sliders and no
-// min/max clamps: whatever you type is what gets applied. A bare number in a
-// px field gets the unit appended for convenience ("18" → "18px"); anything
-// else passes through verbatim, so calc()/rem/vh values work too.
-const styleControlGroups = [
-  {
-    title: "Basics",
-    tier: "basic",
-    fields: [
-      { key: "fontFamily", label: "Font", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Typeface for the whole app — cards, notes and chrome." },
-      { key: "baseFontSize", label: "Text size", type: "text", unit: "px", probe: "font-size", hint: "General Markdown and interface text size." }
-    ]
-  },
-  {
-    title: "Text",
-    tier: "advanced",
-    fields: [
-      { key: "baseLineHeight", label: "Line spacing", type: "text", probe: "line-height", hint: "General reading spacing." },
-      { key: "notesFontSize", label: "Notes text size", type: "text", unit: "px", probe: "font-size", hint: "Body text size in the Study Notes view." },
-      { key: "notesMaxWidthPercent", label: "Notes reading width %", type: "text", probe: "number", hint: "Maximum width of the notes column as a percent of the notes area." },
-      { key: "answerFontSize", label: "Answer text size", type: "text", unit: "px", probe: "font-size", hint: "Main answer text size." },
-      { key: "questionMaxFontSize", label: "Question max text size", type: "text", unit: "px", probe: "font-size", hint: "Largest question text size. Small questions can still shrink without a floor." },
-      { key: "appWidthPercent", label: "App width %", type: "text", probe: "number", hint: "Width of the whole app as a percent of screen width." }
-    ]
-  },
-  {
-    title: "Layout",
-    tier: "advanced",
-    fields: [
-      { key: "appHeightPercent", label: "App height %", type: "text", probe: "number", hint: "Height of the whole app as a percent of screen height." },
-      { key: "cardWidthPercent", label: "Card width %", type: "text", probe: "number", hint: "Flashcard width as a percent of the middle study area." },
-      { key: "cardMaxHeightPercent", label: "Card max height %", type: "text", probe: "number", hint: "Maximum flashcard height as a percent of screen height." },
-      { key: "modalWidthPercent", label: "Modal width %", type: "text", probe: "number", hint: "Import and My Decks panel width as a percent of screen width." },
-      { key: "visualMaxWidthPercent", label: "Visual max width %", type: "text", probe: "number", hint: "Maximum width of images, videos, and diagrams as a percent of available space." }
-    ]
-  },
-  {
-    title: "Spacing and shape",
-    tier: "advanced",
-    fields: [
-      { key: "appGap", label: "Main gap", type: "text", unit: "px", probe: "width", hint: "Space between major app sections." },
-      { key: "panelPadding", label: "Panel padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing for the study panel." },
-      { key: "cardPadding", label: "Card padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing on question and answer faces." },
-      { key: "cardContentGap", label: "Card label gap", type: "text", unit: "px", probe: "width", hint: "Space between the Question/Answer label and content." },
-      { key: "buttonGap", label: "Button gap", type: "text", unit: "px", probe: "width", hint: "Space between buttons." },
-      { key: "cardCornerRadius", label: "Card corner radius", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of the flashcard corners." },
-      { key: "panelCornerRadius", label: "Panel corner radius", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of the study, import, and My Decks panels." },
-      { key: "buttonCornerRadius", label: "Control corner radius", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of buttons, textboxes and selects." },
-      { key: "cardBorderWidth", label: "Card border width", type: "text", unit: "px", probe: "border-top-width", hint: "Border thickness around the flashcard." }
-    ]
-  },
-  {
-    title: "Question",
-    tier: "advanced",
-    fields: [
-      { key: "questionFillPercent", label: "Question fill %", type: "text", probe: "number", hint: "How much vertical card space the question tries to occupy." },
-      { key: "questionLineHeight", label: "Question line spacing", type: "text", probe: "line-height", hint: "Line spacing for question text." },
-      { key: "questionAlign", label: "Question horizontal align", type: "select", options: ["left", "center", "right", "justify"], hint: "Question text alignment." },
-      { key: "questionVerticalAlign", label: "Question vertical align", type: "select", options: ["start", "center", "end"], hint: "Question vertical position." },
-      { key: "questionFontWeight", label: "Question weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Question text thickness." }
-    ]
-  },
-  {
-    title: "Answer and notes",
-    tier: "advanced",
-    fields: [
-      { key: "answerLineHeight", label: "Answer line spacing", type: "text", probe: "line-height", hint: "Reading spacing on the answer side." },
-      { key: "answerFontWeight", label: "Answer weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Answer text thickness." },
-      { key: "notesLineHeight", label: "Notes line spacing", type: "text", probe: "line-height", hint: "Reading spacing in the Study Notes view." },
-      { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
-      { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing around the Study Notes content." }
-    ]
-  },
-  {
-    title: "Controls and text",
-    tier: "advanced",
-    fields: [
-      { key: "toolbarButtonHeight", label: "Button height", type: "text", unit: "px", probe: "height", hint: "Height of icon buttons, Review/Prev/Next, and the replay buttons (slightly shorter). Menu rows keep their own size." },
-      { key: "buttonFontSize", label: "Button font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside buttons." },
-      { key: "inputHeight", label: "Input height", type: "text", unit: "px", probe: "height", hint: "Height of URL and style textboxes." },
-      { key: "modalPadding", label: "Modal padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing for the import and My Decks panels." },
-      { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside Markdown edit boxes." },
-      { key: "codeFontSize", label: "Code font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside code blocks." },
-      { key: "codeLineHeight", label: "Code line spacing", type: "text", probe: "line-height", hint: "Line spacing inside code blocks." }
-    ]
-  }
-];
-
-// Density presets. A shortcut that writes several real controls at once, NOT a
-// stored setting: deliberately absent from defaultStyleProfiles, whose comment
-// above is explicit that a key there which no control maps to is a value the app
-// syncs, back-fills across profiles and does nothing with. Nothing reads these
-// back, so there is no "current preset" to get out of step with the controls —
-// pressing one is exactly equivalent to typing the eight values by hand.
-const styleDensityPresets = {
-  desktop: {
-    compact:     { baseFontSize: "16px", baseLineHeight: "1.45", cardPadding: "16px", appGap: "6px",  panelPadding: "6px",  cardContentGap: "10px", buttonGap: "6px",  toolbarButtonHeight: "34px" },
-    comfortable: { baseFontSize: "18px", baseLineHeight: "1.58", cardPadding: "24px", appGap: "10px", panelPadding: "10px", cardContentGap: "16px", buttonGap: "8px",  toolbarButtonHeight: "38px" },
-    large:       { baseFontSize: "21px", baseLineHeight: "1.7",  cardPadding: "32px", appGap: "14px", panelPadding: "14px", cardContentGap: "22px", buttonGap: "11px", toolbarButtonHeight: "44px" }
-  },
-  mobile: {
-    compact:     { baseFontSize: "11px", baseLineHeight: "1.15", cardPadding: "16px", appGap: "6px",  panelPadding: "6px",  cardContentGap: "10px", buttonGap: "6px",  toolbarButtonHeight: "30px" },
-    comfortable: { baseFontSize: "12px", baseLineHeight: "1.23", cardPadding: "24px", appGap: "10px", panelPadding: "10px", cardContentGap: "16px", buttonGap: "8px",  toolbarButtonHeight: "34px" },
-    large:       { baseFontSize: "15px", baseLineHeight: "1.45", cardPadding: "30px", appGap: "13px", panelPadding: "13px", cardContentGap: "20px", buttonGap: "10px", toolbarButtonHeight: "40px" }
-  }
-};
-
-const styleFieldByKey = styleControlGroups.reduce((fields, group) => {
-  group.fields.forEach((field) => {
-    fields[field.key] = field;
-  });
-  return fields;
-}, {});
-
-// key → the CSS variable it writes verbatim. Percent keys are deliberately
-// ABSENT: they were mapped to `--*-percent` variables no rule ever read, while
-// the value that actually did the work was the derived `--app-width: 100vw`
-// etc. set further down in applyStyleSettings. Two variables per setting, one
-// of them a decoy, is how "why doesn't this slider do anything" starts.
-const styleCssVariables = {
-  baseFontSize: "--content-font-size",
-  baseLineHeight: "--content-line-height",
-  rawMarkdownFontSize: "--raw-markdown-font-size",
-  codeFontSize: "--code-font-size",
-  codeLineHeight: "--code-line-height",
-  questionMaxFontSize: "--question-max-font-size",
-  questionLineHeight: "--question-line-height",
-  questionAlign: "--question-align",
-  questionVerticalAlign: "--question-vertical-align",
-  questionFontWeight: "--question-font-weight",
-  answerFontSize: "--answer-font-size",
-  answerLineHeight: "--answer-line-height",
-  answerFontWeight: "--answer-font-weight",
-  notesFontSize: "--notes-font-size",
-  notesLineHeight: "--notes-line-height",
-  notesFontWeight: "--notes-font-weight",
-  notesPadding: "--notes-padding",
-  appGap: "--app-gap",
-  panelPadding: "--panel-padding",
-  cardPadding: "--card-face-padding",
-  cardContentGap: "--card-face-gap",
-  buttonGap: "--toolbar-gap",
-  cardBorderWidth: "--card-border-width",
-  cardCornerRadius: "--card-radius",
-  panelCornerRadius: "--panel-corner-radius",
-  buttonCornerRadius: "--toolbar-button-radius",
-  toolbarButtonHeight: "--toolbar-button-height",
-  buttonFontSize: "--button-font-size",
-  inputHeight: "--input-height",
-  modalPadding: "--modal-padding"
-};
-
-
        // grid | folder | tree
  // tiles | list
          // Folder-view path
 
-
-async function chooseDeckCategory(currentCategory = defaultDeckCategory) {
-  try {
-    await refreshKnownWebDeckCategories();
-  } catch (error) {
-    console.warn("Could not load deck categories", error);
-  }
-
-  return new Promise((resolve) => {
-    const modal = document.createElement("section");
-    modal.className = "category-choice-modal";
-    modal.setAttribute("aria-label", "Choose deck category");
-
-    const shell = document.createElement("div");
-    shell.className = "category-choice-shell";
-    shell.innerHTML = `
-      <div class="category-choice-head">
-        <div>
-          <h2>Deck Category</h2>
-          <p>Choose an existing category or create a new one.</p>
-        </div>
-        <button type="button" data-category-cancel aria-label="Close category editor">&#215;</button>
-      </div>
-      <label class="category-choice-field">
-        <span>Category</span>
-        <select data-category-select></select>
-      </label>
-      <label class="category-choice-field" data-category-new-field hidden>
-        <span>New category</span>
-        <input type="text" data-category-new autocomplete="off" spellcheck="false">
-      </label>
-      <div class="category-choice-actions">
-        <button type="button" data-category-cancel>Cancel</button>
-        <button type="button" data-category-save>Apply</button>
-      </div>
-    `;
-
-    const select = shell.querySelector("[data-category-select]");
-    // Offer every folder that actually exists, not just the ones the cloud knows
-    // about: the local library's own categories and the known-folder registry
-    // (which is where empty folders live). Without these the picker was just
-    // "Uncategorized" + "New category" whenever Supabase was unreachable or the
-    // folder had only ever existed on this device — so choosing an existing
-    // folder was impossible offline.
-    categoriesFromDecks(readLocalDeckIndex(), [
-      ...webDeckCategories,
-      ...readKnownFolders(),
-      currentCategory
-    ]).forEach((category) => {
-      const option = document.createElement("option");
-      option.value = category;
-      option.textContent = category;
-      select.appendChild(option);
-    });
-    const newOption = document.createElement("option");
-    newOption.value = "__new__";
-    newOption.textContent = "+ New category";
-    select.appendChild(newOption);
-    select.value = normalizeDeckCategory(currentCategory);
-
-    const newField = shell.querySelector("[data-category-new-field]");
-    const newInput = shell.querySelector("[data-category-new]");
-    const cleanup = (value = null) => {
-      modal.remove();
-      resolve(value);
-    };
-
-    select.addEventListener("change", () => {
-      newField.hidden = select.value !== "__new__";
-      if (!newField.hidden) newInput.focus();
-    });
-    shell.querySelectorAll("[data-category-cancel]").forEach((button) => {
-      button.addEventListener("click", () => cleanup(null));
-    });
-    shell.querySelector("[data-category-save]").addEventListener("click", () => {
-      if (select.value === "__new__" && !newInput.value.trim()) {
-        setStatus("Category cannot be empty.", "error");
-        newInput.focus();
-        return;
-      }
-      cleanup(normalizeDeckCategory(select.value === "__new__" ? newInput.value : select.value));
-    });
-    newInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        if (!newInput.value.trim()) {
-          setStatus("Category cannot be empty.", "error");
-          return;
-        }
-        cleanup(normalizeDeckCategory(newInput.value));
-      }
-      if (event.key === "Escape") cleanup(null);
-    });
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) cleanup(null);
-    });
-
-    modal.appendChild(shell);
-    document.body.appendChild(modal);
-    select.focus();
-  });
-}
-
-// Asks Cards vs Notes before a bulk export (Export All / multi-select) runs —
-// unlike the single active-deck view, which already has separate Export and
-// Export Notes buttons, a bulk export otherwise has no way to say which one
-// you actually wanted. Resolves "cards" | "notes" | null (cancelled).
-function chooseExportContent() {
-  return new Promise((resolve) => {
-    const modal = document.createElement("section");
-    modal.className = "category-choice-modal";
-    modal.setAttribute("aria-label", "Choose what to export");
-
-    const shell = document.createElement("div");
-    shell.className = "category-choice-shell";
-    shell.innerHTML = `
-      <div class="category-choice-head">
-        <div>
-          <h2>Export</h2>
-          <p>What would you like to export?</p>
-        </div>
-        <button type="button" data-export-content-cancel aria-label="Close">&#215;</button>
-      </div>
-      <div class="export-content-choices">
-        <button type="button" class="export-content-choice" data-export-content="cards">
-          <span class="export-content-choice-icon">&#128209;</span>
-          <span>Cards</span>
-        </button>
-        <button type="button" class="export-content-choice" data-export-content="notes">
-          <span class="export-content-choice-icon">&#128221;</span>
-          <span>Notes</span>
-        </button>
-      </div>
-      <div class="category-choice-actions">
-        <button type="button" data-export-content-cancel>Cancel</button>
-      </div>
-    `;
-
-    const cleanup = (value = null) => {
-      modal.remove();
-      resolve(value);
-    };
-    shell.querySelectorAll("[data-export-content-cancel]").forEach((button) => {
-      button.addEventListener("click", () => cleanup(null));
-    });
-    shell.querySelectorAll("[data-export-content]").forEach((button) => {
-      button.addEventListener("click", () => cleanup(button.dataset.exportContent));
-    });
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) cleanup(null);
-    });
-
-    modal.appendChild(shell);
-    document.body.appendChild(modal);
-    shell.querySelector(".export-content-choice")?.focus();
-  });
-}
-
-// Whichever of two ISO timestamps (either may be null/undefined) is later,
-// or null if neither parses.
-function laterIsoTimestamp(a, b) {
-  const ta = Date.parse(a || "");
-  const tb = Date.parse(b || "");
-  if (!Number.isFinite(ta)) return Number.isFinite(tb) ? b : null;
-  if (!Number.isFinite(tb)) return a;
-  return tb > ta ? b : a;
-}
-
-// Local counterpart of touchWebDeckAccess: bumps a deck's "last opened" time
-// without touching updatedAt, so background reconcile reloads (which also call
-// loadDeckFromLibrary) don't masquerade as a real visit — only the explicit
-// open-from-My-Decks call sites invoke this.
-function touchLocalDeckAccess(id) {
-  if (!id) return;
-  const index = readLocalDeckIndex();
-  const entry = index.find((e) => e.id === id);
-  if (!entry) return;
-  entry.accessedAt = new Date().toISOString();
-  writeLocalDeckIndex(index);
-}
-
-// A PostgREST UPDATE that matches NO rows is not an error — it is a successful
-// request that changed nothing. Under RLS that is the normal shape of "this row
-// isn't yours" and of "this row no longer exists", so these three writers
-// reported success for both. `.select("id")` makes the server return what it
-// actually touched, which is the only way to tell the difference. The decks.meta
-// writers already do this; these did not.
-async function updatedDeckRow(builder, label) {
-  const { data, error } = await builder.select("id");
-  if (error) throw error;
-  if (!data || data.length === 0) {
-    throw new Error(
-      `Couldn't ${label} in the cloud — that deck isn't there, or it belongs to another account.`
-    );
-  }
-  return true;
-}
-
-async function touchWebDeckAccess(deckId) {
-  if (!deckId || !supabaseClient) return false;
-
-  // The one exception: this is a background bookkeeping touch fired whenever a
-  // deck is opened or exported. A deck that only exists locally has no cloud row
-  // to touch, which is ordinary rather than a fault, so a zero-row result here
-  // stays quiet — nothing downstream depends on it having landed.
-  const { error } = await supabaseClient
-    .from("decks")
-    .update({
-      last_accessed_at: new Date().toISOString()
-    })
-    .eq("id", deckId);
-
-  if (error) throw error;
-  return true;
-}
-
-
-async function updateWebDeckTitle(deckId, title) {
-  if (!deckId || !supabaseClient) return false;
-
-  const now = new Date().toISOString();
-  await updatedDeckRow(
-    supabaseClient.from("decks").update({ title, updated_at: now }).eq("id", deckId),
-    "rename that deck"
-  );
-  await syncLocalLibraryMetaForDeck(deckId, { title, now });
-  return true;
-}
-
-async function updateWebDeckCategory(deckId, category) {
-  if (!deckId || !supabaseClient) return false;
-
-  const normalized = normalizeDeckCategory(category);
-  const now = new Date().toISOString();
-  await updatedDeckRow(
-    supabaseClient.from("decks").update({ category: normalized, updated_at: now }).eq("id", deckId),
-    "move that deck"
-  );
-  await syncLocalLibraryMetaForDeck(deckId, { category: normalized, now });
-  return true;
-}
-
-async function applyWebDeckCategory(deckId, category) {
-  const normalized = normalizeDeckCategory(category);
-  setKnownWebDeckCategories([...webDeckCategories, normalized]);
-  await updateWebDeckCategory(deckId, normalized);
-
-  if (state.deckId === deckId) {
-    state.deckCategory = normalized;
-    updateMeta();
-  }
-
-  return normalized;
-}
-
-function closeWebDeckExportMenus(exceptMenu = null) {
-  document.querySelectorAll(".web-deck-export-menu, .bulk-export-menu").forEach((menu) => {
-    if (menu !== exceptMenu) {
-      menu.hidden = true;
-      const trigger = menu.previousElementSibling;
-      if (trigger?.matches("[aria-expanded]")) trigger.setAttribute("aria-expanded", "false");
-    }
-  });
-}
-
-function downloadTextFile(content, filename, type = "text/plain;charset=utf-8") {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-function normalizeWebDeckPayload(deckData, cardsData = []) {
-  const deck = {
-    id: String(deckData.id || ""),
-    title: String(deckData.title || "Untitled"),
-    category: normalizeDeckCategory(deckData.category),
-    notes: String(deckData.notes || ""),
-    meta: deckData.meta && typeof deckData.meta === "object" ? deckData.meta : {},
-    current_card_index: Number(deckData.current_card_index) || 0,
-    created_at: deckData.created_at || null,
-    updated_at: deckData.updated_at || null,
-    last_accessed_at: deckData.last_accessed_at || null
-  };
-
-  const cards = (cardsData || []).map((card, index) => ({
-    id: String(card.id || `${deck.id}-${index}`),
-    deck_id: String(card.deck_id || deck.id),
-    question: String(card.question || ""),
-    answer: String(card.answer || ""),
-    position: Number.isFinite(Number(card.position)) ? Number(card.position) : index,
-    status: normalizeCardStatus(card.status),
-    // Free subject label for quick_notes cards; null on regular study cards.
-    category: card.category ? String(card.category) : null,
-    created_at: card.created_at || null,
-    updated_at: card.updated_at || null
-  }));
-
-  return { deck, cards };
-}
-
-function deckPayloadSnapshot(payload) {
-  return {
-    app: "recall", // informational only — imports never read this field, so old "markdown-flashcards" exports still load
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    // The deck's REAL last-edited time (distinct from exportedAt, the moment the
-    // archive was written). Restore compares this to decide newest-wins, so it
-    // must survive the round-trip; falls back to null for older exports.
-    updatedAt: payload.deck.updated_at || null,
-    deckTitle: payload.deck.title,
-    deckCategory: payload.deck.category,
-    notes: payload.deck.notes || "",
-    // Deck-level bag — carries the quick_notes managed category set through
-    // backup/restore so restored notes still resolve their labels.
-    meta: payload.deck.meta && typeof payload.deck.meta === "object" ? payload.deck.meta : {},
-    sourceTitle: payload.deck.title,
-    importTitleHint: payload.deck.title,
-    deckId: payload.deck.id,
-    current: payload.deck.current_card_index || 0,
-    cards: payload.cards.map((card) => ({
-      id: card.id,
-      question: card.question,
-      answer: card.answer,
-      status: card.status,
-      // Quick-note subject label carried through backup/restore + reconcile.
-      category: card.category || null,
-      // Per-card last-edited time when known, so card-level conflicts can also
-      // resolve newest-wins instead of blindly overwriting a newer local edit.
-      updatedAt: card.updated_at || null
-    }))
-  };
-}
-
-function statusByIdFromCards(cards = []) {
-  return cards.reduce((statusById, card) => {
-    const status = normalizeCardStatus(card.status);
-    if (status) statusById[card.id] = status;
-    return statusById;
-  }, {});
-}
-
-// Quick-note subject label for a card: state.categoryById is authoritative
-// while a deck is open (the board writes there), with the card's own field as
-// the fallback for cards that never went through a deck load.
-function quickNoteCategoryForCard(card) {
-  if (!card || !card.id) return null;
-  const assigned = state.categoryById[card.id];
-  if (assigned) return String(assigned);
-  return card.category ? String(card.category) : null;
-}
-
-// Apply a loaded deck's meta bag to the in-memory category set. Only the
-// quick_notes deck owns this set: loading an ordinary deck must leave it alone,
-// or its (empty) meta would blank the categories the board still needs. Falls
-// back to the local cache so an offline/pre-migration load still has labels.
-function applyDeckMetaCategories(meta, deckId, title) {
-  if (!isQuickNotesDeck(deckId, title)) return;
-  const fromMeta = quickNoteCategoriesFromMeta(meta);
-  if (fromMeta.length) {
-    state.quickNoteCategories = fromMeta;
-    writeCachedQuickNoteCategories(fromMeta);
-  } else {
-    state.quickNoteCategories = readCachedQuickNoteCategories();
-  }
-}
-
-async function fetchWebDeckPayload(deckId) {
-  const { data: deckData, error: deckError } = await supabaseClient
-    .from("decks")
-    .select("*")
-    .eq("id", deckId)
-    .single();
-
-  if (deckError) throw deckError;
-
-  const { data: cardsData, error: cardsError } = await supabaseClient
-    .from("cards")
-    .select("*")
-    .eq("deck_id", deckId)
-    .order("position", { ascending: true });
-
-  if (cardsError) throw cardsError;
-  return normalizeWebDeckPayload(deckData, cardsData || []);
-}
-
-function webDeckPayloadMarkdown(payload) {
-  const notesBlock = notesExportBlock(payload.deck.notes);
-  return [
-    `# ${payload.deck.title}`,
-    "",
-    `Category: ${payload.deck.category}`,
-    `Deck ID: ${payload.deck.id}`,
-    `Exported: ${new Date().toISOString()}`,
-    "",
-    formatCardList("Cards", payload.cards),
-    notesBlock ? "" : null,
-    notesBlock || null
-  ].filter((line) => line !== null).join("\n");
-}
-
-function sqlValue(value) {
-  if (value === null || value === undefined) return "NULL";
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-function sqlTimestamp(value, fallback = new Date().toISOString()) {
-  const parsed = value ? new Date(value) : null;
-  return sqlValue(parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : fallback);
-}
-
-// `includeNotes`/`includeCards` default true (today's full-deck export). A
-// bulk "Cards" or "Notes" only export sets one of these false — critically,
-// that must OMIT the notes column / the cards DELETE+INSERT entirely rather
-// than sending a blanked value through the normal upsert, which would (if this
-// script is ever run against a live database) silently wipe the omitted half
-// of every deck it touches instead of just leaving it out of the file.
-function buildDeckSql(payloads, title = "Recall SQL Export", { includeNotes = true, includeCards = true } = {}) {
-  const lines = [
-    `-- ${title}`,
-    `-- Exported: ${new Date().toISOString()}`,
-    "BEGIN;"
-  ];
-
-  payloads.forEach((payload) => {
-    const deck = payload.deck;
-    lines.push("");
-    // Strip newlines before interpolating into a line comment — unlike the
-    // INSERT below (escaped via sqlValue), a title containing a literal
-    // newline here would break out of the "--" comment and let the rest of
-    // the title be interpreted as SQL.
-    lines.push(`-- Deck: ${String(deck.title || "").replace(/\r?\n/g, " ")}`);
-    const notesColumns = includeNotes ? [["notes", sqlValue(deck.notes || "")]] : [];
-    const columns = [
-      ["id", sqlValue(deck.id)],
-      ["title", sqlValue(deck.title)],
-      ["category", sqlValue(deck.category)],
-      ...notesColumns,
-      // Carries the quick_notes deck's managed category set; without it a
-      // restore from this file leaves every note's label pointing at a
-      // category that no longer exists.
-      ["meta", `${sqlValue(JSON.stringify(deck.meta || {}))}::jsonb`],
-      ["current_card_index", Number(deck.current_card_index) || 0],
-      ["created_at", sqlTimestamp(deck.created_at)],
-      ["updated_at", sqlTimestamp(deck.updated_at)],
-      ["last_accessed_at", sqlTimestamp(deck.last_accessed_at)]
-    ];
-    const updateColumns = ["title", "category", ...(includeNotes ? ["notes"] : []), "meta", "current_card_index", "updated_at", "last_accessed_at"];
-    lines.push(
-      `INSERT INTO decks (${columns.map(([name]) => name).join(", ")}) VALUES ` +
-      `(${columns.map(([, value]) => value).join(", ")}) ` +
-      "ON CONFLICT (id) DO UPDATE SET " +
-      updateColumns.map((name) => `${name} = EXCLUDED.${name}`).join(", ") + ";"
-    );
-
-    if (includeCards) {
-      lines.push(`DELETE FROM cards WHERE deck_id = ${sqlValue(deck.id)};`);
-      if (payload.cards.length) {
-        const values = payload.cards.map((card, index) => (
-          `(${sqlValue(card.id)}, ${sqlValue(deck.id)}, ${sqlValue(card.question)}, ${sqlValue(card.answer)}, ${Number.isFinite(Number(card.position)) ? Number(card.position) : index}, ${sqlValue(normalizeCardStatus(card.status))}, ${sqlValue(card.category || null)}, ${sqlTimestamp(card.created_at)}, ${sqlTimestamp(card.updated_at)})`
-        ));
-        lines.push(
-          "INSERT INTO cards (id, deck_id, question, answer, position, status, category, created_at, updated_at) VALUES\n" +
-          values.join(",\n") +
-          "\nON CONFLICT (id) DO UPDATE SET " +
-          "deck_id = EXCLUDED.deck_id, question = EXCLUDED.question, answer = EXCLUDED.answer, position = EXCLUDED.position, status = EXCLUDED.status, category = EXCLUDED.category, updated_at = EXCLUDED.updated_at;"
-        );
-      }
-    }
-  });
-
-  lines.push("");
-  lines.push("COMMIT;");
-  return `${lines.join("\n")}\n`;
-}
-
-function currentDeckPayload(scope = "all") {
-  const deckTitle = state.deckTitle || state.sourceTitle || "Untitled Deck";
-  const deckId = state.deckId || slugifyFileName(deckTitle);
-  const cards = cardsForScope(scope).map((card, index) => ({
-    id: card.id,
-    deck_id: deckId,
-    question: card.question,
-    answer: card.answer,
-    position: index,
-    status: normalizeCardStatus(state.statusById[card.id]),
-    category: quickNoteCategoryForCard(card),
-    created_at: null,
-    updated_at: new Date().toISOString()
-  }));
-
-  return {
-    deck: {
-      id: deckId,
-      title: deckTitle,
-      category: normalizeDeckCategory(state.deckCategory),
-      notes: state.notes || "",
-      meta: isQuickNotesDeck(deckId, deckTitle) && state.quickNoteCategories.length
-        ? { quickNoteCategories: state.quickNoteCategories }
-        : {},
-      current_card_index: Number.isFinite(state.current) ? state.current : 0,
-      created_at: null,
-      updated_at: new Date().toISOString(),
-      last_accessed_at: new Date().toISOString()
-    },
-    cards
-  };
-}
-
-function exportSql(scope = "all") {
-  const payload = currentDeckPayload(scope);
-  if (!payload.cards.length) {
-    setStatus("No cards to export as SQL.", "error");
-    return;
-  }
-
-  downloadTextFile(
-    buildDeckSql([payload], `${payload.deck.title} SQL Export`),
-    `${exportBaseName(scope)}.sql`,
-    "application/sql;charset=utf-8"
-  );
-  setStatus("Exported current deck as SQL.");
-}
 
 // Bumped by every deck-open attempt (web or local), so an in-flight one can
 // tell whether it's still the load the user actually wants applied. A big
@@ -1176,100 +286,6 @@ async function loadWebDeck(deckId) {
   }
 }
 
-function normalizeSyncText(value) {
-  return normalizeMarkdown(String(value || ""))
-    .replace(/[ \t]+$/gm, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function syncTextChanged(localValue, webValue) {
-  return normalizeSyncText(localValue) !== normalizeSyncText(webValue);
-}
-
-function sameSyncContent(localCard, webCard) {
-  return !syncTextChanged(localCard.question, webCard.question)
-    && !syncTextChanged(localCard.answer, webCard.answer);
-}
-
-function uniqueMatchingWebCard(webCards, predicate) {
-  const matches = webCards.filter(predicate);
-  return matches.length === 1 ? matches[0] : null;
-}
-
-function fallbackWebCardFor(localCard, localIndex, unmatchedWebCards, localIds) {
-  const candidates = unmatchedWebCards.filter((webCard) => !localIds.has(String(webCard.id)));
-
-  return uniqueMatchingWebCard(candidates, (webCard) => sameSyncContent(localCard, webCard))
-    || uniqueMatchingWebCard(candidates, (webCard) => Number(webCard.position) === localIndex)
-    || uniqueMatchingWebCard(candidates, (webCard) => (
-      normalizeSyncText(localCard.question)
-      && normalizeSyncText(localCard.question) === normalizeSyncText(webCard.question)
-    ))
-    || uniqueMatchingWebCard(candidates, (webCard) => (
-      normalizeSyncText(localCard.answer)
-      && normalizeSyncText(localCard.answer) === normalizeSyncText(webCard.answer)
-    ));
-}
-
-// `fuzzy` (default on) lets a local card with no exact id match pair up with a
-// web card by content/position — right when the two sides may have drifted ids
-// (e.g. an import-minted local deck vs its first web copy). It is WRONG for a
-// stable-id diff (old library snapshot vs the same deck's cloud rows), where a
-// genuinely deleted card would get spuriously paired with a genuinely added one
-// and both miscounted as an "update" — pass `{ fuzzy: false }` there.
-function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true } = {}) {
-  const unmatchedWeb = new Map(webCards.map((card) => [String(card.id), card]));
-  const localIds = new Set(localCards.map((card) => String(card.id)));
-  const changes = {
-    added: 0,
-    deleted: 0,
-    edited: 0,
-    moved: 0,
-    statusChanges: 0,
-    categoryChanges: 0
-  };
-
-  localCards.forEach((localCard, index) => {
-    const id = String(localCard.id);
-    let webCard = unmatchedWeb.get(id) || null;
-
-    if (!webCard && fuzzy) {
-      webCard = fallbackWebCardFor(localCard, index, Array.from(unmatchedWeb.values()), localIds);
-    }
-
-    if (!webCard) {
-      changes.added += 1;
-      return;
-    }
-
-    unmatchedWeb.delete(String(webCard.id));
-
-    if (syncTextChanged(localCard.question, webCard.question) || syncTextChanged(localCard.answer, webCard.answer)) {
-      changes.edited += 1;
-    }
-
-    const webPosition = Number(webCard.position);
-    if (Number.isFinite(webPosition) && webPosition !== index) {
-      changes.moved += 1;
-    }
-
-    const localStatus = normalizeCardStatus(statusById[id]);
-    const webStatus = normalizeCardStatus(webCard.status);
-    if (localStatus !== webStatus) {
-      changes.statusChanges += 1;
-    }
-
-    // Quick-note label moves are real changes; without this a pull that only
-    // recategorised notes reported "no per-card changes".
-    if ((localCard.category || null) !== (webCard.category || null)) {
-      changes.categoryChanges += 1;
-    }
-  });
-
-  changes.deleted = unmatchedWeb.size;
-  return changes;
-}
 
 // ── Per-card sync bookkeeping ───────────────────────────────────────────────
 // Deck-level last-write-wins used to be the whole conflict story: a pull
@@ -1291,310 +307,6 @@ function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy = true
 // reduces the merge to exactly the old take-the-cloud behaviour for decks that
 // predate this change.
 
-// ── Per-card delete tombstones ──────────────────────────────────────────────
-// `dirty` alone cannot express "I deleted this card": a deleted card leaves no
-// object behind to carry a flag. That gap is what let deletions un-happen. The
-// push is authoritative (pushDeckRowsToCloud prunes every cloud card missing
-// from the snapshot it sends), and the direction is chosen per deck purely by
-// timestamp — so a device holding a stale copy of a deck it has ALSO edited
-// takes the push branch, never pulls, and re-upserts the card another device
-// deleted. The card then comes back on every device on their next pull.
-//
-// So each snapshot carries `deletedCardIds` — { cardId: iso } — the ids this
-// device deleted. Two rules use it:
-//   push : a cloud card absent locally is pruned only if it is tombstoned here.
-//          Otherwise it was ADDED on another device, and pruning it would be
-//          the same bug pointing the other way.
-//   pull : a cloud row that is tombstoned here is not re-adopted; the deck is
-//          marked as owing a push so the deletion is re-asserted in the cloud.
-// A tombstone is retired as soon as the cloud is observed not to have that id —
-// the deletion has propagated and nothing can resurrect it (a device still
-// holding the card clean drops it under the clean-and-absent rule). The age cap
-// is only a backstop for a device that never syncs again.
-const CARD_TOMBSTONE_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
-const CARD_TOMBSTONE_MAX = 2000;
-
-// Always a fresh plain object, so callers can mutate it without touching the
-// snapshot they read it from.
-function readCardTombstones(snapshot) {
-  const raw = snapshot?.deletedCardIds;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const out = {};
-  for (const [id, iso] of Object.entries(raw)) {
-    if (id) out[String(id)] = typeof iso === "string" ? iso : new Date(0).toISOString();
-  }
-  return out;
-}
-
-// Age + count cap, so a deck that is edited for years can't grow an unbounded
-// tombstone map inside a snapshot that has to fit in localStorage. Oldest go
-// first when over the count cap.
-function pruneCardTombstones(map) {
-  const cutoff = Date.now() - CARD_TOMBSTONE_MAX_AGE_MS;
-  let entries = Object.entries(map).filter(([, iso]) => tsMs(iso) >= cutoff);
-  if (entries.length > CARD_TOMBSTONE_MAX) {
-    entries.sort((a, b) => tsMs(b[1]) - tsMs(a[1]));
-    entries = entries.slice(0, CARD_TOMBSTONE_MAX);
-  }
-  return Object.fromEntries(entries);
-}
-
-// The invariant every writer has to keep: a card that is PRESENT is not
-// deleted. Snapshot paths that add cards by hand (a restore, a quick note
-// pinned into another deck) must call this, or a re-created id would keep a
-// tombstone that quietly blocks it from ever syncing again.
-function dropTombstonesForLiveCards(snapshot) {
-  const map = readCardTombstones(snapshot);
-  if (!Object.keys(map).length) return snapshot;
-  for (const card of snapshot.cards || []) delete map[String(card.id)];
-  if (Object.keys(map).length) snapshot.deletedCardIds = map;
-  else delete snapshot.deletedCardIds;
-  return snapshot;
-}
-
-// Carries a deck's tombstones across a save: ids that were in the copy being
-// replaced but aren't in the new one were just deleted here; ids that are back
-// (an undo, or a re-import of the same card id) retire their tombstone, because
-// the user's most recent action is the one that counts.
-function recordDeletedCardIds(snapshot, previousSnapshot, stampIso) {
-  const map = readCardTombstones(previousSnapshot);
-  const liveIds = new Set((snapshot.cards || []).map((card) => String(card.id)));
-  for (const card of previousSnapshot?.cards || []) {
-    const id = String(card.id || "");
-    if (id && !liveIds.has(id)) map[id] = stampIso;
-  }
-  const pruned = pruneCardTombstones(map);
-  snapshot.deletedCardIds = pruned;
-  return dropTombstonesForLiveCards(snapshot);
-}
-
-// The fields that make a card materially different — i.e. the ones worth
-// pushing. Deliberately excludes position (tracked by the deck's card order)
-// and noteAnchor (device-local; the cards table has no column for it).
-function cardSyncSignature(card) {
-  return [
-    normalizeSyncText(card?.question),
-    normalizeSyncText(card?.answer),
-    normalizeCardStatus(card?.status),
-    card?.category || ""
-  ].join("␟");
-}
-
-function cardIsDirty(card) {
-  return Boolean(card && card.dirty);
-}
-
-// A card's local edit time, falling back to the deck's timestamp for snapshots
-// written before per-card stamps existed.
-function cardUpdatedMs(card, fallbackIso) {
-  return tsMs(card?.updatedAt || fallbackIso);
-}
-
-// Stamps dirty/updatedAt onto a freshly built snapshot by diffing it against the
-// copy it is about to replace. Called from saveDeckToLibrary — the one choke
-// point every local deck edit passes through. A card whose content is unchanged
-// keeps its previous flags, so a card still waiting to be pushed stays dirty
-// across any number of unrelated saves. `synced` is for the one case where the
-// snapshot is known to match the cloud already (mirroring a just-loaded web
-// deck): everything is clean, and nothing gets re-pushed for no reason.
-function stampCardSyncState(snapshot, previousSnapshot, stampIso, { synced = false } = {}) {
-  const previousById = new Map(
-    (previousSnapshot?.cards || []).map((card) => [String(card.id), card])
-  );
-  for (const card of snapshot.cards || []) {
-    if (synced) {
-      card.dirty = false;
-      card.updatedAt = stampIso;
-      continue;
-    }
-    const previous = previousById.get(String(card.id));
-    if (previous && cardSyncSignature(previous) === cardSyncSignature(card)) {
-      card.dirty = cardIsDirty(previous);
-      card.updatedAt = previous.updatedAt || stampIso;
-    } else {
-      card.dirty = true;
-      card.updatedAt = stampIso;
-    }
-  }
-  return snapshot;
-}
-
-// Merge one deck's incoming cloud rows into the copy this device already holds,
-// card by card, instead of replacing the list:
-//
-//   local only, dirty         → keep   (added here, never pushed)
-//   local only, clean         → drop   (it reached the cloud once, so the cloud
-//                                       no longer having it IS a deletion)
-//   in both, local dirty AND
-//     strictly newer          → keep local
-//   in both, otherwise        → take cloud (and it is clean from now on)
-//   cloud only                → add
-//
-// Result order follows the cloud's row order (already sorted by `position`),
-// with kept local-only cards appended in their existing relative order — they
-// have no cloud position to slot into yet. `keptLocal` is what tells the caller
-// this deck still owes the cloud a push after the pull, and so is
-// `blockedResurrections` — a cloud row this device has tombstoned is skipped
-// here and has to be re-deleted in the cloud by the following push.
-function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbackIso) {
-  const localCards = Array.isArray(oldSnapshot?.cards) ? oldSnapshot.cards : [];
-  const localById = new Map(localCards.map((card) => [String(card.id), card]));
-  const tombstones = readCardTombstones(oldSnapshot);
-  const merged = [];
-  const seenLocalIds = new Set();
-  const cloudIds = new Set();
-  let keptLocal = 0;
-  let blockedResurrections = 0;
-
-  for (const row of cloudCards || []) {
-    const id = String(row.id || "");
-    if (!id) continue;
-    cloudIds.add(id);
-    // Deleted here, still in the cloud — another device re-pushed it, or our own
-    // delete hasn't been pushed yet. Either way, adopting it back is exactly the
-    // resurrection this tombstone exists to stop.
-    if (tombstones[id]) {
-      blockedResurrections += 1;
-      continue;
-    }
-    const local = localById.get(id);
-    const fromCloud = {
-      id,
-      question: row.question,
-      answer: row.answer,
-      status: normalizeCardStatus(row.status),
-      category: row.category ? String(row.category) : null,
-      dirty: false,
-      updatedAt: row.updated_at || deckFallbackIso
-    };
-    if (local) {
-      seenLocalIds.add(id);
-      if (cardIsDirty(local) && cardUpdatedMs(local, deckFallbackIso) > tsMs(row.updated_at || deckFallbackIso)) {
-        keptLocal += 1;
-        merged.push({ ...local, id });
-        continue;
-      }
-      // noteAnchor is a device-local link (the cloud `cards` table has no column
-      // for it), so an incoming row never carries one. Re-attach what this
-      // device already had, or every pull permanently breaks the quick-note
-      // "jump to where this was pinned" button.
-      if (local.noteAnchor) fromCloud.noteAnchor = local.noteAnchor;
-    }
-    merged.push(fromCloud);
-  }
-
-  // Zero cloud rows for a deck that has cards here is NOT read as "every card
-  // was deleted elsewhere". It is what an unauthenticated read looks like (RLS
-  // returns an empty set, not an error), and what a dropped page looks like —
-  // and the cost of believing it is the entire deck, here and then in the cloud
-  // on the next push. A deck genuinely emptied on another device still converges:
-  // that device holds per-card tombstones and re-deletes these rows, which is
-  // the evidence-based path. This only refuses the guess.
-  const cloudLooksBlank = !(cloudCards || []).length && localCards.length > 0;
-
-  for (const card of localCards) {
-    const id = String(card.id || "");
-    if (!id || seenLocalIds.has(id)) continue;
-    // Clean and cloud-less means it was synced once and deleted elsewhere —
-    // dropping it is the whole point of a two-way mirror. Only unpushed work
-    // survives a cloud that has never heard of it.
-    if (!cardIsDirty(card) && !cloudLooksBlank) continue;
-    keptLocal += 1;
-    merged.push({ ...card, id });
-  }
-  if (cloudLooksBlank) {
-    console.warn(`Cloud returned 0 cards for a deck holding ${localCards.length} — keeping them all rather than treating it as a deletion.`);
-  }
-
-  // Retire the tombstones the cloud has already honoured. Keeping them past
-  // that point would block a card the user later re-creates with the same id
-  // (a restore from backup, say) from ever syncing again.
-  const deletedCardIds = pruneCardTombstones(
-    Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudIds.has(id)))
-  );
-
-  return { cards: merged, keptLocal, blockedResurrections, deletedCardIds };
-}
-
-// The push side of the same story. `pushLibraryDeckToCloud` sends the local card
-// list and pushDeckRowsToCloud deletes every cloud row missing from it — which is
-// only correct if the local list is a superset of "what the cloud has, minus what
-// I deleted". This makes it one, using the deck's cloud rows (already fetched for
-// the push diff) as the reference:
-//
-//   local, in cloud            → push
-//   local only, dirty          → push   (added/edited here, cloud hasn't seen it)
-//   local only, clean          → DROP   (it reached the cloud once and is gone
-//                                        from it now — deleted on another device)
-//   cloud only, tombstoned here → omit  (deleted here; the push prunes it)
-//   cloud only, not tombstoned  → adopt (added on another device since our last
-//                                        pull; pushing without it would delete
-//                                        someone else's new card)
-//
-// Adopted rows are appended rather than slotted in at their cloud position: the
-// push restamps positions from array order anyway, and appending keeps this
-// device's own ordering intact.
-function reconcileCardsBeforePush(snapshot, cloudCards) {
-  const localCards = Array.isArray(snapshot?.cards) ? snapshot.cards : [];
-  const tombstones = readCardTombstones(snapshot);
-  const cloudById = new Map((cloudCards || []).map((row) => [String(row.id), row]));
-  const localIds = new Set(localCards.map((card) => String(card.id)));
-
-  // Dropping a clean local-only card only means "deleted elsewhere" if this
-  // snapshot actually carries per-card sync state. A snapshot written by a build
-  // that predates it has no `dirty` anywhere, so every card would read as clean
-  // and a legitimately-unpushed card would be destroyed instead of uploaded.
-  // Keep everything in that case; the push itself writes the fields back, so a
-  // deck is legacy for exactly one sync.
-  const hasCardSyncState = localCards.some((card) => card.dirty !== undefined || card.updatedAt);
-
-  // The same refusal as the pull side (see mergeCloudCardsIntoSnapshot): a deck
-  // whose cloud rows all came back empty is far more likely to be a bad read
-  // than a deck someone emptied card by card — and here the stakes are higher
-  // still, because these cards are about to be dropped from the snapshot AND
-  // the push that follows prunes whatever it doesn't send. Believing a blank
-  // read at this point deletes the deck's contents on every device at once.
-  const cloudLooksBlank = !(cloudCards || []).length && localCards.length > 0;
-
-  const cards = [];
-  let dropped = 0;
-  for (const card of localCards) {
-    const id = String(card.id || "");
-    if (!id) continue;
-    if (hasCardSyncState && !cloudLooksBlank && !cloudById.has(id) && !cardIsDirty(card)) {
-      dropped += 1;
-      continue;
-    }
-    cards.push(card);
-  }
-  if (cloudLooksBlank) {
-    console.warn(`Push diff saw 0 cloud cards for a deck holding ${localCards.length} — sending them all rather than pruning.`);
-  }
-
-  let adopted = 0;
-  for (const row of cloudCards || []) {
-    const id = String(row.id || "");
-    if (!id || localIds.has(id) || tombstones[id]) continue;
-    adopted += 1;
-    cards.push({
-      id,
-      question: row.question,
-      answer: row.answer,
-      status: normalizeCardStatus(row.status),
-      category: row.category ? String(row.category) : null,
-      dirty: false,
-      updatedAt: row.updated_at || new Date().toISOString()
-    });
-  }
-
-  // Same retirement rule as the pull: a tombstone whose card is no longer in the
-  // cloud has done its job.
-  const deletedCardIds = pruneCardTombstones(
-    Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudById.has(id)))
-  );
-
-  return { cards, dropped, adopted, deletedCardIds };
-}
 
 // Shared HTML for a sync report — every deck reconcileAllDecks() touched,
 // what direction it went, and exactly what changed (cards added/updated/
@@ -3968,7 +2680,7 @@ async function syncStyleToWeb() {
   );
 }
 
-function setStatus(message, type = "info") {
+export function setStatus(message, type = "info") {
   el.statusText.textContent = message;
   el.statusText.classList.toggle("error", type === "error");
 }
@@ -8050,7 +6762,7 @@ async function renderMyDecksList() {
   }
 }
 
-function normalizeMarkdown(text) {
+export function normalizeMarkdown(text) {
   return text.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
 }
 
@@ -8079,7 +6791,7 @@ function extractNotesFromMarkdown(markdown) {
   return { markdown: rest, notes: found.join("\n\n---\n\n") };
 }
 
-function notesExportBlock(notes) {
+export function notesExportBlock(notes) {
   const body = String(notes || "")
     // A literal end sentinel inside the notes would truncate the block on import.
     .replace(/<!--\s*\/recall:notes\s*-->/g, "<!- - /recall:notes - ->")
@@ -11551,7 +10263,7 @@ function hasActiveDeck() {
   return Boolean(state.deckTitle) || state.masterCards.length > 0 || Boolean(state.notes.trim());
 }
 
-function updateMeta() {
+export function updateMeta() {
   const total = state.cards.length;
   const finished = Math.min(state.current, total);
   const hasDeck = hasActiveDeck();
@@ -19068,14 +17780,14 @@ function escapeCardSideSeparator(text) {
     .join("\n");
 }
 
-function formatCardList(title, cards) {
+export function formatCardList(title, cards) {
   const body = cards.length
     ? cards.map((card) => `::\n${escapeCardSideSeparator(card.question.trim())}\n\n---\n\n${escapeCardSideSeparator(card.answer.trim())}\n::`).join("\n\n")
     : "_None_";
   return `## ${title}\n\n${body}`;
 }
 
-function slugifyFileName(value, fallback = "recall") {
+export function slugifyFileName(value, fallback = "recall") {
   const source = String(value || "").trim() || fallback;
   const cleaned = source
     .replace(/\.(md|markdown|mdown|mkdn|txt|json|zip)$/i, "")
@@ -19085,7 +17797,7 @@ function slugifyFileName(value, fallback = "recall") {
   return cleaned || fallback;
 }
 
-function exportBaseName(scope = "all") {
+export function exportBaseName(scope = "all") {
   const base = slugifyFileName(state.deckTitle || state.sourceTitle || "recall");
   if (scope === "known") return `${base} - known`;
   if (scope === "review") return `${base} - review`;
@@ -19093,7 +17805,7 @@ function exportBaseName(scope = "all") {
   return base;
 }
 
-function normalizeCardStatus(status) {
+export function normalizeCardStatus(status) {
   return status === "known" || status === "review" ? status : "";
 }
 
@@ -20391,7 +19103,7 @@ function updateDeckEmptyStatus() {
 
 // Normalizes any ISO / timestamptz string to epoch ms so timestamps written by
 // the JS client and read back from Postgres compare correctly.
-function tsMs(value) {
+export function tsMs(value) {
   const t = new Date(value || 0).getTime();
   return Number.isFinite(t) ? t : 0;
 }
@@ -21737,7 +20449,7 @@ async function reconcileAllDecks({ explicit = false } = {}) {
   }
 }
 
-function readLocalDeckIndex() {
+export function readLocalDeckIndex() {
   try {
     const list = JSON.parse(localStorage.getItem(LOCAL_DECKS_INDEX_KEY) || "[]");
     return Array.isArray(list) ? list : [];
@@ -21749,7 +20461,7 @@ function readLocalDeckIndex() {
 // Rethrows on failure (unlike most small localStorage writers in this file,
 // which swallow-and-warn) so saveDeckToLibrary's caller-facing "could not
 // save" messaging actually fires instead of the error going uncaught.
-function writeLocalDeckIndex(list) {
+export function writeLocalDeckIndex(list) {
   try {
     localStorage.setItem(LOCAL_DECKS_INDEX_KEY, JSON.stringify(list));
     // The one choke point for "what decks exist and what are they called", so
@@ -21914,7 +20626,7 @@ async function appendCardToLocalLibraryDeck(deckId, card, now) {
 // cloud as "newer" and pulls it over any not-yet-synced local card edits,
 // silently discarding them. Only patches title/category + updatedAt; leaves
 // card content alone so it doesn't clobber other pending local edits.
-async function syncLocalLibraryMetaForDeck(deckId, { title, category, now } = {}) {
+export async function syncLocalLibraryMetaForDeck(deckId, { title, category, now } = {}) {
   if (!deckId) return;
   const localId = readLocalDeckIndex().find((e) => e.deckId === deckId)?.id;
   if (!localId) return;
@@ -22565,7 +21277,7 @@ async function renameDeckInLibrary(id, title) {
   });
 }
 
-function cardsForScope(scope) {
+export function cardsForScope(scope) {
   syncResults();
   if (scope === "known") return state.results.known;
   if (scope === "review") return state.results.review;
@@ -32565,7 +31277,7 @@ function getQuickNotesDeckId() {
 }
 
 // True when a deck (by id and/or title) is the special quick_notes deck.
-function isQuickNotesDeck(deckId = state.deckId, title = state.deckTitle) {
+export function isQuickNotesDeck(deckId = state.deckId, title = state.deckTitle) {
   if (deckId && String(deckId).startsWith("quick-notes-")) return true;
   const qid = getQuickNotesDeckId();
   if (qid && String(deckId) === qid) return true;
@@ -32599,7 +31311,7 @@ function normalizeQuickNoteCategories(list) {
 
 // Pull the managed category set out of a deck row's meta JSON (defensive: meta
 // may be a parsed object, a JSON string, or missing on pre-migration rows).
-function quickNoteCategoriesFromMeta(meta) {
+export function quickNoteCategoriesFromMeta(meta) {
   let bag = meta;
   if (typeof bag === "string") {
     try { bag = JSON.parse(bag); } catch { bag = null; }
@@ -32608,13 +31320,13 @@ function quickNoteCategoriesFromMeta(meta) {
   return normalizeQuickNoteCategories(list);
 }
 
-function readCachedQuickNoteCategories() {
+export function readCachedQuickNoteCategories() {
   try {
     return normalizeQuickNoteCategories(JSON.parse(localStorage.getItem(QUICK_NOTE_CATEGORIES_CACHE_KEY) || "[]"));
   } catch { return []; }
 }
 
-function writeCachedQuickNoteCategories(list) {
+export function writeCachedQuickNoteCategories(list) {
   try { localStorage.setItem(QUICK_NOTE_CATEGORIES_CACHE_KEY, JSON.stringify(list)); } catch (_) {}
 }
 
