@@ -1,6 +1,7 @@
 // The known/review split of the current deck, and resetting it.
 
-import { resetCardUndoHistory, setCurrentReadingAnchor, setCurrentReadingAnchorDeckKey, state } from "../main.js?v=__BUILD__";
+import { resetCardUndoHistory } from "./all-cards-edit.js?v=__BUILD__";
+import { setCurrentReadingAnchor, setCurrentReadingAnchorDeckKey, state } from "../main.js?v=__BUILD__";
 
 export function syncResults() {
   state.results = {

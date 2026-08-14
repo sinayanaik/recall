@@ -61,31 +61,29 @@ const ACCEPTED = {
 // Listed by name rather than waved through, so a body that changed for any
 // OTHER reason still fails. The check below verifies that the only difference is
 // the setter rewrite; anything more is reported as a real change.
-const SETTER_ROUTED = {
-  "setSignedIn": ["isSignedIn"],
-  "setSupabaseClient": ["supabaseClient"],
-  "setExplicitLogout": ["explicitLogout"],
-  "setQnReturnState": ["qnReturnState"],
-  "setMyDecksRendered": ["myDecksRendered"],
-  "setCurrentReadingAnchor": ["currentReadingAnchor"],
-  "setCurrentReadingAnchorDeckKey": ["currentReadingAnchorDeckKey"],
-  "setDraggedAllCardId": ["draggedAllCardId"],
-  "setNotesBlockEstimateSource": ["notesBlockEstimateSource"],
-  "bumpAllCardsRenderId": ["allCardsRenderId"]
-};
+// Discovered, not hand-listed: every `export function setX(value) { x = value; }`
+// in the tree, plus the bump helpers. Registering these by hand meant forgetting
+// one and getting a spurious "body differs" report for a routing that was
+// entirely mechanical.
+const SETTER_ROUTED = new Map();
+for (const f of walk(path.join(ROOT, "src"))) {
+  const text = readFileSync(f, "utf8");
+  for (const m of text.matchAll(/export function (set[A-Za-z0-9_$]*)\(\s*([A-Za-z0-9_$]+)\s*\)\s*\{\s*([A-Za-z0-9_$]+) = \2;\s*\}/g)) {
+    SETTER_ROUTED.set(m[1], { name: m[3], kind: "set" });
+  }
+  for (const m of text.matchAll(/export function (bump[A-Za-z0-9_$]*)\(\s*\)\s*\{\s*([A-Za-z0-9_$]+) \+= 1;/g)) {
+    SETTER_ROUTED.set(m[1], { name: m[2], kind: "bump" });
+  }
+}
+
 
 // Undo the setter rewrite on the CURRENT text; if it then matches the baseline,
 // the setter routing was the whole of the difference.
 function unroute(code) {
   let out = code;
-  for (const [setter, names] of Object.entries(SETTER_ROUTED)) {
-    for (const name of names) {
-      if (setter.startsWith("bump")) {
-        out = out.replaceAll(`${setter}();`, `${name} += 1;`);
-      } else {
-        out = out.replace(new RegExp(`\\b${setter}\\(([^;]*)\\);`, "g"), `${name} = $1;`);
-      }
-    }
+  for (const [setter, { name, kind }] of SETTER_ROUTED) {
+    if (kind === "bump") out = out.replaceAll(`${setter}();`, `${name} += 1;`);
+    else out = out.replace(new RegExp(`\\b${setter}\\(([^;]*)\\);`, "g"), `${name} = $1;`);
   }
   return out;
 }
