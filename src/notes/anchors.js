@@ -10,7 +10,8 @@ import { syncResults } from "../cards/study.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { loadDeckFromLibrary, locateSelectionInSource, renderedSelectionStrings, scheduleDeckAutosave, setViewMode, state } from "../main.js?v=__BUILD__";
+import { locateSelectionInSource, renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
+import { loadDeckFromLibrary, scheduleDeckAutosave, state } from "../main.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
@@ -19,6 +20,7 @@ import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selec
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
+import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
 export function addCardFromNotes(question, answer, noteAnchor = null) {
   const card = {

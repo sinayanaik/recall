@@ -11,10 +11,11 @@ import { forgetFolderTree, normalizeDeckCategory } from "./folders.js?v=__BUILD_
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { myDeckPayload, myDeckSelKey, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
-import { deleteDeckEverywhere, flushWorkingDeck, loadDeckFromLibrary, normalizeCardStatus, setViewMode, showCard, state } from "../main.js?v=__BUILD__";
+import { deleteDeckEverywhere, flushWorkingDeck, loadDeckFromLibrary, normalizeCardStatus, showCard, state } from "../main.js?v=__BUILD__";
 import { closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseDeckCategory } from "../ui/pickers.js?v=__BUILD__";
+import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
 export function createDeckExportControl(sel, deckTitle, { compact = false } = {}) {
   const wrap = document.createElement("div");

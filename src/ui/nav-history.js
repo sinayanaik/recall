@@ -5,10 +5,11 @@
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { closeQuickNotesBoard, loadDeckFromLibrary, openQuickNotesBoard, qnBoard, setQnReturnState, setViewMode, showCard, state } from "../main.js?v=__BUILD__";
+import { closeQuickNotesBoard, loadDeckFromLibrary, openQuickNotesBoard, qnBoard, setQnReturnState, showCard, state } from "../main.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { captureCurrentReadingAnchor, currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { setStatus } from "./feedback.js?v=__BUILD__";
+import { setViewMode } from "./view-mode.js?v=__BUILD__";
 
 // ── Universal back ───────────────────────────────────────────────
 // The appbar's ← works like the back key on a remote: it steps back through the

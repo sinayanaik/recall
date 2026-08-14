@@ -3,7 +3,8 @@
 import { syncResults, uncategorizedCards } from "./study.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { setSyncIndicator, setViewMode, state } from "../main.js?v=__BUILD__";
+import { setSyncIndicator, state } from "../main.js?v=__BUILD__";
+import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
 export function cardStatusLabel(status) {
   if (status === "known") return "Known";

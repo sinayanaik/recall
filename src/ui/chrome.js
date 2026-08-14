@@ -7,8 +7,9 @@
 
 import { adjustCornellRows } from "../cards/all-cards.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, scheduleLiveQuestionFit, state } from "../main.js?v=__BUILD__";
+import { scheduleLiveQuestionFit, state } from "../main.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
+import { FOCUS_MODE_KEY } from "./view-mode.js?v=__BUILD__";
 
 export const CHROME_MOBILE_QUERY = "(max-width: 720px)";
 

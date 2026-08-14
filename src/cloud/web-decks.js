@@ -10,7 +10,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { setKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, refreshSyncIndicatorBaseline, revokeLocalImageUrls, saveDeckToLibrary, setViewMode, showCard, state, syncLocalLibraryMetaForDeck, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, refreshSyncIndicatorBaseline, revokeLocalImageUrls, saveDeckToLibrary, showCard, state, syncLocalLibraryMetaForDeck, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { resetChromeAutoHide } from "../ui/chrome.js?v=__BUILD__";
@@ -18,6 +18,7 @@ import { closeImportPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
+import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
 // Whichever of two ISO timestamps (either may be null/undefined) is later,
 // or null if neither parses.

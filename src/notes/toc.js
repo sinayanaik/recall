@@ -5,9 +5,10 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { forEachDeckSnapshot, loadDeckFromLibrary, parseNoteLinkTarget, readLocalDeckIndex, state } from "../main.js?v=__BUILD__";
+import { forEachDeckSnapshot, loadDeckFromLibrary, readLocalDeckIndex, state } from "../main.js?v=__BUILD__";
 import { scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
+import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";

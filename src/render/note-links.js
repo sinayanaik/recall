@@ -2,7 +2,7 @@
 // carries its own links wherever it is copied, exported or restored.
 
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { sanitizeNoteLinkLabel } from "../main.js?v=__BUILD__";
+import { sanitizeNoteLinkLabel } from "../notes/link-picker.js?v=__BUILD__";
 
 // ── Note references: [[Another note]] ───────────────────────────────────────
 //
