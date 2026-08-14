@@ -1,8 +1,10 @@
 // DOCX export: rendered HTML translated into OOXML, images rasterised, and the
 // theme's colours resolved to literal values because Word has no CSS.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeXml, hex6 } from "../core/text.js?v=__BUILD__";
-import { utf8Bytes } from "./zip.js?v=__BUILD__";
+import { finishExportRoot, prepareExportRoot } from "./html.js?v=__BUILD__";
+import { buildZipArchive, utf8Bytes } from "./zip.js?v=__BUILD__";
 
 export function bytesToBase64(bytes) {
   let binary = "";
@@ -382,4 +384,173 @@ export function createDocxRenderContext(elementMedia, theme) {
     inlineProps: { maxWidthIn: DOCX_PAGE_WIDTH_TWIPS / 1440 },
     listDepth: 0
   };
+}
+
+// Resolves any valid CSS color expression (a plain hex custom property, a
+// var() reference, or a color-mix() expression) to a concrete hex string by
+// actually applying it to a real CSS property on a throwaway element and
+// reading back the browser's resolved value — custom properties don't
+// evaluate functions like color-mix() themselves (they're just substituted
+// token text), but a real used property always does.
+export function resolveCssColorValue(expression, fallbackHex) {
+  if (!expression) return fallbackHex;
+  const probe = document.createElement("div");
+  probe.style.display = "none";
+  probe.style.color = expression;
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).color;
+  probe.remove();
+
+  // Plain rgb()/rgba() — 0–255 integers.
+  const rgbMatch = resolved.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+  if (rgbMatch) {
+    const [r, g, b] = rgbMatch.slice(1, 4).map((n) => Math.max(0, Math.min(255, Math.round(parseFloat(n)))));
+    return [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
+  }
+
+  // A color-mix() result (used by --print-question/--print-accent-strong)
+  // resolves in Chromium to the CSS Color 4 `color(srgb r g b)` syntax —
+  // 0–1 floats, not 0–255 — which the rgb() regex above never matches, so
+  // this silently fell back to the hardcoded default for every theme.
+  const colorFnMatch = resolved.match(/color\([a-z0-9-]+\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/i);
+  if (colorFnMatch) {
+    const [r, g, b] = colorFnMatch.slice(1, 4).map((n) => Math.max(0, Math.min(255, Math.round(parseFloat(n) * 255))));
+    return [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
+  }
+
+  return fallbackHex;
+}
+
+// A Word document page is always white paper — reusing the app's live
+// theme colors verbatim would be unreadable for any dark theme (near-white
+// text on a white page). The app already solves exactly this problem for
+// the Cornell PDF export with a fixed, always-print-safe --print-* palette
+// (only its accent tracks the live theme); the .docx export reuses that
+// same palette rather than inventing its own.
+export function docxThemeFromPrintVars() {
+  const computed = getComputedStyle(document.documentElement);
+  const raw = (name) => computed.getPropertyValue(name).trim();
+  const resolve = (name, fallbackHex) => resolveCssColorValue(raw(name), fallbackHex);
+  return {
+    card: resolve("--print-surface", "FFFFFF"),
+    panel2: resolve("--print-question", "F0EEE7"),
+    text: resolve("--print-text", "17201C"),
+    muted: resolve("--print-muted", "56645F"),
+    line: resolve("--print-line", "B9C9C5"),
+    accent: resolve("--print-accent", "16796C"),
+    accentStrong: resolve("--print-accent-strong", "0D5E53")
+  };
+}
+
+export const DOCX_CONTENT_TYPES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>`;
+
+export const DOCX_ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`;
+
+export const DOCX_NUMBERING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:abstractNum w:abstractNumId="0">
+${[0, 1, 2, 3].map((lvl) => `<w:lvl w:ilvl="${lvl}"><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/><w:pPr><w:ind w:left="${720 + lvl * 720}" w:hanging="360"/></w:pPr><w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr></w:lvl>`).join("\n")}
+</w:abstractNum>
+<w:abstractNum w:abstractNumId="1">
+${[0, 1, 2, 3].map((lvl) => `<w:lvl w:ilvl="${lvl}"><w:numFmt w:val="decimal"/><w:lvlText w:val="%${lvl + 1}."/><w:pPr><w:ind w:left="${720 + lvl * 720}" w:hanging="360"/></w:pPr></w:lvl>`).join("\n")}
+</w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+</w:numbering>`;
+
+export function buildDocxStylesXml(theme) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:rPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="200" w:after="100"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="160" w:after="80"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="120" w:after="60"/></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="${theme.accentStrong}"/><w:u w:val="single"/></w:rPr></w:style>
+</w:styles>`;
+}
+
+export function buildDocxCoreXml(title) {
+  const now = new Date().toISOString();
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<dc:title>${escapeXml(title)}</dc:title>
+<dc:creator>Recall</dc:creator>
+<cp:lastModifiedBy>Recall</cp:lastModifiedBy>
+<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>
+<dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>
+</cp:coreProperties>`;
+}
+
+export const DOCX_APP_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Recall</Application></Properties>`;
+
+export function buildDocxDocumentRelsXml(media, hyperlinks) {
+  const mediaRels = media.map(({ rId, name }) => `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${name}"/>`).join("\n");
+  const linkRels = hyperlinks.map(({ rId, url }) => `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeXml(url)}" TargetMode="External"/>`).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+${mediaRels}
+${linkRels}
+</Relationships>`;
+}
+
+export function buildDocxDocumentXml(bodyBlocksXml) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+${bodyBlocksXml}
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1080" w:right="1080" w:bottom="1080" w:left="1080" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>
+</w:body>
+</w:document>`;
+}
+
+// Ties the whole pipeline together: mounts+renders+embeds bodyHtml (same
+// as the HTML/PDF exports), rasterizes its images/diagrams to PNG media
+// parts, walks the DOM into WordprocessingML, and zips it all into a real
+// .docx byte stream.
+export async function buildDocxBytes(bodyHtml, title) {
+  const failedImageCount = await prepareExportRoot(bodyHtml);
+  const { media, elementMedia } = await collectDocxMedia(el.printRoot);
+  const theme = docxThemeFromPrintVars();
+  const ctx = createDocxRenderContext(elementMedia, theme);
+  const bodyBlocksXml = childBlocks(el.printRoot, ctx).join("\n");
+  finishExportRoot();
+
+  const documentXml = buildDocxDocumentXml(bodyBlocksXml);
+  const documentRelsXml = buildDocxDocumentRelsXml(media, ctx.hyperlinks);
+  const stylesXml = buildDocxStylesXml(theme);
+  const coreXml = buildDocxCoreXml(title);
+
+  const files = [
+    { name: "[Content_Types].xml", data: utf8Bytes(DOCX_CONTENT_TYPES) },
+    { name: "_rels/.rels", data: utf8Bytes(DOCX_ROOT_RELS) },
+    { name: "docProps/core.xml", data: utf8Bytes(coreXml) },
+    { name: "docProps/app.xml", data: utf8Bytes(DOCX_APP_XML) },
+    { name: "word/document.xml", data: utf8Bytes(documentXml) },
+    { name: "word/styles.xml", data: utf8Bytes(stylesXml) },
+    { name: "word/numbering.xml", data: utf8Bytes(DOCX_NUMBERING_XML) },
+    { name: "word/_rels/document.xml.rels", data: utf8Bytes(documentRelsXml) },
+    ...media.map(({ name, bytes }) => ({ name: `word/media/${name}`, data: bytes }))
+  ];
+
+  return { bytes: buildZipArchive(files), failedImageCount };
 }
