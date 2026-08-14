@@ -4,10 +4,14 @@
 import { fetchCloudDeckList } from "../cloud/deck-list.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { deckPayloadSnapshot, downloadTextFile, statusByIdFromCards, touchWebDeckAccess, webDeckPayloadMarkdown } from "../cloud/web-decks.js?v=__BUILD__";
+import { prepareExportHtml, wrapStandaloneHtmlDocument } from "./html.js?v=__BUILD__";
 import { normalizeCardStatus, slugifyFileName } from "./markdown.js?v=__BUILD__";
+import { buildCornellFlatDocument, buildNotesFlatDocument } from "./pdf.js?v=__BUILD__";
 import { buildDeckSql } from "./sql.js?v=__BUILD__";
+import { listLocalDecks } from "../library/local-library.js?v=__BUILD__";
 import { myDeckPayload } from "../library/my-decks-selection.js?v=__BUILD__";
-import { buildCornellFlatDocument, buildDocxBytes, buildNotesFlatDocument, exportCardsPdf, exportNotesFlatPdf, imageEmbedSuffix, isDeckTombstoned, listLocalDecks, prepareExportHtml, wrapStandaloneHtmlDocument } from "../main.js?v=__BUILD__";
+import { isDeckTombstoned } from "../library/tombstones.js?v=__BUILD__";
+import { buildDocxBytes, exportCardsPdf, exportNotesFlatPdf, imageEmbedSuffix } from "../main.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseExportContent } from "../ui/pickers.js?v=__BUILD__";
 

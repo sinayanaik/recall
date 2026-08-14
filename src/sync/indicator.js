@@ -4,7 +4,8 @@
 import { hasActiveDeck } from "../cards/card-status.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { autoSyncNextAt, getAutoSyncMinutes, listLocalDecks, readLocalDeckIndex, state } from "../main.js?v=__BUILD__";
+import { listLocalDecks, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
+import { autoSyncNextAt, getAutoSyncMinutes, state } from "../main.js?v=__BUILD__";
 import { LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY } from "../storage/keys.js?v=__BUILD__";
 import { restoreStashedNotes } from "./notes-conflict.js?v=__BUILD__";
 import { lastStartupSyncReport, reconcileInFlight } from "./reconcile.js?v=__BUILD__";

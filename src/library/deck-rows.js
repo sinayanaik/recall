@@ -7,7 +7,8 @@ import { createDeckExportControl, deckCardInfo, deckSelOf, loadDeckEntry } from 
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { createDeckCategoryControl, createDeckSelectCell, formatLocalDeckSavedDate, formatLocalDeckSavedDateShort, renameMyDeck } from "./my-decks-selection.js?v=__BUILD__";
-import { deleteDeckEverywhere, state } from "../main.js?v=__BUILD__";
+import { deleteDeckEverywhere } from "./tombstones.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Tile actions carry an icon plus a label the phone layout drops, so a tile

@@ -6,8 +6,10 @@ import { applyWebDeckCategory, updateWebDeckTitle } from "../cloud/web-decks.js?
 import { el } from "../core/dom.js?v=__BUILD__";
 import { clearImportStaging } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
+import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
-import { renameDeckInLibrary, saveDeckToLibrary, showImportSourceDrawer, state } from "../main.js?v=__BUILD__";
+import { renameDeckInLibrary } from "../library/tombstones.js?v=__BUILD__";
+import { showImportSourceDrawer, state } from "../main.js?v=__BUILD__";
 import { setStatus, showPromptModal, showToast } from "./feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "./overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./pickers.js?v=__BUILD__";

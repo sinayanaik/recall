@@ -6,7 +6,8 @@
 // later session replays, and it is deliberately capped so it cannot itself
 // overflow the storage it is protecting.
 
-import { readLocalDeckIndex, saveDeckToLibrary, state } from "../main.js?v=__BUILD__";
+import { readLocalDeckIndex, saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { LOCAL_DECK_PREFIX } from "./keys.js?v=__BUILD__";
 import { deckAutosaveStorageFailed, deckAutosaveTimer, handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveTimer } from "./quota.js?v=__BUILD__";
 import { setSyncIndicator } from "../sync/indicator.js?v=__BUILD__";

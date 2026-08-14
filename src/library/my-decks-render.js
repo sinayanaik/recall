@@ -8,11 +8,13 @@ import { buildFolderTree, categoriesFromDecks, setKnownWebDeckCategories, webDec
 import { buildCloudDeckRow } from "./deck-rows.js?v=__BUILD__";
 import { allFoldersExpanded, buildDeckTile, buildFolderNavRow, buildFolderTile, buildRootDropRow, findTreeNode, makeDeckDraggable, myDecksSortComparator, renderFolderChildren, renderFolderDecks, renderMyDecksBreadcrumb, setMyDecksRendered, sortedFolderChildren } from "./folder-tree.js?v=__BUILD__";
 import { isCategoryUnder, readExpandedFolders, readKnownFolders } from "./folders.js?v=__BUILD__";
+import { listLocalDecks } from "./local-library.js?v=__BUILD__";
 import { deckSelOf } from "./my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./my-decks-icons.js?v=__BUILD__";
 import { setMyDecksCwd } from "./my-decks-prefs.js?v=__BUILD__";
 import { myDeckMatchesSearch, myDecksSearchTerm, updateMyDecksBulkBar } from "./my-decks-selection.js?v=__BUILD__";
-import { isDeckTombstoned, listLocalDecks, state } from "../main.js?v=__BUILD__";
+import { isDeckTombstoned } from "./tombstones.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 
 // ── Empty states ────────────────────────────────────────────────────────────
 export function myDecksEmptyMessage(ctx) {

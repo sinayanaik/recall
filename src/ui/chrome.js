@@ -6,8 +6,9 @@
 // be frozen or the page re-expands the header the moment it settles.
 
 import { adjustCornellRows } from "../cards/all-cards.js?v=__BUILD__";
+import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { scheduleLiveQuestionFit, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { FOCUS_MODE_KEY } from "./view-mode.js?v=__BUILD__";
 

@@ -1,10 +1,11 @@
 // Showing a card, and the transition between two of them.
 
 import { hasActiveDeck, updateMeta } from "./card-status.js?v=__BUILD__";
+import { scheduleLiveQuestionFit } from "./question-fit.js?v=__BUILD__";
 import { syncResults } from "./study.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { commitEditIfActive, resetClozeButton, scheduleLiveQuestionFit, setCardRawModePreferred, state } from "../main.js?v=__BUILD__";
+import { commitEditIfActive, resetClozeButton, setCardRawModePreferred, state } from "../main.js?v=__BUILD__";
 import { cardHasNoteLink } from "../notes/anchors.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";

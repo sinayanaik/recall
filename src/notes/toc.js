@@ -5,7 +5,8 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { loadDeckFromLibrary, readLocalDeckIndex, state } from "../main.js?v=__BUILD__";
+import { loadDeckFromLibrary, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";

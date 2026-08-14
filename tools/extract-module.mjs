@@ -245,7 +245,13 @@ if (FIX_IMPORTS) {
 for (const job of jobs) {
   const targetAbs = path.resolve(ROOT, job.target);
   const targetRel = path.relative(ROOT, targetAbs).replace(/\\/g, "/");
-  let main = readFileSync(MAIN, "utf8");
+  // `source` lets a job move symbols BETWEEN modules, not only out of main.js.
+  // Source order in the original file grouped some things wrongly — fitLiveQuestion
+  // sits between two export functions and is not an export function — and
+  // correcting that is a move from one module to another.
+  const SOURCE = job.source ? path.resolve(ROOT, job.source) : MAIN;
+  const sourceRel = path.relative(ROOT, SOURCE).replace(/\\/g, "/");
+  let main = readFileSync(SOURCE, "utf8");
   const decls = topLevelDecls(main);
   const byName = new Map(decls.map((d) => [d.name, d]));
 
@@ -259,8 +265,8 @@ for (const job of jobs) {
   if (job.from) {
     const a = decls.findIndex((d) => d.name === job.from);
     const b = decls.findIndex((d) => d.name === job.to);
-    if (a === -1) { console.error(`  ! ${targetRel}: no top-level '${job.from}' in src/main.js`); process.exit(1); }
-    if (b === -1) { console.error(`  ! ${targetRel}: no top-level '${job.to}' in src/main.js`); process.exit(1); }
+    if (a === -1) { console.error(`  ! ${targetRel}: no top-level '${job.from}' in ${sourceRel}`); process.exit(1); }
+    if (b === -1) { console.error(`  ! ${targetRel}: no top-level '${job.to}' in ${sourceRel}`); process.exit(1); }
     if (b < a) { console.error(`  ! ${targetRel}: '${job.to}' comes before '${job.from}'`); process.exit(1); }
     const except = new Set(job.except || []);
     wanted = decls.slice(a, b + 1).filter((d) => !except.has(d.name));
@@ -268,7 +274,7 @@ for (const job of jobs) {
     wanted = [];
     for (const name of job.symbols) {
       const d = byName.get(name);
-      if (!d) { console.error(`  ! ${targetRel}: '${name}' is not a top-level declaration of src/main.js`); process.exit(1); }
+      if (!d) { console.error(`  ! ${targetRel}: '${name}' is not a top-level declaration of ${sourceRel}`); process.exit(1); }
       wanted.push(d);
     }
   }
@@ -309,9 +315,9 @@ for (const job of jobs) {
   const owner = new Map();
   for (const f of walk(SRC)) {
     const rel = path.relative(ROOT, f).replace(/\\/g, "/");
-    const text = rel === "src/main.js" ? main : readFileSync(f, "utf8");
+    const text = rel === sourceRel ? main : readFileSync(f, "utf8");
     for (const d of topLevelDecls(text)) {
-      if (movedNames.has(d.name) && rel === "src/main.js") continue;
+      if (movedNames.has(d.name) && rel === sourceRel) continue;
       if (!owner.has(d.name)) owner.set(d.name, { file: rel, line: d.line });
     }
   }
@@ -333,15 +339,15 @@ for (const job of jobs) {
   // whole import block is recomputed from scratch, not appended to.
   const mainStripped = main.split("\n").filter((l) => !IMPORT_LINE.test(l)).join("\n");
   const mainOwn = new Set(topLevelDecls(mainStripped).map((d) => d.name));
-  const mainNeeds = neededBy(mainStripped, mainOwn, owner, "src/main.js");
-  const mainText = withImports(main, importLines(MAIN, mainNeeds, owner));
+  const mainNeeds = neededBy(mainStripped, mainOwn, owner, sourceRel);
+  const mainText = withImports(main, importLines(SOURCE, mainNeeds, owner));
 
   console.log(`${DRY ? "[dry] " : ""}${targetRel}  ${pieces.length} symbols, ${targetImports.length} import line(s)`);
   for (const l of targetImports) console.log(`    ${l}`);
   if (!DRY) {
     mkdirSync(path.dirname(targetAbs), { recursive: true });
     writeFileSync(targetAbs, targetText);
-    writeFileSync(MAIN, mainText);
+    writeFileSync(SOURCE, mainText);
   }
 }
 

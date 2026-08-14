@@ -3,9 +3,11 @@
 import { clearAllCardDropTargets, refreshAllCardsAround } from "./all-cards-edit.js?v=__BUILD__";
 import { setCardStatusBadge, updateMeta } from "./card-status.js?v=__BUILD__";
 import { showCard } from "./card-view.js?v=__BUILD__";
+import { afterPaint } from "./question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
-import { afterPaint, cornellCardHtml, createToolbarHtml, enableSyntaxHighlighting, setDraggedAllCardId, state } from "../main.js?v=__BUILD__";
+import { cornellCardHtml } from "../export/pdf.js?v=__BUILD__";
+import { createToolbarHtml, enableSyntaxHighlighting, setDraggedAllCardId, state } from "../main.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
