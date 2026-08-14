@@ -1,6 +1,7 @@
 // The per-deck and bulk actions on the My Decks list: open, categorise,
 // delete.
 
+import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { closeWebDeckExportMenus, loadWebDeck, touchLocalDeckAccess } from "../cloud/web-decks.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { exportMyDeck } from "../export/decks.js?v=__BUILD__";
@@ -9,7 +10,7 @@ import { forgetFolderTree, normalizeDeckCategory } from "./folders.js?v=__BUILD_
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { myDeckPayload, myDeckSelKey, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
-import { closeAllCardsPanel, deleteDeckEverywhere, flushWorkingDeck, loadDeckFromLibrary, normalizeCardStatus, resetStudyDeck, setViewMode, showCard, state, syncResults } from "../main.js?v=__BUILD__";
+import { closeAllCardsPanel, deleteDeckEverywhere, flushWorkingDeck, loadDeckFromLibrary, normalizeCardStatus, setViewMode, showCard, state } from "../main.js?v=__BUILD__";
 import { closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseDeckCategory } from "../ui/pickers.js?v=__BUILD__";

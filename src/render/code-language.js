@@ -288,3 +288,21 @@ export function configurePrismLanguages() {
 
   prismPythonConfigured = true;
 }
+
+export function declaredCodeLanguage(code) {
+  const languageClass = Array.from(code.classList).find((className) => className.startsWith("language-"));
+  return languageClass ? languageClass.replace(/^language-/, "").trim() : "";
+}
+
+export function normalizeCodeLanguage(language) {
+  const normalized = String(language || "").toLowerCase();
+  return codeLanguageAliases[normalized] || normalized;
+}
+
+export function codeLanguageLabel(language) {
+  return language
+    .replace(/^language-/, "")
+    .replace(/[-_]+/g, " ")
+    .trim()
+    .toUpperCase();
+}

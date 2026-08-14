@@ -66,7 +66,12 @@ const ACCEPTED = {
   followNoteLink: "qnReturnState = { … } -> setQnReturnState({ … })",
   paintMyDecks:
     "myDecksRendered = { … } -> setMyDecksRendered({ … }); the binding lives in " +
-    "library/folder-tree.js, which reads it, and imports are read-only."
+    "library/folder-tree.js, which reads it, and imports are read-only.",
+
+  // The reading anchor is captured by the notes scroll code and cleared when the
+  // study deck resets — two modules, so it is written through setters.
+  resetResults: "currentReadingAnchor{,DeckKey} = null -> setCurrentReadingAnchor{,DeckKey}(null)",
+  captureCurrentReadingAnchor: "same, via the setters"
 };
 
 // Baseline symbols that are intentionally gone, and why. A rename lands here
