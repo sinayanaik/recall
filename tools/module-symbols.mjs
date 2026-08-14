@@ -111,10 +111,22 @@ for (const [rel, { raw, blanked, decls }] of parsed) {
   // many written from what will become a different module — so this is the
   // single most likely way an otherwise-correct extraction breaks. Either the
   // binding moves in with its writer, or it needs an exported setter.
+  // Postfix and compound assignment: `x = …`, `x++`, `x += …`.
   for (const m of blanked.matchAll(/(^|[^\w$.])([A-Za-z_$][\w$]*)\s*(?:=(?![=>])|\+\+|--|\+=|-=|\*=|\/=|%=|\|\|=|&&=|\?\?=)/g)) {
     if (!imported.has(m[2])) continue;
     const line = raw.slice(0, m.index).split("\n").length;
     assignedImports.push(`${rel}:${line} assigns to ${m[2]}, which it imports from ${imported.get(m[2])}`);
+  }
+  // PREFIX increment/decrement: `++x`, `--x`. Missing this shipped a real bug —
+  // `const loadToken = ++activeDeckLoadToken;` in local-library.js, where the
+  // token is imported from cloud/web-decks.js. Assigning to an imported binding
+  // throws, so opening a saved deck threw before the deck was ever applied and
+  // the notes never appeared. The pattern above only ever matched the POSTFIX
+  // form, because it requires the name to come first.
+  for (const m of blanked.matchAll(/(\+\+|--)\s*([A-Za-z_$][\w$]*)/g)) {
+    if (!imported.has(m[2])) continue;
+    const line = raw.slice(0, m.index).split("\n").length;
+    assignedImports.push(`${rel}:${line} assigns to ${m[2]} (prefix ${m[1]}), which it imports from ${imported.get(m[2])}`);
   }
 
   // Two levels of "is this name this file's own?".

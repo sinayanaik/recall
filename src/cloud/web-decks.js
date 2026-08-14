@@ -282,6 +282,16 @@ export function webDeckPayloadMarkdown(payload) {
 // they left. See the checks in loadWebDeck and loadDeckFromLibrary below.
 export let activeDeckLoadToken = 0;
 
+// Claim the next token, and hand it back.
+//
+// loadDeckFromLibrary needs to bump this too, and it lives in another module —
+// where `++activeDeckLoadToken` is an assignment to an IMPORTED binding, which
+// throws. It threw before the deck was ever applied, so opening a saved deck
+// from My Decks did nothing at all and its notes never appeared.
+export function nextDeckLoadToken() {
+  return ++activeDeckLoadToken;
+}
+
 export async function loadWebDeck(deckId) {
   if (!deckId || !supabaseClient) return;
   if (!navigator.onLine) {

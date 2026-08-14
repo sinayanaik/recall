@@ -4,7 +4,7 @@
 // otherwise resolve after a faster later one and overwrite it, so the last
 // deck REQUESTED always wins, not the last one to arrive.
 
-import { activeDeckLoadToken } from "../cloud/web-decks.js?v=__BUILD__";
+import { activeDeckLoadToken, nextDeckLoadToken } from "../cloud/web-decks.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { setPendingImportFolder } from "../import/staging.js?v=__BUILD__";
@@ -495,7 +495,7 @@ export async function loadDeckFromLibrary(id) {
   // first. A big note can take a moment to come off IndexedDB (cold read) or
   // still be mid-fetch from the web — without this, that slower response
   // lands after a faster subsequent open and silently overwrites it.
-  const loadToken = ++activeDeckLoadToken;
+  const loadToken = nextDeckLoadToken();
   // The READ is caught separately from everything after it, because the two
   // failures mean opposite things and only one is the user's problem. A throw
   // here is IndexedDB failing to answer — the deck is fine, this attempt

@@ -79,6 +79,11 @@ for (const f of walk(path.join(ROOT, "src"))) {
   for (const m of text.matchAll(/export function (bump[A-Za-z0-9_$]*)\(\s*\)\s*\{\s*([A-Za-z0-9_$]+) \+= 1;/g)) {
     SETTER_ROUTED.set(m[1], { name: m[2], kind: "bump" });
   }
+  // `export function nextX() { return ++y; }` — a counter claimed from another
+  // module, where `++y` on the import would throw.
+  for (const m of text.matchAll(/export function ([A-Za-z0-9_$]+)\(\s*\)\s*\{\s*return \+\+([A-Za-z0-9_$]+);\s*\}/g)) {
+    SETTER_ROUTED.set(m[1], { name: m[2], kind: "preinc" });
+  }
 }
 
 
@@ -93,6 +98,7 @@ function unroute(code) {
     const before = out;
     for (const [setter, { name, kind }] of SETTER_ROUTED) {
       if (kind === "bump") { out = out.replaceAll(`${setter}();`, `${name} += 1;`); continue; }
+    if (kind === "preinc") { out = out.replaceAll(`${setter}()`, `++${name}`); continue; }
       out = replaceCall(out, setter, (arg) => `${name} = ${arg};`);
     }
     if (out === before) break;

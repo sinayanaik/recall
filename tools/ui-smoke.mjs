@@ -122,6 +122,8 @@ const SNAPSHOT = String.raw`() => {
     myDecksOpen: vis("#myDecksPanel"),
     importOpen: vis("#importPanel"),
     notesChars: (document.querySelector("#notesEdit")?.value || "").length,
+    stateNotesChars: (window.__api?.state?.notes || "").length,
+    stateCards: (window.__api?.state?.masterCards || []).length,
     renderedBlocks: document.querySelectorAll("#notesRendered > *").length,
     toast: txt(".toast"),
     status: txt("#status")
@@ -166,6 +168,30 @@ const STEPS = String.raw`[
   ["export markdown", async (api) => {
     window.__exported = api.exportMarkdown("all");
     await new Promise((r) => setTimeout(r, 250));
+  }],
+  ["save to My Decks", async (api) => {
+    // saveDeckToLibrary returns the library INDEX ENTRY, not the id.
+    const meta = await api.saveDeckToLibrary({ silent: true });
+    window.__savedId = meta && meta.id;
+    if (!window.__savedId) throw new Error("saving produced no library id");
+    await new Promise((r) => setTimeout(r, 500));
+  }],
+  ["start a different deck", async (api) => {
+    api.createNewDeck({ title: "Something else", notesMode: false });
+    await new Promise((r) => setTimeout(r, 500));
+  }],
+  ["LOAD the saved deck back", async (api) => {
+    // The path the user reported broken: opening a saved deck must restore its
+    // notes AND its cards, not just its title.
+    const ok = await api.loadDeckFromLibrary(window.__savedId);
+    if (!ok) throw new Error("loadDeckFromLibrary returned false");
+    await new Promise((r) => setTimeout(r, 900));
+    if (!api.state.notes) throw new Error("the deck loaded but its notes are empty");
+    if (!api.state.masterCards.length) throw new Error("the deck loaded but it has no cards");
+  }],
+  ["view the loaded notes", async (api) => {
+    api.setViewMode("notes");
+    await new Promise((r) => setTimeout(r, 800));
   }],
   ["open My Decks", async (api) => { api.openMyDecksPanel(); await new Promise((r) => setTimeout(r, 800)); }],
   ["close My Decks", async (api) => { api.closeMyDecksPanel(); await new Promise((r) => setTimeout(r, 250)); }],
@@ -224,7 +250,8 @@ const MODULE_API = `async () => {
     import("/src/notes/notes-view.js?v=__BUILD__"), import("/src/notes/anchors.js?v=__BUILD__"),
     import("/src/export/markdown.js?v=__BUILD__"), import("/src/export/pdf.js?v=__BUILD__"),
     import("/src/ui/deck-header.js?v=__BUILD__"),
-    import("/src/sync/reconcile.js?v=__BUILD__"), import("/src/core/state.js?v=__BUILD__")
+    import("/src/sync/reconcile.js?v=__BUILD__"), import("/src/core/state.js?v=__BUILD__"),
+    import("/src/library/local-library.js?v=__BUILD__"), import("/src/cards/new-deck.js?v=__BUILD__")
   ]);
   const api = {};
   for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
@@ -239,7 +266,8 @@ const NAMES = ["showAuthenticatedUI", "initAppForUser",
   "stageMarkdownImport", "commitStagedImport", "sampleMarkdown", "flipCard", "navigateCard",
   "moveCard", "openAllCardsPanel", "setAllCardsAnswersVisible", "closeAllCardsPanel",
   "setViewMode", "renderNotesView", "addCardFromNotes", "shuffleCards", "exportMarkdown",
-  "openMyDecksPanel", "closeMyDecksPanel", "reconcileAllDecks", "state"];
+  "openMyDecksPanel", "closeMyDecksPanel", "reconcileAllDecks", "state",
+  "saveDeckToLibrary", "loadDeckFromLibrary", "createNewDeck"];
 
 const servers = [];
 const temps = [];
