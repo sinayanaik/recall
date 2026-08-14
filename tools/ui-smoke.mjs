@@ -195,6 +195,62 @@ const STEPS = String.raw`[
   }],
   ["open My Decks", async (api) => { api.openMyDecksPanel(); await new Promise((r) => setTimeout(r, 800)); }],
   ["close My Decks", async (api) => { api.closeMyDecksPanel(); await new Promise((r) => setTimeout(r, 250)); }],
+  ["edit a card and commit it", async (api) => {
+    api.toggleEditMode("question", { remember: false });
+    await new Promise((r) => setTimeout(r, 350));
+    const box = document.querySelector("#questionEdit");
+    if (box) { box.value = "Edited question?"; box.dispatchEvent(new Event("input", { bubbles: true })); }
+    api.commitEditIfActive();
+    await new Promise((r) => setTimeout(r, 450));
+  }],
+  ["delete a card, then undo", async (api) => {
+    const id = api.state.masterCards[0]?.id;
+    api.pushCardUndoSnapshot(api.snapshotCardsState());
+    if (id) api.deleteAllCard(id);
+    await new Promise((r) => setTimeout(r, 350));
+    api.undoCardAction();
+    await new Promise((r) => setTimeout(r, 350));
+  }],
+  ["filter All Cards to known", async (api) => {
+    await api.openAllCardsPanel();
+    await new Promise((r) => setTimeout(r, 500));
+    api.setAllCardsFilter("known");
+    await new Promise((r) => setTimeout(r, 500));
+    api.setAllCardsFilter("all");
+    api.closeAllCardsPanel();
+    await new Promise((r) => setTimeout(r, 300));
+  }],
+  ["open the cloze panel", async (api) => { api.openClozePanel(); await new Promise((r) => setTimeout(r, 700)); }],
+  ["open the highlights panel", async (api) => { api.renderHighlightsPanel(); await new Promise((r) => setTimeout(r, 700)); }],
+  ["change theme", async (api) => { api.setTheme("light-paper"); await new Promise((r) => setTimeout(r, 500)); api.setTheme("dark-amoled"); await new Promise((r) => setTimeout(r, 400)); }],
+  ["open the style panel", async (api) => { api.openStylePanel(); await new Promise((r) => setTimeout(r, 600)); api.closeStylePanel(); await new Promise((r) => setTimeout(r, 300)); }],
+  ["open Help", async (api) => { api.openHelpModal(); await new Promise((r) => setTimeout(r, 500)); api.closeHelpModal(); await new Promise((r) => setTimeout(r, 250)); }],
+  ["open the Quick Notes board", async (api) => {
+    await api.openQuickNotesBoard();
+    await new Promise((r) => setTimeout(r, 900));
+    api.closeQuickNotesBoard();
+    await new Promise((r) => setTimeout(r, 350));
+  }],
+  ["export JSON", async (api) => { window.__json = api.exportJson(); await new Promise((r) => setTimeout(r, 300)); }],
+  ["rename the saved deck", async (api) => {
+    await api.renameDeckInLibrary(window.__savedId, "Renamed deck");
+    await new Promise((r) => setTimeout(r, 500));
+  }],
+  ["search My Decks", async (api) => {
+    api.openMyDecksPanel();
+    await new Promise((r) => setTimeout(r, 700));
+    api.state.myDecksSearch = "Renamed";
+    api.repaintMyDecks();
+    await new Promise((r) => setTimeout(r, 600));
+    api.state.myDecksSearch = "";
+    api.repaintMyDecks();
+    api.closeMyDecksPanel();
+    await new Promise((r) => setTimeout(r, 350));
+  }],
+  ["delete the saved deck", async (api) => {
+    api.deleteDeckFromLibrary(window.__savedId);
+    await new Promise((r) => setTimeout(r, 600));
+  }],
   ["sync", async (api) => { await api.reconcileAllDecks({ explicit: true }); await new Promise((r) => setTimeout(r, 900)); }]
 ]`;
 
@@ -251,7 +307,12 @@ const MODULE_API = `async () => {
     import("/src/export/markdown.js?v=__BUILD__"), import("/src/export/pdf.js?v=__BUILD__"),
     import("/src/ui/deck-header.js?v=__BUILD__"),
     import("/src/sync/reconcile.js?v=__BUILD__"), import("/src/core/state.js?v=__BUILD__"),
-    import("/src/library/local-library.js?v=__BUILD__"), import("/src/cards/new-deck.js?v=__BUILD__")
+    import("/src/library/local-library.js?v=__BUILD__"), import("/src/cards/new-deck.js?v=__BUILD__"),
+    import("/src/ui/edit-mode.js?v=__BUILD__"), import("/src/panels/cloze-panel.js?v=__BUILD__"),
+    import("/src/panels/highlights-panel.js?v=__BUILD__"), import("/src/ui/theme.js?v=__BUILD__"),
+    import("/src/cloud/style-sync.js?v=__BUILD__"), import("/src/ui/help.js?v=__BUILD__"),
+    import("/src/quick-notes/board.js?v=__BUILD__"), import("/src/library/tombstones.js?v=__BUILD__"),
+    import("/src/library/my-decks-render.js?v=__BUILD__")
   ]);
   const api = {};
   for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
@@ -267,7 +328,12 @@ const NAMES = ["showAuthenticatedUI", "initAppForUser",
   "moveCard", "openAllCardsPanel", "setAllCardsAnswersVisible", "closeAllCardsPanel",
   "setViewMode", "renderNotesView", "addCardFromNotes", "shuffleCards", "exportMarkdown",
   "openMyDecksPanel", "closeMyDecksPanel", "reconcileAllDecks", "state",
-  "saveDeckToLibrary", "loadDeckFromLibrary", "createNewDeck"];
+  "saveDeckToLibrary", "loadDeckFromLibrary", "createNewDeck",
+  "toggleEditMode", "commitEditIfActive", "deleteAllCard", "undoCardAction",
+  "pushCardUndoSnapshot", "snapshotCardsState", "setAllCardsFilter", "openClozePanel",
+  "renderHighlightsPanel", "setTheme", "openStylePanel", "closeStylePanel",
+  "openHelpModal", "closeHelpModal", "openQuickNotesBoard", "closeQuickNotesBoard",
+  "exportJson", "renameDeckInLibrary", "repaintMyDecks", "deleteDeckFromLibrary"];
 
 const servers = [];
 const temps = [];
