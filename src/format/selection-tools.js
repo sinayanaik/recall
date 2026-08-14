@@ -2,7 +2,8 @@
 // or lift it out into a note of its own.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { MARK_HIGHLIGHT_COLORS, makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
+import { MARK_HIGHLIGHT_COLORS } from "./highlight-colors.js?v=__BUILD__";
+import { makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults, renderTargetConfig } from "./render-toolbar.js?v=__BUILD__";
 import { state, toggleWrapPair } from "../main.js?v=__BUILD__";

@@ -4,41 +4,12 @@
 // a paragraph boundary does not survive re-rendering — and list/table prefixes
 // have to stay outside the mark or the markup breaks.
 
+import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT } from "./highlight-colors.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults } from "./render-toolbar.js?v=__BUILD__";
 import { SELECTION_TARGETS, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
-
-// Highlighting is a literal <mark data-color="…"> in the markdown source —
-// NOT an inline background-color <span>, which is what this used to be. A
-// fixed, opaque background chosen at authoring time looked wrong the moment
-// the reader switched themes (light text on a pale swatch in a dark theme, or
-// vice versa) — that span carried no opinion about what was behind it.
-// `data-color` is a small closed set of named tokens, and each one is styled
-// with `color-mix(in srgb, <hue> N%, transparent)` (see .rendered mark[data-
-// color] in styles.css) — an alpha tint over whatever surface is actually
-// behind it, which is what makes it read correctly across every one of this
-// app's light AND dark theme variants without a single theme-specific
-// override. MARK_HIGHLIGHT_HEX is only the PICKER's own preview swatches (a
-// normal opaque chip, the same idiom the text-colour picker uses) — it never
-// reaches the note itself.
-export const MARK_HIGHLIGHT_DEFAULT = "yellow";
-
-export const MARK_HIGHLIGHT_HEX = {
-  yellow: "#e0b400",
-  green: "#22c55e",
-  blue: "#3b82f6",
-  pink: "#ec4899",
-  orange: "#f97316",
-  purple: "#8b5cf6",
-};
-
-export const MARK_HIGHLIGHT_COLORS = Object.entries(MARK_HIGHLIGHT_HEX).map(([token, hex]) => ({
-  name: token[0].toUpperCase() + token.slice(1),
-  value: token,
-  swatch: hex,
-}));
 
 // The raw-editor toolbar's Highlight dropdown reuses the .color-menu circular-
 // swatch styling (see styles.css) via data-highlight instead of data-color, so

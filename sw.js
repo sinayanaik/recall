@@ -164,6 +164,7 @@ const APP_SHELL = [
   `./src/export/sql.js?v=${STAMP}`,
   `./src/export/zip.js?v=${STAMP}`,
   `./src/format/cloze.js?v=${STAMP}`,
+  `./src/format/highlight-colors.js?v=${STAMP}`,
   `./src/format/highlight.js?v=${STAMP}`,
   `./src/format/locate-selection.js?v=${STAMP}`,
   `./src/format/render-toolbar.js?v=${STAMP}`,

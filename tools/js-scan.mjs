@@ -266,6 +266,59 @@ function endOfStatement(blanked, from) {
 }
 
 /**
+ * Blank out every nested function body in `text`, leaving the rest.
+ *
+ * Used to answer "what does this initialiser read AT IMPORT TIME". An
+ * identifier inside `() => closeMainMenu()` is not read when the module is
+ * evaluated — it is read whenever that arrow is later called — so counting it
+ * reported a table of lazy callbacks (OVERLAY_LAYERS) as a temporal-dead-zone
+ * hazard when it is nothing of the kind.
+ */
+export function stripFunctionBodies(text) {
+  const src = blankLiterals(text);
+  const out = text.split("");
+  const blank = (from, to) => {
+    for (let k = from; k < to && k < out.length; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  const skipBlock = (start) => {
+    let depth = 0;
+    for (let k = start; k < src.length; k++) {
+      if (src[k] === "{") depth++;
+      else if (src[k] === "}") { depth--; if (!depth) return k + 1; }
+    }
+    return src.length;
+  };
+
+  // Arrow functions: blank the body, block or expression.
+  for (let i = 0; i < src.length - 1; i++) {
+    if (src[i] !== "=" || src[i + 1] !== ">") continue;
+    let j = i + 2;
+    while (j < src.length && /\s/.test(src[j])) j++;
+    if (src[j] === "{") { const end = skipBlock(j); blank(j, end); i = end; continue; }
+    // Expression body: to the first , ) ] } ; at this depth.
+    let depth = 0;
+    let k = j;
+    for (; k < src.length; k++) {
+      const c = src[k];
+      if ("([{".includes(c)) depth++;
+      else if (")]}".includes(c)) { if (depth === 0) break; depth--; }
+      else if ((c === "," || c === ";") && depth === 0) break;
+    }
+    blank(j, k);
+    i = k;
+  }
+
+  // Function expressions and declarations.
+  for (const m of src.matchAll(/\bfunction\b/g)) {
+    const brace = src.indexOf("{", m.index);
+    if (brace === -1) continue;
+    const end = skipBlock(brace);
+    blank(brace, end);
+  }
+  return out.join("");
+}
+
+/**
  * Identifiers referenced as values in `src`: excludes property accesses
  * (`a.foo`), object-literal keys (`{ foo: 1 }`), shorthand-safe cases, and
  * anything after `import`/`export` bookkeeping. Returns a Set.
