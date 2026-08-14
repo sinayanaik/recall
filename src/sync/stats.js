@@ -1,6 +1,6 @@
 // Counting what a sync did, so the report can say it in words.
 
-import { quickNoteCategoriesFromMeta } from "../main.js?v=__BUILD__";
+import { quickNoteCategoriesFromMeta } from "../quick-notes/categories.js?v=__BUILD__";
 
 // Normalizes any ISO / timestamptz string to epoch ms so timestamps written by
 // the JS client and read back from Postgres compare correctly.

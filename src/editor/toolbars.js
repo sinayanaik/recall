@@ -1,9 +1,9 @@
 // The editor toolbars, and the reveal-all-clozes button.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { enableSyntaxHighlighting } from "./highlight-mirror.js?v=__BUILD__";
 import { markHighlightSwatchButtonsHtml } from "../format/highlight.js?v=__BUILD__";
 import { CLOZE_MAKE_ICON, RENDER_HIGHLIGHT_GLYPH, refreshRenderSwatches } from "../format/render-toolbar.js?v=__BUILD__";
-import { enableSyntaxHighlighting } from "../main.js?v=__BUILD__";
 
 // Dynamic HTML template for the inline edit toolbar.
 // Pass { quickNote: true } to append the "save selection to quick_notes" button.

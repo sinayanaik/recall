@@ -5,7 +5,8 @@ import { downloadTextFile, quickNoteCategoryForCard } from "../cloud/web-decks.j
 import { exportBaseName, normalizeCardStatus, slugifyFileName } from "./markdown.js?v=__BUILD__";
 import { cardsForScope } from "./pdf.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { isQuickNotesDeck, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
+import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 
 export function sqlValue(value) {

@@ -8,7 +8,8 @@
 import { CLOUD_TIMEOUT_MS, withTimeout } from "./net.js?v=__BUILD__";
 import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { cachedUserId, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
+import { cachedUserId } from "../quick-notes/categories.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 import { applyActiveStyleSettings, detectStyleProfile, hasMeaningfulStyleSettings, setStyleProfileSettings, setStyleProfiles, setStyleStatus, styleProfileLabel, styleProfilesPayload, styleSettingsFromControls, updateStyleControls, updateStyleProfileUi } from "../ui/style-settings.js?v=__BUILD__";

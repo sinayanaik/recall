@@ -14,7 +14,8 @@ import { LOCAL_IMAGE_SCHEME, getOutboxImage } from "../images/outbox.js?v=__BUIL
 import { OFFLINE_IMAGE_CACHE } from "../images/upload.js?v=__BUILD__";
 import { FOLDER_SEP, folderSegments, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { myDeckPayload } from "../library/my-decks-selection.js?v=__BUILD__";
-import { noteAnchorsFromMeta, quickNoteCategoriesFromMeta } from "../main.js?v=__BUILD__";
+import { noteAnchorsFromMeta } from "../quick-notes/anchors.js?v=__BUILD__";
+import { quickNoteCategoriesFromMeta } from "../quick-notes/categories.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 export const BACKUP_SCHEMA = "recall-backup";

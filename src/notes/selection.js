@@ -7,9 +7,10 @@
 // lives on the parent.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { HIGHLIGHT_MIRROR_MAX_CHARS } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
-import { HIGHLIGHT_MIRROR_MAX_CHARS, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { lineIndexAtOffset } from "./caret.js?v=__BUILD__";
 import { codeLanguageOrGeneric, inferCodeLanguage, normalizeCodeLanguage } from "../render/code-language.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";

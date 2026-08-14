@@ -10,10 +10,11 @@ import { revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { humanizeSourceTitle, sourceFileTitle } from "../import/parse-cards.js?v=__BUILD__";
 import { importTargetCategory } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { isQuickNotesDeck, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
+import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 

@@ -1,7 +1,13 @@
 // Finding every cloze in the deck, with enough surrounding text to recognise
 // it out of context.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../main.js?v=__BUILD__";
+import { commitNotesEditIfActive, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
+import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 export const CLOZE_SCAN_RE = /\{\{([\s\S]+?)\}\}/g;
 
@@ -149,4 +155,173 @@ export function collectDeckClozes() {
     pushGroup(`Card ${i + 1} · Answer`, card.answer || "");
   });
   return groups;
+}
+
+// Split a markdown table row into trimmed cell strings (drops the outer pipes).
+export function clozeSplitTableRow(line) {
+  return String(line)
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.trim());
+}
+
+// Find GitHub-style tables in the notes source: a header row, a |---|---| delim
+// row, then consecutive pipe rows. Returns header labels + data-row line indices.
+export function parseNotesTables(source) {
+  const lines = String(source).split("\n");
+  const tables = [];
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!lines[i].includes("|")) continue;
+    const delim = lines[i + 1];
+    if (!/^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(delim)) continue;
+    const headers = clozeSplitTableRow(lines[i]);
+    const rowLines = [];
+    let j = i + 2;
+    while (j < lines.length && lines[j].includes("|") && lines[j].trim() !== "") {
+      rowLines.push(j);
+      j++;
+    }
+    tables.push({ headers, rowLines });
+    i = j - 1;
+  }
+  return tables;
+}
+
+// Wrap every data cell in one column of one notes table as its own {{cloze}}.
+export function clozeNotesTableColumn(tableIndex, colIndex) {
+  const lines = (state.notes || "").split("\n");
+  const table = parseNotesTables(state.notes || "")[tableIndex];
+  if (!table) return;
+  let changed = 0;
+  table.rowLines.forEach((lineNo) => {
+    const cells = clozeSplitTableRow(lines[lineNo]);
+    if (colIndex >= cells.length) return;
+    const bare = cells[colIndex].trim();
+    if (!bare || /^\{\{[\s\S]*\}\}$/.test(bare)) return; // empty or already clozed
+    cells[colIndex] = "{{" + bare + "}}";
+    lines[lineNo] = "| " + cells.join(" | ") + " |";
+    changed++;
+  });
+  if (!changed) {
+    showToast("Those cells are already clozed", "info");
+    return;
+  }
+  state.notes = lines.join("\n");
+  if (el.notesEdit) el.notesEdit.value = state.notes;
+  scheduleDeckAutosave();
+  renderNotesViewPinned();
+  showToast(`Clozed ${changed} cell${changed === 1 ? "" : "s"}`);
+  renderClozePanel();
+}
+
+export function clozeContextNode(markdown, isSide) {
+  const node = document.createElement("div");
+  node.className = "cloze-ctx" + (isSide ? " is-side" : "");
+  node.innerHTML = markdownToSafeHtml(markdown);
+  return node;
+}
+
+export function renderClozePanel() {
+  const body = el.clozeReviewBody;
+  if (!body) return;
+  body.innerHTML = "";
+  const groups = collectDeckClozes();
+  const tables = parseNotesTables(state.notes || "");
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+
+  if (el.clozeReviewSummary) {
+    el.clozeReviewSummary.textContent =
+      total === 0 ? "No clozes yet" : `${total} cloze${total === 1 ? "" : "s"} across this deck`;
+  }
+
+  if (tables.length) {
+    const sec = document.createElement("section");
+    sec.className = "cloze-tables";
+    const h = document.createElement("h2");
+    h.textContent = "Quick-cloze a notes table column";
+    sec.appendChild(h);
+    tables.forEach((table, ti) => {
+      const row = document.createElement("div");
+      row.className = "cloze-table-row";
+      const name = document.createElement("span");
+      name.className = "cloze-table-name";
+      name.textContent = table.headers.filter(Boolean).slice(0, 3).join(" · ") || `Table ${ti + 1}`;
+      const select = document.createElement("select");
+      table.headers.forEach((hd, ci) => {
+        const opt = document.createElement("option");
+        opt.value = String(ci);
+        opt.textContent = hd || `Column ${ci + 1}`;
+        select.appendChild(opt);
+      });
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cloze-table-cloze-btn";
+      btn.textContent = "Cloze column";
+      btn.addEventListener("click", () => clozeNotesTableColumn(ti, Number(select.value)));
+      row.append(name, select, btn);
+      sec.appendChild(row);
+    });
+    body.appendChild(sec);
+  }
+
+  if (total === 0 && !tables.length) {
+    const p = document.createElement("p");
+    p.className = "cloze-empty";
+    p.textContent =
+      "No fill-in-the-blank clozes in this deck yet. Select text in your notes or a card and press […] to hide it as a cloze.";
+    body.appendChild(p);
+    resetClozePanelBulk();
+    return;
+  }
+
+  groups.forEach((group) => {
+    const sec = document.createElement("section");
+    sec.className = "cloze-group";
+    const h = document.createElement("h2");
+    h.textContent = `${group.label} — ${group.items.length}`;
+    sec.appendChild(h);
+    group.items.forEach((it) => {
+      const item = document.createElement("div");
+      item.className = "cloze-item";
+      if (it.prev) item.appendChild(clozeContextNode(it.prev, true));
+      item.appendChild(clozeContextNode(it.cur, false));
+      if (it.next) item.appendChild(clozeContextNode(it.next, true));
+      sec.appendChild(item);
+    });
+    body.appendChild(sec);
+  });
+
+  resetClozePanelBulk();
+}
+
+// The bulk button is a plain toggle (its own aria-pressed is the source of
+// truth), separate from the per-view "flip all clozes" header buttons.
+export function resetClozePanelBulk() {
+  if (!el.clozeBulkBtn) return;
+  el.clozeBulkBtn.setAttribute("aria-pressed", "false");
+  el.clozeBulkBtn.textContent = "[A] Reveal all";
+}
+
+export function toggleClozePanelAll() {
+  if (!el.clozeBulkBtn || !el.clozeReviewBody) return;
+  const reveal = el.clozeBulkBtn.getAttribute("aria-pressed") !== "true";
+  el.clozeReviewBody.querySelectorAll(".cloze").forEach((c) => c.classList.toggle("is-revealed", reveal));
+  el.clozeBulkBtn.setAttribute("aria-pressed", reveal ? "true" : "false");
+  el.clozeBulkBtn.textContent = reveal ? "[_] Hide all" : "[A] Reveal all";
+}
+
+export function openClozePanel() {
+  if (!el.clozePanel) return;
+  commitNotesEditIfActive();
+  lockPageScroll();
+  renderClozePanel();
+  el.clozePanel.hidden = false;
+}
+
+export function closeClozePanel() {
+  if (!el.clozePanel || el.clozePanel.hidden) return;
+  el.clozePanel.hidden = true;
+  unlockPageScroll();
 }

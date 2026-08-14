@@ -2,7 +2,8 @@
 
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { refreshHighlightBackdrop, state, viewModePaintToken } from "../main.js?v=__BUILD__";
+import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
+import { state, viewModePaintToken } from "../main.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderHighlightsPanel } from "../panels/highlights-panel.js?v=__BUILD__";
