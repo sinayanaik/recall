@@ -37,16 +37,21 @@ const argv = process.argv.slice(2);
 const DRY = argv.includes("--dry");
 const args = argv.filter((a) => a !== "--dry");
 
+const FIX_IMPORTS = args.includes("--fix-imports");
+
 let jobs = [];
 const planIdx = args.indexOf("--plan");
-if (planIdx !== -1) {
-  // [{ target: "src/render/math.js", symbols: [...] }, …] — applied in order.
+if (FIX_IMPORTS) {
+  jobs = [];
+} else if (planIdx !== -1) {
+  // [{ target, symbols }] or [{ target, from, to, except? }] — applied in order.
   jobs = JSON.parse(readFileSync(path.resolve(ROOT, args[planIdx + 1]), "utf8"));
 } else {
   const [target, ...symbols] = args;
   if (!target || !symbols.length) {
     console.error("usage: extract-module.mjs <src/dir/file.js> <symbol...> [--dry]");
     console.error("       extract-module.mjs --plan <plan.json> [--dry]");
+    console.error("       extract-module.mjs --fix-imports [--dry]");
     process.exit(2);
   }
   jobs = [{ target, symbols }];
@@ -131,19 +136,96 @@ function neededBy(text, ownNames, owner, selfFile) {
   return need;
 }
 
-// Put the import block below the file's opening comment banner and above
-// everything else. Inserting at "the first line that isn't a comment" instead
-// wedged it between a comment and the function that comment explains.
+// Put the import block below the file's opening comment BANNER and above
+// everything else.
+//
+// "Banner" means a leading comment block followed by a blank line — a note about
+// the file. A leading comment with no blank line after it is not a banner, it is
+// the explanation of the first declaration, and imports must go ABOVE it.
+// Getting that distinction wrong is how two earlier versions of this function
+// wedged an import (and then a stray blank line) between a comment and the thing
+// it documents, which is precisely the readability the comments exist for.
 function withImports(text, importLines) {
   const lines = text.split("\n").filter((l) => !IMPORT_LINE.test(l));
   let i = 0;
-  while (i < lines.length && lines[i].trim().startsWith("//")) i++;   // banner
-  while (i < lines.length && !lines[i].trim()) i++;                   // its blank line
+  while (i < lines.length && lines[i].trim().startsWith("//")) i++;
+  const isBanner = i > 0 && i < lines.length && !lines[i].trim();
+  if (!isBanner) i = 0;
   const head = lines.slice(0, i);
-  const rest = lines.slice(i);
+  let rest = lines.slice(i);
   while (head.length && !head[head.length - 1].trim()) head.pop();
-  const block = importLines.length ? [...importLines, ""] : [];
-  return [...head, ...(head.length ? [""] : []), ...block, ...rest].join("\n");
+  while (rest.length && !rest[0].trim()) rest.shift();
+  if (!importLines.length) {
+    return [...head, ...(head.length ? [""] : []), ...rest].join("\n");
+  }
+  return [...head, ...(head.length ? [""] : []), ...importLines, "", ...rest].join("\n");
+}
+
+// Add `export` to every declaration some other module imports.
+//
+// Computing an import is only half of it: `import { configureMermaid } from
+// "../main.js"` against a main.js that never exported it is a SyntaxError at
+// instantiation — "does not provide an export named…" — and the static checks
+// missed it entirely because the import was present and correct. Only loading
+// the page found it. So the two halves are now done together, always.
+function ensureExports() {
+  const files = walk(SRC);
+  const wantedFrom = new Map();   // file -> Set(names other modules import from it)
+  for (const f of files) {
+    const raw = readFileSync(f, "utf8");
+    for (const [name, source] of parseImports(raw).names) {
+      if (!source.startsWith(".")) continue;
+      const abs = path.resolve(path.dirname(f), source.replace(/\?.*$/, ""));
+      const rel = path.relative(ROOT, abs).replace(/\\/g, "/");
+      if (!wantedFrom.has(rel)) wantedFrom.set(rel, new Set());
+      wantedFrom.get(rel).add(name);
+    }
+  }
+  let added = 0;
+  for (const f of files) {
+    const rel = path.relative(ROOT, f).replace(/\\/g, "/");
+    const wanted = wantedFrom.get(rel);
+    if (!wanted?.size) continue;
+    let raw = readFileSync(f, "utf8");
+    // Walk backwards so earlier offsets stay valid.
+    const todo = topLevelDecls(raw).filter((d) => wanted.has(d.name) && !d.exported);
+    for (const d of todo.sort((a, b) => b.start - a.start)) {
+      raw = raw.slice(0, d.start) + "export " + raw.slice(d.start);
+      added++;
+    }
+    if (todo.length && !DRY) writeFileSync(f, raw);
+    if (todo.length) console.log(`${DRY ? "[dry] " : ""}${rel}: +export on ${todo.length} declaration(s)`);
+  }
+  return added;
+}
+
+// Recompute every module's import block from the symbol table, moving nothing.
+// Needed whenever the graph changes without an extraction — adding a setter,
+// renaming a symbol, hand-editing a module — because an import block that is
+// merely stale fails at instantiation, not at the line that got it wrong.
+if (FIX_IMPORTS) {
+  const files = walk(SRC);
+  const owner = new Map();
+  for (const f of files) {
+    const rel = path.relative(ROOT, f).replace(/\\/g, "/");
+    for (const d of topLevelDecls(readFileSync(f, "utf8"))) {
+      if (!owner.has(d.name)) owner.set(d.name, { file: rel, line: d.line });
+    }
+  }
+  for (const f of files) {
+    const rel = path.relative(ROOT, f).replace(/\\/g, "/");
+    const raw = readFileSync(f, "utf8");
+    const stripped = raw.split("\n").filter((l) => !IMPORT_LINE.test(l)).join("\n");
+    const own = new Set(topLevelDecls(stripped).map((d) => d.name));
+    const lines = importLines(f, neededBy(stripped, own, owner, rel), owner);
+    const next = withImports(raw, lines);
+    if (next !== raw) {
+      if (!DRY) writeFileSync(f, next);
+      console.log(`${DRY ? "[dry] " : ""}${rel}: ${lines.length} import line(s)`);
+    }
+  }
+  ensureExports();
+  process.exit(0);
 }
 
 for (const job of jobs) {
@@ -153,11 +235,28 @@ for (const job of jobs) {
   const decls = topLevelDecls(main);
   const byName = new Map(decls.map((d) => [d.name, d]));
 
-  const wanted = [];
-  for (const name of job.symbols) {
-    const d = byName.get(name);
-    if (!d) { console.error(`  ! ${targetRel}: '${name}' is not a top-level declaration of src/main.js`); process.exit(1); }
-    wanted.push(d);
+  // A job is either an explicit symbol list, or a REGION: every top-level
+  // declaration from `from` to `to` inclusive, in source order. Regions are how
+  // most of this split is expressed — app.js was already grouped by feature, so
+  // a feature is nearly always one contiguous run, and naming its two ends is
+  // both shorter and far less error-prone than listing sixty symbols. `except`
+  // drops individual symbols that belong elsewhere.
+  let wanted;
+  if (job.from) {
+    const a = decls.findIndex((d) => d.name === job.from);
+    const b = decls.findIndex((d) => d.name === job.to);
+    if (a === -1) { console.error(`  ! ${targetRel}: no top-level '${job.from}' in src/main.js`); process.exit(1); }
+    if (b === -1) { console.error(`  ! ${targetRel}: no top-level '${job.to}' in src/main.js`); process.exit(1); }
+    if (b < a) { console.error(`  ! ${targetRel}: '${job.to}' comes before '${job.from}'`); process.exit(1); }
+    const except = new Set(job.except || []);
+    wanted = decls.slice(a, b + 1).filter((d) => !except.has(d.name));
+  } else {
+    wanted = [];
+    for (const name of job.symbols) {
+      const d = byName.get(name);
+      if (!d) { console.error(`  ! ${targetRel}: '${name}' is not a top-level declaration of src/main.js`); process.exit(1); }
+      wanted.push(d);
+    }
   }
   wanted.sort((a, b) => a.start - b.start);
 
@@ -245,6 +344,7 @@ function syncAppShell() {
 }
 
 if (!DRY) {
+  ensureExports();
   syncAppShell();
   console.log("Now run: node tools/split-parity.mjs && node tools/module-symbols.mjs");
 }

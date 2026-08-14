@@ -4,8 +4,11 @@
 // mixed-build failure this repo has already shipped twice. deploy.yml and
 // tools/module-symbols.mjs both refuse a relative import without it.
 
+import { clearSupabaseConfig, initSupabaseClient, isSignedIn, loadSupabaseConfig, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
+import { ensureJsZip, ensureMermaid, ensureNomnoml, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { encodeAttribute, escapeHtml, escapeRegExp, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
+import { codeLanguageAliases, codeLanguageOrGeneric, configurePrismLanguages, inferCodeLanguage } from "./render/code-language.js?v=__BUILD__";
 
 // Run `fn` once the DOM is parsed AND this module has finished evaluating.
 //
@@ -517,232 +520,6 @@ const styleCssVariables = {
   modalPadding: "--modal-padding"
 };
 
-
-// Supabase config is stored in localStorage — no hardcoded credentials.
-// Users enter their own project URL and anon key on first launch.
-const SUPABASE_CONFIG_STORAGE_KEY = "flashcards_supabase_config";
-
-function loadSupabaseConfig() {
-  try {
-    const raw = localStorage.getItem(SUPABASE_CONFIG_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveSupabaseConfig(url, key) {
-  localStorage.setItem(SUPABASE_CONFIG_STORAGE_KEY, JSON.stringify({ url: url.trim(), key: key.trim() }));
-}
-
-function clearSupabaseConfig() {
-  localStorage.removeItem(SUPABASE_CONFIG_STORAGE_KEY);
-}
-
-let supabaseClient = null;
-// Tracks whether a real user session is active, so background auto-sync only
-// fires for signed-in users (and never tries to push while logged out).
-let isSignedIn = false;
-
-// Returns a REASON, not a boolean. The two failures it used to conflate need
-// opposite responses: "no-config" is a first run and the setup form is correct;
-// "no-library" is a configured device whose CDN fetch for supabase-js failed,
-// and showing that user the setup form tells them their project is missing when
-// it isn't — then offers them a button that deletes it. The developer never saw
-// this because localhost keeps the script warm and unregisters the worker.
-function initSupabaseClient() {
-  const config = loadSupabaseConfig();
-  if (!config?.url || !config?.key) return "no-config";
-  if (!window.supabase) return "no-library";
-  try {
-    supabaseClient = window.supabase.createClient(config.url, config.key);
-  } catch (error) {
-    // A malformed URL or key that passed the setup form's shape check can throw
-    // here. Treated as "no client" rather than allowed to abort boot.
-    console.warn("Could not create the Supabase client", error);
-    supabaseClient = null;
-    return "no-library";
-  }
-  preconnectToStorageOrigin(config.url);
-  return "ok";
-}
-
-// index.html can only preconnect to cdn.jsdelivr.net — every user brings their
-// own Supabase project, so the storage origin isn't known until the config is
-// read. Without this the first image of a session pays DNS + TLS on top of its
-// download, which is exactly the request the reader is waiting on.
-function preconnectToStorageOrigin(url) {
-  try {
-    const origin = new URL(url).origin;
-    if (document.querySelector(`link[rel="preconnect"][href="${CSS.escape(origin)}"]`)) return;
-    const link = document.createElement("link");
-    link.rel = "preconnect";
-    link.href = origin;
-    link.crossOrigin = "anonymous";
-    document.head.appendChild(link);
-  } catch {
-    // A malformed configured URL is already handled above; nothing to warm.
-  }
-}
-
-// supabase-js is a blocking <script> before this file, so if it were coming at
-// all it would already be here — except when the browser gave up on it early,
-// or a slow CDN answered after the parser moved on. Cheap to keep looking for a
-// few seconds before declaring failure, and free when it's already loaded.
-async function waitForSupabaseLibrary(timeoutMs = 8000) {
-  if (window.supabase) return true;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    if (window.supabase) return true;
-  }
-  return false;
-}
-
-// Re-fetch supabase-js by hand. The original <script> has already failed and
-// will not retry itself, so "Try again" has to actually go and get it — a bare
-// location.reload() would re-run the same blocked request through the same
-// blocked path and look identical to doing nothing.
-function reloadSupabaseLibrary() {
-  return new Promise((resolve) => {
-    if (window.supabase) return resolve(true);
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.2";
-    script.async = true;
-    script.onload = () => resolve(Boolean(window.supabase));
-    script.onerror = () => resolve(false);
-    document.head.appendChild(script);
-  });
-}
-
-// ── Deferred third-party libraries ──────────────────────────────────────────
-//
-// index.html used to load 5.8MB of blocking CDN JavaScript before app.js, and
-// every listener in this file attaches at module scope — so until all of that
-// had downloaded AND executed, the whole UI was painted and completely inert.
-// Measured cold: controls on screen at 56ms, listeners live at 5421ms. That is
-// the real reason the app "felt laggy": the first press of a session genuinely
-// did nothing. (The boot-click queue in index.html covers that window by
-// replaying the press; it is a mitigation, not a fix.)
-//
-// Six of those libraries — mermaid (3.3MB on its own), jszip, nomnoml+graphre
-// and turndown+its gfm plugin — are render-, import- or export-only. They now
-// load from here instead.
-//
-// Why injected rather than `defer`: deferred scripts still block
-// DOMContentLoaded, and initToolbars — which wires the ☰ drawer that every
-// toolbar action lives behind — waits on that event, so `defer` would have
-// moved the stall rather than removed it. `async` would not block it, but
-// loses the ordering graphre→nomnoml and turndown→its plugin both require.
-//
-// What stays blocking in index.html: dompurify, marked, prism and katex (the
-// first render needs them) and supabase-js (bootApp needs it).
-//
-// OFFLINE CONTRACT: these URLs must stay byte-identical to the entries in
-// sw.js's CDN_ASSETS. The worker precaches them at install and serves
-// cdn.jsdelivr.net cache-first, so an injected <script> for the same URL is
-// still answered from the cache with no connection. A typo here doesn't fail
-// loudly — it quietly turns "works offline" into "worked offline on the
-// machine it was tested on".
-const CDN_BASE = "https://cdn.jsdelivr.net/npm/";
-const LIB_URLS = {
-  mermaid: `${CDN_BASE}mermaid@10.9.1/dist/mermaid.min.js`,
-  jszip: `${CDN_BASE}jszip@3.10.1/dist/jszip.min.js`,
-  graphre: `${CDN_BASE}graphre/dist/graphre.js`,
-  nomnoml: `${CDN_BASE}nomnoml/dist/nomnoml.js`,
-  turndown: `${CDN_BASE}turndown@7.1.2/dist/turndown.js`,
-  turndownGfm: `${CDN_BASE}turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js`
-};
-
-// url -> Promise<boolean>. Cached by URL so concurrent callers (a note with
-// twelve diagrams in it) share one <script>, and so a failed load isn't retried
-// on a loop — it resolves false and the caller degrades.
-const loadedScripts = new Map();
-
-function loadScriptOnce(url) {
-  let pending = loadedScripts.get(url);
-  if (pending) return pending;
-  pending = new Promise((resolve) => {
-    const script = document.createElement("script");
-    script.src = url;
-    script.async = true;
-    script.onload = () => resolve(true);
-    script.onerror = () => {
-      // Drop the rejection from the cache so a later attempt (back online, or
-      // after the worker's CDN repair pass) can succeed.
-      loadedScripts.delete(url);
-      console.warn("Could not load", url);
-      resolve(false);
-    };
-    document.head.appendChild(script);
-  });
-  loadedScripts.set(url, pending);
-  return pending;
-}
-
-async function ensureMermaid() {
-  if (typeof mermaid !== "undefined") return true;
-  if (!(await loadScriptOnce(LIB_URLS.mermaid))) return false;
-  // setTheme() ran at boot and its configureMermaid() call was a no-op with no
-  // library to configure. Apply the current theme now, or the first diagram
-  // would draw in mermaid's own default palette.
-  configureMermaid(currentThemeId());
-  return true;
-}
-
-async function ensureJsZip() {
-  if (window.JSZip) return true;
-  return loadScriptOnce(LIB_URLS.jszip);
-}
-
-async function ensureNomnoml() {
-  if (typeof nomnoml !== "undefined") return true;
-  // Sequential, not Promise.all: nomnoml reads graphre off the global at
-  // evaluation time.
-  if (!(await loadScriptOnce(LIB_URLS.graphre))) return false;
-  return loadScriptOnce(LIB_URLS.nomnoml);
-}
-
-async function ensureTurndown() {
-  if (typeof TurndownService !== "undefined") return true;
-  if (!(await loadScriptOnce(LIB_URLS.turndown))) return false;
-  // The gfm plugin augments TurndownService, so it must come second. Its
-  // absence is survivable (tables and strikethrough convert less well), so a
-  // failure here doesn't fail the whole thing.
-  await loadScriptOnce(LIB_URLS.turndownGfm);
-  return true;
-}
-
-// Called once the app is interactive. The ensureX() guards above are the
-// correctness backstop, but they make the caller wait; warming the libraries
-// while the user is still reading their first card means that by the time
-// anyone renders a diagram, runs a backup or pastes rich text, the library is
-// already there. Idle-time and unawaited, so it cannot get in front of
-// anything the user is doing.
-//
-// This also covers htmlToMarkdown's paste path, which reads clipboardData
-// synchronously and so genuinely cannot await a loader mid-event.
-let deferredLibrariesWarmed = false;
-function warmDeferredLibraries() {
-  if (deferredLibrariesWarmed) return;
-  deferredLibrariesWarmed = true;
-  const warm = () => {
-    ensureMermaid();
-    ensureJsZip();
-    ensureNomnoml();
-    ensureTurndown();
-  };
-  // Held back a couple of seconds and THEN made to wait for an idle moment.
-  // Both halves matter: the app is still rendering its first deck when this is
-  // armed, and requestIdleCallback alone would happily fire during one of
-  // boot's IndexedDB awaits — dropping a 3.3MB mermaid parse straight into the
-  // window this whole change exists to clear. Anyone who reaches a diagram
-  // before then simply loads it through the ensureX() guard instead.
-  setTimeout(() => {
-    if (typeof requestIdleCallback === "function") requestIdleCallback(warm, { timeout: 5000 });
-    else warm();
-  }, 2000);
-}
 
 // Reads the session straight from local storage — no network — so a user who
 // has signed in at least once can keep using the app while offline.
@@ -3054,294 +2831,19 @@ marked.setOptions({
   headerIds: false
 });
 
-const codeLanguageAliases = {
-  cjs: "javascript",
-  coffee: "coffeescript",
-  "c++": "cpp",
-  "c#": "csharp",
-  "f#": "fsharp",
-  html: "markup",
-  js: "javascript",
-  jsx: "javascript",
-  mjs: "javascript",
-  md: "markdown",
-  py: "python",
-  rb: "ruby",
-  sh: "bash",
-  shell: "bash",
-  tex: "latex",
-  ts: "typescript",
-  tsx: "typescript",
-  yml: "yaml"
-};
 
-// ── Guessing a language for undeclared fences ──────────────────────────────
-// Plenty of code arrives in notes as a bare ``` fence with no language —
-// pasted from chat, from a PDF, typed in a hurry. Those blocks render as flat
-// grey text (no highlighting, no badge), and — the reason this matters most —
-// a selection lifted out of one can only ever be re-fenced as a bare ```.
-// Each entry scores a body against weighted signals; the winner needs both an
-// absolute score (INFER_SCORE_FLOOR) and a clear margin over the runner-up, so
-// prose, logs and pseudocode stay unlabelled rather than being mislabelled.
-// Negative weights are counter-evidence (semicolon line endings aren't
-// Python; `: string` isn't plain JavaScript).
-const CODE_LANGUAGE_SIGNATURES = [
-  ["python", [
-    [/^\s*def\s+\w+\s*\([^)]*\)\s*(?:->[^:]*)?:/m, 5],
-    [/^\s*(?:async\s+)?def\s/m, 3],
-    [/^\s*class\s+\w+\s*(?:\([^)]*\))?\s*:\s*$/m, 4],
-    [/^\s*(?:from\s+[\w.]+\s+)?import\s+[\w.*]/m, 3],
-    [/^\s*(?:if|elif|else|for|while|try|except|finally|with)\b[^\n{]*:\s*$/m, 3],
-    [/\bself\./, 4],
-    [/\b(?:True|False|None)\b/, 2],
-    [/\bprint\s*\(/, 3],
-    [/\b(?:lambda|yield|elif|__init__|__name__)\b/, 3],
-    [/^\s*@\w+(?:\.\w+)*(?:\([^)]*\))?\s*$/m, 2],
-    // Notebook/data-science lines are half of what gets pasted into notes and
-    // carry none of the keywords above.
-    [/\b(?:np|pd|plt|df|sns|torch|tf|nn|sk)\.\w+/, 3],
-    [/\.(?:fit|predict|transform|head|describe|dropna|groupby)\s*\(/, 3],
-    [/;\s*$/m, -2],
-    [/^\s*[\w)\]"']\s*;\s*$/m, -3],
-    [/\b(?:const|let|var|function)\s+\w+\s*=/, -3],
-    [/\{\s*$/m, -1]
-  ]],
-  ["typescript", [
-    [/\b(?:interface|type)\s+\w+\s*(?:<[^>]*>)?\s*[={]/, 5],
-    [/:\s*(?:string|number|boolean|any|void|unknown|never)\b/, 4],
-    [/\b(?:public|private|protected|readonly)\s+\w+\s*[:(]/, 4],
-    [/\bimplements\s+\w/, 3],
-    [/\benum\s+\w+\s*\{/, 4],
-    [/\bas\s+(?:const|string|number|unknown)\b/, 3],
-    [/\b(?:const|let)\s+\w+\s*:\s*\w/, 4],
-    [/\bfunction\s+\w+\s*\([^)]*\)\s*:\s*\w/, 4]
-  ]],
-  ["javascript", [
-    [/\b(?:const|let|var)\s+[\w{[$]/, 3],
-    [/\bfunction\s*\w*\s*\(/, 3],
-    [/=>\s*[{(\w'"`]/, 3],
-    [/\b(?:console|document|window)\.\w+/, 3],
-    [/\b(?:require|module\.exports|export\s+(?:default|const|function)|import\s+.*\bfrom\b)/, 3],
-    [/\b(?:async|await)\b/, 2],
-    [/===|!==|\?\?|\?\./, 2],
-    [/\b(?:null|undefined|true|false)\b/, 1],
-    [/;\s*$/m, 1],
-    [/:\s*(?:string|number|boolean)\b/, -3],
-    [/\binterface\s+\w+\s*\{/, -3]
-  ]],
-  ["java", [
-    [/\b(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?[\w<>\[\]]+\s+\w+\s*\(/, 5],
-    [/\bSystem\.out\.print/, 6],
-    [/\bpublic\s+(?:final\s+)?class\s+\w+/, 4],
-    [/\bimport\s+(?:java|javax)\./, 5],
-    [/\bnew\s+[A-Z]\w*\s*(?:<[^>]*>)?\s*\(/, 2],
-    [/\bvoid\s+main\s*\(/, 3],
-    [/@Override\b/, 3]
-  ]],
-  ["csharp", [
-    [/\busing\s+System(?:\.\w+)*\s*;/, 5],
-    [/\bnamespace\s+[\w.]+/, 4],
-    [/\bConsole\.(?:Write|Read)/, 5],
-    [/\bpublic\s+(?:static\s+)?(?:async\s+)?[\w<>\[\]]+\s+\w+\s*\(/, 2],
-    [/\bvar\s+\w+\s*=\s*new\b/, 2],
-    [/\b(?:string|int|bool)\s+\w+\s*=/, 1],
-    [/\{\s*get;\s*set;\s*\}/, 5]
-  ]],
-  ["cpp", [
-    [/#include\s*<(?:iostream|vector|string|map|algorithm|memory|cstdio)>/, 6],
-    [/#include\s*<bits\/stdc\+\+\.h>/, 6],
-    [/\bstd::\w+/, 5],
-    [/\b(?:cout|cin|endl)\b/, 4],
-    [/\btemplate\s*</, 4],
-    [/\bnamespace\s+\w+\s*\{/, 3],
-    [/\bnullptr\b/, 3],
-    [/\b(?:public|private|protected)\s*:/, 3]
-  ]],
-  ["c", [
-    [/#include\s*<[\w./+-]+>/, 5],
-    [/\bprintf\s*\(/, 4],
-    [/\b(?:int|void|char|float|double)\s+\w+\s*\([^)]*\)\s*\{/, 3],
-    [/\bmalloc\s*\(|\bfree\s*\(/, 3],
-    [/\bstruct\s+\w+\s*\{/, 2],
-    [/^\s*(?:unsigned\s+|signed\s+|const\s+)?(?:int|char|float|double|long|short|size_t|void)\s+\*?\w+\s*(?:=|;|\[)/m, 3],
-    [/\bfor\s*\(\s*(?:int|size_t|unsigned|long)\s+\w+\s*=/, 4],
-    [/\bstd::/, -5],
-    [/\bclass\s+\w+/, -4]
-  ]],
-  ["go", [
-    [/\bfunc\s+(?:\([^)]*\)\s*)?\w+\s*\(/, 5],
-    [/\bpackage\s+\w+\s*$/m, 4],
-    [/\bfmt\.\w+/, 5],
-    [/:=/, 4],
-    [/\bimport\s+\(/, 3],
-    [/\b(?:defer|go|chan)\b/, 3]
-  ]],
-  ["rust", [
-    [/\bfn\s+\w+\s*(?:<[^>]*>)?\s*\(/, 5],
-    [/\blet\s+mut\b/, 5],
-    [/\b(?:println!|vec!|format!|panic!)/, 6],
-    [/\bimpl\s+\w/, 4],
-    [/->\s*(?:Result|Option|Vec|String|&str|[iu](?:8|16|32|64|size))\b/, 4],
-    [/\buse\s+(?:std|crate)::/, 4],
-    [/&(?:mut\s+)?self\b/, 3]
-  ]],
-  ["ruby", [
-    [/^\s*def\s+\w+[!?]?(?:\([^)]*\))?\s*$/m, 4],
-    [/^\s*end\s*$/m, 4],
-    [/\bputs\s+/, 4],
-    [/\brequire\s+['"]/, 3],
-    [/\b(?:do\s*\|[^|]*\||nil|elsif)\b/, 3],
-    [/@\w+\s*=/, 2],
-    [/\battr_(?:accessor|reader|writer)\b/, 5]
-  ]],
-  ["php", [
-    [/<\?php/, 6],
-    [/\$\w+\s*=/, 3],
-    [/\becho\s+/, 2],
-    [/\bfunction\s+\w+\s*\([^)]*\)\s*\{/, 1],
-    [/->\w+\s*\(/, 1],
-    [/\bpublic\s+function\b/, 4]
-  ]],
-  ["sql", [
-    [/\bSELECT\b[\s\S]*\bFROM\b/i, 6],
-    [/\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b/i, 5],
-    [/\bCREATE\s+(?:TABLE|INDEX|VIEW|DATABASE)\b/i, 6],
-    [/\bALTER\s+TABLE\b/i, 6],
-    [/\b(?:INNER|LEFT|RIGHT|FULL)\s+JOIN\b/i, 4],
-    [/\b(?:WHERE|GROUP\s+BY|ORDER\s+BY|HAVING)\b/i, 2],
-    // Keeps prose that happens to say "create table of contents" out of SQL.
-    [/\b(?:the|this|these|those|your|our|which|because|when)\b/i, -4]
-  ]],
-  ["bash", [
-    [/^#!.*\b(?:ba|z|k)?sh\b/, 6],
-    [/^\s*\$\s+\w/m, 3],
-    [/\b(?:sudo|apt-get|yum|brew|chmod|chown|mkdir|grep|sed|awk|curl|wget|tar|ssh|scp)\b/, 3],
-    [/\b(?:npm|yarn|pnpm|pip|pip3|git|docker|kubectl|cargo|go|make)\s+\w[\w-]*/, 3],
-    [/\becho\s+["'$]/, 2],
-    [/\$\{?\w+\}?/, 1],
-    [/^\s*(?:export|source)\s+\w/m, 3],
-    [/\|\s*(?:grep|sed|awk|xargs|head|tail|sort|uniq|jq)\b/, 3],
-    [/^\s*(?:npm|npx|yarn|pnpm|pip3?|git|docker|kubectl|cargo|cd|ls|cat|mv|cp|rm|touch|mkdir|export|python3?|node|brew|apt|apt-get)\s+\S/m, 4],
-    [/\s-{1,2}[A-Za-z][\w-]*(?:\s|$)/, 2],
-    [/^\s*(?:if|for|while)\b.*;\s*(?:then|do)\s*$/m, 4],
-    [/^\s*fi\s*$|^\s*done\s*$/m, 3]
-  ]],
-  ["json", [
-    [/^\s*[{[][\s\S]*[}\]]\s*$/, 3],
-    [/"[\w.-]+"\s*:/, 4],
-    [/:\s*(?:"[^"]*"|\d+(?:\.\d+)?|true|false|null|[{[])\s*,?\s*$/m, 2],
-    [/^\s*(?:\/\/|#)/m, -4],
-    [/[;=]\s*$/m, -4],
-    [/\b(?:function|def|class|const|let|var|return)\b/, -4]
-  ]],
-  ["yaml", [
-    [/^---\s*$/m, 4],
-    [/^\s*[\w.-]+:\s*(?:$|[^:\n]*$)/m, 2],
-    [/^\s*-\s+[\w"'{[]/m, 2],
-    [/^\s*#\s/m, 1],
-    [/[{};]\s*$/m, -3],
-    [/^\s*"[\w.-]+"\s*:/m, -2]
-  ]],
-  ["markup", [
-    [/<!DOCTYPE\s+html>/i, 6],
-    [/<(?:html|head|body|div|span|p|a|h[1-6]|ul|ol|li|table|tr|td|th|form|label|select|option|textarea|nav|main|article|aside|section|header|footer|script|style|img|input|button|br|hr|meta|link)\b[^>]*>/i, 4],
-    [/<\/(?:div|span|p|a|h[1-6]|li|ul|ol|body|html|section|table|tr|td|th|form|nav|main|article|header|footer|button|label)>/i, 4],
-    [/<\w+[^>]*\/>/, 2]
-  ]],
-  ["xml", [
-    [/<\?xml\b/, 6],
-    [/<\/[\w:-]+>/, 1],
-    [/xmlns(?::\w+)?\s*=/, 4]
-  ]],
-  ["css", [
-    [/^[^{}]*\{[^{}]*:[^{}]*;[^{}]*\}/m, 4],
-    [/\b(?:color|background|margin|padding|font-size|display|position|flex|grid-template)\s*:/, 4],
-    [/^\s*[.#]?[\w-]+(?:[.#:][\w-]+)*\s*(?:,\s*)?\{\s*$/m, 3],
-    [/@(?:media|import|keyframes|font-face)\b/, 4],
-    [/--[\w-]+\s*:/, 3],
-    [/\b(?:function|return|if)\s*\(/, -4]
-  ]],
-  ["dockerfile", [
-    [/^\s*FROM\s+\S+/m, 5],
-    [/^\s*(?:RUN|CMD|COPY|ADD|ENTRYPOINT|WORKDIR|EXPOSE|ENV|ARG)\s+\S/m, 3]
-  ]],
-  ["diff", [
-    [/^(?:diff --git|@@ -\d)/m, 8],
-    [/^[+-]{3}\s+\S/m, 3]
-  ]]
-];
+ // confident: this is what the block is
+ // …and the winner must beat the runner-up by this
+ // plausible: one signal, uncontested
 
-// Two tiers, because most fences in real notes are three lines long. A
-// confident win needs a high score AND daylight over the runner-up; failing
-// that, any single real signal still beats leaving the block blank, as long as
-// nothing else scored as well (`console.log(…)` is JavaScript; `int x = 10;`
-// on its own is C-family and could be four different languages, so it isn't).
-const INFER_SCORE_FLOOR = 6; // confident: this is what the block is
-const INFER_SCORE_MARGIN = 2; // …and the winner must beat the runner-up by this
-const INFER_WEAK_FLOOR = 3; // plausible: one signal, uncontested
 
-// Blocks nothing matches still get a language, so every block renders and
-// copies the same way and no selection is ever fenced bare. Prism defines
-// `text` as an empty grammar, so it highlights to exactly what you typed
-// rather than 404ing the autoloader on a language that doesn't exist.
-const GENERIC_CODE_LANGUAGE = "text";
+ // enough signal; keeps long blocks cheap
 
-const INFER_SAMPLE_CHARS = 2000; // enough signal; keeps long blocks cheap
-
-// Guessed language for an undeclared block, or "" when nothing scored at all.
-// Scores the block as a whole (not the selection), so every selection out of a
-// block — and the block's own badge — agree on one answer.
-function inferCodeLanguage(source) {
-  const text = String(source || "");
-  if (!text.trim()) return "";
-  const sample = text.length > INFER_SAMPLE_CHARS ? text.slice(0, INFER_SAMPLE_CHARS) : text;
-  let best = "";
-  let bestScore = 0;
-  let runnerUp = 0;
-  for (const [language, signals] of CODE_LANGUAGE_SIGNATURES) {
-    let score = 0;
-    for (const [pattern, weight] of signals) {
-      if (pattern.test(sample)) score += weight;
-    }
-    if (score > bestScore) {
-      runnerUp = bestScore;
-      bestScore = score;
-      best = language;
-    } else if (score > runnerUp) {
-      runnerUp = score;
-    }
-  }
-  if (bestScore >= INFER_SCORE_FLOOR && bestScore - runnerUp >= INFER_SCORE_MARGIN) return best;
-  if (bestScore >= INFER_WEAK_FLOOR && bestScore > runnerUp) return best;
-  return "";
-}
-
-// The language to render, badge and fence a block with — the guess when there
-// is one, the generic fallback when there isn't. Every code block gets an
-// answer here; nothing is left blank.
-function codeLanguageOrGeneric(language) {
-  return language || GENERIC_CODE_LANGUAGE;
-}
 
 if (window.Prism?.plugins?.autoloader) {
   Prism.plugins.autoloader.languages_path = "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/";
 }
 
-let prismPythonConfigured = false;
-
-function configurePrismLanguages() {
-  if (prismPythonConfigured || !window.Prism?.languages?.python) return;
-
-  Prism.languages.insertBefore("python", "function", {
-    method: {
-      pattern: /(\.)[A-Za-z_]\w*(?=\s*\()/,
-      lookbehind: true
-    },
-    "uppercase-constant": /\b[A-Z][A-Z0-9_]*\b/
-  });
-
-  prismPythonConfigured = true;
-}
 
 function themeById(themeId) {
   const normalized = normalizeThemeId(themeId);
@@ -3354,7 +2856,7 @@ function normalizeThemeId(themeId) {
   return themeCatalog.some((theme) => theme.id === normalized) ? normalized : "dark-amoled";
 }
 
-function currentThemeId() {
+export function currentThemeId() {
   return normalizeThemeId(document.documentElement.dataset.theme || "dark-amoled");
 }
 
@@ -3372,7 +2874,7 @@ function applyThemePreviewStyles(node, theme) {
   node.style.setProperty("--theme-accent", theme.colors.accent);
 }
 
-function configureMermaid(themeId) {
+export function configureMermaid(themeId) {
   // mermaid is loaded on demand (see ensureMermaid), and setTheme calls this at
   // boot — long before any diagram exists to draw. Nothing to configure yet;
   // ensureMermaid re-invokes this with the live theme the moment it lands.
@@ -27795,7 +27297,7 @@ document.getElementById("offlineBootRetryBtn")?.addEventListener("click", async 
     setupAuthListener();
     const session = await getCachedSession();
     if (session?.user) {
-      isSignedIn = true;
+      setSignedIn(true);
       await ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
       if (!appInitialized) {
@@ -27812,7 +27314,7 @@ document.getElementById("offlineBootRetryBtn")?.addEventListener("click", async 
 
 document.getElementById("offlineBootChangeProjectBtn")?.addEventListener("click", () => {
   clearSupabaseConfig();
-  supabaseClient = null;
+  setSupabaseClient(null);
   showSetupScreen();
 });
 
@@ -27861,7 +27363,7 @@ document.getElementById("loginToggleBtn")?.addEventListener("click", () => {
 
 document.getElementById("loginChangeProjectBtn")?.addEventListener("click", () => {
   clearSupabaseConfig();
-  supabaseClient = null;
+  setSupabaseClient(null);
   showSetupScreen();
 });
 
@@ -28908,7 +28410,7 @@ async function recoverSessionIfPossible() {
     // still good, which is exactly the case this exists for.
     const session = await getCachedSession();
     if (session?.user) {
-      isSignedIn = true;
+      setSignedIn(true);
       await ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
       if (!appInitialized) {
@@ -28947,7 +28449,7 @@ function setupAuthListener() {
   }
   const { data } = supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (session?.user) {
-      isSignedIn = true;
+      setSignedIn(true);
       await ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
       if (!appInitialized) {
@@ -28955,7 +28457,7 @@ function setupAuthListener() {
         initAppForUser();
       }
     } else if (event === "SIGNED_OUT") {
-      isSignedIn = false;
+      setSignedIn(false);
       const wasExplicit = explicitLogout;
       // Reset unconditionally. It used to be cleared only past the offline
       // guard below, so one sign-out attempt made while offline left it true for
@@ -29011,7 +28513,7 @@ async function bootApp() {
   // still let a signed-in user reach their decks instead of the login wall.
   const session = await getCachedSession();
   if (session?.user) {
-    isSignedIn = true;
+    setSignedIn(true);
     await ensureLocalLibraryOwner(session.user.id);
     showAuthenticatedUI();
     if (!appInitialized) {

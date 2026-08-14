@@ -45,7 +45,15 @@ const ACCEPTED = {
   fetchUrl:
     "calls fetchImportText, the URL-import half of the split fetchText — see REMOVED",
   fetchLiveRelease:
-    "calls fetchReleaseText, the update-check half of the split fetchText — see REMOVED"
+    "calls fetchReleaseText, the update-check half of the split fetchText — see REMOVED",
+
+  // supabaseClient and isSignedIn moved into cloud/supabase-client.js. An
+  // imported binding is read-only, so the auth flow writes them through
+  // setSupabaseClient/setSignedIn instead of assigning directly. Reads are
+  // unchanged — a live binding still shows every reader the current value.
+  recoverSessionIfPossible: "isSignedIn = true -> setSignedIn(true)",
+  setupAuthListener: "isSignedIn = true/false -> setSignedIn(true/false)",
+  bootApp: "isSignedIn = true -> setSignedIn(true)"
 };
 
 // Baseline symbols that are intentionally gone, and why. A rename lands here

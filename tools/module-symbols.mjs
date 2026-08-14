@@ -70,6 +70,7 @@ const missing = [];
 const notExported = [];
 const unused = [];
 const badSpecifiers = [];
+const assignedImports = [];
 
 for (const [rel, { raw, blanked, decls }] of parsed) {
   const { names: imported, sources } = parseImports(raw);
@@ -83,6 +84,36 @@ for (const [rel, { raw, blanked, decls }] of parsed) {
     if (source.startsWith(".") && !source.includes("?v=")) {
       badSpecifiers.push(`${rel} — "${source}" is missing ?v=__BUILD__`);
     }
+  }
+
+  // Does the module we import from actually EXPORT the name we ask for?
+  //
+  // This gap shipped once: lib-loader.js imported configureMermaid from main.js,
+  // which declared it but never exported it. The import was present, correct and
+  // resolvable, so nothing here objected — and the page died at instantiation
+  // with "does not provide an export named 'configureMermaid'". Only loading it
+  // in a browser found that, which is one round trip too many.
+  for (const [name, source] of imported) {
+    if (!source.startsWith(".")) continue;
+    const abs = path.resolve(path.dirname(path.join(ROOT, rel)), source.replace(/\?.*$/, ""));
+    const from = path.relative(ROOT, abs);
+    const target = parsed.get(from);
+    if (!target) { badSpecifiers.push(`${rel} imports from "${source}", which does not exist`); continue; }
+    const decl = target.decls.find((d) => d.name === name);
+    if (!decl) notExported.push(`${from} has no '${name}' at all, but ${rel} imports it`);
+    else if (!decl.exported) notExported.push(`${from}:${decl.line} declares '${name}' but does not export it (${rel} imports it)`);
+  }
+
+  // An imported binding is READ-ONLY in the importing module: `foo = 1` where
+  // foo came from an import is an early SyntaxError, so the whole module fails
+  // to instantiate. That matters here because app.js had 115 top-level `let`s,
+  // many written from what will become a different module — so this is the
+  // single most likely way an otherwise-correct extraction breaks. Either the
+  // binding moves in with its writer, or it needs an exported setter.
+  for (const m of blanked.matchAll(/(^|[^\w$.])([A-Za-z_$][\w$]*)\s*(?:=(?![=>])|\+\+|--|\+=|-=|\*=|\/=|%=|\|\|=|&&=|\?\?=)/g)) {
+    if (!imported.has(m[2])) continue;
+    const line = raw.slice(0, m.index).split("\n").length;
+    assignedImports.push(`${rel}:${line} assigns to ${m[2]}, which it imports from ${imported.get(m[2])}`);
   }
 
   const used = new Set();
@@ -110,8 +141,10 @@ report("DUPLICATE OWNER — two modules declare the same top-level name", duplic
 report("MISSING IMPORT", missing, 60);
 report("NOT EXPORTED", [...new Set(notExported)], 40);
 report("UNSTAMPED IMPORT — relative import without ?v=__BUILD__", badSpecifiers, 40);
+report("ASSIGNS TO AN IMPORT — read-only binding; move it or add a setter", assignedImports, 40);
 if (SHOW_UNUSED) report("unused imports", unused, 60);
 
-const fail = duplicates.length + missing.length + badSpecifiers.length;
+const fail = duplicates.length + missing.length + badSpecifiers.length
+  + assignedImports.length + notExported.length;
 console.log(`\n${files.length} modules · ${owner.size} symbols · ${fail} problem(s)`);
 process.exit(fail ? 1 : 0);

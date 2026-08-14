@@ -130,8 +130,11 @@ const APP_SHELL = [
   // launch, which is precisely the case this precache exists for. CI compares
   // this list against the files on disk.
   `./src/main.js?v=${STAMP}`,
+  `./src/cloud/supabase-client.js?v=${STAMP}`,
   `./src/core/build.js?v=${STAMP}`,
+  `./src/core/lib-loader.js?v=${STAMP}`,
   `./src/core/text.js?v=${STAMP}`,
+  `./src/render/code-language.js?v=${STAMP}`,
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
