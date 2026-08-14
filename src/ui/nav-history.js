@@ -5,7 +5,8 @@
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { captureCurrentReadingAnchor, closeQuickNotesBoard, currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey, loadDeckFromLibrary, openQuickNotesBoard, qnBoard, scheduleNoteJump, setQnReturnState, setViewMode, showCard, state } from "../main.js?v=__BUILD__";
+import { closeQuickNotesBoard, loadDeckFromLibrary, openQuickNotesBoard, qnBoard, scheduleNoteJump, setQnReturnState, setViewMode, showCard, state } from "../main.js?v=__BUILD__";
+import { captureCurrentReadingAnchor, currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { setStatus } from "./feedback.js?v=__BUILD__";
 
 // ── Universal back ───────────────────────────────────────────────

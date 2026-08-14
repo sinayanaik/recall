@@ -6,7 +6,9 @@
 
 import { BACKUP_IMAGE_REF_RE, decodeImageRefEntities, exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
-import { activeDeckMatchesMasterOrder, clearAllCardDropTargets, closeAllCardsPanel, createBlankCard, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, refreshAllCardsAround, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
+import { activeDeckMatchesMasterOrder, clearAllCardDropTargets, closeAllCardsPanel, createBlankCard, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
+import { adjustCornellRows, allCardById, allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardEditor, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
+import { cardStatusLabel, hasActiveDeck, updateMeta } from "./cards/card-status.js?v=__BUILD__";
 import { resetStudyDeck, syncResults, uncategorizedCards } from "./cards/study.js?v=__BUILD__";
 import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
 import { deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingColumnError, isMissingNotesColumnError, isMissingRelationError } from "./cloud/deck-list.js?v=__BUILD__";
@@ -29,9 +31,12 @@ import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { setMyDecksCwd, setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
-import { renderMarkdown, renderedBlockCache, setNotesBlockEstimateSource, syncNotesBlockEstimateSource } from "./render/block-cache.js?v=__BUILD__";
+import { caretRectInBackdrop, lineIndexAtOffset, scheduleNotesCaretCheck, scrollTextareaToOffset } from "./notes/caret.js?v=__BUILD__";
+import { NOTES_PROGRAMMATIC_SCROLL_MS, commitNotesEditIfActive, discardNotesEditingForDeckSwap, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, markProgrammaticNotesScroll, notesScrolledSource, quizPanel, renderNotesView, renderNotesViewPinned, resetNotesEditingUI, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { NOTES_BLOCK_SELECTOR, findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
+import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey, notesReadingLineOffset, rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
+import { renderMarkdown } from "./render/block-cache.js?v=__BUILD__";
 import { codeLanguageOrGeneric, inferCodeLanguage, normalizeCodeLanguage } from "./render/code-language.js?v=__BUILD__";
-import { releaseDeferredWork } from "./render/deferred-work.js?v=__BUILD__";
 import { applyDiagramTransform, beginDiagramPan, beginDiagramPinch, clampDiagramScale, closeDiagramModal, currentDiagramZoom, diagramLocalPoint, diagramPointers, pointerCenter, pointerDistance, zoomDiagramBy, zoomDiagramTo } from "./render/diagram-zoom.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "./render/enhance.js?v=__BUILD__";
 import { findMathRanges, repairEscapedMathMarkdown } from "./render/math.js?v=__BUILD__";
@@ -246,15 +251,7 @@ const swipeConfig = {
   longPressGraceMs: 340
 };
 
-export let allCardsRenderId = 0;
 
-// Bumping the render generation cancels any in-flight All Cards render, and
-// callers outside this module cannot assign to an imported binding. Theme
-// changes need it: a rendered card carries the old theme's colours baked in.
-export function bumpAllCardsRenderId() {
-  allCardsRenderId += 1;
-  return allCardsRenderId;
-}
 export let draggedAllCardId = "";
 
 // Setter: an imported binding is read-only, and the All Cards drag handlers in cards/all-cards-edit.js set it.
@@ -263,17 +260,7 @@ export function setDraggedAllCardId(value) {
 }
 let printTitleBeforeExport = "";
 let printPreviewOpen = false;
-let allCardsAnswersVisible = false;
-// Dense one-line-per-card view for the All Cards panel — ideal for decks of
-// short entries (e.g. quick_notes single words / phrases). Persisted so the
-// preference sticks across sessions.
-let allCardsCompact = localStorage.getItem("recall:allCardsCompact") === "1";
-// Status filter for the All Cards panel: "all" | "none" (uncategorized) |
-// "review" | "known". Applied as a data-attr on the list so it's a pure CSS
-// hide/show that survives status changes without a re-render.
-const ALL_CARDS_FILTERS = new Set(["all", "none", "review", "known"]);
-let allCardsFilter = localStorage.getItem("recall:allCardsFilter") || "all";
-if (!ALL_CARDS_FILTERS.has(allCardsFilter)) allCardsFilter = "all";
+
 const pdfPrintStyleId = "pdfPrintStyle";
 let liveQuestionFitFrame = 0;
 // Last answer fitLiveQuestion computed, and the inputs it was computed from.
@@ -361,1166 +348,6 @@ if (window.Prism?.plugins?.autoloader) {
  // container -> rAF id
 
 
-function handleAllCardDragEnd() {
-  setDraggedAllCardId("");
-  clearAllCardDropTargets();
-}
-
-export function updateAllCardStatuses() {
-  el.allCardsList.querySelectorAll(".all-card").forEach((node) => {
-    const status = state.statusById[node.dataset.cardId] || "";
-    node.dataset.status = status;
-    setCardStatusBadge(node.querySelector("[data-all-status-label]"), status);
-    node.querySelectorAll("[data-all-status]").forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.allStatus === status);
-    });
-  });
-  // A card whose status just changed may fall in/out of an active filter —
-  // refresh the CSS filter + header count so it drops out (or the count updates).
-  applyAllCardsFilter();
-}
-
-function allCardById(cardId) {
-  return state.masterCards.find((card) => card.id === cardId) || null;
-}
-
-function closeAllCardEditor(item) {
-  const editor = item?.querySelector(".all-card-editor");
-  if (!editor) return;
-  editor.hidden = true;
-  editor.dataset.side = "";
-  item.classList.remove("is-editing");
-  item.draggable = true;
-  updateAllCardEditButton(item);
-  adjustCornellRowHeight(item);
-}
-
-function closeAllCardEditors(exceptItem = null) {
-  el.allCardsList.querySelectorAll(".all-card.is-editing").forEach((item) => {
-    if (item !== exceptItem) closeAllCardEditor(item);
-  });
-}
-
-function allCardVisibleSide(item) {
-  return item?.classList.contains("is-flipped") ? "answer" : "question";
-}
-
-export function updateAllCardEditButton(item) {
-  const button = item?.querySelector("[data-all-edit-current]");
-  if (!button) return;
-  const editing = item.classList.contains("is-editing");
-  const side = editing
-    ? item.querySelector(".all-card-editor")?.dataset.side || allCardVisibleSide(item)
-    : allCardVisibleSide(item);
-  button.innerHTML = editing ? "&#128190;" : "&#9998;";
-  button.classList.toggle("is-saving", editing);
-  button.title = editing
-    ? `Save ${side}`
-    : `Edit ${side}`;
-  button.setAttribute("aria-label", button.title);
-}
-
-// Built on first edit, not at render time.
-//
-// renderAllCards used to give every card its own editor up front, each carrying
-// a full copy of createToolbarHtml() — ~73 lines of markup per card, in a
-// container that starts hidden and that most cards never open. On a few-hundred
-// card deck that was the single biggest slice of the freeze when All Cards was
-// opened.
-function ensureAllCardEditor(item) {
-  const existing = item?.querySelector(".all-card-editor");
-  if (existing || !item) return existing || null;
-  const cell = item.querySelector(".cornell-answer-cell");
-  if (!cell) return null;
-  const editor = document.createElement("div");
-  editor.className = "all-card-editor";
-  editor.hidden = true;
-  editor.innerHTML = `
-    <label>
-      <div class="all-card-editor-header">
-        <span data-all-edit-label>Question</span>
-        <div class="edit-toolbar" data-all-card-toolbar>
-          ${createToolbarHtml()}
-        </div>
-      </div>
-      <textarea data-all-edit-value spellcheck="false"></textarea>
-    </label>
-  `;
-  cell.appendChild(editor);
-  return editor;
-}
-
-export function openAllCardEditor(item, side = allCardVisibleSide(item)) {
-  const card = allCardById(item?.dataset.cardId);
-  const editor = ensureAllCardEditor(item);
-  if (!card || !editor) return;
-
-  closeAllCardEditors(item);
-  item.classList.add("is-editing");
-  item.draggable = false;
-  if (side === "answer") item.classList.add("is-flipped");
-  editor.hidden = false;
-  editor.dataset.side = side;
-  editor.querySelector("[data-all-edit-label]").textContent = side === "answer" ? "Answer" : "Question";
-  const textarea = editor.querySelector("[data-all-edit-value]");
-  textarea.value = side === "answer" ? card.answer : card.question;
-  updateAllCardEditButton(item);
-  adjustCornellRowHeight(item);
-  enableSyntaxHighlighting(textarea);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-function toggleAllCardEditor(item) {
-  if (!item) return;
-  const editor = item.querySelector(".all-card-editor");
-  if (item.classList.contains("is-editing")) {
-    saveAllCardEditor(item);
-    return;
-  }
-  openAllCardEditor(item, allCardVisibleSide(item));
-}
-
-function saveAllCardEditor(item) {
-  const card = allCardById(item?.dataset.cardId);
-  const editor = item?.querySelector(".all-card-editor");
-  if (!card || !editor) return;
-
-  const side = editor.dataset.side === "answer" ? "answer" : "question";
-  const value = editor.querySelector("[data-all-edit-value]").value.trim();
-
-  if (!value) {
-    setStatus(`${side === "answer" ? "Answer" : "Question"} cannot be empty.`, "error");
-    return;
-  }
-
-  card[side] = value;
-  updateMeta();
-  // showCard (below) schedules an autosave, but only runs when the edited card
-  // is the one on screen — schedule explicitly so edits to any other card are
-  // persisted too instead of waiting for the next navigation/tab-hide flush.
-  scheduleDeckAutosave();
-  if (state.cards[state.current]?.id === card.id || state.previewCard?.id === card.id) {
-    showCard();
-  }
-
-  refreshAllCardsAround(card.id, side);
-  setStatus(state.deckId ? "Card updated locally. Sync to update the web deck." : "Card updated.");
-}
-
-export async function ensureAllCardAnswer(item) {
-  if (item.dataset.answerRendered === "true") {
-    adjustCornellRowHeight(item);
-    return;
-  }
-  if (item.dataset.answerRendered === "rendering") return;
-  const card = item.cardData;
-  if (!card) return;
-
-  item.dataset.answerRendered = "rendering";
-  const answerView = item.querySelector(".all-card-answer .rendered");
-  answerView.textContent = "Rendering...";
-  await renderMarkdown(answerView, card.answer, true);
-  item.dataset.answerRendered = "true";
-  adjustCornellRowHeight(item);
-}
-
-function flipAllCard(item) {
-  if (item.dataset.answerRendered === "rendering") return;
-  if (item.classList.contains("is-editing")) return;
-  const willShowAnswer = !item.classList.contains("is-flipped");
-  item.classList.toggle("is-flipped", willShowAnswer);
-  if (willShowAnswer) {
-    ensureAllCardAnswer(item).then(() => adjustCornellRowHeight(item));
-  } else {
-    adjustCornellRowHeight(item);
-  }
-  updateAllCardEditButton(item);
-}
-
-// Sizing a Cornell row is a write (clear the min-height) followed by reads
-// (scrollHeight, a rect), so doing it row by row forces one full layout PER ROW.
-// Split into its three phases so a caller with many rows can reset them all,
-// measure them all, then write them all — three flushes instead of 3n.
-function resetCornellRowHeight(row) {
-  if (row) row.style.minHeight = "";
-}
-
-function measureCornellRowHeight(row) {
-  if (!row) return null;
-  // Compact rows size to their content — no forced min-height.
-  if (row.closest(".all-cards-list.is-compact")) return null;
-  const rail = row.querySelector(".cornell-question-rail");
-  const question = rail?.querySelector(".rendered");
-  const answerCell = row.querySelector(".cornell-answer-cell");
-  if (!rail || !question || !answerCell) return null;
-
-  const railStyle = getComputedStyle(rail);
-  const railPaddingY = (parseFloat(railStyle.paddingTop) || 0) + (parseFloat(railStyle.paddingBottom) || 0);
-  const railGap = parseFloat(railStyle.rowGap || railStyle.gap) || 0;
-  const badge = rail.querySelector(".cornell-row-number");
-  const badgeHeight = badge ? badge.getBoundingClientRect().height : 0;
-  const questionBuffer = row.classList.contains("cornell-print-row") ? 10 : 16;
-  const questionHeight = question.scrollHeight + railPaddingY + badgeHeight + railGap + questionBuffer;
-  const answerHeight = answerCell.scrollHeight;
-  const minHeight = row.classList.contains("cornell-print-row") ? 72 : 108;
-  return Math.ceil(Math.max(minHeight, rail.scrollHeight, questionHeight, answerHeight));
-}
-
-function applyCornellRowHeight(row, height) {
-  if (row && height != null) row.style.minHeight = `${height}px`;
-}
-
-function adjustCornellRowHeight(row) {
-  if (!row) return;
-  resetCornellRowHeight(row);
-  applyCornellRowHeight(row, measureCornellRowHeight(row));
-}
-
-function adjustCornellRows(container = document) {
-  const rows = Array.from(container.querySelectorAll(".cornell-card, .cornell-print-row"));
-  if (!rows.length) return;
-  rows.forEach(resetCornellRowHeight);
-  const heights = rows.map(measureCornellRowHeight);
-  rows.forEach((row, at) => applyCornellRowHeight(row, heights[at]));
-}
-
-function updateAllAnswersToggleButton() {
-  if (!el.toggleAllAnswersBtn) return;
-  el.toggleAllAnswersBtn.textContent = allCardsAnswersVisible ? "Hide answers" : "Show answers";
-  el.toggleAllAnswersBtn.setAttribute("aria-pressed", allCardsAnswersVisible ? "true" : "false");
-}
-
-function updateCompactToggleButton() {
-  if (!el.toggleCompactBtn) return;
-  el.toggleCompactBtn.classList.toggle("is-active", allCardsCompact);
-  el.toggleCompactBtn.setAttribute("aria-pressed", allCardsCompact ? "true" : "false");
-}
-
-// Toggle the dense one-line-per-card view. Pure CSS switch on the list, so no
-// re-render is needed — just clear the JS-computed inline row heights (compact
-// rows size to their content) and re-measure.
-function setAllCardsCompact(on) {
-  allCardsCompact = Boolean(on);
-  try { localStorage.setItem("recall:allCardsCompact", allCardsCompact ? "1" : "0"); } catch (_) {}
-  updateCompactToggleButton();
-  if (el.allCardsList) {
-    el.allCardsList.classList.toggle("is-compact", allCardsCompact);
-    el.allCardsList.querySelectorAll(".cornell-card").forEach((row) => { row.style.minHeight = ""; });
-    if (!allCardsCompact) adjustCornellRows(el.allCardsList);
-  }
-}
-
-// Number of cards matching the active status filter.
-function allCardsFilterMatchCount() {
-  if (allCardsFilter === "all") return state.masterCards.length;
-  return state.masterCards.filter((card) => {
-    const status = normalizeCardStatus(state.statusById[card.id]);
-    return allCardsFilter === "none" ? !status : status === allCardsFilter;
-  }).length;
-}
-
-// Reflect the active filter on the list (drives the CSS hide/show), the filter
-// buttons, and the header count. Called on render, on filter change, and after
-// a status change (so a card toggled under an active filter drops out live).
-function applyAllCardsFilter() {
-  if (el.allCardsList) el.allCardsList.dataset.filter = allCardsFilter;
-  if (el.allCardsFilter) {
-    el.allCardsFilter.querySelectorAll("[data-filter]").forEach((btn) => {
-      btn.classList.toggle("is-active", btn.dataset.filter === allCardsFilter);
-    });
-  }
-  if (el.allCardsSummary) {
-    const total = state.masterCards.length;
-    const totalLabel = `${total} ${total === 1 ? "card" : "cards"}`;
-    if (allCardsFilter === "all") {
-      el.allCardsSummary.textContent = totalLabel;
-    } else {
-      el.allCardsSummary.textContent = `${allCardsFilterMatchCount()} of ${totalLabel}`;
-    }
-  }
-}
-
-function setAllCardsFilter(filter) {
-  allCardsFilter = ALL_CARDS_FILTERS.has(filter) ? filter : "all";
-  try { localStorage.setItem("recall:allCardsFilter", allCardsFilter); } catch (_) {}
-  applyAllCardsFilter();
-}
-
-async function setAllCardsAnswersVisible(visible) {
-  allCardsAnswersVisible = Boolean(visible);
-  updateAllAnswersToggleButton();
-
-  const rows = Array.from(el.allCardsList.querySelectorAll(".cornell-card"));
-  for (const row of rows) {
-    row.classList.toggle("is-flipped", allCardsAnswersVisible);
-    // Hiding answers needs no per-row measurement — the batched adjustCornellRows
-    // below re-sizes every row anyway, in three layout flushes instead of one
-    // per row.
-    if (allCardsAnswersVisible) await ensureAllCardAnswer(row);
-  }
-  await afterPaint();
-  adjustCornellRows(el.allCardsList);
-}
-
-export async function renderAllCards() {
-  const cards = state.masterCards;
-  const renderId = allCardsRenderId;
-  el.allCardsList.innerHTML = "";
-  el.allCardsList.classList.toggle("is-compact", allCardsCompact);
-  updateAllAnswersToggleButton();
-  updateCompactToggleButton();
-  applyAllCardsFilter();
-
-  // Built in chunks. Every card here is a full markdown render plus a forced
-  // layout to size its row, and awaiting enhanceRenderedMarkdown yields only a
-  // microtask — so the whole loop used to be ONE uninterrupted task and a deck
-  // of a few hundred cards froze the tab for seconds with nothing on screen.
-  // afterPaint() between chunks hands the frame back, so the first cards are
-  // readable while the rest arrive.
-  const CHUNK = 20;
-  let chunk = [];
-  const settleChunk = async () => {
-    if (!chunk.length) return;
-    // Read every row, then write every row. Interleaving them made each card
-    // invalidate the layout the next card was about to measure.
-    const heights = chunk.map(measureCornellRowHeight);
-    chunk.forEach((row, at) => applyCornellRowHeight(row, heights[at]));
-    chunk = [];
-    await afterPaint();
-  };
-
-  for (const [index, card] of cards.entries()) {
-    if (renderId !== allCardsRenderId) return;
-
-    const template = document.createElement("template");
-    template.innerHTML = cornellCardHtml(card, index, { answerVisible: allCardsAnswersVisible });
-    const item = template.content.firstElementChild;
-    item.cardData = card;
-    const dragHandle = document.createElement("div");
-    dragHandle.className = "all-card-drag-handle";
-    dragHandle.setAttribute("aria-hidden", "true");
-    dragHandle.textContent = "⠿";
-    item.prepend(dragHandle);
-    el.allCardsList.appendChild(item);
-    await enhanceRenderedMarkdown(item.querySelector(".all-card-question .rendered"));
-    if (allCardsAnswersVisible) {
-      await enhanceRenderedMarkdown(item.querySelector(".cornell-answer-body"));
-    }
-    chunk.push(item);
-    if (chunk.length >= CHUNK) await settleChunk();
-  }
-  if (renderId !== allCardsRenderId) return;
-  await settleChunk();
-
-  updateAllCardStatuses();
-  await afterPaint();
-  if (renderId !== allCardsRenderId) return;
-  // Final pass: a row measured while the rows after it did not yet exist can be
-  // off once everything has settled (a late web font, an image). Batched, so the
-  // whole sweep is three layout flushes rather than one per row.
-  adjustCornellRows(el.allCardsList);
-}
-
-function openAllCardsPanel() {
-  if (!state.masterCards.length) {
-    setStatus("Import a deck before opening all cards.", "error");
-    return;
-  }
-
-  lockPageScroll();
-  allCardsRenderId += 1;
-  el.allCardsPanel.hidden = false;
-  renderAllCards();
-}
-
-function cardStatusLabel(status) {
-  if (status === "known") return "Known";
-  if (status === "review") return "Review";
-  return "Uncategorized";
-}
-
-function setCardStatusBadge(badge, status) {
-  if (!badge) return;
-  badge.dataset.status = status;
-  badge.textContent = cardStatusLabel(status);
-}
-
-function updateActiveCardStatusBadges() {
-  const card = state.previewCard || state.cards[state.current] || null;
-  const status = card ? normalizeCardStatus(state.statusById[card.id]) : "";
-  setCardStatusBadge(el.questionStatusBadge, status);
-  setCardStatusBadge(el.answerStatusBadge, status);
-}
-
-// A deck "exists" for UI purposes once it's been created/loaded (has a title),
-// has cards, or has study notes — so a freshly created deck with zero cards
-// still shows its title/toolbar instead of looking like nothing is loaded.
-export function hasActiveDeck() {
-  return Boolean(state.deckTitle) || state.masterCards.length > 0 || Boolean(state.notes.trim());
-}
-
-export function updateMeta() {
-  const total = state.cards.length;
-  const finished = Math.min(state.current, total);
-  const hasDeck = hasActiveDeck();
-  syncResults();
-  updateActiveCardStatusBadges();
-  el.deckTitle.textContent = state.deckTitle;
-  el.deckTitle.title = state.deckTitle;
-  el.deckTitleWrap.hidden = !hasDeck;
-  if (el.deckMeta2Row) el.deckMeta2Row.hidden = !hasDeck;
-  if (!hasDeck) setSyncIndicator("idle");
-  el.editDeckTitleBtn.disabled = !hasDeck;
-  if (el.deckCategory) {
-    el.deckCategory.textContent = normalizeDeckCategory(state.deckCategory);
-    el.deckCategory.title = `Category: ${normalizeDeckCategory(state.deckCategory)}`;
-  }
-  if (el.editDeckCategoryBtn) {
-    el.editDeckCategoryBtn.disabled = !hasDeck;
-  }
-  el.positionText.textContent = state.previewCard ? "Preview" : total ? `${Math.min(state.current + 1, total)}/${total}` : "0/0";
-  el.scoreText.textContent = `Known ${state.known} / Review ${state.review}`;
-  const knownPct = total ? (state.results.known.length / state.masterCards.length) * 100 : 0;
-  const reviewPct = total ? (state.results.review.length / state.masterCards.length) * 100 : 0;
-  const remainingPct = total ? Math.max(0, (finished / total) * 100 - knownPct - reviewPct) : 0;
-  if (el.progressKnown) el.progressKnown.style.width = `${knownPct}%`;
-  if (el.progressReview) el.progressReview.style.width = `${reviewPct}%`;
-  el.progressBar.style.width = `${remainingPct}%`;
-
-  const disabled = !state.previewCard && (total === 0 || state.current >= total);
-  el.prevCardBtn.disabled = Boolean(state.previewCard) || total === 0 || state.current <= 0;
-  // Next stays enabled on the LAST card — one more step shows the end-of-deck
-  // summary (same as swiping/arrow keys); it only disables on the summary itself.
-  el.nextCardBtn.disabled = Boolean(state.previewCard) || total === 0 || state.current >= total;
-  el.knownBtn.disabled = disabled;
-  el.reviewBtn.disabled = disabled;
-  el.shuffleBtn.disabled = total < 2;
-  el.resetBtn.disabled = total === 0;
-  el.allCardsBtn.disabled = state.masterCards.length === 0;
-  el.exportBtn.disabled = !hasDeck && state.results.known.length === 0 && state.results.review.length === 0;
-  el.replayKnownBtn.disabled = state.results.known.length === 0;
-  el.replayReviewBtn.disabled = state.results.review.length === 0;
-  el.replayUncategorizedBtn.disabled = uncategorizedCards().length === 0;
-  el.replayAllBtn.disabled = state.masterCards.length === 0;
-  if (el.viewModeToggle) el.viewModeToggle.hidden = !hasDeck;
-  if (el.exportNotesBtn) el.exportNotesBtn.disabled = !hasDeck || !state.notes.trim();
-  if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
-}
-
-// ── Deck study notes view ──────────────────────────────────────────
-// Notes and Cards are two complementary views of the same deck: study/write
-// notes first, then distill them into flashcards (or skip notes entirely).
-const quizPanel = document.querySelector(".quiz-panel");
-
-export function isNotesEditing() {
-  return Boolean(el.notesEdit && !el.notesEdit.hidden);
-}
-
-// The notes markdown the rendered view is currently laid out for. #notesView is
-// its own scroll port and is never re-created — it's reused for every deck — so
-// its scrollTop survives a content swap. Opening a DIFFERENT note therefore
-// used to land wherever you happened to be reading in the previous one, tens of
-// screens down a document you've never seen. Comparing the source (rather than
-// a deck id) means every route in — web deck, saved deck, import, restore —
-// gets the same answer without each having to remember to ask.
-let notesScrolledSource = null;
-
-// ── Telling our own scrolling apart from the reader's ──────────────────────
-// #notesView carries several scroll listeners that derive "where is the reader"
-// from the scroll position. When the APP scrolls — restoring a position across
-// the raw<->rendered toggle, jumping to a heading or a highlight — those
-// listeners would fire and re-derive a position we were in the middle of
-// setting, which is both wasteful and a source of drift. Same shape as the
-// chromeSettleUntil guard further down: a short window, checked rather than
-// unwound, so no code path can leave the flag stuck on.
-const NOTES_PROGRAMMATIC_SCROLL_MS = 250;
-let notesProgrammaticScrollUntil = 0;
-
-function markProgrammaticNotesScroll(ms = NOTES_PROGRAMMATIC_SCROLL_MS) {
-  notesProgrammaticScrollUntil = Math.max(notesProgrammaticScrollUntil, performance.now() + ms);
-}
-
-function isProgrammaticNotesScroll() {
-  return performance.now() < notesProgrammaticScrollUntil;
-}
-
-// Every path that repaints the rendered notes goes through here, so the "is
-// this a different note?" bookkeeping can't drift out of step with what's on
-// screen. Re-rendering the SAME note (an edit commit, a cloze toggle, an image
-// finishing its upload) deliberately leaves the scroll alone — you get put back
-// where you were reading.
-//
-// `sameNote` says so explicitly, and it matters. The bookkeeping below used the
-// SOURCE STRING as a stand-in for note identity, which cannot tell "a different
-// note opened" from "this note was just edited in place" — every edit read as a
-// swap. That is what made highlighting jump: the measured block estimate was
-// thrown away and re-derived, which re-sized every off-screen block, including
-// the ones ABOVE the viewport, and the content the reader was looking at slid
-// out from under them (see the note on measureNotesBlockEstimate). Callers that
-// mutate the open note pass sameNote so the estimate and the deferred-work queue
-// survive an edit that changed one block out of hundreds.
-function renderNotesView({ sameNote = false } = {}) {
-  if (!el.notesView) return Promise.resolve();
-  if (sameNote) {
-    // Same document, so the existing estimate still describes it and the queued
-    // work still points at live nodes. Both trackers are moved onto the new text
-    // so the next ordinary render doesn't mistake this edit for a swap. Nodes
-    // that DID get replaced are unobserved by releaseDetachedDeferredWork() on
-    // the next deferral pass, so skipping the wholesale release leaks nothing.
-    notesScrolledSource = state.notes;
-    setNotesBlockEstimateSource(state.notes);
-  } else {
-    // A different note replaces every block, so everything queued against the old
-    // one describes nodes that are about to be detached. Released here, while we
-    // can still name the root, rather than left for the next render to notice.
-    if (notesScrolledSource !== state.notes) releaseDeferredWork(el.notesView);
-    notesScrolledSource = state.notes;
-    syncNotesBlockEstimateSource();
-  }
-  return renderMarkdown(el.notesView, state.notes, true)
-    .then(() => resetClozeButton(el.clozeToggleNotesBtn));
-}
-
-// Repaint the open note without the reader appearing to move at all.
-//
-// Distinct from preserveNotesReadingPosition, which pulls its anchor TO the
-// reading line — right for a width change, wrong here: highlighting a sentence
-// must not also scroll the sentence to a different part of the screen. So this
-// measures where an anchor block sits, lets the render happen, and corrects
-// scrollTop by however far that same block moved. If nothing moved, nothing is
-// written.
-//
-// Two anchors are captured because the block under the reading line may be the
-// very one being edited, and an edited block is rebuilt rather than reused (see
-// patchRenderedBlocks) — its node is detached and its position unmeasurable
-// afterwards. The preceding sibling is unchanged by definition and stands in.
-function renderNotesViewPinned() {
-  const view = el.notesView;
-  if (!view || view.hidden) return renderNotesView({ sameNote: true });
-
-  const at = blockAtNotesReadingLine();
-  const anchors = [];
-  [at, at?.previousElementSibling].forEach((node) => {
-    if (node && view.contains(node)) anchors.push({ node, top: node.getBoundingClientRect().top });
-  });
-
-  const done = renderNotesView({ sameNote: true });
-  if (!anchors.length) return done;
-  return done.then(() => new Promise((resolve) => {
-    // A frame later: the patched blocks have been laid out, and any block whose
-    // content-visibility state changed has settled.
-    requestAnimationFrame(() => {
-      const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
-      if (anchor) {
-        const drift = anchor.node.getBoundingClientRect().top - anchor.top;
-        if (drift) {
-          markProgrammaticNotesScroll();
-          view.scrollTop += drift;
-        }
-      }
-      resolve();
-    });
-  }));
-}
-
-// UI-only exit from notes edit mode. Deliberately does NOT copy the textarea
-// into state.notes — the textarea's input listener keeps state in sync while
-// typing, so by the time anything calls this the two already agree.
-//
-// It also does NOT clear the textarea, because commitNotesEditIfActive reads
-// .value immediately before calling this. A deck swap needs the value gone as
-// well and must call discardNotesEditingForDeckSwap instead.
-function resetNotesEditingUI() {
-  if (!isNotesEditing()) return;
-  el.notesEdit.hidden = true;
-  el.notesView.hidden = false;
-  el.notesEditToolbar.hidden = true;
-  if (el.notesRenderToolbar) el.notesRenderToolbar.hidden = false;
-  el.editNotesBtn.classList.remove("is-editing");
-  el.editNotesBtn.title = "Edit notes";
-  hideNotesSelectionButton();
-}
-
-// Leave raw edit mode because the note underneath is being REPLACED, not
-// because the user finished editing.
-//
-// A deck swap reassigns state.notes wholesale, but the <textarea> is not part
-// of `state` and nothing else resets it: setViewMode only calls
-// resetNotesEditingUI on the way to the CARDS view, and enterNotesEditing
-// returns immediately when the editor is already open, so the incoming note
-// never reaches the textarea. That left the editor showing the note being left
-// while state.localDeckId already pointed at the new deck — and the very next
-// keystroke (`state.notes = el.notesEdit.value`) copied the old note's whole
-// body into the new deck, which the autosave then made permanent. Clearing
-// .value is the load-bearing half: resetNotesEditingUI only hides the element.
-export function discardNotesEditingForDeckSwap() {
-  if (!isNotesEditing()) return;
-  el.notesEdit.value = "";
-  // The mirror holds its own copy of the text (see refreshHighlightBackdrop);
-  // left alone it keeps painting the old note behind the empty textarea.
-  refreshHighlightBackdrop(el.notesEdit);
-  resetNotesEditingUI();
-}
-
-export function commitNotesEditIfActive() {
-  if (!isNotesEditing()) return;
-  // Capture BEFORE overwriting state.notes / hiding the textarea — both the
-  // scroll position and the value it's measured against have to be the
-  // pre-commit ones. The caret (selectionStart) is the reader's position and
-  // is O(1) to read — far cheaper than reconstructing an offset from the
-  // scroll position, which on a huge note meant scanning the whole document.
-  const resumeOffset = el.notesEdit.selectionStart ?? textareaOffsetFromScroll(el.notesEdit);
-  state.notes = el.notesEdit.value;
-  resetNotesEditingUI();
-  // #notesView's own stale scrollTop (it's never destroyed, just hidden) is
-  // what used to make this look like it "worked" for a same-source re-render
-  // — an incidental side effect, not a real position match. Explicitly aim
-  // at the offset we just left, once the re-render settles.
-  renderNotesView().then(() => scrollRenderedNotesToRawOffset(resumeOffset, { smooth: false }));
-  scheduleDeckAutosave();
-  updateMeta();
-}
-
-// `cursorOffset` (raw-markdown character index), when given, places the caret
-// there instead of the textarea's default start-of-text position — used by the
-// triple-click-to-edit handler below so switching to raw mode doesn't lose your
-// place.
-function enterNotesEditing(cursorOffset = null) {
-  if (!el.notesEdit || isNotesEditing()) return;
-  // Normalised BEFORE the textarea sees it, because a <textarea> silently
-  // rewrites \r\n to \n in its own .value. Without this, the first raw toggle
-  // of any CRLF-containing import (a Windows-authored .md, most EPUB
-  // conversions) made commitNotesEditIfActive write back a value that differs
-  // from state.notes — which misses the render cache, rebuilds every block, and
-  // marks the deck dirty for an "edit" the reader never made.
-  if (state.notes && state.notes.includes("\r")) state.notes = state.notes.replace(/\r\n?/g, "\n");
-  el.notesEdit.value = state.notes;
-  el.notesView.hidden = true;
-  el.notesEdit.hidden = false;
-  el.notesEditToolbar.hidden = false;
-  if (el.notesRenderToolbar) el.notesRenderToolbar.hidden = true;
-  el.editNotesBtn.classList.add("is-editing");
-  el.editNotesBtn.title = "Back to preview";
-  if (el.notesTocDrawer?.classList.contains("is-open")) closeNotesToc();
-  hideNotesSelectionButton();
-  // Paint the highlight mirror directly rather than faking an "input": the text
-  // hasn't changed, and the input listener would mark the deck dirty and queue a
-  // full autosave just for opening the editor.
-  refreshHighlightBackdrop(el.notesEdit);
-  el.notesEdit.focus();
-  // Assigning .value leaves the caret at the very end in most browsers, so
-  // always place it explicitly — a matched offset when we have one, otherwise
-  // the top of the notes. Never let a failed match silently dump you at the end.
-  const pos = cursorOffset != null
-    ? Math.max(0, Math.min(cursorOffset, el.notesEdit.value.length))
-    : 0;
-  el.notesEdit.setSelectionRange(pos, pos);
-  scrollTextareaToOffset(el.notesEdit, pos);
-}
-
-// ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
-// marked/the DOM give no source-position map back to the raw markdown, so this
-// is a best-effort text match: grab a short snippet of plain text immediately
-// before/after the click inside its block (paragraph/heading/list item/...),
-// then locate that snippet in state.notes with a regex tolerant of the
-// markdown syntax (**, `, [text](url), etc.) the renderer stripped out around
-// it. Returns null on no confident match — the caller just skips the cursor
-// hint rather than guessing wrong.
-const NOTES_BLOCK_SELECTOR = "p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th, dt, dd";
-
-function caretFromPoint(x, y) {
-  if (document.caretPositionFromPoint) {
-    const pos = document.caretPositionFromPoint(x, y);
-    return pos ? { node: pos.offsetNode, offset: pos.offset } : null;
-  }
-  if (document.caretRangeFromPoint) {
-    const range = document.caretRangeFromPoint(x, y);
-    return range ? { node: range.startContainer, offset: range.startOffset } : null;
-  }
-  return null;
-}
-
-// Character offset of (node, offset) within root's flattened text — Range
-// accepts either a text node + character offset or an element + child index,
-// so this works for both kinds of caret target.
-function textOffsetWithin(root, node, offset) {
-  try {
-    const range = document.createRange();
-    range.selectNodeContents(root);
-    range.setEnd(node, offset);
-    return range.toString().length;
-  } catch (_) {
-    return null;
-  }
-}
-
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-// How far either side of the hint the windowed search below looks. Wide enough
-// to absorb the error in a proportional block-position estimate on a large
-// note, narrow enough that a phrase repeated every few hundred characters can't
-// be confused across it. A hinted search that misses this window gives up
-// rather than widening — see the note at the miss below.
-const SNIPPET_SEARCH_WINDOW_CHARS = 20000;
-
-// ── Why this search is bounded three separate ways ─────────────────────────
-// The pattern below used to turn every run of punctuation/whitespace in the
-// snippet into its own lazy bounded gap. Chained bounded lazy quantifiers backtrack
-// combinatorially when the overall match FAILS, and failing is the common case:
-// this runs while you scroll, against whatever block happens to be near the top
-// of the viewport, including tables and code fences whose rendered text doesn't
-// survive into the raw source verbatim. Measured on a real note shape (an
-// indented list, allowNewline on, the 40KB window): ONE call took 9,945ms. That
-// is the "scrolling freezes and Chrome offers to exit the site" report — the
-// unresponsive-page dialog, not an OOM.
-//
-// The fix is structural: the gaps are made non-backtracking, so the engine can
-// no longer explore anything. A gap is written as a *tempered* run —
-//
-//     (?:(?!word)[^\n]){0,60}word
-//
-// — which can only consume characters that do not begin the next word, and so
-// stops dead at that word's first occurrence. There is exactly one way for it to
-// match, which means adjacent gaps have nothing to negotiate over and the whole
-// pattern runs in linear time. Semantically this is first-fit rather than
-// full backtracking, which is what we wanted anyway: locate the nearest
-// occurrence of these words in this order, within this distance of each other.
-//
-// Two cheaper bounds sit in front of it: an indexOf prefilter that proves
-// impossibility before the engine is involved at all, and a wall-clock budget
-// on the scan loop. A snippet that can't be located yields null, and every
-// caller already handles null by falling back to a coarser position.
-//
-// Measured on the case that reproduced the freeze (an indented list, newlines
-// allowed, the 40KB window): 9,897ms before, 0.5ms after, with identical
-// results on the snippet-matching cases this has to keep getting right.
-const SNIPPET_GAP_MAX_CHARS = 60;
-const SNIPPET_SEARCH_BUDGET_MS = 8;
-// Runs shorter than this are too common to be worth an indexOf (a one-letter
-// word appears everywhere, so the prefilter would never reject on it).
-const SNIPPET_PREFILTER_MIN_RUN = 3;
-
-// The alphanumeric runs of a snippet, which are what the pattern anchors on.
-// Whitespace and punctuation between them is deliberately discarded: the
-// rendered text a snippet is taken from has already had markdown syntax
-// stripped out of it, so the raw source is expected to differ there — that is
-// the entire reason for the gaps.
-function snippetWordRuns(snippet) {
-  return (snippet || "").split(/[^A-Za-z0-9]+/).filter(Boolean);
-}
-
-// A tempered gap that ends where `next` begins. For prose the gap excludes
-// newlines so a short generic fragment can't bridge into an unrelated block;
-// inside code we must allow them so a snippet straddling two code lines still
-// matches.
-function snippetGap(next, allowNewline) {
-  const unit = allowNewline ? "[\\s\\S]" : "[^\\n]";
-  return `(?:(?!${escapeRe(next)})${unit}){0,${SNIPPET_GAP_MAX_CHARS}}`;
-}
-
-// words joined by tempered gaps: word1 GAP word2 GAP word3 …
-function snippetSequencePattern(runs, allowNewline) {
-  if (!runs.length) return null;
-  let pattern = escapeRe(runs[0]);
-  for (let i = 1; i < runs.length; i += 1) {
-    pattern += snippetGap(runs[i], allowNewline) + escapeRe(runs[i]);
-  }
-  return pattern;
-}
-
-// Every word run appears in the pattern verbatim, so if any one of them is
-// absent from the text being searched, no match is possible — and indexOf can
-// prove that in microseconds.
-function snippetLiteralRuns(snippet) {
-  return snippetWordRuns(snippet).filter((run) => run.length >= SNIPPET_PREFILTER_MIN_RUN);
-}
-
-function snippetCannotMatch(text, runs) {
-  for (const run of runs) {
-    if (text.indexOf(run) === -1) return true;
-  }
-  return false;
-}
-
-// Locate `before`+`after` snippets (either may be empty) inside state.notes and
-// return the character offset of the seam between them. `allowNewline` lets the
-// gap and fuzzified whitespace cross line breaks — essential inside fenced code
-// blocks, whose raw markdown keeps the newlines the click snippet spans.
-//
-// `hint` is roughly where in the source the caller believes the snippet lives,
-// and it is what makes this usable on a repetitive document. The match is
-// otherwise simply the FIRST one in the whole note, which is wrong whenever the
-// same words appear more than once: an endnote chapter repeats "GO TO NOTE
-// REFERENCE IN TEXT" once per note and body prose repeats ordinary phrases all
-// the time, so leaving the rendered view for raw mode 600 paragraphs down
-// resolved to paragraph 1 and dumped the reader at the top of the note. With a
-// hint, the search runs over a window around it and takes the match nearest the
-// hint; without one it takes the first match in the document.
-function matchSnippetInSource(source, before, after, allowNewline, hint = null) {
-  if (!source || (!before && !after)) return null;
-  const beforeRuns = snippetWordRuns(before);
-  const afterRuns = snippetWordRuns(after);
-  const beforePattern = snippetSequencePattern(beforeRuns, allowNewline);
-  const afterPattern = snippetSequencePattern(afterRuns, allowNewline);
-  let pattern;
-  if (beforePattern && afterPattern) {
-    // The seam gap is tempered against the first word on the far side, so it
-    // stops at that word rather than negotiating with the gaps around it.
-    pattern = `(${beforePattern})${snippetGap(afterRuns[0], allowNewline)}(${afterPattern})`;
-  } else if (beforePattern || afterPattern) {
-    pattern = `(${beforePattern || afterPattern})`;
-  } else {
-    // A snippet with no word characters at all (pure punctuation) — nothing to
-    // anchor on, so match it literally or not at all.
-    pattern = `(${escapeRe(before || after)})`;
-  }
-  const literalRuns = snippetLiteralRuns(before).concat(snippetLiteralRuns(after));
-
-  try {
-    const seam = (match, base) => (before ? match.index + match[1].length : match.index) + base;
-    const deadline = performance.now() + SNIPPET_SEARCH_BUDGET_MS;
-
-    if (Number.isFinite(hint)) {
-      const start = Math.max(0, Math.floor(hint) - SNIPPET_SEARCH_WINDOW_CHARS);
-      const end = Math.min(source.length, Math.floor(hint) + SNIPPET_SEARCH_WINDOW_CHARS);
-      if (end > start) {
-        // Every match in the window is considered and the one NEAREST the hint
-        // wins. Taking the window's first match instead would just move the
-        // original bug rather than fix it: on text that repeats every few dozen
-        // characters the first hit in the window is its left edge, which is
-        // wrong by however wide the window is.
-        const slice = source.slice(start, end);
-        // Cheap proof of impossibility before the engine is involved at all.
-        if (snippetCannotMatch(slice, literalRuns)) return null;
-        const scan = new RegExp(pattern, "g");
-        let best = null;
-        let bestDistance = Infinity;
-        let match;
-        while ((match = scan.exec(slice)) !== null) {
-          const position = seam(match, start);
-          const distance = Math.abs(position - hint);
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            best = position;
-          }
-          // A pattern that can match empty would never advance lastIndex.
-          if (match.index === scan.lastIndex) scan.lastIndex += 1;
-          if (performance.now() > deadline) break;
-        }
-        if (best != null) return best;
-        // A hint that missed its own ±20,000-char window is not going to produce
-        // a trustworthy answer from the rest of the note, only a slow wrong one:
-        // the whole reason the hint exists (see the header comment) is that the
-        // first match elsewhere in a repetitive document is the WRONG match. So
-        // a hinted miss is a miss, and the caller falls back to block-level
-        // positioning rather than paying for a full-document scan.
-        return null;
-      }
-    }
-
-    if (snippetCannotMatch(source, literalRuns)) return null;
-    const match = new RegExp(pattern).exec(source);
-    if (!match) return null;
-    return seam(match, 0);
-  } catch (_) {
-    return null;
-  }
-}
-
-// Roughly where in `source` a given rendered block begins, for use as a search
-// hint (never as an answer). The incremental renderer already keeps this
-// container's blocks in document order with each one's own prepared source as
-// its cache key, so the share of the document lying before a block is just the
-// share of those key lengths — no measuring and no re-lexing. It is a ratio
-// rather than a raw character sum because preprocessSpecialBlocks changes
-// lengths on its way to the prepared text (math, cloze and code protection),
-// so prepared offsets and raw offsets differ by a factor that a proportion
-// cancels out. Returns null when there's no cache to read, and the caller
-// simply searches without a hint.
-function approximateRawOffsetForBlock(root, source, node) {
-  const cached = renderedBlockCache.get(root);
-  if (!cached || !Array.isArray(cached.blocks) || !cached.blocks.length || !source) return null;
-
-  // Walk up to the top-level block — the cache is keyed on root's own children.
-  let topLevel = node;
-  while (topLevel && topLevel.parentElement !== root) topLevel = topLevel.parentElement;
-  if (!topLevel) return null;
-
-  let before = 0;
-  let total = 0;
-  let found = false;
-  let precedingLength = 0;
-  for (const entry of cached.blocks) {
-    const length = (entry.key || "").length;
-    if (!found && Array.isArray(entry.nodes) && entry.nodes.includes(topLevel)) {
-      found = true;
-      precedingLength = before;
-    }
-    if (!found) before += length;
-    total += length;
-  }
-  if (!found || !total) return null;
-  return (precedingLength / total) * source.length;
-}
-
-// `root` is the rendered container (notes view, or a card's question/answer
-// `.rendered`) and `source` its raw markdown — the mapping is identical for
-// both, so notes and cards share this one resolver.
-function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
-  if (!root) return null;
-  const caret = caretFromPoint(clientX, clientY);
-  // Widgets (rendered code fences, cloze/math, images) can swallow the caret or
-  // sit outside a text block — fall back to the element under the pointer so the
-  // block lookup below can still land us in the right region of the raw source.
-  const anchorNode = caret && root.contains(caret.node)
-    ? caret.node
-    : document.elementFromPoint(clientX, clientY);
-  if (!anchorNode || !root.contains(anchorNode)) return null;
-
-  const startEl = anchorNode.nodeType === Node.TEXT_NODE ? anchorNode.parentElement : anchorNode;
-  const block = startEl?.closest?.(NOTES_BLOCK_SELECTOR);
-  if (!block || !root.contains(block)) return null;
-
-  // Code fences render verbatim, so their raw markdown keeps the exact newlines
-  // and punctuation the click snippet spans — match across lines for those.
-  const isCode = block.tagName === "PRE" || Boolean(startEl.closest("pre, code"));
-  const blockText = block.textContent || "";
-  // Which region of the source to prefer. Without this the snippet search takes
-  // the first match in the note, so any phrase that recurs resolves to its
-  // earliest occurrence instead of the one under the pointer.
-  const hint = approximateRawOffsetForBlock(root, source, block);
-
-  // Precise hit: match the text on both sides of the exact click point.
-  const localOffset = caret && root.contains(caret.node)
-    ? textOffsetWithin(block, caret.node, caret.offset)
-    : null;
-  if (localOffset != null) {
-    const before = blockText.slice(Math.max(0, localOffset - 24), localOffset).trim();
-    const after = blockText.slice(localOffset, localOffset + 24).trim();
-    const hit = matchSnippetInSource(source, before, after, isCode, hint);
-    if (hit != null) return hit;
-  }
-
-  // Fallback: we know which block was clicked but not the precise seam (widget,
-  // failed fuzzy match, …). Land at the start of that block rather than leaving
-  // the caret to snap to the very end of the source.
-  return rawOffsetForRenderedBlock(root, source, block, { isCode, hint });
-}
-
-// Where a whole rendered block begins in the raw source — block-level precision,
-// no click point involved. Split out of findRawOffsetForRenderedPoint's own
-// fallback so the reading-line resolver below can reach it directly, for the case
-// where there is no usable caret at all (the reading line sitting in the gap
-// between two blocks, or under a floating overlay).
-// `hint` is passed in when the caller already has it: approximateRawOffsetForBlock
-// walks the whole block cache, and this sits on the scroll-settle path (see
-// captureCurrentReadingAnchor), so it must not be computed twice.
-function rawOffsetForRenderedBlock(root, source, block, { isCode = null, hint } = {}) {
-  if (!root || !block || !source) return null;
-  const code = isCode == null
-    ? block.tagName === "PRE" || Boolean(block.querySelector?.("pre, code"))
-    : isCode;
-  const blockStart = (block.textContent || "").replace(/^\s+/, "").slice(0, 40).trim();
-  if (!blockStart) return null;
-  const at = hint === undefined ? approximateRawOffsetForBlock(root, source, block) : hint;
-  return matchSnippetInSource(source, blockStart, "", code, at);
-}
-
-// Counts newlines in value[0..pos) without materialising the prefix. The old
-// `value.slice(0, pos).match(/\n/g).length` allocated a copy of everything above
-// the caret AND an array with one entry per line in it — on a book chapter that
-// is megabytes of garbage every time the editor opens.
-function lineIndexAtOffset(value, pos) {
-  let count = 0;
-  let at = value.indexOf("\n");
-  while (at !== -1 && at < pos) {
-    count += 1;
-    at = value.indexOf("\n", at + 1);
-  }
-  return count;
-}
-
-function textareaLineHeight(textarea) {
-  return parseFloat(getComputedStyle(textarea).lineHeight) || 20;
-}
-
-// The syntax-highlight mirror, when there is one to measure against.
-//
-// A <textarea> will not report where a character sits, but the backdrop behind
-// it is a character-for-character copy under an identical metrics rule (see
-// .highlight-textarea-backdrop / .edit-textarea in styles.css — deliberately
-// ONE declaration for both), so a Range inside the mirror answers the question
-// exactly. Null whenever there is nothing trustworthy to measure: no mirror
-// yet, or plain mode (a note past HIGHLIGHT_MIRROR_MAX_CHARS, where the mirror
-// is emptied on purpose).
-function backdropForTextarea(textarea) {
-  const wrapper = textarea?.parentElement;
-  if (!wrapper || wrapper.classList.contains("is-plain")) return null;
-  return wrapper.querySelector(".highlight-textarea-backdrop") || null;
-}
-
-function caretRectInBackdrop(textarea, offset) {
-  const backdrop = backdropForTextarea(textarea);
-  if (!backdrop) return null;
-  const walker = document.createTreeWalker(backdrop, NodeFilter.SHOW_TEXT);
-  let seen = 0;
-  let node = walker.nextNode();
-  while (node) {
-    const len = node.nodeValue.length;
-    if (seen + len >= offset) {
-      try {
-        const range = document.createRange();
-        range.setStart(node, Math.max(0, offset - seen));
-        range.collapse(true);
-        const rect = range.getBoundingClientRect();
-        if (rect && (rect.top || rect.left)) return { rect, backdrop };
-      } catch {
-        // A detached or mid-rebuild mirror; the caller's fallback is fine.
-      }
-      return null;
-    }
-    seen += len;
-    node = walker.nextNode();
-  }
-  return null;
-}
-
-// The reverse walk: a (node, offset) inside the mirror back to a character
-// offset in the textarea's value. The mirror's text content is the value
-// verbatim (only <span> colour wrappers are added — see enableSyntaxHighlighting,
-// which is forbidden from changing any metric), so summing the text nodes before
-// `node` is an exact conversion. Null when the node isn't in this mirror.
-function backdropTextOffset(backdrop, node, offsetInNode) {
-  const walker = document.createTreeWalker(backdrop, NodeFilter.SHOW_TEXT);
-  let seen = 0;
-  let current = walker.nextNode();
-  while (current) {
-    if (current === node) return seen + Math.max(0, offsetInNode);
-    seen += current.nodeValue.length;
-    current = walker.nextNode();
-  }
-  return null;
-}
-
-// Character offset -> its VISUAL top, in the textarea's own scroll coordinates.
-//
-// This is the fix for "triple-click takes me somewhere off-screen". The old
-// arithmetic counted "\n" characters and multiplied by the line height, but
-// both boxes are `white-space: pre-wrap` — a paragraph of prose occupies many
-// visual rows per hard line break, and every one of them was unaccounted for.
-// The result undershot monotonically, so the further into a note you clicked
-// the further BELOW the viewport the caret landed. Measuring the mirror counts
-// wrapped rows because the browser already laid them out.
-//
-// The \n-counting math survives only as the plain-mode fallback, where there is
-// no mirror to measure and an approximation is the only thing on offer.
-function visualLineTopForOffset(textarea, pos) {
-  const hit = caretRectInBackdrop(textarea, pos);
-  if (hit) {
-    const box = hit.backdrop.getBoundingClientRect();
-    // The backdrop scrolls in lockstep with the textarea (see syncScroll) and
-    // shares its padding, so subtracting the border and adding back the scroll
-    // converts a viewport rect straight into scroll-content space.
-    return hit.rect.top - box.top - hit.backdrop.clientTop + hit.backdrop.scrollTop;
-  }
-  const padTop = parseFloat(getComputedStyle(textarea).paddingTop) || 0;
-  return lineIndexAtOffset(textarea.value, pos) * textareaLineHeight(textarea) + padTop;
-}
-
-// setSelectionRange alone doesn't reliably re-scroll a long textarea in every
-// browser, so drive the scroll from the measured position of `pos`. Puts the
-// line on the same reading line the rendered view samples from and restores to
-// (notesReadingLineOffset) — previously this centred while the sampler read
-// from near the top, so a round trip drifted by half a viewport.
-function scrollTextareaToOffset(textarea, pos) {
-  const top = visualLineTopForOffset(textarea, pos);
-  const gap = textarea === el.notesEdit
-    ? notesReadingLineOffset(textarea.clientHeight)
-    : textarea.clientHeight / 2;
-  const max = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
-  textarea.scrollTop = Math.min(max, Math.max(0, top - gap));
-  // Writing scrollTop programmatically doesn't reliably fire a scroll event in
-  // every browser, and the mirror is the only thing painting visible text — so
-  // without this nudge the reader can end up looking at the OLD text with the
-  // caret sitting over it. (scrollNotesEditToHeadingIndex has carried this
-  // workaround on its own since before there were other callers.)
-  textarea.dispatchEvent(new Event("scroll"));
-}
-
-// Keep the caret off the bottom edge while writing at the END of a note.
-//
-// The complaint this fixes: type past the last visible line and the new text
-// went under the bottom of the box (on a phone, under the keyboard) with no
-// way to see it except adding blank lines and scrolling up by hand.
-//
-// Two things had to be true and neither was. There has to be somewhere to
-// scroll TO — that is the scroll-past-end padding on .notes-stage's editor
-// wrapper — and something has to scroll there. Browsers only scroll far enough
-// to make the caret *technically* visible, which lands it flush against the
-// bottom frame; the comfortable gap that every other editor leaves is ours to
-// add.
-//
-// Scoped deliberately to a caret with nothing but whitespace after it. That is
-// the reported case, it needs no line arithmetic at all (the content bottom is
-// just scrollHeight minus the padding), and it leaves the browser's own
-// behaviour alone when you are editing mid-document — where scrolling the line
-// you touched up to a fixed height would be a surprise, not a fix.
-//
-// Note the lower bound: this only ever scrolls DOWN. Scrolling back up would
-// fight the user the moment they deliberately scrolled away from the caret.
-const NOTES_CARET_TAIL_LINES = 3;
-
-function keepNotesCaretVisible() {
-  const textarea = el.notesEdit;
-  if (!textarea || textarea.hidden) return;
-  // A range selection isn't a typing caret; leave it where the user put it.
-  if (textarea.selectionStart !== textarea.selectionEnd) return;
-  // Anything of substance below the caret means there is context to read down
-  // there, and the native behaviour is already the right one.
-  //
-  // Scanned rather than `value.slice(selectionEnd).trim()`, which allocated a
-  // copy of everything below the caret AND a trimmed copy of that — on every
-  // keystroke, on a note that may be hundreds of KB. Same defect, same fix, as
-  // lineIndexAtOffset above.
-  const value = textarea.value;
-  for (let i = textarea.selectionEnd; i < value.length; i += 1) {
-    if (!/\s/.test(value[i])) return;
-  }
-
-  const styles = getComputedStyle(textarea);
-  const lineHeight = parseFloat(styles.lineHeight) || 20;
-  const padBottom = parseFloat(styles.paddingBottom) || 0;
-  // scrollHeight includes the scroll-past-end padding; the last line of actual
-  // text ends where that padding starts.
-  const contentBottom = textarea.scrollHeight - padBottom;
-  const maxScroll = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
-  const want = Math.min(
-    maxScroll,
-    Math.max(0, contentBottom + lineHeight * NOTES_CARET_TAIL_LINES - textarea.clientHeight)
-  );
-  // Writing scrollTop fires the textarea's own scroll event, which is what the
-  // highlight backdrop listens to — the mirror follows on its own.
-  if (want > textarea.scrollTop) textarea.scrollTop = want;
-}
-
-// Coalesced to one check per frame: autorepeat and fast typing fire input far
-// faster than the box can be re-measured, and each measurement forces layout.
-//
-// Deliberately NOT wired to the textarea's scroll event. It briefly was, to keep
-// a caret-following band drawn over the editor in step, and that single listener
-// put a getComputedStyle, a scrollHeight read and a walk of the highlight mirror
-// on every frame of every scroll — the cost growing with how far down the note
-// the caret sat. Scrolling is not typing: nothing here can change while the
-// reader is only moving the view.
-let notesCaretFrame = 0;
-export function scheduleNotesCaretCheck() {
-  if (notesCaretFrame) return;
-  notesCaretFrame = requestAnimationFrame(() => {
-    notesCaretFrame = 0;
-    keepNotesCaretVisible();
-  });
-}
-
 // ── No editor guides ───────────────────────────────────────────────────────
 //
 // The raw editor draws NOTHING over the text. A "typewriter" pair of marks used
@@ -1534,224 +361,6 @@ export function scheduleNotesCaretCheck() {
 // still targets that line and every scroll sampler still reads from it, so a
 // raw<->rendered round trip lands where you left. It is simply invisible again.
 
-// Inverse of scrollTextareaToOffset: the raw character offset sitting at the
-// textarea's CURRENT reading line. Both directions must use the SAME measure or
-// a round trip (scroll → offset → scroll) compounds error instead of cancelling
-// it — so this asks the mirror which character is painted on the reading line,
-// exactly as visualLineTopForOffset asks it where a character is painted, and
-// only falls back to the line-height arithmetic when there is no mirror.
-function textareaOffsetFromScroll(textarea) {
-  const lineHeight = textareaLineHeight(textarea);
-  const gap = textarea === el.notesEdit
-    ? notesReadingLineOffset(textarea.clientHeight)
-    : textarea.clientHeight / 2;
-
-  const backdrop = backdropForTextarea(textarea);
-  if (backdrop) {
-    const box = backdrop.getBoundingClientRect();
-    // A couple of pixels in from the text edge: dead on the padding edge can
-    // land outside every text node and report nothing.
-    const caret = caretFromPoint(
-      box.left + backdrop.clientLeft + 2,
-      box.top + backdrop.clientTop + gap
-    );
-    if (caret && backdrop.contains(caret.node)) {
-      const offset = backdropTextOffset(backdrop, caret.node, caret.offset);
-      if (offset != null) return Math.min(offset, textarea.value.length);
-    }
-  }
-
-  const lineIndex = Math.max(0, Math.round((textarea.scrollTop + gap) / lineHeight));
-  const value = textarea.value;
-  // Walk to the start of the target line by scanning for newlines with
-  // indexOf — this only touches the prefix up to the caret line, and never
-  // materialises the whole document as an array (split("\n") on a huge note
-  // is what made the raw→rendered toggle slow).
-  let offset = 0;
-  for (let i = 0; i < lineIndex; i += 1) {
-    const nl = value.indexOf("\n", offset);
-    if (nl === -1) break;
-    offset = nl + 1;
-  }
-  return Math.min(offset, value.length);
-}
-
-// A representative raw-markdown offset for whatever's currently at the top of
-// the visible #notesView. Unlike the triple-click path, the "Edit notes"
-// toolbar button has no click point to hand findRawOffsetForRenderedPoint —
-// synthesize one near the top of the viewport instead, so leaving rendered
-// mode via the button still lands raw-edit mode near where you were reading
-// instead of always at the top.
-// How far below the top of the notes viewport "where you are reading" is taken
-// to be. THE one definition: the sampler below reads from this line and every
-// restore (scrollNotesBlockToReadingLine, scrollTextareaToOffset) puts the
-// target back on it, which is what makes a raw<->rendered round trip land you
-// on the line you left rather than drifting each time.
-// Takes the height explicitly because the two sides are never both on screen:
-// in raw mode #notesView is hidden and reports clientHeight 0, so the editor
-// has to measure against the textarea that replaced it.
-const NOTES_READING_LINE_MAX_PX = 64;
-
-function notesReadingLineOffset(viewportHeight) {
-  const height = viewportHeight || el.notesView?.clientHeight || 0;
-  return Math.min(NOTES_READING_LINE_MAX_PX, height / 3);
-}
-
-// The top-level block the reading line falls on, found GEOMETRICALLY rather than
-// by hit-testing.
-//
-// blockAtNotesReadingLine (further down) asks elementFromPoint, which answers
-// nothing useful in two very ordinary situations: the reading line resting in the
-// margin gap between two blocks (elementFromPoint returns #notesView itself,
-// which is not one of its own children) and the line sitting under a floating
-// overlay, where the topmost element isn't inside the view at all. Both used to
-// make the raw-mode toggle land at offset 0.
-//
-// Binary searched, not swept: these are `content-visibility: auto` blocks, so
-// reading a rect forces the browser to lay one out — the same reason
-// findRenderedNoteRange searches for its window's first member this way instead
-// of testing every block from the top.
-function notesBlockAtReadingLineGeometric() {
-  const view = el.notesView;
-  if (!view || view.hidden) return null;
-  const blocks = view.children;
-  if (!blocks.length) return null;
-  const y = view.getBoundingClientRect().top + notesReadingLineOffset(view.clientHeight);
-  let low = 0;
-  let high = blocks.length - 1;
-  let found = null;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (blocks[mid].getBoundingClientRect().bottom < y) {
-      low = mid + 1;
-    } else {
-      found = blocks[mid];
-      high = mid - 1;
-    }
-  }
-  // Scrolled past the last block (the scroll-past-end padding) — that block is
-  // still where the reader is.
-  return found || blocks[blocks.length - 1];
-}
-
-// Nudge an approximate offset onto the start of a line, so the caret lands at a
-// line boundary rather than mid-word. Forward, because an offset derived from a
-// block's own position is a lower bound on where its text begins.
-function snapOffsetToLineStart(source, offset) {
-  if (!Number.isFinite(offset)) return null;
-  const at = Math.max(0, Math.min(Math.round(offset), source.length));
-  const next = source.indexOf("\n", at);
-  return next === -1 ? at : next + 1;
-}
-
-// A representative raw-markdown offset for what the reader is currently looking
-// at, resolved in four layers of decreasing precision. The layering is the fix
-// for "switching to raw mode takes me to the very beginning": every one of these
-// steps used to be a single all-or-nothing attempt whose failure returned null,
-// and enterNotesEditing(null) means offset 0 — the top of the note. A miss now
-// costs precision, never the reader's place.
-function rawOffsetForCurrentNotesScroll() {
-  const view = el.notesView;
-  if (!view || view.hidden) return null;
-  const notes = state.notes || "";
-  if (!notes) return null;
-  const rect = view.getBoundingClientRect();
-  const x = rect.left + rect.width / 2;
-  const y = rect.top + notesReadingLineOffset(rect.height);
-
-  // 1. Exact: the caret under the reading line, matched by the text either side.
-  const precise = findRawOffsetForRenderedPoint(view, notes, x, y);
-  if (precise != null) return precise;
-
-  const block = notesBlockAtReadingLineGeometric();
-  if (block) {
-    const hint = approximateRawOffsetForBlock(view, notes, block);
-    // 2. Block-level: no usable caret, but we know which block it is.
-    const atBlock = rawOffsetForRenderedBlock(view, notes, block, { hint });
-    if (atBlock != null) return atBlock;
-    // 3. The hint itself. Coarse — it's a proportion of the block cache's key
-    // lengths — but it puts the reader in the right region of the note, which is
-    // the whole point.
-    const snapped = snapOffsetToLineStart(notes, hint);
-    if (snapped != null) return snapped;
-  }
-
-  // 4. Nothing measurable at all (no block cache yet): the scroll fraction.
-  const range = view.scrollHeight - view.clientHeight;
-  if (range <= 0) return 0;
-  return snapOffsetToLineStart(notes, (view.scrollTop / range) * notes.length);
-}
-
-// ── Cross-device reading-position resume ────────────────────────────────
-// currentReadingAnchor is tracked in memory ONLY — no IndexedDB/localStorage
-// write here, no debounce/timer. It's folded into deckSnapshot()'s meta bag
-// (see the `readingPosition` line there) purely as a piggyback on whatever
-// save is already about to happen for some other reason (a notes edit, a
-// card change, the pagehide flush) — the user's explicit "no advanced/costly
-// logic, just sync the current location whenever the sync happens" call.
-export let currentReadingAnchor = null;
-
-// Setter: an imported binding is read-only, and cards/study.js clears this when
-// the study deck resets.
-export function setCurrentReadingAnchor(value) {
-  currentReadingAnchor = value;
-}
-// Which deck the anchor above was captured for — a scroll captured in deck A
-// must never ride into deck B's meta after switching decks without any
-// intervening scroll in B. Compared against currentDeckKey() in deckSnapshot.
-export let currentReadingAnchorDeckKey = null;
-
-// Setter: an imported binding is read-only, and cards/study.js clears this when
-// the study deck resets.
-export function setCurrentReadingAnchorDeckKey(value) {
-  currentReadingAnchorDeckKey = value;
-}
-
-export function currentDeckKey() {
-  return JSON.stringify([state.deckId || null, state.localDeckId || null]);
-}
-
-export function captureCurrentReadingAnchor() {
-  if (!el.notesView || el.notesView.hidden || state.viewMode !== "notes") return;
-  const offset = rawOffsetForCurrentNotesScroll();
-  if (offset == null) return;
-  const notes = state.notes || "";
-  const text = notes.slice(offset, offset + 80).trim() || notes.slice(Math.max(0, offset - 80), offset).trim();
-  if (!text) return;
-  setCurrentReadingAnchor(trimNoteAnchor({ offset, source: notes.slice(offset, offset + 80), text }));
-  setCurrentReadingAnchorDeckKey(currentDeckKey());
-}
-
-// Deliberately a TRAILING debounce rather than the rAF coalescing this used to
-// use. rAF coalescing still means "once per frame", i.e. ~60 hit-tests per
-// second for as long as a fling lasts — and each one is a
-// caretPositionFromPoint, a Range.toString() over the block, a walk of the
-// block cache and up to two snippet searches. That was the single most
-// expensive thing happening while reading.
-//
-// Nothing needs this mid-scroll. The anchor is memory-only (see above) and is
-// read when some *other* save happens, so the only moment it has to be right is
-// after you stop moving. requestIdleCallback keeps it off the critical path
-// even then.
-const READING_ANCHOR_IDLE_MS = 150;
-let readingAnchorCaptureTimer = 0;
-let readingAnchorIdleHandle = 0;
-
-function scheduleReadingAnchorCapture() {
-  if (readingAnchorCaptureTimer) clearTimeout(readingAnchorCaptureTimer);
-  readingAnchorCaptureTimer = setTimeout(() => {
-    readingAnchorCaptureTimer = 0;
-    if (typeof requestIdleCallback !== "function") {
-      captureCurrentReadingAnchor();
-      return;
-    }
-    if (readingAnchorIdleHandle) cancelIdleCallback(readingAnchorIdleHandle);
-    readingAnchorIdleHandle = requestIdleCallback(() => {
-      readingAnchorIdleHandle = 0;
-      captureCurrentReadingAnchor();
-    }, { timeout: 1000 });
-  }, READING_ANCHOR_IDLE_MS);
-}
 
 el.notesView?.addEventListener("scroll", () => {
   // A scroll the app performed itself (the raw<->rendered restore, a TOC jump)
@@ -1864,7 +473,7 @@ el.notesEdit?.addEventListener("input", () => {
   // Typing edits the note you're already in — it doesn't open a new one. Kept
   // in step here so leaving the editor for the cards and coming back doesn't
   // read as "different note" and throw away your place.
-  notesScrolledSource = state.notes;
+  setNotesScrolledSource(state.notes);
   if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
   // Writing at the end of the note must not push what you just typed off the
   // bottom of the box. See keepNotesCaretVisible.
@@ -2489,7 +1098,7 @@ function preserveNotesReadingPosition(mutate) {
 }
 
 // The rendered block currently sitting on the reading line, or null.
-function blockAtNotesReadingLine() {
+export function blockAtNotesReadingLine() {
   const view = el.notesView;
   if (!view) return null;
   const rect = view.getBoundingClientRect();
@@ -2761,7 +1370,7 @@ let notesSelectionTimer = null;
 //   { targetName, editing, sel, markdown }
 let pillSelectionCapture = null;
 
-function hideNotesSelectionButton() {
+export function hideNotesSelectionButton() {
   // Called from every scroll event on the notes view and the raw editor, where
   // "already fully hidden" is the overwhelmingly common case — make that a few
   // property reads rather than half a dozen redundant DOM writes. The menu is
@@ -3776,7 +2385,7 @@ function blockForRange(range) {
   return startEl?.closest?.(NOTES_BLOCK_SELECTOR) || startEl;
 }
 
-function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
+export function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
   if (offset == null || !el.notesView || el.notesView.hidden) return;
   const notes = state.notes || "";
   const forward = notes.slice(offset, offset + 60).trim();
@@ -4309,7 +2918,7 @@ function rewriteNoteLinkTarget(title, entry) {
     el.notesEdit.value = next;
     refreshHighlightBackdrop(el.notesEdit);
   }
-  notesScrolledSource = null; // force a real repaint rather than a cache hit
+  setNotesScrolledSource(null); // force a real repaint rather than a cache hit
   renderNotesView();
   scheduleDeckAutosave();
 }
@@ -5146,7 +3755,7 @@ async function extractSelectionToNote() {
       const notes = state.notes || "";
       state.notes = notes.slice(0, loc.idx) + link + notes.slice(loc.end);
       window.getSelection()?.removeAllRanges();
-      notesScrolledSource = null;
+      setNotesScrolledSource(null);
       renderNotesView();
       scheduleDeckAutosave();
     };
@@ -9440,7 +8049,7 @@ function renderSyncCountdown() {
 }
 
 // Reflects the auto-save / cloud-sync lifecycle in the deck-meta pill.
-function setSyncIndicator(stateName) {
+export function setSyncIndicator(stateName) {
   const node = el.syncIndicator;
   if (!node) return;
   // textContent below drops the countdown child, so it's re-appended at the end.
@@ -12016,7 +10625,7 @@ export function scheduleLiveQuestionFit() {
   });
 }
 
-function afterPaint() {
+export function afterPaint() {
   return new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
   });
@@ -12062,7 +10671,7 @@ function cornellDeckDividerHtml(entry) {
   `;
 }
 
-function cornellCardHtml(card, index, { answerVisible = false, print = false, statusById = state.statusById } = {}) {
+export function cornellCardHtml(card, index, { answerVisible = false, print = false, statusById = state.statusById } = {}) {
   const status = normalizeCardStatus(statusById[card.id] || card.status);
   const statusLabel = cardStatusLabel(status);
   const rowClass = print ? "cornell-print-row" : "all-card cornell-card";
@@ -20451,7 +19060,7 @@ document.addEventListener("drop", (event) => {
 // The + / quick-note pair mirrors the rendered-view render-toolbar's capture
 // group: this toolbar REPLACES that one while raw-editing, so anything only
 // present there would silently disappear the moment you tapped ✎.
-function createToolbarHtml(options = {}) {
+export function createToolbarHtml(options = {}) {
   const quickNoteBtn = options.quickNote
     ? `
     <span class="edit-toolbar-divider" aria-hidden="true"></span>
@@ -20592,7 +19201,7 @@ function toggleClozes(container, button) {
 }
 
 // New card / re-rendered notes start with every cloze hidden again.
-function resetClozeButton(button) {
+export function resetClozeButton(button) {
   setClozeButtonState(button, false);
 }
 
@@ -21224,7 +19833,7 @@ document.addEventListener("keydown", (e) => {
 // out the whole document once per event.
 const highlightBackdropSync = new WeakMap(); // textarea -> force a resync now
 
-function refreshHighlightBackdrop(textarea) {
+export function refreshHighlightBackdrop(textarea) {
   highlightBackdropSync.get(textarea)?.();
 }
 
@@ -21251,7 +19860,7 @@ function refreshHighlightBackdrop(textarea) {
 // editor that responds to typing. Everything below the threshold is unchanged.
 const HIGHLIGHT_MIRROR_MAX_CHARS = 60000;
 
-function enableSyntaxHighlighting(textarea) {
+export function enableSyntaxHighlighting(textarea) {
   if (!textarea || textarea.dataset.highlighted === "true") return;
   textarea.dataset.highlighted = "true";
 
@@ -22136,7 +20745,7 @@ async function flushPendingQuickNoteCategories() {
 
 // Keep the stored anchor small — meta is one JSON blob for the whole deck, and
 // only these fields are needed to find the spot again.
-function trimNoteAnchor(anchor) {
+export function trimNoteAnchor(anchor) {
   if (!anchor || typeof anchor !== "object") return null;
   const text = String(anchor.text || "").slice(0, 300);
   const trimmed = {

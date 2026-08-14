@@ -1,9 +1,11 @@
 // The All Cards panel's editing model: undo/redo over whole-deck snapshots,
 // insert and delete, and drag-to-reorder against the master card order.
 
+import { allCardsRenderId, bumpAllCardsRenderId, ensureAllCardAnswer, openAllCardEditor, renderAllCards, updateAllCardEditButton, updateAllCardStatuses } from "./all-cards.js?v=__BUILD__";
+import { updateMeta } from "./card-status.js?v=__BUILD__";
 import { syncResults } from "./study.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { allCardsRenderId, bumpAllCardsRenderId, closestElement, draggedAllCardId, ensureAllCardAnswer, openAllCardEditor, renderAllCards, scheduleDeckAutosave, setDraggedAllCardId, showCard, state, updateAllCardEditButton, updateAllCardStatuses, updateMeta } from "../main.js?v=__BUILD__";
+import { closestElement, draggedAllCardId, scheduleDeckAutosave, setDraggedAllCardId, showCard, state } from "../main.js?v=__BUILD__";
 import { setStatus, showConfirmModal } from "../ui/feedback.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
