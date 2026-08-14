@@ -130,6 +130,8 @@ const APP_SHELL = [
   // launch, which is precisely the case this precache exists for. CI compares
   // this list against the files on disk.
   `./src/main.js?v=${STAMP}`,
+  `./src/backup/backup.js?v=${STAMP}`,
+  `./src/backup/restore.js?v=${STAMP}`,
   `./src/cloud/auth.js?v=${STAMP}`,
   `./src/cloud/net.js?v=${STAMP}`,
   `./src/cloud/style-sync.js?v=${STAMP}`,
@@ -140,10 +142,14 @@ const APP_SHELL = [
   `./src/core/dom.js?v=${STAMP}`,
   `./src/core/lib-loader.js?v=${STAMP}`,
   `./src/core/text.js?v=${STAMP}`,
+  `./src/export/decks.js?v=${STAMP}`,
   `./src/export/sql.js?v=${STAMP}`,
   `./src/library/categories.js?v=${STAMP}`,
   `./src/library/folders.js?v=${STAMP}`,
+  `./src/library/my-decks-actions.js?v=${STAMP}`,
+  `./src/library/my-decks-icons.js?v=${STAMP}`,
   `./src/library/my-decks-prefs.js?v=${STAMP}`,
+  `./src/library/my-decks-selection.js?v=${STAMP}`,
   `./src/render/code-language.js?v=${STAMP}`,
   `./src/sync/cards.js?v=${STAMP}`,
   `./src/sync/diff.js?v=${STAMP}`,

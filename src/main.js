@@ -4,20 +4,26 @@
 // mixed-build failure this repo has already shipped twice. deploy.yml and
 // tools/module-symbols.mjs both refuse a relative import without it.
 
+import { BACKUP_IMAGE_REF_RE, decodeImageRefEntities, exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
+import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
 import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, isTransientCloudError, mapWithConcurrency, withRetry, withTimeout } from "./cloud/net.js?v=__BUILD__";
 import { PENDING_STYLE_KEY, closeStylePanel, flushPendingStyleSync, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, loadSupabaseConfig, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
-import { activeDeckLoadToken, applyDeckMetaCategories, applyWebDeckCategory, closeWebDeckExportMenus, deckPayloadSnapshot, downloadTextFile, fetchWebDeckPayload, laterIsoTimestamp, loadWebDeck, normalizeWebDeckPayload, quickNoteCategoryForCard, statusByIdFromCards, touchLocalDeckAccess, touchWebDeckAccess, updateWebDeckTitle, webDeckPayloadMarkdown } from "./cloud/web-decks.js?v=__BUILD__";
+import { activeDeckLoadToken, applyDeckMetaCategories, closeWebDeckExportMenus, downloadTextFile, laterIsoTimestamp, loadWebDeck, quickNoteCategoryForCard } from "./cloud/web-decks.js?v=__BUILD__";
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
 import { cardSideSeparatorPattern, deckStorageKey, defaultDeckCategory, delimitedCardBoundaryPattern, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { el } from "./core/dom.js?v=__BUILD__";
 import { ensureJsZip, ensureMermaid, ensureNomnoml, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
-import { encodeAttribute, escapeHtml, escapeRegExp, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
-import { buildDeckSql, exportSql } from "./export/sql.js?v=__BUILD__";
+import { encodeAttribute, escapeHtml, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
+import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
+import { exportSql } from "./export/sql.js?v=__BUILD__";
 import { buildFolderTree, categoriesFromDecks, setKnownWebDeckCategories, webDeckCategories } from "./library/categories.js?v=__BUILD__";
-import { FOLDER_SEP, addKnownFolder, folderSegments, forgetFolderTree, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./library/folders.js?v=__BUILD__";
+import { FOLDER_SEP, addKnownFolder, folderSegments, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./library/folders.js?v=__BUILD__";
+import { categorizeSelectedMyDecks, createDeckExportControl, deckCardInfo, deckSelOf, deleteSelectedMyDecks, loadDeckEntry, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
+import { hydrateMyDecksIcons, mdIcon } from "./library/my-decks-icons.js?v=__BUILD__";
 import { setMyDecksCwd, setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
+import { createDeckCategoryControl, createDeckSelectCell, createDeckSelectControl, createFolderSelectControl, formatLocalDeckSavedDate, formatLocalDeckSavedDateShort, myDeckMatchesSearch, myDecksSearchTerm, renameMyDeck, selectedMyDecks, selectedMyFolders, setMyDeckCategory, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { codeLanguageAliases, codeLanguageOrGeneric, configurePrismLanguages, inferCodeLanguage } from "./render/code-language.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, dropTombstonesForLiveCards, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush, recordDeletedCardIds, stampCardSyncState } from "./sync/cards.js?v=__BUILD__";
 import { calculateSyncDiff, normalizeSyncText, syncTextChanged } from "./sync/diff.js?v=__BUILD__";
@@ -30,7 +36,7 @@ import { closeImportPanel, closeMyDecksPanel, dismissSwipeHint, editCurrentDeckC
 import { setButtonLoading, setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack, suppressNavRecording } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
-import { chooseDeckCategory, chooseExportContent } from "./ui/pickers.js?v=__BUILD__";
+import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
 import { applyActiveStyleSettings, applyStyleDensity, currentKeyboardInset, detectStyleProfile, handleStyleControlChange, loadLocalStyleSettings, normalizeStyleSettings, normalizeStyleValue, numericStyleValue, resetStyleField, resetStyleProfile, setStyleProfiles, setStyleStatus, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
@@ -288,614 +294,24 @@ if (window.Prism?.plugins?.autoloader) {
 // the { force: true } re-fit — is now scheduleStyleRefit, off the edit path.)
 
 
-function formatLocalDeckSavedDate(iso) {
-  if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  const datePart = date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-  const timePart = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  return `${datePart}, ${timePart}`;
-}
-
-// A phone row can't spare 120px for "Jul 25, 2026, 10:11 PM". The compact form
-// rides along on the cell as data-short and the ≤720px CSS swaps to it, so the
-// full timestamp is still what's rendered (and read out) at every other width.
-function formatLocalDeckSavedDateShort(iso) {
-  if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  const days = Math.floor((Date.now() - date.getTime()) / 86400000);
-  if (days <= 0) return "today";
-  if (days === 1) return "1d ago";
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-  return `${Math.floor(days / 365)}y ago`;
-}
-
-function myDecksEmptyRow(message) {
-  return `<tr><td colspan="7" class="web-decks-empty">${escapeHtml(message)}</td></tr>`;
-}
-
 // ── Unified deck access ────────────────────────────────────────────────────
 // Every My Decks feature that needs full deck content (export, combined bulk
 // load) goes through myDeckPayload so it behaves identically for on-device
 // decks (offline included) and cloud-only decks: the local snapshot is
 // preferred, the cloud is the fallback.
 
-async function localDeckPayload(localId) {
-  try {
-    const snapshot = await readDeckSnapshot(localId);
-    if (!snapshot) return null;
-    const meta = readLocalDeckIndex().find((m) => m.id === localId) || {};
-    return normalizeWebDeckPayload({
-      id: snapshot.deckId || localId,
-      title: snapshot.deckTitle || meta.title || "Untitled",
-      category: snapshot.deckCategory || meta.category,
-      notes: snapshot.notes || "",
-      // The deck-level bag — the quick_notes managed category set, plus the
-      // pinned-from source anchors. myDeckPayload PREFERS this local path, so
-      // dropping it here is what made every backup/export write `meta: {}` and
-      // lose the names and colours each note's label resolves against.
-      meta: snapshot.meta,
-      current_card_index: snapshot.current || 0,
-      created_at: meta.createdAt || null,
-      updated_at: meta.updatedAt || null,
-      last_accessed_at: meta.accessedAt || meta.updatedAt || null
-    }, (snapshot.cards || []).map((card, index) => ({
-      id: card.id,
-      deck_id: snapshot.deckId || localId,
-      question: card.question,
-      answer: card.answer,
-      position: index,
-      status: card.status,
-      // Quick-note subject label — same reason as `meta` above. Without it a
-      // backup restores every note as Uncategorized, and an exported .sql
-      // (whose UPDATE sets category = EXCLUDED.category) would clear the
-      // labels outright if it were ever run against a live database.
-      category: card.category || null,
-      updated_at: card.updatedAt || null
-    })));
-  } catch (error) {
-    console.warn("Could not read local deck snapshot", localId, error);
-    return null;
-  }
-}
-
-async function myDeckPayload({ localId = null, deckId = null } = {}) {
-  if (localId) {
-    const payload = await localDeckPayload(localId);
-    if (payload) return payload;
-  }
-  if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
-    return fetchWebDeckPayload(deckId);
-  }
-  throw new Error("Deck data unavailable — cloud-only decks need a connection");
-}
 
 // ── Selection & bulk-action bar ────────────────────────────────────────────
 
-// The single source of truth for the title search, shared by the renderer
-// (paintMyDecks) and by folder selection below. They MUST agree: the folder
-// tree, its "N decks" label, and what checking that folder selects are all
-// derived from this — if selection saw decks the render had filtered out, a
-// folder Delete would destroy decks the user could neither see nor count.
-function myDecksSearchTerm() {
-  return (state.myDecksSearch || "").trim().toLowerCase();
-}
-
-function myDeckMatchesSearch(deck) {
-  const search = myDecksSearchTerm();
-  if (!search) return true;
-  return String(deck.title || "").toLowerCase().includes(search);
-}
-
-// Checking a folder is equivalent to checking every deck inside it (recursively,
-// via decksUnderFolder — same helper folder rename/move/delete already use) — so
-// bulk actions Just Work on folders without exportSelectedMyDecks/deleteSelectedMyDecks/
-// etc. needing to know folders exist at all. Deduped so a deck both individually
-// checked AND covered by a checked ancestor folder isn't acted on twice.
-function selectedMyDecks() {
-  const host = el.myDecksBody || el.myDecksListTable;
-  const direct = Array.from(host?.querySelectorAll(".my-deck-row-checkbox:checked") || [])
-    .map((checkbox) => ({
-      localId: checkbox.dataset.localId || null,
-      deckId: checkbox.dataset.deckId || null
-    }));
-  const fromFolders = Array.from(host?.querySelectorAll(".my-folder-row-checkbox:checked") || [])
-    .map((checkbox) => checkbox.dataset.folderPath)
-    .filter(Boolean)
-    // Search-filtered to match the folder row the user actually clicked: while a
-    // search is active that row is built from — and counts — only the matching
-    // decks, so selecting it must not reach the ones hiding behind the filter.
-    .flatMap((path) => decksUnderFolder(path).filter(myDeckMatchesSearch).map((entry) => entry.sel));
-
-  const seen = new Set();
-  const merged = [];
-  [...direct, ...fromFolders].forEach((sel) => {
-    const key = `${sel.localId || ""}\u0000${sel.deckId || ""}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    merged.push(sel);
-  });
-  return merged;
-}
-
-// The checked folders themselves. selectedMyDecks() above flattens them away
-// into decks, which is all Export/Load/Categorize need — but Delete also has to
-// remove the folder, so it needs the paths that selection came from.
-function selectedMyFolders() {
-  const host = el.myDecksBody || el.myDecksListTable;
-  return Array.from(host?.querySelectorAll(".my-folder-row-checkbox:checked") || [])
-    .map((checkbox) => checkbox.dataset.folderPath)
-    .filter(Boolean);
-}
-
-function myDeckSelKey(sel) {
-  return `${sel.localId || ""} ${sel.deckId || ""}`;
-}
-
-function updateMyDecksBulkBar() {
-  // Query the whole body host, not just the table — tiles live in a sibling grid.
-  const host = el.myDecksBody || el.myDecksListTable;
-  const allBoxes = host?.querySelectorAll(".my-deck-row-checkbox, .my-folder-row-checkbox") || [];
-  const checkedBoxes = host?.querySelectorAll(".my-deck-row-checkbox:checked, .my-folder-row-checkbox:checked") || [];
-  // Counts what a bulk action will actually touch — a checked folder stands in
-  // for the decks inside it — rather than the raw number of ticked boxes. The
-  // folder count is spelled out separately because it isn't derivable from the
-  // deck count: an empty folder contributes 0 decks but is still deletable.
-  const deckCount = selectedMyDecks().length;
-  const folderCount = selectedMyFolders().length;
-  if (el.myDecksSelectedCount) {
-    const bits = [];
-    if (folderCount) bits.push(`${folderCount} folder${folderCount === 1 ? "" : "s"}`);
-    bits.push(`${deckCount} deck${deckCount === 1 ? "" : "s"}`);
-    el.myDecksSelectedCount.textContent = folderCount ? bits.join(" · ") : String(deckCount);
-  }
-  if (el.myDecksBulkActions) el.myDecksBulkActions.hidden = checkedBoxes.length === 0;
-  if (el.myDecksSelectAllCheckbox) {
-    el.myDecksSelectAllCheckbox.checked = allBoxes.length > 0 && checkedBoxes.length === allBoxes.length;
-    el.myDecksSelectAllCheckbox.indeterminate = checkedBoxes.length > 0 && checkedBoxes.length < allBoxes.length;
-  }
-}
-
-// The bare selection checkbox, shared by table rows (wrapped in a <td>) and grid
-// tiles. Both keep the same `.my-deck-row-checkbox` class + data-* so bulk
-// selection works identically regardless of how the deck is drawn.
-function createDeckSelectControl({ localId = null, deckId = null, title = "" } = {}) {
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.className = "my-deck-row-checkbox web-deck-row-checkbox";
-  if (localId) checkbox.dataset.localId = localId;
-  if (deckId) checkbox.dataset.deckId = deckId;
-  checkbox.setAttribute("aria-label", `Select ${title || "deck"}`);
-  checkbox.addEventListener("change", updateMyDecksBulkBar);
-  return checkbox;
-}
-
-function createDeckSelectCell({ localId = null, deckId = null, title = "" } = {}) {
-  const td = document.createElement("td");
-  td.dataset.label = "Select";
-  td.className = "web-deck-select-cell";
-  td.appendChild(createDeckSelectControl({ localId, deckId, title }));
-  return td;
-}
-
-// Folder counterpart to createDeckSelectControl — same class family (so
-// select-all and the bulk-bar counters see it) plus data-folder-path instead
-// of a deck id, which selectedMyDecks() expands via decksUnderFolder().
-function createFolderSelectControl(path, name = "") {
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.className = "my-folder-row-checkbox web-deck-row-checkbox";
-  checkbox.dataset.folderPath = path;
-  checkbox.setAttribute("aria-label", `Select folder ${name || path}`);
-  // Stop click/dragstart from bubbling to the row/tile's own handlers (enter
-  // folder, start a re-parent drag) — checking the box should only check it.
-  checkbox.addEventListener("click", (e) => e.stopPropagation());
-  checkbox.addEventListener("change", updateMyDecksBulkBar);
-  return checkbox;
-}
 
 // ── Category editing (works for local, synced, and cloud-only decks) ───────
 
-// Offline / not-yet-uploaded path: update the local library only. Bumping
-// updatedAt counts as an edit, so the next reconcile pushes the new category.
-async function setLocalDeckCategory(localId, category) {
-  const normalized = normalizeDeckCategory(category);
-  return withDeckLock(localId, async () => {
-    const index = readLocalDeckIndex();
-    const entry = index.find((e) => e.id === localId);
-    if (!entry) return;
-    entry.category = normalized;
-    entry.updatedAt = new Date().toISOString();
-    writeLocalDeckIndex(index);
-    const snapshot = await readDeckSnapshot(localId);
-    if (snapshot) {
-      snapshot.deckCategory = normalized;
-      writeDeckSnapshot(localId, snapshot);
-    }
-  });
-}
-
-async function setMyDeckCategory({ localId = null, deckId = null } = {}, category) {
-  const normalized = normalizeDeckCategory(category);
-  setKnownWebDeckCategories([...webDeckCategories, normalized]);
-  if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
-    // Updates the cloud row and keeps the local mirror's meta/timestamp aligned.
-    await applyWebDeckCategory(deckId, normalized);
-  } else if (localId) {
-    await setLocalDeckCategory(localId, normalized);
-    if (state.localDeckId === localId) {
-      state.deckCategory = normalized;
-      updateMeta();
-    }
-  } else {
-    throw new Error("Offline — a cloud-only deck can't be categorized right now");
-  }
-  return normalized;
-}
-
-function createDeckCategoryControl(sel, currentCategory, categories, deckTitle) {
-  const wrap = document.createElement("div");
-  wrap.className = "web-deck-category-editor";
-
-  const select = document.createElement("select");
-  select.className = "web-deck-category-select";
-  select.setAttribute("aria-label", `Category for ${deckTitle || "Untitled"}`);
-
-  categoriesFromDecks([], [...categories, currentCategory]).forEach((category) => {
-    const option = document.createElement("option");
-    option.value = category;
-    option.textContent = category;
-    select.appendChild(option);
-  });
-  const newOption = document.createElement("option");
-  newOption.value = "__new__";
-  newOption.textContent = "+ New category";
-  select.appendChild(newOption);
-  select.value = normalizeDeckCategory(currentCategory);
-
-  const newRow = document.createElement("div");
-  newRow.className = "web-deck-category-new";
-  newRow.hidden = true;
-
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "New category";
-  input.autocomplete = "off";
-  input.spellcheck = false;
-
-  const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
-  saveBtn.textContent = "Save";
-
-  const cancelBtn = document.createElement("button");
-  cancelBtn.type = "button";
-  cancelBtn.textContent = "Cancel";
-
-  const commit = async (nextCategory) => {
-    select.disabled = true;
-    saveBtn.disabled = true;
-    try {
-      setStatus("Updating deck category...");
-      const normalized = await setMyDeckCategory(sel, nextCategory);
-      setStatus("Deck category updated.");
-      showToast(`Category set to "${normalized}"`);
-      renderMyDecksList();
-    } catch (error) {
-      console.error("Failed to update deck category", error);
-      setStatus("Failed to update deck category.", "error");
-      showToast("Couldn't update category", "error");
-      select.disabled = false;
-      saveBtn.disabled = false;
-      select.value = normalizeDeckCategory(currentCategory);
-    }
-  };
-
-  select.addEventListener("change", () => {
-    if (select.value === "__new__") {
-      newRow.hidden = false;
-      input.value = "";
-      input.focus();
-      return;
-    }
-    const nextCategory = normalizeDeckCategory(select.value);
-    if (nextCategory === normalizeDeckCategory(currentCategory)) return;
-    commit(nextCategory);
-  });
-
-  const saveNewCategory = () => {
-    if (!input.value.trim()) {
-      setStatus("Category cannot be empty.", "error");
-      input.focus();
-      return;
-    }
-    commit(input.value);
-  };
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") saveNewCategory();
-    if (event.key === "Escape") {
-      newRow.hidden = true;
-      select.value = normalizeDeckCategory(currentCategory);
-    }
-  });
-  saveBtn.addEventListener("click", saveNewCategory);
-  cancelBtn.addEventListener("click", () => {
-    newRow.hidden = true;
-    select.value = normalizeDeckCategory(currentCategory);
-  });
-
-  newRow.append(input, saveBtn, cancelBtn);
-  wrap.append(select, newRow);
-  return wrap;
-}
 
 // ── Rename (local library + immediate cloud rename when reachable) ─────────
 
-function renameMyDeck({ localId = null, deckId = null } = {}, currentTitle = "") {
-  showPromptModal("Rename Deck", "", currentTitle || "Untitled", async (nextTitle) => {
-    const title = nextTitle.trim();
-    if (!title) {
-      setStatus("Deck title cannot be empty.", "error");
-      return;
-    }
-    try {
-      if (localId) await renameDeckInLibrary(localId, title);
-      if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
-        // Best-effort immediate cloud rename (also re-aligns the local
-        // mirror's timestamp); on failure the local rename, whose updatedAt
-        // was just bumped, is pushed by the next reconcile anyway.
-        try {
-          await updateWebDeckTitle(deckId, title);
-        } catch (error) {
-          console.warn("Cloud rename failed — the next sync will push it", error);
-        }
-      }
-      if ((localId && state.localDeckId === localId) || (deckId && state.deckId && String(state.deckId) === String(deckId))) {
-        state.deckTitle = title;
-        state.sourceTitle = title;
-        updateMeta();
-      }
-      renderMyDecksList();
-      setStatus("Deck renamed.");
-      showToast(`Renamed to "${title}"`);
-    } catch (error) {
-      console.error("Failed to rename deck", error);
-      setStatus("Failed to rename deck.", "error");
-      showToast("Couldn't rename deck", "error");
-    }
-  });
-}
 
 // ── Exports (single deck, selected decks, everything) ──────────────────────
 
-// Shared writer for every My Decks export path. `payloads` come from
-// myDeckPayload; a single payload exports as that deck, several export as one
-// document/file with per-deck dividers (PDF) or concatenation (MD/SQL/JSON).
-// `contentType` — "both" (default, the single/per-row export's long-standing
-// behaviour: cards-only for pdf/html/doc, cards+notes combined for
-// markdown/json/sql), or "cards"/"notes" when a bulk export (Export All /
-// multi-select) asked the user which one they wanted via chooseExportContent().
-async function exportDeckPayloads(payloads, format, { fileBaseName, title }, contentType = "both") {
-  if (contentType === "notes") {
-    if (format === "pdf") {
-      await exportNotesFlatPdf(payloads, { fileBaseName, title });
-      return;
-    }
-    if (format === "html" || format === "doc") {
-      const sections = payloads.map((payload) => ({
-        title: payload.deck.title,
-        category: payload.deck.category,
-        notes: payload.deck.notes || ""
-      }));
-      const rawBodyHtml = buildNotesFlatDocument(title, sections);
-      if (format === "doc") {
-        const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName);
-        downloadTextFile(bytes, `${fileBaseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-        setStatus(`Exported notes as Word (.docx).${imageEmbedSuffix(failedImageCount)}`);
-      } else {
-        const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
-        const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName);
-        downloadTextFile(html, `${fileBaseName}.html`, "text/html;charset=utf-8");
-        setStatus(`Exported notes as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
-      }
-      return;
-    }
-    if (format === "markdown") {
-      // Wrapped in the recall:notes sentinels the importer looks for, so a
-      // notes export re-imports as notes. Without them the file is just a
-      // Markdown document with headings, and importing it used to chop it into
-      // one flashcard per heading. The sentinels are HTML comments, so the file
-      // still reads normally in any other Markdown tool.
-      downloadTextFile(
-        payloads.map((payload) => {
-          const body = String(payload.deck.notes || "").trim();
-          return `# ${payload.deck.title}\n\n${body ? notesExportBlock(body) : "*No notes for this deck.*"}`;
-        }).join("\n\n---\n\n"),
-        `${fileBaseName}.md`,
-        "text/markdown;charset=utf-8"
-      );
-      setStatus("Exported notes as Markdown.");
-      return;
-    }
-    // sql / json: keep the deck row itself, but strip cards down to none.
-    payloads = payloads.map((payload) => ({ ...payload, cards: [] }));
-  } else if (contentType === "cards") {
-    // sql / json: keep the cards, but blank the notes column/field. pdf/html/doc
-    // never included notes in the first place, so nothing changes for them.
-    payloads = payloads.map((payload) => ({ ...payload, deck: { ...payload.deck, notes: "" } }));
-  }
-
-  if (format === "pdf") {
-    if (payloads.length === 1) {
-      const payload = payloads[0];
-      await exportCardsPdf(payload.deck.title, payload.cards, {
-        fileBaseName,
-        statusById: statusByIdFromCards(payload.cards)
-      });
-      return;
-    }
-    const cards = [];
-    const statusById = {};
-    payloads.forEach((payload) => {
-      cards.push({
-        type: "deck-divider",
-        title: payload.deck.title,
-        category: payload.deck.category
-      });
-      payload.cards.forEach((card) => {
-        const id = `${payload.deck.id}:${card.id}`;
-        cards.push({ id, question: card.question, answer: card.answer, position: cards.length });
-        const status = normalizeCardStatus(card.status);
-        if (status) statusById[id] = status;
-      });
-    });
-    await exportCardsPdf(title, cards, { fileBaseName, statusById });
-    return;
-  }
-
-  if (format === "html" || format === "doc") {
-    const cards = [];
-    const statusById = {};
-    if (payloads.length === 1) {
-      payloads[0].cards.forEach((card) => cards.push(card));
-      Object.assign(statusById, statusByIdFromCards(payloads[0].cards));
-    } else {
-      payloads.forEach((payload) => {
-        cards.push({
-          type: "deck-divider",
-          title: payload.deck.title,
-          category: payload.deck.category
-        });
-        payload.cards.forEach((card) => {
-          const id = `${payload.deck.id}:${card.id}`;
-          cards.push({ id, question: card.question, answer: card.answer, position: cards.length });
-          const status = normalizeCardStatus(card.status);
-          if (status) statusById[id] = status;
-        });
-      });
-    }
-    const rawBodyHtml = buildCornellFlatDocument(title, cards, { sourceTitle: title, statusById });
-    if (format === "doc") {
-      const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName);
-      downloadTextFile(bytes, `${fileBaseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-      setStatus(`Exported as Word (.docx).${imageEmbedSuffix(failedImageCount)}`);
-    } else {
-      const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
-      const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName);
-      downloadTextFile(html, `${fileBaseName}.html`, "text/html;charset=utf-8");
-      setStatus(`Exported as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
-    }
-    return;
-  }
-
-  if (format === "markdown") {
-    downloadTextFile(
-      payloads.map(webDeckPayloadMarkdown).join("\n\n---\n\n"),
-      `${fileBaseName}.md`,
-      "text/markdown;charset=utf-8"
-    );
-    setStatus("Exported as Markdown.");
-    return;
-  }
-
-  if (format === "sql") {
-    // Derived from contentType directly rather than the (possibly already
-    // blanked/emptied) `payloads` above — buildDeckSql needs to know to omit
-    // the notes column / the cards statements entirely, not just receive an
-    // empty value for them (see buildDeckSql's own comment for why).
-    const sqlOptions = { includeNotes: contentType !== "cards", includeCards: contentType !== "notes" };
-    downloadTextFile(buildDeckSql(payloads, `${title} SQL Export`, sqlOptions), `${fileBaseName}.sql`, "application/sql;charset=utf-8");
-    setStatus("Exported as SQL.");
-    return;
-  }
-
-  const body = payloads.length === 1
-    ? deckPayloadSnapshot(payloads[0])
-    : {
-      app: "recall",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      decks: payloads.map(deckPayloadSnapshot)
-    };
-  downloadTextFile(`${JSON.stringify(body, null, 2)}\n`, `${fileBaseName}.json`, "application/json;charset=utf-8");
-  setStatus("Exported as JSON.");
-}
-
-async function exportMyDeck(sel, format) {
-  try {
-    setStatus("Exporting deck...");
-    const payload = await myDeckPayload(sel);
-    await exportDeckPayloads([payload], format, {
-      fileBaseName: slugifyFileName(payload.deck.title || "recall"),
-      title: payload.deck.title || "Deck"
-    });
-    if (format !== "pdf") showToast(`Exported "${payload.deck.title || "deck"}" as ${format.toUpperCase()}`);
-    if (sel.deckId && supabaseClient && isSignedIn && navigator.onLine) {
-      touchWebDeckAccess(sel.deckId).catch(() => {});
-    }
-  } catch (error) {
-    console.error("Failed to export deck", error);
-    setStatus("Failed to export deck.", "error");
-    showToast("Export failed", "error");
-  }
-}
-
-async function exportSelectedMyDecks(selections, format) {
-  if (!selections.length) return;
-  const contentType = await chooseExportContent();
-  if (!contentType) return; // cancelled
-  try {
-    setStatus(`Exporting ${selections.length} deck${selections.length === 1 ? "" : "s"}...`);
-    const payloads = [];
-    for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: `selected-decks-${contentType}`, title: "Selected Decks" }, contentType);
-    if (format !== "pdf") showToast(`Exported ${payloads.length} deck${payloads.length === 1 ? "" : "s"} ${contentType} as ${format.toUpperCase()}`);
-  } catch (error) {
-    console.error("Failed to export selected decks", error);
-    setStatus("Failed to export selected decks.", "error");
-    showToast("Export failed", "error");
-  }
-}
-
-// Everything My Decks shows: all on-device decks, plus cloud-only decks when
-// the cloud is reachable (skipped with a warning when it isn't).
-async function allMyDeckSelections() {
-  const localDecks = listLocalDecks();
-  const selections = localDecks.map((deck) => ({ localId: deck.id, deckId: deck.deckId || null }));
-  if (supabaseClient && isSignedIn && navigator.onLine) {
-    try {
-      const localCloudIds = new Set(localDecks.map((d) => String(d.deckId)).filter((id) => id && id !== "null"));
-      (await fetchCloudDeckList())
-        .filter((deck) => !localCloudIds.has(String(deck.id)) && !isDeckTombstoned(deck.id))
-        .forEach((deck) => selections.push({ localId: null, deckId: String(deck.id) }));
-    } catch (error) {
-      console.warn("Could not include cloud-only decks in the export", error);
-    }
-  }
-  return selections;
-}
-
-async function exportAllMyDecks(format) {
-  const contentType = await chooseExportContent();
-  if (!contentType) return; // cancelled
-  try {
-    setStatus("Exporting all decks...");
-    const selections = await allMyDeckSelections();
-    if (!selections.length) {
-      setStatus("No decks to export.", "error");
-      return;
-    }
-    const payloads = [];
-    for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: `all-decks-${contentType}`, title: "All Decks" }, contentType);
-    if (format !== "pdf") showToast(`Exported all decks' ${contentType} as ${format.toUpperCase()}`);
-  } catch (error) {
-    console.error("Failed to export all decks", error);
-    setStatus("Failed to export all decks.", "error");
-    showToast("Export failed", "error");
-  }
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // Library Backup (.zip) + Safe Restore
@@ -910,1699 +326,12 @@ async function exportAllMyDecks(format) {
 // library index+snapshot model so the on-disk format is unchanged.
 // ══════════════════════════════════════════════════════════════════════════
 
-const BACKUP_SCHEMA = "recall-backup";
-// 2: images are packed into assets/ as real files (see packBackupAssets).
-// Purely informational — nothing reads it to decide how to restore, so v1 and v2
-// archives are both readable by both builds.
-const BACKUP_VERSION = 2;
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-// Filesystem-safe local timestamp with SECONDS, so multiple backups on the same
-// day (and a backup + its pre-restore safety backup moments apart) get distinct
-// names instead of colliding. Colons are illegal in filenames -> dashes.
-function backupTimestamp(date = new Date()) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
-    + `_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
-}
-
-// The deck-level meta bag, whatever shape it arrived in (a parsed object, a JSON
-// string from a hand-edited archive, or missing entirely).
-function normalizeBackupMeta(raw) {
-  let bag = raw;
-  if (typeof bag === "string") {
-    try { bag = JSON.parse(bag); } catch { bag = null; }
-  }
-  return bag && typeof bag === "object" && !Array.isArray(bag) ? bag : {};
-}
-
-// Restore is ADDITIVE, so a deck's meta bag merges rather than replaces: a
-// quick-note category the backup still knows about but this device has lost is
-// added back, every local one is kept, and local wins on a conflicting id (same
-// newest-wins-but-never-delete rule the cards follow). Sibling keys — the pinned
-// -from source anchors above all — are unioned the same way.
-function mergeBackupMeta(localMeta, backupMeta) {
-  const local = normalizeBackupMeta(localMeta);
-  const backup = normalizeBackupMeta(backupMeta);
-  const merged = { ...backup, ...local };
-
-  const localCats = quickNoteCategoriesFromMeta(local);
-  const backupCats = quickNoteCategoriesFromMeta(backup);
-  if (localCats.length || backupCats.length) {
-    const byId = new Map(localCats.map((cat) => [cat.id, cat]));
-    for (const cat of backupCats) if (!byId.has(cat.id)) byId.set(cat.id, cat);
-    merged.quickNoteCategories = Array.from(byId.values());
-  }
-
-  const localAnchors = noteAnchorsFromMeta(local);
-  const backupAnchors = noteAnchorsFromMeta(backup);
-  if (Object.keys(localAnchors).length || Object.keys(backupAnchors).length) {
-    merged.noteAnchors = { ...backupAnchors, ...localAnchors };
-  }
-  return merged;
-}
-
-// Coerce any deck shape we might read from an archive — a per-deck backup file,
-// a legacy deckPayloadSnapshot, or a normalizeWebDeckPayload deck+cards bundle —
-// into the single shape planRestore/applyRestore work with.
-// `fallbackCategory` is the folder the file itself sat in inside the archive.
-// It only applies when the deck carries no category of its own, which is what
-// lets an unstructured zip — deck files someone dropped into folders by hand —
-// come back organised into folders of those names instead of one flat pile.
-function normalizeBackupDeck(raw, fallbackCategory = "") {
-  if (!raw || typeof raw !== "object") return null;
-  const cards = Array.isArray(raw.cards) ? raw.cards : [];
-  const title = raw.deckTitle || raw.title || (raw.deck && raw.deck.title) || "Untitled deck";
-  const ownCategory = raw.deckCategory || raw.category || (raw.deck && raw.deck.category) || "";
-  return {
-    deckId: raw.deckId || raw.deck_id || (raw.deck && raw.deck.id) || null,
-    title: String(title),
-    category: normalizeDeckCategory(ownCategory || fallbackCategory),
-    notes: String(raw.notes || (raw.deck && raw.deck.notes) || ""),
-    // Carried through so a restore puts the quick-note category NAMES and
-    // COLOURS back, not just the per-card ids that point at them — without it
-    // every restored note resolved its label against a category that no longer
-    // existed and showed up as Uncategorized.
-    meta: normalizeBackupMeta(raw.meta || (raw.deck && raw.deck.meta)),
-    current: Number.isFinite(Number(raw.current)) ? Number(raw.current) : 0,
-    updatedAt: raw.updatedAt || raw.updated_at || raw.exportedAt || null,
-    cards: cards.map((card, index) => ({
-      id: String(card.id || `${index}`),
-      question: String(card.question || ""),
-      answer: String(card.answer || ""),
-      status: normalizeCardStatus(card.status),
-      // Quick-note subject label (see `meta` above).
-      category: card.category ? String(card.category) : null,
-      ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
-    }))
-  };
-}
-
-async function collectBackupPayloads(progress = null) {
-  const selections = await allMyDeckSelections();
-  const payloads = [];
-  for (const sel of selections) {
-    if (progress?.cancelled()) break;
-    try {
-      payloads.push(await myDeckPayload(sel));
-    } catch (error) {
-      console.warn("Skipping unavailable deck in backup", sel, error);
-    }
-    progress?.update(`Reading decks ${payloads.length}/${selections.length}…`, payloads.length / Math.max(selections.length, 1));
-    progress?.setStat("decks", payloads.length);
-  }
-  return payloads;
-}
-
-// ── Live backup panel ──────────────────────────────────────────────────────
-// A backup used to be one click followed by a long silence: the only sign of
-// life was the status bar, which sits behind the My Decks panel the click came
-// from. Packing images made that wait much longer (every picture is read, and
-// the whole archive is then compressed), so it reads as frozen. This gives the
-// job a face — what it's doing right now, a bar, and running counts that become
-// the finished archive's stats — plus a way out while it's still working.
-function showBackupProgress(title = "Backing up your library") {
-  const modal = document.createElement("section");
-  modal.className = "category-choice-modal backup-progress-modal";
-  modal.setAttribute("aria-label", title);
-
-  const shell = document.createElement("div");
-  shell.className = "category-choice-shell backup-progress-shell";
-  shell.innerHTML = `
-    <div class="category-choice-head">
-      <div>
-        <h2 class="backup-progress-title"></h2>
-        <p class="backup-progress-line" role="status" aria-live="polite">Starting…</p>
-      </div>
-    </div>
-    <div class="job-progress-track is-indeterminate"><div class="job-progress-fill"></div></div>
-    <div class="epub-preview-stats">
-      <div class="epub-preview-stat"><strong data-backup-stat="decks">0</strong><span>Decks</span></div>
-      <div class="epub-preview-stat"><strong data-backup-stat="cards">0</strong><span>Cards</span></div>
-      <div class="epub-preview-stat"><strong data-backup-stat="images">0</strong><span>Images</span></div>
-      <div class="epub-preview-stat"><strong data-backup-stat="size">—</strong><span>Size</span></div>
-    </div>
-    <p class="backup-progress-note"></p>
-    <div class="category-choice-actions">
-      <button type="button" data-backup-cancel>Cancel</button>
-    </div>
-  `;
-  shell.querySelector(".backup-progress-title").textContent = title;
-  modal.appendChild(shell);
-  document.body.appendChild(modal);
-
-  const line = shell.querySelector(".backup-progress-line");
-  const track = shell.querySelector(".job-progress-track");
-  const fill = shell.querySelector(".job-progress-fill");
-  const note = shell.querySelector(".backup-progress-note");
-  const button = shell.querySelector("[data-backup-cancel]");
-
-  let cancelled = false;
-  let finished = false;
-  button.addEventListener("click", () => {
-    if (finished) {
-      modal.remove();
-      return;
-    }
-    cancelled = true;
-    button.disabled = true;
-    if (line) line.textContent = "Stopping…";
-  });
-
-  return {
-    // `fraction` null/undefined keeps the bar in its indeterminate sweep, which
-    // is honest about steps whose total isn't known yet.
-    update(text, fraction) {
-      if (cancelled && !finished) return;
-      if (text) line.textContent = text;
-      if (typeof fraction === "number") {
-        track.classList.remove("is-indeterminate");
-        fill.style.width = `${Math.min(100, Math.max(0, Math.round(fraction * 100)))}%`;
-      } else {
-        track.classList.add("is-indeterminate");
-      }
-    },
-    setStat(key, value) {
-      const cell = shell.querySelector(`[data-backup-stat="${key}"]`);
-      if (cell) cell.textContent = String(value);
-    },
-    note(text, warning = false) {
-      note.textContent = text || "";
-      note.classList.toggle("is-warning", Boolean(text) && warning);
-    },
-    cancelled() { return cancelled; },
-    // Leaves the panel up with the finished archive's numbers — the point of the
-    // whole thing is to be able to see what was saved — and turns the escape
-    // hatch into the way to dismiss it.
-    finish(text, { warning = "" } = {}) {
-      finished = true;
-      line.textContent = text;
-      track.classList.remove("is-indeterminate");
-      fill.style.width = "100%";
-      if (warning) this.note(warning, true);
-      button.disabled = false;
-      button.textContent = "Done";
-      button.classList.add("import-action-primary");
-      button.focus();
-    },
-    close() { modal.remove(); }
-  };
-}
-
-function formatBackupSize(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
-}
-
-// ── Images travel INSIDE the backup ────────────────────────────────────────
-// A deck's markdown only ever holds an image REFERENCE — a public Supabase
-// Storage URL, or a `recall-img:<token>` placeholder for one still queued
-// offline. A backup of just that text is only as portable as those references
-// are: hand the zip to someone else (or to yourself after the bucket is gone)
-// and every picture is a dead link, because the bytes only ever lived in the
-// original owner's project.
-//
-// So the archive carries the bytes too: `assets/index.json` maps each original
-// reference to a file in `assets/`, and restore re-homes them (see
-// planBackupAssetAdoption). Deck JSON keeps the ORIGINAL urls untouched, which
-// is what keeps a new backup readable by an older build and makes restoring
-// your own backup into your own project a no-op.
-const BACKUP_ASSET_DIR = "assets";
-const BACKUP_ASSET_INDEX = `${BACKUP_ASSET_DIR}/index.json`;
-const BACKUP_ASSET_SCHEMA = "recall-backup-assets";
-// Per-image ceiling when the bytes have to come off the network. Generous
-// enough for a slow phone on a big screenshot, short enough that a dead host
-// can't hold the whole backup hostage.
-const BACKUP_ASSET_FETCH_TIMEOUT_MS = 20000;
-
-// Every image reference in a deck's text: markdown `![alt](url)` (optional
-// `<...>` wrapping and a trailing "title") and raw `<img src=…>`, which the
-// notes renderer accepts just as readily.
-const BACKUP_IMAGE_REF_RE = new RegExp(
-  "!\\[[^\\]]*\\]\\(\\s*<?([^)\\s<>\"']+)"
-  + "|<img\\b[^>]*?\\bsrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-  "gi"
-);
-
-// Refs whose bytes we can actually pack. `data:` images are already inline in
-// the markdown, and in-page `blob:`/anchor urls are meaningless in an archive.
-function isPackableImageRef(ref) {
-  if (!ref) return false;
-  if (ref.startsWith(LOCAL_IMAGE_SCHEME)) return true;
-  return /^https?:\/\//i.test(ref);
-}
-
-function collectBackupImageRefs(snapshot, into = new Set()) {
-  const scan = (text) => {
-    for (const match of String(text || "").matchAll(BACKUP_IMAGE_REF_RE)) {
-      const ref = decodeImageRefEntities(match[1] || match[2] || match[3] || match[4] || "");
-      if (isPackableImageRef(ref)) into.add(ref);
-    }
-  };
-  scan(snapshot?.notes);
-  for (const card of snapshot?.cards || []) {
-    scan(card.question);
-    scan(card.answer);
-  }
-  return into;
-}
-
-// A `<img src="…&amp;x=1">` in stored HTML holds entity-escaped text; the fetch
-// (and the later find-and-replace) both need the real url.
-function decodeImageRefEntities(ref) {
-  return String(ref).replace(/&amp;/gi, "&").trim();
-}
-
-// The bytes behind one reference, or null if they can't be reached. Tries the
-// offline image cache before the network: it holds exactly what the app renders,
-// costs nothing, and means a backup taken offline still carries its pictures.
-async function readBackupAssetBlob(ref) {
-  if (ref.startsWith(LOCAL_IMAGE_SCHEME)) {
-    try {
-      const entry = await getOutboxImage(ref.slice(LOCAL_IMAGE_SCHEME.length));
-      return entry?.blob || null;
-    } catch {
-      return null;
-    }
-  }
-  try {
-    if (typeof caches !== "undefined") {
-      const cache = await caches.open(OFFLINE_IMAGE_CACHE);
-      // ignoreVary: entries written by the service worker come from a CORS
-      // fetch, and Supabase Storage answers those with `Vary: Origin` — without
-      // this, a lookup keyed by the bare URL would miss every one of them.
-      const hit = await cache.match(ref, { ignoreVary: true });
-      if (hit && hit.ok) {
-        const blob = await hit.blob();
-        if (blob.size) return blob;
-      }
-    }
-  } catch (error) {
-    console.warn("Could not read a cached image for the backup", ref, error);
-  }
-  // A host that accepts the connection and then never answers would otherwise
-  // park one of the fetch workers forever, and the whole backup with it — the
-  // failure mode that looks exactly like the app having frozen.
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), BACKUP_ASSET_FETCH_TIMEOUT_MS);
-  try {
-    // Storage serves public objects with permissive CORS; a third-party host
-    // (an old ImgBB/Drive link) may not, in which case this throws and the
-    // image is reported as missing rather than failing the backup.
-    const response = await fetch(ref, { mode: "cors", credentials: "omit", signal: abort.signal });
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    return blob.size ? blob : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-const BACKUP_ASSET_EXT_BY_TYPE = {
-  "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
-  "image/gif": "gif", "image/svg+xml": "svg", "image/avif": "avif", "image/bmp": "bmp"
-};
-
-// ── The archive mirrors the library's own shape ────────────────────────────
-// A flat `decks/*.json` bag is fine for a machine and useless for a person: a
-// 200-deck backup was an unbrowsable wall of files, with no sign of the folder
-// tree those decks actually live in. Deck files are now written under their
-// folder path, and every image is filed beside the deck that uses it, in a
-// folder named the same way the Storage bucket names it:
-//
-//   decks/Science/Cell Biology/Mitosis-a1b2c3.json
-//   assets/Mitosis--a1b2c3/0001-spindle.webp
-//
-// This is also what lets an UNSTRUCTURED archive come back organised: restore
-// reads the folder path back out of the zip when a deck file carries no
-// category of its own (backupCategoryFromArchivePath), so a hand-made zip of
-// deck files in folders lands in exactly those folders here.
-const BACKUP_DECK_DIR = "decks";
-
-// One path segment, safe in a zip and still readable — slugifyFileName keeps
-// spaces and capitals (unlike storageFolderSlug) and only strips what a
-// filesystem would choke on, so `Science/Chapter 1` survives the round trip
-// exactly as typed.
-function backupPathSegment(value, fallback) {
-  return slugifyFileName(String(value || "").trim(), fallback).replace(/^\.+/, "").trim() || fallback;
-}
-
-// `decks/<folder path>/` for one deck, honouring the deck's category tree.
-function backupDeckFolderPath(category) {
-  const segments = folderSegments(normalizeDeckCategory(category)).map((segment) => backupPathSegment(segment, "Folder"));
-  return [BACKUP_DECK_DIR, ...segments].join("/");
-}
-
-// The deck's own asset folder, named exactly the way its Storage bucket folder
-// is (`<slug>--<id>`), so what you see in the zip matches what you see in the
-// bucket.
-function backupAssetFolderPath(title, id) {
-  return `${BACKUP_ASSET_DIR}/${backupPathSegment(title, "Deck")}--${id}`;
-}
-
-// Read a deck's folder path back out of the archive: everything between the
-// `decks/` root (wherever it sits — some zip tools nest the whole archive one
-// level deeper) and the file itself. Returns "" when the file is at the root,
-// which leaves the deck's own category (or the default) in charge.
-function backupCategoryFromArchivePath(path) {
-  const parts = String(path || "").split("/").filter(Boolean);
-  parts.pop(); // the file itself
-  const root = parts.findIndex((part) => part.toLowerCase() === BACKUP_DECK_DIR);
-  const folders = root >= 0 ? parts.slice(root + 1) : parts;
-  return folderSegments(folders.join(FOLDER_SEP)).join(FOLDER_SEP);
-}
-
-// A readable, unique filename for one packed image. The original basename is
-// kept where there is one (a book figure stays recognisable inside the zip),
-// behind an index that guarantees uniqueness without a second pass.
-function backupAssetName(ref, blob, index, usedNames) {
-  const fromUrl = ref.startsWith(LOCAL_IMAGE_SCHEME)
-    ? "queued-image"
-    : decodeURIComponent((ref.split("?")[0].split("#")[0].split("/").pop() || "image"));
-  const stem = slugifyFileName(fromUrl.replace(/\.[^.]+$/, ""), "image") || "image";
-  const ext = BACKUP_ASSET_EXT_BY_TYPE[blob.type]
-    || (/\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(ref)?.[1] || "img").toLowerCase();
-  let name = `${String(index + 1).padStart(4, "0")}-${stem}.${ext}`;
-  let n = 2;
-  while (usedNames.has(name)) name = `${String(index + 1).padStart(4, "0")}-${stem}-${n++}.${ext}`;
-  usedNames.add(name);
-  return name;
-}
-
-// Pack every image the decks reference into `assets/<deck>--<id>/`, writing the
-// reference→file index alongside. `entries` is one {snapshot, assetFolder} per
-// deck, in library order, so each image lands in the folder of the first deck
-// that uses it (a picture shared by two decks is stored once, not twice).
-// Best-effort per image: one unreachable url is recorded in the index's
-// `missing` list (so a restore can say what it couldn't bring) and never aborts
-// the backup.
-async function packBackupAssets(zip, entries, onProgress, isCancelled = () => false) {
-  const folderByRef = new Map();
-  entries.forEach((entry) => {
-    for (const ref of collectBackupImageRefs(entry.snapshot)) {
-      if (!folderByRef.has(ref)) folderByRef.set(ref, entry.assetFolder);
-    }
-  });
-  const refs = Array.from(folderByRef.keys());
-  if (!refs.length) return { assets: [], missing: [] };
-
-  let done = 0;
-  onProgress?.(0, refs.length);
-  // A handful at a time: these are mostly cache hits, and the ones that aren't
-  // are latency-bound, but an unbounded fan-out over a few hundred images would
-  // stall the browser's connection pool.
-  const blobs = await mapWithConcurrency(refs, 5, async (ref) => {
-    if (isCancelled()) return null;
-    const blob = await readBackupAssetBlob(ref);
-    done += 1;
-    onProgress?.(done, refs.length);
-    return blob;
-  });
-
-  // Names are unique per folder, so two decks can both hold a `0001-fig.webp`.
-  const usedNames = new Map();
-  const assets = [];
-  const missing = [];
-  refs.forEach((ref, i) => {
-    const blob = blobs[i];
-    if (!blob) {
-      missing.push(ref);
-      return;
-    }
-    const folder = folderByRef.get(ref) || BACKUP_ASSET_DIR;
-    if (!usedNames.has(folder)) usedNames.set(folder, new Set());
-    const names = usedNames.get(folder);
-    const name = backupAssetName(ref, blob, names.size, names);
-    const path = `${folder}/${name}`;
-    zip.file(path, blob);
-    assets.push({
-      file: path,
-      url: ref,
-      type: blob.type || "application/octet-stream",
-      bytes: blob.size
-    });
-  });
-
-  zip.file(BACKUP_ASSET_INDEX, `${JSON.stringify({
-    schema: BACKUP_ASSET_SCHEMA,
-    version: 1,
-    note: "Maps each image reference used in decks/**.json to its packed file. "
-      + "Files are grouped per deck, named the way that deck's Storage folder is. "
-      + "Restore re-homes these into the restoring device's own storage.",
-    assets,
-    missing
-  }, null, 2)}\n`);
-  return { assets, missing };
-}
-
-async function exportLibraryBackupZip({
-  fileBaseName,
-  includeImages = true,
-  // The panel is the whole point of the click; `showPanel:false` exists for the
-  // callers that already own the screen (nothing does today except tests).
-  showPanel = true,
-  panelTitle = "Backing up your library",
-  // The safety backup taken before a restore is a step INSIDE another job, so
-  // its panel gets out of the way on success instead of waiting to be dismissed.
-  autoClosePanel = false
-} = {}) {
-  // jszip loads on demand now (see ensureJsZip); it is export-only, so it has
-  // no business blocking the app's boot.
-  if (!(await ensureJsZip())) {
-    setStatus("Backup needs the zip library, which failed to load.", "error");
-    return false;
-  }
-  const progress = showPanel ? showBackupProgress(panelTitle) : null;
-  try {
-    return await runLibraryBackup({ fileBaseName, includeImages, progress, autoClosePanel });
-  } catch (error) {
-    console.error("Backup failed", error);
-    setStatus(`Backup failed: ${error && error.message ? error.message : "unknown error"}`, "error");
-    showToast("Backup failed", "error");
-    progress?.finish("Backup failed.", { warning: String(error && error.message || "Something went wrong.") });
-    return false;
-  }
-}
-
-async function runLibraryBackup({ fileBaseName, includeImages, progress, autoClosePanel = false }) {
-  progress?.update("Reading your decks…");
-  const payloads = await collectBackupPayloads(progress);
-  if (progress?.cancelled()) {
-    progress.close();
-    setStatus("Backup cancelled.");
-    return false;
-  }
-  if (!payloads.length) {
-    setStatus("No decks to back up.", "error");
-    progress?.finish("No decks to back up.", { warning: "This device has no decks saved yet." });
-    return false;
-  }
-
-  const zip = new JSZip();
-  const now = new Date();
-  const manifestDecks = [];
-  const usedPaths = new Set();
-  const entries = [];
-  const folders = new Set();
-
-  payloads.forEach((payload) => {
-    const snapshot = deckPayloadSnapshot(payload);
-    const idPart = String(payload.deck.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16)
-      || Math.random().toString(36).slice(2, 8);
-    // Filed under the deck's own folder path, so unzipping the backup gives you
-    // the same tree you see in My Decks.
-    const category = normalizeDeckCategory(payload.deck.category);
-    const dir = backupDeckFolderPath(category);
-    folders.add(category);
-    const base = `${backupPathSegment(payload.deck.title, "Deck")}-${idPart}`;
-    let path = `${dir}/${base}.json`;
-    let n = 2;
-    while (usedPaths.has(path)) path = `${dir}/${base}-${n++}.json`;
-    usedPaths.add(path);
-    zip.file(path, `${JSON.stringify(snapshot, null, 2)}\n`);
-    entries.push({ snapshot, assetFolder: backupAssetFolderPath(payload.deck.title, idPart) });
-    manifestDecks.push({
-      file: path,
-      deckId: payload.deck.id || null,
-      title: payload.deck.title || "Untitled deck",
-      category: payload.deck.category || "",
-      cardCount: payload.cards.length,
-      hasNotes: Boolean(String(payload.deck.notes || "").trim()),
-      updatedAt: payload.deck.updated_at || null
-    });
-  });
-
-  const cardTotal = payloads.reduce((n, payload) => n + payload.cards.length, 0);
-  progress?.setStat("decks", payloads.length);
-  progress?.setStat("cards", cardTotal);
-
-  const deckLabel = `${payloads.length} deck${payloads.length === 1 ? "" : "s"}`;
-  let packed = { assets: [], missing: [] };
-  if (includeImages) {
-    progress?.update("Looking for images…");
-    packed = await packBackupAssets(zip, entries, (done, total) => {
-      // The slow phase, and the one people most need to see moving: each image
-      // is read from the offline cache or fetched back from storage.
-      setStatus(`Packing images ${done}/${total}…`);
-      progress?.update(`Packing images ${done}/${total}…`, done / Math.max(total, 1));
-      progress?.setStat("images", done);
-    }, () => Boolean(progress?.cancelled()));
-    if (progress?.cancelled()) {
-      progress.close();
-      setStatus("Backup cancelled.");
-      return false;
-    }
-    progress?.setStat("images", packed.assets.length);
-  }
-
-  const manifest = {
-    schema: BACKUP_SCHEMA,
-    version: BACKUP_VERSION,
-    app: "recall",
-    exportedAt: now.toISOString(),
-    deckCount: payloads.length,
-    // Image bytes live in assets/ (see assets/index.json). Counted here so a
-    // restore knows whether an archive predates image packing or genuinely had
-    // no images at all.
-    assetCount: packed.assets.length,
-    assetsMissing: packed.missing.length,
-    // The folder tree these decks came from, so the archive documents the
-    // library's shape even where a folder holds no decks of its own.
-    folders: Array.from(folders).sort(),
-    decks: manifestDecks
-  };
-  zip.file("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
-  zip.file("README.txt", [
-    "Recall library backup",
-    "",
-    `Created: ${now.toISOString()}`,
-    `Decks:   ${payloads.length}`,
-    `Folders: ${folders.size}`,
-    `Images:  ${packed.assets.length}${packed.missing.length ? ` (${packed.missing.length} unreachable, not packed)` : ""}`,
-    "",
-    "Layout:",
-    "  manifest.json          index of every deck, folder and image",
-    "  decks/<folder>/*.json  one file per deck, inside its own folder path",
-    "  assets/<deck>--<id>/   that deck's images, as real files",
-    "  assets/index.json      maps each image reference to its packed file",
-    "",
-    "The zip mirrors the library: the folders under decks/ are the folders in",
-    "My Decks, and each deck's images sit in a folder named the same way its",
-    "cloud Storage folder is. Restoring puts all of it back — decks into those",
-    "folders, images into this device's own storage. A hand-made zip works too:",
-    "deck files dropped into folders are restored into folders of those names.",
-    "",
-    "The images are real files in here, not links — this archive stands on its",
-    "own. Restoring it on another device (or another person's) copies those",
-    "files onto that device and, if it has its own cloud project, re-uploads",
-    "them there on the next sync. Nothing depends on the original owner's",
-    "storage staying reachable.",
-    "",
-    "Restore from the app: My Decks -> More -> Restore backup. Restore is not",
-    "the same as Import: Import brings ONE source in as notes or cards and lets",
-    "you choose where it lands, while Restore merges a whole library archive.",
-    "Restore compares every deck, card and note against your current",
-    "decks and shows a preview before changing anything. It never deletes your",
-    "local-only decks or cards; it only adds what's missing and applies edits",
-    "from this backup.",
-    ""
-  ].join("\n"));
-
-  setStatus(`Compressing backup (${deckLabel}${packed.assets.length ? `, ${packed.assets.length} images` : ""})…`);
-  progress?.update("Compressing the archive…", 0);
-  const blob = await zip.generateAsync({
-    type: "blob",
-    compression: "DEFLATE",
-    compressionOptions: { level: 6 }
-  }, (meta) => {
-    // JSZip reports real percentage here, which is what keeps the bar moving
-    // through what is otherwise the longest opaque step of a big backup.
-    progress?.update(`Compressing the archive… ${Math.round(meta.percent)}%`, meta.percent / 100);
-  });
-  const name = `${fileBaseName || `recall-backup-${backupTimestamp(now)}`}.zip`;
-  progress?.setStat("size", formatBackupSize(blob.size));
-  downloadBlob(blob, name);
-  const imageNote = packed.assets.length
-    ? ` with ${packed.assets.length} image${packed.assets.length === 1 ? "" : "s"}`
-    : "";
-  const missingNote = packed.missing.length
-    ? ` ${packed.missing.length} image${packed.missing.length === 1 ? " was" : "s were"} unreachable and could not be packed.`
-    : "";
-  setStatus(`Backed up ${deckLabel}${imageNote} to ${name}.${missingNote}`, packed.missing.length ? "error" : "info");
-  if (autoClosePanel && !packed.missing.length) {
-    progress?.close();
-  } else {
-    progress?.finish(`Saved ${name}`, {
-      warning: packed.missing.length
-        ? `${packed.missing.length} image${packed.missing.length === 1 ? "" : "s"} could not be reached and ${packed.missing.length === 1 ? "is" : "are"} not in this archive. Everything else is.`
-        : ""
-    });
-  }
-  if (!packed.missing.length) showToast("Backup saved", "success");
-  return true;
-}
-
-// A parsed JSON node is either a multi-deck bundle ({decks:[...]}) or a single
-// deck snapshot — normalise both into `out`.
-function expandBackupBundleInto(parsed, out, fallbackCategory = "") {
-  if (parsed && Array.isArray(parsed.decks)) {
-    parsed.decks.forEach((deck) => {
-      const normalized = normalizeBackupDeck(deck, fallbackCategory);
-      if (normalized) out.push(normalized);
-    });
-  } else {
-    const normalized = normalizeBackupDeck(parsed, fallbackCategory);
-    if (normalized) out.push(normalized);
-  }
-}
-
-// Read `assets/index.json` and pull each packed image out of the zip, returning
-// Map(original reference -> Blob). An archive from before image packing (or one
-// whose index is unreadable) just yields an empty map and restores exactly as
-// it always did.
-async function readBackupAssets(zip) {
-  const assets = new Map();
-  const indexEntry = zip.files[BACKUP_ASSET_INDEX]
-    || zip.files[Object.keys(zip.files).find((path) => path.toLowerCase() === BACKUP_ASSET_INDEX) || ""];
-  if (!indexEntry) return assets;
-  let index;
-  try {
-    index = JSON.parse(await indexEntry.async("string"));
-  } catch (error) {
-    console.warn("Backup asset index is unreadable — restoring text only", error);
-    return assets;
-  }
-  for (const entry of Array.isArray(index?.assets) ? index.assets : []) {
-    const file = entry && zip.files[entry.file];
-    if (!entry?.url || !file || file.dir) continue;
-    try {
-      const raw = await file.async("blob");
-      // JSZip hands back an octet-stream blob; re-wrap with the recorded type so
-      // the image renders (and later uploads) as the right content type.
-      assets.set(String(entry.url), entry.type ? new Blob([raw], { type: entry.type }) : raw);
-    } catch (error) {
-      console.warn("Could not read a packed image from the archive", entry.file, error);
-    }
-  }
-  return assets;
-}
-
-// Zip noise no archive reader should look at: macOS resource forks, Finder
-// metadata, and the dotfiles a few zip tools sprinkle around.
-function isArchiveJunkPath(path) {
-  return /(^|\/)(__MACOSX\/|\.DS_Store$|Thumbs\.db$|\._)/i.test(path);
-}
-
-// Does this JSON look like a deck rather than some unrelated file that happened
-// to be in the zip? Only consulted for unstructured archives, where anything
-// could be sitting next to the deck files.
-function looksLikeBackupDeckJson(parsed) {
-  if (!parsed || typeof parsed !== "object") return false;
-  if (Array.isArray(parsed.decks)) return true;
-  if (Array.isArray(parsed.cards)) return true;
-  return Boolean(parsed.deck && typeof parsed.deck === "object" && Array.isArray(parsed.cards));
-}
-
-async function readBackupArchive(file) {
-  const name = String(file.name || "").toLowerCase();
-  const looksZip = /\.zip$/.test(name)
-    || file.type === "application/zip"
-    || file.type === "application/x-zip-compressed";
-
-  const decks = [];
-  if (looksZip) {
-    if (!(await ensureJsZip())) throw new Error("the zip library failed to load, so this .zip can't be read");
-    const zip = await JSZip.loadAsync(file);
-    const files = Object.keys(zip.files).filter((path) => !zip.files[path].dir && !isArchiveJunkPath(path));
-    // Our own archives (and anything shaped like them): every .json under a
-    // decks/ root, at any depth — the depth IS the folder path.
-    let deckPaths = files.filter((path) => /(^|\/)decks\/.+\.json$/i.test(path));
-    let strict = true;
-    if (!deckPaths.length) {
-      // An unstructured zip: deck files someone dropped in, loose or in folders
-      // of their own naming. Take every .json that reads like a deck, wherever
-      // it sits, and let its folder become the deck's folder.
-      deckPaths = files.filter((path) => /\.json$/i.test(path)
-        && !/(^|\/)manifest\.json$/i.test(path)
-        && !/(^|\/)assets\//i.test(path));
-      strict = false;
-    }
-    for (const path of deckPaths) {
-      try {
-        const parsed = JSON.parse(await zip.files[path].async("string"));
-        if (!strict && !looksLikeBackupDeckJson(parsed)) continue;
-        expandBackupBundleInto(parsed, decks, backupCategoryFromArchivePath(path));
-      } catch (error) {
-        console.warn("Skipping unreadable deck file in archive", path, error);
-      }
-    }
-    if (!decks.length) throw new Error("no decks found in this archive");
-    return { decks, assets: await readBackupAssets(zip) };
-  }
-
-  // Plain JSON export (single snapshot or {decks:[...]} bundle) — text only,
-  // there is nowhere in a bare .json for image bytes to live.
-  expandBackupBundleInto(JSON.parse(await file.text()), decks);
-  if (!decks.length) throw new Error("no decks found in this file");
-  return { decks, assets: new Map() };
-}
-
-// ── Re-homing a backup's images ────────────────────────────────────────────
-// An image reference that came out of the archive is only usable here if it
-// points into the storage project THIS device is configured against — the same
-// project's bucket is public, so the url resolves for any of its users, and the
-// object already exists (re-uploading it would just duplicate it). Anything
-// else — a friend's project, a dead project, a queued `recall-img:` placeholder
-// from the other device's outbox — is adopted: the bytes go into this device's
-// own image outbox and the markdown is rewritten to the local placeholder, so
-// the image shows immediately and flushPendingImageUploads later re-uploads it
-// into this user's own storage and rewrites the reference to the new url.
-//
-// Planned without writing anything (restore shows a preview first, and a
-// cancelled restore must leave no trace); commitBackupAssets does the writes.
-async function planBackupAssetAdoption(decks, assets) {
-  const plan = { keep: [], adopt: [], rewrites: new Map(), missing: 0 };
-  if (!assets || !assets.size) return plan;
-
-  // Which deck first mentions a reference, so an adopted image is filed under
-  // that deck's folder when it uploads instead of landing in unfiled/.
-  const folderByRef = new Map();
-  decks.forEach((deck) => {
-    const refs = collectBackupImageRefs(deck);
-    for (const ref of refs) {
-      if (!folderByRef.has(ref) && assets.has(ref)) {
-        const slug = storageFolderSlug(deck.title, "untitled-deck");
-        folderByRef.set(ref, `decks/${slug}--${deterministicRestoreLocalId(deck)}`);
-      }
-    }
-  });
-
-  for (const [ref, blob] of assets) {
-    if (!blob) {
-      plan.missing += 1;
-      continue;
-    }
-    if (!ref.startsWith(LOCAL_IMAGE_SCHEME) && supabaseImagePathFromUrl(ref)) {
-      // Ours already: keep the url, but seed the offline cache so the restored
-      // deck reads on a plane instead of only once it has been online again.
-      plan.keep.push({ ref, blob });
-      continue;
-    }
-    // Restoring this device's own backup, taken while an image was still queued
-    // for upload: the token is still in the outbox, so leave the reference
-    // alone rather than parking a second copy of the same pending image.
-    if (ref.startsWith(LOCAL_IMAGE_SCHEME) && await outboxHasToken(ref.slice(LOCAL_IMAGE_SCHEME.length))) {
-      continue;
-    }
-    const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-    plan.adopt.push({ ref, blob, token, folder: folderByRef.get(ref) || null });
-    plan.rewrites.set(ref, LOCAL_IMAGE_SCHEME + token);
-  }
-  return plan;
-}
-
-// Point every image reference the plan adopted at its new local placeholder,
-// in the BACKUP decks — before planRestore reads them, so the preview diffs and
-// the snapshots that get written both carry the rewritten text.
-function applyBackupAssetRewrites(decks, rewrites) {
-  if (!rewrites.size) return;
-  // One alternation over every reference rather than a pass per reference: a
-  // book-sized deck is thousands of card faces, and a library restore can carry
-  // hundreds of images.
-  const pattern = new RegExp(Array.from(rewrites.keys()).map(escapeRegExp).join("|"), "g");
-  const swap = (text) => String(text || "").replace(pattern, (match) => rewrites.get(match) || match);
-  decks.forEach((deck) => {
-    deck.notes = swap(deck.notes);
-    (deck.cards || []).forEach((card) => {
-      card.question = swap(card.question);
-      card.answer = swap(card.answer);
-    });
-  });
-}
-
-// The writes planBackupAssetAdoption deliberately deferred. Best-effort per
-// image: one that can't be stored leaves a placeholder that renders as missing,
-// which is no worse than the dead link it replaced.
-async function commitBackupAssets(plan, onProgress) {
-  if (!plan) return { kept: 0, adopted: 0, failed: 0 };
-  let kept = 0;
-  let adopted = 0;
-  let failed = 0;
-  const total = plan.keep.length + plan.adopt.length;
-  let done = 0;
-  const tick = () => onProgress?.(++done, total);
-
-  for (const item of plan.keep) {
-    await cacheUploadedImageOffline(item.ref, item.blob);
-    kept += 1;
-    tick();
-  }
-  for (const item of plan.adopt) {
-    try {
-      await putOutboxImage({
-        token: item.token,
-        blob: item.blob,
-        folder: item.folder,
-        savedAt: new Date().toISOString()
-      });
-      adopted += 1;
-    } catch (error) {
-      console.warn("Could not store a restored image on this device", item.ref, error);
-      failed += 1;
-    }
-    tick();
-  }
-  return { kept, adopted, failed };
-}
-
-// Match a backup deck to a local library entry: cloud/deck id first, then a
-// unique title match. Ambiguous title (2+ local decks share it) → treat as new.
-function findLocalMatchForBackupDeck(backupDeck, index) {
-  if (backupDeck.deckId) {
-    const byId = index.find((meta) => meta.deckId && String(meta.deckId) === String(backupDeck.deckId));
-    if (byId) return byId;
-  }
-  const title = normalizeSyncText(backupDeck.title);
-  if (title) {
-    const byTitle = index.filter((meta) => normalizeSyncText(meta.title) === title);
-    if (byTitle.length === 1) return byTitle[0];
-  }
-  return null;
-}
-
-// Dry run — classify every backup deck against the current device state WITHOUT
-// writing anything. Reuses the sync diff engine (fuzzy:false: stable-id diff).
-async function planRestore(backupDecks) {
-  const index = readLocalDeckIndex();
-  const decks = [];
-  const totals = { newDecks: 0, cardsAdded: 0, cardsUpdated: 0, cardsKept: 0, notesUpdated: 0, unchanged: 0 };
-
-  // for-of, not forEach: this loop awaits readDeckSnapshot per deck, and
-  // forEach can't be paused for a promise — its callback's return value is
-  // silently discarded, which would fire every read in parallel and start
-  // pushing into `decks`/`totals` out of order before earlier reads resolve.
-  for (const backupDeck of backupDecks) {
-    const localMeta = findLocalMatchForBackupDeck(backupDeck, index);
-    if (!localMeta) {
-      decks.push({ title: backupDeck.title, status: "new", localId: null, backupDeck, counts: { added: backupDeck.cards.length } });
-      totals.newDecks += 1;
-      totals.cardsAdded += backupDeck.cards.length;
-      continue;
-    }
-
-    const localSnapshot = await readDeckSnapshot(localMeta.id);
-    // Newest-wins per deck: the backup only overwrites an existing card or the
-    // notes when the backup deck was edited more recently than the local one.
-    // A missing card is ALWAYS added back and a local-only card is ALWAYS kept,
-    // regardless of direction — those can't lose data either way. Tie / unknown
-    // timestamps favour keeping local (never overwrite on a guess).
-    const localTime = Date.parse(localMeta.updatedAt || "") || 0;
-    const backupTime = Date.parse(backupDeck.updatedAt || "") || 0;
-    const backupNewer = backupTime > localTime;
-
-    const localCards = (localSnapshot && localSnapshot.cards) || [];
-    // Count by DISTINCT card (id-keyed union), matching exactly what
-    // mergeDeckSnapshots does on apply, so the preview never over/under-states.
-    const localById = new Map(localCards.map((card) => [String(card.id), card]));
-    const backupIds = new Set(backupDeck.cards.map((card) => String(card.id)));
-    let backupOnly = 0;  // in backup, not local -> always added back
-    let differing = 0;   // id-matched card whose question/answer/status differs
-    backupDeck.cards.forEach((backupCard) => {
-      const local = localById.get(String(backupCard.id));
-      if (!local) {
-        backupOnly += 1;
-      } else if (
-        syncTextChanged(local.question, backupCard.question)
-        || syncTextChanged(local.answer, backupCard.answer)
-        || normalizeCardStatus(local.status) !== normalizeCardStatus(backupCard.status)
-        // A quick-note label move is a real difference; without this a backup
-        // that only recategorised notes was previewed (and applied) as
-        // "unchanged", so the labels never came back.
-        || (local.category || null) !== (backupCard.category || null)
-      ) {
-        differing += 1;
-      }
-    });
-    const localOnly = localCards.reduce((n, card) => n + (backupIds.has(String(card.id)) ? 0 : 1), 0);
-
-    const localNotes = (localSnapshot && localSnapshot.notes) || "";
-    const notesDiffer = syncTextChanged(localNotes, backupDeck.notes);
-    // The category DEFINITIONS live on the deck's meta bag, so a backup that
-    // still knows a category this device has lost is a restorable change even
-    // when not one card differs. Merged the same way applyRestore will, so the
-    // preview can never promise something the apply won't do.
-    const localMetaBag = (localSnapshot && localSnapshot.meta) || {};
-    const metaRestored = quickNoteCategoriesDiffer(mergeBackupMeta(localMetaBag, backupDeck.meta), localMetaBag);
-
-    // What will actually be written, given the direction.
-    const overwritten = backupNewer ? differing : 0;   // matched cards replaced by backup
-    const heldLocal = backupNewer ? 0 : differing;     // matched cards kept (local newer/tie)
-    const notesUpdated = backupNewer && notesDiffer;
-    const notesHeldLocal = notesDiffer && !backupNewer;
-
-    // A write happens only if a card is added, an existing card is overwritten,
-    // the notes are replaced, or a lost quick-note category comes back.
-    // Differences we deliberately keep local are NOT changes, so a deck where
-    // the backup is older with only conflicting edits (and nothing to add) is
-    // correctly "unchanged".
-    if (!backupOnly && !overwritten && !notesUpdated && !metaRestored) {
-      decks.push({ title: backupDeck.title, status: "unchanged", localId: localMeta.id, localMeta, localSnapshot, backupDeck, backupNewer, counts: {} });
-      totals.unchanged += 1;
-      continue;
-    }
-
-    decks.push({
-      title: backupDeck.title,
-      status: "conflict",
-      localId: localMeta.id,
-      localMeta,
-      localSnapshot,
-      backupDeck,
-      backupNewer,
-      counts: {
-        added: backupOnly,
-        overwritten,
-        heldLocal,
-        kept: localOnly,
-        notesUpdated: notesUpdated ? 1 : 0,
-        notesHeldLocal: notesHeldLocal ? 1 : 0,
-        metaRestored: metaRestored ? 1 : 0
-      }
-    });
-    totals.cardsAdded += backupOnly;
-    totals.cardsUpdated += overwritten;
-    totals.cardsKept += localOnly + heldLocal;
-    if (notesUpdated) totals.notesUpdated += 1;
-  }
-
-  return { decks, totals };
-}
-
-// Short, stable, order-sensitive fingerprint of a backup deck's own content.
-// Deterministic, so re-running the same restore keeps updating the same local
-// entry instead of duplicating it — but distinct for two different decks that
-// merely share a title.
-function backupDeckFingerprint(backupDeck) {
-  const source = [
-    normalizeDeckCategory(backupDeck.category),
-    String(backupDeck.notes || "").slice(0, 200),
-    ...(backupDeck.cards || []).slice(0, 40).map((card) => `${card.id}|${String(card.question || "").slice(0, 60)}`)
-  ].join("\u0000");
-  let hash = 5381;
-  for (let i = 0; i < source.length; i += 1) hash = ((hash * 33) ^ source.charCodeAt(i)) >>> 0;
-  return hash.toString(36);
-}
-
-// Stable local id for a restored deck so re-running a restore updates in place
-// instead of duplicating (mirrors the deterministic-id reconcile at
-// applyCloudDeckToLocal). Reuses an existing local entry if the deckId is known.
-function deterministicRestoreLocalId(backupDeck) {
-  const index = readLocalDeckIndex();
-  if (backupDeck.deckId) {
-    const existing = index.find((meta) => meta.deckId && String(meta.deckId) === String(backupDeck.deckId));
-    if (existing) return existing.id;
-    return `ld_restore_${String(backupDeck.deckId).replace(/[^A-Za-z0-9_-]/g, "")}`;
-  }
-  // Two decks in one archive can share a title AND carry no deck id (older
-  // exports), in which case a title-only key made the second silently overwrite
-  // the first — one of them just vanished from the restore. The fingerprint is
-  // what keeps them apart.
-  const slug = (slugifyFileName(backupDeck.title || "deck") || "deck").replace(/[^A-Za-z0-9_-]/g, "");
-  return `ld_restore_${slug || "deck"}_${backupDeckFingerprint(backupDeck)}`;
-}
-
-function backupDeckToSnapshot(backupDeck, localId) {
-  const now = new Date().toISOString();
-  const meta = normalizeBackupMeta(backupDeck.meta);
-  return {
-    app: "recall",
-    version: 1,
-    exportedAt: now,
-    deckTitle: backupDeck.title || "",
-    deckCategory: normalizeDeckCategory(backupDeck.category),
-    notes: backupDeck.notes || "",
-    sourceTitle: backupDeck.title || "",
-    importTitleHint: backupDeck.title || "",
-    deckId: backupDeck.deckId || null,
-    current: backupDeck.current || 0,
-    localDeckId: localId,
-    // Quick-note category definitions + source anchors, so restored notes can
-    // resolve their labels instead of all reading as Uncategorized.
-    ...(Object.keys(meta).length ? { meta } : {}),
-    cards: backupDeck.cards.map((card) => ({
-      id: card.id,
-      question: card.question,
-      answer: card.answer,
-      status: normalizeCardStatus(card.status),
-      category: card.category || null,
-      // Restored cards owe the cloud a push. Without `dirty`, the pull-side
-      // merge (mergeCloudCardsIntoSnapshot) reads a local-only clean card as
-      // "this reached the cloud once, so the cloud not having it IS a deletion"
-      // and drops it — deleting exactly the cards the restore just brought
-      // back, on the very next sync.
-      dirty: true,
-      updatedAt: now,
-      ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
-    }))
-  };
-}
-
-// Newest-wins union merge. Always: keep every local card, append backup-only
-// cards. Only when `backupNewer` is true does the backup overwrite an
-// id-matched card's content/status or replace the notes — otherwise the local
-// copy is kept. Local-only cards are never dropped in either direction.
-function mergeDeckSnapshots(localSnapshot, backupDeck, backupNewer) {
-  const local = localSnapshot || {};
-  const now = new Date().toISOString();
-  const cards = Array.isArray(local.cards) ? local.cards.slice() : [];
-  const indexById = new Map(cards.map((card, i) => [String(card.id), i]));
-  let added = 0;
-  let updated = 0;
-
-  backupDeck.cards.forEach((backupCard) => {
-    const key = String(backupCard.id);
-    if (indexById.has(key)) {
-      if (!backupNewer) return; // local is newer/tie -> keep the local card as-is
-      const i = indexById.get(key);
-      const current = cards[i];
-      const changed = syncTextChanged(current.question, backupCard.question)
-        || syncTextChanged(current.answer, backupCard.answer)
-        || normalizeCardStatus(current.status) !== normalizeCardStatus(backupCard.status)
-        || (current.category || null) !== (backupCard.category || null);
-      cards[i] = {
-        ...current,
-        question: backupCard.question,
-        answer: backupCard.answer,
-        status: normalizeCardStatus(backupCard.status),
-        // Quick-note subject label follows the same newest-wins rule as the text.
-        category: backupCard.category || null,
-        // Only a card the backup actually CHANGED owes the cloud a push; one the
-        // restore left byte-identical keeps whatever sync flags it already had.
-        ...(changed ? { dirty: true, updatedAt: now } : {}),
-        ...(backupCard.noteAnchor ? { noteAnchor: backupCard.noteAnchor } : {})
-      };
-      if (changed) updated += 1;
-    } else {
-      cards.push({
-        id: backupCard.id,
-        question: backupCard.question,
-        answer: backupCard.answer,
-        status: normalizeCardStatus(backupCard.status),
-        category: backupCard.category || null,
-        // See backupDeckToSnapshot: a clean local-only card is dropped by the
-        // next pull as "deleted in the cloud", which would undo the restore.
-        dirty: true,
-        updatedAt: now,
-        ...(backupCard.noteAnchor ? { noteAnchor: backupCard.noteAnchor } : {})
-      });
-      added += 1;
-    }
-  });
-
-  const snapshot = {
-    ...local,
-    app: "recall",
-    version: 1,
-    exportedAt: now,
-    deckTitle: local.deckTitle || backupDeck.title || "",
-    deckCategory: local.deckCategory || normalizeDeckCategory(backupDeck.category),
-    notes: backupNewer && syncTextChanged(local.notes || "", backupDeck.notes || "")
-      ? (backupDeck.notes || "")
-      : (local.notes || ""),
-    deckId: local.deckId || backupDeck.deckId || null,
-    // Additive union — a quick-note category the backup remembers and this
-    // device has lost comes back, and nothing local is dropped.
-    meta: mergeBackupMeta(local.meta, backupDeck.meta),
-    cards
-  };
-  return { snapshot, added, updated };
-}
-
-function upsertRestoredMeta(localId, snapshot, backupDeck) {
-  const index = readLocalDeckIndex();
-  const existing = index.find((meta) => meta.id === localId);
-  const now = new Date().toISOString();
-  const meta = {
-    id: localId,
-    title: snapshot.deckTitle || "Untitled deck",
-    category: snapshot.deckCategory || defaultDeckCategory,
-    cardCount: (snapshot.cards || []).length,
-    hasNotes: Boolean(String(snapshot.notes || "").trim()),
-    updatedAt: now,
-    createdAt: existing?.createdAt || now,
-    lastSyncedAt: existing ? existing.lastSyncedAt || null : null,
-    accessedAt: existing ? existing.accessedAt || null : null,
-    deckId: snapshot.deckId || backupDeck.deckId || null
-  };
-  writeLocalDeckIndex([meta, ...index.filter((entry) => entry.id !== localId)]);
-}
-
-// Confirmation preview — resolves true to apply, false to cancel. Nothing is
-// written until the returned promise resolves true.
-function showRestorePreview(report) {
-  return new Promise((resolve) => {
-    const modal = document.createElement("section");
-    modal.className = "category-choice-modal restore-preview-modal";
-    modal.setAttribute("aria-label", "Restore preview");
-
-    const total = report.totals;
-    const summaryBits = [];
-    if (total.newDecks) summaryBits.push(`${total.newDecks} new deck${total.newDecks === 1 ? "" : "s"}`);
-    if (total.cardsAdded) summaryBits.push(`${total.cardsAdded} card${total.cardsAdded === 1 ? "" : "s"} restored`);
-    if (total.cardsUpdated) summaryBits.push(`${total.cardsUpdated} updated`);
-    if (total.cardsKept) summaryBits.push(`${total.cardsKept} local kept`);
-    if (total.notesUpdated) summaryBits.push(`${total.notesUpdated} notes updated`);
-    if (total.unchanged) summaryBits.push(`${total.unchanged} unchanged`);
-    const willChange = total.newDecks || total.cardsAdded || total.cardsUpdated || total.notesUpdated;
-
-    // Images are the part of a restore that isn't visible in a card count, and
-    // the part people most expect to be missing — say plainly what happens to
-    // them: the archive's own copies are stored on this device, and the ones
-    // that came from someone else's storage get re-uploaded to yours.
-    const plan = report.assetPlan;
-    const imageBits = [];
-    if (plan?.keep.length) imageBits.push(`${plan.keep.length} already in your storage (saved for offline use)`);
-    if (plan?.adopt.length) imageBits.push(`${plan.adopt.length} copied from the archive onto this device, then uploaded to your own storage`);
-    const imageNote = imageBits.length ? `Images: ${imageBits.join(" · ")}.` : "";
-
-    const rowsHtml = report.decks.map((entry) => {
-      let badge = "MERGE";
-      let cls = "is-conflict";
-      let detail = "";
-      if (entry.status === "new") {
-        badge = "NEW";
-        cls = "is-new";
-        detail = `${entry.counts.added} card${entry.counts.added === 1 ? "" : "s"}`;
-      } else if (entry.status === "unchanged") {
-        badge = "=";
-        cls = "is-unchanged";
-        detail = "unchanged";
-      } else {
-        const c = entry.counts;
-        const bits = [];
-        if (c.added) bits.push(`+${c.added} restored`);
-        if (c.overwritten) bits.push(`~${c.overwritten} updated`);
-        if (c.heldLocal) bits.push(`${c.heldLocal} local newer (kept)`);
-        if (c.kept) bits.push(`${c.kept} local kept`);
-        if (c.notesUpdated) bits.push("notes updated");
-        if (c.notesHeldLocal) bits.push("notes differ (local newer, kept)");
-        if (c.metaRestored) bits.push("note categories restored");
-        detail = bits.join(" · ") || "changes";
-      }
-      return `<li class="restore-row ${cls}">`
-        + `<span class="restore-badge">${badge}</span>`
-        + `<span class="restore-name"><span class="restore-title"></span><span class="restore-folder"></span></span>`
-        + `<span class="restore-detail">${escapeHtml(detail)}</span>`
-        + `</li>`;
-    }).join("");
-
-    const shell = document.createElement("div");
-    shell.className = "category-choice-shell restore-preview-shell";
-    shell.innerHTML = `
-      <div class="category-choice-head">
-        <div>
-          <h2>Restore from backup</h2>
-          <p>Reviewed against your current decks. Nothing changes until you confirm.</p>
-        </div>
-        <button type="button" data-restore-cancel aria-label="Close">&#215;</button>
-      </div>
-      <ul class="restore-deck-list">${rowsHtml}</ul>
-      <p class="restore-summary">${escapeHtml(summaryBits.join(" · ") || "No changes to apply.")}</p>
-      ${imageNote ? `<p class="restore-summary">${escapeHtml(imageNote)}</p>` : ""}
-      <p class="restore-note">A full backup of your current decks is saved first, so this is reversible. Local-only decks and cards are never deleted.</p>
-      <div class="category-choice-actions">
-        <button type="button" data-restore-cancel>Cancel</button>
-        <button type="button" class="import-action-primary" data-restore-confirm ${willChange ? "" : "disabled"}>Merge &amp; Restore</button>
-      </div>
-    `;
-
-    // Titles set via textContent (never innerHTML) so deck names can't inject markup.
-    const titleSpans = shell.querySelectorAll(".restore-title");
-    const folderSpans = shell.querySelectorAll(".restore-folder");
-    report.decks.forEach((entry, i) => {
-      if (titleSpans[i]) titleSpans[i].textContent = entry.title || "Untitled deck";
-      // Where the deck will live. Worth showing: for an archive with no folder
-      // information of its own this is the folder the restore INFERRED, and the
-      // preview is the place to notice it before anything is written.
-      if (folderSpans[i]) {
-        const folder = normalizeDeckCategory(entry.localMeta?.category || entry.backupDeck?.category);
-        folderSpans[i].textContent = folder === defaultDeckCategory ? "" : folder.split(FOLDER_SEP).join(" / ");
-      }
-    });
-
-    const cleanup = (value) => {
-      modal.remove();
-      resolve(value);
-    };
-    shell.querySelectorAll("[data-restore-cancel]").forEach((button) => {
-      button.addEventListener("click", () => cleanup(false));
-    });
-    shell.querySelector("[data-restore-confirm]")?.addEventListener("click", () => cleanup(true));
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) cleanup(false);
-    });
-
-    modal.appendChild(shell);
-    document.body.appendChild(modal);
-    (shell.querySelector("[data-restore-confirm]:not([disabled])") || shell.querySelector("[data-restore-cancel]"))?.focus();
-  });
-}
-
-async function applyRestore(report, { autoBackup = true } = {}) {
-  if (autoBackup) {
-    try {
-      await exportLibraryBackupZip({
-        fileBaseName: `recall-backup-before-restore-${backupTimestamp()}`,
-        panelTitle: "Saving a safety backup first",
-        autoClosePanel: true
-      });
-    } catch (error) {
-      console.warn("Pre-restore safety backup failed (continuing)", error);
-    }
-  }
-
-  // Store the archive's images on this device first, so every deck written
-  // below already has its pictures behind it.
-  const assetResult = await commitBackupAssets(report.assetPlan, (done, total) => {
-    setStatus(`Restoring images ${done}/${total}…`);
-  });
-
-  let addedDecks = 0;
-  let mergedDecks = 0;
-  let cardsAdded = 0;
-  let cardsUpdated = 0;
-  const restoredDeckIds = [];
-
-  report.decks.forEach((entry) => {
-    try {
-      if (entry.status === "new") {
-        const localId = deterministicRestoreLocalId(entry.backupDeck);
-        const snapshot = backupDeckToSnapshot(entry.backupDeck, localId);
-        writeDeckSnapshot(localId, snapshot);
-        upsertRestoredMeta(localId, snapshot, entry.backupDeck);
-        if (snapshot.deckId) restoredDeckIds.push(String(snapshot.deckId));
-        addedDecks += 1;
-        cardsAdded += entry.backupDeck.cards.length;
-      } else if (entry.status === "conflict") {
-        const merged = mergeDeckSnapshots(entry.localSnapshot, entry.backupDeck, entry.backupNewer);
-        // A restore is an explicit "this should exist again" for cards too, not
-        // just decks — retire the tombstone of anything the backup brought back.
-        dropTombstonesForLiveCards(merged.snapshot);
-        writeDeckSnapshot(entry.localId, merged.snapshot);
-        upsertRestoredMeta(entry.localId, merged.snapshot, entry.backupDeck);
-        if (merged.snapshot.deckId) restoredDeckIds.push(String(merged.snapshot.deckId));
-        mergedDecks += 1;
-        cardsAdded += merged.added;
-        cardsUpdated += merged.updated;
-      }
-    } catch (error) {
-      console.warn("Failed to restore deck", entry.title, error);
-    }
-  });
-
-  // Restoring a deck is an explicit statement that it should exist again, so
-  // retire its delete tombstones. Without this, a deck that had been deleted
-  // came back only to be destroyed a sync or two later: the push pass skips a
-  // tombstoned deck, then the tombstone-adoption pass deletes the local copy
-  // outright. Queued (not written inline) so a restore performed offline still
-  // takes effect — reconcileAllDecks drains the queue before it reads the
-  // tombstone list.
-  queuePendingUntombstones(restoredDeckIds);
-  await flushPendingUntombstones();
-
-  // Adopted images render from the local outbox straight away; pushing them to
-  // this user's own storage now (rather than waiting for the next sync) is what
-  // makes them survive onto their other devices. Best-effort — offline or
-  // signed out, the outbox holds them and the next reconcile picks them up.
-  if (assetResult.adopted) {
-    try {
-      const uploaded = await flushPendingImageUploads();
-      if (uploaded) setStatus(`Uploaded ${uploaded} restored image${uploaded === 1 ? "" : "s"} to your storage…`);
-    } catch (error) {
-      console.warn("Restored images will upload on the next sync", error);
-    }
-  }
-
-  await renderMyDecksList();
-
-  const parts = [];
-  if (addedDecks) parts.push(`${addedDecks} deck${addedDecks === 1 ? "" : "s"} added`);
-  if (mergedDecks) parts.push(`${mergedDecks} merged`);
-  if (cardsAdded) parts.push(`${cardsAdded} card${cardsAdded === 1 ? "" : "s"} restored`);
-  if (cardsUpdated) parts.push(`${cardsUpdated} updated`);
-  const images = assetResult.kept + assetResult.adopted;
-  if (images) parts.push(`${images} image${images === 1 ? "" : "s"} restored`);
-  if (assetResult.failed) parts.push(`${assetResult.failed} image${assetResult.failed === 1 ? "" : "s"} could not be stored`);
-  setStatus(`Restore complete — ${parts.length ? parts.join(", ") : "no changes"}.`);
-  showToast("Restore complete", "success");
-}
-
-async function runRestoreFlow(file) {
-  // Unzipping a library-sized archive (images included) takes long enough that
-  // a silent wait reads as a dead click, same as the backup did. The panel goes
-  // away as soon as there's a preview to show.
-  const progress = showBackupProgress("Reading backup");
-  try {
-    setStatus("Reading backup…");
-    progress.update("Opening the archive…");
-    progress.setStat("size", formatBackupSize(file.size));
-    const { decks: backupDecks, assets } = await readBackupArchive(file);
-    progress.setStat("decks", backupDecks.length);
-    progress.setStat("cards", backupDecks.reduce((n, deck) => n + deck.cards.length, 0));
-    progress.setStat("images", assets.size);
-    if (progress.cancelled()) {
-      progress.close();
-      setStatus("Restore cancelled.");
-      return;
-    }
-    // Images are re-homed BEFORE the diff: a foreign backup's references get
-    // rewritten to local placeholders, and the preview then compares (and the
-    // apply then writes) exactly the text the decks will end up with.
-    progress.update("Checking this backup's images…");
-    const assetPlan = await planBackupAssetAdoption(backupDecks, assets);
-    applyBackupAssetRewrites(backupDecks, assetPlan.rewrites);
-    progress.update("Comparing against your decks…");
-    const report = await planRestore(backupDecks);
-    report.assetPlan = assetPlan;
-    progress.close();
-    const confirmed = await showRestorePreview(report);
-    if (!confirmed) {
-      setStatus("Restore cancelled.");
-      return;
-    }
-    setStatus("Restoring…");
-    await applyRestore(report);
-  } catch (error) {
-    console.error("Restore failed", error);
-    setStatus(`Restore failed: ${error && error.message ? error.message : "unreadable backup"}`, "error");
-    showToast("Restore failed", "error");
-  } finally {
-    progress.close();
-  }
-}
-
-function createDeckExportControl(sel, deckTitle, { compact = false } = {}) {
-  const wrap = document.createElement("div");
-  wrap.className = "web-deck-export-wrap";
-
-  const button = document.createElement("button");
-  button.className = compact ? "bulk-action-btn bulk-export icon-action" : "bulk-action-btn bulk-export";
-  button.type = "button";
-  button.setAttribute("aria-haspopup", "true");
-  button.setAttribute("aria-expanded", "false");
-  button.title = "Export deck";
-  button.setAttribute("aria-label", `Export ${deckTitle || "Untitled"}`);
-  button.innerHTML = mdIcon("download");
-  if (!compact) {
-    const label = document.createElement("span");
-    label.className = "md-btn-label";
-    label.textContent = "Export";
-    button.append(label);
-  }
-
-  const menu = document.createElement("div");
-  menu.className = "web-deck-export-menu";
-  menu.hidden = true;
-
-  [
-    ["pdf", "Cornell PDF"],
-    ["html", "Standalone HTML"],
-    ["doc", "Word (.docx)"],
-    ["markdown", "Markdown"],
-    ["json", "JSON"],
-    ["sql", "SQL"]
-  ].forEach(([format, label]) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.textContent = label;
-    item.addEventListener("click", (event) => {
-      event.stopPropagation();
-      menu.hidden = true;
-      button.setAttribute("aria-expanded", "false");
-      exportMyDeck(sel, format);
-    });
-    menu.appendChild(item);
-  });
-
-  button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const shouldOpen = menu.hidden;
-    closeWebDeckExportMenus(menu);
-    menu.hidden = !shouldOpen;
-    button.setAttribute("aria-expanded", String(shouldOpen));
-  });
-
-  wrap.append(button, menu);
-  return wrap;
-}
 
 // ── Bulk actions ───────────────────────────────────────────────────────────
 
-async function loadSelectedMyDecks(selections) {
-  if (!selections.length) return;
-
-  if (selections.length === 1) {
-    const sel = selections[0];
-    // Persist the outgoing deck before its in-memory state is replaced (see
-    // the per-row Load handler for why the flush matters).
-    flushWorkingDeck();
-    if (sel.localId) {
-      if (await loadDeckFromLibrary(sel.localId)) {
-        touchLocalDeckAccess(sel.localId);
-        closeMyDecksPanel();
-        showToast("Deck loaded");
-      }
-    } else if (sel.deckId) {
-      closeMyDecksPanel();
-      loadWebDeck(sel.deckId);
-    }
-    return;
-  }
-
-  setStatus(`Loading ${selections.length} decks...`);
-  try {
-    const payloads = [];
-    for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    flushWorkingDeck();
-
-    const combinedCards = [];
-    const combinedStatusById = {};
-    const usedIds = new Set();
-    const titles = [];
-    let combinedCategory = "";
-    payloads.forEach((payload) => {
-      titles.push(payload.deck.title || "Untitled");
-      if (!combinedCategory) combinedCategory = normalizeDeckCategory(payload.deck.category);
-      payload.cards.forEach((card) => {
-        // Older decks may carry deterministic ids that collide across decks —
-        // remint on collision so statuses/navigation stay per-card.
-        let id = String(card.id);
-        while (usedIds.has(id)) id = `${id}-${Math.random().toString(36).slice(2, 6)}`;
-        usedIds.add(id);
-        combinedCards.push({ id, question: card.question, answer: card.answer });
-        const status = normalizeCardStatus(card.status);
-        if (status) combinedStatusById[id] = status;
-      });
-    });
-
-    state.deckId = null;
-    // Fresh combined deck — detach from any previously-loaded library entry so
-    // its first autosave creates a NEW deck instead of overwriting that one.
-    state.localDeckId = null;
-    state.masterCards = combinedCards;
-    resetStudyDeck(state.masterCards);
-    state.statusById = combinedStatusById;
-    state.current = 0;
-    state.deckTitle = `Combined: ${titles.join(", ")}`.slice(0, 80);
-    state.deckCategory = combinedCategory || defaultDeckCategory;
-    state.sourceTitle = state.deckTitle;
-    state.importTitleHint = state.deckTitle;
-    state.notes = "";
-    setViewMode("cards");
-
-    syncResults();
-    closeAllCardsPanel();
-    closeMyDecksPanel();
-    showCard();
-    setStatus(`Loaded ${selections.length} decks.`);
-    showToast(`Loaded ${selections.length} decks · ${combinedCards.length} cards`);
-  } catch (error) {
-    console.error("Failed to load selected decks", error);
-    setStatus("Failed to load selected decks.", "error");
-    showToast("Couldn't load selected decks", "error");
-  }
-}
-
-async function categorizeSelectedMyDecks(selections) {
-  if (!selections.length) return;
-  const category = await chooseDeckCategory();
-  if (category === null) return;
-
-  setStatus(`Updating category for ${selections.length} deck${selections.length === 1 ? "" : "s"}...`);
-  let failed = 0;
-  for (const sel of selections) {
-    try {
-      await setMyDeckCategory(sel, category);
-    } catch (error) {
-      failed += 1;
-      console.error("Failed to update deck category", sel, error);
-    }
-  }
-  renderMyDecksList();
-  if (failed) {
-    setStatus(`Category updated, but ${failed} deck${failed === 1 ? "" : "s"} failed.`, "error");
-    showToast(`Couldn't update ${failed} deck${failed === 1 ? "" : "s"}`, "error");
-  } else {
-    setStatus("Deck categories updated.");
-    showToast(`Set category "${normalizeDeckCategory(category)}" on ${selections.length} deck${selections.length === 1 ? "" : "s"}`);
-  }
-}
-
-// `folders` are the checked folder paths (see selectedMyFolders). Their decks
-// are already flattened into `selections`; the paths are needed on top of that
-// so the folder itself goes away instead of lingering as an empty "0 decks"
-// shell. An empty folder is a valid delete on its own, hence no deck guard.
-function deleteSelectedMyDecks(selections, folders = []) {
-  if (!selections.length && !folders.length) return;
-
-  const deckPart = `${selections.length} ${selections.length === 1 ? "deck" : "decks"}`;
-  const folderPart = `${folders.length} ${folders.length === 1 ? "folder" : "folders"}`;
-  const what = folders.length
-    ? (selections.length ? `${folderPart} and ${deckPart}` : folderPart)
-    : deckPart;
-
-  showConfirmModal(
-    `Delete ${what} from this device and the cloud? This cannot be undone.`,
-    async () => {
-      setStatus(`Deleting ${what}...`);
-      // Snapshot which decks are being removed BEFORE deleting, so a folder is
-      // only forgotten when the delete empties it. Under an active search a
-      // folder keeps decks the filter hid, and those still imply the folder.
-      const deletedKeys = new Set(selections.map(myDeckSelKey));
-      const emptiedByThisDelete = folders.filter((path) =>
-        decksUnderFolder(path).every((entry) => deletedKeys.has(myDeckSelKey(entry.sel)))
-      );
-
-      let cloudFailures = 0;
-      for (const sel of selections) {
-        const { cloudError } = await deleteDeckEverywhere({ localId: sel.localId, deckId: sel.deckId });
-        if (cloudError) cloudFailures += 1;
-      }
-      emptiedByThisDelete.forEach(forgetFolderTree);
-
-      renderMyDecksList();
-      if (cloudFailures) {
-        showToast("Deleted here — cloud delete will retry on next sync", "info");
-      } else {
-        showToast(`Deleted ${what} everywhere`, "info");
-      }
-      setStatus(`Deleted ${what}.`);
-    },
-    { confirmLabel: "Delete All", danger: true }
-  );
-}
 
 // ── Rows ───────────────────────────────────────────────────────────────────
 
-// Shared deck helpers used by both the table rows and the grid tiles, so the two
-// presentations stay in lock-step. `kind` is "local" | "cloud".
-function deckSelOf(deck, kind) {
-  return kind === "cloud"
-    ? { localId: null, deckId: String(deck.id) }
-    : { localId: deck.id, deckId: deck.deckId || null };
-}
-
-function deckCardInfo(deck, kind) {
-  const count = kind === "cloud"
-    ? (Array.isArray(deck.cards) ? deck.cards[0]?.count : deck.cardCount)
-    : deck.cardCount;
-  const hasNotes = kind === "cloud" ? Boolean(String(deck.notes || "").trim()) : Boolean(deck.hasNotes);
-  return { count: count ?? null, hasNotes };
-}
-
-// Loads a deck into the study view. Persists the outgoing deck first — the
-// autosave debounce resets on every edit, so a pending timer can hold all
-// edits/marks since the last pause; without this flush, switching decks before it
-// fires would drop them.
-async function loadDeckEntry(deck, kind) {
-  flushWorkingDeck();
-  // Closed BEFORE the load in both branches. The cloud branch always did; the
-  // local one — the common path — closed it only after `await
-  // loadDeckFromLibrary`, which itself awaits an IndexedDB read and an
-  // autosave flush. So pressing Load on a local deck left the panel sitting
-  // there, unchanged, for the whole load: the press looked ignored right up
-  // until the deck appeared. Nothing about the load needs the panel open, and
-  // the failure path below re-reports through the same toast either way.
-  closeMyDecksPanel();
-  if (kind === "cloud") {
-    loadWebDeck(deck.id);
-  } else if (await loadDeckFromLibrary(deck.id)) {
-    touchLocalDeckAccess(deck.id);
-    showToast(`Loaded "${deck.title || "deck"}"`);
-  }
-}
-
-// ── My Decks icon set ───────────────────────────────────────────────────────
-// Hand-drawn on the same 24×24 grid, stroke weight and currentColor contract as
-// CLOZE_SVG_ATTRS, so one visual language runs through the whole app. Emoji were
-// used here before; they render at a different size, weight and colour on every
-// platform, and can't pick up the accent colour of a pressed segmented button.
-//
-// Defined once, in JS, even though most of these live on static buttons in
-// index.html — those carry `data-md-icon="<name>"` and are filled in by
-// hydrateMyDecksIcons() below, so a path is never written down twice.
-const MD_SVG_ATTRS =
-  'class="md-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
-
-const MD_DOT = (cx, cy, r = 1.6) => `<circle cx="${cx}" cy="${cy}" r="${r}" fill="currentColor" stroke="none"/>`;
-
-const MD_ICONS = {
-  // Views: every deck at once · one folder at a time · the whole hierarchy
-  grid: `<rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>`,
-  folder: `<path d="M3 6.6A1.6 1.6 0 0 1 4.6 5h4.1l2 2.6h8.7A1.6 1.6 0 0 1 21 9.2v8.8a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 18Z"/>`,
-  tree: `<rect x="2.5" y="1.8" width="10" height="4.2" rx="1.4"/><path d="M5.2 6v10.6a2 2 0 0 0 2 2h3.6M5.2 10.9h5.6"/><rect x="12" y="8.4" width="9.5" height="5" rx="1.4"/><rect x="12" y="16.2" width="9.5" height="5" rx="1.4"/>`,
-  // Display: side-by-side cards · a dotted list
-  tiles: `<rect x="2.6" y="4.4" width="8.4" height="15.2" rx="1.7"/><rect x="13" y="4.4" width="8.4" height="15.2" rx="1.7"/>`,
-  list: `<path d="M8.5 6h12.5M8.5 12h12.5M8.5 18h12.5"/>${MD_DOT(4, 6, 1.4)}${MD_DOT(4, 12, 1.4)}${MD_DOT(4, 18, 1.4)}`,
-  // Create
-  newDeck: `<rect x="3" y="4.5" width="18" height="15" rx="2.2"/><path d="M12 9.2v6M9 12.2h6"/>`,
-  newFolder: `<path d="M3 6.6A1.6 1.6 0 0 1 4.6 5h4.1l2 2.6h8.7A1.6 1.6 0 0 1 21 9.2v8.8a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 18Z"/><path d="M12 11.6v4.8M9.6 14h4.8"/>`,
-  // Import / export / sync
-  // A deck with an arrow landing inside it — "put a file in here". Deliberately
-  // not `upload`/`download`, which both read as moving data in or out of the
-  // app as a whole rather than into one folder.
-  importDeck: `<rect x="3" y="4.5" width="18" height="15" rx="2.2"/><path d="M12 7.4v6.4M9.2 11l2.8 2.8L14.8 11"/>`,
-  book: `<path d="M12 6.9a3 3 0 0 0-2.4-1.4H4v12h5.6A2.7 2.7 0 0 1 12 19Z"/><path d="M12 6.9a3 3 0 0 1 2.4-1.4H20v12h-5.6A2.7 2.7 0 0 0 12 19Z"/>`,
-  refresh: `<path d="M20.4 12a8.4 8.4 0 1 1-2.5-6"/><path d="M20.6 3.6v5.6H15"/>`,
-  download: `<path d="M12 3.4v11.2M7.6 10.4 12 14.8l4.4-4.4"/><path d="M4 16.6v2.8A1.6 1.6 0 0 0 5.6 21h12.8a1.6 1.6 0 0 0 1.6-1.6v-2.8"/>`,
-  upload: `<path d="M12 15.2V4M7.6 8.4 12 4l4.4 4.4"/><path d="M4 16.6v2.8A1.6 1.6 0 0 0 5.6 21h12.8a1.6 1.6 0 0 0 1.6-1.6v-2.8"/>`,
-  cloud: `<path d="M7.2 18.6a4.3 4.3 0 0 1-.5-8.5 5.7 5.7 0 0 1 10.9-1.3 3.95 3.95 0 0 1 .6 9.8Z"/>`,
-  // "All decks" — the root drop target that files a deck out of every folder
-  home: `<path d="M3.6 10.2 12 3.4l8.4 6.8v9a1.6 1.6 0 0 1-1.6 1.6H5.2a1.6 1.6 0 0 1-1.6-1.6Z"/><path d="M9.4 20.8v-6.4h5.2v6.4"/>`,
-  // Row + menu actions
-  more: `${MD_DOT(5, 12)}${MD_DOT(12, 12)}${MD_DOT(19, 12)}`,
-  play: `<path d="M7.6 4.9 19 12 7.6 19.1Z" fill="currentColor"/>`,
-  pencil: `<path d="M4 20.6 4.9 16 16.3 4.6a1.9 1.9 0 0 1 2.7 0l1.4 1.4a1.9 1.9 0 0 1 0 2.7L9 20.1Z"/><path d="m15 6.6 3.4 3.4"/>`,
-  trash: `<path d="M4 6.4h16M9.6 6.4V4.7a1.3 1.3 0 0 1 1.3-1.3h2.2a1.3 1.3 0 0 1 1.3 1.3v1.7"/><path d="m6.6 6.4.9 13.3a1.5 1.5 0 0 0 1.5 1.4h6a1.5 1.5 0 0 0 1.5-1.4l.9-13.3"/><path d="M10.2 10.4v6.8M13.8 10.4v6.8"/>`,
-  // Tree expand / collapse — arrows apart, arrows together
-  expand: `<path d="m8 9.6 4-4 4 4M8 14.4l4 4 4-4"/>`,
-  collapse: `<path d="m8 6.4 4 4 4-4M8 17.6l4-4 4 4"/>`,
-  // Chevron: the folder twisty. CSS rotates it 90° when the folder is open.
-  chevron: `<path d="m9.5 5.5 6.5 6.5-6.5 6.5"/>`,
-  close: `<path d="m6 6 12 12M18 6 6 18"/>`,
-  search: `<circle cx="10.6" cy="10.6" r="6.6"/><path d="m15.4 15.4 4.6 4.6"/>`,
-  sort: `<path d="M4 6.4h11M4 12h7.5M4 17.6h4"/><path d="M18.2 7.8v9.4M15.2 14.2l3 3 3-3"/>`,
-};
-
-// Renders one icon as an <svg> string. Unknown names render nothing rather than
-// throwing, so a typo degrades to a text-only button instead of a blank panel.
-function mdIcon(name) {
-  const body = MD_ICONS[name];
-  return body ? `<svg ${MD_SVG_ATTRS}>${body}</svg>` : "";
-}
-
-// Fills in every static `data-md-icon` button in index.html. The icon is
-// *prepended* so an existing text label stays put as the button's second child.
-function hydrateMyDecksIcons(root = document) {
-  root.querySelectorAll("[data-md-icon]").forEach((node) => {
-    if (node.querySelector("svg.md-ico")) return; // already hydrated
-    node.insertAdjacentHTML("afterbegin", mdIcon(node.dataset.mdIcon));
-  });
-}
 
 // Tile actions carry an icon plus a label the phone layout drops, so a tile
 // stays usable at the ~130px track width two columns leave on a 360px screen.
@@ -2811,7 +540,7 @@ function buildCloudDeckRow(deck, categories = webDeckCategories) {
   return tr;
 }
 
-async function fetchCloudDeckList() {
+export async function fetchCloudDeckList() {
   const { data, error } = await withTimeout(
     abortable((signal) => supabaseClient
       .from("decks")
@@ -3307,7 +1036,7 @@ function sortedFolderChildren(node) {
 
 // Every visible deck (local + cloud-only) whose category is `path` or nested
 // under it, as { sel, category } — the unit folder rename/move/delete act on.
-function decksUnderFolder(path) {
+export function decksUnderFolder(path) {
   const out = [];
   (myDecksRendered.local || []).forEach((deck) => {
     if (isCategoryUnder(deck.category, path)) {
@@ -15911,7 +13640,7 @@ function requestPersistentStorage() {
 // (ensureLocalQuickNotesSnapshot, readLocalSnapshotByDeckId) are deliberately
 // left unlocked.
 const deckWriteLocks = new Map();
-function withDeckLock(id, fn) {
+export function withDeckLock(id, fn) {
   const key = String(id || "");
   if (!key) return Promise.resolve(fn());
   const previous = deckWriteLocks.get(key) || Promise.resolve();
@@ -16543,7 +14272,7 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
 // recoloured, removed, reordered)? Compares through quickNoteCategoriesFromMeta
 // so both sides are normalised the same way and a meta bag that's a JSON string
 // on one side and a parsed object on the other doesn't read as a change.
-function quickNoteCategoriesDiffer(metaA, metaB) {
+export function quickNoteCategoriesDiffer(metaA, metaB) {
   const key = (meta) => JSON.stringify(quickNoteCategoriesFromMeta(meta).map((c) => [c.id, c.name, c.color]));
   return key(metaA) !== key(metaB);
 }
@@ -18009,7 +15738,7 @@ export async function syncLocalLibraryMetaForDeck(deckId, { title, category, now
 }
 
 // Newest first.
-function listLocalDecks() {
+export function listLocalDecks() {
   return readLocalDeckIndex()
     .slice()
     .sort((a, b) => String(b.accessedAt || b.updatedAt || "").localeCompare(String(a.accessedAt || a.updatedAt || "")));
@@ -18380,7 +16109,7 @@ function writeDeckTombstones(map) {
   localStorage.setItem(LOCAL_DECK_TOMBSTONES_KEY, JSON.stringify(map));
 }
 
-function isDeckTombstoned(deckId) {
+export function isDeckTombstoned(deckId) {
   return deckId ? Boolean(readDeckTombstones()[String(deckId)]) : false;
 }
 
@@ -18459,7 +16188,7 @@ function readPendingUntombstones() {
   }
 }
 
-function queuePendingUntombstones(deckIds) {
+export function queuePendingUntombstones(deckIds) {
   const ids = (deckIds || []).map(String).filter(Boolean);
   if (!ids.length) return;
   const merged = Array.from(new Set([...readPendingUntombstones(), ...ids]));
@@ -18473,7 +16202,7 @@ function clearPendingUntombstones() {
 // Returns how many ids were retired. Called from reconcileAllDecks BEFORE the
 // deck index and tombstone list are read, so the un-delete is already in place
 // by the time the passes that act on tombstones run.
-async function flushPendingUntombstones() {
+export async function flushPendingUntombstones() {
   const ids = readPendingUntombstones();
   if (!ids.length) return 0;
   if (!supabaseClient || !isSignedIn || !navigator.onLine) return 0;
@@ -18562,7 +16291,7 @@ function removeDecksMissingFromCloud(entries) {
 // the deck back. `localId` and/or `deckId` may be given; a missing `deckId` is
 // resolved from the local index. Returns { cloudError } (best-effort: the
 // tombstone still blocks re-pull if the cloud delete fails and is retried later).
-async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
+export async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
   if (localId && !deckId) {
     const meta = readLocalDeckIndex().find((m) => m.id === localId);
     deckId = meta?.deckId || null;
@@ -19138,7 +16867,7 @@ function cornellFlatDeckDividerHtml(entry) {
   `;
 }
 
-function buildCornellFlatDocument(title, cards, options = {}) {
+export function buildCornellFlatDocument(title, cards, options = {}) {
   const total = printableCardCount(cards);
   const sourceTitle = options.sourceTitle || state.deckTitle || state.sourceTitle || "Recall";
   const statusById = options.statusById || state.statusById;
@@ -19210,7 +16939,7 @@ function notesFlatSectionsHtml(sections) {
   `).join("");
 }
 
-function buildNotesFlatDocument(title, sections) {
+export function buildNotesFlatDocument(title, sections) {
   return `
     <header class="flat-export-cover">
       <h1>${escapeHtml(title)}</h1>
@@ -19244,7 +16973,7 @@ function buildNotesFlatPrintDocument(title, sections) {
 
 // Bulk counterpart of exportNotesPdf() — combines every selected deck's notes
 // into one print-preview document instead of the single active deck's own.
-async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
+export async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
   const sections = payloads.map((payload) => ({
     title: payload.deck.title || "Untitled",
     category: payload.deck.category,
@@ -19379,7 +17108,7 @@ function finishExportRoot() {
   el.printRoot.setAttribute("aria-hidden", "true");
 }
 
-async function prepareExportHtml(bodyHtml) {
+export async function prepareExportHtml(bodyHtml) {
   const failedImageCount = await prepareExportRoot(bodyHtml);
   const html = el.printRoot.innerHTML;
   finishExportRoot();
@@ -19391,7 +17120,7 @@ async function prepareExportHtml(bodyHtml) {
 // overrides from the style settings panel (fonts, sizes, widths, theme) —
 // opening the file reproduces the exact look of the app when it was
 // exported, not just its default theme.
-async function wrapStandaloneHtmlDocument(bodyHtml, title) {
+export async function wrapStandaloneHtmlDocument(bodyHtml, title) {
   const styleTag = await buildExportStyleTag();
   const liveStyle = document.documentElement.getAttribute("style") || "";
   return `<!doctype html>
@@ -20048,7 +17777,7 @@ ${bodyBlocksXml}
 // as the HTML/PDF exports), rasterizes its images/diagrams to PNG media
 // parts, walks the DOM into WordprocessingML, and zips it all into a real
 // .docx byte stream.
-async function buildDocxBytes(bodyHtml, title) {
+export async function buildDocxBytes(bodyHtml, title) {
   const failedImageCount = await prepareExportRoot(bodyHtml);
   const { media, elementMedia } = await collectDocxMedia(el.printRoot);
   const theme = docxThemeFromPrintVars();
@@ -20080,7 +17809,7 @@ async function buildDocxBytes(bodyHtml, title) {
 // every image (e.g. a private Drive share or a host that blocks hotlinking),
 // so the user knows some images were kept as plain links instead of quietly
 // discovering a broken image glyph after opening the file.
-function imageEmbedSuffix(failedImageCount) {
+export function imageEmbedSuffix(failedImageCount) {
   if (!failedImageCount) return "";
   return ` (${failedImageCount} image${failedImageCount === 1 ? "" : "s"} couldn't be embedded — kept as ${failedImageCount === 1 ? "a link" : "links"})`;
 }
@@ -20469,7 +18198,7 @@ function revealPrintRootClozes() {
   el.printRoot.querySelectorAll(".cloze").forEach((node) => node.classList.add("is-revealed"));
 }
 
-async function exportCardsPdf(sourceTitle, cards, options = {}) {
+export async function exportCardsPdf(sourceTitle, cards, options = {}) {
   const title = options.title || "All Cards";
   const statusById = options.statusById || {};
   const fileBaseName = slugifyFileName(options.fileBaseName || sourceTitle || "recall");
@@ -24234,7 +21963,7 @@ initBackGesture();
 bootApp();
 
 // Commit any in-progress edit into the session before the tab is hidden or closed.
-function flushWorkingDeck() {
+export function flushWorkingDeck() {
   try {
     commitEditIfActive();
   } catch (error) {
@@ -25470,7 +23199,7 @@ const MAX_STORAGE_SLUG_LENGTH = 48;
 // browser: lowercase a-z0-9 and dashes only. Storage accepts more than this,
 // but spaces and non-ASCII turn into percent-escapes in every URL and log line
 // that mentions the object, which defeats the point of naming the folder.
-function storageFolderSlug(value, fallback = "untitled") {
+export function storageFolderSlug(value, fallback = "untitled") {
   const slug = String(value || "")
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "") // strip accents left by NFKD
@@ -25503,7 +23232,7 @@ function deckImageFolder() {
 // IMAGE_BUCKET, or null if `url` isn't one of ours (a legacy ImgBB/Drive/
 // external link) — the signal deleteSupabaseImage uses to know whether
 // there's anything it can actually delete.
-function supabaseImagePathFromUrl(url) {
+export function supabaseImagePathFromUrl(url) {
   if (!supabaseClient || !url) return null;
   const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("");
   const prefix = data?.publicUrl || "";
@@ -25588,9 +23317,9 @@ async function uploadImageToSupabase(file, { folder = null, name = null } = {}) 
 // worker reads (same name as sw.js's IMAGE_CACHE_NAME — it is deliberately not
 // versioned, so this survives app updates). Best-effort: a failure here costs a
 // re-download later, nothing more.
-const OFFLINE_IMAGE_CACHE = "recall-images-v1";
+export const OFFLINE_IMAGE_CACHE = "recall-images-v1";
 
-async function cacheUploadedImageOffline(url, blob) {
+export async function cacheUploadedImageOffline(url, blob) {
   if (!url || !blob || typeof caches === "undefined") return;
   try {
     const cache = await caches.open(OFFLINE_IMAGE_CACHE);
@@ -25622,7 +23351,7 @@ const IMAGE_OUTBOX_DB = "recall-outbox";
 const IMAGE_OUTBOX_STORE = "images";
 // The scheme used in markdown for a not-yet-uploaded image. Deliberately not a
 // bare `blob:` URL: those die with the page, and the markdown outlives it.
-const LOCAL_IMAGE_SCHEME = "recall-img:";
+export const LOCAL_IMAGE_SCHEME = "recall-img:";
 
 function openImageOutbox() {
   return new Promise((resolve, reject) => {
@@ -25649,15 +23378,15 @@ function imageOutboxRequest(mode, run) {
   }));
 }
 
-const putOutboxImage = (entry) => imageOutboxRequest("readwrite", (store) => store.put(entry));
-const getOutboxImage = (token) => imageOutboxRequest("readonly", (store) => store.get(token));
+export const putOutboxImage = (entry) => imageOutboxRequest("readwrite", (store) => store.put(entry));
+export const getOutboxImage = (token) => imageOutboxRequest("readonly", (store) => store.get(token));
 const allOutboxImages = () => imageOutboxRequest("readonly", (store) => store.getAll());
 const deleteOutboxImage = (token) => imageOutboxRequest("readwrite", (store) => store.delete(token));
 
 // Whether an image is still parked under this token. Used by restore to leave a
 // `recall-img:` reference alone when this device's outbox already holds it,
 // instead of parking (and later uploading) a second copy of the same image.
-async function outboxHasToken(token) {
+export async function outboxHasToken(token) {
   try {
     return Boolean(await getOutboxImage(token));
   } catch {
@@ -25734,7 +23463,7 @@ async function hydrateLocalImages(root = document) {
 
 // Upload everything the outbox is holding and rewrite the markdown that points
 // at it. Called from reconcileAllDecks. Returns how many images landed.
-async function flushPendingImageUploads() {
+export async function flushPendingImageUploads() {
   if (!supabaseClient || !isSignedIn || !navigator.onLine) return 0;
   let queued;
   try {
@@ -29000,7 +26729,7 @@ function trimNoteAnchor(anchor) {
   return trimmed;
 }
 
-function noteAnchorsFromMeta(meta) {
+export function noteAnchorsFromMeta(meta) {
   let bag = meta;
   if (typeof bag === "string") {
     try { bag = JSON.parse(bag); } catch { bag = null; }
