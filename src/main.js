@@ -4,11 +4,17 @@
 // mixed-build failure this repo has already shipped twice. deploy.yml and
 // tools/module-symbols.mjs both refuse a relative import without it.
 
+import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, loadSupabaseConfig, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
+import { cardSideSeparatorPattern, deckStorageKey, delimitedCardBoundaryPattern, styleStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { ensureJsZip, ensureMermaid, ensureNomnoml, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { encodeAttribute, escapeHtml, escapeRegExp, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
+import { buildFolderTree, categoriesFromDecks, refreshKnownWebDeckCategories, setKnownWebDeckCategories } from "./library/categories.js?v=__BUILD__";
+import { FOLDER_SEP, addKnownFolder, folderSegments, forgetFolderTree, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./library/folders.js?v=__BUILD__";
+import { setMyDecksCwd, setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { codeLanguageAliases, codeLanguageOrGeneric, configurePrismLanguages, inferCodeLanguage } from "./render/code-language.js?v=__BUILD__";
+import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 
 // Run `fn` once the DOM is parsed AND this module has finished evaluating.
 //
@@ -38,8 +44,6 @@ function onDomReady(fn) {
   else queueMicrotask(fn);
 }
 
-const delimitedCardBoundaryPattern = /(?:^|\n)\s*::/;
-const cardSideSeparatorPattern = /^\s*---(?!-)/;
 
 const sampleMarkdown = `::
 ## What is the derivative of $x^2$?
@@ -81,7 +85,7 @@ const styleProfiles = ["desktop", "mobile"];
 const styleMobileQuery = "(max-width: 720px)";
 const styleMobileMedia = typeof window !== "undefined" && window.matchMedia ? window.matchMedia(styleMobileQuery) : null;
 
-const state = {
+export const state = {
   deckId: null,
   localDeckId: null,
   cards: [],
@@ -147,11 +151,6 @@ const state = {
   stylePanelTouchY: 0
 };
 
-const deckStorageKey = "swipe-notes-current-deck-v1";
-const styleStorageKey = "swipe-notes-style-settings-v1";
-const themeStorageKey = "swipe-notes-theme";
-const defaultDeckCategory = "Uncategorized";
-let webDeckCategories = [defaultDeckCategory];
 
 const themeCatalog = [
   {
@@ -521,386 +520,10 @@ const styleCssVariables = {
 };
 
 
-// Reads the session straight from local storage — no network — so a user who
-// has signed in at least once can keep using the app while offline.
-async function getCachedSession() {
-  if (!supabaseClient) return null;
-  try {
-    const { data } = await supabaseClient.auth.getSession();
-    return data?.session ?? null;
-  } catch (error) {
-    console.warn("Could not read cached session", error);
-    return null;
-  }
-}
+       // grid | folder | tree
+ // tiles | list
+         // Folder-view path
 
-// Proof that the requests this sync is about to make will actually carry THIS
-// user's identity — not just that the app once saw a session (`isSignedIn`).
-//
-// This is the single most destructive failure mode the app has. Every table is
-// RLS-scoped to `auth.uid()`, so a request that reaches Supabase without a valid
-// user token is not rejected: it succeeds and matches nothing. The reconcile
-// then reads an empty deck list as "every deck was deleted on another device",
-// deletes the local library, and (before the change alongside this one) wrote
-// tombstones for all of it — losing the user's decks on every device at once.
-//
-// `isSignedIn` cannot rule that out. It's a boolean set from a CACHED session,
-// so it stays true after a refresh token expires or a refresh fails. getSession()
-// is the check that matters: it refreshes an expired access token when it can,
-// and returns null when it can't — which is precisely "your next query would run
-// as nobody". No network cost in the common case (a live token is returned from
-// local storage as-is).
-async function verifiedCloudUserId() {
-  if (!supabaseClient) return null;
-  try {
-    const { data, error } = await supabaseClient.auth.getSession();
-    if (error) return null;
-    const session = data?.session;
-    // An access token that has already expired means the queries below would go
-    // out unauthenticated (or be rejected outright). getSession normally
-    // refreshes it for us; if it handed one back anyway, don't trust it.
-    if (!session?.user?.id || !session?.access_token) return null;
-    if (session.expires_at && Number(session.expires_at) * 1000 <= Date.now()) return null;
-    return String(session.user.id);
-  } catch (error) {
-    console.warn("Could not verify the signed-in user", error);
-    return null;
-  }
-}
-
-let explicitLogout = false;
-
-// Raw provider strings were shown verbatim, which is fine for "Invalid login
-// credentials" and useless for the rest. "Failed to fetch" reads like a bug in
-// the app; "Invalid API key" is a truthful message about a cause the user has no
-// reason to connect to the key they pasted on a different screen. The sync path
-// already translates the network case (see writeStyleToCloud) — this is the same
-// judgement applied where people actually hit it.
-function describeAuthError(error) {
-  const message = String(error?.message || error || "Something went wrong");
-  if (!navigator.onLine || /failed to fetch|networkerror|load failed|timed out/i.test(message)) {
-    return "Couldn't reach your Supabase project — check your connection, then try again.";
-  }
-  if (/invalid api key/i.test(message)) {
-    return "This project's anon key isn't valid. Use “Change Supabase project” below and paste it again.";
-  }
-  if (/email not confirmed/i.test(message)) {
-    return "This email hasn't been confirmed yet — check your inbox for the confirmation link.";
-  }
-  if (/email logins are disabled|signups not allowed|signup is disabled/i.test(message)) {
-    return "This Supabase project has email sign-in turned off. Enable it under Authentication → Providers → Email.";
-  }
-  return message;
-}
-
-// Every cloud data call is wrapped in withTimeout; these three never were, and
-// they are the ones a user is actively waiting on. On a network that accepts a
-// connection and then answers nothing — the exact failure the service worker's
-// whole design exists for — the promise never settles, so the submit button
-// stays disabled with no error and no spinner, and only a reload recovers.
-const AUTH_TIMEOUT_MS = 20000;
-
-async function handleLogin(email, password) {
-  const { data, error } = await withTimeout(
-    supabaseClient.auth.signInWithPassword({ email, password }),
-    AUTH_TIMEOUT_MS,
-    "sign in"
-  );
-  if (error) throw error;
-  return data.user;
-}
-
-// Returns what actually happened, because "no error" does not mean "signed in".
-// With Supabase's default "Confirm email" ON — a dashboard setting the app can't
-// see and that supabase_setup.sql only mentions in a closing comment — signUp
-// resolves with a user and a NULL session and no error at all. The old code
-// returned data.user, the caller treated that as success, no auth event fired,
-// and the button simply re-enabled: pressing "Create Account" did visibly
-// nothing. Supabase also deliberately obfuscates an already-registered address
-// by returning a fake user with an empty `identities` array, which looked
-// identical.
-async function handleSignup(email, password) {
-  const { data, error } = await withTimeout(
-    supabaseClient.auth.signUp({
-      email,
-      password,
-      // Without this, a confirmation mail points at the project's dashboard Site
-      // URL, which defaults to http://localhost:3000 — a dead page on the
-      // user's own machine. Sending them back where they signed up from is the
-      // only value that's right for every deployment.
-      options: { emailRedirectTo: location.href.split("#")[0] }
-    }),
-    AUTH_TIMEOUT_MS,
-    "create account"
-  );
-  if (error) throw error;
-
-  if (data?.session) return { outcome: "signed-in", user: data.user };
-  if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
-    return { outcome: "already-registered", user: data.user };
-  }
-  return { outcome: "confirm-email", user: data?.user || null };
-}
-
-async function handleLogout() {
-  explicitLogout = true;
-  // The signed-in uid outlives the session unless it is cleared here: it is
-  // what styleSettingsRowId() and getQuickNotesDeckId() resolve against, so
-  // leaving it behind pointed the next account's style row and quick-notes deck
-  // at the previous user.
-  try { localStorage.removeItem(LAST_USER_STORAGE_KEY); } catch (_) {}
-  // Unscoped and replayed on the next reconcile by whoever is signed in then —
-  // on a shared device that uploaded one user's style into another's row. The
-  // quick-note queues are deck-scoped and self-discard; this one never was.
-  try { localStorage.removeItem(PENDING_STYLE_KEY); } catch (_) {}
-  if (supabaseClient) {
-    try {
-      await withTimeout(supabaseClient.auth.signOut(), AUTH_TIMEOUT_MS, "sign out");
-    } catch (error) {
-      // Offline sign-out still clears the local session below via the listener.
-      console.warn("Sign-out network call failed (continuing locally)", error);
-    }
-  }
-}
-
-// One switch for the four mutually exclusive boot states, so a new one can't be
-// added by remembering to hide three things somewhere else and forgetting one.
-function showBootScreen(which) {
-  const overlays = {
-    setup: "setupOverlay",
-    login: "loginOverlay",
-    library: "offlineBootOverlay"
-  };
-  for (const [name, id] of Object.entries(overlays)) {
-    const node = document.getElementById(id);
-    if (node) node.hidden = name !== which;
-  }
-  const shell = document.querySelector(".app-shell");
-  if (shell) shell.hidden = which !== "app";
-  const logout = document.getElementById("logoutBtn");
-  if (logout) logout.hidden = which !== "app";
-}
-
-function showSetupScreen() { showBootScreen("setup"); }
-function showLoginScreen() { showBootScreen("login"); }
-function showAuthenticatedUI() { showBootScreen("app"); }
-function showLibraryFailedScreen() { showBootScreen("library"); }
-
-
-// A deck's `category` is a "/"-delimited folder path (e.g. "Math/Calculus"):
-// each segment is a folder, nesting is arbitrary depth. Legacy flat categories
-// (no "/") are simply single-segment paths, so this stays backward compatible.
-const FOLDER_SEP = "/";
-
-// Splits a category into its trimmed, non-empty folder segments.
-function folderSegments(value) {
-  return String(value || "")
-    .split(FOLDER_SEP)
-    .map((segment) => segment.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-}
-
-function normalizeDeckCategory(value) {
-  const segments = folderSegments(value);
-  return segments.length ? segments.join(FOLDER_SEP) : defaultDeckCategory;
-}
-
-// True when `path` is `ancestor` itself or nested beneath it.
-function isCategoryUnder(path, ancestor) {
-  const p = normalizeDeckCategory(path);
-  const a = normalizeDeckCategory(ancestor);
-  return p === a || p.startsWith(a + FOLDER_SEP);
-}
-
-// Rewrites a category whose path is `fromPath` (or nested under it) so its
-// `fromPath` prefix becomes `toPath`; returns it unchanged otherwise.
-function rewriteCategoryPrefix(category, fromPath, toPath) {
-  const current = normalizeDeckCategory(category);
-  const from = normalizeDeckCategory(fromPath);
-  if (current === from) return normalizeDeckCategory(toPath);
-  if (current.startsWith(from + FOLDER_SEP)) {
-    return normalizeDeckCategory(toPath + current.slice(from.length));
-  }
-  return current;
-}
-
-function categorySortValue(value) {
-  const category = normalizeDeckCategory(value);
-  return category === defaultDeckCategory ? "" : category.toLowerCase();
-}
-
-// ── Empty-folder registry ──────────────────────────────────────────────────
-// Folders only exist implicitly, as prefixes of deck categories — so a folder
-// with no decks yet has nowhere to live. This device-local list keeps such
-// freshly-created (or emptied) folders visible until a deck lands in them; once
-// one does, the folder persists everywhere via that deck's synced category.
-const KNOWN_FOLDERS_KEY = "flashcards_folders_v1";
-const COLLAPSED_FOLDERS_KEY = "flashcards_folder_collapsed_v1";
-
-function readKnownFolders() {
-  try {
-    const list = JSON.parse(localStorage.getItem(KNOWN_FOLDERS_KEY) || "[]");
-    return Array.isArray(list) ? list.map(normalizeDeckCategory).filter((p) => p !== defaultDeckCategory) : [];
-  } catch (error) {
-    console.warn("Could not read known folders", error);
-    return [];
-  }
-}
-
-function writeKnownFolders(list) {
-  const unique = Array.from(new Set((list || []).map(normalizeDeckCategory)))
-    .filter((p) => p !== defaultDeckCategory);
-  try { localStorage.setItem(KNOWN_FOLDERS_KEY, JSON.stringify(unique)); } catch (_) {}
-  return unique;
-}
-
-function addKnownFolder(path) {
-  const normalized = normalizeDeckCategory(path);
-  if (normalized === defaultDeckCategory) return;
-  writeKnownFolders([...readKnownFolders(), normalized]);
-}
-
-// Forgets a folder and every subfolder under it: drops them from the
-// known-folder registry and from the collapsed/expanded UI state, and lifts
-// the Folder-view cwd out if it pointed inside. A folder has no record of its
-// own — it is a deck-category prefix plus a registry entry — so once its decks
-// are gone this is the only thing still holding it on screen, which is exactly
-// how a deleted folder used to linger as an empty "0 decks" shell.
-function forgetFolderTree(path) {
-  const target = normalizeDeckCategory(path);
-  if (target === defaultDeckCategory) return;
-
-  writeKnownFolders(readKnownFolders().filter((p) => !isCategoryUnder(p, target)));
-
-  const prune = (set) => {
-    const next = new Set();
-    set.forEach((p) => { if (!isCategoryUnder(p, target)) next.add(p); });
-    return next;
-  };
-  writeCollapsedFolders(prune(readCollapsedFolders()));
-  writeExpandedFolders(prune(readExpandedFolders()));
-
-  if (state.myDecksCwd && isCategoryUnder(state.myDecksCwd, target)) {
-    setMyDecksCwd(folderSegments(target).slice(0, -1).join(FOLDER_SEP));
-  }
-}
-
-function readCollapsedFolders() {
-  try {
-    const list = JSON.parse(localStorage.getItem(COLLAPSED_FOLDERS_KEY) || "[]");
-    return new Set(Array.isArray(list) ? list.map(normalizeDeckCategory) : []);
-  } catch (error) {
-    console.warn("Could not read collapsed folders", error);
-    return new Set();
-  }
-}
-
-function writeCollapsedFolders(set) {
-  try { localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(Array.from(set))); } catch (_) {}
-}
-
-// Folders are FOLDED BY DEFAULT: a folder is expanded only if its path is in this
-// set (the inverse of a "collapsed" list), so a fresh library shows everything
-// folded. Supersedes COLLAPSED_FOLDERS_KEY for the tree view.
-const EXPANDED_FOLDERS_KEY = "flashcards_folder_expanded_v1";
-
-function readExpandedFolders() {
-  try {
-    const list = JSON.parse(localStorage.getItem(EXPANDED_FOLDERS_KEY) || "[]");
-    return new Set(Array.isArray(list) ? list.map(normalizeDeckCategory) : []);
-  } catch (error) {
-    console.warn("Could not read expanded folders", error);
-    return new Set();
-  }
-}
-
-function writeExpandedFolders(set) {
-  try { localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify(Array.from(set))); } catch (_) {}
-}
-
-function isFolderCollapsed(path) {
-  return !readExpandedFolders().has(normalizeDeckCategory(path));
-}
-
-// ── My Decks view + display preferences (persisted per device) ──────────────
-const MYDECKS_VIEW_KEY = "flashcards_mydecks_view_v1";       // grid | folder | tree
-const MYDECKS_DISPLAY_KEY = "flashcards_mydecks_display_v1"; // tiles | list
-const MYDECKS_CWD_KEY = "flashcards_mydecks_cwd_v1";         // Folder-view path
-const MYDECKS_SORT_KEY = "flashcards_mydecks_sort_v1";
-const MYDECKS_SORT_OPTIONS = ["recent", "title-asc", "title-desc", "updated-desc", "created-desc", "size-desc"];
-
-function setMyDecksView(view) {
-  if (!["grid", "folder", "tree"].includes(view)) return;
-  state.myDecksView = view;
-  try { localStorage.setItem(MYDECKS_VIEW_KEY, view); } catch (_) {}
-}
-
-function setMyDecksDisplay(display) {
-  if (!["tiles", "list"].includes(display)) return;
-  state.myDecksDisplay = display;
-  try { localStorage.setItem(MYDECKS_DISPLAY_KEY, display); } catch (_) {}
-}
-
-function setMyDecksSort(sort) {
-  if (!MYDECKS_SORT_OPTIONS.includes(sort)) return;
-  state.myDecksSort = sort;
-  try { localStorage.setItem(MYDECKS_SORT_KEY, sort); } catch (_) {}
-}
-
-function setMyDecksCwd(path) {
-  state.myDecksCwd = normalizeDeckCategory(path) === defaultDeckCategory ? "" : normalizeDeckCategory(path);
-  try { localStorage.setItem(MYDECKS_CWD_KEY, state.myDecksCwd); } catch (_) {}
-}
-
-// Builds a nested folder tree from a set of category paths and the decks that
-// carry them. Each node: { name, path, children:Map<name,node>, decks:[] }.
-// `deckEntries` is an array of { deck, kind } where kind is "local"|"cloud".
-function buildFolderTree(deckEntries = [], extraFolders = []) {
-  const root = { name: "", path: "", children: new Map(), decks: [] };
-  const ensure = (path) => {
-    const segments = folderSegments(path);
-    let node = root;
-    let acc = "";
-    segments.forEach((segment) => {
-      acc = acc ? acc + FOLDER_SEP + segment : segment;
-      if (!node.children.has(segment)) {
-        node.children.set(segment, { name: segment, path: acc, children: new Map(), decks: [] });
-      }
-      node = node.children.get(segment);
-    });
-    return node;
-  };
-  // Uncategorized decks live at the tree root so they aren't buried in a folder.
-  extraFolders.forEach((path) => ensure(path));
-  deckEntries.forEach((entry) => {
-    const category = normalizeDeckCategory(entry.deck.category);
-    const node = category === defaultDeckCategory ? root : ensure(category);
-    node.decks.push(entry);
-  });
-  return root;
-}
-
-function categoriesFromDecks(decks = [], extraCategories = []) {
-  return Array.from(new Set([
-    defaultDeckCategory,
-    ...extraCategories.map(normalizeDeckCategory),
-    ...(decks || []).map((deck) => normalizeDeckCategory(deck.category))
-  ])).sort((a, b) => categorySortValue(a).localeCompare(categorySortValue(b)));
-}
-
-function setKnownWebDeckCategories(categories = []) {
-  webDeckCategories = categoriesFromDecks([], categories);
-  return webDeckCategories;
-}
-
-async function refreshKnownWebDeckCategories() {
-  if (!supabaseClient) return webDeckCategories;
-  const { data, error } = await supabaseClient
-    .from("decks")
-    .select("category");
-  if (error) throw error;
-  return setKnownWebDeckCategories(categoriesFromDecks(data || []));
-}
 
 async function chooseDeckCategory(currentCategory = defaultDeckCategory) {
   try {
@@ -2295,7 +1918,7 @@ const CLOUD_ABORT = Symbol("cloudAbort");
 // catch) and the user sees "Couldn't reach the cloud" rather than a spinner
 // that never stops. The underlying request may still complete server-side; we
 // only wrap idempotent upserts/reads/uploads, so a late success is harmless.
-function withTimeout(promise, ms = CLOUD_TIMEOUT_MS, label = "") {
+export function withTimeout(promise, ms = CLOUD_TIMEOUT_MS, label = "") {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
@@ -4248,7 +3871,7 @@ async function loadStyleFromWeb(force = false) {
 // Without this, tapping "Sync style" offline was a flat "Failed to sync style.
 // Create the app_style_settings table first." — a wrong diagnosis and a dead
 // end, when the settings were sitting perfectly safe on the device.
-const PENDING_STYLE_KEY = "recall:pendingStyleSync";
+export const PENDING_STYLE_KEY = "recall:pendingStyleSync";
 
 function queuePendingStyleSync(settings) {
   try {
@@ -28350,7 +27973,7 @@ async function announceProjectHealthOnce() {
 // must not survive — the next reconcile would push them straight into the new
 // account's cloud (and the old tombstones would suppress the new user's own
 // decks). The previous user's data is safe in their own cloud account.
-const LAST_USER_STORAGE_KEY = "flashcards_last_user_id";
+export const LAST_USER_STORAGE_KEY = "flashcards_last_user_id";
 
 async function ensureLocalLibraryOwner(userId) {
   if (!userId) return;
@@ -28463,7 +28086,7 @@ function setupAuthListener() {
       // guard below, so one sign-out attempt made while offline left it true for
       // the life of the page — and the next failed refresh, which should have
       // been forgiven, then threw the user out of their offline decks.
-      explicitLogout = false;
+      setExplicitLogout(false);
       // Only drop to the login screen for a real sign-out. A failed token
       // refresh while offline also emits SIGNED_OUT — ignore it so the user
       // isn't locked out of their offline decks. recoverSessionIfPossible()
