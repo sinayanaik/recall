@@ -9,7 +9,8 @@
 import { closeStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { chromeFocusPinned, closeAllCardsPanel, closeAllDeckTileMenus, closeAppInfoModal, closeClozePanel, closeDiagramModal, closeHelpModal, closeMainMenu, closeMyDecksMoreMenu, closeNotesToc, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, closeStoragePanel, commitNotesEditIfActive, isMainMenuOpen, isNotesEditing, isNotesTocOpen, setFocusMode } from "../main.js?v=__BUILD__";
+import { closeAllDeckTileMenus } from "../library/folder-tree.js?v=__BUILD__";
+import { chromeFocusPinned, closeAllCardsPanel, closeAppInfoModal, closeClozePanel, closeDiagramModal, closeHelpModal, closeMainMenu, closeMyDecksMoreMenu, closeNotesToc, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, closeStoragePanel, commitNotesEditIfActive, isMainMenuOpen, isNotesEditing, isNotesTocOpen, setFocusMode } from "../main.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { showToast } from "./feedback.js?v=__BUILD__";
 import { goNavBack } from "./nav-history.js?v=__BUILD__";

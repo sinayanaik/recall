@@ -5,9 +5,10 @@
 // the deck looking un-synced and retriable, rather than current with cards
 // missing.
 
+import { isMissingColumnError, isMissingNotesColumnError } from "../cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
-import { emptySyncStats, isMissingColumnError, isMissingNotesColumnError, normalizeCardStatus } from "../main.js?v=__BUILD__";
+import { emptySyncStats, normalizeCardStatus } from "../main.js?v=__BUILD__";
 import { syncTextChanged } from "./diff.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 

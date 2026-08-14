@@ -3,7 +3,8 @@
 // Matching is by id first and content second: a card edited on two devices has
 // to be recognised as ONE card, or a sync turns every edit into a duplicate.
 
-import { normalizeCardStatus, normalizeMarkdown } from "../main.js?v=__BUILD__";
+import { normalizeMarkdown } from "../import/parse-cards.js?v=__BUILD__";
+import { normalizeCardStatus } from "../main.js?v=__BUILD__";
 
 export function normalizeSyncText(value) {
   return normalizeMarkdown(String(value || ""))

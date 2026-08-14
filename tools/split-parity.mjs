@@ -63,7 +63,10 @@ const ACCEPTED = {
   goToNavLocation: "qnReturnState = … -> setQnReturnState(…)",
   restoreQnReturnState: "qnReturnState = null -> setQnReturnState(null)",
   openQuickNotesBoard: "qnReturnState = null -> setQnReturnState(null)",
-  followNoteLink: "qnReturnState = { … } -> setQnReturnState({ … })"
+  followNoteLink: "qnReturnState = { … } -> setQnReturnState({ … })",
+  paintMyDecks:
+    "myDecksRendered = { … } -> setMyDecksRendered({ … }); the binding lives in " +
+    "library/folder-tree.js, which reads it, and imports are read-only."
 };
 
 // Baseline symbols that are intentionally gone, and why. A rename lands here

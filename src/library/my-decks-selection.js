@@ -6,8 +6,10 @@ import { applyWebDeckCategory, fetchWebDeckPayload, normalizeWebDeckPayload, upd
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { categoriesFromDecks, setKnownWebDeckCategories, webDeckCategories } from "./categories.js?v=__BUILD__";
+import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
-import { decksUnderFolder, readDeckSnapshot, readLocalDeckIndex, renameDeckInLibrary, renderMyDecksList, state, updateMeta, withDeckLock, writeDeckSnapshot, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
+import { readDeckSnapshot, readLocalDeckIndex, renameDeckInLibrary, state, updateMeta, withDeckLock, writeDeckSnapshot, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
 import { setStatus, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 export function formatLocalDeckSavedDate(iso) {
