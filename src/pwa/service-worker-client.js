@@ -103,10 +103,40 @@ export function showUpdateBanner() {
     // promote it when the page still has a controller, so without this the
     // button would appear to do nothing on the first press.
     const waiting = serviceWorkerRegistration?.waiting;
-    if (waiting) {
-      try { waiting.postMessage({ type: "skip-waiting" }); } catch (_) { /* fall through */ }
+    if (!waiting) {
+      location.reload();
+      return;
     }
-    location.reload();
+
+    // Reload once the new worker CONTROLS the page, not the instant it has been
+    // asked to. skipWaiting is a request, not a transition: it still has to
+    // finish activating and claim this client. Reloading immediately raced that
+    // — the old worker was still in charge, so it answered the navigation with
+    // its own release, and the page came back on the version the user had just
+    // pressed a button to leave. The controllerchange handler further down then
+    // declined to reload again (it refuses twice inside a minute, which is what
+    // stops a reload loop), so the update sat there until the user navigated
+    // again of their own accord.
+    //
+    // Measured before this change, driving a real install/update cycle: 1 to 3
+    // extra navigations were needed, and it never landed on the first press.
+    // It was always a race — the pre-split build lost it too — but a release
+    // whose install is 130 module requests instead of one loses it far more
+    // often, because the waiting worker takes that much longer to activate.
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      // Tell the controllerchange handler this reload was ours, so it does not
+      // count as the user's own and suppress the next one.
+      try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) {}
+      location.reload();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", go, { once: true });
+    try { waiting.postMessage({ type: "skip-waiting" }); } catch (_) { go(); return; }
+    // If the message is lost or the worker never claims, reload anyway rather
+    // than leaving a pressed button doing nothing at all.
+    setTimeout(go, 4000);
   });
 
   const dismiss = document.createElement("button");

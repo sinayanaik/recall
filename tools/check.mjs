@@ -20,6 +20,9 @@
 //   port-sync       do the extension's copies still match?
 //   boot-check      does it actually run?
 //   behaviour       does it still produce the same answers?
+//   sync            does the merge behave identically AND still refuse to lose
+//                   data? (parity plus invariants — passing one is not passing
+//                   the other)
 //   release-check   (--full) does a release reach an existing install, and
 //                   does it work offline?
 
@@ -43,6 +46,7 @@ const checks = [
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "main"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
+    ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];

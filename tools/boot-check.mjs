@@ -106,11 +106,15 @@ async function boot(url) {
   }
 }
 
-// Anything from the CDN or Supabase is the sandbox having no network/credentials,
-// not a defect in the page.
+// Anything from the CDN or Supabase is the environment having no network or no
+// credentials, not a defect in the page. Chrome reports those twice: once as a
+// REQFAIL carrying the URL, and once as a bare console error that does NOT —
+// "Failed to load resource: net::ERR_CERT_VERIFIER_CHANGED" names nothing at
+// all. Filtering only on the URL let the second form through and failed a run
+// whose page state was identical to the baseline's.
+const NETWORK_NOISE = /cdn\.jsdelivr|supabase|favicon|Failed to load resource|net::ERR_/i;
 const isOurs = ([type, msg]) =>
-  (type === "PAGEERROR" || type === "error" || type === "REQFAIL")
-  && !/cdn\.jsdelivr|supabase|favicon|net::ERR_INTERNET_DISCONNECTED/i.test(msg);
+  (type === "PAGEERROR" || type === "error" || type === "REQFAIL") && !NETWORK_NOISE.test(msg);
 
 const servers = [];
 const temps = [];

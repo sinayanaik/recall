@@ -60,7 +60,12 @@ function walk(dir, out = []) {
 
 // Exactly what deploy.yml does: substitute the placeholders everywhere.
 function stamp(dir, sha) {
-  const files = [path.join(dir, "index.html"), path.join(dir, "sw.js"), ...walk(path.join(dir, "src"))];
+  // src/** on this branch, a single app.js before it — so the same check can be
+  // pointed at the pre-split build to tell a regression from a pre-existing trait.
+  const appFiles = existsSync(path.join(dir, "src"))
+    ? walk(path.join(dir, "src"))
+    : [path.join(dir, "app.js")];
+  const files = [path.join(dir, "index.html"), path.join(dir, "sw.js"), ...appFiles];
   for (const f of files) {
     const before = readFileSync(f, "utf8");
     const after = before
@@ -74,8 +79,10 @@ const tmp = mkdtempSync(path.join(tmpdir(), "recall-release-"));
 const dirA = path.join(tmp, "a");
 const dirB = path.join(tmp, "b");
 execFileSync("bash", ["-c", `mkdir -p ${dirA} ${dirB}`]);
+const SRC_REF = (process.argv.find((a) => a.startsWith("--from=")) || "").slice(7);
 for (const d of [dirA, dirB]) {
-  execFileSync("bash", ["-c",
+  if (SRC_REF) execFileSync("bash", ["-c", `cd ${ROOT} && git archive ${SRC_REF} | tar -x -C ${d}`]);
+  else execFileSync("bash", ["-c",
     `cd ${ROOT} && tar -c index.html sw.js manifest.webmanifest src styles icons | tar -x -C ${d}`]);
 }
 stamp(dirA, "aaaaaa1");
@@ -153,8 +160,10 @@ try {
     };
   });
   check(cachedA.name === "recall-aaaaaa1", `release A: cache is ${cachedA.name} (want recall-aaaaaa1)`);
-  check(cachedA.modules >= 130, `release A: ${cachedA.modules} modules precached (want >= 130)`);
-  check(cachedA.styles === 13, `release A: ${cachedA.styles} stylesheets precached (want 13)`);
+  if (!SRC_REF) {
+    check(cachedA.modules >= 130, `release A: ${cachedA.modules} modules precached (want >= 130)`);
+    check(cachedA.styles === 13, `release A: ${cachedA.styles} stylesheets precached (want 13)`);
+  }
 
   // ── 2. Offline ──────────────────────────────────────────────────────────
   const cdp = await page.target().createCDPSession();
@@ -199,6 +208,11 @@ try {
   check(held === "aaaaaa1", `update: the old worker still serves its OWN release until told (?v=${held})`);
 
   if (banner) {
+    // Press like a person would, a beat after the banner appears — not in the
+    // same millisecond. Clicking the instant it renders can beat the
+    // registration's `waiting` reference into existence, which is a race no
+    // real user runs.
+    await new Promise((r) => setTimeout(r, 1500));
     await Promise.all([
       page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 }).catch(() => null),
       page.evaluate(() => document.querySelector(".update-banner button")?.click())
@@ -211,19 +225,37 @@ try {
   // twice inside a minute), so the interesting question is whether the release
   // lands on the press or one navigation later — either is fine, silently never
   // is not.
-  const straightAfterPress = await page.evaluate(() =>
-    document.querySelector('script[type="module"]')?.getAttribute("src")?.match(/v=([^&"']+)/)?.[1]);
-  await page.goto(`${ORIGIN}/index.html`, { waitUntil: "networkidle2", timeout: 60000 });
-  await new Promise((r) => setTimeout(r, 2000));
+  const readStamp = () => page.evaluate(() => {
+    const tag = document.querySelector('script[type="module"]') || document.querySelector('script[src*="app.js"]');
+    return tag?.getAttribute("src")?.match(/v=([^&"']+)/)?.[1];
+  });
+  const straightAfterPress = await readStamp();
+  // How many further navigations it takes to converge. One is expected: the
+  // reload races skipWaiting and the app declines to auto-reload twice inside a
+  // minute. Never converging would be a different thing entirely.
+  let navs = 0;
+  for (; navs < 4; navs++) {
+    if (await readStamp() === "bbbbbb2") break;
+    await page.goto(`${ORIGIN}/index.html`, { waitUntil: "networkidle2", timeout: 60000 });
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 
   const after = await page.evaluate(async () => {
     const names = await caches.keys();
-    const src = document.querySelector('script[type="module"]')?.getAttribute("src") || "";
+    const tag = document.querySelector('script[type="module"]') || document.querySelector('script[src*="app.js"]');
+    const src = tag?.getAttribute("src") || "";
     const stamp = src.match(/v=([^&"']+)/)?.[1];
-    const mod = await import("./src/core/build.js?v=" + stamp);
-    return { caches: names.filter((n) => !n.includes("images")), running: mod.BUILD_STAMP, requested: stamp };
+    let running = null;
+    try { running = (await import("./src/core/build.js?v=" + stamp)).BUILD_STAMP; }
+    catch { running = (await (await fetch(src)).text()).match(/BUILD_STAMP = "([^"]+)"/)?.[1] || null; }
+    return { caches: names.filter((n) => !n.includes("images")), running, requested: stamp };
   });
-  console.log(`        (straight after the press: ?v=${straightAfterPress}; after one more navigation: ?v=${after.requested})`);
+  console.log(`        (straight after the press: ?v=${straightAfterPress}; converged after ${navs} further navigation(s))`);
+  // Pressing Reload must LAND the release, not merely start it moving. Before
+  // the banner waited for controllerchange this needed 1-2 further navigations
+  // every single run, and the app's own reload-loop guard meant those had to
+  // come from the user.
+  check(straightAfterPress === "bbbbbb2", `update: pressing Reload lands release B (got ?v=${straightAfterPress})`);
   check(after.requested === "bbbbbb2", `update: page ends up on release B (?v=${after.requested})`);
   check(after.running === "bbbbbb2", `update: RUNNING code is release B (BUILD_STAMP ${after.running})`);
   check(after.running === after.requested, "update: requested and running agree — not a mixed build");

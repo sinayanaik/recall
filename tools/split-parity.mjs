@@ -45,7 +45,12 @@ const ACCEPTED = {
   fetchUrl:
     "calls fetchImportText, the URL-import half of the split fetchText — see REMOVED",
   fetchLiveRelease:
-    "calls fetchReleaseText, the update-check half of the split fetchText — see REMOVED"
+    "calls fetchReleaseText, the update-check half of the split fetchText — see REMOVED",
+  showUpdateBanner:
+    "the Reload button now waits for controllerchange before reloading, instead " +
+    "of reloading the instant it has asked the waiting worker to skip waiting. " +
+    "Fixes a pre-existing race (measured: 1-2 extra navigations every run) that " +
+    "130 module requests make considerably worse. See tools/release-check.mjs."
 };
 
 // Functions whose ONLY change is that a write to a module-level binding now goes
