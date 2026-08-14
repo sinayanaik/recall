@@ -861,6 +861,36 @@ Two deliberate omissions, both explained in comments in the file: there is **no 
 | **`supabase_setup.sql`** | **The only SQL file. Run it once; re-run it to upgrade** |
 | `tools/` | Development checks — not served, not needed to run the app |
 
+### Checking a change
+
+```sh
+node tools/check.mjs           # everything except the release cycle (~1 min)
+node tools/check.mjs --quick   # static checks only, no browser (~5s)
+node tools/check.mjs --full    # ...and drive a real install / offline / update
+```
+
+Eleven checks, each answering a different question, and none of them subsuming
+another:
+
+| Check | Question |
+|---|---|
+| `split-parity` | Is the code still the same code as before the split? |
+| `scanner-audit` | Does the identifier scanner the next check relies on actually *see* every reference? |
+| `module-symbols` | Does every cross-module reference resolve — imported, exported, not assigned, no dead-zone read across a cycle? |
+| `css-parity` | Do `styles/*.css` still reassemble to the original stylesheet byte for byte? |
+| `port-sync` | Do the browser extension's copied functions still match the app's? |
+| `boot-check` | Does the app boot, and reach the same state as the pre-split build? |
+| `behaviour` | Do rendering, math, clozes, card parsing and the text transforms still produce identical output? (150 probes) |
+| `sync` | Do the merge primitives behave identically, **and** still refuse to lose data? (43 scenarios + 15 invariants + 11 storage round-trips) |
+| `reconcile` | Does the whole two-way sync behave identically end to end against a stand-in backend? |
+| `ui-smoke` | Does the app still *work*? 18 real actions driven through the DOM on both builds and compared step by step |
+| `release-check` | Does a release actually reach an existing install, and does it work offline? |
+
+The browser-driven ones block `cdn.jsdelivr.net` and inject the library copies
+under `recall-clipper/vendor/`, so they do not depend on the network being up,
+and they take a free port from the OS rather than a fixed one. Both were
+sources of failures that had nothing to do with the code.
+
 Serve every one of them; `sw.js` and the icons are what make the app installable and usable offline.
 
 ### How `src/` is laid out
