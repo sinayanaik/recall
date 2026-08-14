@@ -1,0 +1,35 @@
+{
+  "markdown": [
+    "# Heading\n\nSome **bold** and *italic* and `code`.\n",
+    "Inline math $x^2 + y^2 = z^2$ and display:\n\n$$\\frac{d}{dx}x^2 = 2x$$\n",
+    "A cloze: {{the answer}} and another {{one}}.\n",
+    "| a | b |\n|---|---|\n| 1 | 2 |\n| longer cell | x |\n",
+    "```python\ndef f(x):\n    return x * 2\n```\n",
+    "```mermaid\nflowchart LR\n  A --> B\n```\n",
+    "A [[Linked Note|abc123]] reference and a [link](https://example.com).\n",
+    "![img](https://example.com/a.png)\n\n<img src=\"https://example.com/b.png\" width=\"200\">\n",
+    "Escaped math \\$not math\\$ and \\\\[bracket\\\\] forms.\n",
+    "> quote\n> more\n\n- list\n- items\n  - nested\n",
+    "Text with a citation[^1] and footnote.\n\n[^1]: The note.\n",
+    "$$\n\\begin{aligned} a &= b \\\\ c &= d \\end{aligned}\n$$\n",
+    "Mixed $a$ then `$b$` then $c$.\n",
+    "<mark data-color=\"yellow\">highlighted</mark> text\n"
+  ],
+  "decks": [
+    "::\n## Q one?\n\n---\n\nA one.\n::\n\n::\n## Q two?\n\n---\n\nA two.\n::\n",
+    "## What is X?\n\nX is a thing.\n\n## What is Y?\n\nY is another.\n",
+    "> **Q:** Question here\n> **A:** Answer here\n",
+    "<details><summary>Prompt</summary>\n\nHidden answer\n</details>\n",
+    "# Notes Title\n\nJust prose, no cards at all. Several paragraphs.\n\nMore prose.\n"
+  ],
+  "transforms": [
+    ["toggleWrap", "hello world", 0, 5, "**"],
+    ["toggleUnderline", "abc def", 0, 3],
+    ["toggleStrikethrough", "abc def", 4, 7],
+    ["toggleCode", "let x = 1", 0, 3],
+    ["toggleCloze", "answer here", 0, 6],
+    ["toggleBulletPoints", "one\ntwo\nthree"],
+    ["clearFormatting", "**bold** and _it_ and `c`"],
+    ["clearStyling", "<span style=\"color:red\">x</span>"]
+  ]
+}

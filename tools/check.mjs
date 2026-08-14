@@ -18,6 +18,7 @@
 //   css-parity      do the stylesheet slices still reassemble to the original?
 //   port-sync       do the extension's copies still match?
 //   boot-check      does it actually run?
+//   behaviour       does it still produce the same answers?
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -31,7 +32,10 @@ const checks = [
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
-  ...(QUICK ? [] : [["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "main"], ROOT]]])
+  ...(QUICK ? [] : [
+    ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "main"], ROOT]],
+    ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]]
+  ])
 ];
 
 // port-sync has two PRE-EXISTING drifts, present since before the restructure
