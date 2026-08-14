@@ -2,6 +2,7 @@
 //
 //   node tools/check.mjs
 //   node tools/check.mjs --quick     # skip the browser (static checks only)
+//   node tools/check.mjs --full      # ...and drive a real install/update/offline cycle
 //
 // This exists because running the checks individually meant one of them could
 // be skipped, and one of them was: a `git checkout` during an unrelated
@@ -19,6 +20,8 @@
 //   port-sync       do the extension's copies still match?
 //   boot-check      does it actually run?
 //   behaviour       does it still produce the same answers?
+//   release-check   (--full) does a release reach an existing install, and
+//                   does it work offline?
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -26,6 +29,11 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const QUICK = process.argv.includes("--quick");
+// The release path drives two real service-worker installs and takes ~40s, so
+// it is opt-in. Run it before merging — it is the only check that exercises the
+// failure this repo has actually shipped: a release that never reaches an
+// existing install.
+const FULL = process.argv.includes("--full");
 
 const checks = [
   ["split-parity  ", ["node", ["tools/split-parity.mjs"], ROOT]],
@@ -34,7 +42,8 @@ const checks = [
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "main"], ROOT]],
-    ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]]
+    ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
+    ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];
 
