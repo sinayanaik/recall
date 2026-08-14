@@ -2,10 +2,11 @@
 // it steps back through the places you have been (decks, notes, the Quick Notes
 // board), the way the back key on a remote does.
 
+import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { closeQuickNotesBoard, loadDeckFromLibrary, openQuickNotesBoard, qnBoard, setQnReturnState, showCard, state } from "../main.js?v=__BUILD__";
+import { closeQuickNotesBoard, loadDeckFromLibrary, openQuickNotesBoard, qnBoard, setQnReturnState, state } from "../main.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { captureCurrentReadingAnchor, currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { setStatus } from "./feedback.js?v=__BUILD__";

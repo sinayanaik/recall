@@ -1,7 +1,8 @@
 // Switching between the cards view and the notes view.
 
+import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { refreshHighlightBackdrop, renderHighlightsPanel, showCard, state, viewModePaintToken } from "../main.js?v=__BUILD__";
+import { refreshHighlightBackdrop, renderHighlightsPanel, state, viewModePaintToken } from "../main.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { resetChromeAutoHide } from "./chrome.js?v=__BUILD__";

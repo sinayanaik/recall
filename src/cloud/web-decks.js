@@ -3,6 +3,7 @@
 
 import { closeAllCardsPanel } from "../cards/all-cards-edit.js?v=__BUILD__";
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
+import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./net.js?v=__BUILD__";
 import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
@@ -10,7 +11,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { setKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, refreshSyncIndicatorBaseline, revokeLocalImageUrls, saveDeckToLibrary, showCard, state, syncLocalLibraryMetaForDeck, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, refreshSyncIndicatorBaseline, revokeLocalImageUrls, saveDeckToLibrary, state, syncLocalLibraryMetaForDeck, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { resetChromeAutoHide } from "../ui/chrome.js?v=__BUILD__";

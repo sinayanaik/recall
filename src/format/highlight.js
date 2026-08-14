@@ -5,7 +5,8 @@
 // have to stay outside the mark or the markup breaks.
 
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
-import { renderFormatDefaults, scheduleDeckAutosave } from "../main.js?v=__BUILD__";
+import { renderFormatDefaults } from "./render-toolbar.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../main.js?v=__BUILD__";
 import { SELECTION_TARGETS, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 

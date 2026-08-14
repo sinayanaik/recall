@@ -2,8 +2,9 @@
 
 import { clearAllCardDropTargets, refreshAllCardsAround } from "./all-cards-edit.js?v=__BUILD__";
 import { setCardStatusBadge, updateMeta } from "./card-status.js?v=__BUILD__";
+import { showCard } from "./card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { afterPaint, cornellCardHtml, createToolbarHtml, enableSyntaxHighlighting, normalizeCardStatus, scheduleDeckAutosave, setDraggedAllCardId, showCard, state } from "../main.js?v=__BUILD__";
+import { afterPaint, cornellCardHtml, createToolbarHtml, enableSyntaxHighlighting, normalizeCardStatus, scheduleDeckAutosave, setDraggedAllCardId, state } from "../main.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";

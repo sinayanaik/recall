@@ -6,10 +6,11 @@
 // normalisation drops them rather than applying garbage.
 
 import { renderAllCards } from "../cards/all-cards.js?v=__BUILD__";
+import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { styleStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeRegExp } from "../core/text.js?v=__BUILD__";
-import { scheduleLiveQuestionFit, showCard, state } from "../main.js?v=__BUILD__";
+import { scheduleLiveQuestionFit, state } from "../main.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "../notes/caret.js?v=__BUILD__";
 import { isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
