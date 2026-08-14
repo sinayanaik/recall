@@ -99,8 +99,24 @@ const VENDORED = [
   path.join(ROOT, "recall-clipper/vendor/purify.min.js")
 ];
 
-function serve(dir, port) {
-  return spawn(process.execPath, [path.join(ROOT, "tools/static-server.mjs"), dir, String(port)], { stdio: "ignore" });
+// Start a server on a FREE port and resolve to its URL base. Fixed ports made
+// these checks quietly unreliable — a server left behind by an interrupted run
+// keeps the port, the new bind fails, and the stale one answers from a
+// different tree.
+function serveOn(dir) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [path.join(ROOT, "tools/static-server.mjs"), dir, "0"],
+      { stdio: ["ignore", "pipe", "ignore"] });
+    let buf = "";
+    proc.stdout.on("data", (chunk) => {
+      buf += chunk;
+      const nl = buf.indexOf("\n");
+      if (nl === -1) return;
+      resolve({ proc, base: `http://127.0.0.1:${buf.slice(0, nl).trim()}` });
+    });
+    proc.on("error", reject);
+    setTimeout(() => reject(new Error("static server did not start")), 10000);
+  });
 }
 
 async function collect(url, buildApi) {
@@ -155,21 +171,21 @@ try {
   const html = readFileSync(path.join(baseDir, "index.html"), "utf8")
     .replace('<script src="app.js?v=__BUILD__"></script>', '<script src="probe.js"></script>');
   writeFileSync(path.join(baseDir, "index.html"), html);
-  servers.push(serve(baseDir, 8094));
+  const __s_baseDir = await serveOn(baseDir); servers.push(__s_baseDir.proc);
 
-  servers.push(serve(ROOT, 8093));
+  const __s_ROOT = await serveOn(ROOT); servers.push(__s_ROOT.proc);
   await new Promise((r) => setTimeout(r, 1500));
 
-  const before = await collect("http://127.0.0.1:8094/index.html", "async () => window.__recallApi");
+  const before = await collect(`${__s_baseDir.base}/index.html`, "async () => window.__recallApi");
   const after = await collect(
-    "http://127.0.0.1:8093/index.html",
+    `${__s_ROOT.base}/index.html`,
     // Import the modules that now own each name and reassemble the same surface.
     `async () => {
       const mods = await Promise.all([
-        import("/src/render/preprocess.js"), import("/src/render/math.js"),
-        import("/src/render/cloze-markup.js"), import("/src/render/inline.js"),
-        import("/src/import/parse-cards.js"), import("/src/render/code-language.js"),
-        import("/src/editor/text-transforms.js")
+        import("/src/render/preprocess.js?v=__BUILD__"), import("/src/render/math.js?v=__BUILD__"),
+        import("/src/render/cloze-markup.js?v=__BUILD__"), import("/src/render/inline.js?v=__BUILD__"),
+        import("/src/import/parse-cards.js?v=__BUILD__"), import("/src/render/code-language.js?v=__BUILD__"),
+        import("/src/editor/text-transforms.js?v=__BUILD__")
       ]);
       const api = {};
       for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];

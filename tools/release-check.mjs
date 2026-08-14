@@ -33,8 +33,12 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "recall.test";
-const PORT = 8092;
-const ORIGIN = `http://${HOST}:${PORT}`;
+// Chosen by the OS, not hard-coded: the origin is baked into Chrome's
+// secure-origin flag and into the service worker's scope, so it has to be known
+// before the browser launches — but a fixed port collides with anything left
+// behind by an interrupted run, and the stale server then answers.
+let PORT = 0;
+let ORIGIN = "";
 
 const CHROME = [
   "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
@@ -106,9 +110,20 @@ http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream" });
     res.end(body);
   } catch { res.writeHead(404); res.end("no"); }
-}).listen(${PORT}, "127.0.0.1");
+}).listen(0, "127.0.0.1", function () { process.stdout.write(String(this.address().port) + "\\n"); });
 `);
-const server = spawn(process.execPath, [serverJs, dirA], { stdio: "ignore" });
+const server = spawn(process.execPath, [serverJs, dirA], { stdio: ["ignore", "pipe", "ignore"] });
+PORT = await new Promise((resolve, reject) => {
+  let buf = "";
+  server.stdout.on("data", (c) => {
+    buf += c;
+    const nl = buf.indexOf("\n");
+    if (nl !== -1) resolve(Number(buf.slice(0, nl).trim()));
+  });
+  server.on("error", reject);
+  setTimeout(() => reject(new Error("release server did not start")), 10000);
+});
+ORIGIN = `http://${HOST}:${PORT}`;
 
 const say = (ok, msg) => { console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); return ok; };
 let failures = 0;

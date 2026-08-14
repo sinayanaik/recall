@@ -6,7 +6,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.argv[2];
-const port = Number(process.argv[3]);
+// Port 0 means "any free port", and the chosen one is printed on stdout for the
+// caller to read. Fixed ports made the browser-driven checks quietly
+// unreliable: a server left behind by an interrupted run keeps the port, the
+// next run's bind fails, and the STALE server answers — serving a different
+// tree, so the comparison is against something nobody intended.
+const port = Number(process.argv[3] || 0);
 const TYPES = {
   ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
   ".css": "text/css", ".json": "application/json", ".png": "image/png",
@@ -28,4 +33,6 @@ http.createServer(async (req, res) => {
     res.writeHead(404);
     res.end("not found");
   }
-}).listen(port, "127.0.0.1");
+}).listen(port, "127.0.0.1", function () {
+  process.stdout.write(String(this.address().port) + "\n");
+});

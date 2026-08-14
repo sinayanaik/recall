@@ -445,8 +445,24 @@ const STORAGE = String.raw`async (api) => {
   return results;
 }`;
 
-function serve(dir, port) {
-  return spawn(process.execPath, [path.join(ROOT, "tools/static-server.mjs"), dir, String(port)], { stdio: "ignore" });
+// Start a server on a FREE port and resolve to its URL base. Fixed ports made
+// these checks quietly unreliable — a server left behind by an interrupted run
+// keeps the port, the new bind fails, and the stale one answers from a
+// different tree.
+function serveOn(dir) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [path.join(ROOT, "tools/static-server.mjs"), dir, "0"],
+      { stdio: ["ignore", "pipe", "ignore"] });
+    let buf = "";
+    proc.stdout.on("data", (chunk) => {
+      buf += chunk;
+      const nl = buf.indexOf("\n");
+      if (nl === -1) return;
+      resolve({ proc, base: `http://127.0.0.1:${buf.slice(0, nl).trim()}` });
+    });
+    proc.on("error", reject);
+    setTimeout(() => reject(new Error("static server did not start")), 10000);
+  });
 }
 
 async function withPage(url, fn) {
@@ -477,25 +493,31 @@ try {
   writeFileSync(path.join(baseDir, "index.html"),
     readFileSync(path.join(baseDir, "index.html"), "utf8")
       .replace('<script src="app.js?v=__BUILD__"></script>', '<script src="probe.js"></script>'));
-  servers.push(serve(baseDir, 8091));
-  servers.push(serve(ROOT, 8090));
+  const __s_baseDir = await serveOn(baseDir); servers.push(__s_baseDir.proc);
+  const __s_ROOT = await serveOn(ROOT); servers.push(__s_ROOT.proc);
   await new Promise((r) => setTimeout(r, 1500));
 
+  // NOTE: ?v=__BUILD__ on every import, matching what the app's own modules ask
+  // for. A module's URL is its identity — importing "/src/cloud/supabase-client.js"
+  // and "/src/cloud/supabase-client.js?v=__BUILD__" yields TWO instances with
+  // separate state. Without the stamp this harness set the client on one
+  // instance while reconcile read from another, saw none, and returned
+  // immediately: every scenario "passed" by doing nothing at all.
   const MODULE_API = `async () => {
     const mods = await Promise.all([
-      import("/src/sync/diff.js"), import("/src/sync/cards.js"), import("/src/sync/stats.js"),
-      import("/src/cloud/web-decks.js"), import("/src/backup/restore.js"),
-      import("/src/backup/backup.js"), import("/src/storage/keys.js"),
-      import("/src/export/markdown.js")
+      import("/src/sync/diff.js?v=__BUILD__"), import("/src/sync/cards.js?v=__BUILD__"), import("/src/sync/stats.js?v=__BUILD__"),
+      import("/src/cloud/web-decks.js?v=__BUILD__"), import("/src/backup/restore.js?v=__BUILD__"),
+      import("/src/backup/backup.js?v=__BUILD__"), import("/src/storage/keys.js?v=__BUILD__"),
+      import("/src/export/markdown.js?v=__BUILD__")
     ]);
     const api = {};
     for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
     return api;
   }`;
 
-  const before = await withPage("http://127.0.0.1:8091/index.html", (p) =>
+  const before = await withPage(`${__s_baseDir.base}/index.html`, (p) =>
     p.evaluate(async (src, api) => (0, eval)("(" + src + ")")(await (0, eval)(api)()), SCENARIOS, "async () => window.__recallApi"));
-  const after = await withPage("http://127.0.0.1:8090/index.html", (p) =>
+  const after = await withPage(`${__s_ROOT.base}/index.html`, (p) =>
     p.evaluate(async (src, api) => (0, eval)("(" + src + ")")(await (0, eval)(api)()), SCENARIOS, MODULE_API));
 
   const keys = [...new Set([...Object.keys(before.value), ...Object.keys(after.value)])].sort();
@@ -512,7 +534,7 @@ try {
   console.log(`  ${keys.length} sync scenarios · ${diffs.length} differ · ${threw.length} threw`);
   failures += diffs.length + threw.length;
 
-  const inv = await withPage("http://127.0.0.1:8090/index.html", (p) =>
+  const inv = await withPage(`${__s_ROOT.base}/index.html`, (p) =>
     p.evaluate(async (src, api) => (0, eval)("(" + src + ")")(await (0, eval)(api)()), INVARIANTS, MODULE_API));
   console.log("\n── data-loss invariants (current code) ──");
   for (const [ok, name, detail] of inv.value) {
@@ -524,14 +546,14 @@ try {
 
   const STORAGE_API = `async () => {
     const mods = await Promise.all([
-      import("/src/storage/deck-store.js"), import("/src/library/tombstones.js"),
-      import("/src/storage/keys.js")
+      import("/src/storage/deck-store.js?v=__BUILD__"), import("/src/library/tombstones.js?v=__BUILD__"),
+      import("/src/storage/keys.js?v=__BUILD__")
     ]);
     const api = {};
     for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
     return api;
   }`;
-  const store = await withPage("http://127.0.0.1:8090/index.html", (p) =>
+  const store = await withPage(`${__s_ROOT.base}/index.html`, (p) =>
     p.evaluate(async (src, api) => (0, eval)("(" + src + ")")(await (0, eval)(api)()), STORAGE, STORAGE_API));
   console.log("\n── storage round-trip (real IndexedDB / localStorage) ──");
   for (const [ok, name, detail] of store.value) {
