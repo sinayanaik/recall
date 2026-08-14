@@ -21,6 +21,9 @@ export function createNewDeck({ title = "New Deck", category = defaultDeckCatego
     // Detach from any previously-loaded library entry so this new deck saves as
     // its own entry rather than overwriting the deck that was just open.
     state.localDeckId = null;
+    // …and out of folder-as-one-deck mode, or this deck's first save would be
+    // routed into the member decks of the folder that was being read.
+    state.folderDeck = null;
     state.deckTitle = name;
     state.deckCategory = cat;
     state.notes = "";

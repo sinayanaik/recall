@@ -8,6 +8,7 @@ import { activeDeckLoadToken, nextDeckLoadToken } from "../cloud/web-decks.js?v=
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { setPendingImportFolder } from "../import/staging.js?v=__BUILD__";
+import { isFolderDeckActive, saveFolderDeck, saveFolderDeckSync } from "./folder-deck.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
 import { invalidateNoteLinkIndex } from "../notes/note-links.js?v=__BUILD__";
 import { repairEscapedMathMarkdown } from "../render/math.js?v=__BUILD__";
@@ -414,6 +415,12 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
 }
 
 export async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false } = {}) {
+  // A whole folder is open as one document. There is no such deck, and
+  // resolveSaveTarget below would happily invent one — mint a local id, write
+  // every deck in the folder glued together into IndexedDB, and let the next
+  // reconcile push that to every device. The edits belong to the decks the
+  // document was built from; saveFolderDeck puts them there.
+  if (!id && isFolderDeckActive()) return saveFolderDeck({ silent });
   if (!state.masterCards.length && !state.notes.trim()) {
     if (!silent) setStatus("Add some cards or notes before saving a deck.", "error");
     return null;
@@ -478,6 +485,10 @@ export function cachedDeckSnapshotSync(id) {
 // the async path for anything already cache-resident — that's the entire
 // reason finishSaveDeckToLibrary is shared rather than duplicated.
 export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
+  // Same gate as the async twin, and the load-bearing one of the two:
+  // flushWorkingDeck() calls THIS from pagehide/visibilitychange, so without it
+  // simply switching tabs while reading a folder would mint the merged deck.
+  if (!id && isFolderDeckActive()) return saveFolderDeckSync();
   if (!state.masterCards.length && !state.notes.trim()) return null;
   if (deckStoreUnreadable) return null;
   const { snapshot, localId } = resolveSaveTarget(id);

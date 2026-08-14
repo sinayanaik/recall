@@ -1,0 +1,125 @@
+/* Uniform heading sizes, for the two places markdown renders outside .rendered
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * styles/06-rendered.css:5 already sizes every heading in `.rendered` at 1em
+ * and carries the hierarchy entirely in the underline ladder below each one
+ * (full-width 2px accent for h1, down to a 14% dotted hairline at 0.7 opacity
+ * for h6), plus weight 800 -> 600 and colour --accent-strong -> --text ->
+ * --muted. Every surface that renders a note through that class therefore
+ * already had one heading size.
+ *
+ * Two surfaces do NOT carry the class and so fell through to the UA defaults,
+ * where h1 is 2em and h2 is 1.5em:
+ *
+ *   • .qn-card-body      — src/quick-notes/board.js:214, the Quick Notes board
+ *   • .epub-preview-chapter-body — src/import/epub.js:896, the import preview
+ *
+ * Both are the SAME markdown, put through the same markdownToSafeHtml, so a
+ * heading that is one size in the notes view and a different size on the board
+ * reads as a rendering fault. The ladder is restated here for the two of them
+ * rather than the class being added to those elements, because both containers
+ * have their own layout (a compact card, an accordion body) that `.rendered`
+ * would also bring padding and block spacing to.
+ *
+ * The margins are deliberately tighter than .rendered's 1.2em: these two are
+ * previews measured in a handful of lines, not documents.
+ */
+
+.qn-card-body :is(h1, h2, h3, h4, h5, h6),
+.epub-preview-chapter-body :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  line-height: 1.4;
+  margin: 0.9em 0 0.35em;
+}
+
+/* No left rule on any heading here either — see the block comment at
+   styles/06-rendered.css:18, where an h2's left accent border made it read as a
+   blockquote once the size difference was gone. */
+.qn-card-body :is(h1, h2, h3, h4, h5, h6)::after,
+.epub-preview-chapter-body :is(h1, h2, h3, h4, h5, h6)::after {
+  content: "";
+  display: block;
+  margin-top: 0.28em;
+  border-top-color: currentColor;
+}
+
+.qn-card-body h1,
+.epub-preview-chapter-body h1 {
+  font-weight: 800;
+  color: var(--accent-strong);
+  margin-top: 1.05em;
+}
+.qn-card-body h1::after,
+.epub-preview-chapter-body h1::after {
+  width: 100%;
+  border-top: 2px solid var(--accent);
+}
+
+.qn-card-body h2,
+.epub-preview-chapter-body h2 {
+  font-weight: 800;
+  color: var(--text);
+  margin-top: 1em;
+}
+.qn-card-body h2::after,
+.epub-preview-chapter-body h2::after {
+  width: min(60%, 20em);
+  border-top: 2px solid var(--accent);
+}
+
+.qn-card-body h3,
+.epub-preview-chapter-body h3 {
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+.qn-card-body h3::after,
+.epub-preview-chapter-body h3::after {
+  width: min(40%, 14em);
+  border-top: 1.5px solid;
+}
+
+.qn-card-body h4,
+.epub-preview-chapter-body h4 {
+  font-weight: 700;
+  color: var(--text);
+}
+.qn-card-body h4::after,
+.epub-preview-chapter-body h4::after {
+  width: min(28%, 10em);
+  border-top: 1.5px dashed;
+}
+
+.qn-card-body h5,
+.epub-preview-chapter-body h5 {
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 0.8em;
+}
+.qn-card-body h5::after,
+.epub-preview-chapter-body h5::after {
+  width: min(20%, 7em);
+  border-top: 1.5px dotted;
+}
+
+.qn-card-body h6,
+.epub-preview-chapter-body h6 {
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 0.8em;
+}
+.qn-card-body h6::after,
+.epub-preview-chapter-body h6::after {
+  width: min(14%, 5em);
+  border-top: 1.5px dotted;
+  opacity: 0.7;
+}
+
+/* .qn-card-body already zeroes the first/last child's block margins
+   (styles/13-quick-notes.css:287) — restate it for the heading margins added
+   above, which are set on the element and would otherwise reintroduce a gap
+   above a card that opens on a heading. */
+.qn-card-body > :is(h1, h2, h3, h4, h5, h6):first-child,
+.epub-preview-chapter-body > :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}

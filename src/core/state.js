@@ -24,6 +24,13 @@ export const state = {
   // (quick_notes categories, a synced reading position, …) survive autosave.
   meta: {},
   previewCard: null,
+  // Set only while a whole FOLDER is open as one document (see
+  // src/library/folder-deck.js): { path, members: [...], cardOwner: {...} }.
+  // Non-null is what tells saveDeckToLibrary/saveDeckToLibrarySync that this is
+  // not a deck of its own and must be written back to the decks it came from —
+  // without which the first autosave would mint a brand-new library entry for
+  // the merged blob and sync it to every device.
+  folderDeck: null,
   deckTitle: "",
   deckCategory: "Uncategorized",
   notes: "",

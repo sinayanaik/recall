@@ -1,0 +1,286 @@
+/* The phone reading surface: one toolbar row, a quieter appbar, a header that folds
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ * Loaded after the slices, so it settles ties against them without having to
+ * out-specify them.
+ *
+ * The problem, measured on a 390x844 phone with a deck open in Notes view: four
+ * chrome bars stacked above the first line of text —
+ *
+ *   1. .appbar          ☰ ‹ title / ARTICLES / 0-0 / Known 0 Review 0 / Synced 6h / 5m
+ *   2. .view-mode-toggle              CARDS | NOTES | HIGHLIGHTS
+ *   3. .notes-head      ☰ · three cloze icons · + · pin · edit pill · focus
+ *   4. #notesRenderToolbar            B I U S </> A- A-
+ *
+ * Bars 3 and 4 are the SAME element: styles/10-editor.css:881 promotes the
+ * render toolbar onto a full-width row of its own below 560px, because nine
+ * controls plus the strip did not fit on one row and the overflow did not
+ * scroll out of reach — it vanished, .quiz-panel being overflow:hidden here.
+ *
+ * Three changes, in the order they matter:
+ *
+ *   a. src/notes/notes-head-overflow.js moves six low-frequency buttons into a
+ *      popover, so the header fits on one row again and bar 4 goes away.
+ *   b. The appbar's second row drops the two card counters while you are
+ *      reading, where they mean nothing, and the sync pill drops its countdown.
+ *   c. body.chrome-collapsed now folds the notes header away with the appbar
+ *      and the view toggle, so scrolling down gives the note the whole screen.
+ */
+
+/* ── (c) The notes header joins the fold ──────────────────────────────────
+   Deliberately OUTSIDE the mobile block, exactly like the .appbar rules it
+   mirrors at styles/12-notes.css:1210: the scroll-driven half of the collapse
+   is phone-gated in JS, but the pinned half (focus mode) works at every width.
+
+   --notes-head-h is measured and published by src/notes/notes-head-fold.js.
+   The 200px fallback only applies before the first measurement and is
+   deliberately generous — a max-height that is too large merely fails to clip.
+
+   No `transform` here, for the same reason .appbar has none: #notesTocDrawer is
+   positioned inside this subtree, and a non-`none` transform on an ancestor
+   makes that ancestor the containing block for it. */
+.notes-mode .notes-head {
+  max-height: var(--notes-head-h, 200px);
+}
+
+body.chrome-ready .notes-mode .notes-head {
+  transition:
+    max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.16s linear,
+    margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    border-width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* The :not(:has(…)) guard matches the appbar's: the ☰ drawer is a fixed
+   descendant of .appbar, and opacity:0 on a folded ancestor would fade it to
+   invisible even though it isn't clipped. Nothing in .notes-head escapes it the
+   same way, but keeping the two conditions identical means the two bars can
+   never disagree about whether the chrome is folded. */
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-head {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The header is the .notes-stage's first row and the gap below it belongs to
+   the fold too — untransitioned it vanishes on frame 1, which is a 7px jolt at
+   the start of every collapse. */
+body.chrome-ready .notes-mode .notes-stage {
+  transition: gap 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-stage {
+  gap: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.chrome-ready .notes-mode .notes-head,
+  body.chrome-ready .notes-mode .notes-stage {
+    transition: none;
+  }
+}
+
+/* ── The ⋯ overflow menu ──────────────────────────────────────────────────
+   Absolute against .notes-head, not fixed. It opens downward over the note,
+   which is inside .quiz-panel, so that panel's overflow:hidden cannot clip it —
+   and an absolutely positioned box cannot be re-parented by a transform
+   appearing on some ancestor the way a fixed one can. */
+.notes-head {
+  position: relative;
+}
+
+.notes-head-more-btn[hidden] {
+  display: none;
+}
+
+.notes-head-more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 45;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: min(280px, calc(100vw - 32px));
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius, 8px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+}
+
+.notes-head-more-menu[hidden] {
+  display: none;
+}
+
+/* Inside the menu the buttons are a grid of equals, not a right-aligned run —
+   the auto-margin and stretch alignment they carry in the header row would
+   leave them stranded and full-height here. */
+.notes-head-more-menu > .edit-card-btn {
+  flex: 0 0 auto;
+  margin: 0;
+  align-self: center;
+}
+
+@media (max-width: 720px) {
+  /* ── (a) One row ───────────────────────────────────────────────────────
+     Undoes the full-width promotion at styles/10-editor.css:900. That rule
+     exists because the row was overfull; with six buttons now behind ⋯ it is
+     not — measured at 320px, the widest remaining run (☰ + B I U S </> + two
+     split controls + pill + ⋯) leaves room to spare.
+
+     `flex-wrap: wrap` is KEPT on the header, and the toolbar keeps
+     `overflow-x: visible`. Both are the safety net the comment at
+     styles/10-editor.css:911 spells out: .quiz-panel is overflow:hidden here,
+     so a run that overflows is not scrollable, it is gone. Wrapping turns any
+     future overflow into a visible second line instead of a missing button.
+
+     `overflow-x: auto` would be the other way to fit, and is the wrong one: the
+     colour and highlight menus are absolutely positioned inside .render-split,
+     and a scroll container on their ancestor would clip them. */
+  .notes-mode .notes-head > .render-toolbar {
+    order: 2;
+    flex: 1 0 100%;
+    width: 100%;
+    justify-content: center;
+    overflow-x: visible;
+  }
+
+  /* Collapsed by default: .is-format-collapsible is put on the header by
+     src/notes/notes-head-overflow.js whenever the phone layout is active, and
+     .is-format-open is what the A button adds.
+
+     Measured at 390px with the six ⋯ buttons already moved out, the row was
+     still ☰ 34 + strip 224 + pill 58 + ⋯ 26 + gaps 12 = 354px against 336px of
+     header, so the ⋯ wrapped and the header was two rows again. Collapsed it is
+     ☰ + A + pill + ⋯ ≈ 156px. */
+  .notes-mode .notes-head.is-format-collapsible:not(.is-format-open) > .render-toolbar {
+    display: none;
+  }
+
+  .notes-format-toggle-btn {
+    flex: 0 0 auto;
+  }
+
+  .notes-format-toggle-btn[hidden] {
+    display: none;
+  }
+
+  /* Engaged reads the same as the edit pill and the focus button — one visual
+     language across the header for "this mode is on". */
+  .notes-format-toggle-btn[aria-pressed="true"] {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    color: var(--accent);
+  }
+
+  /* The hairline group separators go with the buttons they separated. What is
+     left is three single controls and one strip, which needs no punctuation. */
+  .notes-mode .notes-head > .notes-head-divider {
+    display: none;
+  }
+
+  /* .notes-head-divider.is-lead carried the margin-left:auto that pushed the
+     right-hand cluster to the edge, and it has just been hidden. The edit pill
+     is the first of what remains, so it takes the auto-margin over. */
+  .notes-mode .notes-head > #editNotesBtn {
+    margin-left: auto;
+  }
+
+  .notes-head-more-btn {
+    flex: 0 0 auto;
+    /* Optically matches the ⋯ glyph to the icon buttons either side of it: the
+       character sits on the baseline and reads small at the inherited size. */
+    font-size: 1.05rem;
+    line-height: 1;
+  }
+
+  /* ── (b) A quieter appbar while reading ────────────────────────────────
+     "0/0" and "Known 0 / Review 0" are about the card deck. In Notes and
+     Highlights view there are no cards on screen, so on a phone — where they
+     cost a third of the meta row — they say nothing and are simply noise. They
+     stay in Cards view, and in My Decks, where they are the point.
+
+     :has() rather than a class, because .quiz-panel.notes-mode is a DESCENDANT
+     of a later sibling of .appbar and there is no other way to reach back. The
+     app already relies on :has() for the drawer guard in the collapse rules. */
+  .app-shell:has(.quiz-panel.notes-mode) #positionText,
+  .app-shell:has(.quiz-panel.notes-mode) #scoreText {
+    display: none;
+  }
+
+  /* And the hairline that introduced them. .deck-meta-row2 is
+     category · 🏷 · SEP · 0/0 · Known 0 / Review 0 · SEP · sync, so hiding the
+     two counters leaves the first separator with nothing on its right and the
+     row reads "UNCATEGORIZED 🏷 · · Synced" — two dots in a row, which looks
+     like something failed to load. Matched by what FOLLOWS it rather than by
+     position, so it stays correct if the row ever gains a field. */
+  .app-shell:has(.quiz-panel.notes-mode) .deck-meta-sep:has(+ #positionText) {
+    display: none;
+  }
+
+  /* The countdown is a 1s ticker whose whole content is "↻ 4m". Next to a
+     wrapped title and a category chip it reads as clutter; the pill's own
+     colour and text still say whether the deck is synced, and the full
+     interval is in the pill's title attribute either way. */
+  .sync-countdown {
+    display: none;
+  }
+
+  /* A long category ("Articles / Long Reads / 2026") wrapped the chip onto a
+     second line and pushed the whole meta block down. One line, clipped. */
+  .deck-category {
+    max-width: 42vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Two lines is a title; five is a wall. The rest is one tap away in the
+     title's own tooltip and in My Decks. */
+  .deck-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+}
+
+/* ── (d) Image controls stop shouting on a touch screen ───────────────────
+   Every image in a note carries three pieces of chrome painted straight over
+   the picture: the "Zoom" pill (.diagram-zoom), the corner resize grip
+   (.notes-img-resize-handle) and the red delete button (.notes-img-delete-btn).
+   On a desktop they are calm because hover distinguishes the image you are
+   working with from the twenty you are scrolling past. A phone has no hover, so
+   all three are painted at full strength on every figure at once — which is
+   most of what makes a note full of images look busy.
+
+   They are dimmed, not hidden. Hiding them would need a tap to reveal, and a
+   tap on an image is already the zoom gesture; taking a real affordance away
+   and putting it behind a gesture that means something else is a worse trade
+   than making it quieter. At 45% each one is still perfectly visible against
+   the photo, still exactly as large a touch target, and no longer the first
+   thing your eye lands on. Full strength returns for the one being dragged.
+
+   Coarse pointers only, so the desktop hover behaviour is untouched. */
+@media (hover: none), (pointer: coarse) {
+  #notesView .diagram-shell .diagram-zoom,
+  #notesView .diagram-shell .notes-img-resize-handle,
+  #notesView .diagram-shell .notes-img-delete-btn {
+    opacity: 0.45;
+    transition: opacity 0.15s linear;
+  }
+
+  #notesView .diagram-shell.is-resizing .diagram-zoom,
+  #notesView .diagram-shell.is-resizing .notes-img-resize-handle,
+  #notesView .diagram-shell.is-resizing .notes-img-delete-btn {
+    opacity: 1;
+  }
+}

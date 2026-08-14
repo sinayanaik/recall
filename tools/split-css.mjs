@@ -67,6 +67,23 @@ const POST_SPLIT = {
     "it started in pulled the app's furniture in with it — 370 characters of " +
     "the top bar and the (only off-screen, never hidden) ☰ drawer, or the whole " +
     "notes toolbar when dragging upward. See tools/selection-check.mjs.",
+  "15-headings.css":
+    "One heading SIZE everywhere markdown renders. .rendered has sized h1-h6 at " +
+    "1em since the underline ladder replaced the size ladder, but .qn-card-body " +
+    "(Quick Notes board) and .epub-preview-chapter-body (import preview) don't " +
+    "carry that class, so the same note's headings fell through to the UA " +
+    "defaults — 2em and 1.5em — on those two surfaces alone.",
+  "16-mobile-reading.css":
+    "The phone reading surface. Four chrome bars stacked above the first line " +
+    "of a note; this folds the render toolbar back into the notes header (six " +
+    "buttons move behind a ⋯ popover), drops the card counters and the sync " +
+    "countdown from the appbar while reading, lets body.chrome-collapsed fold " +
+    "the notes header too, and dims the per-image controls on touch screens.",
+  "17-toc-fold.css":
+    "Foldable table-of-contents sections, folded by default. The list is flat " +
+    "(the tree is drawn by rail spans, not by nesting), so there is no child " +
+    "list to hide: this is the twisty laid over each branch row's dot cell, " +
+    "and [hidden] on the rows JS works out are under a folded ancestor.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

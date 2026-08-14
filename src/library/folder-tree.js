@@ -11,6 +11,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { buildFolderTree } from "./categories.js?v=__BUILD__";
 import { buildCloudDeckRow, buildDeckDeleteButton, buildDeckLoadButton, buildLocalDeckRow } from "./deck-rows.js?v=__BUILD__";
+import { openFolderAsDeck } from "./folder-deck.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, folderSegments, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./folders.js?v=__BUILD__";
 import { createDeckExportControl, deckCardInfo, deckSelOf, loadDeckEntry } from "./my-decks-actions.js?v=__BUILD__";
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
@@ -508,6 +509,9 @@ export function buildFolderActionCluster(path) {
     return b;
   };
   wrap.append(
+    // First, because it is the only one of these that is about READING rather
+    // than about managing the folder.
+    mk("book", "Read", "Read every deck in this folder as one document — edits are saved back to each deck", () => openFolderAsDeck(path)),
     mk("newDeck", "Deck", "New deck in this folder", () => newDeckInFolder(path)),
     mk("newFolder", "Folder", "New subfolder", () => createFolder(path)),
     mk("importDeck", "Import", "Import a file into this folder — as notes, as cards, or both", () => importIntoFolder(path)),

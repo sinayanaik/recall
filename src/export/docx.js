@@ -207,7 +207,12 @@ export function withScope(ctx, patch) {
   return { ...ctx, ...patch };
 }
 
-export const DOCX_HEADING_STYLE_BY_LEVEL = { 1: "Heading1", 2: "Heading2", 3: "Heading3", 4: "Heading4", 5: "Heading4", 6: "Heading4" };
+// Six levels, six styles. h5 and h6 used to fold into Heading4, which was
+// harmless while the sizes did the work of telling levels apart and is not now
+// that they don't — see buildDocxStylesXml, where all six are one size and the
+// hierarchy is carried by weight, colour and the underline, exactly as
+// styles/06-rendered.css carries it on screen.
+export const DOCX_HEADING_STYLE_BY_LEVEL = { 1: "Heading1", 2: "Heading2", 3: "Heading3", 4: "Heading4", 5: "Heading5", 6: "Heading6" };
 
 export const DOCX_NESTED_BLOCK_TAGS = new Set(["ul", "ol", "p", "pre", "blockquote", "table", "div"]);
 
@@ -478,10 +483,12 @@ export function buildDocxStylesXml(theme) {
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
 <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:rPrDefault></w:docDefaults>
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
-<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="200" w:after="100"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="160" w:after="80"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="120" w:after="60"/></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="240" w:after="120"/><w:pBdr><w:bottom w:val="single" w:sz="12" w:space="2" w:color="${theme.accent}"/></w:pBdr></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.accentStrong}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="200" w:after="100"/><w:pBdr><w:bottom w:val="single" w:sz="12" w:space="2" w:color="${theme.accent}"/></w:pBdr></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="160" w:after="80"/><w:pBdr><w:bottom w:val="single" w:sz="8" w:space="2" w:color="${theme.accentStrong}"/></w:pBdr></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.accentStrong}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="120" w:after="60"/><w:pBdr><w:bottom w:val="dashed" w:sz="8" w:space="2" w:color="${theme.text}"/></w:pBdr></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.text}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading5"><w:name w:val="heading 5"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="120" w:after="60"/><w:pBdr><w:bottom w:val="dotted" w:sz="8" w:space="2" w:color="${theme.muted}"/></w:pBdr></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.muted}"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading6"><w:name w:val="heading 6"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="120" w:after="60"/><w:pBdr><w:bottom w:val="dotted" w:sz="4" w:space="2" w:color="${theme.line}"/></w:pBdr></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:color w:val="${theme.muted}"/></w:rPr></w:style>
 <w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="${theme.accentStrong}"/><w:u w:val="single"/></w:rPr></w:style>
 </w:styles>`;
 }

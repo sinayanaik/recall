@@ -60,6 +60,9 @@
          the 13 slices above stay byte-for-byte comparable to the stylesheet
          they came from. Last, so it wins ties rather than out-specifying. -->
     <link rel="stylesheet" href="styles/14-selection.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/15-headings.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/16-mobile-reading.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/17-toc-fold.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -526,11 +529,30 @@
                    Escape and the shortcut also exit — necessary on desktop,
                    where the collapsed appbar takes ☰ and Back with it. -->
               <button class="edit-card-btn focus-mode-btn" id="focusModeBtn" type="button" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Toggle focus mode">&#10530;</button>
+              <!-- Phones only (hidden above 720px). Six of the buttons above
+                   move INTO the menu below on a narrow screen, which is what
+                   lets this header be one row there instead of two. They are
+                   moved, not duplicated — see src/notes/notes-head-overflow.js —
+                   so every handler already wired to them keeps working, and the
+                   menu sits inside .notes-head so the [data-render-target]
+                   delegation still resolves for the ones that format a
+                   selection. -->
+              <!-- Also phones only. The formatting strip is 224px of the ~310px
+                   a 360px phone has to spend on this row, and it is only ever
+                   useful with text selected — so on a phone it is opened when
+                   wanted rather than parked there all the time. -->
+              <button class="edit-card-btn notes-format-toggle-btn" id="notesFormatToggleBtn" type="button" aria-pressed="false" aria-controls="notesRenderToolbar" title="Text formatting" aria-label="Show text formatting" hidden><b aria-hidden="true">A</b></button>
+              <button class="edit-card-btn notes-head-more-btn" id="notesHeadMoreBtn" type="button" aria-expanded="false" aria-haspopup="true" aria-controls="notesHeadMoreMenu" title="More notes tools" aria-label="More notes tools" hidden>&#8943;</button>
+              <div class="notes-head-more-menu" id="notesHeadMoreMenu" hidden></div>
             </div>
             <div class="rendered notes-rendered" id="notesView"></div>
             <nav class="notes-toc-drawer" id="notesTocDrawer" hidden aria-label="Notes table of contents">
               <div class="notes-toc-head">
                 <span class="notes-toc-title">On this page</span>
+                <!-- Sections start folded, so this starts as "expand all". It
+                     hides itself when the note has no nested headings, where
+                     there is nothing for it to do. -->
+                <button class="notes-toc-fold-all" id="notesTocFoldAllBtn" type="button" title="Expand all sections" aria-label="Expand all sections" hidden>&#8862;</button>
                 <button class="notes-toc-close" id="notesTocCloseBtn" type="button" title="Close" aria-label="Close table of contents">&times;</button>
               </div>
               <div class="notes-toc-scroll">

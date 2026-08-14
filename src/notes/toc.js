@@ -39,6 +39,31 @@ export let notesTocLinks = [];
 
 export let notesTocActiveIndex = -1;
 
+// ── Folding ────────────────────────────────────────────────────────────────
+//
+// The list is FLAT — one <li> per heading, with the tree drawn by the rail
+// spans rather than by nesting — so folding cannot be "hide the child <ul>".
+// These three arrays are the parent/child relation the flat DOM does not carry,
+// rebuilt with the list and indexed the same way as notesTocHeadings.
+export let notesTocItems = [];
+
+export let notesTocParent = [];
+
+export let notesTocBranch = [];
+
+// Which branches are folded, by heading SLUG rather than by index: an edit that
+// adds a paragraph renumbers every heading after it, and the reader's folds
+// would jump one row up the tree each time.
+export let notesTocCollapsed = new Set();
+
+// Every branch slug the current note has already been given a state. A slug in
+// here keeps whatever the reader chose; a slug that is NOT in here is new and
+// starts folded — which is what makes the drawer open as an outline instead of
+// as several hundred rows, and, because the set is pruned to the note's own
+// slugs on every rebuild, is also what resets the folds when a different note
+// opens without needing a hook on the deck-load path.
+let notesTocKnownBranches = new Set();
+
 export function slugifyHeading(text, used) {
   const base = String(text || "")
     .toLowerCase()
@@ -96,11 +121,139 @@ export function ensureNotesHeadingIds() {
   return headings;
 }
 
+// When a whole folder is open as one document, each member deck is introduced
+// by a generated `# <Deck title>` heading and every heading below it belongs to
+// that deck. Nothing in the rendered DOM says so: the `<!-- recall-section -->`
+// marker that carries the deck id in the markdown is a comment, and DOMPurify
+// strips comments — which is exactly what keeps it invisible while reading, and
+// exactly why it cannot be used here.
+//
+// So the section starts are found by matching the generated headings against
+// the member titles, in order. Each section is then renormalised on its own:
+// its heading is depth 0, and the headings inside it start at depth 1 no matter
+// what level they use. Without this a deck whose own notes begin at `#` — quite
+// normal — put its headings at the same depth as the deck titles, so folding a
+// deck away left its own sections behind.
+export function applyFolderSectionDepths(depths) {
+  const members = state.folderDeck?.members;
+  if (!members?.length || !depths.length) return;
+
+  const starts = [];
+  let expect = 0;
+  notesTocHeadings.forEach((heading, index) => {
+    if (expect >= members.length) return;
+    if (heading.tagName !== "H1") return;
+    if (heading.textContent.trim() !== String(members[expect].title || "").trim()) return;
+    starts.push(index);
+    expect += 1;
+  });
+  if (!starts.length) return;
+
+  starts.forEach((start, n) => {
+    const end = n + 1 < starts.length ? starts[n + 1] : depths.length;
+    depths[start] = 0;
+    let inner = 6;
+    for (let i = start + 1; i < end; i += 1) inner = Math.min(inner, Number(notesTocHeadings[i].tagName[1]));
+    for (let i = start + 1; i < end; i += 1) {
+      depths[i] = 1 + Math.min(Number(notesTocHeadings[i].tagName[1]) - inner, 3);
+    }
+  });
+}
+
+// Is any ancestor of `index` folded? Walks the parent chain rather than
+// consulting a per-row flag, so folding a branch needs no bookkeeping on the
+// rows below it.
+export function isNotesTocRowHidden(index) {
+  for (let p = notesTocParent[index]; p >= 0; p = notesTocParent[p]) {
+    if (notesTocCollapsed.has(notesTocHeadings[p]?.id)) return true;
+  }
+  return false;
+}
+
+export function applyNotesTocFolding() {
+  notesTocItems.forEach((li, index) => {
+    if (!li) return;
+    li.hidden = isNotesTocRowHidden(index);
+    if (!notesTocBranch[index]) return;
+    const collapsed = notesTocCollapsed.has(notesTocHeadings[index]?.id);
+    li.dataset.tocCollapsed = collapsed ? "true" : "false";
+    const twisty = li.querySelector(".notes-toc-twisty");
+    if (twisty) {
+      twisty.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      twisty.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${notesTocHeadings[index]?.textContent.trim() || "section"}`);
+    }
+  });
+  // The row that was lit may have just been folded away, or revealed.
+  notesTocActiveIndex = -1;
+  updateNotesTocActive();
+}
+
+export function setNotesTocBranchCollapsed(index, collapsed) {
+  const slug = notesTocHeadings[index]?.id;
+  if (!slug || !notesTocBranch[index]) return;
+  if (collapsed) notesTocCollapsed.add(slug);
+  else notesTocCollapsed.delete(slug);
+  applyNotesTocFolding();
+}
+
+export function toggleNotesTocBranch(index) {
+  setNotesTocBranchCollapsed(index, !notesTocCollapsed.has(notesTocHeadings[index]?.id));
+}
+
+export function setAllNotesTocBranches(collapsed) {
+  notesTocCollapsed = new Set();
+  if (collapsed) {
+    notesTocHeadings.forEach((heading, index) => {
+      if (notesTocBranch[index]) notesTocCollapsed.add(heading.id);
+    });
+  }
+  applyNotesTocFolding();
+  updateNotesTocFoldAllButton();
+}
+
+export function allNotesTocBranchesCollapsed() {
+  return notesTocBranch.every((isBranch, index) => !isBranch || notesTocCollapsed.has(notesTocHeadings[index]?.id));
+}
+
+export function updateNotesTocFoldAllButton() {
+  // Looked up here rather than added to the `el` map, which is one big object
+  // literal shared by the whole app: a new module's own elements do not need to
+  // be in it, and keeping them out keeps that file the pre-split one.
+  const button = document.getElementById("notesTocFoldAllBtn");
+  if (!button) return;
+  const anyBranch = notesTocBranch.some(Boolean);
+  button.hidden = !anyBranch;
+  if (!anyBranch) return;
+  const collapsed = allNotesTocBranchesCollapsed();
+  button.textContent = collapsed ? "⊞" : "⊟";
+  button.title = collapsed ? "Expand all sections" : "Collapse all sections";
+  button.setAttribute("aria-label", button.title);
+}
+
+// One delegated listener for the whole list, however many thousand rows it has.
+export function initNotesTocFolding() {
+  el.notesTocList?.addEventListener("click", (event) => {
+    const twisty = event.target.closest(".notes-toc-twisty");
+    if (!twisty) return;
+    // Stopped as well as prevented: the row's own click handler (which jumps to
+    // the heading) is on the same list, and the twisty sits ON TOP of the <a>.
+    event.preventDefault();
+    event.stopPropagation();
+    toggleNotesTocBranch(Number(twisty.dataset.tocIndex));
+    updateNotesTocFoldAllButton();
+  });
+  const foldAll = document.getElementById("notesTocFoldAllBtn");
+  foldAll?.addEventListener("click", () => { setAllNotesTocBranches(!allNotesTocBranchesCollapsed()); });
+}
+
 export function buildNotesToc() {
   if (!el.notesView || !el.notesTocList) return;
   notesTocHeadings = ensureNotesHeadingIds();
 
   el.notesTocList.innerHTML = "";
+  notesTocItems = [];
+  notesTocParent = [];
+  notesTocBranch = [];
   // The list is being rebuilt, so every link reference updateNotesTocActive
   // held is now detached and the remembered active row means nothing.
   notesTocLinks = [];
@@ -123,6 +276,40 @@ export function buildNotesToc() {
     6
   );
   const depths = notesTocHeadings.map((h) => Math.min(Number(h.tagName[1]) - minLevel, 4));
+  applyFolderSectionDepths(depths);
+
+  // The relation the flat list does not carry. A heading's parent is the
+  // nearest earlier heading shallower than it; a heading is a branch when the
+  // very next one is deeper, which is the only way a child can begin.
+  const openAtDepth = [];
+  notesTocParent = depths.map((depth, index) => {
+    openAtDepth.length = depth;
+    // Walks DOWN for the nearest open ancestor rather than reading depth-1
+    // directly: depths are not guaranteed contiguous — a note that goes from #
+    // straight to ###, or a folder section whose decks nest differently from
+    // one another, leaves a hole, and a hole read as "no parent" would make a
+    // heading unfoldable from the section above it.
+    let parent = -1;
+    for (let d = depth - 1; d >= 0; d -= 1) {
+      if (openAtDepth[d] !== undefined) { parent = openAtDepth[d]; break; }
+    }
+    openAtDepth[depth] = index;
+    return parent;
+  });
+  notesTocBranch = depths.map((depth, index) => index + 1 < depths.length && depths[index + 1] > depth);
+
+  // Fold state, carried over by slug. Anything not seen before is folded, so a
+  // note opens as its top-level outline; pruning to the current note's slugs is
+  // what makes a different note start folded again.
+  const nextKnown = new Set();
+  const nextCollapsed = new Set();
+  notesTocHeadings.forEach((heading, index) => {
+    if (!notesTocBranch[index]) return;
+    nextKnown.add(heading.id);
+    if (!notesTocKnownBranches.has(heading.id) || notesTocCollapsed.has(heading.id)) nextCollapsed.add(heading.id);
+  });
+  notesTocKnownBranches = nextKnown;
+  notesTocCollapsed = nextCollapsed;
 
   notesTocHeadings.forEach((heading, index) => {
     // Ids are already assigned by ensureNotesHeadingIds above.
@@ -131,6 +318,9 @@ export function buildNotesToc() {
 
     const li = document.createElement("li");
     li.className = "notes-toc-item";
+    // The twisty is positioned against the row, at this row's own indent, so
+    // the depth has to be readable from the <li> as well as from the link.
+    li.style.setProperty("--toc-depth", String(depth));
     const link = document.createElement("a");
     link.className = "notes-toc-link";
     link.href = `#${heading.id}`;
@@ -161,11 +351,29 @@ export function buildNotesToc() {
       `<span class="notes-toc-text"></span>`;
     link.querySelector(".notes-toc-text").textContent = heading.textContent.trim();
     li.appendChild(link);
+
+    // A <button> cannot live inside the <a> — nesting interactive content is
+    // invalid and browsers reparent it out of the link, which in a list built
+    // with innerHTML lands it somewhere unpredictable. It is a SIBLING of the
+    // link, laid over the dot cell, and the row keeps working as one big target
+    // everywhere the twisty is not.
+    if (notesTocBranch[index]) {
+      li.classList.add("is-branch");
+      const twisty = document.createElement("button");
+      twisty.type = "button";
+      twisty.className = "notes-toc-twisty";
+      twisty.dataset.tocIndex = String(index);
+      twisty.innerHTML = '<span class="notes-toc-twisty-glyph" aria-hidden="true">▸</span>';
+      li.appendChild(twisty);
+    }
+
     el.notesTocList.appendChild(li);
     notesTocLinks.push(link);
+    notesTocItems.push(li);
   });
 
-  updateNotesTocActive();
+  applyNotesTocFolding();
+  updateNotesTocFoldAllButton();
 }
 
 // Distance kept between the top of the notes viewport and the heading it
@@ -278,6 +486,12 @@ export function updateNotesTocActive() {
       high = mid - 1;
     }
   }
+
+  // Folded away? Light the nearest ancestor that IS on screen, the way a file
+  // tree lights the folder holding the open file. Deliberately not "unfold the
+  // ancestors": that would re-open the tree a branch at a time as you scrolled,
+  // which is the opposite of what folding it was for.
+  while (activeIndex > 0 && isNotesTocRowHidden(activeIndex)) activeIndex = notesTocParent[activeIndex];
 
   if (activeIndex === notesTocActiveIndex) return;
   const previous = notesTocLinks[notesTocActiveIndex];

@@ -54,7 +54,78 @@ const ACCEPTED = {
     "the Reload button now waits for controllerchange before reloading, instead " +
     "of reloading the instant it has asked the waiting worker to skip waiting. " +
     "Fixes a pre-existing race (measured: 1-2 extra navigations every run) that " +
-    "130 module requests make considerably worse. See tools/release-check.mjs."
+    "130 module requests make considerably worse. See tools/release-check.mjs.",
+  DOCX_HEADING_STYLE_BY_LEVEL:
+    "h5 and h6 now map to Heading5/Heading6 instead of both folding into " +
+    "Heading4. They only shared a style because size told the levels apart, " +
+    "and it no longer does — see buildDocxStylesXml.",
+  buildDocxStylesXml:
+    "One heading SIZE, in the .docx too. Heading1-4 were 16/14/12/11pt while " +
+    "every other surface has rendered h1-h6 at a single size since the " +
+    "underline ladder replaced the size ladder (styles/06-rendered.css:5). All " +
+    "six are now 11pt, with the hierarchy in weight, colour and a bottom " +
+    "border whose weight and dash pattern track the on-screen ladder — Word " +
+    "cannot draw a partial-width rule, so width is the one cue that is lost.",
+  // ── Reading a whole folder as one deck (src/library/folder-deck.js) ──────
+  // A folder open as one document is not a deck and has no record of its own,
+  // so the field below is what stops the ordinary save path inventing one.
+  state:
+    "One field added: folderDeck, non-null only while a whole folder is open " +
+    "as one document. It is what routes a save back into the decks the " +
+    "document was built from instead of minting a new library entry for the " +
+    "merged blob and syncing it to every device.",
+  saveDeckToLibrary:
+    "Hands over to saveFolderDeck when a folder is the thing open. " +
+    "resolveSaveTarget falls through to generateLocalDeckId, so a null " +
+    "localDeckId does NOT mean ephemeral — it means 'mint one'.",
+  saveDeckToLibrarySync:
+    "Same gate as its async twin, and the load-bearing one: flushWorkingDeck " +
+    "calls THIS from pagehide/visibilitychange, so without it switching tabs " +
+    "while reading a folder would create the merged deck.",
+  createNewDeck:
+    "Clears state.folderDeck alongside localDeckId, or the new deck's first " +
+    "save would be routed into the previous folder's member decks.",
+  loadDeckSnapshot:
+    "Clears state.folderDeck. Every path that replaces the open deck — " +
+    "library, cloud, import, restore — comes through here, so it is the one " +
+    "place that has to remember.",
+  updateMeta:
+    "The deck-title and category pencils are disabled while a folder is open " +
+    "as one document: there is no record to rename, and the chip says FOLDER " +
+    "rather than a category the merged view does not have.",
+  currentDeckKey:
+    "Includes the folder path. A folder document has NEITHER id, which is the " +
+    "same key an unattached working deck has — so without it a reading anchor " +
+    "captured in a folder could be attached to a new deck.",
+  currentNavLocation:
+    "Records a folder document as kind:'folder'. It has no id, so the deck " +
+    "branch would never record it and Back out of a deck opened from the " +
+    "folder view would walk straight past the folder.",
+  sameNavLocation:
+    "Compares kind:'folder' entries by path, the only identity they have.",
+  goToNavLocation:
+    "Restores a kind:'folder' entry by RE-MERGING from the decks as they are " +
+    "now, not from a cached document — a stale merge would be written back " +
+    "over decks that have since changed.",
+  buildFolderActionCluster:
+    "One button added: Read, which opens every deck under the folder as a " +
+    "single document. First in the cluster because it is the only one of the " +
+    "six about reading rather than about managing the folder.",
+  buildNotesToc:
+    "Foldable sections. The list stays flat — the tree is still drawn by the " +
+    "rail spans — so the build now also derives the parent/child relation that " +
+    "flat DOM cannot carry (notesTocParent / notesTocBranch), carries the fold " +
+    "state across a rebuild by heading SLUG rather than by index, and appends a " +
+    "twisty <button> as a SIBLING of each branch row's <a>.",
+  updateNotesTocActive:
+    "When the section being read is folded away, the scroll-spy now lights its " +
+    "nearest visible ancestor instead of a row nobody can see. Deliberately " +
+    "not 'unfold the ancestors': that would re-open the tree a branch at a " +
+    "time as you scrolled, undoing the fold the reader asked for.",
+  OVERLAY_LAYERS:
+    "One entry added, in the popover group: the notes header's phone-only ⋯ " +
+    "menu (src/notes/notes-head-overflow.js). Without it a Back press aimed at " +
+    "the open menu falls through to goNavBack() and loads another deck.",
 };
 
 // Functions whose ONLY change is that a write to a module-level binding now goes
@@ -279,6 +350,13 @@ const RESIDUAL_REWRITES = [
   // the selection the pill is there to act on. See tools/selection-check.mjs.
   [/(hideNotesSelectionButtonUnlessPinned, \{ passive: true \}\); \}\); )(el\.makeCardFromSelectionBtn\?\.addEventListener)/,
    '$1["pointerdown", "mousedown"].forEach((type) => { el.selectionFloat?.addEventListener(type, (event) => { event.preventDefault(); }); }); $2'],
+  // Also an ADDITION rather than a rewrite: two more boot hooks next to the one
+  // that fills #notesRenderToolbar. They set up the notes header's phone-only ⋯
+  // overflow menu and the measurement that lets that header fold away with the
+  // rest of the chrome — see src/notes/notes-head-overflow.js and
+  // src/notes/notes-head-fold.js.
+  [/(onDomReady\(initRenderToolbars\); )(document\.addEventListener\("pointerdown")/,
+   "$1onDomReady(initNotesHeadOverflow); onDomReady(initNotesHeadFold); onDomReady(initNotesTocFolding); $2"],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

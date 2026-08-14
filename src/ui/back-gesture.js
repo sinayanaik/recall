@@ -13,6 +13,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { closeMainMenu, isMainMenuOpen } from "../editor/toolbars.js?v=__BUILD__";
 import { closeAllDeckTileMenus } from "../library/folder-tree.js?v=__BUILD__";
 import { closeMyDecksMoreMenu } from "../library/my-decks-menu.js?v=__BUILD__";
+import { closeNotesHeadMore, isNotesHeadMoreOpen } from "../notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { closeNotesToc, isNotesTocOpen } from "../notes/toc.js?v=__BUILD__";
 import { closeClozePanel } from "../panels/cloze-panel.js?v=__BUILD__";
@@ -55,6 +56,12 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(document.querySelector(".web-deck-export-menu:not([hidden]), .bulk-export-menu:not([hidden])")), close: () => closeWebDeckExportMenus() },
   { isOpen: () => Boolean(el.exportMenu && !el.exportMenu.hidden), close: () => { el.exportMenu.hidden = true; } },
   { isOpen: () => Boolean(el.exportNotesMenu && !el.exportNotesMenu.hidden), close: () => { el.exportNotesMenu.hidden = true; } },
+  // The notes header's phone-only ⋯ menu. A popover like the rest of this
+  // group, and it has to be in the list for the same reason they are: on a
+  // phone the Back gesture is the primary dismiss, and without an entry here a
+  // press aimed at the open menu would fall through to goNavBack() and load
+  // another deck underneath it.
+  { isOpen: () => isNotesHeadMoreOpen(), close: () => closeNotesHeadMore() },
 
   // The hamburger drawer sits here, above the dialogs, because it genuinely is
   // above them: .toolbar is z-index 500 against the help modal's 240 and the

@@ -159,6 +159,12 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // (file open, snapshot import) genuinely wants a fresh, unattached deck so
     // its first autosave doesn't overwrite the deck that was open before.
     state.localDeckId = null;
+    // Whatever is being opened here is a real deck, so the folder-as-one-deck
+    // mode is over. Cleared HERE rather than in each loader because every path
+    // that replaces the open deck comes through this one — library open, cloud
+    // open, file/JSON import, backup restore — and a folderDeck left set would
+    // send the next save into the previous folder's member decks.
+    state.folderDeck = null;
     state.sourceTitle = String(payload.sourceTitle || "").trim() || sourceFileTitle(titleHint) || state.deckTitle;
     state.importTitleHint = String(payload.importTitleHint || "").trim() || titleHint;
     // MUST come before state.notes is replaced. The raw editor's <textarea> is

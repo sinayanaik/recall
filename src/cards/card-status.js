@@ -45,13 +45,22 @@ export function updateMeta() {
   el.deckTitleWrap.hidden = !hasDeck;
   if (el.deckMeta2Row) el.deckMeta2Row.hidden = !hasDeck;
   if (!hasDeck) setSyncIndicator("idle");
-  el.editDeckTitleBtn.disabled = !hasDeck;
+  // A folder open as one document is not a deck: it has no record to rename and
+  // no category of its own, so both pencils would be editing something that
+  // does not exist. The decks it is made of are renamed from their own rows in
+  // My Decks — or, for the title, by editing the section's `#` heading, which
+  // saveFolderDeck writes back as that deck's new name.
+  const isFolder = Boolean(state.folderDeck);
+  el.editDeckTitleBtn.disabled = !hasDeck || isFolder;
+  el.editDeckTitleBtn.title = isFolder ? "Rename each deck from its own row in My Decks" : "Edit deck title";
   if (el.deckCategory) {
-    el.deckCategory.textContent = normalizeDeckCategory(state.deckCategory);
-    el.deckCategory.title = `Category: ${normalizeDeckCategory(state.deckCategory)}`;
+    el.deckCategory.textContent = isFolder ? "FOLDER" : normalizeDeckCategory(state.deckCategory);
+    el.deckCategory.title = isFolder
+      ? `Reading every deck in ${state.folderDeck.path} as one document`
+      : `Category: ${normalizeDeckCategory(state.deckCategory)}`;
   }
   if (el.editDeckCategoryBtn) {
-    el.editDeckCategoryBtn.disabled = !hasDeck;
+    el.editDeckCategoryBtn.disabled = !hasDeck || isFolder;
   }
   el.positionText.textContent = state.previewCard ? "Preview" : total ? `${Math.min(state.current + 1, total)}/${total}` : "0/0";
   el.scoreText.textContent = `Known ${state.known} / Review ${state.review}`;
