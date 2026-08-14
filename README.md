@@ -884,6 +884,7 @@ another:
 | `sync` | Do the merge primitives behave identically, **and** still refuse to lose data? (43 scenarios + 15 invariants + 11 storage round-trips) |
 | `reconcile` | Does the whole two-way sync behave identically end to end against a stand-in backend? |
 | `ui-smoke` | Does the app still *work*? 35 real actions driven through the DOM on both builds and compared step by step |
+| `selection` | Can you select text in a note without dragging the app's own chrome in with it? 7 real mouse drags |
 | `release-check` | Does a release actually reach an existing install, and does it work offline? |
 
 The browser-driven ones block `cdn.jsdelivr.net` and inject the library copies

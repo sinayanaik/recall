@@ -519,6 +519,30 @@ document.addEventListener("selectionchange", () => {
   edit?.addEventListener("scroll", hideNotesSelectionButtonUnlessPinned, { passive: true });
 });
 
+// Every button on the floating pill preventDefaults its own pointerdown, for
+// the reason each of them repeats below: reading the selection is the whole
+// point, and letting the press through dissolves it. The pill ITSELF did not —
+// so a press that landed on its padding, on a gap between two buttons, or on
+// the colour menu's own chrome went through to the notes underneath, dropped a
+// caret there, and threw away the selection the pill was floating there to act
+// on. Measured: pressing 4px inside the pill's corner replaced a 280-character
+// selection with a different 54-character one.
+//
+// preventDefault only, and no stopPropagation: the buttons stop the event
+// themselves, so this listener never runs for them — it exists purely for the
+// gaps between them, and must not get in the way of anything reaching them.
+//
+// BOTH events, and mousedown is the one that does the work. Cancelling
+// pointerdown does not stop Chrome placing a caret and dropping the selection
+// (measured: the pill still ate a live selection with a pointerdown-only
+// guard) — that default belongs to mousedown. pointerdown is kept for the
+// touch path, where the compatibility mousedown arrives late or not at all.
+["pointerdown", "mousedown"].forEach((type) => {
+  el.selectionFloat?.addEventListener(type, (event) => {
+    event.preventDefault();
+  });
+});
+
 el.makeCardFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   // preventDefault keeps the selection from dissolving mid-tap.
   event.preventDefault();

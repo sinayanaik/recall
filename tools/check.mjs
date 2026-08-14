@@ -30,6 +30,9 @@
 //   ui-smoke        does the APP still work? 18 real actions — import, flip,
 //                   mark known, All Cards, notes, export, sync — driven through
 //                   the DOM on both builds and compared step by step
+//   selection       can you still select text in a note without dragging the
+//                   app's own chrome in with it? Real mouse drags, because
+//                   selection is a browser behaviour, not a function
 //   release-check   (--full) does a release reach an existing install, and
 //                   does it work offline?
 
@@ -57,6 +60,7 @@ const checks = [
     ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
     ["reconcile     ", ["node", ["tools/reconcile-parity.mjs"], ROOT]],
     ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
+    ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];

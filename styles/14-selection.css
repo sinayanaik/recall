@@ -1,0 +1,84 @@
+/* Selection hygiene: what is text, and what is furniture
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ * Loaded last, so it settles ties against the slices without having to inflate
+ * its own specificity to win them.
+ */
+
+/* ── Chrome is not text ──────────────────────────────────────────────────
+   Nothing in this app ever said so, so a drag that wandered out of the note
+   it started in dragged the app's own furniture in with it. Measured before
+   this rule existed (tools/selection-check.mjs):
+
+     • a drag across the top bar selected 369 characters of "RECALL × DECKS
+       + New Deck ⇧ Import 📚 My Decks ↻ Sync Now …" — nearly all of it from
+       the ☰ drawer, which when closed is only pushed off-screen
+       (transform: translateX(-110%)), never hidden, and so is fully
+       selectable at every width whether or not it is open;
+     • a drag UP out of the notes into the notes header — the ordinary way to
+       reach a note's first line — swallowed the whole toolbar:
+       "STUDY NOTES B I U S </> A ▾ A ▾ + 📌 ✎ ⤢" arrived at the FRONT of the
+       selection, ahead of the text that was actually wanted.
+
+   Written as a list of container classes rather than `* { user-select: none }`
+   plus opt-ins, because the opt-in list would have to name every rendered
+   surface, every editor and every panel body — and anything left off it would
+   silently stop being selectable at all, which is a worse failure than the one
+   being fixed here.
+
+   Two deliberate absences. `summary`, because markdown can render
+   <details>/<summary>, and the two summaries that ARE furniture (the style
+   panel's sections) already carry user-select: none of their own. And the deck
+   empty state, whose buttons are covered by `button` but whose sync report is
+   a status message worth being able to copy. */
+.appbar,
+.toolbar,
+.view-mode-toggle,
+.progress-track,
+.notes-head,
+.notes-toc-drawer,
+.selection-float,
+.controls,
+.deck-utility-actions,
+.replay-actions,
+.swipe-hint,
+.face-label-row,
+.card-status-badge,
+.web-decks-head,
+.web-decks-tools,
+.web-decks-bulk-actions,
+button,
+select,
+label {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Furniture that lives INSIDE a rendered surface, mixed in among the text it
+   belongs to: the language/copy button on a code block, an image's size badge
+   and resize grip. These sit within any range that crosses their block, and
+   the copy button carries the language as real text ("JavaScript"), so they
+   are the obvious candidates for turning up in a copied selection.
+
+   Stated honestly: measured, they did NOT. Chrome already keeps all three out
+   of Selection.toString() and out of the painted highlight, because each is
+   positioned out of flow. This is a guard, not a repair — the day one of them
+   becomes an ordinary inline span it would start being copied, and
+   tools/selection-check.mjs would catch that only for the copy button.
+   Buttons among them are covered by the rule above; these are the rest. */
+.code-lang-badge,
+.notes-img-size-badge,
+.notes-img-resize-handle {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* And the other half of the same statement: the surfaces that are text stay
+   text, no matter what they are nested inside now or later. */
+.rendered,
+.edit-textarea,
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}

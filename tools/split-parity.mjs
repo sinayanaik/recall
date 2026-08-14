@@ -262,8 +262,9 @@ function residual(text, decls) {
 }
 
 // Intentional module-scope changes, applied to the BASELINE so the comparison
-// stays meaningful instead of being switched off. Each entry is a rewrite the
-// restructure made on purpose, spelled out.
+// stays meaningful instead of being switched off. Each entry is a change made
+// on purpose — by the restructure, or by a fix landed since it — spelled out
+// so that everything around it keeps being compared byte for byte.
 const RESIDUAL_REWRITES = [
   // Phase 1: a deferred module script sees readyState "interactive", so the
   // old inline `else` branch fired mid-file. See onDomReady in src/main.js.
@@ -271,6 +272,13 @@ const RESIDUAL_REWRITES = [
    "onDomReady($1);"],
   [/if \(document\.readyState === "loading"\) \{ document\.addEventListener\("DOMContentLoaded", (\w+), \{ once: true \}\); \} else \{ \1\(\); \}/g,
    "onDomReady($1);"],
+  // Landed after the split, so it is an ADDITION to the baseline rather than a
+  // rewrite of it: the floating selection pill's container now cancels
+  // pointerdown/mousedown, so a press that lands on the pill but on none of its
+  // buttons can no longer place a caret in the note underneath and throw away
+  // the selection the pill is there to act on. See tools/selection-check.mjs.
+  [/(hideNotesSelectionButtonUnlessPinned, \{ passive: true \}\); \}\); )(el\.makeCardFromSelectionBtn\?\.addEventListener)/,
+   '$1["pointerdown", "mousedown"].forEach((type) => { el.selectionFloat?.addEventListener(type, (event) => { event.preventDefault(); }); }); $2'],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

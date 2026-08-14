@@ -47,6 +47,28 @@ const SECTIONS = [
   [12988, "13-quick-notes.css", "The Quick Notes board"],
 ];
 
+// Stylesheets in styles/ that are NOT slices of the original, added after the
+// split and excluded from the reassembly compare.
+//
+// The check above answers exactly one question — "did cutting styles.css up
+// change any of it?" — and that question stays worth asking forever. But the
+// app has to keep being fixed, and a CSS fix written into a slice would fail
+// this check with no way to say "yes, on purpose", the way ACCEPTED does for
+// tools/split-parity.mjs.
+//
+// So new CSS goes in a new file, listed here with the reason. The 13 slices
+// stay byte-for-byte comparable to what they came from, and a fix is a whole
+// file anyone can read on its own rather than eight lines buried in 1,800.
+// Anything appearing in styles/ that is neither a slice nor listed here is
+// still a failure.
+const POST_SPLIT = {
+  "14-selection.css":
+    "user-select on the app's own chrome. Without it a drag that left the note " +
+    "it started in pulled the app's furniture in with it — 370 characters of " +
+    "the top bar and the (only off-screen, never hidden) ☰ drawer, or the whole " +
+    "notes toolbar when dragging upward. See tools/selection-check.mjs.",
+};
+
 // styles.css itself is gone once the split has been applied, so the baseline
 // comes from git — the point of the check is that styles/ still reassembles to
 // the stylesheet the app shipped with before any of this began.
@@ -106,13 +128,21 @@ if (rebuilt !== source) {
 if (CHECK_ONLY) {
   if (!existsSync(OUT_DIR)) { console.log("styles/ does not exist yet."); process.exit(0); }
   const onDisk = readdirSync(OUT_DIR).sort().filter((f) => f.endsWith(".css"));
+  const slices = onDisk.filter((f) => !(f in POST_SPLIT));
+  const added = onDisk.filter((f) => f in POST_SPLIT);
+  const stray = slices.filter((f) => !SECTIONS.some(([, name]) => name === f));
+  if (stray.length) {
+    console.log(`styles/ has ${stray.length} file(s) that are neither a slice nor listed in POST_SPLIT: ${stray.join(", ")}`);
+    process.exit(1);
+  }
   // Each file carries a three-line banner that is not part of the stylesheet.
-  const joined = onDisk
+  const joined = slices
     .map((f) => readFileSync(path.join(OUT_DIR, f), "utf8").replace(/^\/\*[\s\S]*?\*\/\n/, ""))
     .join("\n");
   const ok = joined === source;
   console.log(ok
-    ? `styles/ reassembles to ${BASE_REF}:styles.css exactly (${onDisk.length} files, ${source.split("\n").length} lines)`
+    ? `styles/ reassembles to ${BASE_REF}:styles.css exactly (${slices.length} files, ${source.split("\n").length} lines)`
+      + (added.length ? `, plus ${added.length} added since: ${added.join(", ")}` : "")
     : `styles/ does NOT reassemble to ${BASE_REF}:styles.css`);
   if (!ok) {
     let i = 0;
