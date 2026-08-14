@@ -2,8 +2,9 @@
 
 import { animateToCard, showCard } from "./card-view.js?v=__BUILD__";
 import { resetStudyDeck, syncResults } from "./study.js?v=__BUILD__";
+import { resetCardDrag } from "./swipe.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { applyCardRawModePreference, commitEditIfActive, resetCardDrag, state } from "../main.js?v=__BUILD__";
+import { applyCardRawModePreference, commitEditIfActive, state } from "../main.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 

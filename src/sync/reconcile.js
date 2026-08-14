@@ -5,6 +5,7 @@
 // empty cloud read is never treated as "everything was deleted"; a deletion is
 // never inferred from a single absence; and a large removal always asks first.
 
+import { LAST_USER_STORAGE_KEY } from "../boot.js?v=__BUILD__";
 import { hasActiveDeck } from "../cards/card-status.js?v=__BUILD__";
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { verifiedCloudUserId } from "../cloud/auth.js?v=__BUILD__";
@@ -19,12 +20,14 @@ import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { deleteDeckFromLibrary, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrary, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { TOMBSTONE_ORIGIN_INFERRED, TOMBSTONE_ORIGIN_USER, clearDeckTombstone, deckTombstoneOrigin, flushPendingUntombstones, isDeckTombstoned, readDeckTombstones, removeDecksMissingFromCloud, resetActiveDeckAfterDelete, tombstoneDeck } from "../library/tombstones.js?v=__BUILD__";
-import { LAST_USER_STORAGE_KEY, QUICK_NOTES_DECK_TITLE, commitEditIfActive, flushPendingImageUploads, flushPendingQuickNoteAnchors, flushPendingQuickNoteCategories, rearmAutoSync, state, warmDeckImageCache } from "../main.js?v=__BUILD__";
+import { QUICK_NOTES_DECK_TITLE, commitEditIfActive, flushPendingImageUploads, flushPendingQuickNoteAnchors, flushPendingQuickNoteCategories, state } from "../main.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
+import { warmDeckImageCache } from "../pwa/service-worker-client.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
 import { deckStoreUnreadable, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, MISSING_DECK_MIN_AGE_MS, MISSING_DECK_MIN_SIGHTINGS, NOTES_CONFLICT_SUFFIX, clearBackgroundSyncProblem, clearMissingDeckWatch, readMissingDeckWatch, reportBackgroundSyncProblem, writeMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
+import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
 import { calculateSyncDiff, syncTextChanged } from "./diff.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";

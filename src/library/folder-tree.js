@@ -4,6 +4,7 @@
 // Moving a deck between folders is a category rewrite — there is no folder
 // table — so a rename has to rewrite every descendant path too.
 
+import { newDeckInFolder } from "../cards/new-deck.js?v=__BUILD__";
 import { deckSyncStatus } from "../cloud/deck-list.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
@@ -12,10 +13,11 @@ import { buildCloudDeckRow, buildDeckDeleteButton, buildDeckLoadButton } from ".
 import { FOLDER_SEP, addKnownFolder, folderSegments, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./folders.js?v=__BUILD__";
 import { createDeckExportControl, deckCardInfo, deckSelOf, loadDeckEntry } from "./my-decks-actions.js?v=__BUILD__";
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
+import { importIntoFolder } from "./my-decks-menu.js?v=__BUILD__";
 import { setMyDecksCwd } from "./my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./my-decks-render.js?v=__BUILD__";
 import { createDeckSelectControl, createFolderSelectControl, renameMyDeck, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
-import { importIntoFolder, newDeckInFolder, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { showConfirmModal, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseDeckCategory } from "../ui/pickers.js?v=__BUILD__";
 

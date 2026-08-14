@@ -5,8 +5,9 @@ import { allCardsRenderId, bumpAllCardsRenderId, ensureAllCardAnswer, openAllCar
 import { updateMeta } from "./card-status.js?v=__BUILD__";
 import { showCard } from "./card-view.js?v=__BUILD__";
 import { syncResults } from "./study.js?v=__BUILD__";
+import { closestElement } from "./swipe.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { closestElement, draggedAllCardId, setDraggedAllCardId, state } from "../main.js?v=__BUILD__";
+import { draggedAllCardId, setDraggedAllCardId, state } from "../main.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showConfirmModal } from "../ui/feedback.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";

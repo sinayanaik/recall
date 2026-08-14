@@ -6,10 +6,10 @@
 // to opposite places, and conflating them once offered a button that would
 // have deleted a perfectly good project.
 
+import { LAST_USER_STORAGE_KEY } from "../boot.js?v=__BUILD__";
 import { withTimeout } from "./net.js?v=__BUILD__";
 import { PENDING_STYLE_KEY } from "./style-sync.js?v=__BUILD__";
 import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
-import { LAST_USER_STORAGE_KEY } from "../main.js?v=__BUILD__";
 
 // Reads the session straight from local storage — no network — so a user who
 // has signed in at least once can keep using the app while offline.

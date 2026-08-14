@@ -6,24 +6,26 @@
 
 import { BACKUP_IMAGE_REF_RE, decodeImageRefEntities, exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
+import { LAST_USER_STORAGE_KEY, appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
 import { clearAllCardDropTargets, closeAllCardsPanel, createBlankCard, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
-import { allCardById, allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardEditor, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
-import { hasActiveDeck } from "./cards/card-status.js?v=__BUILD__";
+import { allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
 import { flipCard, moveCard, navigateCard, replayDeck, resetQuiz, shuffleCards } from "./cards/deck-actions.js?v=__BUILD__";
+import { createNewDeck, newDeckInFolder } from "./cards/new-deck.js?v=__BUILD__";
 import { afterPaint, questionFitDeferredBySelection, scheduleLiveQuestionFit } from "./cards/question-fit.js?v=__BUILD__";
-import { resetStudyDeck } from "./cards/study.js?v=__BUILD__";
-import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
+import { handleDiagramPointerDown, handleDiagramPointerEnd, handleDiagramPointerMove, handleDiagramWheel, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp, handleStylePanelTouchMove, handleStylePanelTouchStart, handleStylePanelWheel, handleTouchCancel, handleTouchEnd, handleTouchMove, handleTouchStart, hasCardTextSelection, isCardActionTarget } from "./cards/swipe.js?v=__BUILD__";
+import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
 import { isMissingColumnError, isMissingRelationError } from "./cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./cloud/net.js?v=__BUILD__";
-import { PENDING_STYLE_KEY, closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
-import { clearSupabaseConfig, initSupabaseClient, isSignedIn, loadSupabaseConfig, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
+import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
+import { clearSupabaseConfig, initSupabaseClient, isSignedIn, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus, loadWebDeck } from "./cloud/web-decks.js?v=__BUILD__";
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
-import { deckStorageKey, defaultDeckCategory, themeStorageKey } from "./core/constants.js?v=__BUILD__";
+import { defaultDeckCategory } from "./core/constants.js?v=__BUILD__";
 import { el } from "./core/dom.js?v=__BUILD__";
-import { ensureMermaid, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
+import { ensureMermaid, ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { escapeHtml } from "./core/text.js?v=__BUILD__";
+import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/triple-click.js?v=__BUILD__";
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
 import { normalizeCardStatus } from "./export/markdown.js?v=__BUILD__";
 import { buildNotesFlatPrintDocument, closePrintPreview, printPreviewOpen, setPrintTitleBeforeExport } from "./export/pdf.js?v=__BUILD__";
@@ -39,9 +41,10 @@ import { clearImportStaging, commitStagedImport, importDestinationFolder, import
 import { cleanImportUrl, fetchImportText, readerUrlFor } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
-import { appendCardToLocalLibraryDeck, loadDeckFromLibrary, pruneOrphanedDeckSnapshots, readLocalDeckIndex, runEscapedMathRepair, saveDeckToLibrarySync, writeLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
+import { appendCardToLocalLibraryDeck, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrarySync, writeLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
+import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
@@ -50,37 +53,38 @@ import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, 
 import { scheduleNotesCaretCheck, scrollTextareaToOffset } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
-import { commitNotesEditIfActive, discardNotesEditingForDeckSwap, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
 import { currentNotesSelectionMarkdown, hideNotesSelectionButton, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
 import { closeNotesToc, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
+import { installManifestLink, isMixedBuild, registerServiceWorker, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { renderMarkdown } from "./render/block-cache.js?v=__BUILD__";
-import { applyDiagramTransform, beginDiagramPan, beginDiagramPinch, clampDiagramScale, closeDiagramModal, currentDiagramZoom, diagramLocalPoint, diagramPointers, pointerCenter, pointerDistance, zoomDiagramBy, zoomDiagramTo } from "./render/diagram-zoom.js?v=__BUILD__";
+import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "./render/enhance.js?v=__BUILD__";
 import { findMathRanges, repairEscapedMathMarkdown } from "./render/math.js?v=__BUILD__";
 import { markdownToSafeHtml } from "./render/preprocess.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
-import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
-import { allDeckSnapshotIds, clearAllDeckSnapshots, deckSnapshotCache, deckStoreChannel, deckStoreRequest, forEachDeckSnapshot, indexedDbUnavailable, initDeckStorage, journalPendingDeckWrites, pendingDeckWrites, readDeckSnapshot, requestPersistentStorage, scheduleDeckAutosave, setDeckStoreChannel, storagePersisted, touchDeckSnapshotCache, withDeckLock, writeDeckSnapshot } from "./storage/deck-store.js?v=__BUILD__";
-import { LAST_BG_SYNC_PROBLEM_KEY, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_TOMBSTONES_KEY, MISSING_DECK_WATCH_KEY, reportBackgroundSyncProblem } from "./storage/keys.js?v=__BUILD__";
+import { allDeckSnapshotIds, clearAllDeckSnapshots, deckSnapshotCache, deckStoreChannel, deckStoreRequest, forEachDeckSnapshot, indexedDbUnavailable, journalPendingDeckWrites, pendingDeckWrites, readDeckSnapshot, scheduleDeckAutosave, setDeckStoreChannel, storagePersisted, touchDeckSnapshotCache, withDeckLock, writeDeckSnapshot } from "./storage/deck-store.js?v=__BUILD__";
+import { LOCAL_DECKS_INDEX_KEY } from "./storage/keys.js?v=__BUILD__";
 import { isQuotaExceededError, setDeckAutosaveStorageFailed } from "./storage/quota.js?v=__BUILD__";
+import { applyAutoSyncInterval, autoSyncTick, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
 import { dropTombstonesForLiveCards, mergeCloudCardsIntoSnapshot } from "./sync/cards.js?v=__BUILD__";
-import { formatRelativeTime, refreshSyncIndicatorBaseline, renderSyncCountdown, setSyncIndicator, updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
+import { formatRelativeTime, updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
 import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
-import { reconcileAllDecks, reconcileInFlight } from "./sync/reconcile.js?v=__BUILD__";
+import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, isMobileChrome, measureChromeHeights, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
-import { closeImportPanel, closeMyDecksPanel, dismissSwipeHint, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
+import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack, suppressNavRecording } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
-import { applyActiveStyleSettings, applyStyleDensity, detectStyleProfile, handleStyleControlChange, loadLocalStyleSettings, normalizeStyleValue, resetStyleField, resetStyleProfile, setStyleProfiles, setStyleStatus, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
+import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
-import { configureMermaid, currentThemeId, renderThemeMenu, setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
+import { configureMermaid, currentThemeId, setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 
 // Run `fn` once the DOM is parsed AND this module has finished evaluating.
@@ -258,7 +262,7 @@ export const state = {
 // had no door.
 
 
-const swipeConfig = {
+export const swipeConfig = {
   intentDistance: 12,
   intentRatio: 1.12,
   commitRatio: 1.18,
@@ -1059,745 +1063,6 @@ async function fetchUrl() {
 // ── Import panel: source pickers ────────────────────────────────────────────
 
 
-function currentCardCanMove() {
-  return Boolean(state.previewCard || state.cards[state.current] || (state.cards.length > 0 && state.current === state.cards.length));
-}
-
-export function closestElement(target, selector) {
-  if (target instanceof Element) return target.closest(selector);
-  if (typeof target?.closest === "function") return target.closest(selector);
-  if (typeof target?.parentElement?.closest === "function") return target.parentElement.closest(selector);
-  return null;
-}
-
-// `.notes-img-resize-handle` is a bare <div> (it has to be, so its pointerdown
-// can start a drag without a button's own activation behaviour getting in the
-// way), so it needs naming here explicitly or dragging an image's corner on a
-// card face would also flip the card.
-function isCardActionTarget(target) {
-  return Boolean(closestElement(target, "a, button, input, textarea, .cloze, .render-toolbar, .notes-img-resize-handle"));
-}
-
-function isHorizontallyScrollable(node) {
-  if (!(node instanceof Element)) return false;
-  const styles = window.getComputedStyle(node);
-  const allowsHorizontalScroll = !["hidden", "clip", "visible"].includes(styles.overflowX);
-  return allowsHorizontalScroll && node.scrollWidth > node.clientWidth + 2;
-}
-
-function horizontalScrollRegion(target) {
-  let node = target instanceof Element ? target : target?.parentElement;
-
-  while (node && node !== el.card) {
-    if (isHorizontallyScrollable(node)) {
-      return node;
-    }
-    node = node.parentElement;
-  }
-
-  return null;
-}
-
-function isHorizontalScrollTarget(target) {
-  return Boolean(horizontalScrollRegion(target));
-}
-
-function hasCardTextSelection() {
-  const selection = window.getSelection?.();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
-  const anchorNode = selection.anchorNode;
-  const focusNode = selection.focusNode;
-  return Boolean((anchorNode && el.card.contains(anchorNode)) || (focusNode && el.card.contains(focusNode)));
-}
-
-function swipeCommitDistance() {
-  return Math.min(
-    swipeConfig.maxCommitDistance,
-    Math.max(swipeConfig.minCommitDistance, el.card.offsetWidth * swipeConfig.widthCommitRatio)
-  );
-}
-
-function dragVelocity(current, previous, time) {
-  const elapsed = Math.max(time - state.dragLastTime, 1);
-  return (current - previous) / elapsed;
-}
-
-function beginSwipe(clientX, clientY, pointerId = null, pointerType = "") {
-  const time = performance.now();
-  state.dragging = false;
-  state.dragMoved = false;
-  state.dragStartX = clientX;
-  state.dragStartY = clientY;
-  state.dragCurrentX = clientX;
-  state.dragCurrentY = clientY;
-  state.dragLastX = clientX;
-  state.dragLastY = clientY;
-  state.dragStartTime = time;
-  state.dragLastTime = time;
-  state.dragPointerId = pointerId;
-  state.dragPointerType = pointerType;
-  state.dragCaptured = false;
-}
-
-export function resetCardDrag() {
-  state.dragging = false;
-  state.dragPointerId = null;
-  state.dragPointerType = "";
-  state.dragCaptured = false;
-  state.dragMoved = false;
-  el.card.classList.remove("is-dragging", "drag-review", "drag-known", "drag-prev", "drag-next");
-  el.card.style.transform = "";
-}
-
-function updateSwipe(clientX, clientY, event) {
-  // Never hijack an active text selection — for either mouse-drag or touch
-  // (finger dragging the selection handles). preventDefault() on the move
-  // event would otherwise cancel the browser's native selection.
-  if (hasCardTextSelection()) {
-    if (state.dragCaptured && typeof state.dragPointerId === "number") {
-      el.card.releasePointerCapture?.(state.dragPointerId);
-    }
-    resetCardDrag();
-    return;
-  }
-
-  const time = performance.now();
-  const velocityX = dragVelocity(clientX, state.dragLastX, time);
-  state.dragCurrentX = clientX;
-  state.dragCurrentY = clientY;
-
-  const dx = state.dragCurrentX - state.dragStartX;
-  const dy = state.dragCurrentY - state.dragStartY;
-  const absX = Math.abs(dx);
-  const absY = Math.abs(dy);
-  state.dragMoved = state.dragMoved || absX > 6 || absY > 6;
-
-  // A touch that has dwelled this long without going anywhere is a long-press:
-  // the browser is about to hand back a text selection, and the preventDefault()
-  // further down cancels a pending one. The hasCardTextSelection() guard at the
-  // top of this function can't help, because it only becomes true once the
-  // selection already EXISTS — by which point the swipe has been running for a
-  // frame or two and eaten the gesture. This is the fix for text selection on a
-  // phone being unreliable: press, pause, then drag now always selects, and only
-  // a touch that moves promptly is treated as a swipe.
-  if (!state.dragging
-      && !state.dragMoved
-      && state.dragPointerType !== "mouse"
-      && time - state.dragStartTime > swipeConfig.longPressGraceMs) {
-    resetCardDrag();
-    return;
-  }
-
-  if (!state.dragging) {
-    const hasHorizontalIntent = absX >= swipeConfig.intentDistance && absX >= absY * swipeConfig.intentRatio;
-    const hasVerticalIntent = absY >= swipeConfig.intentDistance && absY >= absX * swipeConfig.intentRatio;
-
-    if (!hasHorizontalIntent && !hasVerticalIntent) {
-      state.dragLastX = clientX;
-      state.dragLastY = clientY;
-      state.dragLastTime = time;
-      return;
-    }
-
-    if (hasVerticalIntent) {
-      state.suppressClickUntil = time + 360;
-      resetCardDrag();
-      return;
-    }
-
-    state.dragging = true;
-    if (event?.pointerId !== undefined && !state.dragCaptured) {
-      if (event.pointerType !== "mouse" || !hasCardTextSelection()) {
-        el.card.setPointerCapture?.(event.pointerId);
-        state.dragCaptured = true;
-      }
-    }
-    el.card.classList.add("is-dragging");
-  }
-
-  if (event?.cancelable && typeof event.preventDefault === "function") {
-    if (event.pointerType !== "mouse" || state.dragCaptured) {
-      event.preventDefault();
-    }
-  }
-
-  const direction = dx > 0 ? 1 : -1;
-  const resisted = direction * Math.min(absX * swipeConfig.resistance, swipeConfig.maxPreviewOffset);
-  const progress = Math.min(absX / swipeCommitDistance(), 1);
-  const flicking = absX >= swipeConfig.flickDistance && Math.abs(velocityX) >= swipeConfig.flickVelocity;
-  const choosing = progress > 0.45 || flicking;
-  el.card.classList.toggle("drag-prev", dx > 0 && choosing);
-  el.card.classList.toggle("drag-next", dx < 0 && choosing);
-  el.card.style.transform = `translateX(${resisted}px) rotate(${direction * progress * 2.2}deg) scale(${1 - progress * 0.01})`;
-
-  state.dragLastX = clientX;
-  state.dragLastY = clientY;
-  state.dragLastTime = time;
-}
-
-function finishSwipe() {
-  const dx = state.dragCurrentX - state.dragStartX;
-  const dy = state.dragCurrentY - state.dragStartY;
-  const absX = Math.abs(dx);
-  const absY = Math.abs(dy);
-  const elapsed = Math.max(performance.now() - state.dragStartTime, 1);
-  const averageVelocity = absX / elapsed;
-  const committed = state.dragging
-    && absX >= absY * swipeConfig.commitRatio
-    && (
-      absX >= swipeCommitDistance()
-      || (absX >= swipeConfig.flickDistance && averageVelocity >= swipeConfig.flickVelocity)
-    );
-
-  // Gated on `dragging` — a gesture that showed real directional intent (see
-  // hasHorizontalIntent/hasVerticalIntent in updateSwipe) — and NOT on
-  // `dragMoved`, which is merely ">6px of travel". A finger tap is rarely
-  // pixel-perfect, so the old condition swallowed the click of any tap that
-  // wobbled 7px for a full 360ms: the card did not flip and nothing on screen
-  // acknowledged the press. That is the purest form of "I clicked and nothing
-  // happened", and it was reachable on every tap.
-  //
-  // The card's own click handler still has an independent 8px isDrag guard, so
-  // dropping the low-threshold case here loses no protection against a real
-  // swipe being read as a tap.
-  if (state.dragging) {
-    state.suppressClickUntil = performance.now() + 360;
-  }
-
-  if (committed) {
-    el.card.classList.remove("is-dragging", "drag-review", "drag-known", "drag-prev", "drag-next");
-    el.card.style.transform = "";
-    state.dragging = false;
-    state.dragPointerId = null;
-    state.dragPointerType = "";
-    state.dragCaptured = false;
-    state.dragMoved = false;
-
-    navigateCard(dx > 0 ? -1 : 1, dx > 0 ? "prev" : "next");
-    return;
-  }
-
-  resetCardDrag();
-}
-
-function handlePointerDown(event) {
-  if (!currentCardCanMove() || isCardActionTarget(event.target)) return;
-  if (isHorizontalScrollTarget(event.target)) return;
-  // Touch/pen: an active selection means the user is dragging a selection
-  // handle — don't start a swipe. (Mouse keeps its mid-drag guard in updateSwipe
-  // so a lingering selection never blocks starting a fresh drag.)
-  if (event.pointerType !== "mouse" && hasCardTextSelection()) return;
-  dismissSwipeHint();
-  beginSwipe(event.clientX, event.clientY, event.pointerId, event.pointerType);
-}
-
-function handlePointerMove(event) {
-  if (state.dragPointerId !== event.pointerId) return;
-  updateSwipe(event.clientX, event.clientY, event);
-}
-
-function handlePointerUp(event) {
-  if (state.dragPointerId !== event.pointerId) return;
-  if (state.dragCaptured) el.card.releasePointerCapture?.(event.pointerId);
-  finishSwipe();
-}
-
-function handlePointerCancel(event) {
-  if (state.dragPointerId === event.pointerId) {
-    if (state.dragCaptured) el.card.releasePointerCapture?.(event.pointerId);
-    resetCardDrag();
-  }
-}
-
-function touchPoint(event) {
-  return event.changedTouches?.[0] || event.touches?.[0] || null;
-}
-
-function handleTouchStart(event) {
-  if (!currentCardCanMove() || isCardActionTarget(event.target)) return;
-  if (isHorizontalScrollTarget(event.target)) return;
-  // A selection is already up (e.g. dragging a selection handle after a
-  // long-press) — leave the gesture to the browser instead of starting a swipe.
-  if (hasCardTextSelection()) return;
-  const point = touchPoint(event);
-  if (!point) return;
-  beginSwipe(point.clientX, point.clientY, "touch", "touch");
-}
-
-function handleTouchMove(event) {
-  if (state.dragPointerId !== "touch") return;
-  const point = touchPoint(event);
-  if (!point) return;
-  updateSwipe(point.clientX, point.clientY, event);
-}
-
-function handleTouchEnd() {
-  if (state.dragPointerId !== "touch") return;
-  finishSwipe();
-}
-
-function handleTouchCancel() {
-  if (state.dragPointerId !== "touch") return;
-  resetCardDrag();
-}
-
-function preventCancelableScroll(event) {
-  if (event.cancelable && typeof event.preventDefault === "function") {
-    event.preventDefault();
-  }
-}
-
-function styleScrollRegion(target) {
-  return closestElement(target, ".style-grid, .all-cards-list, .import-preview-body, .import-decklist-rows, textarea, .import-card, .web-decks-table-wrap, .my-decks-grid, .diagram-modal-body");
-}
-
-function canScrollStyleRegion(region) {
-  return Boolean(region && region.scrollHeight > region.clientHeight + 1);
-}
-
-function isStyleRegionAtTop(region) {
-  return region.scrollTop <= 0;
-}
-
-function isStyleRegionAtBottom(region) {
-  return region.scrollTop + region.clientHeight >= region.scrollHeight - 1;
-}
-
-function containStylePanelScroll(event, deltaY) {
-  const region = styleScrollRegion(event.target);
-  if (!region || !canScrollStyleRegion(region)) {
-    preventCancelableScroll(event);
-    return;
-  }
-
-  if ((deltaY < 0 && isStyleRegionAtTop(region)) || (deltaY > 0 && isStyleRegionAtBottom(region))) {
-    preventCancelableScroll(event);
-  }
-}
-
-function handleStylePanelTouchStart(event) {
-  const point = event.touches?.[0];
-  state.stylePanelTouchY = point ? point.clientY : 0;
-}
-
-function handleStylePanelTouchMove(event) {
-  if (event.touches?.length !== 1) return;
-  if (closestElement(event.target, "input, button, a, label, textarea, .import-action-btn")) return;
-
-  const point = event.touches[0];
-  const previousY = state.stylePanelTouchY || point.clientY;
-  const deltaY = previousY - point.clientY;
-  state.stylePanelTouchY = point.clientY;
-  containStylePanelScroll(event, deltaY);
-}
-
-function handleStylePanelWheel(event) {
-  containStylePanelScroll(event, event.deltaY);
-}
-
-function handleDiagramWheel(event) {
-  if (!currentDiagramZoom) return;
-  preventCancelableScroll(event);
-  const direction = event.deltaY > 0 ? 0.9 : 1.1;
-  zoomDiagramTo(currentDiagramZoom.scale * direction, event);
-}
-
-function handleDiagramPointerDown(event) {
-  const isPrimaryContact = event.button === 0 || event.pointerType === "touch" || event.pointerType === "pen";
-  if (!currentDiagramZoom || !isPrimaryContact || event.target.closest("button, a")) return;
-  preventCancelableScroll(event);
-  el.diagramModalBody.setPointerCapture?.(event.pointerId);
-  currentDiagramZoom.pointers.set(event.pointerId, diagramLocalPoint(event));
-  el.diagramModalBody.classList.add("is-panning");
-
-  const points = diagramPointers();
-  if (points.length >= 2) beginDiagramPinch();
-  else beginDiagramPan(points[0]);
-}
-
-function handleDiagramPointerMove(event) {
-  if (!currentDiagramZoom?.pointers.has(event.pointerId)) return;
-  preventCancelableScroll(event);
-  currentDiagramZoom.pointers.set(event.pointerId, diagramLocalPoint(event));
-
-  const points = diagramPointers();
-  if (points.length >= 2) {
-    if (currentDiagramZoom.mode !== "pinch") beginDiagramPinch();
-    const distance = pointerDistance(points) || currentDiagramZoom.pinchStartDistance;
-    const center = pointerCenter(points);
-    const nextScale = clampDiagramScale(currentDiagramZoom.pinchStartScale * (distance / currentDiagramZoom.pinchStartDistance));
-    currentDiagramZoom.scale = nextScale;
-    currentDiagramZoom.x = center.x - currentDiagramZoom.pinchAnchorX * nextScale;
-    currentDiagramZoom.y = center.y - currentDiagramZoom.pinchAnchorY * nextScale;
-    applyDiagramTransform();
-    return;
-  }
-
-  if (currentDiagramZoom.mode !== "pan") beginDiagramPan(points[0]);
-  const local = diagramLocalPoint(event);
-  currentDiagramZoom.x = currentDiagramZoom.panStartX + local.x - currentDiagramZoom.pointerStartX;
-  currentDiagramZoom.y = currentDiagramZoom.panStartY + local.y - currentDiagramZoom.pointerStartY;
-  applyDiagramTransform();
-}
-
-function handleDiagramPointerEnd(event) {
-  if (!currentDiagramZoom?.pointers.has(event.pointerId)) return;
-  currentDiagramZoom.pointers.delete(event.pointerId);
-  el.diagramModalBody.releasePointerCapture?.(event.pointerId);
-
-  const points = diagramPointers();
-  if (points.length >= 2) {
-    beginDiagramPinch();
-  } else if (points.length === 1) {
-    beginDiagramPan(points[0]);
-  } else {
-    currentDiagramZoom.mode = "";
-    el.diagramModalBody.classList.remove("is-panning");
-  }
-}
-
-// Every Supabase Storage image URL referenced by a deck's markdown. Used to
-// pre-cache a pulled deck's images so it reads offline later — the service
-// worker's cache-first rule only covers images it has already SEEN, which means
-// only the ones that happened to be on screen while online.
-const SUPABASE_IMAGE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.supabase\.co\/storage\/v1\/object\/public\/[^\s)"'<>]+/gi;
-
-function collectDeckImageUrls(snapshot) {
-  const seen = new Set();
-  const scan = (text) => {
-    for (const match of String(text || "").matchAll(SUPABASE_IMAGE_URL_PATTERN)) seen.add(match[0]);
-  };
-  scan(snapshot?.notes);
-  for (const card of snapshot?.cards || []) {
-    scan(card.question);
-    scan(card.answer);
-  }
-  return Array.from(seen);
-}
-
-// Hand a deck's image URLs to the service worker to warm its image cache.
-// Fire-and-forget: this is an optimisation, and a controller that isn't ready
-// yet (first load, before the SW has claimed the page) just means the images
-// get cached the normal way — on first view, while online.
-export function warmDeckImageCache(snapshot) {
-  if (!("serviceWorker" in navigator) || !navigator.serviceWorker.controller) return;
-  const urls = collectDeckImageUrls(snapshot);
-  if (!urls.length) return;
-  try {
-    navigator.serviceWorker.controller.postMessage({ type: "cache-images", urls });
-  } catch (error) {
-    console.warn("Could not warm the image cache", error);
-  }
-}
-
-let serviceWorkerRegistered = false;
-// Kept so the App Info modal's "Check for updates" can poke the worker on
-// demand (see refreshAppInfo).
-let serviceWorkerRegistration = null;
-
-// ── Update state, shared with the App Info modal ────────────────────────────
-// True once a newer worker has installed and is waiting to take over.
-let updateIsWaiting = false;
-// True once an install has been discarded before taking over — a release that
-// could not be downloaded. Distinct from "no update": the difference decides
-// whether the honest answer is "you're up to date" or "an update exists and
-// this device keeps failing to get it".
-let updateDownloadFailed = false;
-// Set by the service worker when it had to serve one release's bytes under
-// another release's URL (see announceMixedBuild in sw.js). Holds the URLs it
-// happened to, because the App Info screen otherwise CANNOT detect this: it
-// reads the ?v= off the <script> attribute, which is the URL that was
-// requested, not the bundle that actually ran.
-const mixedBuildUrls = new Set();
-
-function isMixedBuild() {
-  if (mixedBuildUrls.size > 0) return true;
-  // Self-detection, for the load where the worker's message never arrived: if
-  // the URL this file was fetched from carries a different stamp than the one
-  // compiled into it, the bytes running now are not the bytes that URL names.
-  const requested = requestedAppVersion();
-  return Boolean(requested && requested !== BUILD_STAMP);
-}
-
-let updateBannerEl = null;
-
-// A persistent, dismissible bar — deliberately not a toast. A toast for "your
-// app is out of date" is a message that disappears before it can be acted on,
-// which is how everyone stayed on the old release while the app believed it had
-// told them.
-function showUpdateBanner() {
-  updateIsWaiting = true;
-  updateDownloadFailed = false;
-  markUpdateAvailableInMenu();
-  if (updateBannerEl) return;
-
-  updateBannerEl = document.createElement("div");
-  updateBannerEl.className = "update-banner";
-  updateBannerEl.setAttribute("role", "status");
-
-  const text = document.createElement("span");
-  text.className = "update-banner-text";
-  text.textContent = "A new version of Recall is ready.";
-
-  const reload = document.createElement("button");
-  reload.type = "button";
-  reload.className = "update-banner-action";
-  reload.textContent = "Reload";
-  reload.addEventListener("click", () => {
-    // Straight to the waiting worker if there is one: reloading alone does not
-    // promote it when the page still has a controller, so without this the
-    // button would appear to do nothing on the first press.
-    const waiting = serviceWorkerRegistration?.waiting;
-    if (waiting) {
-      try { waiting.postMessage({ type: "skip-waiting" }); } catch (_) { /* fall through */ }
-    }
-    location.reload();
-  });
-
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "update-banner-dismiss";
-  dismiss.setAttribute("aria-label", "Dismiss");
-  dismiss.textContent = "×";
-  dismiss.addEventListener("click", () => {
-    updateBannerEl?.remove();
-    updateBannerEl = null;
-    // The dot in the menu deliberately stays: dismissing the bar means "not
-    // now", not "pretend this build is current".
-  });
-
-  updateBannerEl.append(text, reload, dismiss);
-  document.body.appendChild(updateBannerEl);
-}
-
-function setUpdateFailedHint() {
-  // Only meaningful if nothing is waiting — a redundant worker that was simply
-  // superseded by a newer one is not a failure.
-  if (updateIsWaiting) return;
-  updateDownloadFailed = true;
-  markUpdateAvailableInMenu();
-}
-
-// A dot on the hamburger button, which is the one control always on screen.
-// The App Info modal is behind it, so this is what makes the modal findable at
-// the moment it has something to say.
-function markUpdateAvailableInMenu() {
-  document.getElementById("mobileMenuBtn")?.classList.add("has-update");
-  document.getElementById("appInfoBtn")?.classList.add("has-update");
-}
-
-function registerServiceWorker() {
-  if (serviceWorkerRegistered) return;
-  if (!pwaAssetsSupported()) return;
-  if (!("serviceWorker" in navigator)) return;
-  if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") return;
-
-  // Never run the worker against a dev server. Versioned assets (app.js?v=…)
-  // are cache-first and deliberately never revalidated — that is what makes a
-  // release load instantly — but it also means an edit to app.js WITHOUT a new
-  // ?v= is invisible forever: the browser keeps serving the bundle it cached
-  // under that URL, so the page reloads into frozen code and the fix looks
-  // broken. Fine for releases, useless while editing. Unregister anything a
-  // previous visit left behind and drop its caches, so localhost always runs
-  // the files on disk.
-  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
-    serviceWorkerRegistered = true;
-    navigator.serviceWorker.getRegistrations()
-      .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
-      .then((unregistered) => caches.keys()
-        // Only the versioned app shell. The image cache holds the user's
-        // uploaded pictures and is spared here for the same reason the worker
-        // spares it on every release — re-downloading them is pure waste. It
-        // has to be named explicitly: it shares the "recall-" prefix, and back
-        // when shell caches were "recall-v…" the prefix alone happened to
-        // exclude it.
-        .then((keys) => keys.filter((key) => key.startsWith("recall-") && key !== "recall-images-v1"))
-        .then((stale) => Promise.all(stale.map((key) => caches.delete(key))).then(() => stale.length))
-        .then((cleared) => {
-          // Reload only when something was actually removed, so this settles
-          // after one pass instead of looping. The page that reached here was
-          // still being served by the worker, so it needs the reload to pick
-          // up the files on disk.
-          if (unregistered.some(Boolean) || cleared) location.reload();
-        }))
-      .catch((error) => console.warn("Could not unregister dev service worker", error));
-    return;
-  }
-
-  serviceWorkerRegistered = true;
-  // Ask the worker to re-fetch any offline asset its install failed to get.
-  // The install's third-party precache is best-effort, so a first run on a bad
-  // connection leaves the app permanently missing libraries offline — no
-  // markdown, no formulas, no export — and nothing retried, because the cache
-  // is only rebuilt when the worker's version changes. Sent once the worker is
-  // in control, and again whenever the connection comes back, which is exactly
-  // when the gap can be filled.
-  const requestOfflineCacheRepair = () => {
-    navigator.serviceWorker.ready
-      .then((registration) => registration.active?.postMessage({ type: "repair-offline-cache" }))
-      .catch(() => { /* no worker yet — the next online event tries again */ });
-  };
-
-  // A worker that takes over a page which already had one has just swapped the
-  // app's files underneath a page still running the PREVIOUS release's JS. The
-  // markup can already be the new build while the behaviour is the old one, so
-  // half the app quietly does the old thing. It used to just show a toast and
-  // wait — but nobody reads it and everyone kept running the old release for
-  // days, which is exactly the "browsers serve the stale version" report.
-  // Reload straight into the new release instead; notes/cards autosave on
-  // input, so at most a keystroke is in flight. The sessionStorage guard keeps
-  // a flapping update (bad deploy, oscillating server) from reload-looping the
-  // tab: one automatic reload per minute at most.
-  // The worker reporting that it served one release's bytes under another
-  // release's URL. This is the only way the page can learn it is running a mixed
-  // build — see mixedBuildUrls.
-  navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type !== "mixed-build") return;
-    const known = mixedBuildUrls.size > 0;
-    mixedBuildUrls.add(String(event.data.url || ""));
-    // Say it once. Repeating it per asset would be three toasts for one fault.
-    if (!known) {
-      showToast("Some of this app didn't load in the right version — reload when you can", "error");
-      markUpdateAvailableInMenu();
-    }
-  });
-
-  let hadController = Boolean(navigator.serviceWorker.controller);
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (!hadController) {
-      hadController = true; // first-ever install: this page is already current
-      return;
-    }
-    let lastReload = 0;
-    try { lastReload = Number(sessionStorage.getItem("recall:updateReloadAt")) || 0; } catch (_) {}
-    if (Date.now() - lastReload < 60_000) {
-      showToast("Recall updated — reload to finish", "info");
-      return;
-    }
-    try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) {}
-    location.reload();
-  });
-
-  // A worker that reaches "installed" while this page already has a controller
-  // is a release waiting to take over; one that reaches "redundant" without ever
-  // installing is a release that FAILED to download. Both were previously
-  // invisible — the only automatic signal was controllerchange, which by
-  // definition never fires in the second case, and the only manual one was a
-  // modal buried in the hamburger drawer that most users never open. So a user
-  // whose install kept failing on a bad connection sat on an old build
-  // indefinitely with the app insisting nothing was wrong.
-  const watchInstallingWorker = (registration) => {
-    const worker = registration.installing;
-    if (!worker) return;
-    worker.addEventListener("statechange", () => {
-      if (worker.state === "installed" && navigator.serviceWorker.controller) {
-        showUpdateBanner();
-      } else if (worker.state === "redundant") {
-        // Discarded before it could take over: a failed precache, a quota
-        // rejection, or a newer worker superseding it. Only worth saying
-        // anything about in the first case, which is the one that repeats.
-        setUpdateFailedHint();
-      }
-    });
-  };
-
-  const register = () => {
-    // updateViaCache: "none" — the browser's own HTTP cache must never answer
-    // the "is there a new sw.js?" check, or a host that serves the worker with
-    // cacheable headers delays every release by up to a day (the browser's
-    // forced re-check cap). The .update() calls below are the proactive half:
-    // without them the check only runs on navigation, so a tab left open for
-    // days never sees a release at all.
-    navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
-      .then((registration) => {
-        serviceWorkerRegistration = registration;
-        requestOfflineCacheRepair();
-        // A worker may already be waiting from a previous visit — updatefound
-        // has long since fired for it and will not fire again.
-        if (registration.waiting && navigator.serviceWorker.controller) showUpdateBanner();
-        watchInstallingWorker(registration);
-        registration.addEventListener("updatefound", () => watchInstallingWorker(registration));
-        const checkForUpdate = () => registration.update().catch(() => {});
-        document.addEventListener("visibilitychange", () => {
-          if (document.visibilityState === "visible") checkForUpdate();
-        });
-        setInterval(checkForUpdate, 30 * 60 * 1000);
-      })
-      .catch((error) => {
-        console.warn("Service worker registration failed", error);
-      });
-    window.addEventListener("online", requestOfflineCacheRepair);
-  };
-  // Register after `load` to avoid competing with first-paint fetches — but if
-  // the page has already finished loading (this runs from the async auth/boot
-  // flow, long after `load` fires), a "load" listener would never run, so
-  // register immediately instead. This is why offline previously never worked:
-  // the SW was only ever set up inside initAppForUser(), after `load`.
-  if (document.readyState === "complete") register();
-  else window.addEventListener("load", register, { once: true });
-}
-
-function pwaAssetsSupported() {
-  return location.protocol === "http:" || location.protocol === "https:";
-}
-
-function installManifestLink() {
-  if (!pwaAssetsSupported() || document.querySelector('link[rel="manifest"]')) return;
-
-  const link = document.createElement("link");
-  link.rel = "manifest";
-  link.href = "manifest.webmanifest";
-  document.head.appendChild(link);
-}
-
-function createNewDeck({ title = "New Deck", category = defaultDeckCategory, notesMode = false } = {}) {
-  const name = String(title || "New Deck").trim() || "New Deck";
-  const cat = normalizeDeckCategory(category);
-  const doCreate = () => {
-    setDeckAutosaveStorageFailed(false);
-    state.deckId = null;
-    // Detach from any previously-loaded library entry so this new deck saves as
-    // its own entry rather than overwriting the deck that was just open.
-    state.localDeckId = null;
-    state.deckTitle = name;
-    state.deckCategory = cat;
-    state.notes = "";
-    state.sourceTitle = name;
-    state.importTitleHint = name;
-    state.masterCards = [];
-    resetStudyDeck(state.masterCards);
-    setViewMode(notesMode ? "notes" : "cards");
-    closeImportPanel();
-    closeAllCardsPanel();
-    showCard();
-    setStatus("Created new deck.");
-  };
-  if (hasActiveDeck()) {
-    showConfirmModal("Create a new deck? Unsaved local progress will be lost.", doCreate, { confirmLabel: "Create New" });
-  } else {
-    doCreate();
-  }
-}
-
-// Creates a deck inside a folder from the My Decks library: prompts for a title,
-// files it under `folderPath`, closes the panel, and drops the user into the new
-// deck in notes mode ready to write. The deck is filed under `folderPath` (set on
-// state.deckCategory) and persists to the library + cloud on the first edit via
-// autosave — the library never stores a truly empty deck.
-export function newDeckInFolder(folderPath = "") {
-  const cat = normalizeDeckCategory(folderPath);
-  const where = cat === defaultDeckCategory ? "" : ` in "${cat}"`;
-  showPromptModal("New deck", `Name your new deck${where}. Start adding notes and cards right away.`, "", (title) => {
-    // Empty field, "New Deck" placeholder — falls back to that indicative name
-    // if left blank, so the field never needs clearing before typing.
-    const name = String(title || "").trim() || "New Deck";
-    createNewDeck({ title: name, category: cat, notesMode: true });
-    closeMyDecksPanel();
-    showToast(`New deck "${name}"${where} — add notes or cards to save it`);
-  }, { placeholder: "New Deck" });
-}
-
-
 document.getElementById("setupForm")?.addEventListener("submit", (e) => {
   e.preventDefault();
   const url = document.getElementById("setupUrl").value.trim();
@@ -1855,7 +1120,7 @@ document.getElementById("offlineBootRetryBtn")?.addEventListener("click", async 
       await ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
       if (!appInitialized) {
-        appInitialized = true;
+        setAppInitialized(true);
         initAppForUser();
       }
     } else {
@@ -1942,92 +1207,6 @@ el.syncNowBtn?.addEventListener("click", () => {
   reconcileAllDecks({ explicit: true });
 });
 
-// ── User-defined auto-sync ──────────────────────────────────────────────────
-// Runs the same two-way reconcile as "Sync Now" on a cadence the user picks, so
-// they don't have to click it. Device-local (each device sets its own).
-//
-// This used to be a bare setInterval(mins × 60s), which is why auto-sync looked
-// like it ran once and then went to sleep:
-//
-//   • A backgrounded tab has its timers throttled hard (on mobile, often frozen
-//     outright), so a 5-minute interval on a phone fires nowhere near every 5
-//     minutes — and nothing caught up when the tab came back.
-//   • A tick that landed while signed out or offline was dropped entirely, and
-//     the next one was a full interval away. Coming back online meant waiting.
-//   • An explicit Sync Now didn't reset the interval, so a sync could fire
-//     seconds after the user had just synced by hand.
-//
-// So the schedule is a DEADLINE (autoSyncNextAt) rather than an interval, and a
-// 1-second ticker compares it against the clock. Wall-clock time can't be
-// throttled away: however long the tab was frozen, the first tick after it wakes
-// sees the deadline is past and syncs. The same ticker paints the pill's
-// countdown, and every completed sync — background or explicit — re-arms the
-// deadline from when it actually finished.
-const AUTOSYNC_KEY = "recall_autosync_minutes";
-const AUTOSYNC_ALLOWED = new Set([0, 1, 2, 5, 10, 15, 30]);
-const AUTOSYNC_TICK_MS = 1000;
-let autoSyncTicker = null;
-export let autoSyncNextAt = Infinity;
-
-// What a device that has never opened the setting gets. It used to be 0 — off —
-// which meant a new user's only syncs were: boot, reconnect, returning to the
-// foreground after a minute away, and the manual button. Nothing was broken;
-// nothing was scheduled either, and "my decks don't reach my other device" is
-// what that feels like. Anyone who once set an interval (including the
-// developer) had a completely different experience of the same build.
-const AUTOSYNC_DEFAULT_MINUTES = 5;
-
-export function getAutoSyncMinutes() {
-  let raw = null;
-  try {
-    raw = localStorage.getItem(AUTOSYNC_KEY);
-  } catch (_) {
-    raw = null;
-  }
-  // Absent means "never chosen", which is NOT the same as a stored 0. An
-  // explicit "Off" is a real preference and has to survive; only the untouched
-  // case gets the default.
-  if (raw === null) return AUTOSYNC_DEFAULT_MINUTES;
-  const v = parseInt(raw, 10);
-  return AUTOSYNC_ALLOWED.has(v) ? v : 0;
-}
-
-// Push the next auto-sync a full interval out from now. Called when the cadence
-// changes and after every sync completes, so "next in 5m" always means five
-// minutes since the last one actually ran, not since some fixed grid.
-export function rearmAutoSync() {
-  const mins = getAutoSyncMinutes();
-  autoSyncNextAt = mins ? Date.now() + mins * 60 * 1000 : Infinity;
-  renderSyncCountdown();
-}
-
-function autoSyncTick() {
-  // Only the repaint is skipped behind a hidden tab — the sync check below
-  // still runs, because a backgrounded tab is exactly when an auto-sync is
-  // worth having. The countdown is derived from wall-clock time, so it is
-  // correct again as soon as the tab is shown.
-  if (!document.hidden) renderSyncCountdown();
-  if (!getAutoSyncMinutes()) return;
-  if (Date.now() < autoSyncNextAt) return;
-  // Not syncable right now (signed out, offline, or a sync already running).
-  // Leave the deadline in the past so the very next tick that CAN sync does,
-  // instead of silently forfeiting this cycle and waiting a whole interval.
-  if (!supabaseClient || !isSignedIn || !navigator.onLine || reconcileInFlight) return;
-  // reconcileAllDecks re-arms in its finally block; do it here too so a rejected
-  // promise (it handles its own errors, but be safe) can't wedge the loop into
-  // firing on every single tick.
-  rearmAutoSync();
-  reconcileAllDecks({ explicit: false });
-}
-
-function applyAutoSyncInterval() {
-  const mins = getAutoSyncMinutes();
-  if (el.autoSyncSelect) el.autoSyncSelect.value = String(mins);
-  rearmAutoSync();
-  // One ticker for the life of the page: it also drives the countdown, which is
-  // wanted even with auto-sync off (it's what says "off").
-  if (!autoSyncTicker) autoSyncTicker = setInterval(autoSyncTick, AUTOSYNC_TICK_MS);
-}
 
 // Coming back from a frozen tab or a dead connection: check the deadline
 // immediately rather than waiting up to a second (and, more importantly, make
@@ -2037,16 +1216,6 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("online", autoSyncTick);
 
-function setAutoSyncMinutes(mins) {
-  const clean = AUTOSYNC_ALLOWED.has(mins) ? mins : 0;
-  try {
-    localStorage.setItem(AUTOSYNC_KEY, String(clean));
-  } catch (_) {
-    /* storage unavailable (private mode) — timer still applies for this session */
-  }
-  applyAutoSyncInterval();
-  showToast(clean ? `Auto-sync on — every ${clean} min${clean === 1 ? "" : "s"}` : "Auto-sync off", "info");
-}
 
 el.autoSyncSelect?.addEventListener("change", (e) => {
   setAutoSyncMinutes(parseInt(e.target.value, 10) || 0);
@@ -2061,21 +1230,6 @@ hydrateMyDecksIcons();
 el.closeMyDecksBtn?.addEventListener("click", closeMyDecksPanel);
 el.myDecksRefreshBtn?.addEventListener("click", () => { closeMyDecksMoreMenu(); renderMyDecksList(); });
 
-// ── The toolbar's "⋯" menu ──────────────────────────────────────────────────
-// Holds Refresh, Expand all, Import EPUB, Restore and every Export All format,
-// so the toolbar itself stays a single row at any width.
-export function closeMyDecksMoreMenu() {
-  if (!el.myDecksMoreMenu || el.myDecksMoreMenu.hidden) return;
-  el.myDecksMoreMenu.hidden = true;
-  el.myDecksMoreBtn?.setAttribute("aria-expanded", "false");
-}
-
-function toggleMyDecksMoreMenu() {
-  if (!el.myDecksMoreMenu) return;
-  const willOpen = el.myDecksMoreMenu.hidden;
-  el.myDecksMoreMenu.hidden = !willOpen;
-  el.myDecksMoreBtn?.setAttribute("aria-expanded", String(willOpen));
-}
 
 el.myDecksMoreBtn?.addEventListener("click", (e) => { e.stopPropagation(); toggleMyDecksMoreMenu(); });
 document.getElementById("myDecksMoreCloseBtn")?.addEventListener("click", closeMyDecksMoreMenu);
@@ -2086,32 +1240,10 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".my-decks-more")) closeMyDecksMoreMenu();
 });
 
-// The folder new decks/folders are created under: the cwd in Folder view, else the
-// scope-filter value (root when neither is set).
-export function currentMyDecksFolder() {
-  if (state.myDecksView === "folder") return state.myDecksCwd || "";
-  return el.myDecksCategoryFilter?.value || "";
-}
+
 el.myDecksNewFolderBtn?.addEventListener("click", () => createFolder(currentMyDecksFolder()));
 el.myDecksNewDeckBtn?.addEventListener("click", () => newDeckInFolder(currentMyDecksFolder()));
 
-// ── Import into a folder ────────────────────────────────────────────────────
-// The third way to put something in the folder you're looking at, alongside New
-// deck and New folder — previously every import landed in Uncategorized no
-// matter where you started it from, leaving you to drag the deck back. One
-// shared <input type="file"> serves both the toolbar button and every folder
-// row's own Import button; this records which folder opened it, since the change
-// event can't tell them apart.
-let myDecksImportFolder = "";
-
-export function importIntoFolder(folderPath = "") {
-  const input = el.myDecksImportInput;
-  if (!input) return;
-  myDecksImportFolder = folderPath || "";
-  closeMyDecksMoreMenu();
-  input.value = ""; // re-picking the same file must still fire `change`
-  input.click();
-}
 
 el.myDecksImportBtn?.addEventListener("click", () => importIntoFolder(currentMyDecksFolder()));
 
@@ -2441,41 +1573,6 @@ el.allCardsFilter?.addEventListener("click", (event) => {
   if (btn) setAllCardsFilter(btn.dataset.filter);
 });
 el.closeAllCardsBtn.addEventListener("click", closeAllCardsPanel);
-// ── Triple-click a rendered card → open its editor, caret at that spot ──────
-// Mirrors the notes triple-click-to-edit, reusing findRawOffsetForRenderedPoint.
-//
-// The flip is NOT deferred while we wait to see whether a second and third
-// click follow. It used to be — a 250ms setTimeout on EVERY single click of
-// every card in this list — which is a quarter-second of nothing after each
-// tap, paid by everyone, to smooth over a gesture almost nobody uses. The
-// study card had already made the opposite call for exactly this reason (see
-// tripleClickCardToEditor); this list simply never got the same treatment.
-//
-// Clicks 1 and 2 cancel out, so on click 3 the face under the pointer IS the
-// face the user started on — which is what makes `side` below correct without
-// any deferral. The card is then flipped back to it before the editor opens,
-// because clicks 1 and 2 leave the DOM mid-gesture.
-function tripleClickAllCardToEditor(item, rendered, clientX, clientY) {
-  const card = allCardById(item.dataset.cardId);
-  if (!card) return;
-  const side = rendered.closest(".all-card-answer") ? "answer" : "question";
-  const source = side === "answer" ? card.answer : card.question;
-  const offset = findRawOffsetForRenderedPoint(rendered, source, clientX, clientY);
-  // openAllCardEditor only ever ADDS is-flipped (for the answer side), so an
-  // odd number of preceding flips would leave the item showing the wrong face
-  // behind the editor. Settle it here, as the study card does.
-  item.classList.toggle("is-flipped", side === "answer");
-  openAllCardEditor(item, side);
-  const textarea = item.querySelector(".all-card-editor [data-all-edit-value]");
-  if (!textarea) return;
-  const pos = offset != null ? Math.max(0, Math.min(offset, textarea.value.length)) : 0;
-  textarea.focus();
-  textarea.setSelectionRange(pos, pos);
-  // scrollTextareaToOffset measures the highlight mirror, so it has to be
-  // painted first — the editor was only just opened with this card's text.
-  refreshHighlightBackdrop(textarea);
-  scrollTextareaToOffset(textarea, pos);
-}
 
 el.allCardsList.addEventListener("click", (event) => {
   const gotoButton = event.target.closest("[data-all-goto]");
@@ -2679,34 +1776,7 @@ el.card.addEventListener("click", (event) => {
   flipCard();
 });
 
-// ── Triple-click a rendered card face → raw editor, caret at that spot ──────
-// The notes view and the All Cards list both have this; the study card didn't,
-// so there was no way to jump from a spot in the rendered card to the same spot
-// in its markdown. Reuses findRawOffsetForRenderedPoint, exactly as the other
-// two do.
-//
-// Unlike All Cards, the flip is NOT deferred while we wait to see whether a
-// second and third click follow: a quarter-second of nothing after tapping the
-// card would be far worse than the flicker three fast clicks cause, and flipping
-// is the card's main gesture. The clicked side is recovered afterwards instead —
-// clicks 1 and 2 cancel out, so the face under the pointer on click 3 is the one
-// the user started on, and the card is flipped back to it before its editor
-// opens.
-function tripleClickCardToEditor(view, clientX, clientY) {
-  const card = state.cards[state.current];
-  if (!card || view.hidden) return;
-  const side = view === el.answerView ? "answer" : "question";
-  const offset = findRawOffsetForRenderedPoint(view, side === "answer" ? card.answer : card.question, clientX, clientY);
-  const shouldBeFlipped = side === "answer";
-  if (state.flipped !== shouldBeFlipped) {
-    state.flipped = shouldBeFlipped;
-    el.card.classList.toggle("is-flipped", state.flipped);
-  }
-  // Clears the browser's own triple-click word/paragraph selection, which would
-  // otherwise sit behind the editor and make hasCardTextSelection() true.
-  window.getSelection()?.removeAllRanges();
-  toggleEditMode(side, { cursorOffset: offset });
-}
+
 el.card.addEventListener("pointerdown", handlePointerDown);
 el.card.addEventListener("pointermove", handlePointerMove);
 el.card.addEventListener("pointerup", handlePointerUp);
@@ -2820,267 +1890,12 @@ if (styleMobileMedia?.addEventListener) {
   styleMobileMedia.addListener(handleStyleEnvironmentChange);
 }
 
-let appInitialized = false;
-
-function initAppForUser() {
-  clearBrowserPersistence();
-  setStyleProfiles(loadLocalStyleSettings());
-  applyActiveStyleSettings({ force: true });
-  renderThemeMenu();
-  let savedTheme = null;
-  try {
-    savedTheme = localStorage.getItem(themeStorageKey);
-  } catch (error) {
-    console.warn("Could not read saved theme", error);
-  }
-  setTheme(savedTheme || "dark-amoled");
-  setStatus("");
-  // Start on a clean home screen each load — the last-open deck is no longer
-  // auto-restored (only credentials, the saved "My Decks" library, and styles persist).
-  showCard();
-  setStyleStatus("Local style");
-  installManifestLink();
-  registerServiceWorker();
-  // One-time-per-boot cleanup of snapshots orphaned by a since-fixed race in
-  // pullCloudDeckToLibrary (concurrent tabs reconciling the same cloud deck
-  // could each mint a different local id; the loser's snapshot was never
-  // referenced by the index again and leaked in storage forever). Safe to
-  // run regardless of connectivity — it only looks at already-persisted data.
-  pruneOrphanedDeckSnapshots().catch((error) => console.warn("Could not prune orphaned deck snapshots", error));
-  // Mirror every cloud deck onto this device (and push anything newer locally)
-  // so the PWA has a full, up-to-date offline library. Runs in the background.
-  if (navigator.onLine) {
-    setTimeout(() => reconcileAllDecks({ explicit: false }), 1200);
-    // Once per account, well after the sync has had its turn. A project that
-    // never had supabase_setup.sql fully applied otherwise announces itself only
-    // as things quietly not working — and the person who would have to fix it is
-    // the same person who is about to conclude the app is broken.
-    setTimeout(() => announceProjectHealthOnce(), 6000);
-  }
-}
-
-// The health check as a background nudge rather than a screen the user has to
-// go and find. Runs once per account per project: the answer only changes when
-// somebody runs SQL, so repeating it on every launch would be a network call
-// that exists to say the same thing forever.
-const HEALTH_CHECKED_KEY = "recall:projectHealthCheckedFor";
-
-async function announceProjectHealthOnce() {
-  let marker = null;
-  const config = loadSupabaseConfig();
-  const userId = (() => {
-    try { return localStorage.getItem(LAST_USER_STORAGE_KEY); } catch { return null; }
-  })();
-  if (!config?.url || !userId) return;
-  const signature = `${config.url}::${userId}`;
-  try { marker = localStorage.getItem(HEALTH_CHECKED_KEY); } catch (_) {}
-  if (marker === signature) return;
-
-  let results;
-  try {
-    results = await checkProjectHealth();
-  } catch (error) {
-    console.warn("Background project health check failed", error);
-    return;
-  }
-  // Don't remember a run that couldn't reach the project — it proved nothing,
-  // and marking it done would suppress the real check forever.
-  if (results.some((r) => r.status === "skip")) return;
-  if (results.length === 1 && results[0].status === "fail") return;
-
-  try { localStorage.setItem(HEALTH_CHECKED_KEY, signature); } catch (_) {}
-
-  const broken = results.filter((r) => r.status === "fail" || r.status === "warn");
-  if (!broken.length) return;
-  showToast(
-    `Your Supabase project needs attention — ${broken[0].label.toLowerCase()}. See ☰ → App Info.`,
-    "error"
-  );
-  markUpdateAvailableInMenu();
-}
-
-// The on-device deck library is a mirror of ONE account's cloud data. If a
-// different account signs in on this device, the previous user's local decks
-// must not survive — the next reconcile would push them straight into the new
-// account's cloud (and the old tombstones would suppress the new user's own
-// decks). The previous user's data is safe in their own cloud account.
-export const LAST_USER_STORAGE_KEY = "flashcards_last_user_id";
-
-async function ensureLocalLibraryOwner(userId) {
-  if (!userId) return;
-  try {
-    const previous = localStorage.getItem(LAST_USER_STORAGE_KEY);
-    if (previous && previous !== String(userId)) {
-      await clearAllDeckSnapshots();
-      localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
-      localStorage.removeItem(LOCAL_DECK_TOMBSTONES_KEY);
-      // Observations about the previous account's decks say nothing about this
-      // one's, and a stale entry is a head start toward deleting a deck.
-      localStorage.removeItem(MISSING_DECK_WATCH_KEY);
-      localStorage.removeItem(LAST_GLOBAL_SYNC_KEY);
-      localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
-      localStorage.removeItem(LAST_BG_SYNC_PROBLEM_KEY);
-      // Unscoped, unlike the quick-note queues, so it would be replayed by
-      // whoever signs in next — uploading one account's style into another's
-      // row on a shared device.
-      localStorage.removeItem(PENDING_STYLE_KEY);
-      localStorage.removeItem(deckStorageKey);
-      // Persisted state was cleared but the OPEN DECK was not: state.deckId,
-      // masterCards and notes survived the switch in memory, so the next
-      // autosave filed the previous account's deck into this one's library and
-      // the next reconcile pushed it to their cloud.
-      state.localDeckId = null;
-      state.deckId = null;
-      state.masterCards = [];
-      // Nothing repaints on this path, so the setViewMode net never runs — the
-      // raw editor would sit there still holding the PREVIOUS account's note,
-      // ready to be typed back into whatever this account opens first.
-      discardNotesEditingForDeckSwap();
-      state.notes = "";
-      console.log("Cleared local deck library — different account signed in.");
-    }
-    localStorage.setItem(LAST_USER_STORAGE_KEY, String(userId));
-  } catch (error) {
-    console.warn("Could not verify local library owner", error);
-  }
-}
-
-// The other half of the offline-SIGNED_OUT forgiveness in setupAuthListener.
-// Being lenient about a refresh that failed with no network is only correct if
-// something tries again once there IS a network — otherwise `isSignedIn` stays
-// false, autoSyncTick and reconcileAllDecks both bail on it without a word, and
-// the app goes on looking signed in while never syncing again until a reload.
-// That is the shape of "sync just stopped working" for a phone that spent a
-// week in a pocket.
-let sessionRecoveryInFlight = false;
-
-async function recoverSessionIfPossible() {
-  if (sessionRecoveryInFlight) return;
-  if (isSignedIn || !supabaseClient || !navigator.onLine) return;
-  if (!loadSupabaseConfig()) return;
-  sessionRecoveryInFlight = true;
-  try {
-    // getSession() refreshes an expired access token when the refresh token is
-    // still good, which is exactly the case this exists for.
-    const session = await getCachedSession();
-    if (session?.user) {
-      setSignedIn(true);
-      await ensureLocalLibraryOwner(session.user.id);
-      showAuthenticatedUI();
-      if (!appInitialized) {
-        appInitialized = true;
-        initAppForUser();
-      }
-      refreshSyncIndicatorBaseline();
-      return;
-    }
-    // Genuinely signed out, and now demonstrably online — so say so instead of
-    // leaving the app in a state that looks signed in and syncs nothing.
-    if (!document.getElementById("loginOverlay")?.hidden) return; // already there
-    setSyncIndicator("signedout");
-    reportBackgroundSyncProblem(
-      "signed-out",
-      "Signed out — sign in again to resume syncing. Your decks are safe on this device."
-    );
-  } catch (error) {
-    console.warn("Session recovery attempt failed", error);
-  } finally {
-    sessionRecoveryInFlight = false;
-  }
-}
 
 window.addEventListener("online", () => { recoverSessionIfPossible(); });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") recoverSessionIfPossible();
 });
 
-let authListenerSubscription = null;
-
-function setupAuthListener() {
-  if (authListenerSubscription) {
-    authListenerSubscription.unsubscribe();
-    authListenerSubscription = null;
-  }
-  const { data } = supabaseClient.auth.onAuthStateChange(async (event, session) => {
-    if (session?.user) {
-      setSignedIn(true);
-      await ensureLocalLibraryOwner(session.user.id);
-      showAuthenticatedUI();
-      if (!appInitialized) {
-        appInitialized = true;
-        initAppForUser();
-      }
-    } else if (event === "SIGNED_OUT") {
-      setSignedIn(false);
-      const wasExplicit = explicitLogout;
-      // Reset unconditionally. It used to be cleared only past the offline
-      // guard below, so one sign-out attempt made while offline left it true for
-      // the life of the page — and the next failed refresh, which should have
-      // been forgiven, then threw the user out of their offline decks.
-      setExplicitLogout(false);
-      // Only drop to the login screen for a real sign-out. A failed token
-      // refresh while offline also emits SIGNED_OUT — ignore it so the user
-      // isn't locked out of their offline decks. recoverSessionIfPossible()
-      // picks this back up when the connection returns; without it the session
-      // stayed dead and every subsequent sync no-opped in silence.
-      if (!wasExplicit && !navigator.onLine) return;
-      appInitialized = false;
-      showLoginScreen();
-    }
-  });
-  authListenerSubscription = data.subscription;
-}
-
-async function bootApp() {
-  // Before anything reads a deck: set up the IndexedDB-backed deck store
-  // (and migrate any pre-existing localStorage snapshots into it) so every
-  // downstream readDeckSnapshot/writeDeckSnapshot call sees a consistent
-  // picture from the very first render. requestPersistentStorage is
-  // best-effort and doesn't need to block boot; the math repair DOES need to
-  // finish before any deck can be opened, so it's awaited.
-  await initDeckStorage();
-  requestPersistentStorage();
-  await runEscapedMathRepair();
-
-  let status = initSupabaseClient();
-
-  // A configured device whose library didn't arrive gets one patient retry
-  // before being told anything: the script is a blocking tag, so if it is merely
-  // slow rather than blocked it will land within this window.
-  if (status === "no-library" && loadSupabaseConfig()) {
-    if (await waitForSupabaseLibrary()) status = initSupabaseClient();
-  }
-
-  if (status === "no-config") {
-    showSetupScreen();
-    return;
-  }
-  if (status !== "ok") {
-    // Deliberately NOT the setup screen. See initSupabaseClient.
-    showLibraryFailedScreen();
-    return;
-  }
-
-  setupAuthListener();
-
-  // Use the cached session (local, no network) so offline / flaky-network loads
-  // still let a signed-in user reach their decks instead of the login wall.
-  const session = await getCachedSession();
-  if (session?.user) {
-    setSignedIn(true);
-    await ensureLocalLibraryOwner(session.user.id);
-    showAuthenticatedUI();
-    if (!appInitialized) {
-      appInitialized = true;
-      initAppForUser();
-    }
-    // Only on the signed-in path: the setup, library-failed and login screens
-    // have no diagrams to draw, no archives to write and nothing to paste into.
-    warmDeferredLibraries();
-  } else {
-    showLoginScreen();
-  }
-}
 
 // Set up offline support up front, regardless of Supabase config or auth state.
 // The service worker and its precache are what make the app usable offline, so
@@ -3285,7 +2100,7 @@ export function applyCardRawModePreference() {
 // `remember: false` opts out of updating cardRawModePreferred, for the toggles
 // that are a side effect of something else (a blur, a flip) rather than a
 // deliberate choice.
-function toggleEditMode(side, { cursorOffset = null, remember = true } = {}) {
+export function toggleEditMode(side, { cursorOffset = null, remember = true } = {}) {
   const isQuestion = side === 'question';
   const btn = isQuestion ? el.editQuestionBtn : el.editAnswerBtn;
   const view = isQuestion ? el.questionView : el.answerView;
@@ -3531,7 +2346,7 @@ function runningVersionLabel() {
 // BUILD_STAMP to catch a cross-release fallback the worker didn't report — the
 // message needs a controller and an open channel, and neither is guaranteed on
 // the very load that went wrong.
-function requestedAppVersion() {
+export function requestedAppVersion() {
   const src = document.querySelector('script[src*="main.js"]')?.getAttribute("src") || "";
   return src.match(/[?&]v=([^&]+)/)?.[1] || null;
 }
@@ -3962,7 +2777,7 @@ const HEALTH_TABLES = [
 
 const RERUN_SQL = "Re-run supabase_setup.sql in your Supabase project's SQL Editor.";
 
-async function checkProjectHealth() {
+export async function checkProjectHealth() {
   const results = [];
   const add = (label, status, detail) => results.push({ label, status, detail });
 
