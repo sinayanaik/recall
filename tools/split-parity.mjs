@@ -80,12 +80,49 @@ for (const f of walk(path.join(ROOT, "src"))) {
 // Undo the setter rewrite on the CURRENT text; if it then matches the baseline,
 // the setter routing was the whole of the difference.
 function unroute(code) {
+  // To a fixed point: a setter call routinely appears INSIDE another setter's
+  // argument (`setX(requestAnimationFrame(() => { setX(0); … }))`), and one pass
+  // hands the inner one through untouched as part of the outer's argument.
   let out = code;
-  for (const [setter, { name, kind }] of SETTER_ROUTED) {
-    if (kind === "bump") out = out.replaceAll(`${setter}();`, `${name} += 1;`);
-    else out = out.replace(new RegExp(`\\b${setter}\\(([^;]*)\\);`, "g"), `${name} = $1;`);
+  for (let pass = 0; pass < 5; pass++) {
+    const before = out;
+    for (const [setter, { name, kind }] of SETTER_ROUTED) {
+      if (kind === "bump") { out = out.replaceAll(`${setter}();`, `${name} += 1;`); continue; }
+      out = replaceCall(out, setter, (arg) => `${name} = ${arg};`);
+    }
+    if (out === before) break;
   }
   return out;
+}
+
+// Replace `setter(<balanced args>);` — matching parentheses rather than
+// scanning to the next `;`. The argument is routinely a whole callback:
+//
+//   setChromeScrollFrame(requestAnimationFrame(() => { … ; … }));
+//
+// A `[^;]*` pattern stops at the first semicolon INSIDE that callback, fails to
+// match, and reports a mechanical setter routing as a real code change.
+function replaceCall(text, fn, build) {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const at = text.indexOf(`${fn}(`, i);
+    if (at === -1) return out + text.slice(i);
+    // Only a standalone call, not a longer identifier ending in this name.
+    const prev = text[at - 1];
+    if (prev && /[\w$.]/.test(prev)) { out += text.slice(i, at + fn.length + 1); i = at + fn.length + 1; continue; }
+    let depth = 0;
+    let j = at + fn.length;
+    for (; j < text.length; j++) {
+      if (text[j] === "(") depth++;
+      else if (text[j] === ")") { depth--; if (!depth) break; }
+    }
+    if (j >= text.length) return out + text.slice(i);
+    const arg = text.slice(at + fn.length + 1, j);
+    const semi = text[j + 1] === ";" ? j + 2 : j + 1;
+    out += text.slice(i, at) + build(arg) + (text[j + 1] === ";" ? "" : "");
+    i = semi;
+  }
 }
 
 
