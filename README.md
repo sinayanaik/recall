@@ -1,6 +1,6 @@
 # Recall — Setup Guide
 
-Recall is a static flashcard and study-notes web app backed by **your own Supabase project**. Three core files, no build step, no framework, no npm — you serve a folder and the app runs.
+Recall is a static flashcard and study-notes web app backed by **your own Supabase project**. No build step, no framework, no npm — you serve a folder and the app runs.
 
 > [!NOTE]
 > **Looking for how to *use* Recall?** It's documented inside the app: open the **☰** menu → **? Help & Guide**. Twelve sections cover loading decks, study notes, studying, keyboard shortcuts, swipe gestures, editing and formatting, clozes, images, quick notes, progress, the All Cards panel, sync, offline behaviour, card format and themes.
@@ -853,12 +853,42 @@ Two deliberate omissions, both explained in comments in the file: there is **no 
 
 | File | Role |
 |---|---|
-| `index.html` | The whole UI, plus the pinned CDN `<script>` tags |
-| `src/` | All application logic, as ES modules. `src/main.js` is the entry point the page loads; everything else is imported from it. Still no build step — the browser resolves the imports |
-| `styles.css` | All styling, including the 10 themes |
+| `index.html` | The whole UI, the pinned CDN `<script>` tags, and the `<link>`s for everything below |
+| `src/` | All application logic, as ES modules — 130 files. `src/main.js` is the entry point the page loads and holds no logic of its own; everything else is imported from it |
+| `styles/` | All styling, including the 10 themes — 13 files, **loaded in numeric order** |
 | `sw.js` | Service worker — app-shell precache, CDN precache, image cache |
 | `manifest.webmanifest`, `icons/` | PWA install metadata and icons |
 | **`supabase_setup.sql`** | **The only SQL file. Run it once; re-run it to upgrade** |
 | `tools/` | Development checks — not served, not needed to run the app |
 
 Serve every one of them; `sw.js` and the icons are what make the app installable and usable offline.
+
+### How `src/` is laid out
+
+Still no build step: the browser resolves the imports itself. One folder per
+area of the app —
+
+| Folder | What lives there |
+|---|---|
+| `core/` | Values everything shares: `state`, the `el` DOM map, constants, the build stamp, the on-demand CDN loader. **These import nothing** |
+| `cloud/` | The user's Supabase project: config, auth, deck rows, the network policy every call goes through |
+| `sync/` | Two-way sync — the per-card merge, tombstones, push/pull, and the deletion guards |
+| `storage/` | The device's own copy: IndexedDB deck store, autosave, quota, the storage panel |
+| `library/` | My Decks: the local index, folders, rows, tiles, drag and drop |
+| `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache that keeps huge notes fast |
+| `notes/` | The notes view: editing, the caret, scroll anchoring, the TOC, selection, links |
+| `cards/` | Studying: the card view, swipe, the All Cards panel, deck actions |
+| `editor/` | The raw editor: its highlight mirror, text transforms, toolbars |
+| `format/` | Selection-driven formatting: cloze, highlight, locating a rendered selection in the source |
+| `import/` `export/` | Getting decks in (markdown, zip, EPUB, URL) and out (markdown, PDF, DOCX, HTML, SQL) |
+| `images/` | Upload, the offline outbox, paste and drag handling, in-place resize |
+| `backup/` | The whole library as one `.zip`, and the additive restore |
+| `quick-notes/` | The Quick Notes deck and its board |
+| `ui/` `panels/` `pwa/` | Chrome, overlays, navigation, themes; the cloze and highlight panels; the service-worker client and App Info |
+
+**The one rule that matters:** `core/` imports nothing from the rest of the app.
+Modules elsewhere import each other freely — that is safe, because what crosses
+those edges is function declarations, which are hoisted before any module runs.
+What is *not* safe is a top-level `const X = somethingImported` inside a cycle:
+it evaluates immediately and throws. Shared values therefore live in a module
+that imports nothing. `node tools/module-symbols.mjs` enforces this.
