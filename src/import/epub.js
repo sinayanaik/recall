@@ -10,13 +10,14 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { optimizeImage, storageFolderSlug, storageGroupId, uploadImageToSupabase } from "../images/upload.js?v=__BUILD__";
+import { htmlToMarkdown } from "./html-to-markdown.js?v=__BUILD__";
 import { decksUnderFolder } from "../library/folder-tree.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
 import { currentMyDecksFolder } from "../library/my-decks-menu.js?v=__BUILD__";
 import { setMyDecksCwd, setMyDecksView } from "../library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
-import { htmlToMarkdown, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { lastSaveErrorWasQuota, persistWorkingDeck } from "../storage/quota.js?v=__BUILD__";

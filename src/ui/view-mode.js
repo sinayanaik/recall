@@ -2,9 +2,10 @@
 
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { refreshHighlightBackdrop, renderHighlightsPanel, state, viewModePaintToken } from "../main.js?v=__BUILD__";
+import { refreshHighlightBackdrop, state, viewModePaintToken } from "../main.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
+import { renderHighlightsPanel } from "../panels/highlights-panel.js?v=__BUILD__";
 import { resetChromeAutoHide } from "./chrome.js?v=__BUILD__";
 
 // `options.deferRender` yields one frame between flipping the toggle's own

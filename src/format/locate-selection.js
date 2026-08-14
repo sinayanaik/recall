@@ -5,7 +5,7 @@
 // one — each bounded, because an unbounded fuzzy scan over a large note is
 // quadratic.
 
-import { htmlToMarkdown } from "../main.js?v=__BUILD__";
+import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { cleanedSelectionFragment, textWithLineBreaks } from "../notes/selection.js?v=__BUILD__";
 
 // The current selection inside `view`, captured both as markdown (so inline
