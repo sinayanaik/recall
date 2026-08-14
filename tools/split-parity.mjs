@@ -56,7 +56,14 @@ const ACCEPTED = {
   bootApp: "isSignedIn = true -> setSignedIn(true)",
   setTheme:
     "allCardsRenderId += 1 -> bumpAllCardsRenderId(). The counter is main.js's, " +
-    "and an imported binding cannot be incremented from ui/theme.js."
+    "and an imported binding cannot be incremented from ui/theme.js.",
+
+  // qnReturnState is written from the Quick Notes board and from nav-history,
+  // so it is written through setQnReturnState. Reads are unchanged.
+  goToNavLocation: "qnReturnState = … -> setQnReturnState(…)",
+  restoreQnReturnState: "qnReturnState = null -> setQnReturnState(null)",
+  openQuickNotesBoard: "qnReturnState = null -> setQnReturnState(null)",
+  followNoteLink: "qnReturnState = { … } -> setQnReturnState({ … })"
 };
 
 // Baseline symbols that are intentionally gone, and why. A rename lands here

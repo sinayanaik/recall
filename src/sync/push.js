@@ -7,8 +7,9 @@
 
 import { CLOUD_TIMEOUT_MS, abortable, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
-import { emptySyncStats, isMissingColumnError, isMissingNotesColumnError, normalizeCardStatus, showToast } from "../main.js?v=__BUILD__";
+import { emptySyncStats, isMissingColumnError, isMissingNotesColumnError, normalizeCardStatus } from "../main.js?v=__BUILD__";
 import { syncTextChanged } from "./diff.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Upsert one chunk of card rows, retrying without `category` if the database
 // hasn't run supabase_setup.sql yet (no cards.category column). Mirrors

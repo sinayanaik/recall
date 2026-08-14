@@ -8,7 +8,8 @@
 import { styleStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeRegExp } from "../core/text.js?v=__BUILD__";
-import { isNotesEditing, renderAllCards, scheduleLiveQuestionFit, scheduleMarkdownTableFit, scheduleNotesCaretCheck, showCard, showConfirmModal, showToast, state } from "../main.js?v=__BUILD__";
+import { isNotesEditing, renderAllCards, scheduleLiveQuestionFit, scheduleMarkdownTableFit, scheduleNotesCaretCheck, showCard, state } from "../main.js?v=__BUILD__";
+import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
 import { defaultStyleProfiles, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey } from "./style-schema.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./style-tokens.js?v=__BUILD__";
 import { fontFamilyChoices } from "./theme-catalog.js?v=__BUILD__";

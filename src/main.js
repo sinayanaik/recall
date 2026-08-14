@@ -6,6 +6,7 @@
 
 import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, isTransientCloudError, mapWithConcurrency, withRetry, withTimeout } from "./cloud/net.js?v=__BUILD__";
+import { PENDING_STYLE_KEY, closeStylePanel, flushPendingStyleSync, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, loadSupabaseConfig, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
 import { activeDeckLoadToken, applyDeckMetaCategories, applyWebDeckCategory, closeWebDeckExportMenus, deckPayloadSnapshot, downloadTextFile, fetchWebDeckPayload, laterIsoTimestamp, loadWebDeck, normalizeWebDeckPayload, quickNoteCategoryForCard, statusByIdFromCards, touchLocalDeckAccess, touchWebDeckAccess, updateWebDeckTitle, webDeckPayloadMarkdown } from "./cloud/web-decks.js?v=__BUILD__";
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
@@ -23,10 +24,15 @@ import { calculateSyncDiff, normalizeSyncText, syncTextChanged } from "./sync/di
 import { restoreStashedNotes, showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./sync/push.js?v=__BUILD__";
 import { buildSyncReportHtml, showSyncReport } from "./sync/report.js?v=__BUILD__";
+import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
+import { closeImportPanel, closeMyDecksPanel, dismissSwipeHint, editCurrentDeckCategory, editCurrentDeckTitle, maybeShowSwipeHint, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
+import { setButtonLoading, setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
+import { goNavBack, recordNavHistory, refreshNavBack, suppressNavRecording } from "./ui/nav-history.js?v=__BUILD__";
+import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory, chooseExportContent } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
-import { applyActiveStyleSettings, applyStyleDensity, currentKeyboardInset, detectStyleProfile, handleStyleControlChange, hasMeaningfulStyleSettings, loadLocalStyleSettings, normalizeStyleSettings, normalizeStyleValue, numericStyleValue, resetStyleField, resetStyleProfile, setStyleProfileSettings, setStyleProfiles, setStyleStatus, styleProfileLabel, styleProfilesPayload, styleSettingsFromControls, trackKeyboardInset, updateStyleControls, updateStyleProfileUi } from "./ui/style-settings.js?v=__BUILD__";
+import { applyActiveStyleSettings, applyStyleDensity, currentKeyboardInset, detectStyleProfile, handleStyleControlChange, loadLocalStyleSettings, normalizeStyleSettings, normalizeStyleValue, numericStyleValue, resetStyleField, resetStyleProfile, setStyleProfiles, setStyleStatus, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { configureMermaid, cssVariableColor, currentThemeId, renderThemeMenu, setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 
@@ -281,914 +287,6 @@ if (window.Prism?.plugins?.autoloader) {
 // re-ran what had happened on the last keystroke. Its one distinct effect —
 // the { force: true } re-fit — is now scheduleStyleRefit, off the edit path.)
 
-function lockPageScroll() {
-  if (document.documentElement.classList.contains("modal-scroll-lock")) return;
-  state.stylePanelScrollY = window.scrollY || document.documentElement.scrollTop || 0;
-  document.body.style.top = `-${state.stylePanelScrollY}px`;
-  document.documentElement.classList.add("modal-scroll-lock");
-  document.body.classList.add("modal-scroll-lock");
-}
-
-export function unlockPageScroll() {
-  if (!document.documentElement.classList.contains("modal-scroll-lock")) return;
-  // Something else is STILL on screen (a rename prompt opened from My Decks, a
-  // delete confirm over the style panel, …). lockPageScroll is a no-op when the
-  // lock is already held, so the inner overlay never took a lock of its own —
-  // releasing one here would hand the page back its scroll (and jump it to the
-  // pre-lock offset) while the outer panel is still covering it. Leave the
-  // release to whichever overlay closes last. Every close path hides its own
-  // element BEFORE calling this, so anyModalOpen() never sees the caller.
-  if (anyModalOpen()) return;
-  const scrollY = state.stylePanelScrollY || 0;
-  document.documentElement.classList.remove("modal-scroll-lock");
-  document.body.classList.remove("modal-scroll-lock");
-  document.body.style.top = "";
-  window.scrollTo(0, scrollY);
-}
-
-// True while any modal/panel/overlay is on screen — used to keep the global
-// keydown handler's card shortcuts (Space/Enter/arrows/K/R) from silently
-// acting on the card underneath an open dialog.
-function anyModalOpen() {
-  return Boolean(
-    (el.confirmModal && !el.confirmModal.hidden) ||
-    (el.promptModal && !el.promptModal.hidden) ||
-    (el.frameCardModal && !el.frameCardModal.hidden) ||
-    (el.myDecksPanel && !el.myDecksPanel.hidden) ||
-    (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) ||
-    (typeof appInfoModal !== "undefined" && appInfoModal && !appInfoModal.hidden) ||
-    (el.stylePanel && !el.stylePanel.hidden) ||
-    (el.storagePanel && !el.storagePanel.hidden) ||
-    (el.diagramModal && !el.diagramModal.hidden) ||
-    (el.syncModal && !el.syncModal.hidden) ||
-    (el.allCardsPanel && !el.allCardsPanel.hidden) ||
-    (el.quickNotesBoard && !el.quickNotesBoard.hidden) ||
-    (el.qnCatModal && !el.qnCatModal.hidden) ||
-    // The Cloze Review panel takes a scroll lock like the rest, so it has to be
-    // listed here too — unlockPageScroll consults this to decide whether the
-    // lock still has an owner.
-    (el.clozePanel && !el.clozePanel.hidden) ||
-    (el.importPanel && el.importPanel.classList.contains("is-open"))
-  );
-}
-
-// ── Universal back ───────────────────────────────────────────────
-// The appbar's ← works like the back key on a remote: it steps back through the
-// places you've been, whatever they were. There is no per-feature wiring and no
-// destination label — every navigation records where you WERE on its way out,
-// and back replays that.
-//
-// A "location" is whatever you're looking at: a deck (with the card you were on
-// and the view mode) or the Quick Notes board (with its filters/search/scroll).
-// Recording happens at the three doors every navigation goes through:
-// loadDeckFromLibrary, loadWebDeck and openQuickNotesBoard.
-const navHistory = [];
-// Bounded: an unbounded stack would pin snapshots forever, and nobody steps
-// back further than this.
-const NAV_HISTORY_LIMIT = 25;
-
-// >0 while we're replaying history — restoring a location must never be
-// recorded as a new navigation, or back would bounce between two places.
-let navSuppressDepth = 0;
-// Pre-existing bug, surfaced while auditing (not introduced by the async deck
-// storage work, but made worse by it): a `finally` after `fn()` decrements the
-// depth the instant fn RETURNS, not when it's done. That's correct for a sync
-// fn, but goToNavLocation was already async before this, and loadDeckFromLibrary
-// is now async too — for either, `fn()` returns a pending promise immediately,
-// the finally fires right away, and the suppression window closes BEFORE the
-// async work inside (which is what calls recordNavHistory) has even run. The
-// net effect: a navigation meant to be suppressed gets recorded anyway,
-// corrupting the back-history stack. Await the result when it's a promise,
-// and only then decrement.
-function suppressNavRecording(fn) {
-  navSuppressDepth += 1;
-  let result;
-  try {
-    result = fn();
-  } catch (error) {
-    navSuppressDepth -= 1;
-    throw error;
-  }
-  if (result && typeof result.then === "function") {
-    return result.then(
-      (value) => { navSuppressDepth -= 1; return value; },
-      (error) => { navSuppressDepth -= 1; throw error; }
-    );
-  }
-  navSuppressDepth -= 1;
-  return result;
-}
-
-// Where the user is right now, or null on the welcome screen (nothing to record).
-function currentNavLocation(hint = {}) {
-  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) {
-    return {
-      kind: "quick-notes",
-      state: {
-        cardId: hint.cardId || null,
-        filters: [...qnBoard.filters],
-        query: qnBoard.query,
-        scrollTop: el.qnBody ? el.qnBody.scrollTop : 0
-      }
-    };
-  }
-  if (state.localDeckId || state.deckId) {
-    return {
-      kind: "deck",
-      localId: state.localDeckId || null,
-      deckId: state.deckId || null,
-      current: Number.isFinite(state.current) ? state.current : 0,
-      viewMode: state.viewMode,
-      // Where in the note you were reading, so back lands on the paragraph you
-      // left rather than the top. Only captured when actually RECORDING a
-      // departure: currentNavLocation is also called by peekNavBack and
-      // refreshNavBack, which run on every overlay change, and
-      // captureCurrentReadingAnchor costs a caretPositionFromPoint plus a
-      // couple of snippet searches — not something to pay for on a question
-      // as cheap as "is the back button enabled?".
-      anchor: hint.captureAnchor ? freshReadingAnchor() : null
-    };
-  }
-  return null;
-}
-
-// The reading anchor for the deck that is open RIGHT NOW, or null. The deck-key
-// check is the same guard deckSnapshot uses: an anchor captured while reading
-// deck A must never be attached to deck B just because no scroll has happened
-// in B yet.
-function freshReadingAnchor() {
-  if (state.viewMode !== "notes") return null;
-  captureCurrentReadingAnchor();
-  if (!currentReadingAnchor) return null;
-  return currentReadingAnchorDeckKey === currentDeckKey() ? currentReadingAnchor : null;
-}
-
-// Same place? Deck identity only — flipping cards inside a deck isn't a
-// navigation, and there's only ever one Quick Notes board.
-function sameNavLocation(a, b) {
-  if (!a || !b || a.kind !== b.kind) return false;
-  if (a.kind === "quick-notes") return true;
-  return (a.localId || a.deckId) === (b.localId || b.deckId);
-}
-
-// Called by each navigation door BEFORE it moves the user.
-//
-// Deliberately does NOT refresh the button: at this instant the user is still
-// at the old location, so "is there anywhere to go back to?" would answer no.
-// Each door calls refreshNavBack() once it has actually arrived.
-export function recordNavHistory(hint) {
-  if (navSuppressDepth) return;
-  const here = currentNavLocation({ ...hint, captureAnchor: true });
-  if (!here) return;
-  const top = navHistory[navHistory.length - 1];
-  if (top && sameNavLocation(top, here)) navHistory.pop(); // refresh, don't stack
-  navHistory.push(here);
-  if (navHistory.length > NAV_HISTORY_LIMIT) navHistory.shift();
-}
-
-// The newest entry that isn't simply where we already are. Closing the board,
-// for instance, lands you back on the deck that's still sitting on top of the
-// history — going "back" to it would be a no-op, so skip past it.
-function peekNavBack() {
-  const here = currentNavLocation();
-  for (let i = navHistory.length - 1; i >= 0; i--) {
-    if (!sameNavLocation(navHistory[i], here)) return { entry: navHistory[i], index: i };
-  }
-  return null;
-}
-
-export function refreshNavBack() {
-  if (el.appBackBtn) el.appBackBtn.disabled = !peekNavBack();
-}
-
-function clearNavHistory() {
-  navHistory.length = 0;
-  refreshNavBack();
-}
-
-async function goToNavLocation(location) {
-  if (location.kind === "quick-notes") {
-    qnReturnState = location.state;
-    await openQuickNotesBoard({ restore: true });
-    return;
-  }
-  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) closeQuickNotesBoard();
-  // Prefer the local copy: instant, and works offline.
-  if (location.localId && (await loadDeckFromLibrary(location.localId))) {
-    restoreDeckPosition(location);
-    return;
-  }
-  if (location.deckId && supabaseClient && navigator.onLine) {
-    await loadWebDeck(location.deckId);
-    restoreDeckPosition(location);
-    return;
-  }
-  setStatus("Couldn't go back — that deck isn't available on this device.", "error");
-}
-
-// Step back one place. Re-entrancy guarded: restoring is async (it may load a
-// deck), and a double-tap would otherwise skip two entries.
-//
-// Returns whether it actually went anywhere. The hardware Back key needs that
-// answer to decide between "handled — stay in the app" and "nothing left — let
-// the browser leave".
-let navBackBusy = false;
-async function goNavBack() {
-  if (navBackBusy) return false;
-  const found = peekNavBack();
-  if (!found) return false;
-  // Drop the target and anything above it, so back never revisits.
-  navHistory.length = found.index;
-  navBackBusy = true;
-  try {
-    await suppressNavRecording(() => goToNavLocation(found.entry));
-  } catch (error) {
-    console.warn("Could not go back", error);
-    setStatus("Couldn't go back to where you were.", "error");
-  } finally {
-    navBackBusy = false;
-    refreshNavBack();
-  }
-  return true;
-}
-
-// Put the user back on the card and view they were on when they left.
-function restoreDeckPosition(location) {
-  if (Array.isArray(state.cards) && state.cards.length) {
-    state.current = Math.min(Math.max(location.current || 0, 0), state.cards.length - 1);
-    showCard();
-  }
-  if (location.viewMode) setViewMode(location.viewMode);
-  // ...and at the paragraph they were reading, not the top of the note. Left
-  // until after setViewMode on purpose: setViewMode resets scrollTop before it
-  // renders whenever the note differs from the one currently laid out, so a
-  // jump scheduled before it would simply be undone. scheduleNoteJump does its
-  // own retrying across the frames the render takes.
-  if (location.anchor && location.viewMode === "notes") {
-    scheduleNoteJump(location.anchor, { flash: false, smooth: false });
-  }
-}
-
-// The global Escape handler. Closes the single frontmost overlay, reusing that
-// one's own Cancel/Close control so its cleanup (unbinding onclick handlers,
-// releasing the scroll lock) runs exactly as it would from a real click.
-//
-// The stack, innermost first. This used to be the same list written as a chain
-// of `if (…) { close(); return; }` statements; it is a table now because the
-// hardware Back key needs to ask "is anything open?" as well as "close one
-// thing", and two hand-maintained copies of a twenty-entry list in visual-stack
-// order would drift apart the first time a panel was added.
-//
-// Order is the visual stack: transient popovers, then dialogs (which always sit
-// above a panel), then the panels themselves. Each entry closes via that
-// overlay's OWN Cancel/Close control wherever one exists, so its cleanup
-// (unbinding onclick handlers, releasing the scroll lock) runs exactly as it
-// would from a real click.
-//
-// The two menu-drawer entries are late additions. Both used to carry a private
-// `keydown` listener of their own instead of being in this list, which is why
-// Escape closed them but nothing else could — and why the hardware Back key
-// would have walked straight past an open drawer and exited the app.
-const OVERLAY_LAYERS = [
-  // Popovers.
-  { isOpen: () => Boolean(document.querySelector(".qn-cat-menu")), close: () => closeQnCatMenu() },
-  { isOpen: () => Boolean(el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden), close: () => closeMyDecksMoreMenu() },
-  { isOpen: () => Boolean(el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")), close: () => closeAllDeckTileMenus() },
-  { isOpen: () => Boolean(document.querySelector(".web-deck-export-menu:not([hidden]), .bulk-export-menu:not([hidden])")), close: () => closeWebDeckExportMenus() },
-  { isOpen: () => Boolean(el.exportMenu && !el.exportMenu.hidden), close: () => { el.exportMenu.hidden = true; } },
-  { isOpen: () => Boolean(el.exportNotesMenu && !el.exportNotesMenu.hidden), close: () => { el.exportNotesMenu.hidden = true; } },
-
-  // The hamburger drawer sits here, above the dialogs, because it genuinely is
-  // above them: .toolbar is z-index 500 against the help modal's 240 and the
-  // confirm modal's 230. In practice the two rarely coexist — tapping anything
-  // in the drawer closes it — but when they do, the thing covering the screen
-  // is the thing a Back press means.
-  { isOpen: () => isMainMenuOpen(), close: () => closeMainMenu() },
-
-  // Dialogs.
-  { isOpen: () => Boolean(el.confirmModal && !el.confirmModal.hidden), close: () => el.confirmModalCancelBtn?.click() },
-  { isOpen: () => Boolean(el.promptModal && !el.promptModal.hidden), close: () => el.promptModalCancelBtn?.click() },
-  { isOpen: () => Boolean(el.frameCardModal && !el.frameCardModal.hidden), close: () => el.frameCardCancelBtn?.click() },
-  { isOpen: () => Boolean(el.qnCatModal && !el.qnCatModal.hidden), close: () => closeQnCatModal() },
-  // These two are read off the DOM rather than through their `helpModal` /
-  // `appInfoModal` bindings, which are top-level `const`s declared thousands of
-  // lines further down. This list can be walked during script
-  // evaluation (the back-button setup runs near the bottom of the file but
-  // still above those declarations), and a `typeof` test does NOT make a
-  // let/const safe to touch early — reading one in its temporal dead zone
-  // throws from typeof exactly as it would from a plain reference, which would
-  // abort the rest of the file and leave half the app unbuilt.
-  { isOpen: () => Boolean(document.getElementById("helpModal")?.hidden === false), close: () => closeHelpModal() },
-  { isOpen: () => Boolean(document.getElementById("appInfoModal")?.hidden === false), close: () => closeAppInfoModal() },
-  { isOpen: () => Boolean(el.syncModal && !el.syncModal.hidden), close: () => { el.syncModal.hidden = true; } },
-  { isOpen: () => Boolean(el.diagramModal && !el.diagramModal.hidden), close: () => closeDiagramModal() },
-
-  // Full-surface panels.
-  { isOpen: () => Boolean(el.clozePanel && !el.clozePanel.hidden), close: () => closeClozePanel() },
-  { isOpen: () => Boolean(el.quickNotesBoard && !el.quickNotesBoard.hidden), close: () => closeQuickNotesBoard() },
-  { isOpen: () => Boolean(el.allCardsPanel && !el.allCardsPanel.hidden), close: () => closeAllCardsPanel() },
-  { isOpen: () => Boolean(el.stylePanel && !el.stylePanel.hidden), close: () => closeStylePanel() },
-  { isOpen: () => Boolean(el.storagePanel && !el.storagePanel.hidden), close: () => closeStoragePanel() },
-  { isOpen: () => Boolean(el.myDecksPanel && !el.myDecksPanel.hidden), close: () => closeMyDecksPanel() },
-  { isOpen: () => Boolean(el.importPanel && el.importPanel.classList.contains("is-open")), close: () => closeImportPanel() },
-
-  // The notes table-of-contents drawer is LAST, unlike the hamburger drawer
-  // above: at z-index 40 it is underneath every panel and dialog here, so any
-  // of them opened over it must take the press first.
-  { isOpen: () => isNotesTocOpen(), close: () => closeNotesToc() },
-
-  // The raw markdown editor, below even the TOC drawer — it is inline content,
-  // not an overlay, so everything above genuinely sits on top of it and takes
-  // the press first. It belongs in this list all the same: a Back press with
-  // the editor open used to walk straight past it into goNavBack(), loading
-  // another deck UNDERNEATH a textarea still showing the note being left. (The
-  // deck loaders now discard the editor on their own, so this is no longer the
-  // data-loss path it was — but "Back closes the thing on screen" is the right
-  // behaviour regardless, and it costs one extra press to leave a note you were
-  // editing.) commitNotesEditIfActive writes the textarea back, re-renders and
-  // schedules the save, which is exactly what a Back press should mean here.
-  { isOpen: () => isNotesEditing(), close: () => commitNotesEditIfActive() }
-];
-
-// Closes the single frontmost overlay and reports whether it found one. ONE
-// layer per press — the name is the contract. This used to fall through every
-// branch and close the lot, so a single Escape aimed at a confirm dialog also
-// took My Decks, the style panel, the import panel and the diagram modal with
-// it.
-function closeTopmostOverlay() {
-  const layer = OVERLAY_LAYERS.find((entry) => entry.isOpen());
-  if (layer) {
-    layer.close();
-    return true;
-  }
-
-  // Focus mode last of all, and NOT in OVERLAY_LAYERS above. It isn't an
-  // overlay — it's the absence of chrome — so it must never eat the Escape (or
-  // the Back press) that was aimed at something drawn on top of it.
-  //
-  // Reached only once nothing else is open, this is the escape hatch of last
-  // resort, and it is the ONLY one in some states: the ⤢ button that turns
-  // focus mode on lives in the notes header, which doesn't exist in Cards view,
-  // while the pin is remembered across sessions — and a collapsed appbar takes
-  // the ☰ menu and the back chevron with it. Launch into Cards view with a
-  // remembered pin and this branch is the whole way out. On desktop that's
-  // Escape; on a phone (no Escape key) it is the hardware Back / edge swipe,
-  // which lands here through handleBackGesture. Do not "tidy" focus mode into
-  // OVERLAY_LAYERS — it would then eat a press aimed at a real overlay.
-  if (chromeFocusPinned) { setFocusMode(false); return true; }
-
-  // Nothing left open: make sure a scroll lock didn't outlive its owner.
-  unlockPageScroll();
-  return false;
-}
-
-// ── The hardware / browser Back key ─────────────────────────────────────────
-//
-// Until this existed the app had no history integration at all: Back closed the
-// tab, or dropped straight out of the installed PWA, even with a modal open on
-// top of a deck you'd navigated three levels into. Everything the ← button
-// knows how to do was unreachable from the gesture people actually use.
-//
-// A popstate cannot be cancelled — by the time it fires the entry is already
-// gone — so "handle Back myself" has to be done by keeping a spare entry on the
-// stack to spend. That's the sentinel: whenever there is anything in the app
-// that Back should dismiss or step through, one extra entry sits above the real
-// one. Back consumes it, we do the work, and we push a fresh one if there is
-// still more to handle. When there is nothing left we don't re-push, and the
-// next press leaves for real.
-//
-// Deliberately NOT modelled as one history entry per overlay. Overlays open and
-// close from twenty different places, several of them async, and a stack that
-// has to stay numerically in step with the DOM would desynchronise the first
-// time something closed without going through Back — leaving phantom entries
-// that swallow presses. ONE sentinel, always armed, plus "ask the app what's
-// open at the moment of the press" cannot drift: nothing is remembered between
-// presses that could be wrong.
-//
-// Always armed, rather than only while something is open. An earlier version
-// armed on demand and had a hole in it: once the last overlay closed the guard
-// was dropped, so the very next press escaped unhandled and dumped the user out
-// of the app with no warning — the exact thing this is here to prevent.
-const BACK_STATE = "recall-guard";
-let backSentinelPushed = false;
-// Timestamp of the "are you sure" press, so the second one within the window
-// is let through. 0 when not armed.
-let backExitArmed = 0;
-
-function syncBackSentinel() {
-  if (backSentinelPushed) return;
-  try {
-    history.pushState({ [BACK_STATE]: true }, "");
-    backSentinelPushed = true;
-  } catch (error) {
-    // Sandboxed contexts can refuse pushState. Back then behaves exactly as it
-    // did before any of this existed; nothing else breaks.
-    console.warn("Could not arm the back-button guard", error);
-  }
-}
-
-async function handleBackGesture() {
-  // Whatever we had armed is what the press just consumed.
-  backSentinelPushed = false;
-
-  // 1. Anything on screen gets dismissed first, one layer per press.
-  if (closeTopmostOverlay()) {
-    backExitArmed = 0;
-    syncBackSentinel();
-    return;
-  }
-  // 2. Then step back through where the user has been. Awaited because it may
-  //    have to load a deck out of IndexedDB or the cloud; re-arming before the
-  //    await would arm against the location being left, not the one landed on.
-  if (await goNavBack()) {
-    backExitArmed = 0;
-    syncBackSentinel();
-    return;
-  }
-
-  // 3. Nothing left to dismiss or step back to. Rather than dropping out of the
-  //    app on one stray edge-swipe — easy to do on a phone, and it takes
-  //    whatever was on screen with it — the first press asks and only a second
-  //    one within the window is allowed through.
-  const now = Date.now();
-  if (backExitArmed && now - backExitArmed < BACK_EXIT_WINDOW_MS) {
-    backExitArmed = 0;
-    // Nothing re-armed above, so this lands on whatever preceded the app.
-    history.back();
-    return;
-  }
-  backExitArmed = now;
-  showToast("Press back again to leave Recall");
-  syncBackSentinel();
-}
-
-const BACK_EXIT_WINDOW_MS = 2500;
-
-function initBackGesture() {
-  // A base entry of our own, so the sentinel always has something beneath it
-  // and the first Back has somewhere to land.
-  try {
-    history.replaceState({ recall: "root" }, "");
-  } catch (error) {
-    console.warn("Could not initialise history", error);
-  }
-  window.addEventListener("popstate", () => { handleBackGesture(); });
-  // Re-arming is otherwise driven entirely by popstate; this is a cheap safety
-  // net (one boolean test per click) in case the initial push was refused or a
-  // bfcache restore dropped it.
-  document.addEventListener("click", () => syncBackSentinel(), true);
-  // Scheduled, never synchronous: initBackGesture runs during script
-  // evaluation, well above the point where much of the app is declared.
-  requestAnimationFrame(() => syncBackSentinel());
-}
-
-function openStylePanel() {
-  lockPageScroll();
-  state.styleEditProfile = detectStyleProfile();
-  state.styleEditProfileFollowsDevice = true;
-  el.stylePanel.hidden = false;
-  updateStyleControls();
-}
-
-function closeStylePanel() {
-  el.stylePanel.hidden = true;
-  unlockPageScroll();
-}
-
-function switchStyleEditProfile(profile, options = {}) {
-  if (!styleProfiles.includes(profile)) return;
-  state.styleEditProfile = profile;
-  state.styleEditProfileFollowsDevice = options.followDevice ?? false;
-  updateStyleControls();
-  setStyleStatus(`Editing ${styleProfileLabel(profile).toLowerCase()} style`);
-}
-
-function handleStyleEnvironmentChange() {
-  const previousProfile = state.activeStyleProfile;
-  applyActiveStyleSettings({ force: true });
-  if (!el.stylePanel?.hidden && (state.styleEditProfileFollowsDevice || state.styleEditProfile === previousProfile)) {
-    switchStyleEditProfile(detectStyleProfile(), { followDevice: true });
-  } else {
-    updateStyleProfileUi();
-  }
-}
-
-// Which app_style_settings row belongs to this user. The table predates auth and
-// held ONE row, id "global", that every account on a deployment read and wrote —
-// so a second user signing in silently overwrote the first's fonts/sizes/layout.
-// Styles are now per-account, keyed on the user id, with "global" kept as a
-// read-only legacy fallback so an existing deployment's shared style is still
-// what a user sees until they save their own. Signed out (no cached id) there's
-// nothing to scope to, so the legacy row is all there is.
-const LEGACY_STYLE_ROW_ID = "global";
-
-function styleSettingsRowId() {
-  return cachedUserId() || LEGACY_STYLE_ROW_ID;
-}
-
-async function loadStyleFromWeb(force = false) {
-  if (!supabaseClient) {
-    setStyleStatus("Local style");
-    return;
-  }
-
-  setStyleStatus("Loading synced style...");
-  try {
-    const rowId = styleSettingsRowId();
-    // Both rows in one request; this user's own wins, the legacy shared row is
-    // the fallback for an account that has never synced a style of its own.
-    const wanted = rowId === LEGACY_STYLE_ROW_ID ? [LEGACY_STYLE_ROW_ID] : [rowId, LEGACY_STYLE_ROW_ID];
-    const { data: rows, error } = await supabaseClient
-      .from("app_style_settings")
-      .select("id, settings, updated_at")
-      .in("id", wanted);
-
-    if (error) throw error;
-    const data = (rows || []).find((row) => row.id === rowId)
-      || (rows || []).find((row) => row.id === LEGACY_STYLE_ROW_ID)
-      || null;
-    if (!hasMeaningfulStyleSettings(data?.settings)) {
-      setStyleStatus("No synced style yet");
-      return;
-    }
-    if (state.styleTouched && !force) {
-      setStyleStatus("Unsynced local style");
-      return;
-    }
-
-    setStyleProfiles(data.settings);
-    // Pre-theme-sync rows have no `theme` key at all; leaving this device's
-    // theme alone is the right answer there, so only act when one is present.
-    if (data.settings.theme) setTheme(data.settings.theme);
-    applyActiveStyleSettings({ force: true });
-    state.styleTouched = false;
-    updateStyleControls();
-    setStyleStatus(data.updated_at ? `Loaded ${new Date(data.updated_at).toLocaleString()}` : "Loaded synced style");
-  } catch (error) {
-    console.warn("Could not load synced style", error);
-    setStyleStatus(
-      error?.code === "42501"
-        ? "Style sync blocked — check app_style_settings RLS policy"
-        : "Style sync table not ready"
-    );
-  }
-}
-
-// A style upload that couldn't reach the cloud, held until the next reconcile.
-// Without this, tapping "Sync style" offline was a flat "Failed to sync style.
-// Create the app_style_settings table first." — a wrong diagnosis and a dead
-// end, when the settings were sitting perfectly safe on the device.
-export const PENDING_STYLE_KEY = "recall:pendingStyleSync";
-
-function queuePendingStyleSync(settings) {
-  try {
-    localStorage.setItem(PENDING_STYLE_KEY, JSON.stringify({ settings, savedAt: new Date().toISOString() }));
-  } catch (_) { /* storage full — the style is still applied locally */ }
-}
-
-function clearPendingStyleSync() {
-  try { localStorage.removeItem(PENDING_STYLE_KEY); } catch (_) {}
-}
-
-// The cloud write, shared by the button and the reconcile replay. Returns
-// "synced" | "offline" | "failed" rather than throwing, so both callers can say
-// something accurate about where the style ended up.
-async function writeStyleToCloud(settings) {
-  if (!supabaseClient || !navigator.onLine) return "offline";
-  try {
-    const { error } = await withTimeout(
-      supabaseClient.from("app_style_settings").upsert({
-        // This user's own row (see styleSettingsRowId) — never the legacy
-        // shared "global" one, which writing would push onto every other
-        // account on the deployment.
-        id: styleSettingsRowId(),
-        settings,
-        updated_at: new Date().toISOString()
-      }, { onConflict: "id" }),
-      CLOUD_TIMEOUT_MS,
-      "sync style"
-    );
-    if (error) throw error;
-    return "synced";
-  } catch (error) {
-    console.warn("Failed to sync style", error);
-    // A dropped connection is not a missing table — telling the user to go
-    // create one is what made this failure so misleading.
-    if (/failed to fetch|networkerror|load failed/i.test(error?.message || "")) return "offline";
-    return error?.code === "42501" ? "denied" : "failed";
-  }
-}
-
-// Deliver a style upload queued while offline. Called from reconcileAllDecks.
-async function flushPendingStyleSync() {
-  let pending;
-  try {
-    pending = JSON.parse(localStorage.getItem(PENDING_STYLE_KEY) || "null");
-  } catch {
-    pending = null;
-  }
-  if (!pending?.settings) return false;
-  const outcome = await writeStyleToCloud(pending.settings);
-  // "denied" is an RLS misconfiguration — permanent for this project, so
-  // replaying it on every sync forever would accomplish nothing.
-  if (outcome === "synced" || outcome === "denied") clearPendingStyleSync();
-  return outcome === "synced";
-}
-
-async function syncStyleToWeb() {
-  if (!supabaseClient) {
-    setStyleStatus("Supabase unavailable");
-    setStatus("Supabase is not available for style sync.", "error");
-    return;
-  }
-
-  const syncBtn = el.syncUpBtn;
-  state.styleTouched = true;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  setStyleProfileSettings(editProfile, styleSettingsFromControls());
-  if (editProfile === detectStyleProfile()) applyActiveStyleSettings({ force: true });
-  const settings = styleProfilesPayload();
-  syncBtn.disabled = true;
-  setStyleStatus("Syncing style...");
-  const outcome = await writeStyleToCloud(settings);
-  syncBtn.disabled = false;
-
-  if (outcome === "synced") {
-    clearPendingStyleSync();
-    state.styleTouched = false;
-    setStyleStatus("Style synced");
-    setStatus("Style synced to web.");
-    return;
-  }
-  if (outcome === "offline") {
-    queuePendingStyleSync(settings);
-    setStyleStatus("Style saved — syncs when online");
-    setStatus("Offline — your style is saved on this device and will sync automatically.");
-    return;
-  }
-  setStyleStatus("Sync failed");
-  setStatus(
-    outcome === "denied"
-      ? "Failed to sync style — the app_style_settings RLS policy doesn't allow your own row. Re-run supabase_setup.sql in Supabase."
-      : "Failed to sync style. Create the app_style_settings table first.",
-    "error"
-  );
-}
-
-export function setStatus(message, type = "info") {
-  el.statusText.textContent = message;
-  el.statusText.classList.toggle("error", type === "error");
-}
-
-// Transient toast notification, anchored top-center, used to confirm that
-// web-sync actions (sync, load, delete, rename, export, quick note) actually
-// completed — visible regardless of where the triggering button lives.
-export function showToast(message, type = "success") {
-  let container = document.getElementById("toastContainer");
-  if (!container) {
-    container = document.createElement("div");
-    container.id = "toastContainer";
-    container.className = "toast-container";
-    container.setAttribute("role", "status");
-    container.setAttribute("aria-live", "polite");
-    document.body.appendChild(container);
-  }
-
-  const toast = document.createElement("div");
-  toast.className = `toast toast-${type}`;
-  const icon = type === "error" ? "✕" : type === "info" ? "ℹ" : "✓";
-  const iconEl = document.createElement("span");
-  iconEl.className = "toast-icon";
-  iconEl.setAttribute("aria-hidden", "true");
-  iconEl.textContent = icon;
-  const msgEl = document.createElement("span");
-  msgEl.className = "toast-msg";
-  msgEl.textContent = message;
-  toast.append(iconEl, msgEl);
-  container.appendChild(toast);
-
-  requestAnimationFrame(() => toast.classList.add("is-visible"));
-
-  const duration = type === "error" ? 4200 : 2600;
-  const dismiss = () => {
-    clearTimeout(timer);
-    toast.classList.remove("is-visible");
-    toast.classList.add("is-leaving");
-    setTimeout(() => toast.remove(), 280);
-  };
-  const timer = setTimeout(dismiss, duration);
-  toast.addEventListener("click", dismiss);
-}
-
-function setButtonLoading(btn, loading, text = "…") {
-  if (!btn) return;
-  if (loading) {
-    btn._loadingOriginalText = btn.textContent;
-    btn.textContent = text;
-    btn.disabled = true;
-  } else {
-    if (btn._loadingOriginalText !== undefined) btn.textContent = btn._loadingOriginalText;
-    btn.disabled = false;
-  }
-}
-
-export function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm", danger = false } = {}) {
-  if (!el.confirmModal) return onConfirm();
-  el.confirmModalMessage.textContent = message;
-  el.confirmModalOkBtn.textContent = confirmLabel;
-  el.confirmModalOkBtn.classList.toggle("is-danger", danger);
-  el.confirmModal.hidden = false;
-  lockPageScroll();
-  const cleanup = (confirmed) => {
-    el.confirmModal.hidden = true;
-    unlockPageScroll();
-    el.confirmModalOkBtn.onclick = null;
-    el.confirmModalCancelBtn.onclick = null;
-    if (confirmed) onConfirm();
-  };
-  el.confirmModalOkBtn.onclick = () => cleanup(true);
-  el.confirmModalCancelBtn.onclick = () => cleanup(false);
-}
-
-function showPromptModal(title, hint, defaultValue, onConfirm, { placeholder = "" } = {}) {
-  if (!el.promptModal) {
-    // Native prompt has no placeholder, so surface the indicative name as the
-    // (rare) fallback's default text.
-    const result = prompt(title, defaultValue || placeholder);
-    if (result !== null) onConfirm(result);
-    return;
-  }
-  el.promptModalTitle.textContent = title;
-  el.promptModalHint.textContent = hint || "";
-  el.promptModalHint.hidden = !hint;
-  // An empty field with an indicative placeholder (e.g. "New Deck") — nothing to
-  // clear before typing — instead of a concrete default the user must delete.
-  el.promptModalInput.value = defaultValue || "";
-  el.promptModalInput.placeholder = placeholder;
-  el.promptModal.hidden = false;
-  lockPageScroll();
-  requestAnimationFrame(() => el.promptModalInput.focus());
-  const cleanup = (confirmed) => {
-    el.promptModal.hidden = true;
-    unlockPageScroll();
-    el.promptModalOkBtn.onclick = null;
-    el.promptModalCancelBtn.onclick = null;
-    el.promptModalInput.onkeydown = null;
-    if (confirmed) onConfirm(el.promptModalInput.value);
-  };
-  el.promptModalOkBtn.onclick = () => cleanup(true);
-  el.promptModalCancelBtn.onclick = () => cleanup(false);
-  el.promptModalInput.onkeydown = (e) => {
-    if (e.key === "Enter") { e.preventDefault(); cleanup(true); }
-    if (e.key === "Escape") { e.preventDefault(); cleanup(false); }
-  };
-}
-
-let swipeHintTimer = null;
-function maybeShowSwipeHint() {
-  if (!el.swipeHint) return;
-  if (localStorage.getItem("swipe-hint-seen")) return;
-  if (!("ontouchstart" in window) && navigator.maxTouchPoints < 1) return;
-  el.swipeHint.hidden = false;
-  swipeHintTimer = setTimeout(dismissSwipeHint, 3500);
-}
-
-function dismissSwipeHint() {
-  if (!el.swipeHint || el.swipeHint.hidden) return;
-  clearTimeout(swipeHintTimer);
-  try { localStorage.setItem("swipe-hint-seen", "1"); } catch (_) {}
-  el.swipeHint.classList.add("is-fading");
-  setTimeout(() => {
-    if (el.swipeHint) {
-      el.swipeHint.hidden = true;
-      el.swipeHint.classList.remove("is-fading");
-    }
-  }, 420);
-}
-
-function setDeckTitle(title, options = {}) {
-  const normalized = String(title || "").trim();
-  state.deckTitle = normalized;
-  if (options.updateSourceTitle || !state.sourceTitle) {
-    state.sourceTitle = normalized;
-  }
-  if (options.save !== false)  updateMeta();
-}
-
-function setDeckCategory(category, options = {}) {
-  state.deckCategory = normalizeDeckCategory(category);
-  if (options.save !== false)  updateMeta();
-}
-
-async function editCurrentDeckTitle() {
-  if (!hasActiveDeck()) {
-    setStatus("Create or import a deck before editing its title.", "error");
-    return;
-  }
-
-  showPromptModal("Edit Deck Title", "", state.deckTitle || state.sourceTitle || "Untitled Deck", async (nextTitle) => {
-    const title = nextTitle.trim();
-    if (!title) {
-      setStatus("Deck title cannot be empty.", "error");
-      return;
-    }
-
-    // 1) Update the live view + every title field (deckTitle/sourceTitle/
-    //    importTitleHint) right away so the header never reverts to the old name.
-    setDeckTitle(title, { updateSourceTitle: true, save: false });
-    state.importTitleHint = title;
-    updateMeta();
-
-    // 2) Persist to the local library IMMEDIATELY — independent of any network
-    //    round-trip — so the new name survives navigation/reload and, because
-    //    renameDeckInLibrary bumps updatedAt, the next reconcile pushes it even
-    //    if the cloud call below fails or the device is offline. A working deck
-    //    not yet in the library gets saved for the first time. (Previously the
-    //    local snapshot was only rewritten inside the awaited cloud call, so a
-    //    slow/failed sync left the deck saved under its old name.)
-    if (state.localDeckId) {
-      await renameDeckInLibrary(state.localDeckId, title);
-    } else {
-      await saveDeckToLibrary({ silent: true });
-    }
-    renderMyDecksList();
-    setStatus("Deck title updated.");
-    showToast(`Renamed to "${title}"`);
-
-    // 3) Best-effort immediate cloud rename so other devices see it now instead
-    //    of waiting for the next periodic reconcile. Failure is non-fatal.
-    if (state.deckId && supabaseClient && isSignedIn && navigator.onLine) {
-      try {
-        await updateWebDeckTitle(state.deckId, title);
-        setStatus("Deck title updated in the cloud.");
-      } catch (error) {
-        console.warn("Cloud rename failed — the next sync will push it", error);
-        setStatus("Deck renamed. Cloud update will retry on the next sync.");
-      }
-    }
-  });
-}
-
-async function editCurrentDeckCategory() {
-  if (!hasActiveDeck()) {
-    setStatus("Create or import a deck before editing its category.", "error");
-    return;
-  }
-
-  const category = await chooseDeckCategory(state.deckCategory);
-  if (category === null) return;
-  setDeckCategory(category);
-
-  if (!state.deckId || !supabaseClient) {
-    setStatus("Deck category updated locally. Sync to update the web deck.");
-    return;
-  }
-
-  try {
-    setStatus("Updating web deck category...");
-    await applyWebDeckCategory(state.deckId, category);
-    setStatus("Deck category updated in the cloud.");
-  } catch (error) {
-    console.error("Failed to update web deck category", error);
-    // Was a flat "run the deck category SQL migration first", which is only one
-    // of the reasons this fails — and since the write now reports a zero-row
-    // update instead of pretending it succeeded, it is no longer the likeliest.
-    setStatus(
-      `Deck category updated on this device, but the cloud copy didn't change — ${error?.message || "unknown error"}`,
-      "error"
-    );
-  }
-}
-
-function openImportPanel() {
-  lockPageScroll();
-  el.importPanel.classList.add("is-open");
-}
-
-// Closing throws away anything staged but not committed: a half-chosen import
-// must not be waiting the next time the panel opens.
-export function closeImportPanel() {
-  clearImportStaging();
-  showImportSourceDrawer(null);
-  if (el.pasteMarkdownInput) el.pasteMarkdownInput.value = "";
-  el.importPanel.classList.remove("is-open");
-  unlockPageScroll();
-}
-
-function openMyDecksPanel() {
-  lockPageScroll();
-  el.myDecksPanel.hidden = false;
-  // Reset the transient search each time the panel opens so it never surprises
-  // the user with a stale filter; keep the persisted view/display/cwd.
-  state.myDecksSearch = "";
-  if (el.myDecksSearch) el.myDecksSearch.value = "";
-  renderMyDecksList();
-}
-
-function closeMyDecksPanel() {
-  el.myDecksPanel.hidden = true;
-  unlockPageScroll();
-}
 
 function formatLocalDeckSavedDate(iso) {
   if (!iso) return "—";
@@ -4719,7 +3817,7 @@ function buildDeckOverflowMenu(deck, kind, sel) {
 
 // Closes any open deck overflow menus (one-at-a-time behaviour). Scoped to the
 // whole panel body, not just the tile grid — list rows carry the same menu now.
-function closeAllDeckTileMenus(except) {
+export function closeAllDeckTileMenus(except) {
   (el.myDecksBody || document).querySelectorAll(".deck-tile-overflow-menu:not([hidden])").forEach((menu) => {
     if (menu !== except) {
       menu.hidden = true;
@@ -7825,7 +6923,7 @@ function openDiagramModal(node) {
   }
 }
 
-function closeDiagramModal() {
+export function closeDiagramModal() {
   el.diagramModal.hidden = true;
   el.diagramModalBody.innerHTML = "";
   el.diagramModalBody.classList.remove("nomnoml-light-modal-body");
@@ -8514,7 +7612,7 @@ function updateActiveCardStatusBadges() {
 // A deck "exists" for UI purposes once it's been created/loaded (has a title),
 // has cards, or has study notes — so a freshly created deck with zero cards
 // still shows its title/toolbar instead of looking like nothing is loaded.
-function hasActiveDeck() {
+export function hasActiveDeck() {
   return Boolean(state.deckTitle) || state.masterCards.length > 0 || Boolean(state.notes.trim());
 }
 
@@ -8721,7 +7819,7 @@ export function discardNotesEditingForDeckSwap() {
   resetNotesEditingUI();
 }
 
-function commitNotesEditIfActive() {
+export function commitNotesEditIfActive() {
   if (!isNotesEditing()) return;
   // Capture BEFORE overwriting state.notes / hiding the textarea — both the
   // scroll position and the value it's measured against have to be the
@@ -9448,17 +8546,17 @@ function rawOffsetForCurrentNotesScroll() {
 // save is already about to happen for some other reason (a notes edit, a
 // card change, the pagehide flush) — the user's explicit "no advanced/costly
 // logic, just sync the current location whenever the sync happens" call.
-let currentReadingAnchor = null;
+export let currentReadingAnchor = null;
 // Which deck the anchor above was captured for — a scroll captured in deck A
 // must never ride into deck B's meta after switching decks without any
 // intervening scroll in B. Compared against currentDeckKey() in deckSnapshot.
-let currentReadingAnchorDeckKey = null;
+export let currentReadingAnchorDeckKey = null;
 
-function currentDeckKey() {
+export function currentDeckKey() {
   return JSON.stringify([state.deckId || null, state.localDeckId || null]);
 }
 
-function captureCurrentReadingAnchor() {
+export function captureCurrentReadingAnchor() {
   if (!el.notesView || el.notesView.hidden || state.viewMode !== "notes") return;
   const offset = rawOffsetForCurrentNotesScroll();
   if (offset == null) return;
@@ -9672,7 +8770,7 @@ const CHROME_SETTLE_MS = 260; // the CSS collapse transition (220ms) plus a
                               // in which a genuine upward flick right after a
                               // toggle was thrown away.
 
-let chromeFocusPinned = false;
+export let chromeFocusPinned = false;
 try {
   chromeFocusPinned = localStorage.getItem(FOCUS_MODE_KEY) === "1";
 } catch (_) {
@@ -9898,7 +8996,7 @@ document.addEventListener(
 
 // One path for all three ways in and out — the ⤢ button, Escape, and the
 // keyboard shortcut — so they can't drift on what "off" means.
-function setFocusMode(pinned) {
+export function setFocusMode(pinned) {
   if (chromeFocusPinned === pinned) return;
   chromeFocusPinned = pinned;
   try {
@@ -10165,7 +9263,7 @@ function scrollNotesEditToHeadingIndex(index) {
 // offsetTop would be measured against some ancestor and would not answer the
 // question being asked here. The links are captured once when the list is built
 // rather than re-queried per frame, and only the two that change are touched.
-function isNotesTocOpen() {
+export function isNotesTocOpen() {
   return Boolean(el.notesTocDrawer?.classList.contains("is-open"));
 }
 
@@ -10353,7 +9451,7 @@ async function renderNotesBacklinks() {
   section.hidden = false;
 }
 
-function closeNotesToc() {
+export function closeNotesToc() {
   if (!el.notesTocDrawer) return;
   preserveNotesReadingPosition(() => {
     el.notesTocDrawer.classList.remove("is-open");
@@ -11950,7 +11048,7 @@ async function followNoteLink(anchor) {
   // to do, so reuse that rather than inventing a second way to focus a pin.
   const asPin = parseNoteLinkTarget(target);
   if (asPin.cardId) {
-    qnReturnState = { cardId: asPin.cardId, filters: [], query: "", scrollTop: 0 };
+    setQnReturnState({ cardId: asPin.cardId, filters: [], query: "", scrollTop: 0 });
     openQuickNotesBoard({ restore: true }).catch((error) => {
       console.warn("Could not open the quick notes board", error);
       showToast("Couldn't open quick notes", "error");
@@ -15366,7 +14464,7 @@ function stageSnapshotImport(payload, { name = "", folder = null } = {}) {
   return stageImportSources([{ kind: "snapshot", name, payload }], { folder });
 }
 
-function clearImportStaging() {
+export function clearImportStaging() {
   importStaging = null;
   pendingImportFolder = null;
   if (el.importReviewStep) el.importReviewStep.hidden = true;
@@ -19503,7 +18601,7 @@ async function deleteDeckEverywhere({ localId = null, deckId = null } = {}) {
   return { cloudError };
 }
 
-async function renameDeckInLibrary(id, title) {
+export async function renameDeckInLibrary(id, title) {
   const trimmed = String(title || "").trim();
   if (!trimmed) return;
   return withDeckLock(id, async () => {
@@ -23076,7 +22174,7 @@ function loadSample() {
 
 // ── Import panel: source pickers ────────────────────────────────────────────
 
-function showImportSourceDrawer(which) {
+export function showImportSourceDrawer(which) {
   if (el.importUrlRow) el.importUrlRow.hidden = which !== "url";
   if (el.importPasteRow) el.importPasteRow.hidden = which !== "paste";
   if (el.importPasteSourceBtn) el.importPasteSourceBtn.classList.toggle("is-active", which === "paste");
@@ -24100,7 +23198,7 @@ el.myDecksRefreshBtn?.addEventListener("click", () => { closeMyDecksMoreMenu(); 
 // ── The toolbar's "⋯" menu ──────────────────────────────────────────────────
 // Holds Refresh, Expand all, Import EPUB, Restore and every Export All format,
 // so the toolbar itself stays a single row at any width.
-function closeMyDecksMoreMenu() {
+export function closeMyDecksMoreMenu() {
   if (!el.myDecksMoreMenu || el.myDecksMoreMenu.hidden) return;
   el.myDecksMoreMenu.hidden = true;
   el.myDecksMoreBtn?.setAttribute("aria-expanded", "false");
@@ -25498,7 +24596,7 @@ if (deckEmptyNewBtn) deckEmptyNewBtn.addEventListener("click", () => createNewDe
 if (deckEmptyImportBtn2) deckEmptyImportBtn2.addEventListener("click", () => openImportPanel());
 if (deckEmptyWebBtn) deckEmptyWebBtn.addEventListener("click", () => openMyDecksPanel());
 
-const helpModal = document.getElementById("helpModal");
+export const helpModal = document.getElementById("helpModal");
 const helpBtn = document.getElementById("helpBtn");
 const helpModalCloseBtn = document.getElementById("helpModalCloseBtn");
 const helpModalCloseFootBtn = document.getElementById("helpModalCloseFootBtn");
@@ -25509,7 +24607,7 @@ function openHelpModal() {
   lockPageScroll();
 }
 
-function closeHelpModal() {
+export function closeHelpModal() {
   if (!helpModal) return;
   helpModal.hidden = true;
   unlockPageScroll();
@@ -25735,7 +24833,7 @@ async function compareCommits(base, head) {
   }
 }
 
-const appInfoModal = document.getElementById("appInfoModal");
+export const appInfoModal = document.getElementById("appInfoModal");
 const appInfoBtn = document.getElementById("appInfoBtn");
 const appInfoCloseBtn = document.getElementById("appInfoCloseBtn");
 const appInfoVersion = document.getElementById("appInfoVersion");
@@ -26168,7 +25266,7 @@ function forceRefreshAppInfo() {
   return refreshAppInfo();
 }
 
-function closeAppInfoModal() {
+export function closeAppInfoModal() {
   if (!appInfoModal) return;
   appInfoModal.hidden = true;
   unlockPageScroll();
@@ -27135,7 +26233,7 @@ function openStoragePanel() {
   refreshStorageReport();
 }
 
-function closeStoragePanel() {
+export function closeStoragePanel() {
   el.storagePanel.hidden = true;
   unlockPageScroll();
 }
@@ -28946,7 +28044,7 @@ function openClozePanel() {
   el.clozePanel.hidden = false;
 }
 
-function closeClozePanel() {
+export function closeClozePanel() {
   if (!el.clozePanel || el.clozePanel.hidden) return;
   el.clozePanel.hidden = true;
   unlockPageScroll();
@@ -29521,7 +28619,7 @@ const QUICK_NOTE_CATEGORIES_CACHE_KEY = "recall:quickNoteCategories";
 // Current signed-in user's id, read synchronously from the marker written by
 // ensureLocalLibraryOwner — lets render code detect the quick_notes deck and
 // build its id without an async auth round-trip.
-function cachedUserId() {
+export function cachedUserId() {
   try { return localStorage.getItem(LAST_USER_STORAGE_KEY) || null; } catch { return null; }
 }
 
@@ -30228,7 +29326,7 @@ async function patchQuickNoteCardCategory(cardId, value, now) {
 // Independent of the active study deck: pulls the quick_notes deck's cards
 // straight from the cloud (falling back to the local snapshot offline), so the
 // board can be opened at any time without disturbing whatever you're studying.
-const qnBoard = {
+export const qnBoard = {
   cards: [],       // [{ id, question, answer, category, noteAnchor, updatedAt }]
   // Selected category chips: a Set of category ids, plus the literal "none" for
   // uncategorised. Empty means "All". Multi-select, so several subjects can be
@@ -30513,14 +29611,20 @@ function renderQuickNotesBoard() {
 // The board's slice of a history location (filters/search/scroll, and the note
 // you opened from it). Set by goToNavLocation from the recorded location, then
 // consumed by the next board render. See currentNavLocation.
-let qnReturnState = null;
+export let qnReturnState = null;
+
+// Setter: an imported binding is read-only, and this is written both from the
+// Quick Notes board below and from ui/nav-history.js when Back restores it.
+export function setQnReturnState(value) {
+  qnReturnState = value;
+}
 
 // Put the board back the way it was and mark the note you left from, so it's
 // obvious where you were.
 function restoreQnReturnState() {
   if (!qnReturnState) return;
   const { cardId, scrollTop } = qnReturnState;
-  qnReturnState = null;
+  setQnReturnState(null);
   el.qnBody.scrollTop = scrollTop || 0;
   // cardId is only set when the board was left by opening a note from it — a
   // board recorded any other way has no card to point at.
@@ -30532,7 +29636,7 @@ function restoreQnReturnState() {
   setTimeout(() => card.classList.remove("is-returned"), 1600);
 }
 
-async function openQuickNotesBoard({ restore = false } = {}) {
+export async function openQuickNotesBoard({ restore = false } = {}) {
   if (!getQuickNotesDeckId()) {
     setStatus("Sign in to use quick notes.", "error");
     return;
@@ -30553,7 +29657,7 @@ async function openQuickNotesBoard({ restore = false } = {}) {
     // time would look like missing notes.
     qnBoard.query = "";
     qnBoard.filters.clear();
-    qnReturnState = null;
+    setQnReturnState(null);
   }
   if (el.qnSearch) el.qnSearch.value = qnBoard.query;
   // Deck notes may have changed since the last open — rebuild the search index.
@@ -30574,7 +29678,7 @@ async function openQuickNotesBoard({ restore = false } = {}) {
   );
 }
 
-function closeQuickNotesBoard() {
+export function closeQuickNotesBoard() {
   closeQnCatMenu();
   closeQnCatModal();
   el.quickNotesBoard.hidden = true;
@@ -30633,7 +29737,7 @@ async function copyQuickNote(cardId, button) {
 }
 
 // ── Floating category picker (assign a category to one card) ──────
-function closeQnCatMenu() {
+export function closeQnCatMenu() {
   document.querySelectorAll(".qn-cat-menu").forEach((m) => m.remove());
   document.removeEventListener("click", qnCatMenuOutside, true);
   document.removeEventListener("keydown", qnCatMenuEsc, true);
@@ -30751,7 +29855,7 @@ function openQnCatModal() {
   el.qnCatModal.hidden = false;
   setTimeout(() => el.qnCatNewName && el.qnCatNewName.focus(), 30);
 }
-function closeQnCatModal() {
+export function closeQnCatModal() {
   if (el.qnCatModal) el.qnCatModal.hidden = true;
 }
 
@@ -30918,8 +30022,8 @@ async function saveQuickNote(rawText, button, sourceAnchor = null) {
 // (OVERLAY_LAYERS) and the Back key have to be able to see and close it from
 // outside. These two are the seam. They default to "there is no drawer" so
 // nothing has to null-check them if the markup is ever absent.
-let isMainMenuOpen = () => false;
-let closeMainMenu = () => {};
+export let isMainMenuOpen = () => false;
+export let closeMainMenu = () => {};
 {
   const menuBtn = document.getElementById("mobileMenuBtn");
   const toolbar = document.getElementById("mainToolbar");

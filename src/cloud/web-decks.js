@@ -6,7 +6,11 @@ import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { setKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { closeAllCardsPanel, closeImportPanel, discardNotesEditingForDeckSwap, flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, notesExportBlock, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, recordNavHistory, refreshNavBack, refreshSyncIndicatorBaseline, resetChromeAutoHide, resetStudyDeck, revokeLocalImageUrls, saveDeckToLibrary, scheduleNoteJump, setStatus, setViewMode, showCard, showToast, state, syncLocalLibraryMetaForDeck, syncResults, unlockPageScroll, updateMeta, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { closeAllCardsPanel, discardNotesEditingForDeckSwap, flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, notesExportBlock, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, refreshSyncIndicatorBaseline, resetChromeAutoHide, resetStudyDeck, revokeLocalImageUrls, saveDeckToLibrary, scheduleNoteJump, setViewMode, showCard, state, syncLocalLibraryMetaForDeck, syncResults, updateMeta, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { closeImportPanel } from "../ui/deck-header.js?v=__BUILD__";
+import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
+import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
+import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 // Whichever of two ISO timestamps (either may be null/undefined) is later,
 // or null if neither parses.

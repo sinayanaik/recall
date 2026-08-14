@@ -4,7 +4,8 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { NOTES_CONFLICT_SUFFIX, deleteDeckSnapshot, loadDeckFromLibrary, readDeckSnapshot, readLocalDeckIndex, refreshSyncIndicatorBaseline, renderMyDecksList, showConfirmModal, showToast, state, writeDeckSnapshot, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { NOTES_CONFLICT_SUFFIX, deleteDeckSnapshot, loadDeckFromLibrary, readDeckSnapshot, readLocalDeckIndex, refreshSyncIndicatorBaseline, renderMyDecksList, state, writeDeckSnapshot, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Put back the deck-notes body a pull replaced. The stash holds the copy this
 // device had; restoring appends it below the incoming text under a marker
