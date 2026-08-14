@@ -51,6 +51,7 @@ import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadFold } from "./notes/notes-head-fold.js?v=__BUILD__";
+import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -685,6 +686,7 @@ onDomReady(initRenderToolbars);
 onDomReady(initNotesHeadOverflow);
 onDomReady(initNotesHeadFold);
 onDomReady(initNotesTocFolding);
+onDomReady(initPagedNotes);
 
 
 // pointerdown (not click) so preventDefault preserves the live selection.

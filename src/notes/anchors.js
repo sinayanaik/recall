@@ -15,6 +15,7 @@ import { locateSelectionInSource, renderedSelectionStrings } from "../format/loc
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
+import { estimateNotesPageForFraction, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
@@ -320,6 +321,9 @@ export function findRenderedNoteRange(anchor, offset = null) {
 export function estimateNotesScrollForOffset(offset) {
   if (!el.notesView || !Number.isFinite(offset) || !state.notes) return;
   const fraction = Math.max(0, Math.min(1, offset / state.notes.length));
+  // Paged mode has no scrollHeight to take a fraction of — the note runs
+  // sideways — so the same proportional guess becomes a page number.
+  if (estimateNotesPageForFraction(fraction)) return;
   markProgrammaticNotesScroll();
   el.notesView.scrollTop = fraction * el.notesView.scrollHeight;
 }
@@ -331,6 +335,9 @@ export function estimateNotesScrollForOffset(offset) {
 // whichever direction you happened to be toggling.
 export function scrollNotesBlockToReadingLine(block, smooth) {
   if (!block || !el.notesView) return;
+  // In paged mode there is no reading line to put anything on: the block is
+  // either on the page you are looking at or it is not. Turn to its page.
+  if (revealInPagedNotes(block)) return;
   const view = el.notesView;
   const delta = block.getBoundingClientRect().top - view.getBoundingClientRect().top;
   const target = view.scrollTop + delta - notesReadingLineOffset(view.clientHeight);
@@ -394,7 +401,13 @@ export function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
 export function revealRenderedNoteRange(range, { flash = true, smooth = true } = {}) {
   const block = blockForRange(range);
   markProgrammaticNotesScroll(smooth ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
-  (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+  // scrollIntoView WOULD move a paged view — it scrolls the nearest scrollable
+  // ancestor, and here that scrolls sideways — but it stops as soon as the
+  // target is visible, which leaves the reader mid-page with a column sliced
+  // down the middle of the screen. Land on the page boundary instead.
+  if (!revealInPagedNotes(block)) {
+    (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+  }
   if (!flash) return true;
   // The browser's own selection highlight makes the exact span obvious; the
   // block flash draws the eye there first.

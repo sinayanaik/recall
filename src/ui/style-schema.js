@@ -14,6 +14,7 @@
 export const defaultStyleProfiles = {
   "mobile": {
     // Basics
+    "notesReadingMode": "continuous",
     "fontFamily": "system",
     "baseFontSize": "12px",
     "baseLineHeight": "1.23",
@@ -66,6 +67,7 @@ export const defaultStyleProfiles = {
   },
   "desktop": {
     // Basics
+    "notesReadingMode": "continuous",
     "fontFamily": "system",
     "baseFontSize": "18px",
     "baseLineHeight": "1.58",
@@ -144,6 +146,10 @@ export const styleControlGroups = [
     title: "Basics",
     tier: "basic",
     fields: [
+      // Not in styleCssVariables: this one drives a CLASS on #notesView, not a
+      // variable, because the paged layout is a different set of rules rather
+      // than a different number. See src/notes/paged-view.js.
+      { key: "notesReadingMode", label: "Notes layout", type: "select", options: ["continuous", "paged-1", "paged-2"], hint: "Continuous scrolls the whole note. Paged lays it out in fixed pages you turn — one column, or two side by side like a book." },
       { key: "fontFamily", label: "Font", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Typeface for the whole app — cards, notes and chrome." },
       { key: "baseFontSize", label: "Text size", type: "text", unit: "px", probe: "font-size", hint: "General Markdown and interface text size." }
     ]

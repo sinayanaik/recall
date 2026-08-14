@@ -66,6 +66,43 @@ const ACCEPTED = {
     "six are now 11pt, with the hierarchy in weight, colour and a bottom " +
     "border whose weight and dash pattern track the on-screen ladder — Word " +
     "cannot draw a partial-width rule, so width is the one cue that is lost.",
+  // ── Paged reading mode (src/notes/paged-view.js) ─────────────────────────
+  // #notesView gains columns and is paged with scrollLeft, so every "reveal
+  // something in the notes" helper needs a branch that turns to a page instead
+  // of scrolling to a line. There are exactly four of them.
+  defaultStyleProfiles:
+    "One setting added to both profiles: notesReadingMode (continuous / " +
+    "paged-1 / paged-2), defaulting to continuous so nobody's reading view " +
+    "changes without them asking.",
+  styleControlGroups:
+    "The Notes layout control, in Basics. Deliberately absent from " +
+    "styleCssVariables — it selects a layout, not a value.",
+  applyStyleSettings:
+    "Applies notesReadingMode. It drives a class and a repagination rather " +
+    "than a custom property, so it cannot ride the styleCssVariables loop.",
+  renderNotesView:
+    "Re-counts the pages after every repaint. This is the one place every " +
+    "repaint of the rendered notes goes through, so it is the only place that " +
+    "can see a note grow, shrink or be replaced. No-op on continuous mode.",
+  setViewMode:
+    "Resets scrollLeft alongside scrollTop when a DIFFERENT note opens: paged " +
+    "mode runs sideways, so leaving scrollLeft alone opened the new note " +
+    "wherever the previous one had been left. Also repaginates after the paint.",
+  scrollNotesHeadingIntoView:
+    "Turns to the heading's page when paged. No re-aiming loop there — a page " +
+    "boundary is exact, and the loop exists for heights that keep changing " +
+    "under a vertical scroll.",
+  estimateNotesScrollForOffset:
+    "There is no scrollHeight to take a fraction of when the note runs " +
+    "sideways, so the same proportional guess becomes a page number.",
+  scrollNotesBlockToReadingLine:
+    "There is no reading line in paged mode — the block is on the page you " +
+    "are looking at or it is not.",
+  revealRenderedNoteRange:
+    "scrollIntoView WOULD move a paged view, but it stops the moment the " +
+    "target is visible, which leaves the reader mid-page with a column sliced " +
+    "down the middle of the screen. Land on the page boundary instead.",
+
   // ── Reading a whole folder as one deck (src/library/folder-deck.js) ──────
   // A folder open as one document is not a deck and has no record of its own,
   // so the field below is what stops the ordinary save path inventing one.
@@ -356,7 +393,7 @@ const RESIDUAL_REWRITES = [
   // rest of the chrome — see src/notes/notes-head-overflow.js and
   // src/notes/notes-head-fold.js.
   [/(onDomReady\(initRenderToolbars\); )(document\.addEventListener\("pointerdown")/,
-   "$1onDomReady(initNotesHeadOverflow); onDomReady(initNotesHeadFold); onDomReady(initNotesTocFolding); $2"],
+   "$1onDomReady(initNotesHeadOverflow); onDomReady(initNotesHeadFold); onDomReady(initNotesTocFolding); onDomReady(initPagedNotes); $2"],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

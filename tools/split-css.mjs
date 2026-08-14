@@ -84,6 +84,12 @@ const POST_SPLIT = {
     "(the tree is drawn by rail spans, not by nesting), so there is no child " +
     "list to hide: this is the twisty laid over each branch row's dot cell, " +
     "and [hidden] on the rows JS works out are under a folded ancestor.",
+  "18-paged-notes.css":
+    "Paged reading mode: the note laid out as pages you turn, one column or " +
+    "two, by giving #notesView columns + column-fill:auto and paging it with " +
+    "scrollLeft. Also the rules that MUST turn content-visibility off there — " +
+    "multicol has to measure every block, and its layout containment would " +
+    "stop a paragraph flowing across a column boundary at all.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

@@ -11,6 +11,7 @@ import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUIL
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { scrollTextareaToOffset, textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
+import { applyNotesPagedLayout } from "./paged-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
 import { renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource } from "../render/block-cache.js?v=__BUILD__";
@@ -94,7 +95,12 @@ export function renderNotesView({ sameNote = false } = {}) {
     syncNotesBlockEstimateSource();
   }
   return renderMarkdown(el.notesView, state.notes, true)
-    .then(() => resetClozeButton(el.clozeToggleNotesBtn));
+    .then(() => resetClozeButton(el.clozeToggleNotesBtn))
+    // Every repaint of the rendered notes comes through here, so this is the
+    // one place paged mode has to re-count its pages — the note may have grown
+    // a paragraph, lost a block, or be a different note entirely. No-op when
+    // the reader is on continuous mode.
+    .then(() => applyNotesPagedLayout());
 }
 
 // Repaint the open note without the reader appearing to move at all.

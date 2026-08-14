@@ -5,6 +5,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
+import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderHighlightsPanel } from "../panels/highlights-panel.js?v=__BUILD__";
 import { resetChromeAutoHide } from "./chrome.js?v=__BUILD__";
@@ -45,7 +46,13 @@ export function setViewMode(mode, options = {}) {
     // render rather than after it: scheduleNoteJump() calls setViewMode() and
     // then scrolls to the anchor a couple of frames later, and resetting on the
     // render's promise would yank that jump back to the top.
-    if (el.notesView && state.notes !== notesScrolledSource) el.notesView.scrollTop = 0;
+    // scrollLeft too: in paged mode the note runs sideways, so "the first line"
+    // is page 0, and leaving scrollLeft where the previous note ended would
+    // open a different note somewhere in its middle.
+    if (el.notesView && state.notes !== notesScrolledSource) {
+      el.notesView.scrollTop = 0;
+      el.notesView.scrollLeft = 0;
+    }
     // Last-resort net for the deck-swap hazard described on
     // discardNotesEditingForDeckSwap. The two deck loaders discard the editor
     // explicitly and before the swap, which is strictly better — but several
@@ -66,6 +73,9 @@ export function setViewMode(mode, options = {}) {
   const paint = () => {
     if (notesActive) {
       renderNotesView();
+      // After the render, so the columns are laid out against the note that is
+      // actually on screen — and so the page indicator can count its pages.
+      applyNotesPagedLayout();
       if (!state.notes.trim()) enterNotesEditing();
     } else if (highlightsActive) {
       renderHighlightsPanel();

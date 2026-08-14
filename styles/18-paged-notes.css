@@ -1,0 +1,156 @@
+/* Paged reading: the note as pages you turn, one column or two
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * #notesView is already a scroll container, so the whole layout is three
+ * declarations: columns, a definite height, and `column-fill: auto` so the
+ * browser fills each column to the bottom before starting the next instead of
+ * balancing them. The note then runs left to right, one clientWidth per page,
+ * and src/notes/paged-view.js does the paging with scrollLeft.
+ *
+ * Nothing here is wrapped in a new element, deliberately: the incremental
+ * renderer's block cache is keyed on `.notes-rendered > *` being the note's
+ * top-level blocks, and a wrapper would invalidate every cached block on every
+ * render.
+ */
+
+.notes-rendered.is-paged {
+  /* The note runs sideways now. Vertical overflow is a bug in this mode — a
+     column taller than the box means the height was not definite. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  columns: var(--notes-columns, 2);
+  column-gap: var(--notes-page-gap, 2.6em);
+  /* `auto`, not the default `balance`: balance splits the WHOLE note evenly
+     across the column count, which for a long note means two columns thousands
+     of pixels tall. `auto` fills each column to the box height and starts
+     another, which is what makes a page a page. */
+  column-fill: auto;
+  /* Free horizontal swiping with momentum, settled to the nearest page
+     afterwards by scheduleNotesPageSettle(). pan-x rather than none so
+     press-and-hold text selection — which is how highlighting works on a
+     phone — still reaches the text. */
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.notes-rendered.is-paged::-webkit-scrollbar {
+  display: none;
+}
+
+/* content-visibility CANNOT survive paged mode, and this is not a tuning
+   choice. Multi-column layout has to measure every block to know where the
+   columns break, so there is nothing for the skipping to skip; worse, the
+   layout containment it implies makes each block MONOLITHIC, so a paragraph
+   would refuse to flow across a column boundary and would instead be pushed
+   whole into the next column, leaving ragged half-empty pages.
+
+   The selector mirrors styles/12-notes.css:255 exactly — same three :not()s —
+   because that rule's specificity is (0,3,0) and anything lower simply loses
+   to it no matter where it sits. (The same trap is recorded in that file's own
+   comment, about the equation-numbering exclusion.) */
+.notes-rendered.is-paged > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block) {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+/* Things that must not be sliced down the middle by a column break. A heading
+   stranded at the foot of a column with its first paragraph on the next page is
+   the classic multi-column tell. */
+.notes-rendered.is-paged > :is(h1, h2, h3, h4, h5, h6) {
+  break-after: avoid;
+  break-inside: avoid;
+}
+
+.notes-rendered.is-paged > :is(.diagram-shell, .markdown-table-wrap, pre, blockquote, table) {
+  break-inside: avoid;
+}
+
+/* An image taller than the page can never fit in a column, and a block that
+   cannot fit is what produces an entirely blank page next to it. */
+.notes-rendered.is-paged img,
+.notes-rendered.is-paged .diagram-shell {
+  max-height: 100%;
+}
+
+/* The reading-width limit is a CONTINUOUS-mode idea: there, it narrows one
+   column in a wide window. Here the column is already narrow by construction,
+   and applying it again would centre each block inside its own column and waste
+   the gap twice over. */
+.notes-rendered.is-paged > * {
+  max-width: 100%;
+  margin-inline: 0;
+}
+
+/* ── The page indicator ─────────────────────────────────────────────────── */
+
+.notes-page-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.notes-page-indicator[hidden] {
+  display: none;
+}
+
+.notes-page-label {
+  min-width: 5.5em;
+  text-align: center;
+}
+
+.notes-page-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius, 8px);
+  background: transparent;
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.notes-page-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.notes-page-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Said once, where the setting was applied, rather than left as a silently
+   ignored preference. */
+.notes-paged-notice {
+  flex: 0 0 auto;
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--review) 45%, var(--line));
+  border-radius: var(--toolbar-button-radius, 8px);
+  background: color-mix(in srgb, var(--review) 10%, transparent);
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notes-rendered.is-paged {
+    scroll-behavior: auto;
+  }
+}

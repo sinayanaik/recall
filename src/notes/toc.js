@@ -11,6 +11,7 @@ import { scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
+import { isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
@@ -391,6 +392,10 @@ export function notesHeadingOffset(heading) {
 // until it settles (or until the corrections stop helping).
 export async function scrollNotesHeadingIntoView(heading) {
   if (!heading || !el.notesView) return;
+  // Paged mode: turn to the heading's page. No re-aiming loop, because there is
+  // nothing to converge on — a page boundary is exact, and the re-aiming exists
+  // for heights that keep changing under a vertical scroll.
+  if (revealInPagedNotes(heading)) return;
   const aim = (behavior) => {
     const target = el.notesView.scrollTop + notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP;
     markProgrammaticNotesScroll(behavior === "smooth" ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
@@ -472,14 +477,21 @@ export function updateNotesTocActive() {
   if (!isNotesTocOpen()) return;
 
   // The active section is the last heading whose top has scrolled to (or above)
-  // a line a little below the viewport top.
+  // a line a little below the viewport top — or, in paged mode, the last one
+  // whose page is at or before the page being read. Same "last one at or above
+  // the mark" question, asked of a different axis.
+  const paged = isNotesPaged();
+  const page = paged ? notesCurrentPage() : 0;
   const mark = el.notesView.getBoundingClientRect().top + 24;
+  const atOrAbove = (index) => (paged
+    ? notesPageForElement(notesTocHeadings[index]) <= page
+    : notesTocHeadings[index].getBoundingClientRect().top <= mark);
   let low = 0;
   let high = notesTocHeadings.length - 1;
   let activeIndex = 0;
   while (low <= high) {
     const mid = (low + high) >> 1;
-    if (notesTocHeadings[mid].getBoundingClientRect().top <= mark) {
+    if (atOrAbove(mid)) {
       activeIndex = mid;
       low = mid + 1;
     } else {

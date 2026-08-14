@@ -14,6 +14,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { escapeRegExp } from "../core/text.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "../notes/caret.js?v=__BUILD__";
 import { isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
+import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
 import { defaultStyleProfiles, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey } from "./style-schema.js?v=__BUILD__";
@@ -514,6 +515,10 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // two ways to push the same text inward; the second only sized the import
   // box). The :root defaults in styles.css carry them now.
   root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
+  // Deliberately not in styleCssVariables above: this setting selects a
+  // different LAYOUT for the notes view (a class plus a repagination), not a
+  // different value for one of its properties. See src/notes/paged-view.js.
+  setNotesReadingMode(settings.notesReadingMode);
   // The only percent that isn't run through numericStyleValue above, so it's the
   // only one where a non-numeric entry would reach CSS as "abc%".
   root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);
