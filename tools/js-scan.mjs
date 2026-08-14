@@ -194,7 +194,13 @@ export function topLevelDecls(src) {
       name: m[3],
       kind,
       exported: Boolean(m[1]),
+      // `start` skips any `export ` keyword, so the text compared by
+      // split-parity is the declaration itself and gains no spurious diff the
+      // day a symbol becomes exported. `fullStart` includes it — which is what
+      // anything CUTTING the declaration must use. Slicing from `start` left the
+      // orphan `export ` behind in main.js and broke the whole module.
       start,
+      fullStart: m.index,
       end,
       line: src.slice(0, m.index).split("\n").length,
       text: src.slice(start, end)
@@ -203,11 +209,34 @@ export function topLevelDecls(src) {
   return decls;
 }
 
-// End of a `function f() { … }` / `class C { … }`, from the first `{` after
-// `start`. Operates on already-blanked source, so braces are all real.
+// End of a `function f(…) { … }` / `class C { … }`.
+//
+// The body brace is the first `{` at parenthesis- AND bracket-depth zero — NOT
+// simply the first `{` after the name. That shortcut was wrong for any function
+// with braces in its parameter list, of which this codebase has many:
+//
+//   async function uploadEpubImageWithRetry(file, progress, destination = {}) {
+//
+// There, the first `{` is the default value. Depth went 1 then 0 at the very
+// next character, so the declaration "ended" mid-signature and the entire body
+// was left out — extracted as the 71-character fragment
+// `async function uploadEpubImageWithRetry(file, progress, destination = {}`.
+// Moving that function would have written a truncated signature into the new
+// module and abandoned its body in the old one.
+//
+// Operates on already-blanked source, so every bracket here is real code.
 function endOfBlock(blanked, start) {
-  let i = blanked.indexOf("{", start);
-  if (i === -1) return blanked.length;
+  let i = start;
+  let paren = 0, square = 0;
+  for (; i < blanked.length; i++) {
+    const c = blanked[i];
+    if (c === "(") paren++;
+    else if (c === ")") paren--;
+    else if (c === "[") square++;
+    else if (c === "]") square--;
+    else if (c === "{" && paren === 0 && square === 0) break;
+  }
+  if (i >= blanked.length) return blanked.length;
   let depth = 0;
   for (; i < blanked.length; i++) {
     if (blanked[i] === "{") depth++;

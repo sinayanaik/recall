@@ -266,7 +266,12 @@ for (const job of jobs) {
   const cuts = [];
   let floor = 0;
   for (const d of wanted) {
-    const cStart = commentStart(main, d.start, floor);
+    // fullStart, not start: a declaration that is already exported begins at the
+    // `export ` keyword, and cutting from `start` leaves that keyword stranded
+    // on its own line in the source module — a SyntaxError that takes the whole
+    // app down, and one split-parity cannot see because an orphan token is not a
+    // declaration.
+    const cStart = commentStart(main, d.fullStart, floor);
     pieces.push({ name: d.name, kind: d.kind, text: main.slice(cStart, d.end) });
     cuts.push([cStart, d.end]);
     floor = d.end;

@@ -96,8 +96,9 @@ if (!currentFiles.length) {
 }
 
 const baseDecls = new Map();
+const baseAllDecls = topLevelDecls(baseSrc);
 const baseDupes = [];
-for (const d of topLevelDecls(baseSrc)) {
+for (const d of baseAllDecls) {
   if (baseDecls.has(d.name)) baseDupes.push(`${d.name} (lines ${baseDecls.get(d.name).line} and ${d.line})`);
   baseDecls.set(d.name, d);
 }
@@ -152,6 +153,66 @@ for (const name of currentDecls.keys()) {
   if (!baseDecls.has(name)) added.push(`${name} (${currentDecls.get(name).file})`);
 }
 
+// ── The residual: everything that is NOT a top-level declaration ───────────
+//
+// Comparing declarations misses a third of the file. What is left over is the
+// module-scope code — the event-listener registrations, the ~10 bootstrap calls
+// — plus comments and blank lines. That residual is real behaviour, and an
+// extraction can damage it: cutting an already-exported declaration from after
+// its `export ` keyword left the keyword stranded on its own line, which is a
+// SyntaxError that took the whole app down and which this file, comparing only
+// declarations, reported as perfectly fine.
+//
+// So: strip every declaration, drop comments and whitespace, and compare what
+// remains as one blob.
+function residual(text, decls) {
+  const cuts = [...decls].sort((a, b) => b.fullStart - a.fullStart);
+  let out = text;
+  for (const d of cuts) out = out.slice(0, d.fullStart) + out.slice(d.end);
+  return normalize(out).replace(/\s+/g, " ").trim();
+}
+
+// Intentional module-scope changes, applied to the BASELINE so the comparison
+// stays meaningful instead of being switched off. Each entry is a rewrite the
+// restructure made on purpose, spelled out.
+const RESIDUAL_REWRITES = [
+  // Phase 1: a deferred module script sees readyState "interactive", so the
+  // old inline `else` branch fired mid-file. See onDomReady in src/main.js.
+  [/if \(document\.readyState === "loading"\) \{ document\.addEventListener\("DOMContentLoaded", (\w+)\); \} else \{ \1\(\); \}/g,
+   "onDomReady($1);"],
+  [/if \(document\.readyState === "loading"\) \{ document\.addEventListener\("DOMContentLoaded", (\w+), \{ once: true \}\); \} else \{ \1\(\); \}/g,
+   "onDomReady($1);"],
+  // Bindings that moved into a module are read-only where they are imported,
+  // so the module-scope listeners write them through setters. Reads unchanged.
+  [/\bisSignedIn = (true|false);/g, "setSignedIn($1);"],
+  [/\bsupabaseClient = null;/g, "setSupabaseClient(null);"],
+  [/\bexplicitLogout = (true|false);/g, "setExplicitLogout($1);"]
+];
+
+let baseResidual = residual(baseSrc, baseAllDecls);
+for (const [re, to] of RESIDUAL_REWRITES) baseResidual = baseResidual.replace(re, to);
+const currentResidual = currentFiles
+  .map((f) => {
+    const text = readFileSync(f, "utf8");
+    // Import statements are new by construction; they are not "leftover code".
+    const stripped = text.split("\n").filter((l) => !/^import\s.+from\s*["'][^"']+["'];\s*$/.test(l)).join("\n");
+    return residual(stripped, topLevelDecls(stripped));
+  })
+  .join(" ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const residualDrift = [];
+if (baseResidual !== currentResidual) {
+  let i = 0;
+  while (i < baseResidual.length && baseResidual[i] === currentResidual[i]) i++;
+  residualDrift.push(
+    "module-scope code differs from the baseline\n" +
+    `    was: …${baseResidual.slice(Math.max(0, i - 60), i + 90)}\n` +
+    `    now: …${currentResidual.slice(Math.max(0, i - 60), i + 90)}`
+  );
+}
+
 const report = (label, list, verbose = true) => {
   if (!list.length) return;
   console.log(`\n${label} (${list.length})`);
@@ -166,13 +227,14 @@ report("DUPLICATE in current tree — two modules own the same name", currentDup
 report("MISSING — in the baseline, gone from the tree", missing, false);
 report("CHANGED — body differs from the baseline", changed);
 report("ADDED — new since the baseline (expected: setters, module glue)", added, false);
+report("MODULE-SCOPE DRIFT", residualDrift);
 report("accepted differences", accepted);
 
 if (baseDupes.length) {
   console.log(`\nnote: the baseline itself declares these twice — ${baseDupes.join(", ")}`);
 }
 
-const fail = currentDupes.length + missing.length + changed.length;
+const fail = currentDupes.length + missing.length + changed.length + residualDrift.length;
 console.log(
   `\n${baseDecls.size} baseline symbols · ${currentDecls.size} current · ` +
   `${currentDecls.size - added.length - missing.length} matched · ${fail} problem(s)`
