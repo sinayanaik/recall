@@ -15,6 +15,8 @@
 // Each check answers a different question, and none of them subsumes another:
 //
 //   split-parity    is the code still the same code?
+//   scanner-audit   does the scanner module-symbols relies on actually SEE
+//                   every reference? (it once did not, and hid 13 of them)
 //   module-symbols  does every cross-module reference resolve?
 //   css-parity      do the stylesheet slices still reassemble to the original?
 //   port-sync       do the extension's copies still match?
@@ -45,6 +47,7 @@ const FULL = process.argv.includes("--full");
 
 const checks = [
   ["split-parity  ", ["node", ["tools/split-parity.mjs"], ROOT]],
+  ["scanner-audit ", ["node", ["tools/scanner-audit.mjs"], ROOT]],
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
