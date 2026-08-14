@@ -239,6 +239,8 @@ if (FIX_IMPORTS) {
     }
   }
   ensureExports();
+  syncAppShell();
+  syncPreloads();
   process.exit(0);
 }
 
@@ -354,6 +356,28 @@ for (const job of jobs) {
 // Keep sw.js's APP_SHELL in step with what is actually on disk. Doing this by
 // hand ~50 times is a guaranteed omission, and an omitted module is invisible
 // until someone opens the app offline for the first time.
+// index.html lists every module as <link rel="modulepreload">, so a cold load
+// fetches them in parallel instead of walking a 66-deep import chain one
+// round trip at a time.
+function syncPreloads() {
+  const htmlPath = path.join(ROOT, "index.html");
+  const html = readFileSync(htmlPath, "utf8");
+  const start = "<!-- modulepreload:start -->";
+  const end = "<!-- modulepreload:end -->";
+  const a = html.indexOf(start);
+  const b = html.indexOf(end);
+  if (a === -1 || b === -1) { console.error("  ! index.html has no modulepreload block"); return; }
+  const links = walk(SRC)
+    .map((f) => path.relative(ROOT, f).replace(/\\/g, "/"))
+    .filter((rel) => rel !== "src/main.js")   // the <script type="module"> already asks for it
+    .sort()
+    .map((rel) => `    <link rel="modulepreload" href="${rel}${STAMP}">`)
+    .join("\n");
+  const next = html.slice(0, a + start.length) + "\n" + links + "\n    " + html.slice(b);
+  if (next !== html) writeFileSync(htmlPath, next);
+  console.log(`index.html: ${links.split("\n").length} modulepreload link(s)`);
+}
+
 function syncAppShell() {
   const swPath = path.join(ROOT, "sw.js");
   const sw = readFileSync(swPath, "utf8");
@@ -371,5 +395,6 @@ function syncAppShell() {
 if (!DRY) {
   ensureExports();
   syncAppShell();
+  syncPreloads();
   console.log("Now run: node tools/split-parity.mjs && node tools/module-symbols.mjs");
 }
