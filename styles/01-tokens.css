@@ -1,0 +1,418 @@
+/* Custom properties and the ten themes
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+:root {
+  color-scheme: light;
+  /* Safe-area insets, named once. index.html ships `viewport-fit=cover` with a
+     `standalone` manifest, so on a notched phone every `position: fixed` overlay
+     that reaches an edge renders *behind* the status bar / home indicator unless
+     it reserves this space itself. Tokens rather than raw env() so an overlay
+     can compose them into calc() without repeating the four-line fallback. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  /* How much of the viewport the on-screen keyboard is currently covering.
+     Written by trackKeyboardInset() in app.js off visualViewport; 0 whenever no
+     keyboard is up, and on every desktop. Anything that has to keep content
+     clear of the keyboard composes this the way the --safe-* tokens above are
+     composed. Kept separate from --safe-bottom on purpose: the home indicator
+     is permanent, the keyboard comes and goes. */
+  --kb-inset: 0px;
+  --app-width: 100vw;
+  --app-height: 100vh;
+  --app-mobile-width: 100vw;
+  --app-mobile-height: 100dvh;
+  --app-pad: clamp(6px, 1.4vw, 14px);
+  --app-gap: 10px;
+  /* Since the Known/Review side columns were removed, the quiz panel is the
+     only thing on screen — leaving it capped well below the viewport width
+     just stranded it in dead space on both sides. Let it use nearly the
+     full window; the text measure itself is capped separately (see
+     --question-answer-measure) so lines don't get uncomfortably long. */
+  --quiz-panel-max-width: min(99vw, 1800px);
+  --bg: #f4f2ec;
+  --panel: #fffdf8;
+  --panel-2: #f0eee7;
+  --card: #ffffff;
+  --card-answer: #fff9ee;
+  --text: #161a18;
+  --muted: #66706b;
+  --line: #d8d4c8;
+  --accent: #16796c;
+  --accent-strong: #0d5e53;
+  --review: #d71920;
+  --known: #008f3a;
+  --danger: #c33f3f;
+  --accent-contrast: #ffffff;
+  --bg-wash: rgba(183, 121, 31, 0.12);
+  --print-bg: #eef2f2;
+  --print-surface: #ffffff;
+  --print-panel: #ffffff;
+  --print-panel-2: #f2f6f6;
+  --print-question: color-mix(in srgb, var(--accent) 10%, #ffffff);
+  --print-text: #17201c;
+  --print-muted: #56645f;
+  --print-line: #b9c9c5;
+  --print-accent: var(--accent);
+  --print-accent-strong: color-mix(in srgb, var(--accent) 70%, #17201c);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.18);
+  --shadow: 0 24px 70px rgba(32, 28, 18, 0.16);
+  --app-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --question-font-family: var(--app-font-family);
+  --answer-font-family: var(--app-font-family);
+  --content-font-size: 18px;
+  --content-line-height: 1.58;
+  /* Comfortable reading measure for question text — kept narrower than the card
+     itself on wide screens so long lines stay readable even though the card's
+     frame now spans most of the panel width. */
+  --question-answer-measure: 46em;
+  /* The answer face uses the full card width by default (set a length like 46em
+     to re-impose a reading measure). Tables and wide blocks need the room. */
+  --answer-measure: none;
+  --raw-markdown-font-size: 16px;
+  --answer-font-size: 23px;
+  --answer-line-height: 1.58;
+  --answer-font-weight: 400;
+  --notes-font-family: var(--app-font-family);
+  --notes-font-size: 18px;
+  --notes-line-height: 1.58;
+  --notes-font-weight: 400;
+  --notes-padding: 6px;
+  --notes-max-width: 100%;
+  --question-fill: 58%;
+  --question-max-font-size: 64px;
+  --question-line-height: 1.18;
+  --question-align: center;
+  --question-justify-items: center;
+  --question-vertical-align: center;
+  --question-font-weight: 500;
+  --question-padding: 2px;
+  /* Was 0 here but 2px in practice — the removed "Card text padding" control
+     always overwrote both faces with its 2px default, so this matches the
+     layout everyone actually had. */
+  --answer-padding: 2px;
+  --card-face-padding: clamp(18px, 3vw, 42px);
+  --card-face-gap: 16px;
+  --card-width: 96%;
+  --card-mobile-width: 96%;
+  --card-max-height: 74vh;
+  --card-mobile-max-height: 74dvh;
+  --card-border-width: 1px;
+  /* Card-header sizing — one place to tune every card's header row: the study
+     card face-header, the All-Cards skim rows, and the Quick-Notes cards. The
+     status/category indicator and the edit/action controls all resolve to these
+     tokens so they stay uniform across surfaces. Mobile shrinks them from a
+     single override in the 720px block. */
+  --card-hdr-gap: 8px;              /* gap between header items */
+  --card-hdr-mb: 8px;              /* space below the header row */
+  --card-hdr-indicator-h: 24px;     /* status/category pill height */
+  --card-hdr-indicator-fs: 0.68rem; /* pill text size */
+  --card-hdr-indicator-pad: 0 9px;  /* pill horizontal padding */
+  --card-hdr-btn: 30px;             /* square action-button size */
+  --card-hdr-btn-fs: 0.9rem;        /* action-button glyph size */
+  --card-radius: 14px;
+  --card-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+  --toolbar-gap: 8px;
+  --toolbar-button-height: 38px;
+  --toolbar-button-radius: 8px;
+  --toolbar-button-padding: 0 14px;
+  --panel-padding: 10px;
+  --panel-corner-radius: 14px;
+  --quiz-panel-padding: var(--panel-padding);
+  --quiz-panel-radius: var(--panel-corner-radius);
+  /* The notes panel's own inner padding and header/body gap. Tokens rather than
+     literals because .notes-rendered cancels both with negative margins to make
+     its scroll box reach the panel edges — hard-coded, the two drifted apart the
+     moment either was tuned (e.g. the tighter mobile values below). */
+  --notes-stage-pad: 14px;
+  --notes-stage-gap: 10px;
+  --progress-height: 5px;
+  --deck-padding: 10px 0;
+  /* Follows the base text size so code reads at the same scale as the prose
+     around it — which is exactly what `.rendered pre { font-size: 1em }` used to
+     do before this variable had a consumer. The Code font size control
+     overrides it. */
+  --code-font-size: var(--content-font-size);
+  --code-line-height: 1.55;
+  --face-label-font-size: 0.72rem;
+  --face-label-padding: 5px 10px;
+  --face-label-radius: 999px;
+  --face-label-font-weight: 900;
+  /* Action and replay buttons are DERIVED from the one button-height control
+     rather than carrying sliders of their own. Their old controls were inert on
+     the Mobile profile anyway (a hardcoded 34px/24px override further down won),
+     so they were two settings that only worked half the time. Replay buttons
+     stay a notch smaller — they're a secondary row — with a floor so raising
+     the main height can't leave them untappable. */
+  --action-button-height: var(--toolbar-button-height);
+  --action-button-min-width: 86px;
+  --action-button-radius: var(--toolbar-button-radius);
+  --action-button-padding: 0 14px;
+  --action-button-gap: var(--toolbar-gap);
+  --button-font-size: 14px;
+  --action-button-font-size: var(--button-font-size);
+  --replay-button-height: max(24px, calc(var(--toolbar-button-height) - 8px));
+  --replay-button-radius: var(--toolbar-button-radius);
+  --input-height: 40px;
+  /* Buttons and inputs are one visual family and always shared a default; two
+     radius sliders just let them drift apart by accident. */
+  --input-radius: var(--toolbar-button-radius);
+  --input-padding: 0 11px;
+  --textarea-min-height: 30vh;
+  --modal-width: 60vw;
+  --modal-radius: var(--panel-corner-radius);
+  --modal-padding: 18px;
+  --all-cards-item-radius: 10px;
+  --all-cards-item-padding: 12px;
+  --diagram-radius: 10px;
+  --diagram-padding: 10px;
+  font-family: var(--app-font-family);
+}
+
+:root[data-theme="light-paper"] {
+  color-scheme: light;
+}
+
+:root[data-theme="light-snow"] {
+  color-scheme: light;
+  --bg: #f6f8f9;
+  --panel: #ffffff;
+  --panel-2: #edf1f3;
+  --card: #ffffff;
+  --card-answer: #f8fbfc;
+  --text: #172026;
+  --muted: #65727a;
+  --line: #d8e0e5;
+  --accent: #2c6f91;
+  --accent-strong: #154f72;
+  --review: #c23b4e;
+  --known: #16804a;
+  --danger: #b94141;
+  --accent-contrast: #ffffff;
+  --bg-wash: rgba(44, 111, 145, 0.1);
+  --shadow: 0 24px 70px rgba(24, 35, 42, 0.14);
+  --print-shadow: 0 20px 70px rgba(24, 35, 42, 0.16);
+}
+
+:root[data-theme="light-ink"] {
+  color-scheme: light;
+  --bg: #f3f5fb;
+  --panel: #ffffff;
+  --panel-2: #e8edf6;
+  --card: #ffffff;
+  --card-answer: #f7f9ff;
+  --text: #151b2a;
+  --muted: #606b80;
+  --line: #d3dbea;
+  --accent: #3f63b5;
+  --accent-strong: #28488d;
+  --review: #c24161;
+  --known: #147a56;
+  --danger: #bb4141;
+  --accent-contrast: #ffffff;
+  --bg-wash: rgba(63, 99, 181, 0.1);
+  --shadow: 0 24px 70px rgba(25, 32, 52, 0.14);
+  --print-shadow: 0 20px 70px rgba(25, 32, 52, 0.16);
+}
+
+:root[data-theme="dark-amoled"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #050606;
+  --panel-2: #0b1010;
+  --card: #030404;
+  --card-answer: #060909;
+  --text: #f4fbfb;
+  --muted: #9aa8a8;
+  --line: #1a2424;
+  --accent: #27e0d0;
+  --accent-strong: #8ff8ef;
+  --review: #ff5b6c;
+  --known: #39d978;
+  --danger: #ff7676;
+  --accent-contrast: #001314;
+  --bg-wash: rgba(39, 224, 208, 0.04);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.55);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.56);
+}
+
+:root[data-theme="dark-amoled-emerald"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #040705;
+  --panel-2: #09110c;
+  --card: #020503;
+  --card-answer: #050905;
+  --text: #f2fbf5;
+  --muted: #99a89e;
+  --line: #16251b;
+  --accent: #34d96f;
+  --accent-strong: #9af4ba;
+  --review: #ff5d6f;
+  --known: #49e07c;
+  --danger: #ff7676;
+  --accent-contrast: #00150a;
+  --bg-wash: rgba(52, 217, 111, 0.04);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.55);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.56);
+}
+
+:root[data-theme="dark-amoled-violet"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --panel: #070408;
+  --panel-2: #110a13;
+  --card: #050306;
+  --card-answer: #09050b;
+  --text: #fbf5ff;
+  --muted: #aa9db0;
+  --line: #25172a;
+  --accent: #c084fc;
+  --accent-strong: #e5c5ff;
+  --review: #ff6684;
+  --known: #53d98a;
+  --danger: #ff7979;
+  --accent-contrast: #100016;
+  --bg-wash: rgba(192, 132, 252, 0.04);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.55);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.56);
+}
+
+:root[data-theme="dark-forest"] {
+  color-scheme: dark;
+  --bg: #0d1110;
+  --panel: #131917;
+  --panel-2: #1b2420;
+  --card: #101613;
+  --card-answer: #151b17;
+  --text: #eef5f1;
+  --muted: #9daaa4;
+  --line: #2b3933;
+  --accent: #55d6bf;
+  --accent-strong: #8af0df;
+  --review: #ff4d55;
+  --known: #2fd36b;
+  --danger: #ff7777;
+  --accent-contrast: #05110e;
+  --bg-wash: rgba(85, 214, 191, 0.09);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.42);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+}
+
+:root[data-theme="dark-graphite"] {
+  color-scheme: dark;
+  --bg: #101113;
+  --panel: #181a1d;
+  --panel-2: #22252a;
+  --card: #141619;
+  --card-answer: #191c20;
+  --text: #f1f3f4;
+  --muted: #a4abb3;
+  --line: #333841;
+  --accent: #7cc7d8;
+  --accent-strong: #b6ecf4;
+  --review: #ff6979;
+  --known: #4dd27c;
+  --danger: #ff8080;
+  --accent-contrast: #071013;
+  --bg-wash: rgba(124, 199, 216, 0.08);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.44);
+}
+
+:root[data-theme="dark-navy"] {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #121a2b;
+  --panel-2: #1a263b;
+  --card: #111827;
+  --card-answer: #152033;
+  --text: #eef3fb;
+  --muted: #a4afc2;
+  --line: #2b3a55;
+  --accent: #8ab4ff;
+  --accent-strong: #c2d8ff;
+  --review: #ff6c82;
+  --known: #50d08a;
+  --danger: #ff8080;
+  --accent-contrast: #07101f;
+  --bg-wash: rgba(138, 180, 255, 0.08);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-theme="dark-bronze"] {
+  color-scheme: dark;
+  --bg: #12110d;
+  --panel: #1b1913;
+  --panel-2: #262217;
+  --card: #17150f;
+  --card-answer: #1f1b13;
+  --text: #f3f0e7;
+  --muted: #b0a895;
+  --line: #3a3427;
+  --accent: #e1b86b;
+  --accent-strong: #f2dca8;
+  --review: #ff6d6d;
+  --known: #66ca85;
+  --danger: #ff8585;
+  --accent-contrast: #151006;
+  --bg-wash: rgba(225, 184, 107, 0.07);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+  --print-shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 26rem),
+    radial-gradient(circle at 100% 100%, var(--bg-wash), transparent 30rem),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--app-font-family);
+}
+
+html.modal-scroll-lock {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body.modal-scroll-lock {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+  font-size: var(--button-font-size);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}

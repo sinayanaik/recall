@@ -1,0 +1,298 @@
+/* Top bar, toolbar and the mobile drawer
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+.toolbar,
+.url-row,
+.controls,
+.import-actions {
+  display: flex;
+  gap: var(--toolbar-gap);
+}
+
+.toolbar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: min(272px, 88vw);
+  z-index: 500;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  /* Full-height drawer pinned to the top/left/bottom edges: its head (title +
+     close) started at y=0, behind the status bar, and its last row ran under the
+     home indicator. Padding rather than insets on the box so the drawer's
+     background still bleeds edge to edge behind them. --safe-left matters in
+     landscape, where the notch is beside the drawer, not above it. */
+  padding: var(--safe-top) 0 var(--safe-bottom) var(--safe-left);
+  gap: 0;
+  background: color-mix(in srgb, var(--panel-2) 97%, var(--accent));
+  border-right: 1px solid color-mix(in srgb, var(--line) 70%, var(--accent));
+  box-shadow: 6px 0 24px rgba(0, 0, 0, 0.55);
+  transform: translateX(-110%);
+  /* Shorter than the 0.22s used elsewhere: the drawer now closes in the same
+     frame as the press (see the toolbar click handler in app.js), so this
+     slide is the only thing still moving over the panel the press just
+     opened. The backdrop is removed outright, so nothing else is waiting. */
+  transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+}
+
+.toolbar.mobile-open {
+  transform: translateX(0);
+}
+
+.toolbar-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.toolbar-drawer-title {
+  font-size: 0.65rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.toolbar-close-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  color: var(--muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+
+.toolbar-close-btn:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.tool-button,
+.icon-button,
+.export-menu button,
+.deck-menu button,
+.url-row button,
+.import-actions button,
+.sync-modal-btn,
+.web-decks-refresh,
+.web-deck-action,
+.controls button {
+  min-height: var(--toolbar-button-height);
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--button-font-size);
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent),
+    0 1px 2px rgba(0, 0, 0, 0.22);
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.12s ease;
+}
+
+/* Gated on a real pointer. On touch, :hover STICKS after a tap — so the button
+   stayed lifted and highlighted long after the press, which reads as a press
+   that never completed. That is a large part of "the buttons feel laggy" on a
+   phone: the affordance says still-working when the work is long done. */
+@media (hover: hover) {
+  .tool-button:hover,
+  .icon-button:hover,
+  .sync-modal-btn:hover,
+  .web-decks-refresh:hover,
+  .web-deck-action:hover {
+    background-color: var(--panel-2);
+    border-color: var(--accent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent),
+      0 3px 9px rgba(0, 0, 0, 0.2);
+    transform: translateY(-1px);
+  }
+}
+
+.tool-button:active,
+.icon-button:active,
+.sync-modal-btn:active,
+.web-decks-refresh:active,
+.web-deck-action:active,
+.controls button:active {
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.22);
+  transform: translateY(0);
+}
+
+.tool-button {
+  flex: 0 0 auto;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel) 94%, #fff), var(--panel));
+  letter-spacing: 0;
+}
+
+.toolbar-break {
+  display: block;
+  flex: 0 0 auto;
+  height: 0;
+  width: 100%;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+  margin: 4px 0;
+}
+
+/* ── Side drawer: section labels ── */
+.drawer-section-label {
+  display: block;
+  width: 100%;
+  padding: 14px 18px 5px;
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 55%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
+  flex-shrink: 0;
+}
+
+.drawer-section-label:first-of-type {
+  border-top: none;
+  padding-top: 10px;
+}
+
+/* ── Drawer: every tool-button fills full width, left-aligned ── */
+.toolbar > .tool-button,
+.toolbar > .menu-wrap,
+.toolbar > .drawer-section-label,
+.toolbar > .autosync-field {
+  width: 100%;
+  flex-shrink: 0;
+}
+
+/* Auto-sync interval picker — a drawer row (label + select) that matches the
+   tool-button rows around it, so it reads as part of the same menu. */
+.autosync-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 46px;
+  padding: 8px 20px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 25%, transparent);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.autosync-label {
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.autosync-select {
+  min-width: 0;
+  max-width: 55%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius, 8px);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.autosync-select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.toolbar .tool-button {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 25%, transparent);
+  border-radius: 0;
+  text-align: left;
+  justify-content: flex-start;
+  padding: 12px 20px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: transparent;
+  box-shadow: none;
+  min-height: 46px;
+  color: var(--text);
+}
+
+.toolbar .tool-button:hover {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+  border-color: transparent;
+  transform: none;
+  box-shadow: none;
+}
+
+.toolbar .tool-button.tool-button-info {
+  color: var(--accent);
+}
+
+/* Export menu opens inline inside the drawer (not as a floating popup) */
+.toolbar .export-menu:not([hidden]) {
+  position: static;
+  width: 100%;
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 25%, transparent);
+  background: color-mix(in srgb, var(--panel-2) 40%, transparent);
+  box-shadow: none;
+  padding: 6px 0;
+  gap: 2px;
+}
+
+.toolbar .export-menu button {
+  border-radius: 0;
+  padding: 7px 20px 7px 32px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: none;
+  border-bottom: none;
+  background: transparent;
+  min-height: 32px;
+}
+
+.toolbar .export-menu button:hover {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+}
+
+.icon-button {
+  width: var(--toolbar-button-height);
+  padding: 0;
+  font-weight: 900;
+}

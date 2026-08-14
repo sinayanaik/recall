@@ -2,7 +2,7 @@
 //
 // The whole point of this file is fidelity: the preview must render exactly what
 // a Recall deck will show once the clipped Markdown is pasted in. Every function
-// below is ported (near-verbatim) from Recall's app.js so the two stay in step —
+// below is ported (near-verbatim) from Recall's src/render/* so the two stay in step —
 // same `marked` options, same preprocessing (cloze, image rows, math, mermaid /
 // nomnoml fences), same DOMPurify allow-list, and the same post-render enhance
 // pass (KaTeX, Prism, mermaid, nomnoml, Google-Drive image URLs).
@@ -12,9 +12,33 @@
 // mermaid, nomnoml. Anything not yet loaded is guarded with typeof so rendering
 // degrades gracefully instead of throwing.
 //
-// PORT ANCHORS — line numbers in app.js at the time of writing. Anything changed
-// on one side has to be changed on the other, or the preview starts lying about
-// what a deck will show, which is the one thing this file exists to prevent:
+// WHERE THE ORIGINALS LIVE. Anything changed on one side has to be changed on
+// the other, or the preview starts lying about what a deck will show, which is
+// the one thing this file exists to prevent.
+//
+// These were line numbers into app.js, which no longer exists — the app is
+// src/**. Module paths are better anyway: a line number is stale the next time
+// anyone edits above it, which is why the old ones had already drifted by
+// hundreds of lines.
+//
+//   src/core/text.js            escapeHtml, encodeAttribute
+//   src/render/math.js          isEscaped, isSingleDollarLine, findSingleDollarLine,
+//                               findUnescaped, canOpenInlineDollar, INLINE_MATH_MAX_SPAN,
+//                               findInlineDollarClose, healEscapedTex, LINE_SPACE_RE,
+//                               normalizeDisplayMathIndentation, protectMath
+//   src/render/cloze-markup.js  applyClozeMarkup
+//   src/render/inline.js        protectInline, renderImageRows, imageMarkupToTag,
+//                               normalizeCitations, IMG_TOKEN_SOURCE, CITE_INNER,
+//                               CITE_HREF_FRAG, CITATION_LINK_RE, CITATION_ESCAPED_RE,
+//                               FOOTNOTE_BACKREF_LINK_RE, FOOTNOTE_BACKREF_ARROW_RE
+//   src/render/preprocess.js    parseDiagramWidth, diagramOpenTag, normalizeImageUrl,
+//                               SANITIZE_CONFIG, DIAGRAM_WIDTH_MIN, DIAGRAM_WIDTH_MAX
+//   src/render/tables.js        markdownTableColumnCount, tableCellWeight,
+//                               applyMarkdownTableColumns, markdownTableHeaderCells,
+//                               markdownTableHeaders, applyMarkdownTableLabels,
+//                               wrapMarkdownTable
+//   src/render/code-language.js codeLanguageAliases
+//   src/import/parse-cards.js   normalizeMarkdown
 //
 //   escapeHtml 8392 · encodeAttribute 8401 · isEscaped 8405
 //   isSingleDollarLine 8417 · findSingleDollarLine 8440 · findUnescaped 8447
@@ -28,9 +52,9 @@
 //   markdownTableHeaderCells 9992 · applyMarkdownTableLabels 10006
 //   wrapMarkdownTable 10027
 //
-// Not ported, deliberately: fitMarkdownTableFont (app.js:10048) binary-searches
+// Not ported, deliberately: fitMarkdownTableFont (src/render/tables.js) binary-searches
 // a font size against Recall's own CSS variables and layout, which don't exist
-// on an arbitrary page; and promoteNotesHeadings (app.js:9460), which only
+// on an arbitrary page; and promoteNotesHeadings (src/render/enhance.js), which only
 // applies to the notes surface, not to a fragment.
 (function () {
   "use strict";
@@ -77,7 +101,7 @@
     // Stepping over the line's own spaces, rather than lastIndexOf("\n") +
     // slice + trim: the backward search scans to the start of the document
     // whenever there is no newline above, which is quadratic on a note written
-    // as one very long line. Same reasoning as app.js.
+    // as one very long line. Same reasoning as the app.
     let before = index - 1;
     while (before >= 0 && LINE_SPACE_RE.test(source[before])) before -= 1;
     if (before >= 0 && source[before] !== "\n") return false;
@@ -104,7 +128,7 @@
   }
   // How far an inline $…$ span may reach, and no further than the end of its
   // paragraph. Without both bounds, prose that mentions money is silently eaten
-  // and the scan goes quadratic. See app.js for the measured numbers.
+  // and the scan goes quadratic. See src/render/math.js for the measured numbers.
   const INLINE_MATH_MAX_SPAN = 1000;
 
   function findInlineDollarClose(source, start) {
@@ -239,7 +263,7 @@
       const clozeStart = segment.indexOf("{{", i);
       // indexOf, never segment.slice(i) + regex. Slicing copied the WHOLE
       // remaining document on every iteration and then scanned that copy, so a
-      // note with k code spans cost O(n·k) — measured quadratic in app.js
+      // note with k code spans cost O(n·k) — measured quadratic in the app
       // (200KB → 5ms, 1MB → 64ms, 2MB → 250ms).
       const codeStart = segment.indexOf("`", i);
 
@@ -470,7 +494,7 @@
       // currency that auto-render does not have, and letting KaTeX have a second
       // pass at them made the preview render money as math where a deck (which
       // runs the same net without "$") rendered it as money. Same list as
-      // app.js.
+      // the app.
       if (typeof renderMathInElement === "function") {
         try {
           renderMathInElement(container, {
@@ -523,7 +547,7 @@
   // the preview showed evenly-divided columns and a deck showed weighted ones,
   // so a table always looked different in the two places.
   //
-  // fitMarkdownTableFont (app.js:10048) is deliberately not ported — it binary-
+  // fitMarkdownTableFont (src/render/tables.js) is deliberately not ported — it binary-
   // searches a font size against Recall's own CSS variables and page layout,
   // neither of which exists on an arbitrary web page.
   function markdownTableColumnCount(table) {

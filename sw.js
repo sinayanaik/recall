@@ -120,10 +120,158 @@ function fetchImageForCache(url) {
 // that one asset, which the miss handler and repairCdnCache can both recover.
 const APP_SHELL = [
   "./",
-  `./styles.css?v=${STAMP}`,
-  `./app.js?v=${STAMP}`,
+  `./styles/01-tokens.css?v=${STAMP}`,
+  `./styles/02-shell.css?v=${STAMP}`,
+  `./styles/03-toolbar.css?v=${STAMP}`,
+  `./styles/04-import.css?v=${STAMP}`,
+  `./styles/05-study.css?v=${STAMP}`,
+  `./styles/06-rendered.css?v=${STAMP}`,
+  `./styles/07-library.css?v=${STAMP}`,
+  `./styles/08-panels.css?v=${STAMP}`,
+  `./styles/09-all-cards.css?v=${STAMP}`,
+  `./styles/10-editor.css?v=${STAMP}`,
+  `./styles/11-chrome.css?v=${STAMP}`,
+  `./styles/12-notes.css?v=${STAMP}`,
+  `./styles/13-quick-notes.css?v=${STAMP}`,
+  // The module entry point. Everything it imports is stamped with the same
+  // ?v=, so those URLs change with every release too — which is what lets the
+  // cache-first handler below serve them without revalidating and still never
+  // mix a new entry point with an old dependency. As the split proceeds, each
+  // new module must be added here: a module missing from this list still works
+  // (the miss handler fetches and caches it) but is absent on a first offline
+  // launch, which is precisely the case this precache exists for. CI compares
+  // this list against the files on disk.
+  `./src/main.js?v=${STAMP}`,
+  `./src/backup/backup.js?v=${STAMP}`,
+  `./src/backup/restore.js?v=${STAMP}`,
+  `./src/boot.js?v=${STAMP}`,
+  `./src/cards/all-cards-edit.js?v=${STAMP}`,
+  `./src/cards/all-cards.js?v=${STAMP}`,
+  `./src/cards/card-status.js?v=${STAMP}`,
+  `./src/cards/card-view.js?v=${STAMP}`,
+  `./src/cards/deck-actions.js?v=${STAMP}`,
+  `./src/cards/new-deck.js?v=${STAMP}`,
+  `./src/cards/question-fit.js?v=${STAMP}`,
+  `./src/cards/study.js?v=${STAMP}`,
+  `./src/cards/swipe.js?v=${STAMP}`,
+  `./src/cloud/auth.js?v=${STAMP}`,
+  `./src/cloud/deck-list.js?v=${STAMP}`,
+  `./src/cloud/net.js?v=${STAMP}`,
+  `./src/cloud/style-sync.js?v=${STAMP}`,
+  `./src/cloud/supabase-client.js?v=${STAMP}`,
+  `./src/cloud/web-decks.js?v=${STAMP}`,
+  `./src/core/build.js?v=${STAMP}`,
+  `./src/core/constants.js?v=${STAMP}`,
+  `./src/core/dom.js?v=${STAMP}`,
+  `./src/core/lib-loader.js?v=${STAMP}`,
+  `./src/core/state.js?v=${STAMP}`,
+  `./src/core/text.js?v=${STAMP}`,
+  `./src/editor/highlight-mirror.js?v=${STAMP}`,
+  `./src/editor/text-transforms.js?v=${STAMP}`,
+  `./src/editor/toolbar-actions.js?v=${STAMP}`,
+  `./src/editor/toolbars.js?v=${STAMP}`,
+  `./src/editor/triple-click.js?v=${STAMP}`,
+  `./src/export/decks.js?v=${STAMP}`,
+  `./src/export/docx.js?v=${STAMP}`,
+  `./src/export/html.js?v=${STAMP}`,
+  `./src/export/markdown.js?v=${STAMP}`,
+  `./src/export/pdf.js?v=${STAMP}`,
+  `./src/export/run.js?v=${STAMP}`,
+  `./src/export/sql.js?v=${STAMP}`,
+  `./src/export/zip.js?v=${STAMP}`,
+  `./src/format/cloze.js?v=${STAMP}`,
+  `./src/format/highlight-colors.js?v=${STAMP}`,
+  `./src/format/highlight.js?v=${STAMP}`,
+  `./src/format/locate-selection.js?v=${STAMP}`,
+  `./src/format/render-toolbar.js?v=${STAMP}`,
+  `./src/format/selection-tools.js?v=${STAMP}`,
+  `./src/images/outbox.js?v=${STAMP}`,
+  `./src/images/paste.js?v=${STAMP}`,
+  `./src/images/surface-controls.js?v=${STAMP}`,
+  `./src/images/upload.js?v=${STAMP}`,
+  `./src/import/analyze.js?v=${STAMP}`,
+  `./src/import/epub.js?v=${STAMP}`,
+  `./src/import/files.js?v=${STAMP}`,
+  `./src/import/html-to-markdown.js?v=${STAMP}`,
+  `./src/import/parse-cards.js?v=${STAMP}`,
+  `./src/import/sample.js?v=${STAMP}`,
+  `./src/import/staging.js?v=${STAMP}`,
+  `./src/import/url.js?v=${STAMP}`,
+  `./src/library/categories.js?v=${STAMP}`,
+  `./src/library/deck-rows.js?v=${STAMP}`,
+  `./src/library/folder-tree.js?v=${STAMP}`,
+  `./src/library/folders.js?v=${STAMP}`,
+  `./src/library/local-library.js?v=${STAMP}`,
+  `./src/library/my-decks-actions.js?v=${STAMP}`,
+  `./src/library/my-decks-icons.js?v=${STAMP}`,
+  `./src/library/my-decks-menu.js?v=${STAMP}`,
+  `./src/library/my-decks-prefs.js?v=${STAMP}`,
+  `./src/library/my-decks-render.js?v=${STAMP}`,
+  `./src/library/my-decks-selection.js?v=${STAMP}`,
+  `./src/library/tombstones.js?v=${STAMP}`,
+  `./src/notes/anchors.js?v=${STAMP}`,
+  `./src/notes/caret.js?v=${STAMP}`,
+  `./src/notes/link-picker.js?v=${STAMP}`,
+  `./src/notes/note-links.js?v=${STAMP}`,
+  `./src/notes/notes-view.js?v=${STAMP}`,
+  `./src/notes/raw-offset.js?v=${STAMP}`,
+  `./src/notes/scroll-anchor.js?v=${STAMP}`,
+  `./src/notes/selection.js?v=${STAMP}`,
+  `./src/notes/toc.js?v=${STAMP}`,
+  `./src/panels/cloze-panel.js?v=${STAMP}`,
+  `./src/panels/highlights-panel.js?v=${STAMP}`,
+  `./src/pwa/app-info.js?v=${STAMP}`,
+  `./src/pwa/online.js?v=${STAMP}`,
+  `./src/pwa/release-info.js?v=${STAMP}`,
+  `./src/pwa/service-worker-client.js?v=${STAMP}`,
+  `./src/quick-notes/anchors.js?v=${STAMP}`,
+  `./src/quick-notes/board.js?v=${STAMP}`,
+  `./src/quick-notes/categories.js?v=${STAMP}`,
+  `./src/quick-notes/palette.js?v=${STAMP}`,
+  `./src/render/block-cache.js?v=${STAMP}`,
+  `./src/render/cloze-markup.js?v=${STAMP}`,
+  `./src/render/code-language.js?v=${STAMP}`,
+  `./src/render/deferred-work.js?v=${STAMP}`,
+  `./src/render/diagram-zoom.js?v=${STAMP}`,
+  `./src/render/diagrams.js?v=${STAMP}`,
+  `./src/render/enhance.js?v=${STAMP}`,
+  `./src/render/inline.js?v=${STAMP}`,
+  `./src/render/math-dom.js?v=${STAMP}`,
+  `./src/render/math.js?v=${STAMP}`,
+  `./src/render/note-links.js?v=${STAMP}`,
+  `./src/render/preprocess.js?v=${STAMP}`,
+  `./src/render/tables.js?v=${STAMP}`,
+  `./src/storage/deck-snapshot.js?v=${STAMP}`,
+  `./src/storage/deck-store.js?v=${STAMP}`,
+  `./src/storage/keys.js?v=${STAMP}`,
+  `./src/storage/quota.js?v=${STAMP}`,
+  `./src/storage/storage-panel.js?v=${STAMP}`,
+  `./src/sync/auto-sync.js?v=${STAMP}`,
+  `./src/sync/cards.js?v=${STAMP}`,
+  `./src/sync/diff.js?v=${STAMP}`,
+  `./src/sync/indicator.js?v=${STAMP}`,
+  `./src/sync/notes-conflict.js?v=${STAMP}`,
+  `./src/sync/push.js?v=${STAMP}`,
+  `./src/sync/reconcile.js?v=${STAMP}`,
+  `./src/sync/report.js?v=${STAMP}`,
+  `./src/sync/stats.js?v=${STAMP}`,
+  `./src/ui/back-gesture.js?v=${STAMP}`,
+  `./src/ui/boot-screens.js?v=${STAMP}`,
+  `./src/ui/chrome.js?v=${STAMP}`,
+  `./src/ui/deck-header.js?v=${STAMP}`,
+  `./src/ui/edit-mode.js?v=${STAMP}`,
+  `./src/ui/feedback.js?v=${STAMP}`,
+  `./src/ui/help.js?v=${STAMP}`,
+  `./src/ui/nav-history.js?v=${STAMP}`,
+  `./src/ui/overlays.js?v=${STAMP}`,
+  `./src/ui/pickers.js?v=${STAMP}`,
+  `./src/ui/style-schema.js?v=${STAMP}`,
+  `./src/ui/style-settings.js?v=${STAMP}`,
+  `./src/ui/style-tokens.js?v=${STAMP}`,
+  `./src/ui/theme-catalog.js?v=${STAMP}`,
+  `./src/ui/theme.js?v=${STAMP}`,
+  `./src/ui/view-mode.js?v=${STAMP}`,
   "./manifest.webmanifest",
-  "./fevicon.png",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/icon-maskable-512.png",
@@ -442,7 +590,7 @@ self.addEventListener("fetch", (event) => {
 });
 
 // Does this HTML belong to the release this worker was built for? Compares the
-// ?v= stamp its <script src="app.js?v=…"> carries against our own STAMP.
+// ?v= stamp its <script src="src/main.js?v=…"> carries against our own STAMP.
 //
 // Only navigations are judged. A same-origin non-navigation that reaches the
 // network-first handler is not the app shell and has no stamp to check, and a
@@ -463,7 +611,7 @@ async function htmlMatchesThisRelease(response, request) {
   } catch (_) {
     return true; // unreadable (opaque, streaming failure) — don't block on it
   }
-  const stamp = text.match(/app\.js\?v=([^"'&\s]+)/)?.[1];
+  const stamp = text.match(/src\/main\.js\?v=([^"'&\s]+)/)?.[1];
   if (!stamp) return true;
   if (stamp === STAMP) return true;
   try { self.registration.update(); } catch (_) { /* best effort */ }
@@ -473,7 +621,7 @@ async function htmlMatchesThisRelease(response, request) {
 // Content-addressed by URL, so a cache hit is always the right answer.
 function isVersionedAsset(url) {
   if (url.searchParams.has("v")) return true;
-  return /\/(icons\/[^/]+\.png|fevicon\.png|manifest\.webmanifest)$/.test(url.pathname);
+  return /\/(icons\/[^/]+\.png|manifest\.webmanifest)$/.test(url.pathname);
 }
 
 // Tell every open page that it is running a body whose version does not match

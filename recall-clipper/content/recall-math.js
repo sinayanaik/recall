@@ -15,31 +15,36 @@
 // Both produce `<span data-recall-raw-math="$…$">`, which picker.js's `raw-math`
 // rule emits verbatim. One placeholder shape, one rule.
 //
-// Everything in the "ported" section below is copied from Recall's app.js so
-// that what the clipper emits and what a deck accepts are decided by the same
-// code. Line anchors are against app.js at the time of writing:
+// Everything in the "ported" section below is copied from Recall's src/render/*
+// so that what the clipper emits and what a deck accepts are decided by the
+// same code. Where the originals live:
 //
-//   isEscaped 8405 · findUnescaped 8447 · canOpenInlineDollar 8454
-//   INLINE_MATH_MAX_SPAN / findInlineDollarClose 8471 · healEscapedTex 8518
-//   mathSpanAt 8664 · findMathRanges 8685 · codeRegionEnd 8705
-//   repairEscapedMathMarkdown 8729 · RAW_MATH_ATTR … MATH_BLOCK_LEVEL 25904
-//   flattenTextForMath 25923 · protectMathInDom 25962 · relaxEscapedBrackets 26038
+//   src/render/math.js      isEscaped, findUnescaped, canOpenInlineDollar,
+//                           INLINE_MATH_MAX_SPAN, findInlineDollarClose,
+//                           healEscapedTex, mathSpanAt, findMathRanges,
+//                           codeRegionEnd, repairEscapedMathMarkdown
+//   src/render/math-dom.js  RAW_MATH_ATTR, MATH_OPAQUE_MARK, MATH_BLOCK_LEVEL,
+//                           flattenTextForMath, protectMathInDom,
+//                           relaxEscapedBrackets
+//
+// Module paths, not line numbers: the old anchors pointed into app.js, which no
+// longer exists, and had already drifted by hundreds of lines before that.
 //
 // If you change any of them here, change them there too — and vice versa.
-// `node tools/port-sync.mjs` diffs every one of them against app.js and fails
+// `node tools/port-sync.mjs` diffs every one of them against src/** and fails
 // on anything that has drifted.
 //
 // ONE function diverges on purpose: protectMathInDom additionally declines an
 // inline "$…$" span whose content does not read as a formula (see looksLikeMath).
 // The clipper meets raw web prose, where two currency amounts in a sentence are
-// ordinary; app.js only ever sees text a user already chose to keep. The
+// ordinary; the app only ever sees text a user already chose to keep. The
 // divergence is registered in tools/port-sync.mjs so it doesn't read as drift.
 (function () {
   "use strict";
   if (window.__recallMath) return; // idempotent — re-injection is a no-op
 
   // ===========================================================================
-  // Ported from app.js — markdown-level math scanning
+  // Ported from src/render/math.js — markdown-level math scanning
   // ===========================================================================
 
   const RAW_MATH_ATTR = "data-recall-raw-math";
@@ -64,7 +69,7 @@
     return next && next !== "$" && !/\s/.test(next) && !isEscaped(source, index);
   }
 
-  // How far an inline $…$ span may reach — see the long note in app.js. Real
+  // How far an inline $…$ span may reach — see the long note in src/render/math.js. Real
   // inline math is a formula inside a sentence, so this only ever rules out
   // things that were never math, and it keeps the scan from going quadratic on
   // prose that merely mentions money.
@@ -269,7 +274,7 @@
   }
 
   // ===========================================================================
-  // Ported from app.js — DOM-level math protection
+  // Ported from src/render/math-dom.js — DOM-level math protection
   // ===========================================================================
 
   // Stands in for an opaque subtree in the flat text: a character no pasted

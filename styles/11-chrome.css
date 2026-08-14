@@ -1,0 +1,1383 @@
+/* Empty states, Help, App Info, storage
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+/* ── Empty state ─────────────────────────────────────────────── */
+.deck-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 92%;
+  max-width: 480px;
+  padding: 36px 28px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: var(--card-radius);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  box-shadow: var(--card-shadow);
+  text-align: center;
+}
+
+.deck-empty-icon {
+  font-size: 2.6rem;
+  line-height: 1;
+  opacity: 0.72;
+}
+
+.deck-empty-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 1.15rem;
+  font-weight: 850;
+  letter-spacing: 0;
+}
+
+.deck-empty-body {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+/* Structured Sync Status / Your Decks fields on the welcome screen — replaces
+   a single blended status sentence with two clearly labeled rows so both
+   pieces of information are always distinctly visible, not just implied. */
+.deck-empty-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+
+.deck-empty-panel-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.deck-empty-panel-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.deck-empty-panel-value {
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: right;
+}
+
+.deck-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  width: 100%;
+}
+
+/* Inline replacement for the old "Startup Sync Report" modal — same
+   .sync-report-* row styling, just docked in the welcome card instead of a
+   popup, with its own scroll cap so a long deck list doesn't blow out the
+   card's height. */
+.deck-empty-sync-report {
+  width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+
+.deck-empty-sync-report-title {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.deck-empty-action {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.deck-empty-action:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  color: var(--accent);
+}
+
+.deck-empty-action-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+/* ── Swipe hint overlay ──────────────────────────────────────── */
+.swipe-hint {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: var(--card-radius);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  pointer-events: none;
+  animation: swipe-hint-appear 0.3s ease;
+}
+
+.swipe-hint.is-fading {
+  animation: swipe-hint-fade 0.4s ease forwards;
+}
+
+@keyframes swipe-hint-appear {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes swipe-hint-fade {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.swipe-hint-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-size: 0.88rem;
+  font-weight: 900;
+  color: var(--text);
+}
+
+.swipe-hint-dir {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 80%, transparent);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.swipe-hint-center {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.swipe-hint-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+/* ── All Cards drag handle ───────────────────────────────────── */
+.all-card {
+  padding-left: 30px;
+}
+
+.all-card-drag-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  border-radius: var(--all-cards-item-radius) 0 0 var(--all-cards-item-radius);
+  user-select: none;
+}
+
+.all-card:hover .all-card-drag-handle {
+  opacity: 0.55;
+}
+
+.all-card-drag-handle:hover {
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .all-card-drag-handle {
+    opacity: 0.4;
+  }
+}
+
+/* ── Confirm / prompt modals ─────────────────────────────────── */
+.confirm-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 230;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.confirm-modal-content {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--modal-radius);
+  padding: 22px 24px;
+  max-width: 380px;
+  width: 100%;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 16px;
+}
+
+.confirm-modal-message {
+  margin: 0;
+  font-size: 0.96rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.prompt-modal-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.prompt-modal-input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+  border-radius: var(--input-radius);
+  background: var(--card);
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 0.96rem;
+}
+
+.prompt-modal-input::placeholder {
+  color: color-mix(in srgb, var(--muted) 78%, transparent);
+  opacity: 1;
+}
+
+.prompt-modal-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  outline: none;
+}
+
+.sync-modal-btn.is-danger {
+  border-color: color-mix(in srgb, var(--danger) 68%, var(--line));
+  background: color-mix(in srgb, var(--danger) 85%, #200a0a);
+  color: #fff;
+}
+
+.sync-modal-btn.is-danger:hover {
+  background: var(--danger);
+}
+
+/* ── Replay actions prominence when deck complete ────────────── */
+.quiz-panel.deck-complete .replay-actions button:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent);
+  font-weight: 900;
+}
+
+.quiz-panel.deck-complete .replay-actions button:not(:disabled):hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+/* ── Help / info button ──────────────────────────────────────── */
+.tool-button-info {
+  font-size: 1.05rem;
+  font-weight: 900;
+  min-width: 32px;
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent);
+}
+
+.tool-button-info:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: var(--accent);
+}
+
+/* ── Help modal ──────────────────────────────────────────────── */
+.help-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 240;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.help-modal-content {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--modal-radius);
+  width: 100%;
+  max-width: 640px;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.help-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.help-modal-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+/* App Info modal — reuses the help modal's overlay/shell; these are just the
+   version rows and the action row under them. */
+.app-info-content {
+  max-width: 420px;
+}
+
+.app-info-list {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.app-info-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+}
+
+.app-info-row dt {
+  font-weight: 700;
+  color: var(--muted, var(--text));
+  font-size: 0.9rem;
+}
+
+.app-info-row dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.app-info-row dd.is-ok {
+  color: var(--success, #22c55e);
+  font-weight: 700;
+}
+
+.app-info-row dd.is-outdated {
+  color: var(--danger, #d64545);
+  font-weight: 700;
+}
+
+/* The explanation under the rows. Carries the two things a bare version number
+   can't say: that the deployed build's five ?v= stamps disagree with each
+   other, or that there is genuinely nothing for the user to do because the
+   newest code is pushed but not yet published. */
+.app-info-warning {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger, #d64545) 34%, var(--line));
+  border-radius: var(--input-radius);
+  background: color-mix(in srgb, var(--danger, #d64545) 8%, var(--card));
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.app-info-warning[hidden] {
+  display: none;
+}
+
+/* ── Supabase project health check ──────────────────────────────────────── */
+
+.app-info-health {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.app-info-health-title {
+  margin: 0 0 8px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.app-info-health-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.app-info-health-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.app-info-health-item strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.app-info-health-mark {
+  flex: none;
+  width: 1.15em;
+  text-align: center;
+  font-weight: 700;
+}
+
+.app-info-health-item.is-ok .app-info-health-mark { color: var(--known, #4caf50); }
+.app-info-health-item.is-warn .app-info-health-mark { color: var(--review, #d9534f); }
+.app-info-health-item.is-fail .app-info-health-mark { color: var(--danger, #d64545); }
+.app-info-health-item.is-skip .app-info-health-mark { color: var(--muted); }
+
+.app-info-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.help-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 20px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.help-modal-foot {
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.help-section {
+  padding: 16px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.help-section:last-child {
+  border-bottom: none;
+}
+
+.help-section-title {
+  margin: 0 0 10px;
+  font-size: 0.92rem;
+  font-weight: 900;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+
+.help-subsection-title {
+  margin: 16px 0 8px;
+  font-size: 0.86rem;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.help-section p {
+  margin: 0 0 10px;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.help-section p:last-child {
+  margin-bottom: 0;
+}
+
+.help-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+  align-items: center;
+}
+
+.help-demo-btn {
+  pointer-events: none;
+  cursor: default;
+  font-size: 0.82rem !important;
+  min-height: 30px !important;
+  height: auto !important;
+  padding: 4px 10px !important;
+  flex-direction: row !important;
+  gap: 4px !important;
+}
+
+.help-demo-btn-sm {
+  font-size: 0.75rem !important;
+  min-height: 26px !important;
+  padding: 2px 8px !important;
+}
+
+.help-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.help-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+  margin: 8px 0 0;
+}
+
+.help-table tr {
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+}
+
+.help-table tr:last-child {
+  border-bottom: none;
+}
+
+.help-table td {
+  padding: 7px 8px 7px 0;
+  vertical-align: middle;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.help-table td:first-child {
+  width: 160px;
+  padding-right: 14px;
+  white-space: nowrap;
+}
+
+.help-card-demo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  font-size: 0.84rem;
+}
+
+.help-card-face {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--card);
+  color: var(--text);
+  text-align: center;
+  font-weight: 800;
+}
+
+.help-card-face-answer {
+  background: color-mix(in srgb, var(--known) 8%, var(--card));
+  border-color: color-mix(in srgb, var(--known) 30%, var(--line));
+}
+
+.help-card-arrow {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  flex-shrink: 0;
+}
+
+.help-progress-demo {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--panel-2);
+  margin: 10px 0 6px;
+  gap: 0;
+}
+
+.help-progress-known {
+  background: var(--known);
+  height: 100%;
+  border-radius: 999px 0 0 999px;
+}
+
+.help-progress-review {
+  background: var(--review);
+  height: 100%;
+}
+
+.help-progress-remaining {
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, var(--muted)));
+  height: 100%;
+  border-radius: 0 999px 999px 0;
+}
+
+.help-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.76rem;
+  color: var(--muted);
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.help-legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+kbd {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-family: inherit;
+  font-weight: 900;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.help-code {
+  margin: 8px 0 0;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* Inline mini-toast preview chip inside help copy */
+.help-toast-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid color-mix(in srgb, var(--known) 55%, var(--line));
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.help-toast-chip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--known);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 900;
+}
+
+.help-toast-chip-err {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+}
+
+.help-toast-chip-err .help-toast-chip-icon {
+  background: var(--danger);
+}
+
+/* Demo buttons in help modal inherit real control colours */
+.help-btn-row .review,
+.help-table .review {
+  border: 1px solid color-mix(in srgb, var(--review) 56%, var(--line));
+  background: color-mix(in srgb, var(--review) 24%, var(--panel));
+  color: color-mix(in srgb, var(--review) 78%, var(--text));
+}
+
+.help-btn-row .known,
+.help-table .known {
+  border: 1px solid color-mix(in srgb, var(--known) 58%, var(--line));
+  background: color-mix(in srgb, var(--known) 24%, var(--panel));
+  color: color-mix(in srgb, var(--known) 82%, var(--text));
+}
+
+.help-btn-row .nav-card,
+.help-table .nav-card {
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--accent);
+}
+
+/* ── Help modal mobile adjustments ──────────────────────────── */
+@media (max-width: 720px) {
+  .help-modal {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  /* Bottom sheet, same as .style-shell — inset on the sheet so its surface still
+     reaches the screen edge. */
+  .help-modal-content {
+    max-height: 90vh;
+    padding-bottom: var(--safe-bottom);
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    max-width: 100%;
+  }
+
+  .help-table td:first-child {
+    width: 120px;
+  }
+}
+
+/* ---- My Decks (local/offline library) ---- */
+.my-deck-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.web-decks-table tr.is-current-local-deck {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Cloud-only rows in the unified My Decks list read as slightly recessed until
+   pulled onto the device. */
+.web-decks-table tr.is-cloud-only-deck {
+  opacity: 0.82;
+}
+
+.my-deck-cloud-tag {
+  color: var(--accent);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ── My Decks list below the desktop width ──────────────────────────────────
+   The desktop table has seven columns; there is no width between "all seven
+   fit" and "the modal itself is a phone sheet" where they all still work.
+   Two tiers instead:
+
+     721–1080px  a left-aligned stacked card — title on its own line, the
+                 labelled meta fields wrapping beneath it.
+     ≤720px      a real list row: title, then one muted meta line carrying the
+                 actions on its right. ~55px per deck against the ~110px the
+                 old centred card cost, so a phone shows roughly twice as many.
+
+   Both are keyed off data-label rather than nth-child, so the leading
+   bulk-select column can come and go without shifting the layout. */
+@media (max-width: 1080px) {
+  .my-decks-table,
+  .my-decks-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .my-decks-table thead {
+    display: none;
+  }
+
+  .my-decks-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 4px;
+    border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+    padding: 10px 12px;
+    text-align: left;
+  }
+
+  .my-decks-table tr + tr {
+    margin-top: 6px;
+  }
+
+  /* Undo the desktop cell chrome: these are flex children now, not table
+     cells, and the hairline borders would draw across the middle of a card. */
+  .my-decks-table tbody td {
+    display: inline-flex;
+    align-items: center;
+    width: auto;
+    border: 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  .my-decks-table td[data-label="Title"] {
+    flex: 1 1 100%;
+    font-weight: 800;
+    font-size: 0.9rem;
+    line-height: 1.3;
+    /* No ellipsis here — at this width the row has nothing to trade the
+       second line against, and a truncated deck name is unusable. */
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* `display` is restated here because the Web Decks table's mobile rules hide
+     its 3rd and 4th columns as "desktop-only" (.web-decks-table td:nth-child(4),
+     specificity 0-2-1) — that outranks a plain `.my-decks-table tbody td`
+     (0-1-2) and was silently swallowing this table's Cards column. */
+  .my-decks-table td[data-label="Category"],
+  .my-decks-table td[data-label="Cards"],
+  .my-decks-table td[data-label="Saved"],
+  .my-decks-table td[data-label="Sync"] {
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-size: 0.74rem;
+    color: var(--muted);
+    /* The timestamp is one value; letting it break mid-date added a whole line
+       to every row for no gain. */
+    white-space: nowrap;
+  }
+  /* The category <select> has no intrinsic width to shrink to, so it ran into
+     the Cards field beside it. */
+  .my-decks-table td[data-label="Category"] { min-width: 0; max-width: 40%; }
+  .my-decks-table td[data-label="Category"] .web-deck-category-editor,
+  .my-decks-table td[data-label="Category"] select {
+    min-width: 0;
+    max-width: 100%;
+    /* Room for the native chevron, which was sitting on the last character. */
+    padding-right: 20px;
+    text-overflow: ellipsis;
+  }
+
+  .my-decks-table td[data-label="Actions"] {
+    flex: 0 0 auto;
+    margin-left: auto;
+    margin-top: 0;
+  }
+
+  .my-decks-table .my-deck-actions {
+    justify-content: flex-end;
+    gap: 6px;
+    width: auto;
+  }
+  .my-decks-table .my-deck-actions .icon-action,
+  .my-decks-table .my-deck-actions .web-deck-export-wrap {
+    flex: 0 0 auto;
+  }
+
+  /* The current-deck marker is an inset shadow on the first cell on desktop;
+     that cell is hidden here, so the card carries the accent itself. */
+  .my-decks-table tr.is-current-local-deck {
+    border-color: var(--accent);
+  }
+  .my-decks-table tr.is-current-local-deck > td:first-child {
+    box-shadow: none;
+  }
+
+  /* Folder header + root rows stay full-width bars (not stacked cards), and
+     their single cell keeps its own left-aligned indented layout. */
+  .my-decks-table tr.deck-folder-row {
+    display: block;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    padding: 0;
+    border-radius: 8px;
+    background: none;
+  }
+  .my-decks-table tr.deck-folder-row > td { display: block; width: 100%; }
+  .my-decks-table tr.my-deck-row td[data-label="Title"] { padding-left: 0; }
+  /* Deep nesting otherwise eats most of a phone-width row before any label
+     text appears; shrink the per-level indent instead of the desktop 22px. */
+  .my-decks-table tr.deck-folder-row .deck-folder-wrap {
+    padding-left: calc(var(--folder-depth, 0) * 10px);
+    /* Allowed to wrap as a last resort for a very long name at a very narrow
+       width, but the actions are not *forced* onto their own line — at
+       721-1080px there is room beside the name and the forced break was
+       costing ~40px per folder. */
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .my-decks-table tr.deck-folder-row .deck-folder-label {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .my-decks-table tr.deck-folder-row .deck-folder-name {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: break-word;
+    hyphens: auto;
+    min-width: 0;
+  }
+  .my-decks-table tr.deck-folder-row .deck-folder-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+
+  /* The Tree/List folder-row checkbox goes with the deck one (table
+     bulk-select is desktop-only) — tile checkboxes stay, matching the grid
+     deck tiles, which also keep theirs on mobile. */
+  .my-decks-table td.web-deck-select-cell,
+  .deck-folder-wrap .my-folder-row-checkbox {
+    display: none;
+  }
+
+  /* Field names, since there is no header row left to read them off. */
+  .my-decks-table td[data-label="Category"]::before,
+  .my-decks-table td[data-label="Cards"]::before,
+  .my-decks-table td[data-label="Saved"]::before {
+    display: inline;
+    content: attr(data-label) ": ";
+    flex-shrink: 0;
+    margin-right: 4px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+}
+
+@media (max-width: 720px) {
+  /* One list, not a stack of cards: at 8px of gap plus 2px of border per deck,
+     the card treatment was spending a tenth of the screen on separation alone.
+     Flat rows divided by a hairline instead. */
+  .my-decks-table tr.my-deck-row {
+    border: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+    border-radius: 0;
+    background: none;
+    margin-top: 0;
+    padding: var(--md-row-pad);
+    column-gap: 5px;
+    row-gap: 1px;
+  }
+  .my-decks-table tr.my-deck-row + tr.my-deck-row { margin-top: 0; }
+  .my-decks-table tr.my-deck-row.is-current-local-deck {
+    border-color: color-mix(in srgb, var(--line) 55%, transparent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  /* Two lines, always: title + actions, then the meta line.
+     `order` moves the actions up next to the title (they are the last <td> in
+     source), and `flex: 1 1 0` gives the title a zero base size so however long
+     the deck name is it can never push the actions onto a line of their own —
+     which is what a `margin-left: auto` on the meta line was doing as soon as
+     the date read "11mo ago" instead of "today". */
+  .my-decks-table td[data-label="Title"] {
+    order: 1;
+    flex: 1 1 0;
+    min-width: 0;
+    font-size: 0.86rem;
+    font-weight: 700;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .my-decks-table td[data-label="Actions"] {
+    order: 2;
+    margin-left: 6px;
+  }
+  /* Because the title's base size is 0, the meta fields would happily pack onto
+     line 1 and squeeze it away. The Category cell — which this width doesn't
+     show anyway — is reused as the line break: full-width basis, zero height,
+     so it forces a wrap and occupies nothing. `visibility` rather than
+     `display: none` because a `display: none` item can't break a flex line. */
+  .my-decks-table td[data-label="Category"] {
+    display: block;
+    order: 3;
+    flex: 0 0 100%;
+    /* The tablet tier caps this cell at 40% so its <select> can't crowd the
+       fields beside it; that cap would also stop the 100% basis here from
+       filling the line, and a spacer that doesn't fill the line doesn't break
+       it — which collapsed the title to a couple of characters. */
+    max-width: none;
+    height: 0;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+    visibility: hidden;
+  }
+  .my-decks-table td[data-label="Cards"] { order: 4; }
+  .my-decks-table td[data-label="Saved"] { order: 5; }
+  .my-decks-table td[data-label="Sync"] { order: 6; }
+
+  /* The meta line: "24 cards · 2d ago · ●synced". The field-name prefixes are
+     noise here — the values say what they are once "cards" is appended, and
+     the sync pill is already a labelled badge. */
+  .my-decks-table td[data-label="Cards"]::before { display: none; }
+  /* Hung off the number, not the cell, so the "has notes" marker stays last:
+     "24 cards 📝", not "24 📝 cards".
+     A non-breaking space — a leading literal one collapses away here. The space
+     after the escape is the escape's terminator and is consumed; without it CSS
+     would greedily read "\00a0ca" as a single six-digit codepoint. */
+  .my-decks-table td[data-label="Cards"] .deck-card-count-n::after { content: "\00a0 cards"; }
+  .my-decks-table td[data-label="Cards"] .deck-has-notes { margin-left: 4px; }
+
+  /* A small indent so Tree view still reads as a hierarchy. The desktop 22px
+     per level would swallow a phone row after two levels; 8px is enough to see
+     against a left-aligned title. */
+  .my-decks-table tr.my-deck-row {
+    padding-left: calc(10px + min(var(--folder-depth, 0), 4) * 8px);
+  }
+
+  /* Swap the full timestamp for the relative one the row already carries —
+     "Jul 25, 2026, 10:11 PM" is a third of a phone row on its own. */
+  .my-decks-table td[data-label="Saved"] {
+    font-size: 0;
+  }
+  .my-decks-table td[data-label="Saved"]::before {
+    display: inline;
+    content: "· " attr(data-short);
+    font-size: 0.68rem;
+    margin-left: 4px;
+  }
+
+  /* Middot separators, drawn by the field that *follows* the gap, so hiding a
+     field can never leave a dangling dot behind. */
+  .my-decks-table td[data-label="Sync"]::before {
+    content: "·";
+    margin: 0 5px 0 4px;
+    color: color-mix(in srgb, var(--muted) 60%, transparent);
+  }
+  .my-decks-table td[data-label="Cards"],
+  .my-decks-table td[data-label="Sync"] {
+    font-size: 0.68rem;
+  }
+  .my-decks-table td.my-deck-sync span {
+    padding: 1px 6px;
+    font-size: 0.64rem;
+  }
+
+  /* Four icons plus the meta line don't fit a 360px row: Rename and Delete
+     fold into the "⋯" menu that buildDeckActions already renders alongside
+     them (see .md-row-wide-only / .md-row-narrow-only). */
+  .my-deck-actions .md-row-wide-only { display: none; }
+  .my-deck-actions .md-row-narrow-only { display: inline-flex; }
+  .my-decks-table .my-deck-actions { gap: 4px; }
+  .my-decks-table .my-deck-actions .icon-action,
+  .my-decks-table .my-deck-actions .deck-tile-overflow-btn {
+    min-width: 32px;
+    min-height: 30px;
+  }
+
+  /* Folder bars: the four actions drop to icons so they stay on the folder's
+     own line. Wrapping them onto a second line cost ~40px per folder, which on
+     a library with five top-level folders was most of the first screen. */
+  .my-decks-table tr.deck-folder-row {
+    margin-top: 0;
+    border-radius: 6px;
+  }
+  .my-decks-table tr.deck-folder-row + tr { margin-top: 0; }
+  .my-decks-table tr.deck-folder-row > td {
+    padding: 4px 6px !important;
+  }
+  .my-decks-table tr.deck-folder-row .deck-folder-wrap { flex-wrap: nowrap; }
+  .my-decks-table tr.deck-folder-row .deck-folder-actions {
+    flex: 0 0 auto;
+    margin-left: auto;
+    gap: 2px;
+  }
+  .deck-folder-action {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+  .deck-folder-action .md-btn-label { display: none; }
+  .deck-folder-twisty { width: 22px; }
+
+  /* Just the number, sat against the folder icon — the word "decks" was eating
+     35px that the folder's own name needed more. */
+  .deck-folder-count { font-size: 0; }
+  .deck-folder-count::before {
+    content: attr(data-count);
+    font-size: 0.68rem;
+  }
+
+  /* Wrap the name rather than eliding it — a two-line "Cell Biology" costs
+     16px once, whereas "Cell…" is permanently unreadable. */
+  .my-decks-table tr.deck-folder-row .deck-folder-name {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: break-word;
+    line-height: 1.2;
+  }
+
+  /* The root drop zone only exists to receive a dragged deck, and HTML5 drag
+     and drop doesn't fire from a touch. It's a dead row on a phone. */
+  .my-decks-table tr.deck-root-row { display: none; }
+}
+
+/* ---- Offline indicator ---- */
+.offline-indicator {
+  position: fixed;
+  left: calc(12px + var(--safe-left));
+  bottom: calc(12px + var(--safe-bottom));
+  z-index: 200;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--review, #d9534f) 22%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--review, #d9534f) 55%, var(--line));
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.offline-indicator::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--review, #d9534f);
+}
+
+
+/* ── Update banner ──────────────────────────────────────────────────────────
+   Persistent and dismissible, deliberately not a toast: "your app is out of
+   date" is not a message that should disappear before it can be acted on.
+   Anchored to the top because the offline pill already owns the bottom-left,
+   and it reserves notch space like every other fixed overlay here. */
+
+.update-banner {
+  position: fixed;
+  top: calc(12px + var(--safe-top));
+  left: calc(12px + var(--safe-left));
+  right: calc(12px + var(--safe-right));
+  z-index: 400;
+  margin: 0 auto;
+  max-width: 520px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--text);
+  font-size: 0.9rem;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 28%);
+}
+
+.update-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.update-banner-action {
+  flex: none;
+  padding: 5px 12px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-banner-dismiss {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.update-banner-dismiss:hover { color: var(--text); }
+
+/* The dot survives dismissing the bar: "not now" is not "pretend this build is
+   current". The hamburger is the one control always on screen, and App Info
+   lives behind it — this is what makes the modal findable at the moment it has
+   something to say. */
+.has-update {
+  position: relative;
+}
+
+.has-update::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--panel);
+  pointer-events: none;
+}
+
+
+/* ── Deck study notes view (Cards ⇄ Notes toggle inside the quiz panel) ── */
+
+.view-mode-toggle {
+  display: none;
+}
+
+.quiz-panel:has(.view-mode-toggle:not([hidden])) {
+  grid-template-rows: auto auto 1fr auto auto auto;
+}
+
+.quiz-panel .view-mode-toggle:not([hidden]) {
+  display: grid;
+  width: min(320px, 100%);
+  margin: 0 auto 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  padding: 3px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 7%, transparent);
+}
+
+.view-mode-toggle button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 26px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--toolbar-button-radius) - 2px);
+  background: transparent;
+  color: var(--muted);
+  padding: 0 6px;
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.view-mode-toggle button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+}
+
+/* Notes mode: the deck stage and card controls give way to the notes editor */
+.quiz-panel.notes-mode,
+.quiz-panel.notes-mode:has(.view-mode-toggle:not([hidden])) {
+  grid-template-rows: auto 1fr;
+}
+
+.quiz-panel.notes-mode .progress-track,
+.quiz-panel.notes-mode .deck,
+.quiz-panel.notes-mode .controls,
+.quiz-panel.notes-mode .deck-utility-actions,
+.quiz-panel.notes-mode .replay-actions {
+  display: none;
+}
+
+.notes-stage {
+  display: none;
+  /* Declared here as well as on the active-stage rule below so the drawer's
+     width is defined even before .notes-mode applies — a `var()` that resolves
+     to nothing would make the whole declaration invalid, not fall back. */
+  --toc-width: min(300px, 82%);
+}
+
+.quiz-panel.notes-mode .notes-stage:not([hidden]) {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--notes-stage-gap);
+  min-height: 0;
+  min-width: 0;
+  border: var(--card-border-width, 1px) solid var(--line);
+  border-radius: var(--card-radius, 14px);
+  background: var(--card);
+  box-shadow: var(--card-shadow);
+  padding: var(--notes-stage-pad);
+  /* One definition of the TOC drawer's width, read by both the drawer itself
+     and the push rules that make room for it. */
+  --toc-width: min(300px, 82%);
+}

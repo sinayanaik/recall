@@ -1,0 +1,1690 @@
+/* Raw editor, its mirror, and the formatting toolbars
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+.edit-card-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--card-hdr-btn);
+  height: var(--card-hdr-btn);
+  min-height: var(--card-hdr-btn);
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent));
+  border-radius: var(--toolbar-button-radius);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 84%, transparent), color-mix(in srgb, var(--panel) 86%, transparent));
+  color: var(--muted);
+  padding: 0;
+  font-size: var(--card-hdr-btn-fs);
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.12s ease;
+  z-index: 10;
+}
+
+.edit-card-btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+  color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent),
+    0 4px 10px rgba(0, 0, 0, 0.2);
+  transform: translateY(-1px);
+}
+
+.edit-card-btn:active {
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.22);
+  transform: translateY(0);
+}
+
+/* "Go to notes" jump button — accent-tinted so it reads as a link back to
+   the source, distinct from the neutral edit/delete controls. */
+.go-to-notes-btn {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.go-to-notes-btn:hover {
+  color: var(--accent);
+}
+
+/* Brief flash on the notes block a card's "Go to notes" jump lands on. */
+@keyframes note-anchor-flash {
+  0% { background-color: color-mix(in srgb, var(--accent) 42%, transparent); }
+  100% { background-color: transparent; }
+}
+.note-anchor-flash {
+  animation: note-anchor-flash 1.8s ease-out;
+  border-radius: 6px;
+}
+
+.edit-toggle-pill {
+  width: 58px;
+  min-height: var(--card-hdr-btn);
+  height: var(--card-hdr-btn);
+  padding: 3px;
+  gap: 0;
+  border-radius: 999px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* sliding active indicator — default on right (view mode), slides left when editing */
+.edit-toggle-pill::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: calc(50%);
+  width: calc(50% - 3px);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
+  transition: left 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 0;
+}
+
+.edit-toggle-pill.is-editing::before {
+  left: 3px;
+}
+
+.pill-seg {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.88rem;
+  line-height: 1;
+  transition: opacity 0.22s ease, color 0.22s ease;
+}
+
+/* View mode (default): eye active on right, pencil dimmed on left */
+.pill-seg-edit {
+  opacity: 0.28;
+  color: var(--muted);
+}
+
+.pill-seg-view {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Edit mode: pencil active on left, eye dimmed on right */
+.edit-toggle-pill.is-editing .pill-seg-edit {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.edit-toggle-pill.is-editing .pill-seg-view {
+  opacity: 0.28;
+  color: var(--muted);
+}
+
+.edit-toggle-pill:hover::before {
+  background: color-mix(in srgb, var(--accent) 24%, var(--panel));
+}
+
+.edit-toggle-pill.is-editing {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+}
+
+#deleteCardBtn {
+  border-color: color-mix(in srgb, var(--review) 48%, var(--line));
+  background: color-mix(in srgb, var(--review) 13%, var(--panel));
+  color: var(--review) !important;
+}
+
+#deleteCardBtn:hover {
+  border-color: var(--review);
+  background: color-mix(in srgb, var(--review) 22%, var(--panel));
+  color: color-mix(in srgb, var(--review) 88%, var(--text)) !important;
+}
+
+.edit-textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 100px;
+  resize: none;
+  font-family: var(--app-font-family);
+  font-size: var(--raw-markdown-font-size);
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+  color: var(--text);
+  line-height: 1.5;
+}
+.edit-textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.empty-placeholder {
+  color: color-mix(in srgb, var(--text) 30%, transparent);
+  font-style: italic;
+  font-size: 0.9em;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── Deck Summary overlay — covers the whole card when deck ends ─────────── */
+.deck-summary-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px 20px 20px;
+  overflow-y: auto;
+  background: var(--card);
+  border-radius: var(--card-radius);
+  box-sizing: border-box;
+  text-align: center;
+  -webkit-overflow-scrolling: touch;
+}
+
+.deck-summary-overlay[hidden] {
+  display: none;
+}
+
+.deck-summary-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.deck-summary-icon {
+  font-size: 2.4rem;
+  line-height: 1;
+  animation: summary-pop 0.45s cubic-bezier(.34,1.6,.64,1) both;
+}
+
+@keyframes summary-pop {
+  from { transform: scale(0.4); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+.deck-summary-title {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 900;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.deck-summary-subtitle {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deck-summary-body {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* SVG pie chart */
+.deck-summary-chart-wrap {
+  flex-shrink: 0;
+}
+
+.deck-summary-pie {
+  width: 110px;
+  height: 110px;
+  transform: rotate(-90deg);
+  filter: drop-shadow(0 4px 12px color-mix(in srgb, var(--accent) 20%, transparent));
+}
+
+.pie-segment {
+  transition: stroke-dasharray 0.6s cubic-bezier(.4,0,.2,1),
+              stroke-dashoffset 0.6s cubic-bezier(.4,0,.2,1);
+  animation: pie-draw 0.7s cubic-bezier(.4,0,.2,1) both;
+}
+
+@keyframes pie-draw {
+  from { stroke-dasharray: 0 100; }
+}
+
+/* Inner text (rendered while SVG is rotated -90deg, so we counter-rotate) */
+.pie-center-num {
+  transform: rotate(90deg);
+  transform-origin: 21px 21px;
+  font-size: 7px;
+  font-weight: 900;
+  fill: var(--text);
+  text-anchor: middle;
+  dominant-baseline: auto;
+}
+
+.pie-center-label {
+  transform: rotate(90deg);
+  transform-origin: 21px 21px;
+  font-size: 3.6px;
+  font-weight: 700;
+  fill: var(--muted);
+  text-anchor: middle;
+  dominant-baseline: auto;
+}
+
+/* Stat rows */
+.deck-summary-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.deck-stat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+
+.deck-stat-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.deck-stat-label {
+  flex: 1;
+  font-weight: 700;
+  color: var(--text);
+  text-align: left;
+}
+
+.deck-stat-count {
+  font-weight: 900;
+  color: var(--text);
+  min-width: 22px;
+  text-align: right;
+}
+
+.deck-stat-pct {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 34px;
+  text-align: right;
+}
+
+/* Segment colours */
+.deck-stat-known .deck-stat-dot  { background: var(--known, #22c55e); }
+.deck-stat-review .deck-stat-dot { background: var(--review, #f59e0b); }
+.deck-stat-uncat .deck-stat-dot  { background: var(--muted, #94a3b8); }
+.deck-stat-known .deck-stat-count,
+.deck-stat-known .deck-stat-pct  { color: var(--known, #22c55e); }
+.deck-stat-review .deck-stat-count,
+.deck-stat-review .deck-stat-pct { color: var(--review, #f59e0b); }
+
+/* Replay action buttons */
+.deck-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: center;
+}
+
+.deck-summary-btn {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1.5px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 900;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+
+.deck-summary-btn:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.deck-summary-btn-primary {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  border-color: var(--accent);
+}
+
+.deck-summary-btn-primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  border-color: color-mix(in srgb, var(--accent) 88%, #000);
+  color: var(--accent-contrast, #fff);
+}
+
+.deck-summary-btn-review {
+  border-color: color-mix(in srgb, var(--review, #f59e0b) 60%, var(--line));
+  color: var(--review, #f59e0b);
+}
+
+.deck-summary-btn-known {
+  border-color: color-mix(in srgb, var(--known, #22c55e) 60%, var(--line));
+  color: var(--known, #22c55e);
+}
+
+.deck-summary-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Print/PDF-specific Codeblock styling */
+.print-root pre,
+.print-root pre[class*="language-"] {
+  background: #f8f9fa !important;
+  border: 1px solid var(--print-line) !important;
+  color: #24292e !important;
+  box-shadow: none !important;
+}
+
+.print-root pre code,
+.print-root pre code[class*="language-"] {
+  color: #24292e !important;
+  background: transparent !important;
+}
+
+.print-root :not(pre) > code {
+  background: color-mix(in srgb, var(--print-accent, var(--accent)) 8%, #f4f6f6) !important;
+  color: var(--print-text) !important;
+  border: 1px solid var(--print-line) !important;
+}
+
+/* Syntax Highlighting for Print/PDF mode */
+.print-root .token.comment,
+.print-root .token.prolog,
+.print-root .token.doctype,
+.print-root .token.cdata {
+  color: #6a737d !important;
+  font-style: italic !important;
+}
+
+.print-root .token.keyword,
+.print-root .token.atrule {
+  color: #d73a49 !important;
+  font-weight: bold !important;
+}
+
+.print-root .token.function,
+.print-root .token.method {
+  color: #6f42c1 !important;
+}
+
+.print-root .token.builtin,
+.print-root .token.class-name {
+  color: #e36209 !important;
+}
+
+.print-root .token.string,
+.print-root .token.char,
+.print-root .token.attr-value {
+  color: #032f62 !important;
+}
+
+.print-root .token.number,
+.print-root .token.boolean,
+.print-root .token.constant,
+.print-root .token.uppercase-constant {
+  color: #005cc5 !important;
+}
+
+.print-root .token.operator,
+.print-root .token.entity,
+.print-root .token.url {
+  color: #d73a49 !important;
+}
+
+.print-root .token.punctuation {
+  color: #24292e !important;
+}
+
+.print-root .token.property,
+.print-root .token.attr-name,
+.print-root .token.selector,
+.print-root .token.tag {
+  color: #22863a !important;
+}
+
+.print-root .token.regex,
+.print-root .token.important,
+.print-root .token.variable {
+  color: #e36209 !important;
+}
+
+/* Print/PDF Image and Table Formatting */
+.print-root img {
+  max-width: 100% !important;
+  max-height: 55mm !important;
+  object-fit: contain !important;
+  margin: 6px auto !important;
+  border: 1px solid var(--print-line) !important;
+  background: #ffffff !important;
+  padding: 2px !important;
+}
+
+.print-root table {
+  width: 100% !important;
+  max-width: 100% !important;
+  display: table !important;
+  table-layout: auto !important;
+  margin: 8px 0 !important;
+  font-size: 8.5pt !important;
+  border-collapse: collapse !important;
+}
+
+.print-root th,
+.print-root td {
+  display: table-cell !important;
+  min-width: 0 !important;
+  padding: 4px 6px !important;
+  border: 1px solid var(--print-line) !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+}
+
+.print-root th {
+  background: color-mix(in srgb, var(--print-accent) 8%, #f4f6f6) !important;
+  font-weight: bold !important;
+  color: var(--print-text) !important;
+}
+
+/* Inline Card Edit Toolbar in face-header */
+.edit-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.edit-toolbar button {
+  min-height: 24px !important;
+  height: 24px !important;
+  width: auto;
+  min-width: 24px;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 4px !important;
+  color: var(--text) !important;
+  font-size: 0.8rem !important;
+  font-weight: 600 !important;
+  padding: 0 6px !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: none !important;
+  transition: background-color 0.15s ease, color 0.15s ease !important;
+}
+
+.edit-toolbar button:hover {
+  background-color: color-mix(in srgb, var(--accent) 15%, var(--panel)) !important;
+  color: var(--accent-strong) !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* Thin separator before the quick-note button */
+.edit-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 2px;
+  background: var(--line);
+}
+
+/* Quick note button — accent-tinted so it reads as a distinct action */
+.edit-toolbar button.toolbar-quick-note {
+  font-size: 0.85rem !important;
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent) !important;
+}
+
+.edit-toolbar button.toolbar-quick-note:hover {
+  background-color: color-mix(in srgb, var(--accent) 28%, var(--panel)) !important;
+}
+
+/* ── Rendered-view formatting toolbar ─────────────────────────────────────
+   Formats the current selection in place (no raw-edit mode). It lives inline
+   inside the card/notes header row (see .face-header / .notes-head), so it's a
+   bare button strip — no panel background, border, or vertical margin of its
+   own. It shrinks and scrolls horizontally when a very narrow screen can't fit
+   every control, keeping the whole header on a single row. Auto-hidden while
+   that surface is in raw-edit mode (its edit textarea is visible). */
+.render-toolbar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.render-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.card-face:has(> .edit-textarea:not([hidden])) .render-toolbar,
+.notes-stage:has(> .edit-textarea:not([hidden])) .render-toolbar,
+.notes-stage:has(> .edit-textarea:not([hidden])) .notes-toc-toggle {
+  display: none;
+}
+.render-btn {
+  min-height: 26px;
+  height: 26px;
+  min-width: 26px;
+  flex: 0 0 auto;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.render-btn:hover {
+  background-color: color-mix(in srgb, var(--accent) 15%, var(--panel));
+  color: var(--accent-strong);
+}
+.render-btn code {
+  font-size: 0.78rem;
+}
+/* Quick note button — accent-tinted, matching the raw-editor toolbar's 📌 */
+.render-toolbar button.render-quick-note {
+  background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.render-toolbar button.render-quick-note:hover {
+  background-color: color-mix(in srgb, var(--accent) 28%, var(--panel));
+}
+.render-toolbar button.render-quick-note.quick-note-saved {
+  background-color: color-mix(in srgb, var(--known) 35%, var(--panel));
+}
+/* ── The cloze family: three shapes, one idea ───────────────────────────
+   Now that all three sit side by side in the notes header, "related" is what
+   the group divider says — so the glyphs are free to be told apart instead.
+   Bracketed [ … ] [A] [?] gave three near-identical silhouettes; these are a
+   struck-through letter, a plain letter, and a question mark.
+
+     A̶  hide THIS selection   — a redaction bar drawn across the letter
+     A   reveal every answer   — flips to a bare blank while revealed
+     ?   quiz me on them all
+
+   The bars are drawn, not typed: ▄/▬/█ render at wildly different weights and
+   baselines across platforms, and these two have to stay distinguishable from
+   each other at 26px. */
+.render-toolbar .make-cloze-btn,
+.edit-toolbar .make-cloze-btn,
+.cloze-make-icon,
+.cloze-toggle-icon,
+.cloze-review-icon {
+  /* On the buttons, not the inner artwork — every path/rect inside is drawn in
+     currentColor, and colouring one of the three at a different level left it
+     inheriting .edit-card-btn's muted grey while its siblings were accent. */
+  color: var(--accent-strong);
+}
+
+.cz-ico {
+  display: block;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+/* The slash only exists while the answers are showing, so the eye reads as
+   "reveal" when they're hidden and "hide again" when they're not. */
+.cz-slash {
+  display: none;
+}
+
+.cloze-toggle-icon[aria-pressed="true"] .cz-slash,
+#clozeToggleBtn[aria-pressed="true"] .cz-slash {
+  display: inline;
+}
+
+/* The floating selection pill is a bigger touch target than the header icons. */
+.selection-float-btn .cz-ico {
+  width: 17px;
+  height: 17px;
+}
+
+/* Row 1's other five icons. These MUST stay after .edit-card-btn: they are all
+   single-class selectors, so the later rule wins, and while they lived earlier
+   in the file .edit-card-btn's own color/background/font-size silently beat
+   every one of them — the + rendered muted grey and the pin lost its tint. */
+.cloze-make-icon,
+.cloze-toggle-icon,
+.cloze-review-icon,
+.notes-make-card,
+.notes-quick-note {
+  font-size: calc(var(--card-hdr-btn-fs) * 1.02);
+}
+
+/* Capture group: + creates a card, 📌 files the selection away. Accent-tinted
+   like the pin already is everywhere else, so the pair reads as one group. */
+.notes-make-card {
+  color: var(--accent-strong);
+  font-size: calc(var(--card-hdr-btn-fs) * 1.35);
+  font-weight: 700;
+}
+
+.notes-quick-note {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.notes-quick-note.quick-note-saved {
+  background: color-mix(in srgb, var(--known) 35%, var(--panel));
+}
+
+/* Group separator inside the selection strip: style it · colour it · capture it.
+   Not .edit-toolbar-divider — that one is display:none below 600px, which is
+   exactly where the grouping is needed most. */
+.render-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 2px;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+/* Make-card: the one creative act in a strip of transforms, so it gets the
+   accent treatment the pin already has. */
+.render-toolbar button.render-make-card {
+  color: var(--accent-strong);
+  font-size: 1rem;
+  font-weight: 800;
+}
+.render-toolbar button.render-make-card:hover {
+  background-color: color-mix(in srgb, var(--accent) 22%, var(--panel));
+}
+
+/* An "A" wearing the colour it applies — the standard word-processor idiom,
+   and self-explanatory in a way 🎨/🖍️ never were (a palette says "colour
+   something", not "colour the text this colour"). */
+.render-glyph {
+  display: block;
+  font-weight: 800;
+  line-height: 1;
+}
+.render-underbar {
+  display: block;
+  width: 11px;
+  height: 3px;
+  margin-top: 2px;
+  border-radius: 1px;
+  background: var(--accent-strong);
+}
+.render-glyph-hl {
+  min-width: 13px;
+  padding: 1px 2px;
+  border-radius: 2px;
+  /* The highlight palette is all pale tints, so the letter has to go dark to
+     stay legible on top of whichever one is current. */
+  color: #14181c;
+  background: #fde68a;
+}
+.render-split-main:has(.render-underbar),
+.edit-toolbar .toolbar-dropdown-toggle:has(.render-underbar) {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+/* The raw-editor's colour control opens a palette rather than applying a
+   remembered default, so its bar is a plain accent mark — but it shares the
+   glyph so the row doesn't change vocabulary when you tap ✎ (the edit toolbar
+   replaces the render toolbar in the very same slot). */
+.edit-toolbar .toolbar-dropdown-toggle .render-underbar {
+  background: var(--accent-strong);
+}
+
+/* Split colour / highlight control: main applies the current default and shows
+   it, the side button opens the palette to change it. */
+.render-split {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.render-split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  padding-right: 4px;
+}
+.render-split-side {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 0 4px;
+  gap: 2px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+}
+/* The side button is now just the caret — the main button's own A already shows
+   the current colour, so a second swatch here was duplicate information taking
+   up ~14px in the narrowest row in the app. */
+.render-caret {
+  font-size: 0.6rem;
+  opacity: 0.7;
+}
+.render-color-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  padding: 7px;
+  width: max-content;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+.render-color-menu[hidden] {
+  display: none;
+}
+.render-swatch-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  background: var(--sw);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+  transition: transform 0.1s ease;
+}
+.render-swatch-btn:hover {
+  transform: scale(1.12);
+}
+.render-swatch-clear {
+  grid-column: 1 / -1;
+  height: 24px;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.render-swatch-clear:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent-strong);
+}
+
+/* ── Merge the formatting strip into the card / notes header row ───────────
+   The render-toolbar sits between the face label (left) and the icon actions
+   (right); flex-grow lets it fill the middle and push the actions to the edge,
+   while its own overflow-x keeps everything on one line on narrow screens. */
+.face-header,
+.notes-head {
+  flex-wrap: nowrap;
+}
+.face-header > .face-label-row,
+.notes-head > .face-label-row {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+.face-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+/* The notes action icons keep their size and stay clustered at the right end. */
+.notes-head > .edit-card-btn {
+  flex: 0 0 auto;
+}
+
+/* Keep the rendered-view toolbar on a single row on narrow screens by tightening
+   spacing and shrinking the split-control swatch/caret so all controls fit. */
+@media (max-width: 560px) {
+  .render-toolbar {
+    gap: 2px;
+  }
+  /* On phones the format strip shared its row with the label + the reveal/make-
+     card/edit icons, so text colour, cloze and the 📌 pin got squeezed off the
+     end of its little scroll area (they looked "missing"). Give the toolbar its
+     OWN full-width row below the top row instead — now every tool fits on one
+     line with no horizontal scrolling. */
+  /* .notes-mode ancestor raises specificity above the later base
+     `.notes-head { flex-wrap: nowrap }` rule so the wrap actually applies. */
+  .notes-mode .notes-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  /* Row 1 now carries eight controls (☰ · three cloze · + 📌 · pill ⤢). At the
+     inherited 8px gap that measured over the 360px box; the icons themselves
+     are already at their touch-target floor, so the space between them is what
+     gives. */
+  .notes-mode .notes-head {
+    gap: 3px;
+  }
+
+  .notes-mode .notes-head > .render-toolbar {
+    order: 2;
+    flex: 1 0 100%;
+    width: 100%;
+    overflow-x: visible;
+    /* Pure formatting now, and nothing to align with on either side — centring
+       reads as a deliberate strip rather than a left-over left-aligned run. */
+    justify-content: center;
+    /* Safety net. overflow-x:visible alone doesn't rescue an overflowing strip —
+       .quiz-panel is overflow:hidden on mobile, so anything past the edge is
+       simply gone, with no scrollbar to hint at it. Adding + and two dividers
+       here put 📌 9px over at 360px and it vanished. Wrapping turns any future
+       overflow into a visible second line instead of a missing button. */
+    flex-wrap: wrap;
+    row-gap: 3px;
+  }
+  /* Claw back that width first, so the wrap above stays a fallback rather than
+     the normal state: the ▾ side buttons and the group rules don't need desktop
+     breathing room. */
+  .notes-mode .notes-head > .render-toolbar .render-split-side {
+    padding: 0 2px;
+  }
+  .notes-mode .notes-head > .render-toolbar .render-divider {
+    margin-left: 1px;
+    margin-right: 1px;
+  }
+  /* The raw-edit toolbar swaps into the same slot, so it needs the same
+     treatment — left inline it shared row 1 with ☰, shoved the [A] [?] and mode
+     clusters onto a THIRD row, and still scrolled its last buttons (📌) out of
+     reach. Same order value as the render toolbar above: only ever one of the
+     two is visible, so they can't collide. */
+  .notes-mode .notes-head > .edit-toolbar:not([hidden]) {
+    order: 2;
+    flex: 1 0 100%;
+    width: 100%;
+    /* Wrap, don't scroll. Its 13 mobile buttons measured 365px against a 306px
+       box at 360px, putting 📌 59px past the right edge with nothing to say so —
+       the same "the buttons look missing" trap the render toolbar hit. Tighter
+       spacing first, so most phones still get a single row. */
+    flex-wrap: wrap;
+    /* Centred to match the render toolbar it swaps places with — the two occupy
+       the same slot, so a different alignment reads as the row jumping. */
+    justify-content: center;
+    overflow-x: visible;
+    gap: 2px;
+  }
+  .notes-mode .notes-head > .edit-toolbar > button,
+  .notes-mode .notes-head > .edit-toolbar .toolbar-dropdown-toggle {
+    padding: 0 4px;
+  }
+  /* The toolbar left the top row; .notes-head-divider.is-lead carries the
+     auto-margin that pushes the cloze + mode clusters to the right edge of it. */
+  .render-btn {
+    min-width: 22px;
+    padding: 0 5px;
+    font-size: 0.8rem;
+  }
+  .render-btn code {
+    font-size: 0.74rem;
+  }
+  .render-split-main {
+    padding-right: 3px;
+  }
+  .render-split-side {
+    padding: 0 3px;
+    gap: 1px;
+  }
+  .render-caret {
+    font-size: 0.55rem;
+  }
+  /* The A-plus-bar glyphs shrink with the row rather than being dropped — they
+     ARE the label here, unlike the old emoji which the swatch made redundant. */
+  .render-underbar {
+    width: 9px;
+    height: 2px;
+    margin-top: 1px;
+  }
+  .render-glyph-hl {
+    min-width: 11px;
+    padding: 1px;
+  }
+  .render-divider {
+    margin: 4px 1px;
+  }
+}
+
+@media (max-width: 380px) {
+  .render-btn {
+    min-width: 20px;
+    padding: 0 3px;
+  }
+}
+
+.edit-toolbar button.toolbar-quick-note.quick-note-saved {
+  background-color: color-mix(in srgb, var(--known) 35%, var(--panel)) !important;
+}
+
+/* Dropdowns in inline toolbar */
+.edit-toolbar .toolbar-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.edit-toolbar .toolbar-dropdown-content {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+  box-shadow: var(--shadow);
+  z-index: 10001;
+  min-width: 115px;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.edit-toolbar .toolbar-dropdown-content::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px;
+  border-style: solid;
+  border-color: transparent transparent var(--panel) transparent;
+}
+
+.edit-toolbar .toolbar-dropdown.is-open .toolbar-dropdown-content {
+  display: flex;
+}
+
+.edit-toolbar .font-menu {
+  max-height: 250px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.edit-toolbar .font-menu button {
+  text-align: left !important;
+  justify-content: flex-start !important;
+  width: 100% !important;
+  font-size: 0.75rem !important;
+  padding: 4px 8px !important;
+}
+
+.edit-toolbar .color-menu,
+.edit-toolbar .highlight-menu {
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  width: 115px;
+  gap: 6px !important;
+  justify-content: center;
+}
+
+.edit-toolbar .color-menu button[data-color],
+.edit-toolbar .highlight-menu button[data-highlight] {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  max-height: 18px !important;
+  border-radius: 50% !important;
+  padding: 0 !important;
+  border: 1px solid var(--line) !important;
+  cursor: pointer;
+  background-clip: padding-box !important;
+  background-color: var(--btn-bg, transparent) !important;
+}
+
+.edit-toolbar .color-menu button[data-color]:hover,
+.edit-toolbar .highlight-menu button[data-highlight]:hover {
+  transform: scale(1.15) !important;
+  border-color: var(--text) !important;
+}
+
+.edit-toolbar .color-menu button.color-clear,
+.edit-toolbar .highlight-menu button.highlight-clear {
+  width: 100% !important;
+  min-height: 22px !important;
+  font-size: 0.72rem !important;
+  border-radius: 4px !important;
+  border: 1px solid var(--line) !important;
+  background: var(--panel-2) !important;
+  text-align: center !important;
+  justify-content: center !important;
+  margin-top: 4px;
+}
+
+.all-card-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 10px;
+}
+
+@media (max-width: 600px) {
+  .face-header {
+    gap: 8px;
+  }
+  /* Only fan out onto multiple rows while editing (the 6-per-row edit-toolbar
+     grid below needs its own line). In view mode the header stays a single
+     nowrap row with the inline formatting strip. */
+  .face-header:has(> .edit-toolbar:not([hidden])),
+  .notes-head:has(> .edit-toolbar:not([hidden])) {
+    flex-wrap: wrap;
+  }
+  .face-header:has(> .edit-toolbar:not([hidden])) .face-label-row {
+    order: 1;
+  }
+  .face-header:has(> .edit-toolbar:not([hidden])) > div:not(.face-label-row):not(.edit-toolbar) {
+    order: 2;
+  }
+  /* Lay the toolbar out as centered rows on mobile. A fixed 1/6 flex-basis keeps
+     6 items per row, and justify-content:center centers any partial last row
+     (e.g. 11 items → a full row of 6 + a centered row of 5) instead of stranding
+     them on the left — leaving a tidy gap for a future button. */
+  .face-header .edit-toolbar,
+  .all-card-editor-header .edit-toolbar {
+    --edit-toolbar-gap: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: var(--edit-toolbar-gap);
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 6px;
+  }
+  .face-header .edit-toolbar { order: 3; }
+  .all-card-editor-header { flex-wrap: wrap; gap: 8px; }
+  /* Buttons and dropdowns take a fixed 1/6 width for even, tappable targets */
+  .face-header .edit-toolbar > button,
+  .face-header .edit-toolbar > .toolbar-dropdown,
+  .all-card-editor-header .edit-toolbar > button,
+  .all-card-editor-header .edit-toolbar > .toolbar-dropdown {
+    flex: 0 0 calc((100% - 5 * var(--edit-toolbar-gap)) / 6);
+    min-width: 0 !important;
+    justify-content: center;
+  }
+  .edit-toolbar .toolbar-dropdown-toggle {
+    width: 100%;
+  }
+  /* The quick-note divider would consume a row slot — hide it on mobile */
+  .edit-toolbar-divider {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .edit-toolbar button {
+    height: 24px !important;
+    min-height: 24px !important;
+    font-size: 0.78rem !important;
+    padding: 0 4px !important;
+  }
+  .face-header .edit-toolbar,
+  .all-card-editor-header .edit-toolbar {
+    --edit-toolbar-gap: 3px;
+    padding: 3px 4px;
+  }
+}
+
+/* Syntax Highlighting Backdropped Textarea styling */
+.highlight-textarea-wrapper {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ONE rule for both, and it has to stay that way. The backdrop paints every
+   visible pixel (the textarea's own text is transparent — it supplies only the
+   caret), so the two must agree on every metric: font, line-height, padding,
+   wrapping. Divergence in any of them slides the painted text out from under
+   the caret. Only colour may differ between them. */
+.highlight-textarea-backdrop,
+.edit-textarea {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: inherit !important;
+  font-family: var(--app-font-family) !important;
+  font-size: var(--raw-markdown-font-size) !important;
+  line-height: 1.5 !important;
+  padding: 10px 10px var(--editor-pad-bottom, 10px) !important;
+  margin: 0 !important;
+  white-space: pre-wrap !important;
+  word-wrap: break-word !important;
+}
+
+.all-card-editor textarea {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: inherit !important;
+}
+
+/* The raw editor draws nothing over the text. A dashed "reading line" and a
+   tinted caret band used to live here; see the "No editor guides" comment in
+   app.js for why both are gone and why notesReadingLineOffset survives as pure
+   arithmetic. */
+
+.highlight-textarea-backdrop {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  z-index: 0 !important;
+  color: var(--text) !important;
+  background: var(--card) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--input-radius) !important;
+  overflow: auto !important;
+  pointer-events: none !important;
+  /* Own compositor layer: this is a second scroller kept in sync with the
+     textarea purely by JS writing scrollTop/scrollLeft (syncScroll in
+     app.js), so every scroll frame exposes new span-heavy content that has
+     to be painted. Without containment the browser can repaint more than
+     just the newly-exposed strip. */
+  contain: paint;
+}
+
+.edit-textarea {
+  position: relative !important;
+  z-index: 1 !important;
+  color: transparent !important;
+  background: transparent !important;
+  caret-color: var(--text) !important;
+  border: 1px solid transparent !important;
+  overflow: auto !important;
+  resize: none !important;
+}
+
+.edit-textarea:focus {
+  outline: none !important;
+  border-color: transparent !important;
+}
+
+.highlight-textarea-wrapper:focus-within .highlight-textarea-backdrop {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent) !important;
+}
+
+.highlight-textarea-wrapper:has(textarea[hidden]) {
+  display: none !important;
+}
+
+/* Plain mode — the raw editor for a very large note, where the backdrop mirror
+   is switched off because laying out a second copy of the document cost ~1.9s
+   to open and ~0.4s per keystroke (see HIGHLIGHT_MIRROR_MAX_CHARS in app.js).
+   The textarea normally renders its own text transparent and lets the mirror
+   supply every visible pixel, so with no mirror the text has to be given back:
+   its real colour, the background, and the focus border the backdrop was
+   carrying. Metrics are untouched — this only moves who paints the glyphs. */
+.highlight-textarea-wrapper.is-plain > .highlight-textarea-backdrop {
+  display: none !important;
+}
+
+.highlight-textarea-wrapper.is-plain > .edit-textarea {
+  color: var(--text) !important;
+  background: var(--card) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--input-radius) !important;
+}
+
+.highlight-textarea-wrapper.is-plain > .edit-textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent) !important;
+}
+
+/* Faint styling elements / HTML tags in editor mode */
+.syntax-tag {
+  opacity: 0.35 !important;
+  color: var(--muted) !important;
+  font-weight: normal !important;
+}
+
+/* Bulk Action / Selection Styling */
+.web-deck-select-cell {
+  text-align: center;
+}
+
+/* Every selection checkbox needs an explicit size: the global
+   `input { width: 100% }` rule (meant for text fields) otherwise stretches it
+   into a full-width slab. Tile checkboxes are additionally shrink-wrapped by
+   their absolutely-positioned .deck-tile-select wrapper; the folder row ones
+   sit in a plain flex row, so they also need flex-shrink off. */
+.web-deck-select-cell input[type="checkbox"],
+.web-decks-table th input[type="checkbox"],
+.my-folder-row-checkbox {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.deck-folder-wrap .my-folder-row-checkbox {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.web-decks-tools-left {
+  display: flex;
+  align-items: end;
+  gap: 16px;
+  flex: 1;
+}
+
+.web-decks-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* My Decks' bulk bar is the shell's fourth grid row, so it sits under the list
+   instead of appearing between the filters and shoving the whole list down the
+   moment a checkbox is ticked. The top rule separates it from the last row. */
+#myDecksPanel .web-decks-bulk-actions {
+  flex-wrap: wrap;
+  gap: var(--md-gap);
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+#myDecksPanel .web-decks-bulk-actions[hidden] { display: none; }
+#myDecksPanel .web-decks-bulk-actions .bulk-buttons { margin-left: auto; }
+#myDecksPanel .bulk-action-btn {
+  min-height: 32px;
+  border-radius: var(--md-ctl-radius);
+}
+
+.web-decks-bulk-actions .bulk-title {
+  font-size: 0.78rem;
+  font-weight: 900;
+  color: var(--accent);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.web-decks-bulk-actions .bulk-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bulk-action-btn {
+  cursor: pointer;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--panel);
+  color: var(--text);
+  padding: 0 9px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  white-space: nowrap;
+  /* Explicit list, not `all` — see .import-action-btn above. */
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.bulk-action-btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.bulk-action-btn.bulk-load {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  border-color: var(--accent);
+}
+.bulk-action-btn.bulk-load:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+
+.bulk-action-btn.bulk-delete {
+  border-color: color-mix(in srgb, var(--review) 50%, var(--line));
+  color: var(--review);
+}
+.bulk-action-btn.bulk-delete:hover {
+  background: color-mix(in srgb, var(--review) 15%, var(--panel));
+  border-color: var(--review);
+}
+
+.bulk-export-dropdown {
+  position: relative;
+}
+
+.bulk-export-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+  box-shadow: var(--shadow);
+  z-index: 10001;
+  min-width: 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bulk-export-menu button {
+  min-height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 0 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bulk-export-menu button:hover {
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel));
+  color: var(--accent-strong);
+}
+
+/* ALL View Goto & Delete Action Styling */
+.all-card-goto {
+  min-width: 30px;
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line)) !important;
+  color: var(--accent) !important;
+  padding: 0 10px !important;
+}
+
+.all-card-goto:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent) !important;
+}
+
+.all-card-delete {
+  min-width: 30px;
+  border-color: color-mix(in srgb, var(--review) 48%, var(--line)) !important;
+  background: color-mix(in srgb, var(--review) 13%, var(--panel)) !important;
+  color: var(--review) !important;
+  padding: 0 10px !important;
+}
+
+.all-card-delete:hover {
+  border-color: var(--review) !important;
+  background: color-mix(in srgb, var(--review) 22%, var(--panel)) !important;
+  color: color-mix(in srgb, var(--review) 88%, var(--text)) !important;
+}
+
+/* ── Login overlay ─────────────────────────────────────── */
+
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.login-overlay[hidden] {
+  display: none;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  padding: 36px 32px 32px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.login-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0 0 28px;
+  text-align: center;
+  letter-spacing: -0.02em;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.login-field label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.login-field input {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.97rem;
+  font-family: var(--app-font-family);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.login-field input:focus {
+  border-color: var(--accent);
+}
+
+.login-error {
+  min-height: 1.2em;
+  font-size: 0.84rem;
+  color: var(--danger);
+  margin: 4px 0 12px;
+}
+
+/* Same slot, different meaning: "Account created, check your email" is a
+   successful outcome that happens to need saying, and colouring it as an error
+   would tell the user their sign-up failed when it didn't. */
+.login-error.is-notice {
+  color: var(--known, #4caf50);
+}
+
+.login-btn-primary {
+  width: 100%;
+  padding: 11px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: none;
+  border-radius: 8px;
+  font-size: 0.97rem;
+  font-weight: 600;
+  font-family: var(--app-font-family);
+  cursor: pointer;
+  transition: opacity 0.15s;
+  margin-bottom: 10px;
+}
+
+.login-btn-primary:hover {
+  opacity: 0.88;
+}
+
+.login-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-btn-secondary {
+  width: 100%;
+  padding: 10px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-family: var(--app-font-family);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.login-btn-secondary:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.login-btn-link {
+  width: 100%;
+  padding: 8px;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-size: 0.82rem;
+  font-family: var(--app-font-family);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  margin-top: 4px;
+}
+
+.login-btn-link:hover {
+  color: var(--text);
+}
+
+.setup-subtitle {
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-align: center;
+  margin: -18px 0 24px;
+}
+
+.setup-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: -4px 0 12px;
+  line-height: 1.4;
+}
+
+/* ── Export menu grouping ─────────────────────────────────────── */
+.export-group-label {
+  display: block;
+  padding: 4px 10px 2px;
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.export-divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 4px 0;
+}
+
+/* ── Desktop: study control tooltips ─────────────────────────── */
+@media (min-width: 721px) {
+  .controls button[data-shortcut] {
+    position: relative;
+  }
+
+  .controls button[data-shortcut]:hover::after {
+    content: attr(data-shortcut);
+    position: absolute;
+    bottom: calc(100% + 7px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--muted);
+    font-size: 0.62rem;
+    font-weight: 900;
+    letter-spacing: 0.02em;
+    padding: 3px 8px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 20;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  }
+}
+
+/* ── Mobile: larger Known/Review primary action buttons ─────── */
+@media (max-width: 720px) {
+  .controls {
+    grid-template-columns: 1.5fr 0.7fr 0.7fr 0.7fr 1.5fr;
+    align-items: stretch;
+  }
+
+  .controls .review,
+  .controls .known {
+    height: 48px;
+    min-height: 48px;
+    font-size: 1.05rem;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .controls .review span:not([aria-hidden]),
+  .controls .known span:not([aria-hidden]) {
+    display: block;
+    font-size: 0.6rem;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.85;
+  }
+
+  .controls #prevCardBtn,
+  .controls #addCardBtn,
+  .controls #nextCardBtn {
+    align-self: center;
+  }
+}

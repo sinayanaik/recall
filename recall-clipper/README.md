@@ -9,7 +9,7 @@ build step, no network calls, no account. What the two share is a *format* and a
 handful of deliberately duplicated functions — `content/recall-math.js` and
 `content/recall-render.js` are ports of Recall's own math scanner and render
 pipeline, so "what counts as math" and "what a note looks like" mean the same
-thing on both sides. Both files list the `app.js` line each function came from;
+thing on both sides. Both files list the `src/` module each function came from;
 keep them in step.
 
 ---
@@ -178,14 +178,14 @@ Two more things happen on the way out:
   TeX onto its container and returns how many it stamped.
 - `content/recall-math.js` owns everything about math: Recall's own math scanner
   (`mathSpanAt`, `findMathRanges`, `healEscapedTex`, `repairEscapedMathMarkdown`,
-  `relaxEscapedBrackets`, `protectMathInDom`) ported from `app.js`, plus the
+  `relaxEscapedBrackets`, `protectMathInDom`) ported from Recall's `src/render/*`, plus the
   MathML→LaTeX converter and `extractPageMath`. Its header lists the exact
-  `app.js` line each function came from.
+  `src/` module each function came from.
 - `content/recall-render.js` is a near-verbatim port of Recall's own Markdown
   render pipeline (`preprocessSpecialBlocks` → `marked` → `DOMPurify` →
   KaTeX/Prism/mermaid/nomnoml + table layout), so the preview matches a deck
-  instead of merely approximating it. It carries the same list of `app.js` line
-  anchors. **Keep both in sync if Recall's `app.js` pipeline changes** — a drift
+  instead of merely approximating it. It carries the same list of module
+  anchors. **Keep both in sync if Recall's render pipeline changes** — a drift
   here doesn't break anything loudly, it just makes the preview quietly lie.
 - `vendor/` holds pinned copies of the **same versions Recall uses**, bundled
   locally because MV3 forbids loading them from a CDN:
@@ -205,11 +205,11 @@ Two more things happen on the way out:
 ```
 node tools/convert.test.mjs            # 77 assertions over 4 fixtures
 node tools/convert.test.mjs --print    # …and dump the produced Markdown
-node tools/port-sync.mjs               # check the ports against app.js
+node tools/port-sync.mjs               # check the ports against Recall's src/
 node tools/port-sync.mjs --show        # …and print anything that drifted, in full
 ```
 
-**`port-sync.mjs` is the answer to "keep it in sync if `app.js` changes."** A note
+**`port-sync.mjs` is the answer to "keep it in sync if Recall changes."** A note
 in a header is a request; this is a check. It pulls every ported function *and
 constant* out of both files and compares them modulo whitespace — 53 of them,
 including `SANITIZE_CONFIG`, `INLINE_MATH_MAX_SPAN` and the citation regexes,
@@ -218,7 +218,7 @@ wrong. It exits non-zero on drift. The three deliberate divergences are listed i
 its `DIVERGENCES` map with the reason each exists, and an entry there that stops
 being true is itself reported — so the allowlist can't quietly rot either.
 
-That is also why the ported functions keep `app.js`'s brace style and line
+That is also why the ported functions keep the app's brace style and line
 wrapping rather than the surrounding file's: it lets the comparison stay strict,
 so anything it reports is real.
 

@@ -20,7 +20,11 @@
     <meta name="apple-mobile-web-app-title" content="Recall">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Recall</title>
-    <link rel="icon" type="image/png" href="fevicon.png">
+    <!-- 192px, not the 512: this is a 16-32px tab icon. It used to point at
+         fevicon.png, which was a byte-identical copy of icons/icon-512.png —
+         so the same 234KB shipped twice and was precached twice, to render a
+         favicon. -->
+    <link rel="icon" type="image/png" href="icons/icon-192.png">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
@@ -30,7 +34,175 @@
          .github/workflows/deploy.yml. It stays an unsubstituted placeholder in
          the repo and in any local checkout, which is exactly the point: there
          is no version string here for anyone to forget to bump. -->
-    <link rel="stylesheet" href="styles.css?v=__BUILD__">
+    <!-- ── Stylesheets ────────────────────────────────────────────────────
+         styles.css was 13,784 lines. These are contiguous slices of it, in its
+         original order, and that order is load-bearing: at equal specificity a
+         later rule wins, so reordering these links changes how the app looks.
+         tools/split-css.mjs regenerates them and verifies that concatenating
+         them reproduces the original byte for byte.
+
+         Separate <link>s rather than @import, which would serialise the
+         requests behind each other. -->
+    <link rel="stylesheet" href="styles/01-tokens.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/02-shell.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/03-toolbar.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/04-import.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/05-study.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/06-rendered.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/07-library.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/08-panels.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/09-all-cards.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/10-editor.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/11-chrome.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/12-notes.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/13-quick-notes.css?v=__BUILD__">
+
+    <!-- ── Module preloads ────────────────────────────────────────────────
+         The app is ~130 ES modules and the browser discovers them by PARSING
+         them: it cannot ask for a module until it has read the one that
+         imports it. The deepest chain here is 66 hops, so a cold load on a
+         connection with any latency spends most of its time on sequential
+         round trips — measured at 40ms RTT, 6.1s against the single-file
+         build's 5.1s.
+
+         These tell the browser about every module up front, so they all fetch
+         in parallel and the graph's depth stops mattering. Regenerated from
+         what is on disk by tools/extract-module.mjs; the deploy fails if one
+         is missing.
+
+         Only matters on a cold load — after that the service worker has them
+         all, which is why they must also be in sw.js's APP_SHELL. -->
+    <!-- modulepreload:start -->
+    <link rel="modulepreload" href="src/backup/backup.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/restore.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/boot.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/all-cards-edit.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/all-cards.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/card-status.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/card-view.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/deck-actions.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/new-deck.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/question-fit.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/study.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cards/swipe.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cloud/auth.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cloud/deck-list.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cloud/net.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cloud/style-sync.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cloud/supabase-client.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cloud/web-decks.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/core/build.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/core/constants.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/core/dom.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/core/lib-loader.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/core/state.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/core/text.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/editor/highlight-mirror.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/editor/text-transforms.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/editor/toolbar-actions.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/editor/toolbars.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/editor/triple-click.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/decks.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/docx.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/html.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/markdown.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/pdf.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/run.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/sql.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/zip.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/cloze.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/highlight-colors.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/highlight.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/render-toolbar.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/selection-tools.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/images/outbox.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/images/paste.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/images/surface-controls.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/images/upload.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/analyze.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/epub.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/files.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/html-to-markdown.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/parse-cards.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/sample.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/staging.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/url.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/categories.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/deck-rows.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/folder-tree.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/folders.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/local-library.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/my-decks-actions.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/my-decks-icons.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/my-decks-menu.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/my-decks-prefs.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/my-decks-render.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/my-decks-selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/tombstones.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/anchors.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/link-picker.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/note-links.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/notes-view.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/raw-offset.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/scroll-anchor.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/toc.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/panels/cloze-panel.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/pwa/app-info.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/pwa/online.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/pwa/release-info.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/pwa/service-worker-client.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/quick-notes/anchors.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/quick-notes/board.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/quick-notes/categories.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/quick-notes/palette.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/block-cache.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/cloze-markup.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/code-language.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/deferred-work.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/diagram-zoom.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/diagrams.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/enhance.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/inline.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/math-dom.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/math.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/note-links.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/preprocess.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/tables.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/storage/deck-snapshot.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/storage/deck-store.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/storage/keys.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/storage/quota.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/storage/storage-panel.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/auto-sync.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/cards.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/diff.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/indicator.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/notes-conflict.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/push.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/reconcile.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/report.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/stats.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/back-gesture.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/boot-screens.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/chrome.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/deck-header.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/edit-mode.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/feedback.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/help.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/nav-history.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/overlays.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/pickers.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/style-schema.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/style-settings.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/style-tokens.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/theme-catalog.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/theme.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/view-mode.js?v=__BUILD__">
+    <!-- modulepreload:end -->
     <script>
       // ── Boot-click queue ────────────────────────────────────────────────
       // The whole toolbar is in the HTML, so it paints immediately — but every
@@ -1253,6 +1425,20 @@ What year was the Eiffel Tower built?
          build unregisters the worker and refetches every load — always had the
          newest. Bump this deliberately, and match it in sw.js's CDN_ASSETS. -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.2"></script>
-    <script src="app.js?v=__BUILD__"></script>
+    <!-- type="module" so the app can be split into src/**. Two consequences
+         worth knowing, both verified rather than assumed:
+
+         1. A module script is deferred. It no longer executes between the CDN
+            <script> tags above and DOMContentLoaded, but AFTER the parser
+            finishes and BEFORE DOMContentLoaded fires — so the
+            addEventListener("DOMContentLoaded", …) registrations inside still
+            catch the event, and the `el` DOM map at the top still finds its
+            elements. It also means this file no longer blocks the parser,
+            which shortens the window the boot-click queue above exists for.
+
+         2. Module scoping would break inline on* handlers. There are none in
+            this file or in any markup the app generates — checked before the
+            switch, and worth re-checking before adding one. -->
+    <script type="module" src="src/main.js?v=__BUILD__"></script>
   </body>
 </html>

@@ -1,0 +1,2351 @@
+/* The All Cards panel and the Cornell layouts
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+.all-cards-panel {
+  position: fixed;
+  z-index: 70;
+  inset: 0;
+  display: grid;
+  background: color-mix(in srgb, var(--bg) 96%, black);
+  /* Same shape as .quick-notes-board, so the same status-bar clipping: the
+     shell's header sat behind the notch. See --safe-top. */
+  padding:
+    calc(clamp(10px, 2vw, 18px) + var(--safe-top))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-right))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-bottom))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-left));
+  touch-action: none;
+}
+
+.all-cards-shell {
+  display: grid;
+  width: min(1180px, 100%);
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  justify-self: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  touch-action: auto;
+}
+
+.all-cards-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.all-cards-head h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  letter-spacing: 0;
+}
+
+.all-cards-head p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.all-cards-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Status filter — a compact segmented control. */
+.all-cards-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 8px;
+  padding: 2px;
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+}
+
+.all-cards-filter-btn {
+  min-height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 0.74rem;
+  font-weight: 900;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.all-cards-filter-btn:hover {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.all-cards-filter-btn.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.all-cards-filter-btn.is-active[data-filter="review"] {
+  background: var(--review);
+  color: #fff;
+}
+
+.all-cards-filter-btn.is-active[data-filter="known"] {
+  background: var(--known);
+  color: #04210f;
+}
+
+/* Filter hide/show — driven by the list's data-filter attribute against each
+   row's data-status. "none" = uncategorized (empty status). */
+.all-cards-list[data-filter="known"] .cornell-card:not([data-status="known"]),
+.all-cards-list[data-filter="review"] .cornell-card:not([data-status="review"]),
+.all-cards-list[data-filter="none"] .cornell-card:not([data-status=""]) {
+  display: none;
+}
+
+.all-answers-toggle {
+  min-height: 34px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+  padding: 0 12px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.all-answers-toggle[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.all-cards-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.all-card {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--all-cards-item-radius);
+  background: var(--card);
+  padding: var(--all-cards-item-padding);
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.all-card:hover,
+.all-card:focus {
+  border-color: var(--accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  outline: 0;
+  transform: translateY(-1px);
+}
+
+.all-card.is-dragging {
+  opacity: 0.48;
+  transform: scale(0.99);
+}
+
+.all-card.drop-before {
+  border-top-color: var(--accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+}
+
+.all-card.drop-after {
+  border-bottom-color: var(--accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+}
+
+.all-card.drop-before::before,
+.all-card.drop-after::after {
+  position: absolute;
+  right: 14px;
+  left: 14px;
+  z-index: 2;
+  display: grid;
+  height: 26px;
+  place-items: center;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 20%, var(--panel));
+  color: var(--accent-strong);
+  content: "Drop here";
+  font-size: 0.72rem;
+  font-weight: 900;
+  pointer-events: none;
+  text-transform: uppercase;
+}
+
+.all-card.drop-before::before {
+  top: -15px;
+}
+
+.all-card.drop-after::after {
+  bottom: -15px;
+}
+
+.all-card[data-status="review"] {
+  border-color: color-mix(in srgb, var(--review) 58%, var(--line));
+}
+
+.all-card[data-status="known"] {
+  border-color: color-mix(in srgb, var(--known) 58%, var(--line));
+}
+
+.all-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.all-card-index {
+  display: grid;
+  min-width: 34px;
+  height: 30px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.all-card-state {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.all-card-status-label {
+  min-height: var(--card-hdr-indicator-h);
+  font-size: var(--card-hdr-indicator-fs);
+}
+
+.all-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--card-hdr-gap);
+}
+
+.all-card-actions button {
+  cursor: pointer;
+  min-height: var(--card-hdr-btn);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 12px;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.all-card-add {
+  min-width: 30px;
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 14%, transparent) !important;
+  color: var(--accent) !important;
+  padding: 0 10px !important;
+}
+
+.all-card-edit {
+  min-width: 30px;
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line)) !important;
+  color: var(--accent) !important;
+  padding: 0 10px !important;
+}
+
+.all-card-edit.is-saving {
+  background: var(--accent) !important;
+  color: var(--accent-contrast) !important;
+}
+
+.all-card-review {
+  border-color: color-mix(in srgb, var(--review) 50%, var(--line)) !important;
+}
+
+.all-card-known {
+  border-color: color-mix(in srgb, var(--known) 50%, var(--line)) !important;
+}
+
+.all-card-review.is-active {
+  background: color-mix(in srgb, var(--review) 24%, var(--panel));
+  color: var(--review);
+}
+
+.all-card-known.is-active {
+  background: color-mix(in srgb, var(--known) 24%, var(--panel));
+  color: var(--known);
+}
+
+.all-card-face {
+  min-width: 0;
+}
+
+.all-card .rendered {
+  font-family: var(--app-font-family);
+  font-size: 0.95rem;
+  font-weight: 400;
+  line-height: 1.45;
+  padding: 0;
+  text-align: left;
+}
+
+.all-card-face .face-label {
+  margin-bottom: 8px;
+}
+
+.all-card.is-editing:not(.cornell-card) .all-card-face {
+  display: none;
+}
+
+.all-card-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.all-card-editor label {
+  display: grid;
+  gap: 6px;
+}
+
+.all-card-editor span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.all-card-editor textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.all-card-answer {
+  display: none;
+  background: var(--card-answer);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.all-card.is-flipped .all-card-question {
+  display: none;
+}
+
+.all-card.is-flipped .all-card-answer {
+  display: block;
+}
+
+.all-card.is-editing .all-card-question,
+.all-card.is-editing .all-card-answer {
+  display: none;
+}
+
+.all-cards-shell {
+  width: min(1320px, 100%);
+}
+
+.all-cards-list {
+  gap: 10px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 28%),
+    color-mix(in srgb, var(--panel-2) 44%, transparent);
+}
+
+.cornell-card {
+  display: grid;
+  min-height: 108px;
+  grid-template-columns: clamp(170px, 24vw, 300px) minmax(0, 1fr);
+  gap: 0;
+  border: 3px double color-mix(in srgb, var(--accent) 58%, var(--line));
+  overflow: hidden;
+  padding: 0;
+}
+
+.cornell-card .cornell-question-rail {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto;
+  align-content: start;
+  gap: 10px;
+  border-right: 3px double color-mix(in srgb, var(--accent) 58%, var(--line));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent),
+    color-mix(in srgb, var(--panel-2) 78%, var(--card));
+  color: var(--text);
+  padding: 14px 10px;
+  overflow: hidden;
+}
+
+.cornell-card.is-flipped .all-card-question {
+  display: block;
+}
+
+.cornell-card .cornell-question-rail .rendered {
+  position: static;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  padding: 0;
+  color: inherit;
+  font-size: clamp(0.86rem, 1.8vw, 1.05rem);
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: left;
+  transform: none;
+  transform-origin: center;
+  white-space: normal;
+  word-break: normal;
+}
+
+.cornell-card .cornell-question-rail .rendered > * {
+  display: block;
+  margin: 0 0 0.45em;
+}
+
+.cornell-card .cornell-question-rail .rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.cornell-card .cornell-question-rail .rendered a {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.cornell-row-number {
+  position: static;
+  z-index: 1;
+  display: inline-grid;
+  justify-self: start;
+  min-width: 28px;
+  min-height: 28px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--card));
+  color: var(--accent-strong);
+  font-size: 0.72rem;
+  font-weight: 950;
+  letter-spacing: 0;
+  transform: none;
+}
+
+.cornell-card .cornell-answer-cell {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 10px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--card-answer) 72%, transparent), transparent 180px),
+    var(--card);
+  padding: 12px;
+}
+
+.cornell-row-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--card-hdr-gap);
+}
+
+.cornell-status {
+  display: inline-grid;
+  min-height: var(--card-hdr-indicator-h);
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: var(--card-hdr-indicator-pad);
+  background: color-mix(in srgb, var(--panel-2) 78%, transparent);
+  color: var(--muted);
+  font-size: var(--card-hdr-indicator-fs);
+  font-weight: 950;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.cornell-status[data-status="known"] {
+  border-color: color-mix(in srgb, var(--known) 50%, var(--line));
+  background: color-mix(in srgb, var(--known) 14%, transparent);
+  color: var(--known);
+}
+
+.cornell-status[data-status="review"] {
+  border-color: color-mix(in srgb, var(--review) 50%, var(--line));
+  background: color-mix(in srgb, var(--review) 12%, transparent);
+  color: var(--review);
+}
+
+.cornell-card .cornell-answer-body {
+  display: none;
+  min-width: 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  padding-top: 10px;
+}
+
+.cornell-card.is-flipped .cornell-answer-body {
+  display: block;
+}
+
+.cornell-answer-cue {
+  min-height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.cornell-card.is-flipped .cornell-answer-cue {
+  display: none;
+}
+
+/* ── Compact All-Cards view ───────────────────────────────────────────────
+   A dense one-line-per-card list for decks of short entries (quick_notes:
+   single words / short phrases). The number chip and question sit inline on a
+   single tight row; the empty "tap to show answer" cue and status pill are
+   dropped, and each row sizes to its content instead of a fixed min-height. */
+.all-cards-list.is-compact {
+  gap: 5px;
+}
+
+.all-cards-list.is-compact .cornell-card {
+  /* Size to content, and don't clip. With min-height:0 + overflow:hidden the
+     grid auto-row collapses to the card's min-content (~one line) while wrapped
+     action buttons / a visible answer need more — the extra content then spills
+     out and visually overlaps the neighbouring rows. min-height:auto +
+     overflow:visible lets each compact row grow to fit exactly what it holds. */
+  min-height: auto;
+  overflow: visible;
+  grid-template-columns: minmax(0, 1fr) auto;
+  border-width: 1px;
+  border-style: solid;
+  align-items: stretch;
+}
+
+.all-cards-list.is-compact .cornell-question-rail {
+  grid-template-rows: auto;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px 7px 10px;
+  border-right: none;
+  background: color-mix(in srgb, var(--panel-2) 62%, var(--card));
+}
+
+.all-cards-list.is-compact .cornell-row-number {
+  min-width: 24px;
+  min-height: 24px;
+  font-size: 0.66rem;
+}
+
+.all-cards-list.is-compact .cornell-question-rail .rendered {
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.all-cards-list.is-compact .cornell-answer-cell {
+  padding: 5px 8px;
+  gap: 6px;
+  background: transparent;
+  align-content: center;
+}
+
+/* Drop the big empty cue + status pill; a short blank-answer card is just its
+   question. The answer body still appears (compact) when "Show answers" is on. */
+.all-cards-list.is-compact .cornell-answer-cue,
+.all-cards-list.is-compact .cornell-status {
+  display: none;
+}
+
+.all-cards-list.is-compact .cornell-row-head {
+  justify-content: flex-end;
+}
+
+/* When a compact card is opened (answer shown), lay it out as a proper Cornell
+   two-column card: a fixed-width question rail on the left and the answer
+   beside it on the right. The closed compact grid is `minmax(0,1fr) auto`,
+   whose auto answer track grows to fit the (now long) answer body and collapses
+   the 1fr question track to ~zero width — wrapping the question one character
+   per line (the "vertical text" bug). Giving the rail a real min width and the
+   answer a flexible minmax(0,1fr) track keeps both columns side by side. */
+.all-cards-list.is-compact .cornell-card.is-flipped {
+  grid-template-columns: clamp(160px, 22vw, 280px) minmax(0, 1fr);
+}
+
+/* Restore the left divider rail so the open card reads as a Cornell column. */
+.all-cards-list.is-compact .cornell-card.is-flipped .cornell-question-rail {
+  border-right: 3px double color-mix(in srgb, var(--accent) 58%, var(--line));
+  align-content: start;
+}
+
+/* On a phone the two columns would be too cramped — stack instead. */
+@media (max-width: 640px) {
+  .all-cards-list.is-compact .cornell-card.is-flipped {
+    grid-template-columns: 1fr;
+  }
+  .all-cards-list.is-compact .cornell-card.is-flipped .cornell-question-rail {
+    border-right: none;
+  }
+}
+
+.all-cards-list.is-compact .all-card-actions button {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 0.68rem;
+}
+
+.all-cards-list.is-compact .cornell-card .cornell-answer-body {
+  padding-top: 6px;
+  font-size: 0.86rem;
+}
+
+/* On phones, keep the compact row genuinely single-column: stack the trailing
+   actions below the question only when a card is hovered/opened, so scanning
+   stays dense but controls remain reachable. */
+@media (max-width: 640px) {
+  .all-cards-list.is-compact .cornell-card {
+    grid-template-columns: 1fr;
+  }
+  .all-cards-list.is-compact .cornell-answer-cell {
+    padding-top: 0;
+  }
+  .all-cards-list.is-compact .cornell-row-head {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+.cornell-card.is-editing .all-card-editor {
+  display: grid;
+  padding-top: 10px;
+}
+
+.cornell-card.is-editing .cornell-answer-body,
+.cornell-card.is-editing .cornell-answer-cue {
+  display: none !important;
+}
+
+.cornell-card.is-editing .cornell-answer-cell {
+  display: grid;
+}
+
+.cornell-card.is-editing .all-card-editor textarea {
+  min-height: min(44vh, 420px);
+  border: 1px solid color-mix(in srgb, var(--accent) 68%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 92%, black);
+  color: var(--text);
+  padding: 12px;
+  line-height: 1.45;
+}
+
+.cornell-card .rendered table {
+  table-layout: fixed;
+}
+
+.cornell-card .rendered th,
+.cornell-card .rendered td {
+  overflow-wrap: anywhere;
+}
+
+.print-root.is-preparing {
+  position: fixed;
+  top: 0;
+  left: -200vw;
+  display: block;
+  width: 1123px;
+  background: var(--print-bg);
+  color: var(--print-text);
+  font-family: var(--app-font-family);
+  font-size: var(--content-font-size);
+  line-height: var(--content-line-height);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.print-root.is-preview {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: block;
+  overflow: auto;
+  background: var(--print-bg);
+  color: var(--print-text);
+  font-family: var(--app-font-family);
+  padding: 18px;
+  -webkit-overflow-scrolling: touch;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.print-preview-actions {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  width: min(800px, 100%);
+  margin: 0 auto 12px;
+  border: 1px solid var(--print-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--print-panel) 94%, transparent);
+  padding: 8px;
+  box-shadow: 0 12px 38px color-mix(in srgb, var(--print-text) 14%, transparent);
+}
+
+.print-preview-actions button {
+  min-height: 38px;
+  border: 1px solid var(--print-line);
+  border-radius: 8px;
+  background: var(--print-surface);
+  color: var(--print-text);
+  padding: 0 14px;
+  font-weight: 900;
+}
+
+.print-preview-actions [data-print-now] {
+  border-color: var(--print-accent);
+  background: var(--print-accent);
+  color: var(--accent-contrast);
+}
+
+.cornell-print-document {
+  width: min(800px, 100%);
+  margin: 0 auto;
+  background: var(--print-panel);
+  box-shadow: var(--print-shadow);
+  border: 1px solid var(--print-line);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.cornell-print-cover {
+  display: flex;
+  align-items: end;
+  gap: 24px;
+  border-bottom: 3px solid var(--print-accent);
+  background: var(--print-panel);
+  padding: 36px 24px 24px;
+}
+
+.cornell-print-cover h1 {
+  margin: 4px 0 6px;
+  color: var(--print-text);
+  font-size: 34px;
+  line-height: 1.05;
+}
+
+.cornell-print-cover p {
+  margin: 0;
+  color: var(--print-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.cornell-print-kicker {
+  color: var(--print-accent) !important;
+  font-size: 12px !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cornell-print-badge {
+  display: grid;
+  min-width: 72px;
+  height: 72px;
+  place-items: center;
+  border: 2px solid var(--print-accent);
+  border-radius: 50%;
+  color: var(--print-accent-strong);
+  font-size: 14px;
+  font-weight: 950;
+}
+
+.cornell-print-table {
+  display: block;
+  padding: 24px 24px 36px;
+}
+
+.cornell-print-deck-divider {
+  display: grid;
+  gap: 7px;
+  margin: 28px 0 14px;
+  border: 2px solid var(--print-accent);
+  border-left-width: 6px;
+  background: var(--print-surface);
+  padding: 14px 18px;
+  break-after: avoid;
+  page-break-after: avoid;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.cornell-print-deck-divider:first-child {
+  margin-top: 0;
+}
+
+.cornell-print-deck-divider span {
+  color: var(--print-accent-strong);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cornell-print-deck-divider h2 {
+  margin: 0;
+  color: var(--print-text);
+  font-size: 24px;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+}
+
+.cornell-print-deck-divider p {
+  margin: 0;
+  color: var(--print-muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.cornell-print-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  border: 2px solid var(--print-line);
+  border-radius: 0;
+  margin-bottom: 6mm;
+  background: var(--print-surface);
+  break-inside: avoid;
+  page-break-inside: avoid;
+  overflow: hidden;
+}
+
+/* Each card is self-contained with its own strong rectangular borders */
+
+.cornell-print-row.is-oversize {
+  break-inside: auto;
+  page-break-inside: auto;
+}
+
+.cornell-print-row .cornell-question-rail {
+  position: relative;
+  flex: 0 0 45mm;
+  width: 45mm;
+  min-width: 45mm;
+  display: flex;
+  flex-direction: column;
+  align-content: start;
+  gap: 10px;
+  border-right: 2px solid var(--print-line);
+  background: var(--print-question);
+  padding: 12px 14px;
+  overflow: hidden;
+}
+
+.cornell-print-row .cornell-question-rail .rendered {
+  position: static;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--print-text);
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.22;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  transform: none;
+  transform-origin: center;
+  white-space: normal;
+  word-break: normal;
+}
+
+.cornell-print-row .cornell-question-rail .rendered > * {
+  display: block;
+  margin: 0 0 0.45em;
+}
+
+.cornell-print-row .cornell-question-rail .rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.cornell-print-row .cornell-row-number {
+  border-color: color-mix(in srgb, var(--print-accent) 48%, var(--print-line));
+  background: color-mix(in srgb, var(--print-accent) 12%, #ffffff);
+  color: var(--print-accent-strong);
+}
+
+.cornell-print-row .cornell-answer-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--print-surface);
+  padding: 12px 16px;
+}
+
+.cornell-print-row .cornell-row-head {
+  margin-bottom: 10px;
+}
+
+.cornell-print-row .cornell-row-head:empty {
+  display: none;
+  margin-bottom: 0;
+}
+
+.cornell-print-row .cornell-answer-body {
+  display: block;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.cornell-print-row .rendered {
+  min-width: 0;
+  color: var(--print-text);
+  font-size: 16px;
+  line-height: 1.48;
+}
+
+.cornell-print-row .rendered :is(h1, h2, h3, h4, h5, h6, p, li, dd, dt, th, td, strong, b, em, i) {
+  color: inherit;
+}
+
+.cornell-print-row .rendered :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--print-text);
+  font-weight: 900;
+}
+
+/* h1/h2 draw their underline in --accent (a live theme colour); on paper that
+   has to become --print-accent, for the same reason the blockquote rule below
+   is restated — otherwise the active screen theme bleeds into a print that is
+   otherwise entirely in the print palette. h3-h6 use currentColor, which is
+   already --print-text here, so they need no restatement. */
+.cornell-print-row .rendered :is(h1, h2)::after {
+  border-top-color: var(--print-accent);
+}
+
+.cornell-print-row .rendered blockquote {
+  border-left-color: var(--print-accent);
+  /* The screen rule tints with --accent; on paper that has to become
+     --print-accent or the quote carries a colour from the active theme into a
+     print that is otherwise entirely in the print palette. */
+  background: color-mix(in srgb, var(--print-accent) 7%, #ffffff);
+  color: var(--print-text);
+}
+
+.cornell-print-row .rendered a {
+  color: color-mix(in srgb, var(--print-accent) 74%, #10221e);
+}
+
+.cornell-print-row .rendered :not(pre) > code {
+  background: color-mix(in srgb, var(--print-accent) 10%, #f4f6f6);
+  color: var(--print-text);
+}
+
+.cornell-print-row .cornell-answer-body > hr:first-child {
+  display: none;
+}
+
+.cornell-print-row .rendered > :first-child {
+  margin-top: 0;
+}
+
+.cornell-print-row .rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.cornell-print-row pre {
+  overflow: visible;
+  white-space: pre-wrap;
+}
+
+/* The on-screen code-block rule (.rendered pre code) sets white-space: pre and
+   min-width: max-content directly on <code> — fine on screen, where the pre's
+   own overflow-x: auto lets you scroll a long line. In print there's no
+   scrolling and the question rail is a fixed 45mm column with overflow:
+   hidden, so an unwrapped long code line (common in C++ operator chains like
+   std::cout<<x<<std::endl;) simply got clipped instead of wrapping. Override
+   both properties here — same specificity as the screen rule, but this one
+   wins on source order. */
+.cornell-print-row pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.cornell-print-row table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.cornell-print-row th,
+.cornell-print-row td {
+  border: 1px solid var(--print-line);
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.cornell-print-row svg,
+.cornell-print-row img {
+  max-width: 100%;
+  height: auto;
+  max-height: 178mm;
+  object-fit: contain;
+}
+
+.print-root.is-preparing .print-page {
+  display: grid;
+  width: 1123px;
+  height: 794px;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  padding: 91px;
+}
+
+.print-root.is-preparing .page-kicker {
+  margin-bottom: 38px;
+  color: #555;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.print-root.is-preparing .fit-content {
+  min-height: 0;
+  overflow: hidden;
+  transform-origin: top left;
+  line-height: 1.42;
+}
+
+.print-root.is-preparing .fit-question {
+  display: grid;
+  align-content: var(--question-vertical-align);
+  font-family: var(--question-font-family);
+  font-weight: var(--question-font-weight);
+  line-height: var(--question-line-height);
+  padding: var(--question-padding);
+  text-align: var(--question-align);
+}
+
+.print-root.is-preparing .fit-answer {
+  font-family: var(--answer-font-family);
+  font-size: var(--answer-font-size);
+  font-weight: var(--answer-font-weight);
+  line-height: var(--answer-line-height);
+  padding: var(--answer-padding);
+}
+
+
+.print-root.is-preparing .fit-content > :first-child {
+  margin-top: 0;
+}
+
+.print-root.is-preparing .fit-content > :last-child {
+  margin-bottom: 0;
+}
+
+.fit-content h1,
+.fit-content h2,
+.fit-content h3 {
+  margin-top: 0;
+}
+
+.fit-content pre {
+  overflow: hidden;
+  border-radius: 6px;
+  background: #f5f5f5;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.fit-content code {
+  border-radius: 4px;
+  background: #f1f1f1;
+  padding: 0.1em 0.3em;
+}
+
+.fit-content table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.fit-content th,
+.fit-content td {
+  border: 1px solid #ddd;
+  padding: 6px 8px;
+}
+
+.fit-content svg {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.fit-content .katex-display {
+  overflow: visible;
+}
+
+@media (max-width: 720px) {
+  /* Compact every card header from one place on phones: the study card
+     face-header, the All-Cards skim rows and the Quick-Notes cards all read
+     these tokens, so shrinking them here reclaims vertical space for content
+     without touching each surface's rules individually. */
+  :root {
+    --card-hdr-gap: 6px;
+    --card-hdr-mb: 6px;
+    --card-hdr-indicator-h: 20px;
+    --card-hdr-indicator-fs: 0.6rem;
+    --card-hdr-indicator-pad: 0 7px;
+    --card-hdr-btn: 26px;
+    --card-hdr-btn-fs: 0.8rem;
+  }
+
+  .app-shell {
+    width: min(var(--app-mobile-width), 100vw);
+    max-width: 100vw;
+    /* Honour the "App height %" slider on mobile too (dvh-based). Default 100
+       keeps today's full-height behaviour.
+
+       Minus --kb-inset so the whole shell sits ABOVE the on-screen keyboard
+       rather than half behind it. This is the one lever that does the job:
+       every scroll port inside (the notes editor, the rendered notes, the card
+       faces) is sized off the shell, so shrinking it here keeps all of them
+       fully visible without any of them having to know a keyboard exists. It
+       double-counts nothing — where the browser already resized the layout for
+       the keyboard (interactive-widget=resizes-content), window.innerHeight
+       shrank with it and trackKeyboardInset() reports ~0. */
+    height: calc(var(--app-mobile-height) - var(--kb-inset));
+    min-height: calc(var(--app-mobile-height) - var(--kb-inset));
+    overflow: hidden;
+    padding: 6px;
+  }
+
+  /* ── Compact deck-meta: lives in the appbar flex row ── */
+  /* On mobile the header has little else in it, so (unlike desktop) the
+     title/meta rows should stretch to fill it — otherwise a short title
+     would clamp its width to its own content instead of using the space
+     available, which is what lets a long title 2-line-clamp sensibly. */
+  .deck-meta {
+    flex: 1;
+    gap: 2px 0;
+  }
+
+  /* Title row: full-width, wraps fully (no clamp) so the whole title shows */
+  .deck-title-wrap {
+    width: 100%;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .deck-title {
+    max-width: none;
+    font-size: 0.68rem;
+    font-weight: 900;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+    flex: 1;
+  }
+
+  /* Both pencil buttons: visible, compact, clearly a button */
+  .deck-title-edit {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    min-height: 20px;
+    font-size: 0.62rem;
+    flex-shrink: 0;
+    border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+    background: color-mix(in srgb, var(--panel-2) 90%, transparent);
+    box-shadow: none;
+    color: var(--muted);
+  }
+
+  /* Category pencil sits right after the badge, vertically centered */
+  .deck-category-edit {
+    align-self: center;
+    margin-left: -2px;
+  }
+
+  /* Row2: category badge + separator + position + score */
+  .deck-meta-row2 {
+    gap: 4px;
+  }
+
+  .deck-category {
+    min-height: 16px;
+    font-size: 0.56rem;
+    padding: 0 6px;
+    letter-spacing: 0.06em;
+  }
+
+  #positionText {
+    font-size: 0.66rem;
+    color: var(--muted);
+    font-weight: 700;
+  }
+
+  #scoreText {
+    font-size: 0.66rem;
+    font-weight: 700;
+  }
+
+  /* ── Mobile core layout: quiz-panel fills viewport, toggle+panels scroll below ── */
+  .study-layout {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .quiz-panel   { grid-row: 1; grid-column: 1; }
+
+  .quiz-panel {
+    /* 3-row grid: progress bar | card (fills 1fr) | action controls
+       Shuffle/Restart and replay-actions spill into implicit rows
+       and are clipped by overflow:hidden — deck-summary overlay
+       inside the card handles end-of-deck replay. */
+    height: 100%;
+    min-height: 0;
+    width: 100%;
+    max-width: 100%;
+    grid-template-rows: auto 1fr auto;
+    gap: 8px;
+    padding: var(--quiz-panel-padding);
+    box-shadow: 0 16px 46px rgba(0, 0, 0, 0.28);
+    overflow: hidden;
+  }
+
+  .card {
+    width: var(--card-mobile-width);
+    max-width: 100%;
+    height: 100%;
+    /* Cap the card at the user's "Card max height %" slider (dvh so it tracks the
+       real, toolbar-adjusted viewport). .deck centers it, so a sub-100% value
+       gives the content vertical breathing room instead of full-bleed. */
+    max-height: var(--card-mobile-max-height);
+    min-height: 0;
+    border-radius: var(--card-radius);
+  }
+
+  .deck {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    min-height: 0;
+    align-self: stretch;
+    align-items: center;
+    justify-items: center;
+    padding: 0;
+  }
+
+  /* Collapse deck to content height when no deck is loaded */
+  .quiz-panel.is-deck-empty .deck {
+    height: auto;
+    min-height: 0;
+    padding: 12px 8px;
+  }
+
+  .controls {
+    display: grid;
+    width: min(100%, calc(100vw - 12px));
+    max-width: 100%;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-areas:
+      "review prev add next known";
+    gap: 4px;
+    justify-self: center;
+    margin-top: 0;
+  }
+
+  .card-face {
+    gap: var(--card-face-gap);
+    border-radius: var(--card-radius);
+  }
+
+  /* Same story as .replay-actions below: the hardcoded 34px here made the
+     action-button-height setting inert on the whole Mobile profile. Height now
+     comes from --action-button-height, derived from the button-height control.
+     Only the phone-specific shrinking (padding, font, ellipsis) stays. */
+  .controls button {
+    width: auto;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 6px;
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .controls button span:not([aria-hidden]) {
+    display: none;
+  }
+
+  .controls .review {
+    grid-area: review;
+  }
+
+  .controls .known {
+    grid-area: known;
+  }
+
+  .controls #prevCardBtn {
+    grid-area: prev;
+  }
+
+  .controls #addCardBtn {
+    grid-area: add;
+  }
+
+  .controls #nextCardBtn {
+    grid-area: next;
+  }
+
+  .controls .nav-card {
+    display: inline-flex;
+  }
+
+  /* Font size only. These used to pin height: 34px, which — together with the
+     twin rule on the nav buttons further down — is what made the button-height
+     setting inert across the whole Mobile profile. Height comes from
+     --action-button-height, whose mobile default is that same 34px. */
+  .controls .nav-card {
+    font-size: 0.72rem;
+  }
+
+  .controls .review,
+  .controls .known {
+    font-size: 0.72rem;
+  }
+
+  .deck-utility-actions {
+    display: flex;
+    width: min(100%, calc(100vw - 12px));
+    max-width: 100%;
+    gap: 4px;
+    justify-self: center;
+    margin-top: 0;
+  }
+
+  .deck-utility-actions button {
+    width: auto;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 0.72rem;
+  }
+
+  .replay-actions {
+    display: flex;
+    width: min(100%, calc(100vw - 12px));
+    max-width: 100%;
+    justify-self: center;
+    gap: 4px;
+    margin-top: 0;
+  }
+
+  /* No min-height here: it used to hardcode 24px, which silently overrode the
+     replay-button-height setting on the whole Mobile profile — the slider was
+     there, stored a value, and did nothing. The height now comes from
+     --replay-button-height, itself derived from the one button-height control. */
+  .replay-actions button {
+    width: auto;
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 4px;
+    font-size: 0.62rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rendered {
+    font-size: var(--content-font-size);
+  }
+
+  .card-question .rendered {
+    font-size: min(var(--question-fit-font-size, var(--content-font-size)), var(--question-max-font-size));
+    padding-inline: var(--question-padding);
+  }
+
+  .card-question .rendered > * {
+    width: 100%;
+    max-width: min(100%, calc(100vw - 72px));
+    white-space: normal;
+  }
+
+  .card-answer .rendered {
+    font-size: var(--answer-font-size);
+    line-height: var(--answer-line-height);
+  }
+
+  .markdown-table-wrap {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid color-mix(in srgb, var(--line) 84%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--panel) 54%, transparent);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .rendered table {
+    display: table;
+    width: max-content;
+    min-width: max(100%, calc(var(--markdown-table-columns, 4) * 11rem));
+    max-width: none;
+    border-collapse: collapse;
+    table-layout: auto;
+    font-size: min(0.92em, var(--content-font-size));
+    text-align: left !important;
+  }
+
+  .rendered table col {
+    width: auto !important;
+  }
+
+  .rendered table th,
+  .rendered table td {
+    display: table-cell;
+    min-width: 10rem;
+    padding: 9px 11px;
+    overflow-wrap: normal;
+    word-break: normal;
+    hyphens: none;
+    vertical-align: top;
+  }
+
+  .rendered table th:first-child,
+  .rendered table td:first-child {
+    min-width: 6.5rem;
+  }
+
+  .rendered table th {
+    white-space: normal;
+    font-weight: 900;
+  }
+
+  .face-label {
+    padding: 4px 9px;
+    font-size: 0.66rem;
+  }
+
+  /* Must re-add the insets: a bare `padding: 8px` here is a shorthand and would
+     drop the safe-area gutters the base rule sets, precisely on the screens that
+     have a notch. */
+  .all-cards-panel {
+    padding:
+      calc(8px + var(--safe-top))
+      calc(8px + var(--safe-right))
+      calc(8px + var(--safe-bottom))
+      calc(8px + var(--safe-left));
+  }
+
+  .all-cards-head {
+    padding: 10px;
+  }
+
+  .all-cards-list {
+    gap: 10px;
+    padding: 8px;
+  }
+
+  .all-card {
+    padding: 10px;
+  }
+
+  .cornell-card {
+    min-height: 96px;
+    grid-template-columns: minmax(112px, 38%) minmax(0, 1fr);
+    padding: 0;
+  }
+
+  .cornell-card .cornell-question-rail {
+    padding: 11px 8px;
+  }
+
+  .cornell-card .cornell-question-rail .rendered {
+    font-size: 0.82rem;
+  }
+
+  .cornell-card .cornell-answer-cell {
+    padding: 10px;
+  }
+
+  .all-card-top {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .all-card-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .import-panel {
+    padding:
+      calc(16px + var(--safe-top))
+      calc(16px + var(--safe-right))
+      calc(16px + var(--safe-bottom))
+      calc(16px + var(--safe-left));
+  }
+
+  /* Only clips once the card is tall enough to hit this cap — at which point it
+     fills the screen and its head meets the status bar. The -32px mirrors the
+     panel's padding, so the insets come off here too. */
+  .import-card {
+    width: 100%;
+    max-height: calc(100dvh - 32px - var(--safe-top) - var(--safe-bottom));
+    padding: 24px 20px;
+  }
+
+  .import-head {
+    gap: 10px;
+  }
+
+  .import-head h1 {
+    font-size: 1.2rem;
+  }
+
+  textarea {
+    min-height: var(--textarea-min-height);
+  }
+
+  .url-row {
+    flex-direction: column;
+  }
+
+  /* Near-full-height sheet on mobile, so its top edge lands under the status
+     bar. The shell's height is derived from 100dvh below and must lose the same
+     insets, or padding here would just push its bottom off-screen instead. */
+  .web-decks-panel {
+    align-items: center;
+    padding:
+      calc(10px + var(--safe-top))
+      calc(10px + var(--safe-right))
+      calc(10px + var(--safe-bottom))
+      calc(10px + var(--safe-left));
+  }
+
+  .style-panel {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  /* Bottom sheet: it sits flush on `bottom: 0`, so its last row was under the
+     home indicator. The inset goes on the sheet, not the backdrop — padding the
+     backdrop would lift the sheet and show a strip of scrim beneath it, which
+     reads as a rendering fault rather than a deliberate edge. */
+  .style-shell {
+    width: 100%;
+    max-width: 100%;
+    max-height: 92dvh;
+    padding-bottom: var(--safe-bottom);
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .style-grid {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .style-section-body {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .style-section summary {
+    padding: 7px 10px;
+  }
+
+  /* The -20px is the panel's 10px padding on each side; the safe insets are the
+     rest of that padding now, so subtract them too or the sheet outgrows the
+     space its own panel leaves it. */
+  .web-decks-shell {
+    width: 100%;
+    height: calc(100vh - 20px);
+    height: calc(100dvh - 20px - var(--safe-top) - var(--safe-bottom));
+    max-height: calc(100vh - 20px);
+    max-height: calc(100dvh - 20px - var(--safe-top) - var(--safe-bottom));
+    padding: 14px;
+  }
+
+  .web-decks-head {
+    margin-bottom: 10px;
+  }
+
+  /* ── Web decks: simple 2-row card ── */
+  .web-decks-table,
+  .web-decks-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .web-decks-table thead { display: none; }
+
+  /* 2-column grid: [checkbox] | [content]
+     Row 1 = title, Row 2 = all actions/meta */
+  .web-decks-table tr {
+    display: grid;
+    grid-template-columns: 20px 1fr;
+    grid-template-rows: auto auto;
+    column-gap: 8px;
+    row-gap: 8px;
+    align-items: start;
+    border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+    padding: 12px 12px 10px;
+  }
+
+  .web-decks-table tr + tr { margin-top: 8px; }
+
+  .web-decks-table td {
+    display: flex;
+    align-items: center;
+    width: auto !important;
+    border: 0;
+    padding: 0;
+    text-align: left !important;
+  }
+
+  .web-decks-table td::before { display: none; }
+
+  /* Checkbox: col 1, spans both rows */
+  .web-decks-table td:nth-child(1) {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    align-self: flex-start;
+    padding-top: 3px;
+  }
+
+  /* Title: row 1, col 2 */
+  .web-decks-table td:nth-child(2) {
+    grid-column: 2;
+    grid-row: 1;
+    align-items: flex-start;
+  }
+
+  /* Desktop-only category td: hidden on mobile */
+  .web-decks-table td:nth-child(3) { display: none; }
+
+  /* Desktop-only date td: hidden on mobile */
+  .web-decks-table td:nth-child(4) { display: none; }
+
+  /* Actions td: row 2, col 2 — contains mobile-meta + buttons */
+  .web-decks-table td:nth-child(5) {
+    grid-column: 2;
+    grid-row: 2;
+    align-items: flex-start;
+  }
+
+  .web-decks-empty {
+    display: block !important;
+    text-align: center !important;
+    grid-column: 1 / -1;
+  }
+
+  .web-decks-empty::before { display: none; }
+
+  /* Title cell: block, full width */
+  .web-deck-title { display: block; width: 100%; }
+
+  .web-deck-title-text {
+    display: block;
+    -webkit-line-clamp: 2;
+    font-size: 0.85rem;
+    font-weight: 800;
+  }
+
+  /* Actions wrapper: column — meta row above button row */
+  .web-deck-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+  }
+
+  /* Meta row: category pill + count badge + date */
+  .web-deck-mobile-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
+  .web-deck-cat-pill {
+    display: inline-flex;
+    font-size: 0.58rem;
+    font-weight: 900;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent-strong);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--line));
+    border-radius: 999px;
+    padding: 1px 7px;
+    white-space: nowrap;
+  }
+
+  .web-deck-card-count {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+  }
+
+  .web-deck-mobile-date {
+    display: inline;
+    font-size: 0.6rem;
+    color: var(--muted);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  /* Button row: all actions in one even row */
+  .web-deck-button-row {
+    display: flex;
+    gap: 5px;
+    width: 100%;
+  }
+
+  .web-deck-export-wrap {
+    flex: 1 1 auto;
+    display: flex;
+  }
+
+  .web-deck-export-wrap .web-deck-export {
+    width: 100%;
+  }
+
+  /* All action buttons: uniform height, stretch to fill row evenly */
+  .web-deck-rename,
+  .web-deck-action {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 30px;
+    height: 30px;
+    font-size: 0.7rem;
+    padding: 0 6px;
+  }
+
+  .web-decks-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .web-decks-tools label {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .web-decks-tools-left {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .web-decks-tools-left label {
+    flex: 1 1 160px;
+    min-width: 0;
+  }
+
+  .web-decks-tools-left label select {
+    width: 100%;
+  }
+
+  .web-decks-refresh {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .web-deck-title-text,
+  .web-deck-category-badge {
+    display: block;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-line-clamp: unset;
+  }
+
+  /* ── My Decks on a phone ──────────────────────────────────────────────────
+     The panel is a near-full-height sheet here, so every row the chrome takes
+     is a deck the user can't see. Each toolbar control that carried a text
+     label on desktop drops to icon-only (the label survives as the tooltip and
+     aria-label), the two segmented controls share one line instead of taking a
+     line each, and the shared control height comes down 4px. Net effect: the
+     header + toolbar go from ~330px to ~120px. */
+  #myDecksPanel .web-decks-shell {
+    --md-ctl-h: 32px;
+    --md-gap: 6px;
+    --md-row-pad: 8px 10px;
+  }
+
+  /* Title, count and close only — the blurb repeats what the panel obviously is
+     and costs a whole line at this width. */
+  #myDecksPanel .web-decks-head { margin-bottom: 8px; }
+  #myDecksPanel .web-decks-head-sub { display: none; }
+  #myDecksPanel .web-decks-head h1 { font-size: 1rem; }
+
+  /* Both segmented controls on one line: the view switch takes the room it
+     needs for three labels, the 2-button display toggle rides beside it. */
+  .web-decks-tools-primary {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--md-gap);
+  }
+  .my-decks-viewswitch { flex: 1 1 auto; justify-content: center; }
+  .my-decks-viewswitch button { flex: 1 1 0; justify-content: center; padding: 0 6px; }
+  .my-decks-display-toggle { flex: 0 0 auto; }
+  .web-decks-tools-primary-right {
+    flex: 0 0 auto;
+    justify-content: flex-start;
+    gap: var(--md-gap);
+  }
+
+  /* Icon-only: a phone row can't carry "New deck", "New folder" and two
+     segmented controls as words. The <span> label is what goes, not the
+     button's title/aria-label, so the action stays discoverable and named. */
+  #myDecksPanel .md-btn-label,
+  .my-decks-display-toggle .md-btn-label { display: none; }
+  #myDecksPanel .web-decks-refresh,
+  .my-decks-display-toggle button {
+    width: var(--md-ctl-h);
+    padding: 0;
+    justify-content: center;
+  }
+
+  /* Search leads (it's the fastest way to a deck on a phone) and takes the full
+     width; the breadcrumb and the sort/scope selects share the line under it,
+     rather than claiming one each. */
+  .web-decks-tools-secondary { flex-wrap: wrap; gap: var(--md-gap); }
+  .my-decks-search { flex: 1 1 100%; order: -1; }
+  .my-decks-breadcrumb { flex: 0 1 auto; }
+  /* The uppercase field labels are pure decoration once the icon is there. */
+  .my-decks-filter > span { display: none; }
+  /* `width: auto` undoes the shared `.web-decks-tools label { width: 100% }`
+     above, which was giving Sort and Folder a full row each. It needs the
+     #myDecksPanel prefix to outrank that rule's element+class specificity. */
+  #myDecksPanel .my-decks-filter {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+  /* Split the line evenly rather than sizing to content: at their natural width
+     Sort and Folder are 173px each, 44px more than a 390px sheet can fit side
+     by side, so both were dropping to a row of their own. */
+  #myDecksPanel .my-decks-filter select {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+    /* Room for the native chevron, which otherwise sits on top of the last
+       character of a long option like "Recently opened". */
+    padding-right: 24px;
+    text-overflow: ellipsis;
+  }
+
+  /* One column on a 360-390px phone, two from ~480px up. Forcing two columns
+     at every phone width leaves a ~130px track, which breaks real deck titles
+     mid-word — and density is what List display is for; Tiles is the visual
+     mode, so legibility wins here. */
+  .my-decks-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  /* Tiles are full width on a phone, so unlike the toolbar these buttons have
+     room to keep their labels. */
+  #myDecksPanel .deck-tile-actions .md-btn-label { display: inline; }
+
+  /* The "⋯" menu becomes a bottom sheet: an anchored 232px popover at this
+     width would either overflow the viewport or cover the list it acts on.
+     Fixed to the viewport, so the inset goes on the sheet itself (padding the
+     backdrop would leave a strip of panel showing beneath it). */
+  .my-decks-more-menu {
+    position: fixed;
+    top: auto;
+    right: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 120;
+    width: auto;
+    max-height: 80dvh;
+    border-radius: 16px 16px 0 0;
+    border-bottom: none;
+    padding: 6px 10px calc(10px + var(--safe-bottom));
+    box-shadow: 0 -18px 44px rgba(0, 0, 0, 0.4);
+  }
+  .my-decks-more-menu .md-menu-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 4px 6px;
+    color: var(--muted);
+    font-size: 0.66rem;
+    font-weight: 900;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .md-menu-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0;
+  }
+  .md-menu-item { min-height: 42px; font-size: 0.88rem; }
+
+  /* (.folder-tile-name wraps at every width now — no mobile override needed.) */
+
+  .web-deck-button-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .web-deck-export-wrap {
+    display: flex;
+  }
+
+  .web-deck-action,
+  .web-deck-rename {
+    width: 100%;
+    min-height: 34px;
+    height: 34px;
+    flex: unset;
+  }
+
+  .web-deck-export {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .web-deck-export-menu {
+    right: 0;
+    left: auto;
+    width: min(190px, calc(100vw - 48px));
+  }
+
+  .web-deck-category-new {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 721px) and (max-width: 1080px) {
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .study-layout {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+  }
+
+  .quiz-panel {
+    height: min(760px, calc(100vh - 86px));
+    min-height: 520px;
+    order: 1;
+  }
+
+  .card {
+    max-height: none;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-shell {
+    width: min(var(--app-mobile-width), 100vw);
+  }
+
+  .deck {
+    min-height: 0;
+  }
+
+  /* Very small phones: keep the horizontal compaction, but take the height from
+     the setting rather than pinning it — see the note at .controls button above. */
+  .controls button {
+    width: auto;
+    min-width: 0;
+    padding: 0 5px;
+  }
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: var(--print-bg);
+    color: var(--print-text);
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  body.modal-scroll-lock {
+    position: static !important;
+    inset: auto !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: auto !important;
+  }
+
+  .app-shell,
+  .import-panel,
+  .all-cards-panel,
+  .style-panel,
+  .web-decks-panel,
+  .diagram-modal {
+    display: none !important;
+  }
+
+  .print-root,
+  .print-root.is-preview,
+  .print-root.is-preparing {
+    position: static;
+    display: block;
+    width: auto;
+    padding: 0;
+    overflow: visible;
+    background: var(--print-bg);
+    color: var(--print-text);
+    font-family: var(--app-font-family);
+    font-size: var(--content-font-size);
+    line-height: var(--content-line-height);
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .print-preview-actions {
+    display: none !important;
+  }
+
+  /* A copy button on paper is a button nobody can press. Every code block now
+     carries one (the language badge doubles as it), so leaving them in would
+     stamp a pill over the first line of every printed block — and the padding
+     that reserved room for it goes back too. */
+  .code-copy-btn {
+    display: none !important;
+  }
+
+  .rendered pre.has-code-language code[class*="language-"] {
+    padding-top: 6px;
+  }
+
+  .cornell-print-document {
+    width: auto;
+    margin: 0;
+    background: var(--print-panel);
+    box-shadow: none;
+  }
+
+  .cornell-print-cover {
+    padding: 6mm 12mm 6mm;
+  }
+
+  .cornell-print-cover h1 {
+    font-size: 24pt;
+  }
+
+  .cornell-print-table {
+    padding: 6mm 12mm 12mm;
+  }
+
+  .cornell-print-row {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: stretch !important;
+    border: 2px solid var(--print-line) !important;
+    border-radius: 0 !important;
+    margin-bottom: 6mm !important;
+    overflow: hidden !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .cornell-print-row .cornell-question-rail {
+    flex: 0 0 45mm !important;
+    width: 45mm !important;
+    min-width: 45mm !important;
+    border-right: 2px solid var(--print-line) !important;
+    padding: 5mm;
+  }
+
+  .cornell-print-row .cornell-answer-cell {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    padding: 5mm 6mm;
+  }
+
+  .cornell-print-row .rendered {
+    font-size: 9.5pt;
+    line-height: 1.35;
+  }
+
+  .cornell-print-row .cornell-question-rail .rendered {
+    font-size: 9pt;
+    line-height: 1.3;
+  }
+
+  /* Body-sized on paper too, matching the screen scheme: the underline ladder
+     (see the .rendered heading block) is what says which level this is, and it
+     survives print untouched. These used to be 13pt/11.5pt/10.5pt against 9.5pt
+     body text, which reintroduced on paper exactly the size hierarchy the
+     screen styles dropped. */
+  .cornell-print-row :is(h1, h2, h3, h4, h5, h6) {
+    font-size: 1em;
+    margin-top: 0.5em;
+    margin-bottom: 0.3em;
+  }
+  .cornell-print-row p { margin: 0 0 0.5em; }
+  .cornell-print-row p:last-child { margin-bottom: 0; }
+
+  .cornell-print-row table {
+    width: 100% !important;
+    border-collapse: collapse;
+    margin: 6px 0;
+    font-size: 8.5pt;
+  }
+  .cornell-print-row th,
+  .cornell-print-row td {
+    padding: 4px 6px !important;
+    border: 1px solid var(--print-line) !important;
+    word-break: break-word;
+  }
+  .cornell-print-row pre {
+    padding: 6px 8px !important;
+    font-size: 8pt !important;
+    margin: 6px 0 !important;
+    background: #f7f9fa !important;
+    border: 1px solid var(--print-line) !important;
+  }
+
+  .cornell-print-row svg,
+  .cornell-print-row img {
+    max-width: 100%;
+    max-height: 155mm;
+  }
+
+  .print-title {
+    display: none;
+  }
+
+  .print-page {
+    display: grid;
+    height: 100vh;
+    break-after: page;
+    page-break-after: always;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+    padding: 24mm;
+  }
+
+  .print-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .page-kicker {
+    margin-bottom: 10mm;
+    color: #555;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .fit-content {
+    min-height: 0;
+    overflow: hidden;
+    transform-origin: top left;
+    font-size: 18px;
+    line-height: 1.42;
+  }
+
+  .fit-question {
+    display: grid;
+    align-content: var(--question-vertical-align);
+    font-family: var(--question-font-family);
+    font-weight: var(--question-font-weight);
+    line-height: var(--question-line-height);
+    padding: var(--question-padding);
+    text-align: var(--question-align);
+  }
+
+  .fit-answer {
+    font-family: var(--answer-font-family);
+    font-size: var(--answer-font-size);
+    font-weight: var(--answer-font-weight);
+    line-height: var(--answer-line-height);
+    padding: var(--answer-padding);
+  }
+
+  .fit-content > :first-child {
+    margin-top: 0;
+  }
+
+  .fit-content > :last-child {
+    margin-bottom: 0;
+  }
+
+  .fit-content h1,
+  .fit-content h2,
+  .fit-content h3 {
+    margin-top: 0;
+  }
+
+  .fit-content pre {
+    overflow: hidden;
+    border-radius: 6px;
+    background: #f5f5f5;
+    padding: 10px;
+    white-space: pre-wrap;
+  }
+
+  .fit-content code {
+    border-radius: 4px;
+    background: #f1f1f1;
+    padding: 0.1em 0.3em;
+  }
+
+  .fit-content table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .fit-content th,
+  .fit-content td {
+    border: 1px solid #ddd;
+    padding: 6px 8px;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+  }
+
+  .fit-content svg {
+    max-width: 100%;
+    max-height: 100%;
+  }
+
+  .fit-content .katex-display {
+    overflow: visible;
+  }
+}
+
+.face-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--card-hdr-gap);
+  margin-bottom: var(--card-hdr-mb);
+}
+
+.face-header .face-label {
+  margin-bottom: 0;
+}
+
+.face-label-row,
+.face-header > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.face-label-row {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.card-status-badge,
+.all-card-status-label {
+  display: inline-flex;
+  min-height: var(--card-hdr-indicator-h);
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  color: var(--muted);
+  padding: var(--card-hdr-indicator-pad);
+  font-size: var(--card-hdr-indicator-fs);
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.card-status-badge[data-status="review"],
+.all-card-status-label[data-status="review"] {
+  border-color: color-mix(in srgb, var(--review) 58%, var(--line));
+  background: color-mix(in srgb, var(--review) 18%, var(--panel));
+  color: var(--review);
+}
+
+.card-status-badge[data-status="known"],
+.all-card-status-label[data-status="known"] {
+  border-color: color-mix(in srgb, var(--known) 58%, var(--line));
+  background: color-mix(in srgb, var(--known) 18%, var(--panel));
+  color: var(--known);
+}

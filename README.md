@@ -1,6 +1,6 @@
 # Recall — Setup Guide
 
-Recall is a static flashcard and study-notes web app backed by **your own Supabase project**. Three core files, no build step, no framework, no npm — you serve a folder and the app runs.
+Recall is a static flashcard and study-notes web app backed by **your own Supabase project**. No build step, no framework, no npm — you serve a folder and the app runs.
 
 > [!NOTE]
 > **Looking for how to *use* Recall?** It's documented inside the app: open the **☰** menu → **? Help & Guide**. Twelve sections cover loading decks, study notes, studying, keyboard shortcuts, swipe gestures, editing and formatting, clozes, images, quick notes, progress, the All Cards panel, sync, offline behaviour, card format and themes.
@@ -51,7 +51,7 @@ There is **no local-only mode.** The first screen asks for a Supabase URL and ke
 
 There's nothing to build. Deploy the folder as-is.
 
-The one thing a deploy has to do is give each release a version, because versioned assets (`app.js?v=…`) are cached first and never revalidated. On GitHub Pages that is handled for you by `.github/workflows/deploy.yml`, which stamps the commit SHA in at publish time — see [Notes for self-hosters](#notes-for-self-hosters) if you deploy some other way.
+The one thing a deploy has to do is give each release a version, because versioned assets (`src/main.js?v=…`) are cached first and never revalidated. On GitHub Pages that is handled for you by `.github/workflows/deploy.yml`, which stamps the commit SHA in at publish time — see [Notes for self-hosters](#notes-for-self-hosters) if you deploy some other way.
 
 > [!IMPORTANT]
 > **Don't open `index.html` by double-clicking it.** On a `file://` URL Supabase Auth rejects the origin *and* the service worker refuses to register, so you get neither sign-in nor offline support. It must be served over HTTP.
@@ -108,12 +108,11 @@ This is the only SQL you need — one run creates all four tables, every column,
 -- Requires Supabase Auth to be enabled (it is, by default). Each account sees
 -- only its own decks, cards, notes, tombstones and images.
 --
--- This supersedes the older per-feature files, which still ship only so that
--- anyone following older setup notes finds what they reference:
---   supabase_schema.sql · supabase_image_storage.sql · supabase_deck_notes.sql
---   supabase_deck_categories.sql · supabase_deck_tombstones.sql
---   supabase_quick_notes.sql · supabase_style_settings.sql
--- You do not need any of them. Running one afterwards is a no-op.
+-- This is the only SQL file in the repo. It replaced seven per-feature files
+-- (supabase_schema, _image_storage, _deck_notes, _deck_categories,
+-- _deck_tombstones, _quick_notes, _style_settings) and is a strict superset of
+-- all of them, so an older setup note that names one of those just means: run
+-- this instead.
 --
 -- Upgrading a deployment old enough to predate authentication? Run this file,
 -- then read section 8 at the bottom — there is one manual step.
@@ -140,7 +139,7 @@ CREATE TABLE IF NOT EXISTS decks (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  -- app.js never sets user_id explicitly — it relies on this default. Without
+  -- the app never sets user_id explicitly — it relies on this default. Without
   -- it every insert would leave user_id NULL and be rejected by the WITH CHECK
   -- of the "Users manage own decks" policy in section 6.
   user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE
@@ -158,6 +157,13 @@ ALTER TABLE decks ADD COLUMN IF NOT EXISTS current_card_index INT DEFAULT 0;
 ALTER TABLE decks ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
 ALTER TABLE decks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
 ALTER TABLE decks ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+-- Paired with the ADD above for the same reason category/notes/meta/user_id are:
+-- ADD COLUMN IF NOT EXISTS is a no-op on a project that already has the column,
+-- so it cannot give one a default it never had. The superseded
+-- supabase_deck_categories.sql carried this line and this file did not, which is
+-- the one thing that stopped it being a strict superset of the older per-feature
+-- files it replaces.
+ALTER TABLE decks ALTER COLUMN last_accessed_at SET DEFAULT NOW();
 
 -- Added WITHOUT NOT NULL, deliberately. auth.uid() is NULL in the SQL Editor
 -- (there is no request context), so on a table that already has rows a NOT NULL
@@ -442,11 +448,11 @@ ON CONFLICT (id) DO NOTHING;
 DO $$
 BEGIN
   -- A signed-in user may write only into a folder named after their own uid
-  -- (app.js prefixes every upload path with auth.uid()), so one account's
+  -- (the app prefixes every upload path with auth.uid()), so one account's
   -- session can never write into — or, via the delete policy, remove from —
   -- another account's images.
   --
-  -- Only the FIRST path segment is checked, which is what lets app.js file
+  -- Only the FIRST path segment is checked, which is what lets the app file
   -- uploads into per-source subfolders underneath it:
   --   {uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp   (EPUB import)
   --   {uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp   (paste/drop)
@@ -662,9 +668,96 @@ Cards need nothing — they inherit ownership through their deck.
 
 ### The older per-feature SQL files
 
-`supabase_schema.sql`, `supabase_image_storage.sql`, `supabase_deck_categories.sql`, `supabase_deck_notes.sql`, `supabase_deck_tombstones.sql`, `supabase_quick_notes.sql` and `supabase_style_settings.sql` still ship, so that anyone following older setup notes or an older copy of this README still finds what they reference. **You don't need any of them** — `supabase_setup.sql` is their union, and running one afterwards is a no-op.
+The repo used to carry seven more SQL files — `supabase_schema.sql`, `supabase_image_storage.sql`, `supabase_deck_categories.sql`, `supabase_deck_notes.sql`, `supabase_deck_tombstones.sql`, `supabase_quick_notes.sql` and `supabase_style_settings.sql`. They are gone: `supabase_setup.sql` is a verified strict superset of all of them, so following an older setup note just means running the one file instead. The only two things it does *not* create are `decks_category_last_accessed_at_idx` and `decks_last_accessed_at_idx`, which it deliberately drops — nothing filters by category server-side, and under RLS a bare `last_accessed_at` index cannot satisfy the implicit `user_id` predicate, so both were pure write overhead.
 
-The one thing not folded in is the 40-odd seeded layout defaults in `supabase_style_settings.sql`, which pre-fill the shared `global` style row. That's cosmetic and optional: without it the app uses its own built-in defaults.
+The 40-odd seeded layout defaults that `supabase_style_settings.sql` used to write into the shared `global` style row are gone with it. They were cosmetic and optional, and they duplicated `defaultStyleProfiles` in the app — a copy that had to be hand-synced and could only ever drift. The app's own built-in defaults are the single source of truth.
+
+---
+
+## Recovering decks lost to the old cross-device delete bug
+
+Skip this unless a whole library vanished from every device at once. It is a runbook for a bug that no current version of the app can cause.
+
+**What went wrong.** Every table is RLS-scoped to `auth.uid()`, so a query that reaches Supabase without a valid user token is *not* rejected — it succeeds and matches nothing. The old sync read that empty result as "every deck was deleted on another device": it removed the local copies, then wrote a row into `deleted_decks` for each one. Those rows are permanent and shared, so every other device read them as real deletions and dropped its copies too. One bad read on one device took the library everywhere.
+
+The app no longer does any of that — it verifies the session before reading, refuses to treat an empty result as deletions, requires an absence to be seen by two syncs minutes apart, asks before any large removal, and never publishes a deletion it merely inferred. But rows written by the *old* code are still in `deleted_decks`, and they go on suppressing those decks on every device, including on a restore from backup.
+
+**What this can and cannot get back.** It cannot resurrect deck contents from the cloud — those rows were really deleted and Postgres has nothing left to read. It removes the *block*, so a copy that survived elsewhere can come back:
+
+- a device that still lists the decks (offline, or not synced since) re-uploads them on its next sync once the tombstones are gone — the main path, and the reason to act before syncing it;
+- a Backup `.zip` restored from the app (a restore retires tombstones for the decks it brings back, so that path works either way);
+- a Supabase PITR / daily backup restore, if your plan has one — the only route that recovers decks no device still holds. **Check that first** if the decks are gone everywhere; the window is time-limited.
+
+**If a device still holds the decks, do not sync it until step 3 has run.**
+
+The SQL Editor runs as `postgres`, not as you, so `auth.uid()` is `NULL` there and anything filtered on it would silently match nothing. Every query below resolves your id from your login email instead — replace `you@example.com` throughout. Check it resolves first; this must return exactly one row:
+
+```sql
+SELECT id, email FROM auth.users WHERE email = 'you@example.com';
+```
+
+**Step 1 — how much is tombstoned, and when.** The bug deleted a whole library at once, so it shows up as a big cluster of rows sharing a timestamp to the second. A few scattered rows are your own real deletions; leave those alone.
+
+```sql
+SELECT
+  date_trunc('minute', deleted_at) AS deleted_minute,
+  count(*)                         AS decks_tombstoned,
+  min(deleted_at)                  AS first,
+  max(deleted_at)                  AS last
+FROM deleted_decks
+WHERE user_id = (SELECT id FROM auth.users WHERE email = 'you@example.com')
+GROUP BY 1
+ORDER BY 1 DESC;
+```
+
+**Step 2 — list the suspect rows before deleting them.** Set the window to bracket the cluster from step 1. Tombstones whose deck is still present in `decks` aren't the problem, so they're filtered out.
+
+```sql
+SELECT t.deck_id, t.deleted_at
+FROM deleted_decks t
+WHERE t.user_id = (SELECT id FROM auth.users WHERE email = 'you@example.com')
+  AND t.deleted_at >= '2026-01-01 00:00:00+00'   -- ← just before the incident
+  AND t.deleted_at <  '2030-01-01 00:00:00+00'   -- ← just after it
+  AND NOT EXISTS (SELECT 1 FROM decks d WHERE d.id = t.deck_id AND d.user_id = t.user_id)
+ORDER BY t.deleted_at DESC;
+```
+
+**Step 3 — clear them.** Same predicate as step 2. Run step 2 first and check the list is what you expect; this is the irreversible half.
+
+```sql
+DELETE FROM deleted_decks t
+WHERE t.user_id = (SELECT id FROM auth.users WHERE email = 'you@example.com')
+  AND t.deleted_at >= '2026-01-01 00:00:00+00'   -- ← same window as step 2
+  AND t.deleted_at <  '2030-01-01 00:00:00+00'
+  AND NOT EXISTS (SELECT 1 FROM decks d WHERE d.id = t.deck_id AND d.user_id = t.user_id);
+```
+
+The nuclear option clears every deletion record you have, real ones included. Only worth it if you're confident you never deliberately deleted a deck — the cost of being wrong is that decks you *did* delete come back from whichever device still holds a copy. No data is lost either way.
+
+```sql
+DELETE FROM deleted_decks
+WHERE user_id = (SELECT id FROM auth.users WHERE email = 'you@example.com');
+```
+
+**Step 4 — on each device, in this order.** Open Recall on the device that still *has* the decks and tap **Sync Now**; it re-uploads them. Confirm with step 5 that they're back in the cloud, and only then sync the other devices, so they pull rather than push.
+
+Each device also keeps its own local copy of these tombstones, which the SQL above cannot reach. Recall retires a local tombstone once the deck is back in the cloud, so step 4 clears them on its own. On a device that stays stubbornly empty, restoring a Backup `.zip` explicitly retires them for the decks it brings back.
+
+**Step 5 — confirm.**
+
+```sql
+SELECT
+  (SELECT count(*) FROM decks
+     WHERE user_id = (SELECT id FROM auth.users WHERE email = 'you@example.com')) AS decks_in_cloud,
+  (SELECT count(*) FROM deleted_decks
+     WHERE user_id = (SELECT id FROM auth.users WHERE email = 'you@example.com')) AS tombstones_left;
+```
+
+Separately worth checking: deck rows whose `user_id` was never set are invisible to RLS, so the app sees them as missing no matter what `deleted_decks` says — which the old code also read as "deleted elsewhere". This should return `0`; if it doesn't, run the `UPDATE` in [the manual upgrade step](#the-one-case-that-needs-a-manual-step-a-deployment-older-than-authentication) to claim them.
+
+```sql
+SELECT count(*) AS decks_with_no_owner FROM decks WHERE user_id IS NULL;
+```
 
 ---
 
@@ -685,7 +778,9 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
 **If you edit the files, three things will bite you:**
 
-- **Every shipped change needs a new version, and the deploy writes it — never type one.** Four places carry it, all as the placeholder `__BUILD__`: `styles.css?v=…` and `app.js?v=…` in `index.html`, `CACHE_NAME` in `sw.js`, and `BUILD_STAMP` in `app.js` (plus `BUILD_TIME`, the commit's timestamp). `.github/workflows/deploy.yml` substitutes the deploying commit's short SHA into all of them and publishes the result to Pages; nothing is committed back, so the version in the deployed files is exactly the commit that produced them.
+- **Every shipped change needs a new version, and the deploy writes it — never type one.** It appears as the placeholder `__BUILD__` in `styles.css?v=…` and `src/main.js?v=…` in `index.html`, in `CACHE_NAME` in `sw.js`, in `BUILD_STAMP` in `src/core/build.js` (plus `BUILD_TIME`, the commit's timestamp), and **on every relative import in `src/`** — `from "./core/build.js?v=__BUILD__"`. `.github/workflows/deploy.yml` substitutes the deploying commit's short SHA into all of them and publishes the result to Pages; nothing is committed back, so the version in the deployed files is exactly the commit that produced them.
+
+  The import stamps are not decoration. Without one, a module's URL is identical across releases, so a cache-first service worker (or the browser's own HTTP cache) can hand the *current* release's `main.js` the *previous* release's copy of a dependency. The deploy refuses to publish an unstamped relative import for that reason, and `tools/module-symbols.mjs` catches it before you push.
 
   This used to be a hand-edited `YYYYMMDD-NN` stamp, and the reason it isn't any more is that versioned assets are cached first and never revalidated. That makes a release load instantly, and makes a *forgotten* bump invisible: existing installs keep being served the bundle they already have, indefinitely. It happened twice in this repo's history, and you cannot catch it locally — on `localhost` the app deliberately unregisters its service worker and deletes every `recall-*` cache, so a version-less deploy always looks correct while you're building it and only ever breaks for other people. A commit SHA cannot be forgotten, because it changes on every commit whether you think about it or not.
 
@@ -693,8 +788,8 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
   ```sh
   sha=$(git rev-parse --short=7 HEAD)
-  sed -i "s/__BUILD__/$sha/g" index.html sw.js app.js
-  sed -i "s|__BUILD_TIME__|$(git show -s --format=%cI HEAD)|g" app.js
+  sed -i "s/__BUILD__/$sha/g" index.html sw.js $(find src -name '*.js')
+  sed -i "s|__BUILD_TIME__|$(git show -s --format=%cI HEAD)|g" src/core/build.js
   ```
 
   An unsubstituted checkout is not broken, just unversioned: App Info reports it as a development build and skips the update check rather than comparing a placeholder against a real commit.
@@ -758,12 +853,72 @@ Two deliberate omissions, both explained in comments in the file: there is **no 
 
 | File | Role |
 |---|---|
-| `index.html` | The whole UI, plus the pinned CDN `<script>` tags |
-| `app.js` | All application logic |
-| `styles.css` | All styling, including the 10 themes |
+| `index.html` | The whole UI, the pinned CDN `<script>` tags, and the `<link>`s for everything below |
+| `src/` | All application logic, as ES modules — 130 files. `src/main.js` is the entry point the page loads and holds no logic of its own; everything else is imported from it |
+| `styles/` | All styling, including the 10 themes — 13 files, **loaded in numeric order** |
 | `sw.js` | Service worker — app-shell precache, CDN precache, image cache |
-| `manifest.webmanifest`, `icons/`, `fevicon.png` | PWA install metadata and icons |
-| **`supabase_setup.sql`** | **The only SQL file you need to run** |
-| `supabase_schema.sql`, `supabase_image_storage.sql`, `supabase_deck_*.sql`, `supabase_quick_notes.sql`, `supabase_style_settings.sql` | Superseded per-feature files, kept only so older setup notes still resolve. Nothing in the app references them |
+| `manifest.webmanifest`, `icons/` | PWA install metadata and icons |
+| **`supabase_setup.sql`** | **The only SQL file. Run it once; re-run it to upgrade** |
+| `tools/` | Development checks — not served, not needed to run the app |
+
+### Checking a change
+
+```sh
+node tools/check.mjs           # everything except the release cycle (~1 min)
+node tools/check.mjs --quick   # static checks only, no browser (~5s)
+node tools/check.mjs --full    # ...and drive a real install / offline / update
+```
+
+Eleven checks, each answering a different question, and none of them subsuming
+another:
+
+| Check | Question |
+|---|---|
+| `split-parity` | Is the code still the same code as before the split? |
+| `scanner-audit` | Does the identifier scanner the next check relies on actually *see* every reference? |
+| `module-symbols` | Does every cross-module reference resolve — imported, exported, not assigned, no dead-zone read across a cycle? |
+| `css-parity` | Do `styles/*.css` still reassemble to the original stylesheet byte for byte? |
+| `port-sync` | Do the browser extension's copied functions still match the app's? |
+| `boot-check` | Does the app boot, and reach the same state as the pre-split build? |
+| `behaviour` | Do rendering, math, clozes, card parsing and the text transforms still produce identical output? (150 probes) |
+| `sync` | Do the merge primitives behave identically, **and** still refuse to lose data? (43 scenarios + 15 invariants + 11 storage round-trips) |
+| `reconcile` | Does the whole two-way sync behave identically end to end against a stand-in backend? |
+| `ui-smoke` | Does the app still *work*? 35 real actions driven through the DOM on both builds and compared step by step |
+| `release-check` | Does a release actually reach an existing install, and does it work offline? |
+
+The browser-driven ones block `cdn.jsdelivr.net` and inject the library copies
+under `recall-clipper/vendor/`, so they do not depend on the network being up,
+and they take a free port from the OS rather than a fixed one. Both were
+sources of failures that had nothing to do with the code.
 
 Serve every one of them; `sw.js` and the icons are what make the app installable and usable offline.
+
+### How `src/` is laid out
+
+Still no build step: the browser resolves the imports itself. One folder per
+area of the app —
+
+| Folder | What lives there |
+|---|---|
+| `core/` | Values everything shares: `state`, the `el` DOM map, constants, the build stamp, the on-demand CDN loader. **These import nothing** |
+| `cloud/` | The user's Supabase project: config, auth, deck rows, the network policy every call goes through |
+| `sync/` | Two-way sync — the per-card merge, tombstones, push/pull, and the deletion guards |
+| `storage/` | The device's own copy: IndexedDB deck store, autosave, quota, the storage panel |
+| `library/` | My Decks: the local index, folders, rows, tiles, drag and drop |
+| `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache that keeps huge notes fast |
+| `notes/` | The notes view: editing, the caret, scroll anchoring, the TOC, selection, links |
+| `cards/` | Studying: the card view, swipe, the All Cards panel, deck actions |
+| `editor/` | The raw editor: its highlight mirror, text transforms, toolbars |
+| `format/` | Selection-driven formatting: cloze, highlight, locating a rendered selection in the source |
+| `import/` `export/` | Getting decks in (markdown, zip, EPUB, URL) and out (markdown, PDF, DOCX, HTML, SQL) |
+| `images/` | Upload, the offline outbox, paste and drag handling, in-place resize |
+| `backup/` | The whole library as one `.zip`, and the additive restore |
+| `quick-notes/` | The Quick Notes deck and its board |
+| `ui/` `panels/` `pwa/` | Chrome, overlays, navigation, themes; the cloze and highlight panels; the service-worker client and App Info |
+
+**The one rule that matters:** `core/` imports nothing from the rest of the app.
+Modules elsewhere import each other freely — that is safe, because what crosses
+those edges is function declarations, which are hoisted before any module runs.
+What is *not* safe is a top-level `const X = somethingImported` inside a cycle:
+it evaluates immediately and throws. Shared values therefore live in a module
+that imports nothing. `node tools/module-symbols.mjs` enforces this.

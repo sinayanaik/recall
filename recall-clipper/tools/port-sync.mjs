@@ -17,16 +17,46 @@
 // When app.js legitimately changes, update the port and this stays quiet. When
 // the extension needs to differ on purpose, add it to DIVERGENCES with a reason.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+// extract/extractConst/normalize used to live in this file. They now live in
+// tools/js-scan.mjs, shared with the checks that police the modular split, so
+// there is one copy of the hard part rather than three. The functions are
+// unchanged, so what this reports is unchanged.
+import { extract, extractConst, normalize } from "../../tools/js-scan.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
-const APP = path.resolve(ROOT, "..", "app.js");
+const REPO = path.resolve(ROOT, "..");
 const SHOW = process.argv.includes("--show");
 
-const app = readFileSync(APP, "utf8");
+// The app used to be one app.js. It is now src/**/*.js, and a ported function
+// can live in any of them — so search the concatenation. Reading them in sorted
+// order keeps the result stable; the extractors match by name, not position, so
+// nothing here depends on which file a function ended up in.
+function appSource() {
+  const single = path.join(REPO, "app.js");
+  const srcDir = path.join(REPO, "src");
+  const parts = [];
+  if (existsSync(single)) parts.push(readFileSync(single, "utf8"));
+  const walk = (dir) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir).sort()) {
+      const full = path.join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (entry.endsWith(".js")) parts.push(readFileSync(full, "utf8"));
+    }
+  };
+  walk(srcDir);
+  if (!parts.length) {
+    console.error("Found neither app.js nor src/**/*.js to check the ports against.");
+    process.exit(2);
+  }
+  return parts.join("\n");
+}
+
+const app = appSource();
 const files = {
   "content/recall-math.js": readFileSync(path.join(ROOT, "content/recall-math.js"), "utf8"),
   "content/recall-render.js": readFileSync(path.join(ROOT, "content/recall-render.js"), "utf8")
@@ -83,96 +113,6 @@ const DIVERGENCES = {
     "CRLF and nbsp passes"
 };
 
-// Brace-match a function body, stepping over comments, strings, template
-// literals and regex literals — all of which carry unbalanced braces in this
-// code ("{\begin{aligned}", "{{x}}", /\{\{([\s\S]+?)\}\}/).
-function extract(src, name) {
-  const m = new RegExp(`function\\s+${name}\\s*\\(`).exec(src);
-  if (!m) return null;
-  const start = m.index;
-  let i = src.indexOf("{", start);
-  let depth = 0;
-  let prev = "";
-  for (; i < src.length; i++) {
-    const c = src[i];
-    const two = src.slice(i, i + 2);
-    if (two === "//") { i = src.indexOf("\n", i); if (i === -1) return null; continue; }
-    if (two === "/*") { i = src.indexOf("*/", i) + 1; continue; }
-    if (c === '"' || c === "'" || c === "`") {
-      for (i++; i < src.length; i++) {
-        if (src[i] === "\\") { i++; continue; }
-        if (src[i] === c) break;
-      }
-      prev = c;
-      continue;
-    }
-    if (c === "/" && /[(,=:[!&|?+\-*%~^{};\n]/.test(prev || "\n")) {
-      let inClass = false;
-      for (i++; i < src.length; i++) {
-        if (src[i] === "\\") { i++; continue; }
-        if (src[i] === "[") inClass = true;
-        else if (src[i] === "]") inClass = false;
-        else if (src[i] === "/" && !inClass) break;
-      }
-      prev = "/";
-      continue;
-    }
-    if (c === "{") depth++;
-    else if (c === "}") { depth--; if (!depth) return src.slice(start, i + 1); }
-    if (!/\s/.test(c)) prev = c;
-  }
-  return null;
-}
-
-// `const NAME = <expr>;` — scan to the semicolon that closes it at depth 0,
-// stepping over the same literal forms extract() does.
-function extractConst(src, name) {
-  const m = new RegExp(`const\\s+${name}\\s*=`).exec(src);
-  if (!m) return null;
-  const start = m.index;
-  let depth = 0;
-  let prev = "=";
-  for (let i = src.indexOf("=", start) + 1; i < src.length; i++) {
-    const c = src[i];
-    const two = src.slice(i, i + 2);
-    if (two === "//") { i = src.indexOf("\n", i); if (i === -1) return null; continue; }
-    if (two === "/*") { i = src.indexOf("*/", i) + 1; continue; }
-    if (c === '"' || c === "'" || c === "`") {
-      for (i++; i < src.length; i++) {
-        if (src[i] === "\\") { i++; continue; }
-        if (src[i] === c) break;
-      }
-      prev = c;
-      continue;
-    }
-    if (c === "/" && /[(,=:[!&|?+\-*%~^{};\n]/.test(prev || "\n")) {
-      let inClass = false;
-      for (i++; i < src.length; i++) {
-        if (src[i] === "\\") { i++; continue; }
-        if (src[i] === "[") inClass = true;
-        else if (src[i] === "]") inClass = false;
-        else if (src[i] === "/" && !inClass) break;
-      }
-      prev = "/";
-      continue;
-    }
-    if ("{[(".includes(c)) depth++;
-    else if ("}])".includes(c)) depth--;
-    else if (c === ";" && depth === 0) return src.slice(start, i + 1);
-    if (!/\s/.test(c)) prev = c;
-  }
-  return null;
-}
-
-// Comments are the ports' own to write — they explain the extension's context.
-// Only the code has to match.
-function normalize(code) {
-  return code
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 let drifted = 0;
 let matched = 0;
