@@ -1,0 +1,1380 @@
+/* Highlights, note links, table of contents, backlinks
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+/* Highlights tab — same card chrome as the notes stage (see .notes-mode
+   above, which hides the deck/controls for either view). */
+.highlights-stage {
+  display: none;
+}
+
+.quiz-panel.notes-mode .highlights-stage:not([hidden]) {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--notes-stage-gap);
+  min-height: 0;
+  min-width: 0;
+  border: var(--card-border-width, 1px) solid var(--line);
+  border-radius: var(--card-radius, 14px);
+  background: var(--card);
+  box-shadow: var(--card-shadow);
+  padding: var(--notes-stage-pad);
+}
+
+.highlights-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.highlight-row {
+  display: flex;
+  /* flex-start, not center: a preview can now be a whole rendered list or
+     several paragraphs (see renderHighlightsPanel — full markdown, not a
+     cropped plain-text line), and centering a tall block against the small
+     jump button pushed it visually out of line with the row. */
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+/* The highlight and its two context lines, stacked — so .highlight-jump-btn
+   stays beside the highlight instead of dropping below the line after it. */
+.highlight-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* One source line either side of the highlight, dimmed exactly like the cloze
+   panel's side context (.cloze-ctx.is-side above). Clamped in CSS rather than by
+   cropping the markdown string: a cut mid-syntax renders as broken output. */
+.highlight-row .highlight-ctx {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+
+.highlight-row .highlight-ctx :is(p, h1, h2, h3, h4, h5, h6, li) {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  border: 0;
+  padding: 0;
+  color: inherit;
+}
+
+/* As in the cloze panel: the heading underline is an ::after, so `border: 0`
+   above doesn't remove it, and one line of context has no room for it. */
+.highlight-row .highlight-ctx :is(h1, h2, h3, h4, h5, h6)::after {
+  display: none;
+}
+
+.highlight-row .highlight-ctx :is(ul, ol) {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.highlight-preview {
+  min-width: 0;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: break-word;
+}
+
+/* Rendered markdown (paragraphs, lists, headings, …), not a single text run —
+   its own top/bottom child margins would otherwise add extra air inside a
+   row that already has its own padding. */
+.highlight-preview > :first-child {
+  margin-top: 0;
+}
+
+.highlight-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.highlight-jump-btn {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.highlights-empty {
+  color: var(--text-muted, var(--text));
+  opacity: 0.7;
+  font-size: 0.92rem;
+  padding: 12px 4px;
+}
+
+.notes-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+/* Hairline group separators. The header is three clusters — navigate (☰),
+   the cloze family ([A] [?]), and mode (✎|👁, ⤢) — and without a mark between
+   them a six-icon run reads as one undifferentiated strip. */
+.notes-head-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 3px 1px;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+/* The lead divider carries the auto-margin that pushes the two right-hand
+   clusters to the edge. It used to sit on the make-card button; that button has
+   moved to the selection strip, and putting it on the first icon instead would
+   strand this divider on the far side of the gap. */
+.notes-head-divider.is-lead {
+  margin-left: auto;
+}
+
+/* Raw-edit toolbar, in the Notes header specifically: match the rendered-view
+   toolbar's placement (flows right after the label, not shoved to the far
+   right with a dead gap) and bare-strip styling (no boxed panel/border) —
+   the two toolbars occupy the same header slot and swap in and out of the
+   same spot, so they should look and sit the same way regardless of which
+   mode is active. Scoped to .notes-head so the question/answer card-face
+   toolbars (which have their own separate layout) are untouched. */
+.notes-head .edit-toolbar {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.notes-head .edit-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.notes-head .edit-toolbar button {
+  min-height: 26px !important;
+  height: 26px !important;
+}
+
+.notes-rendered {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  /* Bleeds out to the notes-stage panel's own edges (reclaiming its
+     --notes-stage-pad, plus the flex gap up to the header's border) so the scrollable
+     box covers the whole panel below the header — the same trick .card-face
+     already uses by keeping its padding inside its own overflow:auto box.
+     Without this, dragging on that gutter — the side margins, or the strip
+     below the last line, both natural places to grab when trying to scroll —
+     did nothing, because it sat outside the only element that could scroll.
+     The matching padding increase keeps every edge visually identical to
+     before; only the hit region grows. */
+  margin: calc(-1 * var(--notes-stage-gap)) calc(-1 * var(--notes-stage-pad)) calc(-1 * var(--notes-stage-pad));
+  padding: calc(var(--notes-padding) + var(--notes-stage-gap)) calc(var(--notes-padding) + var(--notes-stage-pad)) calc(var(--notes-padding) + var(--notes-stage-pad) + 8px) calc(var(--notes-padding) + var(--notes-stage-pad));
+  -webkit-user-select: text;
+  user-select: text;
+  /* Dedicated Notes typography (Style → Notes), independent of the card faces. */
+  font-family: var(--notes-font-family);
+  font-size: var(--notes-font-size);
+  line-height: var(--notes-line-height);
+  font-weight: var(--notes-font-weight);
+}
+
+/* Constrain the readable measure of the notes column without shifting layout —
+   a centred inner column so long-form notes stay comfortable on wide screens. */
+.notes-rendered > * {
+  max-width: var(--notes-max-width);
+  margin-inline: auto;
+}
+
+/* Long notes: let the browser skip laying out the blocks nobody is looking at.
+   Showing a 230KB note (coming back from raw mode, or switching to Notes) costs
+   a full layout of every paragraph in it — ~300ms on a desktop, far worse on a
+   phone — and this brings that down to the handful of blocks actually on screen.
+   `auto` in contain-intrinsic-size makes each block remember its real height
+   once measured, so the scrollbar settles down as the note is browsed.
+
+   --notes-block-estimate is the height an UNMEASURED block is assumed to have,
+   and it matters far more than it looks. It used to be a hardcoded 120px, which
+   is a large overestimate for ordinary prose: on a 400KB note the document
+   claimed 249,880px on first paint and collapsed to 141,773px as the reader
+   scrolled through it — a 43% shrink spread over 124 separate height changes,
+   the largest a single 961px jump. That is what made scrolling a long note feel
+   broken: the scrollbar thumb kept growing, content slid out from under the
+   cursor, and anything that restores a reading position (raw<->rendered toggle,
+   jump-to-heading, cross-device resume) computed against a height that no longer
+   existed a second later. measureNotesBlockEstimate() in app.js now samples the
+   blocks the browser actually laid out and writes this variable per note, which
+   takes the total-height error to roughly zero. The 120px here is only the
+   fallback for the first paint, before any sample exists.
+
+   Deliberately NOT applied to diagrams (.diagram-shell) or tables
+   (.markdown-table-wrap): both are already deferred in JS off their own
+   IntersectionObserver, which needs their geometry to stay real, and paint
+   containment would clip an image mid-resize-drag.
+
+   Nor to a block holding a numbered equation (.has-eqn-num-block, set by
+   markNumberedEquations() in app.js). content-visibility implies STYLE
+   containment, and style containment scopes counters — while KaTeX numbers
+   equations with a plain CSS counter rooted at <body>. Every contained block
+   therefore started the counter afresh and every equation in the note rendered
+   as "(1)". The exclusion lives in this selector rather than in a later
+   override because the :not()s above give this rule a specificity of (0,3,0),
+   which a separate `.notes-rendered > .has-eqn-num-block` rule (0,2,0) loses to
+   no matter where it sits. Blocks without equations keep their containment and
+   never touch the counter, so numbering across the ones that do stays
+   continuous. */
+.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--notes-block-estimate, 120px);
+}
+
+.notes-rendered:empty::before {
+  content: "No notes yet — tap the ✎ pencil to start writing.";
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* A highlighted passage (see makeHighlightFromSelection in app.js — a literal
+   <mark data-color="…"> in the markdown source, shared by notes AND card
+   faces — .rendered is the class all three views have in common). Each colour
+   is an alpha tint (color-mix over transparent) rather than an opaque swatch,
+   so it reads correctly no matter which of this app's many light/dark theme
+   variants is active — it's tinting whatever surface is actually behind it
+   instead of asserting a fixed colour that could clash with (or vanish into)
+   that surface. Plain <mark> with no data-color (every highlight made before
+   colour existed) keeps the original subtle-gold look via the bare selector. */
+.rendered mark {
+  background: color-mix(in srgb, #e0b400 35%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.rendered mark[data-color="yellow"] { background: color-mix(in srgb, #e0b400 35%, transparent); }
+.rendered mark[data-color="green"]  { background: color-mix(in srgb, #22c55e 33%, transparent); }
+.rendered mark[data-color="blue"]   { background: color-mix(in srgb, #3b82f6 32%, transparent); }
+.rendered mark[data-color="pink"]   { background: color-mix(in srgb, #ec4899 30%, transparent); }
+.rendered mark[data-color="orange"] { background: color-mix(in srgb, #f97316 33%, transparent); }
+.rendered mark[data-color="purple"] { background: color-mix(in srgb, #8b5cf6 30%, transparent); }
+
+/* Any link with a real href — the web, or an in-page jump. These had no colour
+   rule at all and fell back to the browser's blue/purple, which on the AMOLED
+   themes is close to unreadable against black and, in every theme, belongs to
+   no palette this app owns. Kept in the accent family but mixed toward the body
+   text so it stays quieter than a [[note reference]]: the two must not compete,
+   because telling them apart is the whole point of the ◈ / ↗ markers below. */
+.rendered a[href] {
+  color: color-mix(in srgb, var(--accent-strong) 72%, var(--text));
+  text-underline-offset: 2px;
+}
+
+.rendered a[href]:visited {
+  color: color-mix(in srgb, var(--accent-strong) 62%, var(--muted));
+}
+
+.rendered a[href]:hover,
+.rendered a[href]:focus-visible {
+  color: var(--accent-strong);
+}
+
+/* ── [[Note references]] ────────────────────────────────────────────────────
+   A link to another note in this library. The whole point of the marker and
+   the accent colour is that "stays in Recall" and "leaves for the web" must be
+   distinguishable BEFORE you tap, not after — so the two are given opposite
+   treatments: a leading ◈ in the accent colour here, a trailing ↗ in the muted
+   colour on anything with an http href below.
+
+   No underline: these appear in running prose, often several to a paragraph,
+   and underlining them all turns a note into a rule-covered mess. The marker
+   plus the colour is enough. */
+.rendered a.note-link {
+  color: var(--accent-strong);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.rendered a.note-link::before {
+  content: "\25C8";
+  margin-right: 0.28em;
+  font-size: 0.85em;
+  opacity: 0.75;
+  vertical-align: baseline;
+}
+
+.rendered a.note-link:hover,
+.rendered a.note-link:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
+}
+
+.rendered a.note-link:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Its target no longer exists (or was typed before the note did). Dashed and
+   muted rather than hidden: the words still carry meaning in the sentence, and
+   clicking is how you create what it names. */
+.rendered a.note-link.is-missing {
+  color: var(--muted);
+  font-weight: 500;
+  text-decoration: underline dashed currentColor 1px;
+  text-underline-offset: 3px;
+}
+
+.rendered a.note-link.is-missing::before {
+  content: "\25C7";
+  opacity: 0.6;
+}
+
+/* Leaves the app. Muted so it reads as a footnote to the sentence rather than
+   competing with the internal links, and marked so the difference is visible
+   without hovering for a status bar that phones do not have. */
+.rendered a[href^="http"]::after {
+  content: "\2197";
+  margin-left: 0.15em;
+  font-size: 0.8em;
+  color: var(--muted);
+  vertical-align: super;
+  line-height: 0;
+}
+
+/* An in-page jump (a "#heading" href). Neither of the above — it goes nowhere
+   at all, it just moves you within this note. */
+.rendered a.in-page-link {
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+/* The inline sample of a note link used in the Help guide — the real thing
+   lives under .rendered, which the help modal is not. */
+.note-link-sample {
+  color: var(--accent-strong);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── The [[ picker ──────────────────────────────────────────────────────────
+   Appears next to the caret in the raw notes editor. Fixed positioning and a
+   body-level host so it is never clipped by the editor's own overflow, and
+   above the panels (110-115) because it is summoned from inside one. */
+.note-link-picker {
+  position: fixed;
+  z-index: 300;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(46vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: var(--input-radius, 10px);
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+}
+
+.note-link-picker[hidden] {
+  display: none;
+}
+
+.note-link-picker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--input-radius, 10px) - 3px);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-link-picker-row.is-active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.note-link-picker-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The folder path. Always shown, never optional: two notes can share a title,
+   and without this the list would offer no way to tell them apart. */
+.note-link-picker-path {
+  font-size: 0.7rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Heading mode ("[[Note#…"): the rows are sections of one note rather than
+   notes, so they are indented behind a rail — the same visual grammar the TOC
+   drawer uses for the same relationship. */
+.note-link-picker-row.is-heading {
+  padding-left: 16px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 0 calc(var(--input-radius, 10px) - 3px) calc(var(--input-radius, 10px) - 3px) 0;
+}
+
+.note-link-picker-row.is-create {
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 0 0 calc(var(--input-radius, 10px) - 3px) calc(var(--input-radius, 10px) - 3px);
+  margin-top: 3px;
+}
+
+.note-link-picker-row.is-create .note-link-picker-title {
+  color: var(--accent-strong);
+}
+
+/* [[…]] in the raw editor's highlight mirror. Colour only — the mirror has to
+   keep byte-identical metrics to the transparent textarea over it, so no
+   weight, size, family or spacing changes here. See enableSyntaxHighlighting. */
+.syntax-note-link {
+  color: var(--accent-strong) !important;
+}
+
+.notes-stage .highlight-textarea-wrapper {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Scroll-past-end, and ONLY for the notes editor — card faces are a few lines
+     in a small box and want the plain 10px. Writing at the end of a long note
+     used to leave the last line 10px off the bottom edge with nothing below it
+     to scroll into, so every new line appeared hard against the frame; the only
+     way to get breathing room was to type blank lines and scroll up by hand.
+     Costs nothing on a short note: the padding sits below content that already
+     fits, so the box never overflows and the space is simply never seen. */
+  --editor-pad-bottom: max(10px, 24vh);
+}
+
+/* Floating selection toolbar: compact, icon-only buttons (Make card + Cloze)
+   that appear next to a live text selection in the notes or a card face. Icon
+   only so it stays small and unobtrusive on both desktop and mobile. */
+.selection-float {
+  position: fixed;
+  /* Below every panel/modal (100-240) so an open confirm/help/category dialog
+     isn't left with this floater still visible and clickable on top of it. */
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 90%, var(--accent));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
+  touch-action: manipulation;
+}
+
+.selection-float-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 0.95rem;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* The cloze button reads as secondary — a quiet neutral pill next to the solid
+   accent "make card" one, so the primary action stays obvious. */
+.selection-float-btn.is-cloze {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+}
+
+/* Quick-note pin — secondary like the cloze button (the accent "make card" pill
+   stays the sole primary action), with the 📌 glyph sized to sit level with it. */
+.selection-float-btn.is-quick-note {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+/* Brief confirmation flash after a successful pin (button may be hidden with the
+   floater by then — harmless; the toast is the primary feedback). */
+.selection-float-btn.is-quick-note.quick-note-saved {
+  background: color-mix(in srgb, var(--accent) 65%, var(--panel-2));
+  color: var(--accent-contrast, #fff);
+}
+
+/* Eraser — same quiet secondary treatment as cloze/quick-note, with a faint
+   destructive tint so it doesn't read as identical to the other two. Shown for
+   every selection, rendered or raw (see positionNotesSelectionButton in app.js). */
+.selection-float-btn.is-erase {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: color-mix(in srgb, var(--danger, #d64545) 80%, var(--accent));
+}
+
+/* Split into its own note — same quiet secondary treatment, in the accent so it
+   reads as "this becomes a link" rather than as another destructive action
+   sitting beside the eraser. */
+.selection-float-btn.is-extract {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent-strong);
+}
+
+/* ── Highlight: a live swatch, plus its own colour menu ────────────────────
+   This button used to be a 🔴 emoji with `color: color-mix(…#e0b400…)` on it —
+   a dead declaration, because a colour-font glyph ignores currentColor. So the
+   pill always showed red regardless of the six colours it might apply, which
+   read as "changing the colour does nothing". The swatch below is drawn, and
+   refreshRenderSwatches() paints it from renderFormatDefaults.highlight. */
+.selection-float-highlight {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.selection-float-btn.is-highlight {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+}
+
+/* The ▾ is a narrow companion to the swatch, not a full-size button of its own:
+   pill width is scarce, and it must never read as a seventh action. */
+.selection-float-btn.is-highlight-menu {
+  width: 18px;
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+  font-size: 0.7rem;
+}
+
+.pill-swatch {
+  display: block;
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  /* A ring, because the palette runs from yellow to purple and several of those
+     vanish against one theme surface or another with no edge to hold them. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 45%, transparent);
+  background: var(--accent);
+}
+
+/* Opens upward: the pill itself is usually pinned near the bottom of the screen
+   on a phone (see .selection-float.is-pinned-bottom), where downward has no room. */
+.selection-float-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 94%, var(--accent));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+
+.selection-float-menu[hidden] {
+  display: none;
+}
+
+.pill-swatch-btn {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 32%, transparent);
+  border-radius: 999px;
+  background: var(--sw);
+  cursor: pointer;
+}
+
+.pill-swatch-clear {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px dashed color-mix(in srgb, var(--text) 42%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pill-swatch-btn:active,
+.pill-swatch-clear:active {
+  scale: 0.9;
+}
+
+.selection-float-btn:active {
+  scale: 0.94;
+}
+
+/* Mobile: the whole floater pins to a fixed, thumb-reachable spot instead of
+   tracking the selection's on-screen position — see pinSelectionButtonToBottom()
+   in app.js. `translate` (not the `transform` shorthand) so it composes with the
+   button :active press-scale instead of overwriting it. */
+.selection-float.is-pinned-bottom {
+  left: 50%;
+  bottom: calc(16px + var(--safe-bottom));
+  translate: -50% 0;
+}
+
+/* ── Notes table of contents ─────────────────────────────────────── */
+/* The ☰ hamburger lives at the far left of the notes head, mirroring the
+   edit-card-btn chrome so it reads as part of the same control row. */
+.notes-toc-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent));
+  border-radius: var(--toolbar-button-radius);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 84%, transparent), color-mix(in srgb, var(--panel) 86%, transparent));
+  padding: 0;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 9%, transparent),
+    0 1px 3px rgba(0, 0, 0, 0.18);
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.12s ease;
+}
+
+.notes-toc-toggle:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+  transform: translateY(-1px);
+}
+
+.notes-toc-toggle:active {
+  transform: translateY(0);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.22);
+}
+
+.notes-toc-toggle.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+}
+
+/* A dot badge marks the hamburger when the notes actually contain headings. */
+.notes-toc-toggle.has-toc::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--card);
+}
+.notes-toc-toggle {
+  position: relative;
+}
+
+/* Three CSS bars that morph into an X when the drawer is open. */
+.notes-toc-bars,
+.notes-toc-bars::before,
+.notes-toc-bars::after {
+  display: block;
+  width: 15px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--muted);
+  transition: transform 0.24s ease, opacity 0.18s ease, background-color 0.18s ease;
+}
+.notes-toc-bars {
+  position: relative;
+}
+.notes-toc-bars::before,
+.notes-toc-bars::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+.notes-toc-bars::before {
+  top: -5px;
+}
+.notes-toc-bars::after {
+  top: 5px;
+}
+.notes-toc-toggle:hover .notes-toc-bars,
+.notes-toc-toggle:hover .notes-toc-bars::before,
+.notes-toc-toggle:hover .notes-toc-bars::after,
+.notes-toc-toggle.is-active .notes-toc-bars,
+.notes-toc-toggle.is-active .notes-toc-bars::before,
+.notes-toc-toggle.is-active .notes-toc-bars::after {
+  background: var(--accent);
+}
+.notes-toc-toggle.is-active .notes-toc-bars {
+  background: transparent;
+}
+.notes-toc-toggle.is-active .notes-toc-bars::before {
+  top: 0;
+  transform: rotate(45deg);
+}
+.notes-toc-toggle.is-active .notes-toc-bars::after {
+  top: 0;
+  transform: rotate(-45deg);
+}
+
+/* The drawer slides in from the left of the notes viewport; the notes-stage is
+   the positioned ancestor.
+   Whether it OVERLAYS the notes or pushes them aside depends on the room
+   available (see the .is-toc-open rules further down). Wide screens push, so
+   you can click through the contents and read what you landed on; phones keep
+   the overlay, because a 300px drawer plus a readable column does not fit in
+   400px and a shrunken strip of text is worse than a covered one. */
+.notes-toc-drawer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  /* --toc-width is declared on .notes-stage so the push rules below can reserve
+     exactly this much room. The two must never be able to drift apart: a stale
+     copy of the number would leave a strip of notes text under the drawer. */
+  width: var(--toc-width);
+  border-right: 1px solid var(--line);
+  border-top-left-radius: var(--card-radius, 14px);
+  border-bottom-left-radius: var(--card-radius, 14px);
+  background: color-mix(in srgb, var(--card) 92%, var(--panel));
+  box-shadow: 14px 0 40px -20px rgba(0, 0, 0, 0.55);
+  transform: translateX(-104%);
+  opacity: 0;
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
+  overflow: hidden;
+}
+.notes-toc-drawer.is-open {
+  transform: translateX(0);
+  opacity: 1;
+}
+/* A bare .notes-toc-drawer rule would out-rank [hidden] on source order and
+   leave the drawer live (off-screen) while collapsed — pin it off with this. */
+.notes-toc-drawer[hidden] {
+  display: none;
+}
+
+/* ── Push, on screens with room for it ─────────────────────────────────────
+   Above 720px the notes make way for the drawer instead of hiding under it.
+   Nothing is repositioned: the header gets a margin and the scroll box gets
+   extra left padding, both COMPOSED with what is already there rather than
+   replacing it. That matters for .notes-rendered in particular, whose padding
+   is paired with a negative margin that bleeds the scrollable box out to the
+   panel edges (see the comment on .notes-rendered) — overwriting the padding
+   would silently undo the "dragging the gutter doesn't scroll" fix.
+
+   Deliberately NOT transitioned. Every child of .notes-rendered is laid out
+   under `content-visibility: auto` with a measured height estimate; animating
+   the column width would re-measure every one of them on every frame of the
+   drawer's 260ms slide, and the reading position would visibly crawl. The
+   width snaps once while the drawer slides over the space it just vacated,
+   and openNotesToc/closeNotesToc restore the reading position around it. */
+@media (min-width: 721px) {
+  .notes-stage.is-toc-open > .notes-head {
+    margin-left: var(--toc-width);
+  }
+
+  .notes-stage.is-toc-open > .notes-rendered {
+    padding-left: calc(var(--notes-padding) + var(--notes-stage-pad) + var(--toc-width));
+  }
+
+  /* The editor gets the same treatment, so toggling raw mode with the TOC open
+     doesn't slide the text back under the drawer. */
+  .notes-stage.is-toc-open > .highlight-textarea-wrapper {
+    margin-left: var(--toc-width);
+  }
+}
+
+.notes-toc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 12px 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.notes-toc-title {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.notes-toc-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.notes-toc-close:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.notes-toc-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 8px 14px;
+}
+.notes-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.notes-toc-item {
+  margin: 0;
+}
+.notes-toc-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 8px 3px 8px;
+  border-radius: 8px;
+  border-left: 2px solid transparent;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.82rem;
+  line-height: 1.3;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.notes-toc-link:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+.notes-toc-link.is-active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-left-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+/* Deeper headings read as lighter, top-level ones as bolder. */
+.notes-toc-link[style*="--toc-depth: 0"] .notes-toc-text {
+  font-weight: 700;
+}
+
+/* Tree rail: one 14px column per ancestor level plus a final elbow column,
+   rendered as real elements (not just indentation padding) so vertical guide
+   lines can run the full height of each row and connect seamlessly between
+   siblings — the classic file-tree/outline look. */
+.notes-toc-rail {
+  display: flex;
+  align-self: stretch;
+  flex: 0 0 auto;
+}
+.notes-toc-guide,
+.notes-toc-elbow {
+  position: relative;
+  width: 14px;
+  flex: 0 0 auto;
+  align-self: stretch;
+}
+/* Ancestor column: a straight line through the row only if that branch still
+   has more siblings coming later — otherwise it's already closed, so blank. */
+.notes-toc-guide[data-state="line"]::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--muted) 38%, transparent);
+}
+/* This item's own connector: drops from the parent's line down to mid-row,
+   then turns right toward the dot — a "└" for the last child, and with the
+   ::after continuation added below, a "├" when siblings follow. */
+.notes-toc-elbow::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  width: 8px;
+  height: 50%;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 48%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 48%, transparent);
+  border-bottom-left-radius: 5px;
+}
+.notes-toc-elbow[data-last="false"]::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--muted) 38%, transparent);
+}
+/* Highlight this row's own rail on hover/active so the path you're on stands out. */
+.notes-toc-link:hover .notes-toc-guide[data-state="line"]::before,
+.notes-toc-link:hover .notes-toc-elbow::before,
+.notes-toc-link:hover .notes-toc-elbow::after,
+.notes-toc-link.is-active .notes-toc-guide[data-state="line"]::before,
+.notes-toc-link.is-active .notes-toc-elbow::before,
+.notes-toc-link.is-active .notes-toc-elbow::after {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.notes-toc-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 55%, var(--muted));
+  opacity: 0.75;
+}
+.notes-toc-dot[data-level="1"] { width: 8px; height: 8px; opacity: 1; }
+.notes-toc-dot[data-level="2"] { width: 7px; height: 7px; opacity: 0.92; }
+.notes-toc-link.is-active .notes-toc-dot {
+  background: var(--accent);
+  opacity: 1;
+}
+.notes-toc-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.notes-toc-empty {
+  margin: 6px 4px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-style: italic;
+  line-height: 1.45;
+}
+.notes-toc-empty code {
+  font-style: normal;
+}
+
+/* ── "Linked from" (backlinks), in the TOC drawer ────────────────────────── */
+.notes-backlinks {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.notes-backlinks[hidden] {
+  display: none;
+}
+
+.notes-backlinks-title {
+  margin: 0 4px 6px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notes-backlinks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notes-backlink {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.notes-backlink:hover,
+.notes-backlink:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
+
+.notes-backlink-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-backlink-path {
+  font-size: 0.68rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A brief wash on the heading you jumped to, so the eye lands in the right
+   place after the smooth scroll. */
+@keyframes notesHeadingFlash {
+  0% { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+  100% { background: transparent; }
+}
+.notes-heading-flash {
+  animation: notesHeadingFlash 1.2s ease;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notes-toc-drawer,
+  .notes-toc-bars,
+  .notes-toc-bars::before,
+  .notes-toc-bars::after {
+    transition: none;
+  }
+  .notes-heading-flash {
+    animation: none;
+  }
+}
+
+@media (max-width: 720px) {
+  /* Preserve the mobile 3-row clip trick: with the Cards/Notes toggle visible,
+     Shuffle/Restart and replay rows still spill into clipped implicit rows. */
+  .quiz-panel:has(.view-mode-toggle:not([hidden])) {
+    grid-template-rows: auto auto 1fr auto;
+  }
+
+  .quiz-panel.notes-mode,
+  .quiz-panel.notes-mode:has(.view-mode-toggle:not([hidden])) {
+    grid-template-rows: auto 1fr;
+  }
+
+  /* Notes TOC drawer: on a narrow screen the rail indentation eats most of
+     the width, so ellipsis-truncating the heading text left only a handful
+     of characters visible. Wrap instead so the full title is readable. */
+  /* Wider on a phone, where the drawer overlays rather than pushes and the
+     titles have to be readable in one go. Set on the variable, not on the
+     drawer's own width, so the push rules could never disagree with it. */
+  .notes-stage {
+    --toc-width: min(320px, 88%);
+  }
+
+  .notes-toc-link {
+    align-items: flex-start;
+    min-height: 34px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .notes-toc-text {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+  }
+
+  .notes-toc-dot {
+    margin-top: 4px;
+  }
+
+  /* Slightly larger touch targets for the TOC open/close controls. */
+  .notes-toc-toggle {
+    width: 34px;
+    height: 34px;
+  }
+
+  .notes-toc-close {
+    width: 30px;
+    height: 30px;
+  }
+}
+
+/* ── Reading room: giving the screen back to the notes/cards ────────────
+   The fixed chrome above the content — appbar (title + category + score +
+   sync), the Cards/Notes toggle, and the notes panel's own header — measured
+   207px of a 757px phone viewport, so barely 70% of the screen was the thing
+   you actually came to read. A laptop loses less proportionally but the same
+   ~130px absolutely. Three layers of relief, in order of how little they ask
+   of the user:
+
+   1. Tighter tokens (below) — the notes panel's padding/gap and the toggle's
+      own box, trimmed on mobile only.
+   2. Auto-hide (`body.chrome-collapsed`) — scrolling down through notes or a
+      card face folds the appbar and the toggle away; a small scroll back up
+      brings them straight back, exactly like a mobile browser's URL bar.
+      PHONE-ONLY (gated in app.js): a mouse wheel flicking the header in and
+      out reads as a bug on a big screen.
+   3. The ⤢ focus button in the notes header — pins that collapsed state so it
+      never springs back while you read a long note. Works at every width,
+      which is why the collapse rules below sit OUTSIDE the mobile block.
+
+   Layers 2 and 3 set the same class, so they can't disagree about the layout;
+   app.js just decides when it's on. */
+
+/* Pinned-on reads as an engaged toggle, matching the edit pill so the notes
+   header has one visual language for "this mode is on". */
+.focus-mode-btn {
+  display: inline-grid;
+}
+
+.focus-mode-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+/* Both collapsing elements animate on the same curve so the header and the
+   toggle read as one panel folding away, not two things moving. max-height
+   (not height) because the appbar's natural height depends on how many lines
+   the deck title wraps to — there is no fixed value to animate from.
+   Gated on .chrome-ready (set one frame after boot): focus mode is
+   remembered across sessions, and without the gate every launch would open
+   with the header up and visibly fold it away.
+
+   --appbar-h / --view-toggle-h are MEASURED and published by app.js (see
+   measureChromeHeights). This used to be a flat 300px, and that single number
+   is why focus mode never felt seamless: the appbar is really ~45-70px tall,
+   so a 300px→0 tween spent roughly its first 80% shrinking a box that was
+   still taller than its own content. Nothing appeared to happen, then
+   everything happened in the last few frames — a stall followed by a snap,
+   in both directions. Animating between the real height and 0 spends the
+   whole 220ms on motion you can actually see.
+
+   The 300px fallback is what applies before the first measurement (the shell
+   is `hidden` during boot, so nothing has a box yet) and is deliberately
+   generous — a max-height that is too large merely fails to clip. */
+.appbar {
+  max-height: var(--appbar-h, 300px);
+}
+
+.quiz-panel .view-mode-toggle:not([hidden]) {
+  max-height: var(--view-toggle-h, 300px);
+}
+
+body.chrome-ready .appbar,
+body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]) {
+  transition:
+    max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.16s linear,
+    margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    /* border-width was missing, so the toggle's top and bottom rules snapped
+       to zero on frame 1 while the box was still folding. */
+    border-width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* The shell's 10px row gap is part of the same fold and has to move with it.
+   Untransitioned, it vanished on the first frame — the study panel jumped
+   10px upward instantly and then sat there waiting ~180ms for the header to
+   catch up, which is a jolt at the start of every collapse and every expand. */
+body.chrome-ready .app-shell {
+  transition: gap 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Collapsed: the appbar is zero-height and inert, so the study area starts at
+   the top of the shell. The :not(:has(…)) guard is load-bearing — the side
+   drawer is a *descendant* of .appbar at every width, and while opacity:0
+   doesn't clip a position:fixed child, it does still fade it to invisible.
+   Opening the menu therefore has to un-collapse the appbar, or the drawer
+   opens blank. */
+body.chrome-collapsed .app-shell {
+  gap: 0;
+}
+
+/* No `transform` here, deliberately. It used to carry translateY(-6px), and a
+   non-`none` transform makes the element the containing block for any
+   position:fixed DESCENDANT — which .toolbar, the full-height side drawer, is
+   at every width. The :has() guard above removes the transform when the drawer
+   opens, but it removes it over a 220ms transition, so for those 220ms the
+   drawer was being laid out against an appbar box animating from 0 to full
+   height instead of against the viewport: open ☰ in focus mode and the drawer
+   arrived squashed, then snapped to size. With the collapse now animating over
+   the real height, the 6px nudge added nothing worth that. */
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .appbar {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .quiz-panel .view-mode-toggle:not([hidden]) {
+  max-height: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  :root {
+    --notes-stage-pad: 9px;
+    --notes-stage-gap: 7px;
+  }
+
+  /* The toggle is two words in a box — it doesn't need desktop's padding. */
+  .quiz-panel .view-mode-toggle:not([hidden]) {
+    margin-bottom: 4px;
+    padding: 2px;
+  }
+
+  .view-mode-toggle button {
+    min-height: 24px;
+  }
+
+  .notes-head {
+    padding-bottom: 6px;
+  }
+
+  .notes-mode .notes-head {
+    row-gap: 4px;
+  }
+
+  /* Drop the "Study Notes" caption on phones. It says nothing the NOTES half of
+     the Cards/Notes toggle directly above it doesn't already say — and it was
+     costing ~100px of the top row, enough that adding the ⤢ button pushed that
+     row to wrap into a THIRD line, making the header taller than before. */
+  .notes-mode .notes-head > .face-label-row {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.chrome-ready .appbar,
+  body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]),
+  /* The shell's gap has to lose its transition too, or reduced motion would
+     get the one thing that used to jump plus none of the fold that explained
+     it — strictly worse than either. */
+  body.chrome-ready .app-shell {
+    transition: none;
+  }
+}
+
+/* ── "Make a flashcard" modal (select text in notes → frame question) ── */
+
+.frame-card-content {
+  max-width: 560px;
+}
+
+.frame-card-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.frame-card-label {
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.frame-card-answer {
+  max-height: 34vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+  padding: 10px 12px;
+}
+
+.frame-card-answer img {
+  max-width: 100%;
+  height: auto;
+}
+
+.frame-card-question {
+  min-height: 84px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+/* ============================================================
+   Quick Notes board — a glanceable, subject-categorised surface
+   for pinned snippets, distinct from the known/unknown study flow.
+   ============================================================ */
+.quick-notes-board {
+  /* Stand-in accent for anything with no category — defined at the board root
+     so group sections and cards alike can resolve it. */
+  --qn-neutral: color-mix(in srgb, var(--text) 28%, transparent);
+  position: fixed;
+  z-index: 72;
+  inset: 0;
+  display: grid;
+  background: color-mix(in srgb, var(--bg) 94%, black);
+  /* The board is inset:0 under `viewport-fit=cover`, so on a notched phone in
+     standalone PWA mode its top edge sits *behind* the status bar and clips the
+     heading. The gutter is the base padding plus whatever the OS reserves. */
+  padding:
+    calc(clamp(10px, 2vw, 18px) + var(--safe-top))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-right))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-bottom))
+    calc(clamp(10px, 2vw, 18px) + var(--safe-left));
+}

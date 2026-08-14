@@ -120,7 +120,19 @@ function fetchImageForCache(url) {
 // that one asset, which the miss handler and repairCdnCache can both recover.
 const APP_SHELL = [
   "./",
-  `./styles.css?v=${STAMP}`,
+  `./styles/01-tokens.css?v=${STAMP}`,
+  `./styles/02-shell.css?v=${STAMP}`,
+  `./styles/03-toolbar.css?v=${STAMP}`,
+  `./styles/04-import.css?v=${STAMP}`,
+  `./styles/05-study.css?v=${STAMP}`,
+  `./styles/06-rendered.css?v=${STAMP}`,
+  `./styles/07-library.css?v=${STAMP}`,
+  `./styles/08-panels.css?v=${STAMP}`,
+  `./styles/09-all-cards.css?v=${STAMP}`,
+  `./styles/10-editor.css?v=${STAMP}`,
+  `./styles/11-chrome.css?v=${STAMP}`,
+  `./styles/12-notes.css?v=${STAMP}`,
+  `./styles/13-quick-notes.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never

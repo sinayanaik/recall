@@ -102,9 +102,11 @@ jobs:
           # Every file the substitution touches. app.js became src/main.js and
           # then a tree of modules, so this is a glob rather than a fixed list.
           mapfile -t STAMPED < <(printf '%s\n' index.html sw.js; find src -name '*.js' | sort)
+          # styles/*.css carry no placeholder themselves — only the <link> and
+          # APP_SHELL URLs that point at them do — so they are not stamped
+          # files, but every one must be referenced from both.
           echo "stamping ${#STAMPED[@]} files"
 
-          require_one index.html 'styles.css?v=__BUILD__'
           require_one index.html 'src/main.js?v=__BUILD__'
           require_one sw.js             'const CACHE_NAME = "recall-__BUILD__";'
           require_one src/core/build.js 'export const BUILD_STAMP = "__BUILD__";'
@@ -191,8 +193,22 @@ jobs:
             exit 1
           fi
 
+          # Same for the stylesheets. styles.css was split into ordered slices
+          # whose ORDER is the cascade: a missing <link> silently drops a
+          # section of the app's styling, and a missing APP_SHELL entry drops
+          # it only when offline.
+          missing=""
+          while read -r f; do
+            grep -qF "stylesheet\" href=\"$f?v=" index.html || missing="$missing $f(link)"
+            grep -qF "./$f?v=" sw.js || missing="$missing $f(sw)"
+          done < <(find styles -name '*.css' | sort)
+          if [ -n "$missing" ]; then
+            echo "::error::Stylesheet not referenced:$missing"
+            exit 1
+          fi
+
           echo "Deploying $sha ($build_time)"
-          grep -o '\(src/main\.js\|styles\.css\)?v=[^"]*' index.html
+          grep -o 'src/main\.js?v=[^"]*' index.html
           grep '^const CACHE_NAME' sw.js
 
       - uses: actions/configure-pages@v6

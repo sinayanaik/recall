@@ -1,0 +1,340 @@
+/* The quiz panel and the card itself
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+.quiz-panel {
+  display: grid;
+  width: 100%;
+  max-width: var(--quiz-panel-max-width, 860px);
+  margin-inline: auto;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  grid-template-rows: auto 1fr auto auto auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--quiz-panel-radius);
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  box-shadow: var(--shadow);
+  padding: var(--quiz-panel-padding);
+}
+
+.progress-track {
+  display: flex;
+  height: var(--progress-height);
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+
+.progress-known {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--known);
+  transition: width 220ms ease;
+  flex-shrink: 0;
+}
+
+.progress-review {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--review);
+  transition: width 220ms ease;
+  flex-shrink: 0;
+}
+
+.progress-remaining {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, var(--muted)));
+  transition: width 220ms ease;
+  flex-shrink: 0;
+}
+
+.deck {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  min-height: 0;
+  place-items: center;
+  padding: var(--deck-padding);
+  perspective: 1200px;
+}
+
+.card {
+  position: relative;
+  display: grid;
+  width: var(--card-width);
+  height: 100%;
+  max-height: var(--card-max-height);
+  min-height: 0;
+  border: var(--card-border-width) solid var(--line);
+  border-radius: var(--card-radius);
+  background: var(--card);
+  box-shadow: var(--card-shadow);
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    box-shadow 240ms ease;
+  touch-action: pan-y;
+  will-change: transform, opacity;
+}
+
+.card.is-dragging {
+  transition: none;
+  cursor: grabbing;
+  user-select: none;
+}
+
+.card.drag-review {
+  border-color: color-mix(in srgb, var(--review) 74%, var(--line));
+  box-shadow: 0 18px 60px color-mix(in srgb, var(--review) 22%, transparent);
+}
+
+.card.drag-known {
+  border-color: color-mix(in srgb, var(--known) 74%, var(--line));
+  box-shadow: 0 18px 60px color-mix(in srgb, var(--known) 22%, transparent);
+}
+
+.card.drag-prev,
+.card.drag-next {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+  box-shadow: 0 18px 60px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.mobile-menu-btn {
+  display: flex;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, var(--accent));
+  border-radius: var(--toolbar-button-radius);
+  background: color-mix(in srgb, var(--panel-2) 70%, var(--panel));
+  color: var(--text);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.mobile-menu-btn:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── Universal back button ────────────────────────────────────────
+   A plain ← in the appbar beside the menu, deliberately shaped exactly like it:
+   one fixed slot, same size, no destination text — it means "back", the same
+   way a remote's back key does, wherever you happen to be.
+
+   It stays in the DOM and greys out when there's no history, rather than
+   hiding: a control that appears and disappears would shove the deck title
+   sideways every time you navigated. */
+.app-back-btn {
+  display: flex;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, var(--accent));
+  border-radius: var(--toolbar-button-radius);
+  background: color-mix(in srgb, var(--panel-2) 70%, var(--panel));
+  color: var(--text);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.app-back-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.app-back-btn:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.mobile-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 499;
+}
+
+.mobile-backdrop.is-open {
+  display: block;
+}
+
+.card.is-flipped {
+  transform: translateY(-2px);
+}
+
+.card.swipe-left {
+  opacity: 0;
+  transform: translateX(-42px) rotate(-1deg) scale(0.992);
+}
+
+.card.swipe-right {
+  opacity: 0;
+  transform: translateX(42px) rotate(1deg) scale(0.992);
+}
+
+.card.transition-left-out,
+.card.transition-right-out,
+.card.transition-up-out,
+.card.transition-down-out {
+  opacity: 0;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  transition:
+    transform 210ms cubic-bezier(0.55, 0.06, 0.68, 0.19),
+    opacity 170ms ease,
+    box-shadow 210ms ease;
+}
+
+.card.transition-left-out {
+  transform: translateX(max(-340px, -38vw)) rotate(-5deg) scale(0.94);
+}
+
+.card.transition-right-out {
+  transform: translateX(min(340px, 38vw)) rotate(5deg) scale(0.94);
+}
+
+.card.transition-up-out {
+  transform: translateY(max(-260px, -30vh)) rotateX(-5deg) scale(0.94);
+}
+
+.card.transition-down-out {
+  transform: translateY(min(260px, 30vh)) rotateX(5deg) scale(0.94);
+}
+
+.card.transition-left-in,
+.card.transition-right-in,
+.card.transition-up-in,
+.card.transition-down-in {
+  animation: card-enter 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card.transition-left-in {
+  --enter-x: min(300px, 34vw);
+  --enter-y: 0;
+}
+
+.card.transition-right-in {
+  --enter-x: max(-300px, -34vw);
+  --enter-y: 0;
+}
+
+.card.transition-up-in {
+  --enter-x: 0;
+  --enter-y: min(220px, 26vh);
+}
+
+.card.transition-down-in {
+  --enter-x: 0;
+  --enter-y: max(-220px, -26vh);
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    transform: translate(var(--enter-x, 0), var(--enter-y, 18px)) scale(0.94);
+  }
+
+  72% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1.012);
+  }
+
+  to {
+    opacity: 1;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+.card-face {
+  /* Both faces stack in the same grid cell (rather than position:absolute)
+     so the card's height comes from its tallest face's content instead of
+     always stretching to fill the deck area — a 2-line question no longer
+     sits in a mostly-empty box the height of the viewport. */
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--card-face-gap);
+  overflow: auto;
+  padding: var(--card-face-padding);
+  border-radius: var(--card-radius);
+  opacity: 1;
+  transition:
+    opacity 180ms ease,
+    visibility 180ms ease;
+  visibility: visible;
+  overscroll-behavior-y: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.card-answer {
+  background: var(--card-answer);
+  opacity: 0;
+  visibility: hidden;
+}
+
+.card.is-flipped .card-question {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.card.is-flipped .card-answer {
+  opacity: 1;
+  visibility: visible;
+}
+
+.face-label {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: var(--face-label-radius);
+  padding: var(--face-label-padding);
+  color: var(--muted);
+  font-size: var(--face-label-font-size);
+  font-weight: var(--face-label-font-weight);
+  text-transform: uppercase;
+}
+
+.rendered {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+  font-size: var(--content-font-size);
+  line-height: var(--content-line-height);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── Headings: one system, six variations ──────────────────────────────────
+   Every level is body-sized (font-size: 1em) — deliberately. Size used to
+   carry the hierarchy (1.15em → 0.9em) alongside a grab-bag of one-off
+   decorations: only h1 had a rule, h4 was italic, h5/h6 were uppercase. Six
+   levels that each looked like a different idea.
+
+   Now they share ONE idea — a rule underneath the text — and the level is read
+   off that rule's LENGTH and STYLE: full-width and solid at h1, tapering to a
+   short dotted tick at h6. Weight (800→600) and colour (accent-strong → text →
+   muted) reinforce the same ladder without ever changing the type size, so a
+   heading never disturbs the line rhythm of the prose around it.
+
+   The rule is an ::after, not a border-bottom: a border always spans the whole
+   block box, and the varying lengths are the point. Anything that flattens
+   headings (card faces, cloze context) must therefore hide ::after too — see

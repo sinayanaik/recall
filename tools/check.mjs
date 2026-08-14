@@ -15,6 +15,7 @@
 //
 //   split-parity    is the code still the same code?
 //   module-symbols  does every cross-module reference resolve?
+//   css-parity      do the stylesheet slices still reassemble to the original?
 //   port-sync       do the extension's copies still match?
 //   boot-check      does it actually run?
 
@@ -28,6 +29,7 @@ const QUICK = process.argv.includes("--quick");
 const checks = [
   ["split-parity  ", ["node", ["tools/split-parity.mjs"], ROOT]],
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
+  ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
   ...(QUICK ? [] : [["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "main"], ROOT]]])
 ];

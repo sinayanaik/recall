@@ -1,0 +1,1318 @@
+/* Rendered markdown: headings, tables, code, math, diagrams
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+   `.card-question .rendered` and `.cloze-item .cloze-ctx` below. */
+.rendered :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  line-height: 1.4;
+  margin: 1.2em 0 0.45em;
+}
+.rendered :is(h1, h2, h3, h4, h5, h6)::after {
+  content: "";
+  display: block;
+  margin-top: 0.28em;
+  /* currentColor by default, so the rule tracks each level's own colour; h1/h2
+     override it to --accent for the two "chapter" levels. */
+  border-top-color: currentColor;
+}
+/* No left rule on any heading, deliberately. h2 used to carry
+   `border-left: 4px solid var(--accent)` — byte for byte what
+   `.rendered blockquote` still carries — and with the size difference gone
+   entirely the border did ALL the work of saying "heading". The result was
+   that an h2 read as a `>` quote. The left accent rule belongs to blockquotes
+   alone (see .rendered blockquote); headings are told apart by the underline
+   below them, which no other block element uses. */
+.rendered h1 {
+  font-weight: 800;
+  color: var(--accent-strong);
+  margin-top: 1.4em;
+}
+.rendered h1::after {
+  width: 100%;
+  border-top: 2px solid var(--accent);
+}
+.rendered h2 {
+  font-weight: 800;
+  color: var(--text);
+  margin-top: 1.3em;
+}
+.rendered h2::after {
+  width: min(60%, 20em);
+  border-top: 2px solid var(--accent);
+}
+.rendered h3 {
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+.rendered h3::after {
+  width: min(40%, 14em);
+  border-top: 1.5px solid;
+}
+.rendered h4 {
+  font-weight: 700;
+  color: var(--text);
+}
+.rendered h4::after {
+  width: min(28%, 10em);
+  border-top: 1.5px dashed;
+}
+.rendered h5 {
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 1em;
+}
+.rendered h5::after {
+  width: min(20%, 7em);
+  border-top: 1.5px dotted;
+}
+.rendered h6 {
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 1em;
+}
+.rendered h6::after {
+  width: min(14%, 5em);
+  border-top: 1.5px dotted;
+  opacity: 0.7;
+}
+
+/* Cloze deletion: hidden fill-in-the-blank that reveals on tap. */
+.cloze {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 0.35em;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+/* Hidden state — an empty fill-in slot: a soft tint under a dashed outline
+   with no visible text, so it clearly reads as "a blank to reveal" rather than
+   highlighted text. */
+.cloze:not(.is-revealed) {
+  color: transparent;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 5px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* Hide nested content (images, math, bold, etc.) while the cloze is concealed. */
+.cloze:not(.is-revealed) * {
+  visibility: hidden;
+}
+.cloze:not(.is-revealed):hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 75%, transparent);
+}
+/* Revealed contents — bold in the accent colour, keeping the surrounding font
+   (no italics, no serif switch), with NO background box and NO underline, so it
+   reads as revealed answer text and is never mistaken for a highlight. */
+.cloze.is-revealed {
+  color: var(--accent-strong);
+  font-style: normal;
+  font-weight: 700;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 0.1em;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.cloze:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 1px;
+}
+/* Active state for the Reveal-clozes buttons (deck utility row + notes) when
+   every cloze in the view is currently shown. */
+#clozeToggleBtn[aria-pressed="true"],
+.cloze-toggle-icon[aria-pressed="true"] {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* Raw markdown editor: tint {{cloze}} enclosures (colour only — the highlight
+   backdrop must keep the same character metrics as the textarea behind it). */
+.syntax-cloze {
+  color: var(--accent-strong) !important;
+}
+.syntax-cloze-brace {
+  color: var(--accent) !important;
+  opacity: 0.5 !important;
+}
+
+/* "Make a cloze from the selection" header buttons (card question/answer +
+   notes). The [...] glyph mirrors the raw-editor cloze token; the accent tint
+   sets it apart from the neighbouring edit/delete icons so its purpose reads
+   at a glance. */
+.make-cloze-btn {
+  color: var(--accent-strong);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.make-cloze-btn:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.card-question .rendered {
+  display: grid;
+  width: 100%;
+  max-width: var(--question-answer-measure);
+  margin-inline: auto;
+  min-height: 0;
+  flex: 1 1 var(--question-fill);
+  font-family: var(--question-font-family);
+  font-size: min(var(--question-fit-font-size, var(--content-font-size)), var(--question-max-font-size));
+  line-height: var(--question-line-height);
+  font-weight: var(--question-font-weight);
+  padding: var(--question-padding);
+  align-content: var(--question-vertical-align);
+  justify-items: var(--question-justify-items);
+  text-align: var(--question-align);
+}
+
+.card-question .rendered :is(ul, ol) {
+  justify-self: var(--question-justify-items);
+  text-align: left;
+}
+
+.card-answer .rendered {
+  width: 100%;
+  max-width: var(--answer-measure);
+  margin-inline: auto;
+  font-family: var(--answer-font-family);
+  font-size: var(--answer-font-size);
+  line-height: var(--answer-line-height);
+  font-weight: var(--answer-font-weight);
+  padding: var(--answer-padding);
+}
+
+/* When the question contains a code block, pack content from the top instead of
+   centering — centering with fixed-height code blocks creates large empty gaps */
+.card-question .rendered:has(pre) {
+  align-content: start;
+}
+
+/* Cap code block height inside the question face so it can't crowd out text.
+   The block scrolls internally if the code is taller than the cap. */
+.card-question .rendered pre {
+  max-height: calc(var(--card-max-height, 74vh) * 0.45);
+  margin-block: 0.4em;
+}
+
+.card-question .rendered :is(h1, h2, h3, p) {
+  overflow-wrap: anywhere;
+}
+
+/* The question face auto-fits its font size and centers/justifies its content
+   (see --question-fit-font-size) — the border/indent/uppercase treatment from
+   the general .rendered heading styles above would throw off that centering
+   and can clip under the fit-height cap, so headings here fall back to plain
+   text at the question's own size instead. */
+.card-question .rendered :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  font-weight: inherit;
+  font-style: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+/* The heading underline is an ::after (see the heading block above), which a
+   `border: 0` on the heading itself cannot reach — without this the rules
+   survive the flattening and eat vertical space the fit-height cap needs. */
+.card-question .rendered :is(h1, h2, h3, h4, h5, h6)::after {
+  display: none;
+}
+
+.rendered :is(strong, b),
+.fit-content :is(strong, b) {
+  font-weight: 900;
+}
+
+.rendered :is(em, i),
+.fit-content :is(em, i) {
+  font-style: italic;
+  font-weight: inherit;
+}
+
+.card-question .rendered :is(em, i),
+.print-root .fit-question :is(em, i) {
+  font-weight: 650;
+}
+
+.rendered :is(strong, b) :is(em, i),
+.rendered :is(em, i) :is(strong, b),
+.fit-content :is(strong, b) :is(em, i),
+.fit-content :is(em, i) :is(strong, b) {
+  font-style: italic;
+  font-weight: 900;
+}
+
+.rendered > :first-child {
+  margin-top: 0;
+}
+
+.rendered > :last-child {
+  margin-bottom: 0;
+}
+
+.rendered :is(ul, ol),
+.fit-content :is(ul, ol) {
+  margin: 0.65em 0;
+  padding-left: 2.45em;
+}
+
+.rendered ul,
+.fit-content ul {
+  list-style: disc outside;
+}
+
+.rendered ol,
+.fit-content ol {
+  list-style: decimal outside;
+}
+
+.rendered ul ul,
+.fit-content ul ul {
+  list-style-type: circle;
+}
+
+.rendered ul ul ul,
+.fit-content ul ul ul {
+  list-style-type: square;
+}
+
+.rendered li,
+.fit-content li {
+  display: list-item;
+  padding-left: 0.15em;
+}
+
+.rendered li + li,
+.fit-content li + li {
+  margin-top: 0.35em;
+}
+
+.rendered li > :first-child,
+.fit-content li > :first-child {
+  margin-top: 0;
+}
+
+.rendered li > :last-child,
+.fit-content li > :last-child {
+  margin-bottom: 0;
+}
+
+.rendered pre {
+  position: relative;
+  overflow: auto;
+  max-width: 100%;
+  margin: 0.55em 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: var(--diagram-radius);
+  background: #0b1110;
+  color: #dbe7e4;
+  /* The Code font size control's only consumer. It was `1em` for a long time,
+     which meant the control wrote --code-font-size and nothing ever read it —
+     the slider moved and nothing happened. The variable defaults to
+     --content-font-size, so the unset behaviour is what `1em` already gave. */
+  font-size: var(--code-font-size);
+  line-height: var(--code-line-height);
+  tab-size: 2;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+}
+
+.rendered :not(pre) > code {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-2) 82%, var(--accent));
+  color: color-mix(in srgb, var(--review) 68%, var(--text));
+  padding: 0.12em 0.36em;
+  font-size: 0.9em;
+  hyphens: none;
+  overflow-wrap: break-word;
+}
+
+.rendered pre code {
+  display: block;
+  min-width: max-content;
+  background: transparent;
+  color: #dbe7e4;
+  hyphens: none;
+  padding: 0;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.rendered pre code[class*="language-"] {
+  padding: 6px 12px;
+  text-shadow: none;
+}
+
+.rendered pre.has-code-language code[class*="language-"] {
+  padding-top: 24px;
+}
+
+.rendered pre[class*="language-"] {
+  background: #0b1110;
+}
+
+.rendered .token.comment,
+.rendered .token.prolog,
+.rendered .token.doctype,
+.rendered .token.cdata {
+  color: #7b8f88;
+  font-style: italic;
+}
+
+.rendered .token.keyword,
+.rendered .token.atrule {
+  color: #ff79a8;
+  font-weight: 750;
+}
+
+.rendered .token.function,
+.rendered .token.method {
+  color: #7dd3fc;
+}
+
+.rendered .token.builtin,
+.rendered .token.class-name {
+  color: #fbbf24;
+}
+
+.rendered .token.string,
+.rendered .token.char,
+.rendered .token.attr-value {
+  color: #a7f3a0;
+}
+
+.rendered .token.number,
+.rendered .token.boolean,
+.rendered .token.constant,
+.rendered .token.uppercase-constant {
+  color: #c084fc;
+}
+
+.rendered .token.operator,
+.rendered .token.entity,
+.rendered .token.url {
+  color: #5eead4;
+}
+
+.rendered .token.punctuation {
+  color: #93a9a2;
+}
+
+.rendered .token.property,
+.rendered .token.attr-name,
+.rendered .token.selector,
+.rendered .token.tag {
+  color: #fca5a5;
+}
+
+.rendered .token.regex,
+.rendered .token.important,
+.rendered .token.variable {
+  color: #fdba74;
+}
+
+.rendered pre .code-copy-btn {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  right: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #9fb3ae;
+  font-size: 0.6rem;
+  font-weight: 900;
+  font-family: var(--app-font-family);
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+/* Guessed language (the fence declared none — see inferCodeLanguage). Dashed
+   edge so a badge the app worked out is never mistaken for one the note
+   stated. */
+.rendered pre[data-language-inferred="1"] .code-copy-btn {
+  border-style: dashed;
+}
+
+.rendered pre .code-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.13);
+  color: #dbe7e4;
+}
+
+.rendered pre .code-copy-btn.is-copied {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.22);
+}
+
+/* A quote reads as a CONTAINER, not as a line of emphasised text: the left rule
+   plus a faint tint of the surface behind it. The tint is a color-mix over
+   transparent rather than a fixed colour on purpose — this app has ten
+   light/dark themes, and an opaque swatch that looked right on one would clash
+   with or vanish into another. Same reasoning as .rendered mark. */
+.rendered blockquote {
+  margin: 1em 0;
+  border-left: 4px solid var(--accent);
+  border-radius: 0 var(--input-radius) var(--input-radius) 0;
+  padding: 0.6em 1em;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--muted);
+}
+
+.markdown-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  margin: 0.9em 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+}
+
+.rendered table {
+  width: 100%;
+  max-width: 100%;
+  border-collapse: collapse;
+  /* Content-proportional columns: a "Category" column stays narrow while a
+     long "What it does" column gets the room, instead of every column being
+     forced to an equal 1/N slice (which broke long headers character-by-
+     character). Overflow-wide tables scroll horizontally in their face. */
+  table-layout: auto;
+  /* Tables read denser than answer prose (which can be 23px) — pin cells to the
+     base content size so a wide multi-column table stays legible. */
+  font-size: var(--content-font-size);
+  text-align: left;
+}
+
+.rendered th,
+.rendered td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: auto;
+  line-height: 1.42;
+  vertical-align: top;
+}
+
+.rendered th {
+  background: color-mix(in srgb, var(--panel-2) 54%, transparent);
+  color: color-mix(in srgb, var(--text) 88%, var(--accent));
+  font-weight: 900;
+}
+
+.rendered .mermaid,
+.rendered .d2-diagram,
+.math-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 8px 0;
+  touch-action: pan-x pan-y;
+}
+
+/* Numbered display math (\begin{align}, \begin{equation}, \tag{…}), flagged by
+   markNumberedEquations() in app.js.
+
+   KaTeX draws the entire number column as ONE absolutely-positioned .tag pinned
+   to `right: 0` of .katex-html. That works while the formula fits, because
+   .katex-html is a block and its right edge is the container's right edge. It
+   fails on a phone: .math-display above is an overflow-x scroll container and
+   .katex is `white-space: nowrap`, so a multi-line environment wider than the
+   screen overflows PAST that anchor and the numbers end up sitting on top of the
+   equation instead of beside it (and don't move when you scroll it sideways).
+
+   Making the inner box shrink-to-fit re-anchors `right: 0` to the end of the
+   real content, while `min-width: 100%` keeps a formula that does fit centred
+   exactly as before. The symmetric gutter then keeps the number clear of the
+   longest row rather than butted against it — `right: 0` resolves against the
+   padding box, so the tag sits in the gutter and the formula stays centred
+   between the two. Scoped to .has-eqn-num so ordinary display math, which has no
+   tag to make room for, keeps the full width. */
+.katex-display.has-eqn-num > .katex {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.katex-display.has-eqn-num > .katex > .katex-html {
+  padding-inline: 3.4em;
+}
+
+/* Phones give up more of the line to that gutter than they can spare, and the
+   number itself only needs to clear the glyphs. */
+@media (max-width: 560px) {
+  .katex-display.has-eqn-num > .katex > .katex-html {
+    padding-inline: 2.6em;
+  }
+}
+
+.rendered img {
+  max-width: var(--visual-max-width, 100%);
+  height: auto;
+  display: block;
+  margin: 1rem auto;
+  border-radius: var(--diagram-radius);
+}
+
+.diagram-shell {
+  position: relative;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--diagram-radius);
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  overscroll-behavior-x: contain;
+  padding: var(--diagram-padding);
+  touch-action: pan-x pan-y;
+}
+
+.diagram-shell.nomnoml-light-shell {
+  background: var(--card) !important;
+  border-color: var(--line) !important;
+}
+
+.diagram-modal-body.nomnoml-light-modal-body {
+  background: var(--bg) !important;
+}
+
+.nomnoml-light-theme {
+  color: var(--text) !important;
+  color-scheme: inherit;
+  background: var(--card) !important;
+  isolation: isolate;
+}
+
+.nomnoml-light-theme svg,
+svg.nomnoml-light-svg {
+  background: var(--card) !important;
+  color: var(--text) !important;
+  forced-color-adjust: none;
+}
+
+.nomnoml-light-theme svg text,
+svg.nomnoml-light-svg text {
+  fill: var(--text) !important;
+  font-family: Arial, Helvetica, sans-serif !important;
+}
+
+.nomnoml-light-theme svg path,
+.nomnoml-light-theme svg line,
+.nomnoml-light-theme svg rect,
+.nomnoml-light-theme svg circle,
+.nomnoml-light-theme svg ellipse,
+.nomnoml-light-theme svg polygon,
+svg.nomnoml-light-svg path,
+svg.nomnoml-light-svg line,
+svg.nomnoml-light-svg rect,
+svg.nomnoml-light-svg circle,
+svg.nomnoml-light-svg ellipse,
+svg.nomnoml-light-svg polygon {
+  stroke: var(--text) !important;
+}
+
+.nomnoml-light-theme svg [fill="transparent"],
+.nomnoml-light-theme svg [fill="none"],
+svg.nomnoml-light-svg [fill="transparent"],
+svg.nomnoml-light-svg [fill="none"] {
+  fill: none !important;
+}
+
+.print-root .diagram-shell.nomnoml-light-shell,
+.print-root .nomnoml-light-theme,
+.print-root .nomnoml-light-theme svg,
+.print-root svg.nomnoml-light-svg {
+  background: var(--print-surface) !important;
+  color: var(--print-text) !important;
+}
+
+.print-root .nomnoml-light-theme svg text,
+.print-root svg.nomnoml-light-svg text {
+  fill: var(--print-text) !important;
+}
+
+.print-root .nomnoml-light-theme svg path,
+.print-root .nomnoml-light-theme svg line,
+.print-root .nomnoml-light-theme svg rect,
+.print-root .nomnoml-light-theme svg circle,
+.print-root .nomnoml-light-theme svg ellipse,
+.print-root .nomnoml-light-theme svg polygon,
+.print-root svg.nomnoml-light-svg path,
+.print-root svg.nomnoml-light-svg line,
+.print-root svg.nomnoml-light-svg rect,
+.print-root svg.nomnoml-light-svg circle,
+.print-root svg.nomnoml-light-svg ellipse,
+.print-root svg.nomnoml-light-svg polygon {
+  stroke: var(--print-text) !important;
+}
+
+
+.diagram-shell .mermaid svg,
+.diagram-shell .nomnoml-diagram svg,
+.diagram-shell img {
+  display: block !important;
+  margin: 0 auto !important;
+  width: var(--visual-max-width, 100%) !important;
+  max-width: none !important;
+  height: auto !important;
+}
+
+.diagram-zoom {
+  position: sticky;
+  right: 0;
+  bottom: 0;
+  float: right;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 10px;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+/* A diagram whose drawing is still queued (it's below the fold in a long note —
+   see runNearViewportAndDefer) holds its place so scrolling doesn't jump when it
+   arrives, and shows nothing rather than a flash of its raw source. */
+.mermaid.is-diagram-pending,
+.nomnoml-diagram.is-diagram-pending {
+  min-height: 120px;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--line) 22%, transparent) 0 8px,
+    transparent 8px 16px
+  );
+  border-radius: var(--diagram-radius);
+  opacity: 0.5;
+}
+
+/* A resized diagram (```mermaid w=520) sizes its container; the generated <svg>
+   is stretched to fill it by the rule above, so the whole drawing scales and
+   keeps its aspect ratio. Same custom-property and class an image uses. */
+#notesView .diagram-shell > .mermaid.has-custom-size,
+#notesView .diagram-shell > .nomnoml-diagram.has-custom-size,
+#questionView .diagram-shell > .mermaid.has-custom-size,
+#questionView .diagram-shell > .nomnoml-diagram.has-custom-size,
+#answerView .diagram-shell > .mermaid.has-custom-size,
+#answerView .diagram-shell > .nomnoml-diagram.has-custom-size,
+#printRoot .mermaid.has-custom-size,
+#printRoot .nomnoml-diagram.has-custom-size {
+  width: var(--notes-img-w) !important;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+/* …and the drawing inside fills exactly that width. Without this the diagram
+   would be --visual-max-width (a Style setting, 50% by default on desktop) OF
+   the requested width, so dragging the grip to 400px would draw 200px. */
+#notesView .diagram-shell > .mermaid.has-custom-size > svg,
+#notesView .diagram-shell > .nomnoml-diagram.has-custom-size > svg,
+#questionView .diagram-shell > .mermaid.has-custom-size > svg,
+#questionView .diagram-shell > .nomnoml-diagram.has-custom-size > svg,
+#answerView .diagram-shell > .mermaid.has-custom-size > svg,
+#answerView .diagram-shell > .nomnoml-diagram.has-custom-size > svg,
+#printRoot .mermaid.has-custom-size > svg,
+#printRoot .nomnoml-diagram.has-custom-size > svg {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+/* ── Editable images: corner-drag resize ────────────────────────────────────
+   Scoped to the three editable surfaces — the notes view and both card faces —
+   plus #printRoot for export, so generated diagrams elsewhere keep the forced
+   full-width fill above untouched. A more specific selector out-ranks
+   .diagram-shell img's !important rule rather than fighting it. */
+#notesView .diagram-shell img.has-custom-size,
+#questionView .diagram-shell img.has-custom-size,
+#answerView .diagram-shell img.has-custom-size,
+#printRoot .diagram-shell img.has-custom-size {
+  width: var(--notes-img-w) !important;
+  max-width: var(--notes-img-w) !important;
+}
+
+/* An untouched (never resized) image shouldn't fill the whole panel width —
+   cap it and let the shell hug the image.
+   NOTE: notes/print only, deliberately NOT the card faces. A card question is
+   auto-sized by fitLiveQuestion, which measures the image as fixed content and
+   scales the TEXT around it; hugging the image narrows the grid column and drove
+   the question font down to a few pixels. Card images therefore keep the
+   full-width default they have always had — resizing one still works, because
+   .has-custom-size above outranks it. */
+#notesView .diagram-shell img:not(.has-custom-size),
+#printRoot .diagram-shell img:not(.has-custom-size) {
+  width: auto !important;
+  max-width: min(420px, 100%) !important;
+}
+
+/* Images in Notes are always centered in the column. (Card faces already centre
+   theirs via .diagram-shell img's `margin: 0 auto`, and must keep a full-width
+   shell — see the note above.) */
+#notesView .diagram-shell {
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+/* Let the grip / size badge escape the shell's overflow:auto clip while
+   actively resizing. */
+#notesView .diagram-shell.is-resizing,
+#questionView .diagram-shell.is-resizing,
+#answerView .diagram-shell.is-resizing {
+  overflow: visible;
+}
+
+#notesView .diagram-shell img,
+#questionView .diagram-shell img,
+#answerView .diagram-shell img {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* Legacy side-by-side rows (no longer creatable) still render, centered. */
+.notes-img-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.notes-img-row .diagram-shell {
+  flex: 0 1 auto;
+  margin-inline: 0;
+}
+
+/* Bottom-right blue corner resize grip on the image — the only image control.
+   Subtle by default, brightens on hover / while dragging. */
+.notes-img-resize-handle {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 33;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px 3px 6px 3px;
+  background:
+    linear-gradient(135deg, transparent 0 45%, var(--accent-contrast, #fff) 45% 55%, transparent 55% 70%, var(--accent-contrast, #fff) 70% 80%, transparent 80%),
+    var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  cursor: nwse-resize;
+  touch-action: none;
+  /* Always visible so every image (including ones nested in bullets) advertises
+     that it's resizable without needing a hover to discover the grip. */
+  opacity: 1;
+  transition: transform 0.12s ease;
+}
+
+#notesView .diagram-shell:hover .notes-img-resize-handle,
+#notesView .diagram-shell.is-resizing .notes-img-resize-handle,
+#questionView .diagram-shell:hover .notes-img-resize-handle,
+#questionView .diagram-shell.is-resizing .notes-img-resize-handle,
+#answerView .diagram-shell:hover .notes-img-resize-handle,
+#answerView .diagram-shell.is-resizing .notes-img-resize-handle {
+  transform: scale(1.08);
+}
+
+/* The "Zoom" pill also lives at the bottom-right of a diagram-shell; on an
+   editable image that's where the resize grip sits, so move the pill to the
+   bottom-left to avoid overlap. */
+#notesView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom,
+#questionView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom,
+#answerView .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
+  float: left;
+  left: 0;
+  right: auto;
+}
+
+/* Top-right delete button — removes the image from the note (and, for one
+   hosted on the user's own Supabase Storage, deletes the file too). Sits away
+   from the resize grip / Zoom pill at the bottom so the two can't be
+   mis-tapped for each other. */
+.notes-img-delete-btn {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 33;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--danger, #ef4444) 88%, black);
+  color: #fff;
+  font-size: 0.75rem;
+  line-height: 1;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.notes-img-delete-btn:hover {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+/* Live px/% readout shown while dragging the corner grip. */
+.notes-img-size-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 26px;
+  z-index: 34;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 0.7rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.diagram-modal {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: color-mix(in srgb, var(--bg) 94%, black);
+  /* The head row holds the only close button — losing it behind the status bar
+     leaves no way out of the modal, so this inset is not cosmetic. */
+  padding:
+    calc(14px + var(--safe-top))
+    calc(14px + var(--safe-right))
+    calc(14px + var(--safe-bottom))
+    calc(14px + var(--safe-left));
+  touch-action: none;
+}
+
+.diagram-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  color: var(--muted);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.diagram-modal-body {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  cursor: grab;
+  overscroll-behavior: contain;
+  touch-action: none;
+}
+
+.diagram-modal-body.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.diagram-modal-body .diagram-zoom-content {
+  display: block;
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: none;
+  max-height: none;
+  width: auto;
+  height: auto;
+  transform-origin: 0 0;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  will-change: transform;
+}
+
+.diagram-modal-body svg.diagram-zoom-content {
+  image-rendering: auto;
+  shape-rendering: geometricPrecision;
+  text-rendering: geometricPrecision;
+  will-change: transform;
+}
+
+
+
+.controls button,
+.deck-utility-actions button {
+  display: inline-flex;
+  width: auto;
+  align-items: center;
+  justify-content: center;
+  gap: var(--action-button-gap);
+  border-radius: var(--action-button-radius);
+  padding: var(--action-button-padding);
+  font-size: var(--action-button-font-size);
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.controls button {
+  min-width: var(--action-button-min-width);
+  height: var(--action-button-height);
+  min-height: var(--action-button-height);
+}
+
+.controls {
+  gap: var(--toolbar-gap);
+  justify-content: center;
+}
+
+.deck-utility-actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--toolbar-gap);
+  margin-top: 8px;
+}
+
+.deck-utility-actions button {
+  min-width: 118px;
+  min-height: 34px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--panel-2) 78%, transparent);
+  color: var(--text);
+  font-size: var(--button-font-size);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+}
+
+.deck-utility-actions button:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.replay-actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--toolbar-gap);
+  margin-top: 8px;
+}
+
+.replay-actions button {
+  min-height: var(--replay-button-height);
+  border: 1px solid var(--line);
+  border-radius: var(--replay-button-radius);
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  color: var(--muted);
+  padding: 0 12px;
+  font-size: var(--button-font-size);
+  font-weight: 800;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 7%, transparent);
+}
+
+.replay-actions button:not(:disabled):hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  color: var(--accent);
+}
+
+@media (min-width: 721px) {
+  .controls {
+    gap: 5px;
+    margin-top: 2px;
+  }
+
+  .deck-utility-actions {
+    gap: 5px;
+    margin-top: 5px;
+  }
+
+  .replay-actions {
+    gap: 5px;
+    margin-top: 5px;
+  }
+
+  /* Compact type and padding for the secondary replay row; the height itself
+     comes from --replay-button-height (derived from the button-height control),
+     which a hardcoded 24px here used to override on every desktop width. */
+  .replay-actions button {
+    padding: 0 8px;
+    font-size: 0.72rem;
+    line-height: 1;
+  }
+}
+
+/* Icon-only mode for NARROW desktop windows. The max-width is load-bearing:
+   without it this stripped the text label off every card-action and deck-utility
+   button at every desktop width, so a 27" monitor showed the same five bare
+   glyphs as a half-width window — and two of them (the appbar's Back and this
+   row's Prev) were the same bare arrow. 1080px is the same narrow-desktop
+   breakpoint the layout block further down already uses.
+
+   Width and padding compact; the HEIGHT still comes from the setting, so the
+   button-height control isn't silently inert at this width the way it was on
+   the whole mobile profile. Above 1080px the base rules take over: they already
+   give these buttons `width: auto`, `--action-button-min-width` and an
+   icon/label gap, so the labelled layout needs nothing of its own here. */
+@media (min-width: 721px) and (max-width: 1080px) {
+  .controls button {
+    min-width: 38px;
+    width: 38px;
+    height: var(--action-button-height);
+    min-height: var(--action-button-height);
+    padding: 0;
+    font-size: 0.88rem;
+  }
+
+  .controls button span:not([aria-hidden]) {
+    display: none;
+  }
+
+  .deck-utility-actions button {
+    min-width: 38px;
+    width: 38px;
+    min-height: 30px;
+    padding: 0;
+    font-size: 0.86rem;
+  }
+
+  .deck-utility-actions button span:not([aria-hidden]) {
+    display: none;
+  }
+}
+
+.web-decks-panel {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 18px;
+  touch-action: none;
+}
+
+.web-decks-shell {
+  display: grid;
+  width: min(var(--modal-width), 100%);
+  height: min(82vh, 760px);
+  height: min(82dvh, 760px);
+  max-height: min(82vh, 760px);
+  max-height: min(82dvh, 760px);
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  border: 1px solid var(--line);
+  border-radius: var(--modal-radius);
+  background: var(--panel);
+  color: var(--text);
+  padding: var(--modal-padding);
+  box-shadow: var(--shadow);
+  touch-action: auto;
+}
+
+.web-decks-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+  min-width: 0;
+}
+
+.web-decks-head h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: 0;
+}
+
+.web-decks-head p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+/* ── My Decks: compact header ────────────────────────────────────────────────
+   The panel is capped at 82dvh, so a stacked title + two-line paragraph was
+   costing ~60px of list on every open. Title, live deck count and the one-line
+   blurb share a single baseline instead; the blurb drops out below 720px. */
+#myDecksPanel .web-decks-head {
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+#myDecksPanel .web-decks-head-main {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+#myDecksPanel .web-decks-head h1 { font-size: 1.05rem; }
+
+.web-decks-count {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel-2));
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 900;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+.web-decks-count[hidden] { display: none; }
+
+#myDecksPanel .web-decks-head-sub {
+  margin: 0;
+  min-width: 0;
+  flex: 1 1 220px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.web-decks-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin-bottom: 12px;
+  /* Grid/flex items default to min-width:auto (their content's unshrunk
+     size), which lets a row of nowrap buttons force this whole panel wider
+     than the viewport instead of wrapping. Let it shrink to the shell. */
+  min-width: 0;
+}
+
+.web-decks-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.web-decks-tools-primary {
+  justify-content: space-between;
+}
+
+.web-decks-tools-primary-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.web-decks-tools-secondary {
+  align-items: center;
+}
+.web-decks-tools-secondary .web-decks-bulk-actions { margin-left: auto; }
+
+.web-decks-tools label {
+  display: grid;
+  min-width: min(280px, 100%);
+  gap: 6px;
+}
+
+.web-decks-tools span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.web-decks-tools select {
+  min-height: var(--input-height);
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+  color: var(--text);
+  padding: var(--input-padding);
+  font: inherit;
+  font-size: var(--button-font-size);
+  font-weight: 800;
+}
+
+.web-decks-table-wrap {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.web-decks-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  text-align: left;
+  font-size: 0.92rem;
+}
+
+.web-decks-table th,
+.web-decks-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 10px;
+  vertical-align: middle;
+}
+
+.web-decks-table th {
+  color: var(--text);
+  font-weight: 900;
+}
+
+.web-decks-table th:nth-child(1),
+.web-decks-table td:nth-child(1) {
+  width: 6%;
+  text-align: center;
+}
+
+.web-decks-table th:nth-child(2),
+.web-decks-table td:nth-child(2) {
+  width: 35%;
+}
+
+.web-decks-table th:nth-child(3),
+.web-decks-table td:nth-child(3) {
+  width: 20%;
+}
+
+.web-decks-table th:nth-child(4),
+.web-decks-table td:nth-child(4) {
+  width: 15%;
+}
+
+.web-decks-table th:nth-child(5),
+.web-decks-table td:nth-child(5) {
+  width: 24%;
+}
+
+.web-decks-table th:last-child,
+.web-decks-table td:last-child {
+  text-align: right;
+}
+
+/* Column widths come from the 7-column <colgroup> in index.html (checkbox,
+   Title, Category, Cards, Saved, Sync, Actions) — the single source of truth, so
+   there are no per-cell width overrides here to drift out of sync with it.
+
+   Everything except Title is centred. Title is the column the eye scans down,
+   and centring it left every deck name starting at a different x — the single
+   biggest reason this list read as noise. It gets a left edge; the numeric and

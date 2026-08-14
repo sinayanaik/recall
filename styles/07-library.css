@@ -1,0 +1,784 @@
+/* My Decks: rows, tiles, folders, drag and drop
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+   status columns stay centred under their headers. */
+.my-decks-table th,
+.my-decks-table td,
+.my-decks-table th:last-child,
+.my-decks-table td:last-child {
+  text-align: center;
+}
+.my-decks-table th:nth-child(2),
+.my-decks-table td[data-label="Title"] { text-align: left; }
+
+/* Compact-but-informative list rows: tighter padding + smaller controls so the
+   full row (through Delete) fits without a horizontal scrollbar. */
+.my-decks-table th,
+.my-decks-table td {
+  padding: var(--md-row-pad);
+  font-size: 0.84rem;
+}
+
+/* The header rides along inside .web-decks-table-wrap's scroller, so it used to
+   scroll away and leave seven unlabelled columns. Pin it. `background` is
+   required — a sticky element paints over the rows beneath it and would
+   otherwise let them show through. */
+.my-decks-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Hairline separators instead of a full-strength rule under every row: at 36px
+   row height the old borders dominated the content they were dividing. */
+.my-decks-table tbody td {
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
+}
+.my-decks-table tr.my-deck-row:hover > td {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.my-decks-table td[data-label="Title"] {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.my-decks-table td[data-label="Saved"] { font-size: 0.76rem; color: var(--muted); }
+
+/* The deck that's currently open gets an accent edge rather than a full border,
+   which the row's own hairlines would fight with. box-shadow (not border-left)
+   so it doesn't shift the title by 3px relative to every other row. */
+.my-decks-table tr.is-current-local-deck > td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.my-decks-table .my-deck-actions {
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+/* Icon-only action buttons: square, self-explanatory glyphs with tooltips. */
+.my-deck-actions .icon-action {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The per-row category picker is a full <select>. At one per row its border and
+   chevron were the loudest thing in the table, drowning out the titles. Strip
+   it back to plain text and only draw the control on hover/focus, where it
+   still reads as editable. */
+.my-decks-table .web-deck-category-editor,
+.my-decks-table .web-deck-category-editor select {
+  min-height: 24px;
+  font-size: 0.74rem;
+}
+.my-decks-table .web-deck-category-editor select {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  padding: 0 4px;
+  max-width: 100%;
+}
+.my-decks-table tr:hover .web-deck-category-editor select,
+.my-decks-table .web-deck-category-editor select:focus {
+  border-color: var(--line);
+  background: var(--card);
+  color: var(--text);
+}
+
+/* Rename/Delete are inline icons on wide rows and menu items inside "⋯" on
+   narrow ones — buildDeckActions renders both and lets these hide the pair that
+   doesn't apply, so a resize can never strand a row without its actions. */
+.my-deck-actions .md-row-narrow-only { display: none; }
+
+/* ── Sync status ────────────────────────────────────────────────────────────
+   A pill that predicts what the next sync will do to each deck (see
+   deckSyncStatusCell). The colours were hardcoded hexes picked for the dark
+   theme; on the light ones they were near-invisible. Derived from the palette
+   tokens now, so all nine themes get a legible pill. */
+.my-deck-sync {
+  font-weight: 800;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.my-decks-table td.my-deck-sync {
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+/* The pill is a direct child normally, and the child of a <button> when the
+   status is actionable (see deckSyncStatusCell — a notes conflict opens the
+   resolver), so this reaches through either. */
+.my-decks-table td.my-deck-sync span,
+.deck-tile-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1.5;
+  white-space: nowrap;
+  /* --sync-tone is set per status below; one rule then builds the dot, the
+     tint and the text colour from it. */
+  color: var(--sync-tone, var(--muted));
+  background: color-mix(in srgb, var(--sync-tone, var(--muted)) 14%, transparent);
+}
+.my-decks-table td.my-deck-sync span::before,
+.deck-tile-sync::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.sync-ok { --sync-tone: var(--known); }
+.sync-pending { --sync-tone: var(--review); }
+.sync-behind { --sync-tone: var(--accent); }
+.sync-local,
+.sync-cloud-only { --sync-tone: var(--muted); }
+.sync-error { --sync-tone: var(--danger); }
+
+/* The shared modal width (--modal-width, 60vw) is comfortable for prose
+   modals but cramped for a 5-column data table with inline action buttons
+   — widen just this panel so Saved's date+time and the Actions buttons
+   never collide. */
+#myDecksPanel .web-decks-shell {
+  width: min(85vw, 1160px);
+
+  /* ── One control scale for the whole panel ────────────────────────────────
+     Six different button heights and four radii used to meet in this toolbar
+     (40px .web-decks-refresh, ~31px segmented buttons, 30px .bulk-action-btn,
+     ~26px breadcrumb crumbs…). Named once here, and shrunk in one place by the
+     720px block — the same technique the card-header tokens use. Scoped to the
+     panel rather than :root because the Style panel writes to the global scale
+     at runtime and these are not meant to be user-tunable. */
+  --md-ctl-h: 34px;
+  --md-ctl-radius: 9px;
+  --md-gap: 8px;
+  --md-row-pad: 7px 9px;
+  --md-ico: 16px;
+}
+
+/* Every icon in the panel: one box, inheriting colour so a pressed segmented
+   button or a danger-tinted action recolours its glyph for free. */
+.md-ico {
+  width: var(--md-ico, 16px);
+  height: var(--md-ico, 16px);
+  flex: 0 0 auto;
+  display: block;
+}
+
+.web-decks-empty {
+  color: var(--muted);
+  text-align: center;
+}
+
+/* The close button holds an SVG now, so it needs to centre a box rather than a
+   text glyph. Scoped to this panel — .icon-button is shared app-wide. */
+#myDecksPanel > .web-decks-shell > .web-decks-head > .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--md-ctl-h);
+  height: var(--md-ctl-h);
+  min-height: var(--md-ctl-h);
+  flex: 0 0 auto;
+  border-radius: var(--md-ctl-radius);
+}
+
+/* ── Folder tree (My Decks) ─────────────────────────────────────────────────
+   Deck rows nest under collapsible folder header rows. Depth is carried on
+   each row as the --folder-depth custom property and turned into indentation
+   here, so the same markup works for any nesting level. */
+.deck-folder-row > td {
+  text-align: left !important;
+  padding: 4px 8px !important;
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-2));
+  border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+}
+.deck-folder-row.drag-over > td {
+  background: color-mix(in srgb, var(--accent, #6366f1) 22%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--accent, #6366f1) 70%, transparent);
+  outline-offset: -3px;
+}
+.deck-folder-row.dragging { opacity: 0.5; }
+
+.deck-folder-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: calc(var(--folder-depth, 0) * 22px);
+}
+
+.deck-folder-twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+  /* One chevron for both states: pointing right when closed, rotated down when
+     open, so opening a folder reads as a movement instead of a glyph swap. */
+  transition: transform 0.14s ease, color 0.12s ease;
+}
+.deck-folder-twisty[aria-expanded="true"] { transform: rotate(90deg); }
+.deck-folder-twisty:hover { color: var(--accent); }
+.deck-folder-twisty .md-ico { --md-ico: 13px; }
+.deck-folder-label {
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text, inherit);
+  font-weight: 800;
+  font-size: 0.85rem;
+  padding: 2px 2px;
+  min-width: 0;
+}
+.deck-folder-label .md-ico { --md-ico: 15px; }
+.deck-folder-label:hover { color: var(--accent); }
+.deck-folder-icon {
+  display: inline-flex;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.deck-folder-count {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.deck-folder-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.deck-folder-row:hover .deck-folder-actions,
+.deck-folder-row:focus-within .deck-folder-actions { opacity: 1; }
+/* Touch devices have no hover state, so the actions above would be
+   permanently invisible without this — force them on and size up the
+   tap targets for coarse pointers. */
+@media (hover: none), (pointer: coarse) {
+  .deck-folder-actions { opacity: 1; }
+  .deck-folder-twisty { width: 32px; min-height: 32px; }
+  .deck-folder-action { padding: 8px 12px; font-size: 0.8rem; }
+}
+.deck-folder-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 3px 8px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.deck-folder-action .md-ico { --md-ico: 13px; }
+.deck-folder-action .md-btn-label {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.deck-folder-action:hover { color: var(--text, inherit); border-color: var(--accent, #6366f1); }
+
+/* The persistent root drop zone at the top of the list. */
+.deck-root-row > td { background: transparent; border-top: none; }
+.deck-root-row .deck-folder-name { font-weight: 800; }
+.deck-root-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-style: italic;
+  margin-left: 4px;
+}
+
+/* Deck rows are draggable and indented under their folder. */
+.my-decks-table tr.my-deck-row { cursor: grab; }
+.my-decks-table tr.my-deck-row.dragging { opacity: 0.5; cursor: grabbing; }
+.my-decks-table tr.my-deck-row td[data-label="Title"] {
+  text-align: left;
+  padding-left: calc(var(--folder-depth, 0) * 22px + 14px);
+}
+/* Folder-view nav rows enter the folder on click and don't indent. */
+.deck-folder-nav .deck-folder-label { cursor: pointer; }
+.deck-folder-nav { cursor: grab; }
+
+/* ── My Decks: toolbar ───────────────────────────────────────────────────────
+   One row, one control height. Everything that doesn't earn a permanent slot
+   (Refresh, Expand all, Import EPUB, Restore, the seven Export All formats)
+   lives behind the "⋯" button, so this row never wraps at any width. */
+#myDecksPanel .web-decks-tools { gap: var(--md-gap); }
+#myDecksPanel .web-decks-tools-row { gap: var(--md-gap); }
+#myDecksPanel .web-decks-tools-primary-right { gap: 6px; }
+
+/* Toolbar buttons: icon + label on one baseline, at the shared height. */
+#myDecksPanel .web-decks-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--md-ctl-h);
+  height: var(--md-ctl-h);
+  border-radius: var(--md-ctl-radius);
+  padding: 0 11px;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+/* .web-decks-tools span is a 0.72rem uppercase 900 field label (for the Sort /
+   Folder selects). Button labels are ordinary text and must opt back out. */
+#myDecksPanel .md-btn-label,
+#myDecksPanel .my-decks-more-menu span {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.my-decks-viewswitch,
+.my-decks-display-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--md-ctl-radius);
+  background: var(--panel-2);
+  flex: 0 0 auto;
+  height: var(--md-ctl-h);
+}
+.my-decks-viewswitch button,
+.my-decks-display-toggle button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  padding: 0 10px;
+  border-radius: calc(var(--md-ctl-radius) - 3px);
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.my-decks-viewswitch button[aria-pressed="true"],
+.my-decks-display-toggle button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.my-decks-viewswitch button:hover:not([aria-pressed="true"]),
+.my-decks-display-toggle button:hover:not([aria-pressed="true"]) { color: var(--text); }
+
+.web-decks-primary-btn {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel)) !important;
+  color: var(--accent) !important;
+}
+
+/* ── The "⋯" overflow menu ──────────────────────────────────────────────── */
+.my-decks-more { position: relative; flex: 0 0 auto; }
+
+#myDecksPanel .my-decks-more-btn {
+  width: var(--md-ctl-h);
+  padding: 0;
+  justify-content: center;
+}
+
+.my-decks-more-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 6px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: 232px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 5px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
+}
+.my-decks-more-menu[hidden] { display: none; }
+
+/* The sheet header only earns its space on mobile, where the menu covers the
+   screen and needs an explicit way out; on desktop an outside click is enough. */
+.my-decks-more-menu .md-menu-head { display: none; }
+
+.md-menu-group {
+  padding: 9px 9px 4px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.md-menu-group:first-child { padding-top: 4px; }
+
+.md-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: left;
+  padding: 0 9px;
+}
+/* The EPUB picker is a <label class="file-pick">, and .file-pick lays itself out
+   as a grid — which stacked its icon above its text. It is a menu row here. */
+.md-menu-item.file-pick { display: flex; cursor: pointer; }
+.md-menu-item[hidden] { display: none; }
+.md-menu-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.md-menu-item .md-ico { color: var(--muted); }
+.md-menu-item:hover .md-ico { color: var(--accent); }
+/* The export formats are a list, not distinct actions, so they carry no icon.
+   Indent them to the same text edge as the rows above rather than letting the
+   group start at a different x. */
+.md-menu-item:not([data-md-icon]) { padding-left: 34px; }
+
+/* ── Search / filters ───────────────────────────────────────────────────── */
+.my-decks-search {
+  position: relative;
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+/* hydrateMyDecksIcons() prepends the magnifier as the wrapper's first child —
+   float it over the input's left padding rather than reserving a flex slot. */
+.my-decks-search > .md-ico {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+.my-decks-search input {
+  width: 100%;
+  min-height: var(--md-ctl-h);
+  height: var(--md-ctl-h);
+  border: 1px solid var(--line);
+  border-radius: var(--md-ctl-radius);
+  background: var(--card);
+  color: var(--text);
+  padding: 0 11px 0 32px;
+  font: inherit;
+  font-size: 0.82rem;
+}
+.my-decks-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.my-decks-filter {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 7px;
+  min-width: 0 !important;
+}
+/* Same specificity as the global [hidden] rule below, so without the extra
+   class qualifier here the `!important` display above would win on source
+   order alone and the `hidden` attribute would silently do nothing. */
+.my-decks-filter[hidden] {
+  display: none !important;
+}
+.my-decks-filter > .md-ico { color: var(--muted); }
+.my-decks-filter span { flex: 0 0 auto; }
+#myDecksPanel .my-decks-filter select {
+  min-width: 132px;
+  min-height: var(--md-ctl-h);
+  height: var(--md-ctl-h);
+  border-radius: var(--md-ctl-radius);
+  font-size: 0.8rem;
+}
+
+/* The breadcrumb shares the secondary row with search and the filters rather
+   than claiming a line of its own (`flex: 1 1 100%` used to force one). It
+   scrolls sideways when the path is deep instead of wrapping the row apart. */
+.my-decks-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.my-decks-breadcrumb::-webkit-scrollbar { display: none; }
+.my-decks-breadcrumb .breadcrumb-crumb { flex: 0 0 auto; }
+.my-decks-breadcrumb .md-ico { --md-ico: 14px; }
+.breadcrumb-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 800;
+  font-size: 0.8rem;
+  padding: 4px 8px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+.breadcrumb-crumb:hover { color: var(--text); background: var(--panel-2); }
+.breadcrumb-crumb[aria-current="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.breadcrumb-crumb.drag-over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.breadcrumb-sep { color: var(--muted); font-size: 0.8rem; }
+
+/* ── My Decks: body host (table vs grid) ────────────────────────────────────*/
+.web-decks-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+
+/* ── My Decks: deck + folder tiles ──────────────────────────────────────────*/
+.my-decks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 2px;
+  align-content: start;
+  /* Flex items default to min-height:auto (their content's full height), so
+     without this the grid just grows to fit every tile instead of respecting
+     its allotted space — its own `overflow: auto` then never has anything to
+     scroll, because the box is already exactly as tall as its content. */
+  min-height: 0;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.deck-tile,
+.folder-tile {
+  position: relative;
+  /* Grid items default to min-width:auto (their content's unshrunk size).
+     A long unbroken deck/folder name would otherwise force this tile — and
+     the whole grid/modal — wider than its track instead of eliding. */
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--card);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+.deck-tile { cursor: grab; }
+.deck-tile:hover,
+.folder-tile:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 3px 12px color-mix(in srgb, var(--accent) 12%, transparent); }
+.deck-tile:focus-visible,
+.folder-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.deck-tile.dragging,
+.folder-tile.dragging { opacity: 0.5; cursor: grabbing; }
+.deck-tile.drag-over,
+.folder-tile.drag-over {
+  border-color: var(--accent);
+  outline: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: -3px;
+}
+.deck-tile.is-current-local-deck { border-color: var(--accent); }
+.deck-tile.is-cloud-only-deck { border-style: dashed; }
+.deck-tile:has(.my-deck-row-checkbox:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--card));
+}
+.folder-tile:has(.my-folder-row-checkbox:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--card));
+}
+
+.deck-tile-select { position: absolute; top: 8px; right: 8px; margin: 0; cursor: pointer; }
+/* Not clamped: a deck's title is how you find it, and two lines cut most real
+   ones mid-word ("2. Missed Opportunities: The…"). Tiles in a grid row are
+   height-matched anyway, and .deck-tile-meta's `margin-top: auto` keeps the
+   count and actions pinned to the bottom however many lines the title takes.
+   `break-word` (not `anywhere`) so it only splits a word that genuinely can't
+   fit its track — `anywhere` also shrinks the min-content width, which had the
+   two-column phone grid breaking "Opportunities" mid-word. */
+.deck-tile-title {
+  font-weight: 800;
+  font-size: 0.88rem;
+  line-height: 1.28;
+  padding-right: 22px;
+  overflow-wrap: break-word;
+}
+.deck-tile-chip {
+  align-self: flex-start;
+  max-width: 100%;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deck-tile-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+.deck-tile-count { color: var(--muted); font-size: 0.74rem; font-weight: 700; }
+
+.deck-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.deck-tile-actions .bulk-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.deck-tile-actions .md-btn-label {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.deck-tile-actions .my-deck-export { position: relative; }
+.deck-tile-overflow { position: relative; margin-left: auto; }
+.deck-tile-overflow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-radius: 7px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+.deck-tile-overflow-btn:hover { color: var(--accent); border-color: var(--accent); }
+.deck-tile-overflow-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  min-width: 150px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.deck-tile-overflow-menu button {
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.84rem;
+  padding: 7px 10px;
+  border-radius: 6px;
+}
+.deck-tile-overflow-menu button:hover { background: var(--panel-2); }
+
+.folder-tile { cursor: pointer; }
+/* padding-right keeps a long folder name from running under the corner
+   selection checkbox — same reserve .deck-tile-title makes. */
+.folder-tile-main { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 22px; }
+.folder-tile-icon { display: inline-flex; color: var(--accent); flex-shrink: 0; }
+.folder-tile-icon .md-ico { --md-ico: 18px; }
+/* Wraps rather than elides, for the same reason .deck-tile-title does — the
+   name is the only thing identifying the folder. */
+.folder-tile-name {
+  font-weight: 800;
+  font-size: 0.88rem;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+/* Its own row below the name (see buildFolderTile) — sharing the name's flex
+   row left almost no width for a long name to wrap into. */
+.folder-tile-count { color: var(--muted); font-size: 0.76rem; font-weight: 700; }
+
+.my-decks-empty-card {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  text-align: center;
+  padding: 32px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+}
+
+.skeleton-bar {
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--panel-2) 25%, var(--line) 50%, var(--panel-2) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.web-decks-refresh {
+  min-height: var(--input-height);
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 900;
+  padding: 0 14px;
+  white-space: nowrap;
+}

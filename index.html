@@ -34,7 +34,28 @@
          .github/workflows/deploy.yml. It stays an unsubstituted placeholder in
          the repo and in any local checkout, which is exactly the point: there
          is no version string here for anyone to forget to bump. -->
-    <link rel="stylesheet" href="styles.css?v=__BUILD__">
+    <!-- ── Stylesheets ────────────────────────────────────────────────────
+         styles.css was 13,784 lines. These are contiguous slices of it, in its
+         original order, and that order is load-bearing: at equal specificity a
+         later rule wins, so reordering these links changes how the app looks.
+         tools/split-css.mjs regenerates them and verifies that concatenating
+         them reproduces the original byte for byte.
+
+         Separate <link>s rather than @import, which would serialise the
+         requests behind each other. -->
+    <link rel="stylesheet" href="styles/01-tokens.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/02-shell.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/03-toolbar.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/04-import.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/05-study.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/06-rendered.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/07-library.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/08-panels.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/09-all-cards.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/10-editor.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/11-chrome.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/12-notes.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/13-quick-notes.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING

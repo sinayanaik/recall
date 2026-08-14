@@ -1,0 +1,430 @@
+/* App shell, layout, and the boot screens
+ * Part of the split styles.css — see tools/split-css.mjs. Order matters.
+ */
+.app-shell {
+  display: grid;
+  width: min(var(--app-width), 100vw);
+  height: var(--app-height);
+  min-height: var(--app-height);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--app-gap);
+  margin: 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--app-pad) 0;
+}
+
+.appbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deck-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  gap: 1px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  overflow: hidden;
+}
+
+.deck-title-wrap {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  /* Top-align so the pencil sits by the first line when the title wraps. */
+  align-items: flex-start;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.deck-title {
+  /* Size to the title's own text (so the edit pencil sits right after it), but
+     wrap fully — never ellipsize — once it would exceed the available width, so
+     a long title is always completely visible (no crop). overflow-wrap breaks a
+     single over-long token so it can never force horizontal overflow. */
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.16;
+  color: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.deck-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+.deck-meta-row2 {
+  display: flex;
+  width: auto;
+  max-width: 100%;
+  align-items: center;
+  /* Wrap the meta chips onto a second line on narrow widths instead of
+     clipping the sync status — keeps the row structured and responsive. */
+  flex-wrap: wrap;
+  gap: 2px 5px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* Compact the desktop deck header chrome: the edit pencils and category pill
+   (not the text) are what set each row's height, so trimming them to 20px —
+   matching the mobile treatment — shortens the header without shrinking or
+   cropping any label. Scoped to .deck-meta so the shared .web-deck-rename /
+   My-Decks buttons keep their size. min-width:721px keeps it desktop-only. */
+@media (min-width: 721px) {
+  .deck-meta .deck-title-edit {
+    width: 20px;
+    height: 20px;
+    min-height: 20px;
+    font-size: 0.62rem;
+  }
+  .deck-meta .deck-category {
+    min-height: 20px;
+    padding: 0 8px;
+  }
+}
+
+.deck-meta-sep {
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.35;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.deck-meta-spacer {
+  flex: 0;
+}
+
+/* Auto-save / cloud-sync status pill in the deck meta row. Content is set from
+   JS via setSyncIndicator(); hidden when there's no deck or nothing to report. */
+.sync-indicator {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sync-indicator:empty {
+  display: none;
+}
+
+/* "↻ 4m" — time to the next auto-sync, appended by renderSyncCountdown(). Held
+   apart from the status words by a separator so the pill reads as two facts
+   ("Synced · 2m ago" and "when the next one is"), and set in a dimmer weight so
+   the ticking number never out-shouts the status itself. The tabular figures
+   stop the pill resizing every second as digits change width. */
+.sync-countdown {
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  color: var(--muted);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.sync-indicator[data-state="saved"] { color: var(--muted); }
+/* setSyncIndicator emits "saving"; this file only ever styled "syncing", so the
+   one state that means "something is happening right now" rendered in the
+   default colour and looked identical to idle. Both names are kept — the state
+   name is written in two places and silently diverged once already. */
+.sync-indicator[data-state="saving"],
+.sync-indicator[data-state="syncing"] { color: var(--accent); }
+/* A lapsed session is not the same thing as being offline, and until now it was
+   displayed as though it were — the one condition the user can actually fix,
+   wearing the badge of the one they can't. */
+.sync-indicator[data-state="signedout"] {
+  color: var(--review);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.sync-indicator[data-state="synced"] { color: var(--known); }
+.sync-indicator[data-state="offline"] { color: var(--review); }
+.sync-indicator[data-state="error"] { color: #ff6a6a; }
+
+.deck-title-edit,
+.web-deck-rename {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: color-mix(in srgb, var(--panel-2) 84%, transparent);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.deck-category {
+  display: inline-grid;
+  min-height: var(--card-hdr-indicator-h);
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+  padding: var(--card-hdr-indicator-pad);
+  font-size: var(--card-hdr-indicator-fs);
+  font-weight: 950;
+  line-height: 1;
+  max-width: min(260px, 80vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.deck-category:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: var(--accent);
+}
+
+.deck-category-edit {
+  color: var(--accent);
+}
+
+.web-deck-rename {
+  width: auto;
+  min-width: 72px;
+  padding: 0 10px;
+  font-size: 0.68rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.deck-title-edit:hover,
+.web-deck-rename:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.web-deck-title,
+.web-deck-category {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.web-deck-card-count {
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--panel-2) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  align-self: center;
+}
+
+/* Mobile-only web deck elements: hidden on desktop */
+.web-deck-mobile-meta,
+.web-deck-cat-pill,
+.web-deck-mobile-date {
+  display: none;
+}
+
+.web-deck-title-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.web-deck-category-badge {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 28px;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+  padding: 0 10px;
+  font-size: 0.76rem;
+  font-weight: 950;
+  line-height: 1;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+  white-space: normal;
+}
+
+.web-deck-accessed {
+  display: grid;
+  gap: 3px;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.web-deck-accessed strong {
+  font-size: 0.9rem;
+  font-weight: 850;
+}
+
+.web-deck-accessed span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.web-deck-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  position: relative;
+}
+
+.web-deck-button-row {
+  display: flex;
+  gap: 6px;
+}
+
+.web-deck-action {
+  min-width: 66px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 12px;
+  font-size: var(--button-font-size);
+  font-weight: 900;
+}
+
+.web-deck-export {
+  min-width: 76px;
+  padding: 0 10px;
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent);
+}
+
+.web-deck-export-wrap {
+  position: relative;
+}
+
+.web-deck-export-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  width: 150px;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 7px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
+}
+
+.web-deck-export-menu[hidden],
+.web-deck-category-new[hidden],
+.category-choice-field[hidden] {
+  display: none !important;
+}
+
+.web-deck-export-menu button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 10px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-align: left;
+}
+
+.web-deck-category-editor {
+  display: grid;
+  gap: 7px;
+}
+
+.web-deck-category-select,
+.web-deck-category-new input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: var(--input-radius);
+  background: var(--card);
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.web-deck-category-new {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+}
+
+.web-deck-category-new button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 10px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.web-deck-delete {
+  border-color: color-mix(in srgb, var(--danger) 68%, var(--line));
+  background: color-mix(in srgb, var(--danger) 88%, #2a1016);
+  color: #fff;
+}
+
+.deck-meta > * {
+  min-width: 0;
+}
+
+.deck-meta strong {
+  color: var(--text);
+  font-weight: 800;
+}
