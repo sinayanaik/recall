@@ -45,34 +45,51 @@ const ACCEPTED = {
   fetchUrl:
     "calls fetchImportText, the URL-import half of the split fetchText — see REMOVED",
   fetchLiveRelease:
-    "calls fetchReleaseText, the update-check half of the split fetchText — see REMOVED",
-
-  // supabaseClient and isSignedIn moved into cloud/supabase-client.js. An
-  // imported binding is read-only, so the auth flow writes them through
-  // setSupabaseClient/setSignedIn instead of assigning directly. Reads are
-  // unchanged — a live binding still shows every reader the current value.
-  recoverSessionIfPossible: "isSignedIn = true -> setSignedIn(true)",
-  setupAuthListener: "isSignedIn = true/false -> setSignedIn(true/false)",
-  bootApp: "isSignedIn = true -> setSignedIn(true)",
-  setTheme:
-    "allCardsRenderId += 1 -> bumpAllCardsRenderId(). The counter is main.js's, " +
-    "and an imported binding cannot be incremented from ui/theme.js.",
-
-  // qnReturnState is written from the Quick Notes board and from nav-history,
-  // so it is written through setQnReturnState. Reads are unchanged.
-  goToNavLocation: "qnReturnState = … -> setQnReturnState(…)",
-  restoreQnReturnState: "qnReturnState = null -> setQnReturnState(null)",
-  openQuickNotesBoard: "qnReturnState = null -> setQnReturnState(null)",
-  followNoteLink: "qnReturnState = { … } -> setQnReturnState({ … })",
-  paintMyDecks:
-    "myDecksRendered = { … } -> setMyDecksRendered({ … }); the binding lives in " +
-    "library/folder-tree.js, which reads it, and imports are read-only.",
-
-  // The reading anchor is captured by the notes scroll code and cleared when the
-  // study deck resets — two modules, so it is written through setters.
-  resetResults: "currentReadingAnchor{,DeckKey} = null -> setCurrentReadingAnchor{,DeckKey}(null)",
-  captureCurrentReadingAnchor: "same, via the setters"
+    "calls fetchReleaseText, the update-check half of the split fetchText — see REMOVED"
 };
+
+// Functions whose ONLY change is that a write to a module-level binding now goes
+// through that binding's setter.
+//
+// This is the one edit the split forces on function bodies. `import { x }` makes
+// x read-only in the importing module — assigning to it is an early SyntaxError
+// that stops the whole graph instantiating — so a binding written from a module
+// other than the one declaring it needs `setX(v)`. Reads are untouched: a live
+// binding still shows every reader the current value, exactly as the shared
+// script scope did.
+//
+// Listed by name rather than waved through, so a body that changed for any
+// OTHER reason still fails. The check below verifies that the only difference is
+// the setter rewrite; anything more is reported as a real change.
+const SETTER_ROUTED = {
+  "setSignedIn": ["isSignedIn"],
+  "setSupabaseClient": ["supabaseClient"],
+  "setExplicitLogout": ["explicitLogout"],
+  "setQnReturnState": ["qnReturnState"],
+  "setMyDecksRendered": ["myDecksRendered"],
+  "setCurrentReadingAnchor": ["currentReadingAnchor"],
+  "setCurrentReadingAnchorDeckKey": ["currentReadingAnchorDeckKey"],
+  "setDraggedAllCardId": ["draggedAllCardId"],
+  "setNotesBlockEstimateSource": ["notesBlockEstimateSource"],
+  "bumpAllCardsRenderId": ["allCardsRenderId"]
+};
+
+// Undo the setter rewrite on the CURRENT text; if it then matches the baseline,
+// the setter routing was the whole of the difference.
+function unroute(code) {
+  let out = code;
+  for (const [setter, names] of Object.entries(SETTER_ROUTED)) {
+    for (const name of names) {
+      if (setter.startsWith("bump")) {
+        out = out.replaceAll(`${setter}();`, `${name} += 1;`);
+      } else {
+        out = out.replace(new RegExp(`\\b${setter}\\(([^;]*)\\);`, "g"), `${name} = $1;`);
+      }
+    }
+  }
+  return out;
+}
+
 
 // Baseline symbols that are intentionally gone, and why. A rename lands here
 // (the old name) and in the ADDED list (the new one), which is the honest way
@@ -157,6 +174,10 @@ for (const [name, base] of baseDecls) {
   }
   if (normalize(base.text) === normalize(cur.text)) continue;
   if (ACCEPTED[name]) { accepted.push(`${name} — ${ACCEPTED[name]}`); continue; }
+  if (normalize(base.text) === unroute(normalize(cur.text))) {
+    accepted.push(`${name} — writes a moved binding through its setter`);
+    continue;
+  }
   // Where do they first diverge? Far more useful than "these differ".
   const na = normalize(base.text), nb = normalize(cur.text);
   let i = 0;
@@ -200,15 +221,12 @@ const RESIDUAL_REWRITES = [
    "onDomReady($1);"],
   [/if \(document\.readyState === "loading"\) \{ document\.addEventListener\("DOMContentLoaded", (\w+), \{ once: true \}\); \} else \{ \1\(\); \}/g,
    "onDomReady($1);"],
-  // Bindings that moved into a module are read-only where they are imported,
-  // so the module-scope listeners write them through setters. Reads unchanged.
-  [/\bisSignedIn = (true|false);/g, "setSignedIn($1);"],
-  [/\bsupabaseClient = null;/g, "setSupabaseClient(null);"],
-  [/\bexplicitLogout = (true|false);/g, "setExplicitLogout($1);"]
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);
 for (const [re, to] of RESIDUAL_REWRITES) baseResidual = baseResidual.replace(re, to);
+// unroute() undoes the setter rewrite, so module-scope listeners that write a
+// moved binding compare equal without weakening anything else.
 const currentResidual = currentFiles
   .map((f) => {
     const text = readFileSync(f, "utf8");
@@ -219,15 +237,16 @@ const currentResidual = currentFiles
   .join(" ")
   .replace(/\s+/g, " ")
   .trim();
+const currentResidualUnrouted = unroute(currentResidual);
 
 const residualDrift = [];
-if (baseResidual !== currentResidual) {
+if (baseResidual !== currentResidualUnrouted) {
   let i = 0;
-  while (i < baseResidual.length && baseResidual[i] === currentResidual[i]) i++;
+  while (i < baseResidual.length && baseResidual[i] === currentResidualUnrouted[i]) i++;
   residualDrift.push(
     "module-scope code differs from the baseline\n" +
     `    was: …${baseResidual.slice(Math.max(0, i - 60), i + 90)}\n` +
-    `    now: …${currentResidual.slice(Math.max(0, i - 60), i + 90)}`
+    `    now: …${currentResidualUnrouted.slice(Math.max(0, i - 60), i + 90)}`
   );
 }
 

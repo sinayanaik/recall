@@ -6,6 +6,7 @@
 
 import { BACKUP_IMAGE_REF_RE, decodeImageRefEntities, exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
+import { activeDeckMatchesMasterOrder, clearAllCardDropTargets, closeAllCardsPanel, createBlankCard, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, refreshAllCardsAround, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
 import { resetStudyDeck, syncResults, uncategorizedCards } from "./cards/study.js?v=__BUILD__";
 import { describeAuthError, explicitLogout, getCachedSession, handleLogin, handleLogout, handleSignup, setExplicitLogout, verifiedCloudUserId } from "./cloud/auth.js?v=__BUILD__";
 import { deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingColumnError, isMissingNotesColumnError, isMissingRelationError } from "./cloud/deck-list.js?v=__BUILD__";
@@ -16,7 +17,7 @@ import { activeDeckLoadToken, applyDeckMetaCategories, closeWebDeckExportMenus, 
 import { BUILD_STAMP, BUILD_TIME, IS_DEV_BUILD } from "./core/build.js?v=__BUILD__";
 import { deckStorageKey, defaultDeckCategory, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { el } from "./core/dom.js?v=__BUILD__";
-import { ensureJsZip, ensureMermaid, ensureNomnoml, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
+import { ensureJsZip, ensureMermaid, ensureTurndown, warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { escapeHtml, escapeXml, hex6 } from "./core/text.js?v=__BUILD__";
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
 import { exportSql } from "./export/sql.js?v=__BUILD__";
@@ -28,12 +29,15 @@ import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { setMyDecksCwd, setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
-import { codeLanguageLabel, codeLanguageOrGeneric, configurePrismLanguages, declaredCodeLanguage, inferCodeLanguage, normalizeCodeLanguage } from "./render/code-language.js?v=__BUILD__";
-import { EAGER_IMAGE_COUNT, deferrableRenderRoot, flushDeferredWork, releaseDeferredWork, runNearViewportAndDefer, scopedQueryAll } from "./render/deferred-work.js?v=__BUILD__";
-import { sourceWithNomnomlTheme } from "./render/diagrams.js?v=__BUILD__";
+import { renderMarkdown, renderedBlockCache, setNotesBlockEstimateSource, syncNotesBlockEstimateSource } from "./render/block-cache.js?v=__BUILD__";
+import { codeLanguageOrGeneric, inferCodeLanguage, normalizeCodeLanguage } from "./render/code-language.js?v=__BUILD__";
+import { releaseDeferredWork } from "./render/deferred-work.js?v=__BUILD__";
+import { applyDiagramTransform, beginDiagramPan, beginDiagramPinch, clampDiagramScale, closeDiagramModal, currentDiagramZoom, diagramLocalPoint, diagramPointers, pointerCenter, pointerDistance, zoomDiagramBy, zoomDiagramTo } from "./render/diagram-zoom.js?v=__BUILD__";
+import { enhanceRenderedMarkdown } from "./render/enhance.js?v=__BUILD__";
 import { findMathRanges, repairEscapedMathMarkdown } from "./render/math.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkAliasesFor, noteLinkEntryMatchesId, noteLinkIdFor, noteLinkMarkupFor } from "./render/note-links.js?v=__BUILD__";
-import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, SANITIZE_CONFIG, fenceInfoWithWidth, fencePattern, markdownToSafeHtml, normalizeImageUrl, parseDiagramWidth, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./render/preprocess.js?v=__BUILD__";
+import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, fencePattern, markdownToSafeHtml, normalizeImageUrl, parseDiagramWidth } from "./render/preprocess.js?v=__BUILD__";
+import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, dropTombstonesForLiveCards, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush, recordDeletedCardIds, stampCardSyncState } from "./sync/cards.js?v=__BUILD__";
 import { calculateSyncDiff, normalizeSyncText, syncTextChanged } from "./sync/diff.js?v=__BUILD__";
 import { restoreStashedNotes, showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
@@ -251,7 +255,12 @@ export function bumpAllCardsRenderId() {
   allCardsRenderId += 1;
   return allCardsRenderId;
 }
-let draggedAllCardId = "";
+export let draggedAllCardId = "";
+
+// Setter: an imported binding is read-only, and the All Cards drag handlers in cards/all-cards-edit.js set it.
+export function setDraggedAllCardId(value) {
+  draggedAllCardId = value;
+}
 let printTitleBeforeExport = "";
 let printPreviewOpen = false;
 let allCardsAnswersVisible = false;
@@ -273,8 +282,6 @@ const liveQuestionFitCache = { key: null, size: null };
 // A question refit that was skipped because text was selected (see
 // fitLiveQuestion), owed as soon as the selection is released.
 let questionFitDeferredBySelection = false;
-let markdownTableFitFrame = 0;
-
 
 marked.setOptions({
   breaks: true,
@@ -347,1511 +354,19 @@ if (window.Prism?.plugins?.autoloader) {
  // live nodes with queued work, for flushing
  // came into view, not yet run — see drainReadyDeferredWork
 
-function enhanceCodeBlocks(roots) {
-  configurePrismLanguages();
 
-  scopedQueryAll(roots, "pre code").forEach((code) => {
-    const pre = code.closest("pre");
-    const declared = declaredCodeLanguage(code);
-    // No ```lang on the fence? Guess one from the body (see
-    // inferCodeLanguage) so the block still highlights, still gets a badge,
-    // and — via code.dataset.codeLanguage below — so anything selected out of
-    // it can be re-fenced with a real language. The guess is cached on the
-    // element: enhancement passes run again on re-render, and the answer can't
-    // change for a body that hasn't changed. Rendering never rewrites the
-    // user's markdown; the fence in the source stays exactly as they wrote it.
-    let inferred = "";
-    if (!declared) {
-      if (code.dataset.inferredLanguage === undefined) {
-        code.dataset.inferredLanguage = inferCodeLanguage(code.textContent);
-      }
-      // Falls back to `text` when the guess came up empty — a block with no
-      // language at all is what left some blocks flat and badge-less.
-      inferred = codeLanguageOrGeneric(code.dataset.inferredLanguage);
-    }
-    const declaredLanguage = declared || inferred;
-    const normalizedLanguage = normalizeCodeLanguage(declaredLanguage);
+ // view -> { generation, source, blocks: [{key, nodes}] }
+ // view -> number, so a superseded render can bail
 
-    pre?.classList.add("code-block");
-    // Single source of truth for "what language is this block", read back by
-    // the selection→fence path on both the rendered and raw sides.
-    if (normalizedLanguage) code.dataset.codeLanguage = normalizedLanguage;
+ // container -> rAF id
 
-    if (declaredLanguage && pre) {
-      pre.classList.add("has-code-language");
-      pre.dataset.language = codeLanguageLabel(declaredLanguage);
-      // Marks the badge as a guess rather than something the note declared —
-      // used for the tooltip, and available to CSS if it should ever look
-      // different.
-      if (inferred) pre.dataset.languageInferred = "1";
-
-      // Inject a real button for the language badge so it can be clicked to copy.
-      // Guard against double-injection when the block is re-rendered.
-      if (!pre.querySelector(".code-copy-btn")) {
-        const label = codeLanguageLabel(declaredLanguage);
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "code-copy-btn";
-        btn.textContent = label;
-        btn.title = inferred ? `Copy code · ${label} detected` : "Copy code";
-        btn.addEventListener("click", async (event) => {
-          event.stopPropagation();
-          try {
-            await navigator.clipboard.writeText(code.textContent ?? "");
-            btn.textContent = "✓";
-            btn.classList.add("is-copied");
-            setTimeout(() => {
-              btn.textContent = label;
-              btn.classList.remove("is-copied");
-            }, 1400);
-          } catch {
-            // clipboard unavailable — silent fail
-          }
-        });
-        pre.appendChild(btn);
-      }
-    }
-
-    if (!normalizedLanguage) return;
-
-    // Set the class even when Prism isn't around: it's what Turndown reads to
-    // put the language on the fence when a selection spanning the whole block
-    // goes through the HTML→Markdown path.
-    code.classList.add(`language-${normalizedLanguage}`);
-    pre?.classList.add(`language-${normalizedLanguage}`);
-
-    if (!window.Prism || code.dataset.highlighted === "yes") return;
-    Prism.highlightElement(code);
-  });
-}
-
-// Flags every display equation that carries an equation number, because two
-// things in this app quietly break KaTeX's numbering and both of them are only
-// worth correcting where a number actually exists.
-//
-// 1. The number is drawn by a pure CSS counter — katex.css has
-//    `body{counter-reset:katexEqnNo}` and `.eqn-num:before{content:"("
-//    counter(katexEqnNo) ")";counter-increment:katexEqnNo}`. But
-//    `content-visibility: auto` on every top-level notes block (see
-//    .notes-rendered > * in styles.css) implies STYLE containment, and style
-//    containment scopes counters to the contained subtree. Each block therefore
-//    started its own katexEqnNo, so every numbered equation in a note rendered
-//    as "(1)". The block holding one opts out of content-visibility; blocks
-//    without equations keep it, and since they never touch the counter the
-//    numbering across the ones that do stays continuous.
-//
-// 2. KaTeX lays a multi-line environment's whole number column out as ONE
-//    absolutely-positioned `.tag` pinned to `right: 0` of `.katex-html`, which
-//    is a block and so only as wide as the visible container — not as wide as
-//    the (white-space: nowrap) formula. `.math-display` is an overflow-x scroll
-//    container, so on a narrow screen a formula wider than the viewport slid
-//    straight underneath its own equation numbers. See .katex-display.has-eqn-num
-//    in styles.css for the sizing that re-anchors them past the real content.
-function markNumberedEquations(scope) {
-  scopedQueryAll(scope, ".katex-display").forEach((display) => {
-    // .eqn-num is an auto-numbered row (align/gather/equation); a bare .tag
-    // holds a hand-written \tag{...}, which has the same overlap problem but
-    // no counter to fix.
-    if (!display.querySelector(".eqn-num, .katex-html > .tag")) return;
-    display.classList.add("has-eqn-num");
-    const surface = display.closest(".notes-rendered");
-    if (!surface) return;
-    let block = display;
-    while (block.parentElement && block.parentElement !== surface) block = block.parentElement;
-    block.classList.add("has-eqn-num-block");
-  });
-}
-
-// `roots` (optional) narrows every pass to the nodes the incremental renderer
-// just created; omit it to enhance the whole container, which is what the
-// export/print paths and every non-incremental surface do.
-async function enhanceRenderedMarkdown(container, roots = null) {
-  const scope = roots || [container];
-
-  scopedQueryAll(scope, "a[href]").forEach((link) => {
-    // A bare "#foo" is a jump within this note, not a destination on the web.
-    // It used to be swept up here with everything else and opened a blank tab —
-    // now that notes can link to each other, "where will this take me" has to
-    // be answerable at a glance, and an in-page anchor that teleports you to an
-    // empty tab is the opposite of that.
-    const href = link.getAttribute("href") || "";
-    if (href.startsWith("#")) {
-      link.classList.add("in-page-link");
-      link.removeAttribute("target");
-      return;
-    }
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-  });
-
-  enhanceCodeBlocks(scope);
-
-  scopedQueryAll(scope, ".math-display[data-tex], .math-inline[data-tex]").forEach((node) => {
-    try {
-      katex.render(decodeURIComponent(node.dataset.tex), node, {
-        displayMode: node.classList.contains("math-display"),
-        throwOnError: false
-      });
-    } catch (error) {
-      node.textContent = decodeURIComponent(node.dataset.tex);
-    }
-  });
-
-  // Safety net for delimiters that reached the DOM without going through
-  // protectMath. Deliberately WITHOUT a bare "$" pair: protectMath has already
-  // converted every real $…$ / $$…$$ span into a .math-* node above, using
-  // CommonMark-ish rules (no whitespace just inside the delimiters). What is
-  // left is text protectMath examined and declined — overwhelmingly two dollar
-  // AMOUNTS on one line, e.g. "$5 for one and $10 for two", which this pass
-  // would otherwise swallow and render as math.
-  scope.filter((node) => node.nodeType === 1).forEach((node) => {
-    renderMathInElement(node, {
-      delimiters: [
-        { left: "\\[", right: "\\]", display: true },
-        { left: "\\(", right: "\\)", display: false }
-      ],
-      throwOnError: false
-    });
-  });
-
-  // After BOTH math passes, so a numbered equation is caught whether it came
-  // through protectMath or the \[…\] safety net above.
-  markNumberedEquations(scope);
-
-  // Diagrams get their shell (and so their Zoom pill and resize grip) up front,
-  // even when the drawing itself is deferred — the shell is what reserves the
-  // space and carries the controls.
-  const diagrams = scopedQueryAll(scope, ".mermaid, .nomnoml-diagram");
-  diagrams.forEach((node) => {
-    node.classList.add("is-diagram-pending");
-    addDiagramZoomControl(node);
-  });
-
-  const lazyRoot = deferrableRenderRoot(container);
-  const diagramWork = runNearViewportAndDefer(diagrams, lazyRoot, renderDiagramNodes);
-
-  // The first few images of a note are the ones the reader is already looking
-  // at, so they must not wait for an intersection to start downloading — with
-  // content-visibility: auto on every top-level block, a lazy image at the top
-  // of the note can be a blank box for a full round trip on open. Everything
-  // after them stays lazy, which is the whole point on a note carrying dozens
-  // of screenshots. Counted across calls because the notes view renders
-  // incrementally, block by block, into the same container.
-  let eagerBudget = lazyRoot
-    ? Math.max(0, EAGER_IMAGE_COUNT - lazyRoot.querySelectorAll("img[data-eager-image]").length)
-    : 0;
-
-  scopedQueryAll(scope, "img").forEach((img) => {
-    const rewritten = normalizeImageUrl(img.getAttribute("src"));
-    if (rewritten !== img.getAttribute("src")) img.setAttribute("src", rewritten);
-    // Long notes routinely carry dozens of screenshots; letting the browser skip
-    // the ones below the fold is the cheapest win available here. Card faces and
-    // the print/export roots stay eager — both are measured right after render.
-    if (lazyRoot) {
-      if (eagerBudget > 0) {
-        eagerBudget -= 1;
-        img.dataset.eagerImage = "1";
-        img.loading = "eager";
-        img.setAttribute("fetchpriority", "high");
-      } else {
-        img.loading = "lazy";
-      }
-      img.decoding = "async";
-    }
-    addDiagramZoomControl(img);
-  });
-
-  fitMarkdownTables(container, roots);
-  markMissingNoteLinks(scope);
-  await diagramWork;
-}
-
-// Grey out any [[reference]] whose target no longer exists, so a broken link is
-// visible while reading rather than only on the click that fails.
-//
-// Fire-and-forget and never awaited: it needs the deck index (and possibly a
-// cloud round trip on the very first call), and blocking the paint of a note on
-// that would be a poor trade for a styling detail. Links render in their normal
-// state and the broken ones fade a moment later.
-function markMissingNoteLinks(scope) {
-  const links = scopedQueryAll(scope, "a.note-link");
-  if (!links.length) return;
-  loadNoteLinkIndex().then((index) => {
-    for (const link of links) {
-      if (!link.isConnected) continue;
-      const parts = parseNoteLinkTarget(link.getAttribute("data-note-target") || "");
-      // A quick_notes pin isn't in the deck index; leave it alone rather than
-      // calling it broken on the strength of a lookup that never applied.
-      if (parts.cardId) continue;
-      const label = (link.getAttribute("data-note-title") || "").trim();
-      // A pipe-less label may carry a "#Heading" (see resolveNoteLink), and
-      // "[[#Proof]]" names a heading in THIS note, which always exists as far
-      // as the deck index is concerned. Comparing the whole label against deck
-      // titles would grey out both as broken.
-      const hash = label.indexOf("#");
-      const title = (hash === -1 ? label : label.slice(0, hash)).trim();
-      // Must reach the SAME verdict resolveNoteLink would, including its
-      // unique-title fallback — a link drawn as broken that opens perfectly
-      // well is its own bug, and the two tests drifting apart is how that
-      // happens. Both go through noteLinkEntryMatchesId / noteLinkEntriesByTitle.
-      const found = parts.id
-        ? index.some((entry) => noteLinkEntryMatchesId(entry, parts.id))
-          || noteLinkEntriesByTitle(index, label).length === 1
-        : !title || noteLinkEntriesByTitle(index, title).length > 0;
-      // An index that couldn't reach the account is missing every cloud-only
-      // deck, so it cannot say an id doesn't exist — only that it isn't in the
-      // half we have. Leave those links in their normal state: neutral is
-      // honest, grey is a claim. Title-form links are unaffected; they were
-      // never resolvable against decks this device has not pulled anyway.
-      if (!found && parts.id && !index.cloudComplete) {
-        link.classList.remove("is-missing");
-        continue;
-      }
-      link.classList.toggle("is-missing", !found);
-    }
-  }).catch((error) => console.warn("Could not check note links", error));
-}
-
-// Draws one batch of diagrams (mermaid and/or nomnoml). The source lives in
-// data-diagram and is only written into the element here, at render time, so a
-// deferred diagram never flashes its raw source on screen.
-async function renderDiagramNodes(nodes) {
-  const mermaidNodes = nodes.filter((node) => node.classList.contains("mermaid"));
-  const nomnomlNodes = nodes.filter((node) => node.classList.contains("nomnoml-diagram"));
-
-  nodes.forEach((node) => {
-    if (node.dataset.diagram) node.textContent = decodeURIComponent(node.dataset.diagram);
-    node.removeAttribute("data-processed");
-    node.classList.remove("is-diagram-pending");
-  });
-
-  if (mermaidNodes.length && await ensureMermaid()) {
-    // One diagram mermaid can't lay out rejects the whole batch, so a bad
-    // diagram must not take its neighbours' drawings down with it: retry the
-    // batch one node at a time and let only the broken one fail.
-    try {
-      await mermaid.run({ nodes: mermaidNodes });
-    } catch (error) {
-      console.warn("Mermaid render failed", error);
-      for (const node of mermaidNodes) {
-        if (node.querySelector("svg")) continue;
-        try {
-          await mermaid.run({ nodes: [node] });
-        } catch (nodeError) {
-          console.warn("Mermaid render failed", nodeError);
-        }
-      }
-    }
-  }
-
-  if (nomnomlNodes.length && await ensureNomnoml()) {
-    nomnomlNodes.forEach((node) => {
-      try {
-        const printTheme = Boolean(node.closest(".print-root"));
-        const svg = nomnoml.renderSvg(sourceWithNomnomlTheme(node.textContent, printTheme));
-        node.classList.add("nomnoml-light-theme");
-        node.innerHTML = svg;
-        node.querySelector("svg")?.classList.add("nomnoml-light-svg");
-        // The shell is created before the diagram is drawn now, so it can't pick
-        // nomnoml's light background up from the class it used to wait for.
-        if (node.parentElement?.classList.contains("diagram-shell")) {
-          node.parentElement.classList.add("nomnoml-light-shell");
-        }
-      } catch (err) {
-        console.warn("Nomnoml render error:", err);
-        node.textContent = "Error rendering Nomnoml: " + err.message;
-      }
-    });
-  }
-}
-
-// Notes frequently start at ## (or deeper) because the top-level # is reserved
-// for a document title elsewhere. Promote the whole heading tree so the
-// shallowest heading in the notes renders as <h1>: if the topmost level is ##,
-// it becomes #, ### becomes ##, and so on. Every heading is shifted by the same
-// amount, so the relative structure (and the derived TOC) is preserved. Only
-// affects the rendered notes view — the raw markdown and card parsing are left
-// untouched. Fenced code is skipped so a leading `#` in code isn't mistaken for
-// a heading.
-function promoteNotesHeadings(markdown) {
-  const lines = String(markdown || "").split("\n");
-  const levels = new Array(lines.length).fill(0);
-  let inFence = false;
-  let fenceChar = "";
-  let minLevel = 7;
-  lines.forEach((line, i) => {
-    const fence = line.match(/^\s*(```+|~~~+)/);
-    if (fence) {
-      if (!inFence) { inFence = true; fenceChar = fence[1][0]; }
-      else if (line.trim().startsWith(fenceChar)) { inFence = false; }
-      return;
-    }
-    if (inFence) return;
-    const heading = line.match(/^(#{1,6})\s+\S/);
-    if (heading) {
-      levels[i] = heading[1].length;
-      if (heading[1].length < minLevel) minLevel = heading[1].length;
-    }
-  });
-  const shift = minLevel <= 6 ? minLevel - 1 : 0;
-  if (shift <= 0) return String(markdown || "");
-  return lines.map((line, i) => (levels[i] ? "#".repeat(levels[i] - shift) + line.slice(levels[i]) : line)).join("\n");
-}
-
-// ── Incremental rendering ──────────────────────────────────────────────────
-// Flipping the notes between raw and rendered used to throw the entire rendered
-// DOM away and rebuild it: reparse, re-sanitize, re-highlight every code block,
-// re-typeset every formula and — the expensive part — redraw every mermaid
-// diagram. On a 230KB note that was ~9 seconds per toggle, for a document that
-// in the overwhelming majority of cases hadn't changed at all.
-//
-// So the render is now keyed by content. The preprocessed markdown is split into
-// its top-level blocks and each block's rendered nodes are remembered with the
-// block's exact source as the key. A re-render reuses the DOM of every block
-// whose source is byte-identical and only builds the ones that actually changed:
-// an unedited toggle touches nothing (and keeps your scroll position), a
-// one-paragraph edit re-renders one paragraph.
-//
-// Only the three editable surfaces are cached — the notes view and both card
-// faces, the ones a user toggles in and out of. Everything else (All Cards, the
-// print roots, the paste preview) renders once into a container it just built,
-// where a cache could never hit.
-const renderedBlockCache = new WeakMap(); // view -> { generation, source, blocks: [{key, nodes}] }
-const renderSequence = new WeakMap(); // view -> number, so a superseded render can bail
-// Bumped when something outside the markdown changes what a render would
-// produce (the mermaid theme), which retires every cached block.
-let renderGeneration = 0;
-
-export function invalidateRenderedBlockCache() {
-  renderGeneration += 1;
-}
-
-// ── Coalesced surface finalization ─────────────────────────────────────────
-// enhanceSurfaceImageControls re-lexes the WHOLE note (surfaceLexTokens),
-// enhanceSurfaceDiagramControls re-scans it for diagram fences, and
-// buildNotesToc re-queries every heading — each an O(whole document) pass.
-// renderMarkdown runs them once, but EVERY placeholder-upgrade batch (one per
-// scroll chunk on a large note) ran them again synchronously, turning a single
-// render into O(document) × O(number of scroll batches). That is what made a
-// large book crawl. These scans are idempotent and only exist to (re)bind the
-// token indices / heading list against the current DOM, so it's safe — and
-// vastly cheaper — to coalesce them: at most one pass per container per frame,
-// shared by the render tail and every upgrade batch that lands in the same
-// window.
-const surfaceFinalizeFrames = new WeakMap(); // container -> rAF id
-
-function finalizeRenderedSurface(container) {
-  const surface = imageSurfaceForView(container);
-  if (surface) {
-    enhanceSurfaceImageControls(surface);
-    enhanceSurfaceDiagramControls(surface);
-  }
-  if (container === el.notesView) {
-    buildNotesToc();
-    scheduleNotesBlockEstimate(container);
-  }
-}
-
-function scheduleSurfaceFinalize(container, { sync = false } = {}) {
-  if (sync) {
-    const pending = surfaceFinalizeFrames.get(container);
-    if (pending) {
-      cancelAnimationFrame(pending);
-      surfaceFinalizeFrames.delete(container);
-    }
-    finalizeRenderedSurface(container);
-    return;
-  }
-  if (surfaceFinalizeFrames.get(container)) return; // already queued this frame
-  const frame = requestAnimationFrame(() => {
-    surfaceFinalizeFrames.delete(container);
-    finalizeRenderedSurface(container);
-  });
-  surfaceFinalizeFrames.set(container, frame);
-}
-
-// ── Adaptive block-height estimate ─────────────────────────────────────────
-// `content-visibility: auto` needs a guess for how tall a block it hasn't laid
-// out yet will be (contain-intrinsic-size). That guess used to be a hardcoded
-// 120px, which is far too tall for ordinary prose: on a 400KB note the document
-// claimed 249,880px on first paint and shrank to 141,773px as the reader
-// scrolled through it — 43% of the scroll range evaporating across 124 separate
-// jumps. Every one of those is the scrollbar thumb resizing and the content
-// under the cursor sliding, which is what made a long note feel broken to
-// scroll, and it also quietly wrecked anything that restores a reading position
-// (the raw<->rendered toggle, jump-to-heading, cross-device resume) because the
-// height those compute against changed underneath them.
-//
-// The fix is to stop guessing globally and measure THIS note. What governs
-// scroll stability is the TOTAL height, not any individual block, so one
-// well-chosen number per note is enough — and beats a per-block model derived
-// from source length, which was tried and came out worse.
-//
-// Getting that number right needs care in two places that both burned a first
-// attempt at this:
-//
-// 1. A block whose layout content-visibility skipped reports the ESTIMATE from
-//    contain-intrinsic-size as its offsetHeight, not its content's height — not
-//    zero, as you might expect. Averaging "whatever is laid out right now"
-//    therefore mostly re-reads the number we ourselves just wrote, and each
-//    pass feeds on the last: on the 400KB note it climbed 120 -> 157px and made
-//    the drift worse (-55% instead of -43%). So the sample must FORCE layout on
-//    the blocks it measures (content-visibility: visible, restored right after)
-//    rather than trusting whatever geometry happens to be available.
-// 2. The sample has to be spread across the whole document, and a fixed stride
-//    aliases badly against repetitive structure — on an endnote chapter of
-//    alternating list/pre blocks a strided sample landed on the tall one nearly
-//    every time (+21%). A golden-ratio low-discrepancy sequence spreads the
-//    picks evenly without ever locking onto a period.
-//
-// The average is winsorized — every sample is clamped into the 10th..90th
-// percentile band before averaging — because block heights are nowhere near
-// normally distributed and a plain mean is at the mercy of a single outlier: one
-// 200-item list or one full-page image is enough to drag it wildly off (that
-// case measured -50% drift on a plain mean, -0.2% winsorized). Clamping the
-// tails rather than discarding them (a trimmed mean) matters on heterogeneous
-// notes, where the tall blocks are real content rather than freak values and
-// dropping them outright under-estimates: a note of mixed headings, quotes and
-// long paragraphs drifted +20.4% trimmed against +6.1% winsorized.
-//
-// Measured against real scroll-through drift on five note shapes — uniform
-// prose, an endnote chapter, a list-then-prose note, 1500 one-line paragraphs,
-// and mixed headings/quotes/paragraphs — this holds mean absolute drift to ~6%
-// and worst case to 20%, against 38%/65% for the fixed 120px it replaces.
-//
-// Deliberately measured ONCE per note and never revised while scrolling: a
-// revision re-sizes every not-yet-measured block at once, which is a single
-// enormous jump (61,812px was observed) rather than the gradual settling it was
-// meant to cure. Being approximately right before the reader starts moving is
-// worth far more than converging on exactly right while they read.
-const NOTES_ESTIMATE_MIN_PX = 24;
-const NOTES_ESTIMATE_MAX_PX = 900;
-// Under this there is nothing to gain: the browser lays out a screenful or two
-// eagerly anyway, so almost every block is real and the estimate is unused.
-const NOTES_ESTIMATE_MIN_BLOCKS = 60;
-const NOTES_ESTIMATE_SAMPLE_SIZE = 48;
-// Percentile band the sample is clamped into before averaging (winsorizing).
-const NOTES_ESTIMATE_WINSOR_RATIO = 0.10;
-// Successive multiples of this mod 1 never repeat and never clump — the
-// standard trick for spreading N picks over a range without aliasing.
-const GOLDEN_RATIO_CONJUGATE = 0.6180339887498949;
-
-let notesBlockEstimatePx = null;
-// The note the current estimate was measured against — a different note's
-// blocks say nothing about this one's.
-let notesBlockEstimateSource = null;
-let notesBlockEstimateFrame = 0;
-
-function measureNotesBlockEstimate(container) {
-  if (container !== el.notesView || !container) return;
-  if (notesBlockEstimatePx != null) return; // one measurement per note, by design
-
-  const blocks = [];
-  for (let i = 0; i < container.children.length; i += 1) {
-    const node = container.children[i];
-    if (node.nodeType === 1) blocks.push(node);
-  }
-  if (blocks.length < NOTES_ESTIMATE_MIN_BLOCKS) return;
-
-  const wanted = Math.min(NOTES_ESTIMATE_SAMPLE_SIZE, blocks.length);
-  const picked = [];
-  const seen = new Set();
-  for (let i = 0; picked.length < wanted && i < wanted * 4; i += 1) {
-    const index = Math.floor(((i * GOLDEN_RATIO_CONJUGATE) % 1) * blocks.length);
-    if (seen.has(index)) continue;
-    seen.add(index);
-    picked.push(blocks[index]);
-  }
-  if (!picked.length) return;
-
-  // Both loops stay separate from the read below so the forced layout happens
-  // once for the whole sample instead of once per block.
-  picked.forEach((node) => { node.style.contentVisibility = "visible"; });
-  // Border-box height only, deliberately WITHOUT margins. contain-intrinsic-size
-  // stands in for the element's own box; its margins sit outside it and are
-  // applied whether or not the contents were skipped. Adding them here also
-  // double-counted every collapsed margin between adjacent blocks (each gap
-  // counted once as the block above's bottom and again as the block below's
-  // top), which inflated the estimate by ~60% and left 30% of the drift in
-  // place even once the sampling itself was right.
-  const heights = picked.map((node) => node.offsetHeight);
-  picked.forEach((node) => { node.style.removeProperty("content-visibility"); });
-  // removeProperty leaves an empty style="" behind, which is invisible to the
-  // reader but makes a re-rendered block differ from a freshly built one —
-  // enough to fail the render-equivalence check the block cache is verified
-  // with. Deferred a frame because removing it inline here does not stick while
-  // the blocks are still being re-skipped by content-visibility. Blocks that
-  // carry real inline styles (a sized image) have style.length > 0 and keep theirs.
-  requestAnimationFrame(() => {
-    picked.forEach((node) => { if (!node.style.length) node.removeAttribute("style"); });
-  });
-
-  heights.sort((a, b) => a - b);
-  const at = (ratio) => heights[Math.min(heights.length - 1, Math.max(0, Math.floor(heights.length * ratio)))];
-  const low = at(NOTES_ESTIMATE_WINSOR_RATIO);
-  const high = at(1 - NOTES_ESTIMATE_WINSOR_RATIO);
-  const mean = heights.reduce((sum, h) => sum + Math.min(Math.max(h, low), high), 0) / heights.length;
-  if (!Number.isFinite(mean) || mean <= 0) return;
-
-  notesBlockEstimatePx = Math.min(NOTES_ESTIMATE_MAX_PX, Math.max(NOTES_ESTIMATE_MIN_PX, mean));
-  container.style.setProperty("--notes-block-estimate", `${Math.round(notesBlockEstimatePx)}px`);
-}
-
-// A new note's blocks have nothing to do with the previous one's, so the old
-// mean must not carry over — it would be applied to the first paint of content
-// it was never measured against.
-function resetNotesBlockEstimate() {
-  notesBlockEstimatePx = null;
-  el.notesView?.style.removeProperty("--notes-block-estimate");
-}
-
-function syncNotesBlockEstimateSource() {
-  if (notesBlockEstimateSource === state.notes) return;
-  notesBlockEstimateSource = state.notes;
-  resetNotesBlockEstimate();
-}
-
-// Deferred to a frame rather than run inline: reading offsetHeight forces
-// layout, and the render tail is the one moment we most want to hand back to
-// the browser so it can paint. A frame later the blocks near the viewport have
-// real geometry, which is exactly what this needs to sample.
-function scheduleNotesBlockEstimate(container) {
-  if (container !== el.notesView) return;
-  if (notesBlockEstimateFrame) return;
-  notesBlockEstimateFrame = requestAnimationFrame(() => {
-    notesBlockEstimateFrame = 0;
-    measureNotesBlockEstimate(el.notesView);
-  });
-}
-
-function isCachedRenderSurface(container) {
-  return container === el.notesView || container === el.questionView || container === el.answerView;
-}
-
-// The block boundaries of already-preprocessed markdown, as exact source slices.
-// marked's lexer is the authority on where one top-level block ends and the next
-// begins (the image-resize commits lean on the same guarantee), so a list with
-// blank lines between its items stays one block instead of being sliced into
-// several lists.
-//
-// Link reference definitions ([id]: url) are the one thing that isn't local to
-// its block: they produce no output of their own but any block in the document
-// can point at them, and marked collects them onto the token list as `.links`
-// rather than leaving them in the stream. Rebuilding them into a `prelude` that
-// is parsed in front of each block is what keeps `[text][id]` a link when its
-// definition lives twenty blocks away.
-function definitionPrelude(links) {
-  return Object.entries(links || {})
-    .map(([label, link]) => {
-      if (!link || typeof link.href !== "string" || /[\n\r]/.test(label)) return "";
-      const key = label.replace(/[\\[\]]/g, "\\$&");
-      const href = /\s/.test(link.href) ? `<${link.href}>` : link.href;
-      const title = link.title ? ` "${String(link.title).replace(/"/g, '\\"')}"` : "";
-      return `[${key}]: ${href}${title}`;
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-// Returns null when there's nothing to render block-wise.
-function splitPreparedBlocks(prepared) {
-  let tokens;
-  try {
-    tokens = marked.lexer(prepared);
-  } catch (error) {
-    return null;
-  }
-  const blocks = [];
-  for (const token of tokens) {
-    if (token.type === "space") continue;
-    if (typeof token.raw !== "string" || !token.raw.trim()) continue;
-    blocks.push(token.raw);
-  }
-  return blocks.length ? { blocks, prelude: definitionPrelude(tokens.links) } : null;
-}
-
-// A marker that survives sanitisation, so every changed block can be parsed and
-// sanitized in ONE pass and then split back into per-block HTML.
-const BLOCK_BREAK_HTML = '\n<hr data-recall-block-break="1">\n';
-const BLOCK_BREAK_RE = /<hr\b[^>]*\bdata-recall-block-break\b[^>]*>/;
-
-function renderPreparedBlocks(sources, prelude = "") {
-  const head = prelude ? prelude + "\n\n" : "";
-  // Parse each block on its own: marked needs a block in isolation to detect
-  // its structure (a heading, list, etc.). Joining them into ONE marked.parse
-  // call with an <hr> separator breaks that — headings after the first block
-  // come back as literal "## text" instead of <h2>, which is exactly the
-  // broken/blank content seen on large notes. The per-block parse is correct;
-  // the shared DOMPurify.sanitize pass below keeps it from being N sanitizes.
-  const joined = sources.map((source) => marked.parse(head + source)).join(BLOCK_BREAK_HTML);
-  const parts = DOMPurify.sanitize(joined, SANITIZE_CONFIG).split(BLOCK_BREAK_RE);
-  if (parts.length === sources.length) return parts;
-  // A marker was dropped, or the markdown contained one of its own. Either way
-  // the split can't be trusted — sanitize each block on its own instead.
-  return sources.map((source) => safeHtmlFromPrepared(head + source));
-}
-
-function nodesFromHtml(html) {
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  return Array.from(template.content.childNodes);
-}
-
-// Re-resolves a remembered block's nodes against the DOM as it is now. A node
-// can have been wrapped since it was cached (every image and diagram gets a
-// .diagram-shell, every table a .markdown-table-wrap), so what the block really
-// owns is the top-level ancestor; anything no longer under `container` is gone
-// and its block has to be re-rendered.
-function liveBlockNodes(container, nodes, claimed) {
-  const live = [];
-  nodes.forEach((node) => {
-    let top = node;
-    while (top && top.parentNode && top.parentNode !== container) top = top.parentNode;
-    if (!top || top.parentNode !== container || claimed.has(top)) return;
-    claimed.add(top);
-    live.push(top);
-  });
-  return live;
-}
-
-// Rebuilds `container`'s children to match `blocks`, reusing the DOM of every
-// block whose source is unchanged. Returns the new block list plus the nodes
-// that were freshly built, which are the only ones needing enhancement.
-function patchRenderedBlocks(container, blocks, prelude, cached) {
-  const pool = new Map(); // block source -> reusable node groups, in document order
-  if (cached) {
-    const claimed = new Set();
-    cached.blocks.forEach((entry) => {
-      const nodes = liveBlockNodes(container, entry.nodes, claimed);
-      if (!nodes.length) return;
-      const bucket = pool.get(entry.key);
-      if (bucket) bucket.push(nodes);
-      else pool.set(entry.key, [nodes]);
-    });
-  }
-
-  const groups = new Array(blocks.length);
-  const missing = [];
-  blocks.forEach((key, index) => {
-    const bucket = pool.get(key);
-    const reused = bucket && bucket.length ? bucket.shift() : null;
-    if (reused) groups[index] = reused;
-    else missing.push(index);
-  });
-
-  // Large notes used to get lightweight placeholder nodes here, upgraded to
-  // real content as they scrolled into view. That made the FIRST paint fast,
-  // but the IntersectionObserver/estimate/scroll-compensation machinery was
-  // fragile — it produced blank regions and jitter on big notes. The browser
-  // already skips laying out off-screen blocks natively via
-  // `content-visibility: auto` (see .notes-rendered > * in styles.css), which
-  // is robust and needs none of that. So build every missing block as real
-  // content now: the only cost is the synchronous marked.parse + one shared
-  // DOMPurify.sanitize pass, and the incremental block cache means the common
-  // raw<->rendered toggle (nothing edited) never pays it anyway.
-  const fresh = [];
-  if (missing.length) {
-    const parts = renderPreparedBlocks(missing.map((index) => blocks[index]), prelude);
-    missing.forEach((blockIndex, part) => {
-      const nodes = nodesFromHtml(parts[part] ?? "");
-      groups[blockIndex] = nodes;
-      nodes.forEach((node) => fresh.push(node));
-    });
-  }
-
-  // Walk the target order once: a node already in the right place is stepped
-  // over, anything else is moved (reused) or inserted (fresh) in front of the
-  // cursor. Whatever is left after the last block never made it into the new
-  // document and is dropped.
-  let cursor = container.firstChild;
-  groups.forEach((nodes) => {
-    nodes.forEach((node) => {
-      if (node === cursor) {
-        cursor = cursor.nextSibling;
-        return;
-      }
-      container.insertBefore(node, cursor);
-    });
-  });
-  while (cursor) {
-    const next = cursor.nextSibling;
-    container.removeChild(cursor);
-    cursor = next;
-  }
-
-  return {
-    blocks: blocks.map((key, index) => ({ key, nodes: groups[index] })),
-    fresh
-  };
-}
-
-// Rebuilding a view used to put every {{cloze}} back in its hidden state, and
-// the flip-all button is reset to match after each render. Reused blocks keep
-// whatever the reader flipped open, so hide them explicitly to keep that
-// contract — otherwise the button and the text disagree.
-function resetRenderedClozes(container) {
-  container.querySelectorAll(".cloze.is-revealed").forEach((node) => node.classList.remove("is-revealed"));
-}
-
-async function renderMarkdown(container, markdown, allowPlaceholder = false) {
-  let displayMarkdown = markdown;
-  if (allowPlaceholder && (!markdown || String(markdown).trim() === "")) {
-    if (container.closest(".all-card-question") || container.closest(".card-question")) {
-      displayMarkdown = "<div class='empty-placeholder'>Question</div>";
-    } else if (container.closest(".all-card-answer") || container.closest(".card-answer")) {
-      displayMarkdown = "<div class='empty-placeholder'>Answer</div>";
-    }
-  }
-  if (container === el.notesView) displayMarkdown = promoteNotesHeadings(displayMarkdown);
-
-  const cacheable = isCachedRenderSurface(container);
-  const cached = cacheable ? renderedBlockCache.get(container) : null;
-  // The whole point: same content, same theme, and the DOM on screen is already
-  // the answer. This is the raw → rendered toggle when nothing was edited.
-  if (cached && cached.generation === renderGeneration && cached.source === displayMarkdown) {
-    resetRenderedClozes(container);
-    return;
-  }
-
-  const sequence = (renderSequence.get(container) || 0) + 1;
-  renderSequence.set(container, sequence);
-
-  const prepared = preprocessSpecialBlocks(displayMarkdown);
-  const split = cacheable ? splitPreparedBlocks(prepared) : null;
-  let roots = null;
-  if (split) {
-    // Every block is parsed behind the document's link reference definitions, so
-    // a change to those changes what any block could render to: start over.
-    const reusable = cached && cached.prelude === split.prelude ? cached : null;
-    const patched = patchRenderedBlocks(container, split.blocks, split.prelude, reusable);
-    roots = patched.fresh;
-    resetRenderedClozes(container);
-    // Committed before the awaits below: another render can start while mermaid
-    // is drawing, and it must see the DOM as it actually is, not as it was.
-    renderedBlockCache.set(container, {
-      generation: renderGeneration,
-      source: displayMarkdown,
-      prelude: split.prelude,
-      blocks: patched.blocks
-    });
-  } else {
-    container.innerHTML = safeHtmlFromPrepared(prepared);
-    if (cacheable) renderedBlockCache.delete(container);
-  }
-
-  await enhanceRenderedMarkdown(container, roots);
-  // Images still waiting to upload live in IndexedDB behind a recall-img: URL,
-  // which no browser can load directly — swap in a blob URL so they're visible
-  // straight away rather than only after they eventually reach the cloud.
-  await hydrateLocalImages(roots || container);
-  if (renderSequence.get(container) !== sequence) return; // a newer render owns the view now
-  // Notes AND both card faces are editable surfaces, so all three get the
-  // resize/delete grips. Every other caller of renderMarkdown (All Cards, the
-  // print root, the paste preview, the Quick Notes board) renders read-only and
-  // imageSurfaceForView returns null for it. Always run over the whole surface,
-  // never just the fresh blocks: an inserted or deleted block shifts the token
-  // indices every other image's resize handler was bound to. Runs synchronously
-  // here (the print/export path reads the grips right after this resolves).
-  scheduleSurfaceFinalize(container, { sync: true });
-}
-
-function markdownTableColumnCount(table) {
-  return Array.from(table.rows).reduce((max, row) => {
-    const count = Array.from(row.cells).reduce((sum, cell) => sum + Math.max(1, cell.colSpan || 1), 0);
-    return Math.max(max, count);
-  }, 0);
-}
-
-function tableCellWeight(cell) {
-  const text = String(cell.textContent || "").replace(/\s+/g, " ").trim();
-  const longestWord = text.split(/\s+/).reduce((max, word) => Math.max(max, word.length), 0);
-  return Math.max(4, Math.min(80, text.length * 0.58 + longestWord * 0.9));
-}
-
-function applyMarkdownTableColumns(table) {
-  const columnCount = markdownTableColumnCount(table);
-  if (!columnCount) return;
-  table.style.setProperty("--markdown-table-columns", String(columnCount));
-
-  const weights = Array(columnCount).fill(4);
-  Array.from(table.rows).forEach((row) => {
-    let columnIndex = 0;
-    Array.from(row.cells).forEach((cell) => {
-      const span = Math.max(1, cell.colSpan || 1);
-      const weight = tableCellWeight(cell) / span;
-      for (let offset = 0; offset < span && columnIndex + offset < weights.length; offset += 1) {
-        weights[columnIndex + offset] = Math.max(weights[columnIndex + offset], weight);
-      }
-      columnIndex += span;
-    });
-  });
-
-  table.querySelector(":scope > colgroup")?.remove();
-  const colgroup = document.createElement("colgroup");
-  const total = weights.reduce((sum, value) => sum + value, 0) || 1;
-  weights.forEach((weight) => {
-    const col = document.createElement("col");
-    col.style.width = `${(weight / total) * 100}%`;
-    colgroup.appendChild(col);
-  });
-  table.insertBefore(colgroup, table.firstChild);
-}
-
-function markdownTableHeaderCells(table) {
-  if (table.tHead?.rows.length) {
-    return Array.from(table.tHead.rows[table.tHead.rows.length - 1].cells);
-  }
-
-  return Array.from(table.rows)
-    .find((row) => Array.from(row.cells).some((cell) => cell.tagName === "TH"))
-    ?.cells || [];
-}
-
-function markdownTableHeaders(table) {
-  const labels = [];
-  Array.from(markdownTableHeaderCells(table)).forEach((cell) => {
-    const label = String(cell.textContent || "").replace(/\s+/g, " ").trim();
-    const span = Math.max(1, cell.colSpan || 1);
-    for (let index = 0; index < span; index += 1) {
-      labels.push(label || `Column ${labels.length + 1}`);
-    }
-  });
-  return labels;
-}
-
-function applyMarkdownTableLabels(table) {
-  const labels = markdownTableHeaders(table);
-  const columnCount = markdownTableColumnCount(table);
-  while (labels.length < columnCount) {
-    labels.push(`Column ${labels.length + 1}`);
-  }
-  if (!labels.length) return;
-
-  const headerCells = new Set(Array.from(markdownTableHeaderCells(table)));
-  Array.from(table.rows).forEach((row) => {
-    let columnIndex = 0;
-    Array.from(row.cells).forEach((cell) => {
-      const span = Math.max(1, cell.colSpan || 1);
-      if (!headerCells.has(cell)) {
-        cell.dataset.label = labels[columnIndex] || `Column ${columnIndex + 1}`;
-      }
-      columnIndex += span;
-    });
-  });
-}
-
-function wrapMarkdownTable(table) {
-  if (table.parentElement?.classList.contains("markdown-table-wrap")) return table.parentElement;
-  const wrapper = document.createElement("div");
-  wrapper.className = "markdown-table-wrap";
-  table.parentNode.insertBefore(wrapper, table);
-  wrapper.appendChild(table);
-  return wrapper;
-}
-
-function markdownTableFits(table, wrapper) {
-  const allowance = 1;
-  if (table.scrollWidth > wrapper.clientWidth + allowance) return false;
-  return Array.from(table.cells || table.querySelectorAll("th, td"))
-    .every((cell) => cell.scrollWidth <= cell.clientWidth + allowance);
-}
-
-// Shrink-to-fit for one table: a binary search over font sizes, each step
-// reading layout back. That's up to ten forced layouts of the whole document per
-// table, which is why it's deferred until the table is nearly on screen (see
-// runNearViewportAndDefer) — a note with 130 tables spent 1.6s of its render
-// here, all of it on tables nobody was looking at.
-function fitMarkdownTableFont(table) {
-  const wrapper = table.parentElement;
-  if (!wrapper?.classList.contains("markdown-table-wrap") || !wrapper.clientWidth) return;
-
-  if (!table.dataset.baseFontSize) {
-    table.dataset.baseFontSize = String(parseFloat(getComputedStyle(table).fontSize) || 16);
-  }
-
-  const baseFontSize = parseFloat(table.dataset.baseFontSize) || 16;
-  const minimumFontSize = 7;
-  table.style.fontSize = `${baseFontSize}px`;
-
-  if (styleMobileMedia?.matches) return;
-
-  if (markdownTableFits(table, wrapper)) return;
-
-  let low = minimumFontSize;
-  let high = baseFontSize;
-  let best = low;
-
-  for (let index = 0; index < 10; index += 1) {
-    const mid = (low + high) / 2;
-    table.style.fontSize = `${mid}px`;
-    if (markdownTableFits(table, wrapper)) {
-      best = mid;
-      low = mid;
-    } else {
-      high = mid;
-    }
-  }
-
-  table.style.fontSize = `${Math.max(minimumFontSize, best - 0.25)}px`;
-}
-
-function fitMarkdownTableBatch(tables) {
-  tables.forEach(fitMarkdownTableFont);
-}
-
-function fitMarkdownTables(container, roots = null) {
-  const tables = scopedQueryAll(roots || container, "table").filter((table) => {
-    // Genuine markdown tables always live inside a `.rendered` block. Skip
-    // anything else (e.g. the structural <table> the Cornell HTML/Word
-    // export uses for its question/answer columns) so this auto-fit pass
-    // doesn't reflow layout tables it was never meant to touch.
-    if (table.closest("pre") || !table.closest(".rendered")) return false;
-    // Cheap, layout-free preparation stays eager: the mobile per-cell labels and
-    // the column sizing are pure DOM writes, and a table scrolled past before
-    // its fit runs must still be structurally correct.
-    wrapMarkdownTable(table);
-    applyMarkdownTableLabels(table);
-    applyMarkdownTableColumns(table);
-    return true;
-  });
-
-  runNearViewportAndDefer(tables, deferrableRenderRoot(container), fitMarkdownTableBatch);
-}
-
-// Debounced, not just rAF-coalesced. Callers include the style panel's `input`
-// handler, which fires continuously while a slider is dragged — and each run
-// re-queries every `.rendered` surface and re-fits every table in it, where
-// fitMarkdownTableFont is a ~10-step binary search that reads scrollWidth on
-// the table and every cell (a forced layout per step). Once per frame of a drag
-// is far too often for work whose result only matters once the drag stops.
-const MARKDOWN_TABLE_FIT_DEBOUNCE_MS = 120;
-let markdownTableFitTimer = 0;
-
-export function scheduleMarkdownTableFit() {
-  cancelAnimationFrame(markdownTableFitFrame);
-  if (markdownTableFitTimer) clearTimeout(markdownTableFitTimer);
-  markdownTableFitTimer = setTimeout(() => {
-    markdownTableFitTimer = 0;
-    markdownTableFitFrame = requestAnimationFrame(() => {
-      document.querySelectorAll(".rendered").forEach((node) => fitMarkdownTables(node));
-    });
-  }, MARKDOWN_TABLE_FIT_DEBOUNCE_MS);
-}
-
-function addDiagramZoomControl(node) {
-  if (node.closest("#printRoot")) return;
-  if (node.parentElement?.classList.contains("diagram-shell")) return;
-
-  const shell = document.createElement("div");
-  shell.className = "diagram-shell";
-  if (node.classList.contains("nomnoml-light-theme")) {
-    shell.classList.add("nomnoml-light-shell");
-  }
-  const button = document.createElement("button");
-  button.className = "diagram-zoom";
-  button.type = "button";
-  button.textContent = "Zoom";
-  button.addEventListener("click", async () => {
-    // A diagram whose drawing is still queued (below the fold in a long note)
-    // has nothing to zoom into yet — draw it first.
-    if (node.classList.contains("is-diagram-pending")) await flushDeferredWork(node);
-    openDiagramModal(node);
-  });
-
-  node.parentNode.insertBefore(shell, node);
-  shell.appendChild(node);
-  shell.appendChild(button);
-}
-
-let currentDiagramZoom = null;
-const diagramZoomRange = {
-  min: 0.2,
-  max: 8
-};
-
-function clampDiagramScale(value) {
-  return Math.min(diagramZoomRange.max, Math.max(diagramZoomRange.min, value));
-}
-
-function diagramViewportCenter() {
-  const rect = el.diagramModalBody.getBoundingClientRect();
-  return {
-    x: rect.width / 2,
-    y: rect.height / 2
-  };
-}
-
-function diagramLocalPoint(point) {
-  if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-    return { x: point.x, y: point.y };
-  }
-  const rect = el.diagramModalBody.getBoundingClientRect();
-  return {
-    x: point.clientX - rect.left,
-    y: point.clientY - rect.top
-  };
-}
-
-function zoomDiagramTo(scale, focalPoint = diagramViewportCenter()) {
-  if (!currentDiagramZoom) return;
-  const nextScale = clampDiagramScale(scale);
-  const focal = diagramLocalPoint(focalPoint);
-  const anchorX = (focal.x - currentDiagramZoom.x) / currentDiagramZoom.scale;
-  const anchorY = (focal.y - currentDiagramZoom.y) / currentDiagramZoom.scale;
-  currentDiagramZoom.scale = nextScale;
-  currentDiagramZoom.x = focal.x - anchorX * nextScale;
-  currentDiagramZoom.y = focal.y - anchorY * nextScale;
-  applyDiagramTransform();
-}
-
-function zoomDiagramBy(multiplier) {
-  if (!currentDiagramZoom) return;
-  zoomDiagramTo(currentDiagramZoom.scale * multiplier);
-}
-
-function diagramPointers() {
-  return Array.from(currentDiagramZoom?.pointers.values() || []);
-}
-
-function pointerDistance(points) {
-  return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
-}
-
-function pointerCenter(points) {
-  return {
-    x: (points[0].x + points[1].x) / 2,
-    y: (points[0].y + points[1].y) / 2
-  };
-}
-
-function isVectorDiagramContent(content) {
-  return content instanceof SVGElement;
-}
-
-function baseDiagramSize(content) {
-  const rect = content.getBoundingClientRect();
-  const viewBox = content instanceof SVGElement ? content.viewBox?.baseVal : null;
-  if (viewBox?.width && viewBox?.height) {
-    return {
-      width: viewBox.width,
-      height: viewBox.height
-    };
-  }
-  if (content instanceof HTMLImageElement && content.naturalWidth && content.naturalHeight) {
-    return {
-      width: content.naturalWidth,
-      height: content.naturalHeight
-    };
-  }
-  return {
-    width: rect.width || Number(content.getAttribute("width")) || 1,
-    height: rect.height || Number(content.getAttribute("height")) || 1
-  };
-}
-
-function applyDiagramTransform() {
-  if (!currentDiagramZoom?.content) return;
-  const { content, scale, x, y, baseWidth, baseHeight, isVector } = currentDiagramZoom;
-  if (isVector) {
-    content.style.width = `${baseWidth}px`;
-    content.style.height = `${baseHeight}px`;
-  }
-
-  content.style.transform = `matrix(${scale}, 0, 0, ${scale}, ${x}, ${y})`;
-}
-
-function beginDiagramPan(point) {
-  if (!currentDiagramZoom) return;
-  const local = diagramLocalPoint(point);
-  currentDiagramZoom.mode = "pan";
-  currentDiagramZoom.panStartX = currentDiagramZoom.x;
-  currentDiagramZoom.panStartY = currentDiagramZoom.y;
-  currentDiagramZoom.pointerStartX = local.x;
-  currentDiagramZoom.pointerStartY = local.y;
-}
-
-function beginDiagramPinch() {
-  if (!currentDiagramZoom) return;
-  const points = diagramPointers();
-  if (points.length < 2) return;
-
-  const center = pointerCenter(points);
-  currentDiagramZoom.mode = "pinch";
-  currentDiagramZoom.pinchStartDistance = pointerDistance(points) || 1;
-  currentDiagramZoom.pinchStartScale = currentDiagramZoom.scale;
-  currentDiagramZoom.pinchAnchorX = (center.x - currentDiagramZoom.x) / currentDiagramZoom.scale;
-  currentDiagramZoom.pinchAnchorY = (center.y - currentDiagramZoom.y) / currentDiagramZoom.scale;
-}
-
-function centerDiagramContent(content) {
-  if (!currentDiagramZoom || currentDiagramZoom.content !== content) return;
-  const bodyRect = el.diagramModalBody.getBoundingClientRect();
-  const { width, height } = baseDiagramSize(content);
-  currentDiagramZoom.baseWidth = width;
-  currentDiagramZoom.baseHeight = height;
-  const fitPadding = 24;
-  const fitScale = Math.min(
-    1,
-    Math.max(0.1, (bodyRect.width - fitPadding * 2) / Math.max(width, 1)),
-    Math.max(0.1, (bodyRect.height - fitPadding * 2) / Math.max(height, 1))
-  );
-
-  currentDiagramZoom.scale = clampDiagramScale(fitScale);
-  currentDiagramZoom.x = (bodyRect.width - width * currentDiagramZoom.scale) / 2;
-  currentDiagramZoom.y = (bodyRect.height - height * currentDiagramZoom.scale) / 2;
-  applyDiagramTransform();
-}
-
-function initializeDiagramZoom(content) {
-  const { width, height } = baseDiagramSize(content);
-  currentDiagramZoom = {
-    content,
-    isVector: isVectorDiagramContent(content),
-    baseWidth: width,
-    baseHeight: height,
-    scale: 1,
-    x: 0,
-    y: 0,
-    pointers: new Map(),
-    mode: "",
-    panStartX: 0,
-    panStartY: 0,
-    pointerStartX: 0,
-    pointerStartY: 0,
-    pinchStartDistance: 1,
-    pinchStartScale: 1,
-    pinchAnchorX: 0,
-    pinchAnchorY: 0
-  };
-  requestAnimationFrame(() => centerDiagramContent(content));
-}
-
-function resetDiagramZoom() {
-  currentDiagramZoom = null;
-}
-
-function openDiagramModal(node) {
-  lockPageScroll();
-  el.diagramModalBody.innerHTML = "";
-  el.diagramModalBody.classList.remove("nomnoml-light-modal-body");
-  if (node.tagName === "IMG") {
-    el.diagramModalBody.appendChild(node.cloneNode(true));
-  } else {
-    el.diagramModalBody.innerHTML = node.innerHTML;
-  }
-  el.diagramModal.hidden = false;
-  
-  const content = el.diagramModalBody.querySelector("svg, img");
-  if (content) {
-    content.classList.add("diagram-zoom-content");
-    if (content.classList.contains("nomnoml-light-svg")) {
-      el.diagramModalBody.classList.add("nomnoml-light-modal-body");
-    }
-    initializeDiagramZoom(content);
-  }
-}
-
-export function closeDiagramModal() {
-  el.diagramModal.hidden = true;
-  el.diagramModalBody.innerHTML = "";
-  el.diagramModalBody.classList.remove("nomnoml-light-modal-body");
-  resetDiagramZoom();
-  unlockPageScroll();
-}
-
-export function closeAllCardsPanel() {
-  allCardsRenderId += 1;
-  el.allCardsPanel.hidden = true;
-  unlockPageScroll();
-}
-
-function goToCard(cardId) {
-  let index = state.cards.findIndex(c => c.id === cardId);
-  if (index === -1) {
-    // Revert to studying all master cards
-    state.cards = state.masterCards.slice();
-    index = state.cards.findIndex(c => c.id === cardId);
-  }
-  if (index !== -1) {
-    state.current = index;
-    state.previewCard = null;
-    showCard();
-    closeAllCardsPanel();
-  } else {
-    setStatus("Card not found.", "error");
-  }
-}
-
-// ── Structural card undo/redo (add / delete / reorder) ─────────────────────
-// Deliberately scoped to the card array only, not text edits — question/answer/
-// notes textareas already get native per-keystroke undo from the browser, and
-// folding those into this stack would replace that fine-grained undo with
-// coarse snapshot jumps. Reset whenever a different deck's cards are loaded
-// (see resetStudyDeck) so Ctrl+Z can't reach across decks.
-const CARD_UNDO_LIMIT = 50;
-let cardUndoStack = [];
-let cardRedoStack = [];
-
-function snapshotCardsState() {
-  return {
-    masterCards: state.masterCards.map((c) => ({ ...c })),
-    cards: state.cards.map((c) => ({ ...c })),
-    statusById: { ...state.statusById },
-    current: state.current,
-  };
-}
-
-function pushCardUndoSnapshot(snapshot) {
-  cardUndoStack.push(snapshot);
-  if (cardUndoStack.length > CARD_UNDO_LIMIT) cardUndoStack.shift();
-  cardRedoStack = [];
-}
-
-export function resetCardUndoHistory() {
-  cardUndoStack = [];
-  cardRedoStack = [];
-}
-
-function restoreCardsState(snapshot) {
-  state.masterCards = snapshot.masterCards.map((c) => ({ ...c }));
-  state.cards = snapshot.cards.map((c) => ({ ...c }));
-  state.statusById = { ...snapshot.statusById };
-  state.current = state.cards.length ? Math.min(snapshot.current, state.cards.length - 1) : 0;
-  state.previewCard = null;
-  syncResults();
-  updateMeta();
-  showCard();
-  allCardsRenderId += 1;
-  renderAllCards();
-}
-
-function undoCardAction() {
-  if (!cardUndoStack.length) {
-    setStatus("Nothing to undo.");
-    return;
-  }
-  cardRedoStack.push(snapshotCardsState());
-  restoreCardsState(cardUndoStack.pop());
-  scheduleDeckAutosave();
-  setStatus("Undid last card change.");
-}
-
-function redoCardAction() {
-  if (!cardRedoStack.length) {
-    setStatus("Nothing to redo.");
-    return;
-  }
-  cardUndoStack.push(snapshotCardsState());
-  restoreCardsState(cardRedoStack.pop());
-  scheduleDeckAutosave();
-  setStatus("Redid card change.");
-}
-
-function deleteAllCard(cardId) {
-  showConfirmModal("Delete this card?", () => {
-    pushCardUndoSnapshot(snapshotCardsState());
-    state.masterCards = state.masterCards.filter(c => c.id !== cardId);
-    state.cards = state.cards.filter(c => c.id !== cardId);
-    delete state.statusById[cardId];
-    if (state.current >= state.cards.length) {
-      state.current = Math.max(0, state.cards.length - 1);
-    }
-    showCard();
-    renderAllCards();
-    setStatus(state.deckId ? "Card deleted locally. Sync to update the web deck." : "Card deleted. Ctrl+Z to undo.");
-  }, { confirmLabel: "Delete", danger: true });
-}
-
-function setAllCardStatus(cardId, status) {
-  if (state.statusById[cardId] === status) {
-    delete state.statusById[cardId];
-  } else {
-    state.statusById[cardId] = status;
-  }
-  syncResults();
-  updateMeta();
-  updateAllCardStatuses();
-  scheduleDeckAutosave();
-}
-
-function createBlankCard() {
-  // Random suffix: bare Date.now() collides when two cards are added within
-  // the same millisecond (rapid double-click on Add), and card ids must be
-  // globally unique in the cloud (see parseCards).
-  return { id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, question: '', answer: '' };
-}
-
-function refreshAllCardsAround(cardId, side = "question") {
-  allCardsRenderId += 1;
-  const renderId = allCardsRenderId;
-  return renderAllCards().then(async () => {
-    if (renderId !== allCardsRenderId) return null;
-    const item = Array.from(el.allCardsList.querySelectorAll(".all-card"))
-      .find((node) => node.dataset.cardId === cardId);
-    if (item && side === "answer") {
-      item.classList.add("is-flipped");
-      await ensureAllCardAnswer(item);
-    }
-    if (item) updateAllCardEditButton(item);
-    item?.scrollIntoView({ block: "nearest" });
-    item?.focus({ preventScroll: true });
-    return item || null;
-  });
-}
-
-function insertCardAfter(cardId) {
-  if (!state.masterCards.length && !state.deckTitle) {
-    setStatus("Create a new deck or import one first.", "error");
-    return;
-  }
-
-  const insertAfterIndex = state.masterCards.findIndex((card) => card.id === cardId);
-  if (insertAfterIndex < 0) return;
-
-  const currentCardId = state.cards[state.current]?.id || null;
-  const shouldRefreshActiveDeck = activeDeckMatchesMasterOrder();
-  pushCardUndoSnapshot(snapshotCardsState());
-  const newCard = createBlankCard();
-  state.masterCards.splice(insertAfterIndex + 1, 0, newCard);
-
-  if (shouldRefreshActiveDeck) {
-    state.cards = state.masterCards.slice();
-    state.current = currentCardId
-      ? Math.max(0, state.cards.findIndex((item) => item.id === currentCardId))
-      : 0;
-  }
-
-  state.previewCard = null;
-  updateMeta();
-  showCard();
-  refreshAllCardsAround(newCard.id).then((item) => {
-    if (item) openAllCardEditor(item, "question");
-  });
-  setStatus(state.deckId ? "Card inserted locally. Sync to update the web deck." : "Card inserted.");
-}
-
-function activeDeckMatchesMasterOrder() {
-  if (state.cards.length !== state.masterCards.length) return false;
-  return state.cards.every((card, index) => card.id === state.masterCards[index]?.id);
-}
-
-function clearAllCardDropTargets() {
-  el.allCardsList.querySelectorAll(".all-card").forEach((item) => {
-    item.classList.remove("is-dragging", "drop-before", "drop-after");
-  });
-}
-
-function finishMasterCardReorder(cardId, shouldRefreshActiveDeck, currentCardId) {
-  if (shouldRefreshActiveDeck) {
-    state.cards = state.masterCards.slice();
-    state.current = currentCardId
-      ? Math.max(0, state.cards.findIndex((item) => item.id === currentCardId))
-      : Math.min(state.current, Math.max(state.cards.length - 1, 0));
-  }
-
-  state.previewCard = null;
-  syncResults();
-  updateMeta();
-  showCard();
-
-  allCardsRenderId += 1;
-  const renderId = allCardsRenderId;
-  renderAllCards().then(() => {
-    if (renderId !== allCardsRenderId) return;
-    const movedItem = Array.from(el.allCardsList.querySelectorAll(".all-card"))
-      .find((item) => item.dataset.cardId === cardId);
-    movedItem?.scrollIntoView({ block: "nearest" });
-    movedItem?.focus({ preventScroll: true });
-  });
-  setStatus(state.deckId ? "Card order updated locally. Sync to update the web deck." : "Card order updated.");
-}
-
-function reorderMasterCard(cardId, targetCardId, placement) {
-  if (!cardId || !targetCardId || cardId === targetCardId) return;
-
-  const fromIndex = state.masterCards.findIndex((card) => card.id === cardId);
-  const targetIndex = state.masterCards.findIndex((card) => card.id === targetCardId);
-
-  if (fromIndex < 0 || targetIndex < 0) return;
-
-  const currentCardId = state.cards[state.current]?.id || null;
-  const shouldRefreshActiveDeck = activeDeckMatchesMasterOrder();
-  const beforeSnapshot = snapshotCardsState();
-  const [card] = state.masterCards.splice(fromIndex, 1);
-  let insertIndex = targetIndex + (placement === "after" ? 1 : 0);
-  if (fromIndex < insertIndex) insertIndex -= 1;
-  insertIndex = Math.min(Math.max(insertIndex, 0), state.masterCards.length);
-
-  if (insertIndex === fromIndex) {
-    state.masterCards.splice(fromIndex, 0, card);
-    return;
-  }
-
-  state.masterCards.splice(insertIndex, 0, card);
-  pushCardUndoSnapshot(beforeSnapshot);
-  finishMasterCardReorder(cardId, shouldRefreshActiveDeck, currentCardId);
-}
-
-function allCardDropPlacement(item, event) {
-  const rect = item.getBoundingClientRect();
-  return event.clientY > rect.top + rect.height / 2 ? "after" : "before";
-}
-
-function markAllCardDropTarget(item, placement) {
-  clearAllCardDropTargets();
-  item.classList.add(placement === "after" ? "drop-after" : "drop-before");
-  const draggedItem = Array.from(el.allCardsList.querySelectorAll(".all-card"))
-    .find((node) => node.dataset.cardId === draggedAllCardId);
-  draggedItem?.classList.add("is-dragging");
-}
-
-function handleAllCardDragStart(event) {
-  const item = closestElement(event.target, ".all-card");
-  if (!item || closestElement(event.target, "button, a, input, textarea")) {
-    event.preventDefault();
-    return;
-  }
-
-  draggedAllCardId = item.dataset.cardId;
-  item.classList.add("is-dragging");
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", draggedAllCardId);
-}
-
-function handleAllCardDragOver(event) {
-  if (!draggedAllCardId) return;
-  const item = closestElement(event.target, ".all-card");
-  if (!item) return;
-  if (item.dataset.cardId === draggedAllCardId) {
-    clearAllCardDropTargets();
-    item.classList.add("is-dragging");
-    return;
-  }
-
-  event.preventDefault();
-  event.dataTransfer.dropEffect = "move";
-  markAllCardDropTarget(item, allCardDropPlacement(item, event));
-}
-
-function handleAllCardDrop(event) {
-  if (!draggedAllCardId) return;
-  const item = closestElement(event.target, ".all-card");
-  if (!item || item.dataset.cardId === draggedAllCardId) return;
-
-  event.preventDefault();
-  const placement = allCardDropPlacement(item, event);
-  const droppedCardId = draggedAllCardId;
-  draggedAllCardId = "";
-  clearAllCardDropTargets();
-  reorderMasterCard(droppedCardId, item.dataset.cardId, placement);
-}
 
 function handleAllCardDragEnd() {
-  draggedAllCardId = "";
+  setDraggedAllCardId("");
   clearAllCardDropTargets();
 }
 
-function updateAllCardStatuses() {
+export function updateAllCardStatuses() {
   el.allCardsList.querySelectorAll(".all-card").forEach((node) => {
     const status = state.statusById[node.dataset.cardId] || "";
     node.dataset.status = status;
@@ -1890,7 +405,7 @@ function allCardVisibleSide(item) {
   return item?.classList.contains("is-flipped") ? "answer" : "question";
 }
 
-function updateAllCardEditButton(item) {
+export function updateAllCardEditButton(item) {
   const button = item?.querySelector("[data-all-edit-current]");
   if (!button) return;
   const editing = item.classList.contains("is-editing");
@@ -1935,7 +450,7 @@ function ensureAllCardEditor(item) {
   return editor;
 }
 
-function openAllCardEditor(item, side = allCardVisibleSide(item)) {
+export function openAllCardEditor(item, side = allCardVisibleSide(item)) {
   const card = allCardById(item?.dataset.cardId);
   const editor = ensureAllCardEditor(item);
   if (!card || !editor) return;
@@ -1992,7 +507,7 @@ function saveAllCardEditor(item) {
   setStatus(state.deckId ? "Card updated locally. Sync to update the web deck." : "Card updated.");
 }
 
-async function ensureAllCardAnswer(item) {
+export async function ensureAllCardAnswer(item) {
   if (item.dataset.answerRendered === "true") {
     adjustCornellRowHeight(item);
     return;
@@ -2353,7 +868,7 @@ function renderNotesView({ sameNote = false } = {}) {
     // that DID get replaced are unobserved by releaseDetachedDeferredWork() on
     // the next deferral pass, so skipping the wholesale release leaks nothing.
     notesScrolledSource = state.notes;
-    notesBlockEstimateSource = state.notes;
+    setNotesBlockEstimateSource(state.notes);
   } else {
     // A different note replaces every block, so everything queued against the old
     // one describes nodes that are about to be detached. Released here, while we
@@ -3746,7 +2261,7 @@ function ensureNotesHeadingIds() {
   return headings;
 }
 
-function buildNotesToc() {
+export function buildNotesToc() {
   if (!el.notesView || !el.notesTocList) return;
   notesTocHeadings = ensureNotesHeadingIds();
 
@@ -5469,7 +3984,7 @@ function invalidateNoteLinkIndex() {
   noteLinkIndexPromise = null;
 }
 
-async function loadNoteLinkIndex() {
+export async function loadNoteLinkIndex() {
   if (noteLinkIndexCache) return noteLinkIndexCache;
   if (noteLinkIndexPromise) return noteLinkIndexPromise;
   noteLinkIndexPromise = (async () => {
@@ -5569,7 +4084,7 @@ async function loadQuickNotePinIndex() {
 
 // Split "ld_abc#some-heading" / "qn:card_1" / "" into its parts. Pure string
 // work, no lookups — resolveNoteLink does those.
-function parseNoteLinkTarget(target) {
+export function parseNoteLinkTarget(target) {
   const raw = String(target || "").trim();
   if (!raw) return { id: "", heading: "", cardId: "" };
   if (raw.startsWith("qn:")) return { id: "", heading: "", cardId: raw.slice(3) };
@@ -5584,7 +4099,7 @@ function parseNoteLinkTarget(target) {
 //
 // The picker writes "Note › Heading" as the label of a heading link, so the
 // displayed name is trimmed back to the note's own title before comparing.
-function noteLinkEntriesByTitle(index, wanted) {
+export function noteLinkEntriesByTitle(index, wanted) {
   const name = String(wanted || "").split("›")[0].trim().toLowerCase();
   if (!name) return [];
   return index.filter((entry) => entry.title.trim().toLowerCase() === name);
@@ -7965,7 +6480,7 @@ function imageSurfaceFor(name) {
 // The surface that owns a rendered container, or null if it isn't one of the
 // three (the All Cards list, a print root, the paste preview, …) — those render
 // read-only and get no grips.
-function imageSurfaceForView(view) {
+export function imageSurfaceForView(view) {
   if (!view) return null;
   const name = IMAGE_SURFACE_NAMES.find((n) => renderTargetConfig(n).view === view);
   return name ? imageSurfaceFor(name) : null;
@@ -8415,7 +6930,7 @@ function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl, bou
 // check and is simply skipped (keeping only its Zoom pill) rather than consuming
 // a control slot. src is compared through normalizeImageUrl so a Drive link whose
 // rendered src was already rewritten still matches its raw markdown href.
-function enhanceSurfaceImageControls(surface) {
+export function enhanceSurfaceImageControls(surface) {
   const view = surface?.view;
   if (!view) return;
   const tokens = surfaceLexTokens(surface);
@@ -8514,7 +7029,7 @@ function commitDiagramWidth(surface, fenceIndex, px) {
   scheduleDeckAutosave();
 }
 
-function enhanceSurfaceDiagramControls(surface) {
+export function enhanceSurfaceDiagramControls(surface) {
   const view = surface?.view;
   if (!view) return;
   const fences = findDiagramFences(surface.getSource());
@@ -10785,7 +9300,7 @@ async function clearAllDeckSnapshots() {
   announceDeckStoreChange("clear", "");
 }
 
-function scheduleDeckAutosave() {
+export function scheduleDeckAutosave() {
   // After a storage-quota failure, stop scheduling further writes — the
   // toast already told the user, and hammering a full store just wastes CPU
   // and fires more confusing errors.
@@ -16837,7 +15352,7 @@ function currentCardCanMove() {
   return Boolean(state.previewCard || state.cards[state.current] || (state.cards.length > 0 && state.current === state.cards.length));
 }
 
-function closestElement(target, selector) {
+export function closestElement(target, selector) {
   if (target instanceof Element) return target.closest(selector);
   if (typeof target?.closest === "function") return target.closest(selector);
   if (typeof target?.parentElement?.closest === "function") return target.parentElement.closest(selector);
@@ -20352,7 +18867,7 @@ export function revokeLocalImageUrls() {
 // a render, since markdown-to-HTML leaves the custom scheme untouched.
 // `root` is a container, or the list of freshly rendered nodes the incremental
 // renderer just built (which may themselves be the images).
-async function hydrateLocalImages(root = document) {
+export async function hydrateLocalImages(root = document) {
   const nodes = Array.isArray(root)
     ? scopedQueryAll(root, `img[src^="${LOCAL_IMAGE_SCHEME}"]`)
     : root.querySelectorAll?.(`img[src^="${LOCAL_IMAGE_SCHEME}"]`);

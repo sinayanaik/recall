@@ -4,7 +4,8 @@
 
 import { themeStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { bumpAllCardsRenderId, invalidateRenderedBlockCache, renderAllCards, showCard, state } from "../main.js?v=__BUILD__";
+import { bumpAllCardsRenderId, renderAllCards, showCard, state } from "../main.js?v=__BUILD__";
+import { invalidateRenderedBlockCache } from "../render/block-cache.js?v=__BUILD__";
 import { themeAliases, themeCatalog } from "./theme-catalog.js?v=__BUILD__";
 
 export function themeById(themeId) {

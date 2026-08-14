@@ -1,6 +1,7 @@
 // Reading and writing the deck rows in the user's Supabase project, and the
 // payload shape both sides of the sync agree on.
 
+import { closeAllCardsPanel } from "../cards/all-cards-edit.js?v=__BUILD__";
 import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./net.js?v=__BUILD__";
 import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
@@ -8,7 +9,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { setKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { closeAllCardsPanel, discardNotesEditingForDeckSwap, flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, refreshSyncIndicatorBaseline, resetChromeAutoHide, revokeLocalImageUrls, saveDeckToLibrary, scheduleNoteJump, setViewMode, showCard, state, syncLocalLibraryMetaForDeck, updateMeta, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { discardNotesEditingForDeckSwap, flushPendingDeckAutosave, formatCardList, isQuickNotesDeck, normalizeCardStatus, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalDeckIndex, refreshSyncIndicatorBaseline, resetChromeAutoHide, revokeLocalImageUrls, saveDeckToLibrary, scheduleNoteJump, setViewMode, showCard, state, syncLocalLibraryMetaForDeck, updateMeta, writeCachedQuickNoteCategories, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
 import { closeImportPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
