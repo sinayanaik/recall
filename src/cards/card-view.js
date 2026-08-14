@@ -4,10 +4,12 @@ import { hasActiveDeck, updateMeta } from "./card-status.js?v=__BUILD__";
 import { syncResults } from "./study.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { commitEditIfActive, renderDeckEmptyState, resetClozeButton, scheduleDeckAutosave, scheduleLiveQuestionFit, setCardRawModePreferred, state } from "../main.js?v=__BUILD__";
+import { commitEditIfActive, resetClozeButton, scheduleLiveQuestionFit, setCardRawModePreferred, state } from "../main.js?v=__BUILD__";
 import { cardHasNoteLink } from "../notes/anchors.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
+import { renderDeckEmptyState } from "../sync/indicator.js?v=__BUILD__";
 import { maybeShowSwipeHint } from "../ui/deck-header.js?v=__BUILD__";
 
 export function transitionClassFor(direction, phase) {

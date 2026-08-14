@@ -8,8 +8,9 @@
 import { isMissingColumnError, isMissingNotesColumnError } from "../cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
-import { emptySyncStats, normalizeCardStatus } from "../main.js?v=__BUILD__";
+import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { syncTextChanged } from "./diff.js?v=__BUILD__";
+import { emptySyncStats } from "./stats.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Upsert one chunk of card rows, retrying without `category` if the database

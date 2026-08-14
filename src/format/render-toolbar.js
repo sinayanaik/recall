@@ -6,11 +6,12 @@ import { makeClozeFromSelection } from "./cloze.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX, makeHighlightFromSelection, selectionForRenderTarget } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { clozeTextareaSelection } from "./selection-tools.js?v=__BUILD__";
-import { applyInlineStyleProperty, clearInlineStyleProperty, resetClozeButton, saveQuickNote, scheduleDeckAutosave, scheduleLiveQuestionFit, state, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../main.js?v=__BUILD__";
+import { applyInlineStyleProperty, clearInlineStyleProperty, resetClozeButton, saveQuickNote, scheduleLiveQuestionFit, state, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../main.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
 import { isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 
 // Persist a question/answer edit to both the active deck and the master list

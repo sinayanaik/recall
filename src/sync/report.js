@@ -2,8 +2,8 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { describeSyncStats } from "../main.js?v=__BUILD__";
 import { restoreStashedNotes } from "./notes-conflict.js?v=__BUILD__";
+import { describeSyncStats } from "./stats.js?v=__BUILD__";
 
 // Shared HTML for a sync report — every deck reconcileAllDecks() touched,
 // what direction it went, and exactly what changed (cards added/updated/

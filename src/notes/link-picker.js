@@ -2,13 +2,14 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { readDeckSnapshot, state } from "../main.js?v=__BUILD__";
+import { state } from "../main.js?v=__BUILD__";
 import { notesAnchorPlainText } from "./anchors.js?v=__BUILD__";
 import { caretRectInBackdrop } from "./caret.js?v=__BUILD__";
 import { createLinkedNoteFlow, loadNoteLinkIndex } from "./note-links.js?v=__BUILD__";
 import { currentDeckKey } from "./scroll-anchor.js?v=__BUILD__";
 import { slugifyHeading } from "./toc.js?v=__BUILD__";
 import { noteLinkIdFor } from "../render/note-links.js?v=__BUILD__";
+import { readDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { currentKeyboardInset } from "../ui/style-settings.js?v=__BUILD__";
 

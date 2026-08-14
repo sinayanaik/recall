@@ -1,7 +1,7 @@
 // Making and removing clozes, and erasing a selection from the source.
 
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
-import { scheduleDeckAutosave } from "../main.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Wrap the located occurrence in {{ }} — or strip the braces if it's already

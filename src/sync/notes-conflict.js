@@ -5,7 +5,10 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
-import { NOTES_CONFLICT_SUFFIX, deleteDeckSnapshot, loadDeckFromLibrary, readDeckSnapshot, readLocalDeckIndex, refreshSyncIndicatorBaseline, state, writeDeckSnapshot, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { loadDeckFromLibrary, readLocalDeckIndex, state, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { deleteDeckSnapshot, readDeckSnapshot, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { NOTES_CONFLICT_SUFFIX } from "../storage/keys.js?v=__BUILD__";
+import { refreshSyncIndicatorBaseline } from "./indicator.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Put back the deck-notes body a pull replaced. The stash holds the copy this

@@ -4,9 +4,10 @@
 import { fetchCloudDeckList } from "../cloud/deck-list.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { deckPayloadSnapshot, downloadTextFile, statusByIdFromCards, touchWebDeckAccess, webDeckPayloadMarkdown } from "../cloud/web-decks.js?v=__BUILD__";
+import { normalizeCardStatus, slugifyFileName } from "./markdown.js?v=__BUILD__";
 import { buildDeckSql } from "./sql.js?v=__BUILD__";
 import { myDeckPayload } from "../library/my-decks-selection.js?v=__BUILD__";
-import { buildCornellFlatDocument, buildDocxBytes, buildNotesFlatDocument, exportCardsPdf, exportNotesFlatPdf, imageEmbedSuffix, isDeckTombstoned, listLocalDecks, normalizeCardStatus, prepareExportHtml, slugifyFileName, wrapStandaloneHtmlDocument } from "../main.js?v=__BUILD__";
+import { buildCornellFlatDocument, buildDocxBytes, buildNotesFlatDocument, exportCardsPdf, exportNotesFlatPdf, imageEmbedSuffix, isDeckTombstoned, listLocalDecks, prepareExportHtml, wrapStandaloneHtmlDocument } from "../main.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseExportContent } from "../ui/pickers.js?v=__BUILD__";
 

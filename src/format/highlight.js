@@ -6,8 +6,8 @@
 
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults } from "./render-toolbar.js?v=__BUILD__";
-import { scheduleDeckAutosave } from "../main.js?v=__BUILD__";
 import { SELECTION_TARGETS, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Highlighting is a literal <mark data-color="…"> in the markdown source —

@@ -8,8 +8,9 @@
 // locally and present in the cloud is either a deletion to push or a creation
 // to pull, and nothing in the rows themselves says which.
 
-import { normalizeCardStatus, tsMs } from "../main.js?v=__BUILD__";
+import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { normalizeSyncText } from "./diff.js?v=__BUILD__";
+import { tsMs } from "./stats.js?v=__BUILD__";
 
 // ── Per-card delete tombstones ──────────────────────────────────────────────
 // `dirty` alone cannot express "I deleted this card": a deleted card leaves no

@@ -5,12 +5,13 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS, makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults, renderTargetConfig } from "./render-toolbar.js?v=__BUILD__";
-import { scheduleDeckAutosave, state, toggleWrapPair } from "../main.js?v=__BUILD__";
+import { state, toggleWrapPair } from "../main.js?v=__BUILD__";
 import { createLinkedNoteFlow } from "../notes/note-links.js?v=__BUILD__";
 import { renderNotesView, setNotesScrolledSource } from "../notes/notes-view.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { activeEditingTarget, activeRenderedTarget, hideNotesSelectionButton, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
 import { noteLinkMarkupFor } from "../render/note-links.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 

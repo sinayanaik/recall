@@ -10,12 +10,14 @@ import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { generateLocalDeckId, getQuickNotesDeckId, listLocalDecks, loadDeckFromLibrary, openQuickNotesBoard, pushLibraryDeckToCloud, readLocalDeckIndex, refreshHighlightBackdrop, scheduleDeckAutosave, setQnReturnState, state, writeDeckSnapshot, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { generateLocalDeckId, getQuickNotesDeckId, listLocalDecks, loadDeckFromLibrary, openQuickNotesBoard, readLocalDeckIndex, refreshHighlightBackdrop, setQnReturnState, state, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
 import { notesAnchorPlainText } from "./anchors.js?v=__BUILD__";
 import { renderNotesView, setNotesScrolledSource } from "./notes-view.js?v=__BUILD__";
 import { currentDeckKey } from "./scroll-anchor.js?v=__BUILD__";
 import { ensureNotesHeadingIds, scrollNotesHeadingIntoView } from "./toc.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkAliasesFor, noteLinkEntryMatchesId, noteLinkMarkupFor } from "../render/note-links.js?v=__BUILD__";
+import { scheduleDeckAutosave, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { pushLibraryDeckToCloud } from "../sync/reconcile.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseDeckCategory } from "../ui/pickers.js?v=__BUILD__";
 

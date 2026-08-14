@@ -2,9 +2,9 @@
 // or several, cards or notes.
 
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
+import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { NOTES_BLOCK_PRESENT_RE, classifyCardSyntax, extractNotesFromMarkdown, hasExplicitCardSyntax, inferDeckTitle, normalizeMarkdown, parseCards, removeEmptyHeadingGroups, stripReaderMetadata, titleFromImportHint } from "./parse-cards.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { normalizeCardStatus } from "../main.js?v=__BUILD__";
 
 // Deck metadata lines webDeckPayloadMarkdown writes under the title. They are
 // bookkeeping — never notes text and never card content.

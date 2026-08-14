@@ -9,11 +9,14 @@ import { BACKUP_ASSET_INDEX, backupCategoryFromArchivePath, backupTimestamp, col
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { escapeHtml, escapeRegExp } from "../core/text.js?v=__BUILD__";
+import { normalizeCardStatus, slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { FOLDER_SEP, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
-import { LOCAL_IMAGE_SCHEME, cacheUploadedImageOffline, flushPendingImageUploads, flushPendingUntombstones, normalizeCardStatus, outboxHasToken, putOutboxImage, queuePendingUntombstones, quickNoteCategoriesDiffer, readDeckSnapshot, readLocalDeckIndex, slugifyFileName, storageFolderSlug, supabaseImagePathFromUrl, writeDeckSnapshot, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { LOCAL_IMAGE_SCHEME, cacheUploadedImageOffline, flushPendingImageUploads, flushPendingUntombstones, outboxHasToken, putOutboxImage, queuePendingUntombstones, readLocalDeckIndex, storageFolderSlug, supabaseImagePathFromUrl, writeLocalDeckIndex } from "../main.js?v=__BUILD__";
+import { readDeckSnapshot, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { dropTombstonesForLiveCards } from "../sync/cards.js?v=__BUILD__";
 import { normalizeSyncText, syncTextChanged } from "../sync/diff.js?v=__BUILD__";
+import { quickNoteCategoriesDiffer } from "../sync/stats.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // A parsed JSON node is either a multi-deck bundle ({decks:[...]}) or a single

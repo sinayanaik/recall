@@ -9,8 +9,8 @@
 import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "./supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { tsMs } from "../main.js?v=__BUILD__";
 import { showNotesConflictModal } from "../sync/notes-conflict.js?v=__BUILD__";
+import { tsMs } from "../sync/stats.js?v=__BUILD__";
 
 export async function fetchCloudDeckList() {
   const { data, error } = await withTimeout(
