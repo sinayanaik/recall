@@ -47,10 +47,10 @@ import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
-import { initNotesHeadFold } from "./notes/notes-head-fold.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
@@ -321,7 +321,14 @@ if (typeof ResizeObserver === "function") {
   const chromeSizeObserver = new ResizeObserver(() => measureChromeHeights());
   const appbarEl = document.querySelector(".appbar");
   if (appbarEl) chromeSizeObserver.observe(appbarEl);
-  if (el.viewModeToggle) chromeSizeObserver.observe(el.viewModeToggle);
+  // The ROW, matching what readChromeHeights measures. The row also holds the
+  // TOC button, the edit pill and the ⋯ menu, and those show and hide per view
+  // WITHOUT resizing the tabs inside — so observing only the toggle left
+  // --view-toggle-h stale, and .view-mode-row's `max-height: var(--view-toggle-h)`
+  // then clipped its own contents.
+  const viewModeRow = document.getElementById("viewModeRow");
+  if (viewModeRow) chromeSizeObserver.observe(viewModeRow);
+  else if (el.viewModeToggle) chromeSizeObserver.observe(el.viewModeToggle);
 }
 
 
@@ -680,13 +687,12 @@ el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
 
 onDomReady(initRenderToolbars);
 
-// After initRenderToolbars, which is what fills #notesRenderToolbar: the
-// overflow menu records where each button it moves came from, and the header's
-// measured height is only meaningful once the strip inside it exists.
+// After initRenderToolbars, which fills the selection pill's format slot: the
+// overflow menu records what it is moving, and both want the markup settled.
 onDomReady(initNotesHeadOverflow);
-onDomReady(initNotesHeadFold);
 onDomReady(initNotesTocFolding);
 onDomReady(initPagedNotes);
+onDomReady(initNotesCaretLine);
 
 
 // pointerdown (not click) so preventDefault preserves the live selection.

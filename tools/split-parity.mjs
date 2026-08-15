@@ -66,6 +66,110 @@ const ACCEPTED = {
     "six are now 11pt, with the hierarchy in weight, colour and a bottom " +
     "border whose weight and dash pattern track the on-screen ladder — Word " +
     "cannot draw a partial-width rule, so width is the one cue that is lost.",
+  // ── The raw <-> rendered round trip ──────────────────────────────────────
+  // "I want to stay in the same place when I switch." Measured on a 390px phone
+  // before these two: coming back from raw mode landed 32 paragraphs early, at
+  // every scroll position. Now within one paragraph at every position, on both
+  // a phone and a desktop.
+  commitNotesEditIfActive:
+    "Re-renders with sameNote — it IS the same note, you were editing it, not " +
+    "opening another. A bare renderNotesView() re-derives the measured " +
+    "block-height estimate and releases the deferred-work queue, re-sizing every " +
+    "off-screen block INCLUDING those above the viewport, so the position it " +
+    "then restores is computed against a document whose height changed " +
+    "underneath it.",
+  scrollRenderedNotesToRawOffset:
+    "Takes its needle from the start of the caret's LINE rather than from the " +
+    "caret itself. A caret resting mid-paragraph gave a needle of ordinary " +
+    "prose — '…to give the block a realistic height' — which recurs, so the " +
+    "search matched a different copy. A line start is where a markdown " +
+    "paragraph, heading or list item begins, so the needle is the distinctive " +
+    "part of the text rather than its middle.",
+
+  // ── Chunked notes (styles/19-notes-chunks.css) ───────────────────────────
+  // Above NOTES_CHUNK_MIN_BLOCKS the note's blocks are grouped into wrappers
+  // that carry the containment, taking the boxes the engine tracks on a 4.1MB
+  // note from 24,600 to ~600. Measured: 122ms -> 17ms per scroll frame, browser
+  // layout 853ms -> 41ms. Every one of these is a place that assumed a block is
+  // a DIRECT CHILD of the container.
+  liveBlockNodes:
+    "Stops at a chunk as well as at the container. Stopping only at the " +
+    "container resolves every block in a chunk to that same chunk, `claimed` " +
+    "lets exactly one through, and the other 39 read as gone — so every render " +
+    "of a chunked note would rebuild the whole note from source.",
+  patchRenderedBlocks:
+    "A chunked branch. The cursor walk steps over container.firstChild, which " +
+    "is a CHUNK, while the target order is per BLOCK; chunked notes re-home " +
+    "their blocks into freshly built wrappers instead. The flat branch is " +
+    "unchanged and is also what un-chunks a note that shrank below the " +
+    "threshold — the blocks move out one by one and the emptied wrappers are " +
+    "what the trailing sweep removes.",
+  measureNotesBlockEstimate:
+    "Samples the BLOCKS, not container.children — on a chunked note those are " +
+    "wrappers of 40, and the estimate would come out 40x too large for exactly " +
+    "the notes it matters most on. Also publishes --notes-chunk-estimate.",
+  approximateRawOffsetForBlock:
+    "Climbs to a chunk's child as well as the root's. Climbing past the block " +
+    "to the chunk finds nothing in entry.nodes, so this returned null for every " +
+    "block of a chunked note — and without its hint matchSnippetInSource falls " +
+    "back to the first match in the document: triple-click paragraph 600, land " +
+    "at paragraph 1.",
+  markNumberedEquations:
+    "Stops at a chunk too, so has-eqn-num-block lands on the block. On the " +
+    "chunk it would take the content-visibility exclusion with it and disable " +
+    "containment for all 40 of that chunk's blocks.",
+  blockAtNotesReadingLine:
+    "Same, for the hit-testing twin: probing the horizontal midpoint lands in " +
+    "the column gap in two-column mode, where closest('.notes-rendered > *') " +
+    "is null — so this returned null on every call. Also matches a chunk's " +
+    "child, since on a long note the direct children are wrappers of 40.",
+  findRenderedNoteRange:
+    "A paged search window, and the block list is now notesTopLevelBlocks(). " +
+    "Its window was built from scrollHeight/scrollTop, both meaningless when " +
+    "the note runs sideways (scrollTop is 0, scrollHeight === clientHeight), so " +
+    "it degenerated to the whole document and indexOf then took the FIRST " +
+    "occurrence of the phrase anywhere in the note — the wrong-copy failure the " +
+    "window exists to prevent. The binary search was invalid there too: paged " +
+    "document order runs along X, so block `bottom` values are not monotonic. " +
+    "Pages are, so the paged branch windows by page instead.",
+  notesBlockAtReadingLineGeometric:
+    "Delegates to firstVisibleNotesBlock when paged (its binary search rests " +
+    "on block `bottom` values being monotonic in document order, and paged " +
+    "document order runs along X), and reads notesTopLevelBlocks() rather than " +
+    "view.children so a chunked note is searched by block, not by wrapper.",
+  firstVisibleNotesBlock:
+    "Reads notesTopLevelBlocks() rather than view.children.",
+
+  // ── Formatting moved out of the notes header and into the selection pill ──
+  // Every button in that strip refuses with "Select some text in the notes
+  // first" unless there IS a selection, so a permanent row of them was a row
+  // that could do nothing while you read.
+  el:
+    "notesRenderToolbar removed (the element is gone from index.html, and a " +
+    "lookup that can only ever be null is exactly the kind of decoy this " +
+    "file's own header warns about); selectionFloatFormat added, the slot in " +
+    "the floating pill that the formatting controls moved into.",
+  resetNotesEditingUI:
+    "No longer un-hides #notesRenderToolbar on leaving raw mode; there is no " +
+    "such element.",
+  enterNotesEditing:
+    "No longer hides #notesRenderToolbar on entering raw mode; there is no " +
+    "such element. The raw editor's own toolbar is unaffected.",
+  createRenderToolbarHtml:
+    "A `highlight` option. The floating selection pill already carries a " +
+    "highlight swatch + colour menu driving the same renderFormatDefaults, so " +
+    "emitting the split control there too would put two identical controls " +
+    "side by side.",
+  initRenderToolbars:
+    "Fills the pill's format slot instead of #notesRenderToolbar.",
+  positionNotesSelectionButton:
+    "Stamps data-render-target on the pill. The pill now carries the inline " +
+    "formatting controls, which route through the shared " +
+    "[data-render-action] delegation — and that reads the target off the " +
+    "nearest [data-render-target] ancestor. The pill serves the notes AND both " +
+    "card faces, so the target has to follow the selection rather than be " +
+    "hard-coded in the markup.",
+
   // ── Paged reading mode (src/notes/paged-view.js) ─────────────────────────
   // #notesView gains columns and is paged with scrollLeft, so every "reveal
   // something in the notes" helper needs a branch that turns to a page instead
@@ -132,10 +236,6 @@ const ACCEPTED = {
     "on block `bottom` values being monotonic in document order; paged " +
     "document order runs along X, so they are all inside one viewport height " +
     "and the search converged on an arbitrary block near page 0.",
-  blockAtNotesReadingLine:
-    "Same, for the hit-testing twin: probing the horizontal midpoint lands in " +
-    "the column gap in two-column mode, where closest('.notes-rendered > *') " +
-    "is null — so this returned null on every call.",
   renderNotesViewPinned:
     "Pins by page when paged instead of correcting scrollTop, which is pinned " +
     "at 0 there. Reached by making a highlight or a cloze, so getting it wrong " +
@@ -449,7 +549,7 @@ const RESIDUAL_REWRITES = [
   // rest of the chrome — see src/notes/notes-head-overflow.js and
   // src/notes/notes-head-fold.js.
   [/(onDomReady\(initRenderToolbars\); )(document\.addEventListener\("pointerdown")/,
-   "$1onDomReady(initNotesHeadOverflow); onDomReady(initNotesHeadFold); onDomReady(initNotesTocFolding); onDomReady(initPagedNotes); $2"],
+   "$1onDomReady(initNotesHeadOverflow); onDomReady(initNotesTocFolding); onDomReady(initPagedNotes); onDomReady(initNotesCaretLine); $2"],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

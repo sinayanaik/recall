@@ -4,7 +4,7 @@
 // its text. Matching is bounded on purpose: an unbounded scan over a large note
 // is quadratic and froze the tab for tens of seconds.
 
-import { renderedBlockCache } from "../render/block-cache.js?v=__BUILD__";
+import { isTopLevelBlockParent, renderedBlockCache } from "../render/block-cache.js?v=__BUILD__";
 
 // ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
 // marked/the DOM give no source-position map back to the raw markdown, so this
@@ -231,10 +231,17 @@ export function approximateRawOffsetForBlock(root, source, node) {
   const cached = renderedBlockCache.get(root);
   if (!cached || !Array.isArray(cached.blocks) || !cached.blocks.length || !source) return null;
 
-  // Walk up to the top-level block — the cache is keyed on root's own children.
+  // Walk up to the top-level block. "Top level" is a direct child of root OR of
+  // one of its chunks — stopping only at root would climb past the block to the
+  // chunk, which is never in entry.nodes, so this returned null for every block
+  // of a chunked note. That costs the caller its position hint, and without the
+  // hint matchSnippetInSource falls back to the first match in the whole
+  // document: triple-clicking paragraph 600 lands you at paragraph 1.
   let topLevel = node;
-  while (topLevel && topLevel.parentElement !== root) topLevel = topLevel.parentElement;
-  if (!topLevel) return null;
+  while (topLevel?.parentElement && !isTopLevelBlockParent(topLevel.parentElement, root)) {
+    topLevel = topLevel.parentElement;
+  }
+  if (!topLevel || !isTopLevelBlockParent(topLevel.parentElement, root)) return null;
 
   let before = 0;
   let total = 0;

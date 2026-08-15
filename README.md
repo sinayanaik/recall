@@ -906,7 +906,7 @@ area of the app —
 | `sync/` | Two-way sync — the per-card merge, tombstones, push/pull, and the deletion guards |
 | `storage/` | The device's own copy: IndexedDB deck store, autosave, quota, the storage panel |
 | `library/` | My Decks: the local index, folders, rows, tiles, drag and drop, and reading a whole folder as one document |
-| `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache that keeps huge notes fast |
+| `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache (and block chunking) that keeps huge notes fast |
 | `notes/` | The notes view: editing, the caret, scroll anchoring, the foldable TOC, paged reading, selection, links |
 | `cards/` | Studying: the card view, swipe, the All Cards panel, deck actions |
 | `editor/` | The raw editor: its highlight mirror, text transforms, toolbars |

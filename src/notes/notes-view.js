@@ -10,7 +10,8 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
-import { scrollTextareaToOffset, textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
+import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
+import { textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
 import { applyNotesPagedLayout, isNotesPaged, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
@@ -165,7 +166,7 @@ export function resetNotesEditingUI() {
   el.notesEdit.hidden = true;
   el.notesView.hidden = false;
   el.notesEditToolbar.hidden = true;
-  if (el.notesRenderToolbar) el.notesRenderToolbar.hidden = false;
+  hideNotesCaretLine();
   el.editNotesBtn.classList.remove("is-editing");
   el.editNotesBtn.title = "Edit notes";
   hideNotesSelectionButton();
@@ -206,7 +207,14 @@ export function commitNotesEditIfActive() {
   // what used to make this look like it "worked" for a same-source re-render
   // — an incidental side effect, not a real position match. Explicitly aim
   // at the offset we just left, once the re-render settles.
-  renderNotesView().then(() => scrollRenderedNotesToRawOffset(resumeOffset, { smooth: false }));
+  // sameNote, because it IS the same note — you were editing it, not opening
+  // another one. A bare renderNotesView() re-derives the measured block-height
+  // estimate and releases the deferred-work queue, which re-sizes every
+  // off-screen block INCLUDING the ones above the viewport, so the position
+  // this line then restores is computed against a document that changes height
+  // underneath it. Measured on a 390px phone before this: coming back from raw
+  // mode landed 32 paragraphs early, every time, at every scroll position.
+  renderNotesView({ sameNote: true }).then(() => scrollRenderedNotesToRawOffset(resumeOffset, { smooth: false }));
   scheduleDeckAutosave();
   updateMeta();
 }
@@ -228,7 +236,6 @@ export function enterNotesEditing(cursorOffset = null) {
   el.notesView.hidden = true;
   el.notesEdit.hidden = false;
   el.notesEditToolbar.hidden = false;
-  if (el.notesRenderToolbar) el.notesRenderToolbar.hidden = true;
   el.editNotesBtn.classList.add("is-editing");
   el.editNotesBtn.title = "Back to preview";
   if (el.notesTocDrawer?.classList.contains("is-open")) closeNotesToc();
@@ -237,13 +244,20 @@ export function enterNotesEditing(cursorOffset = null) {
   // hasn't changed, and the input listener would mark the deck dirty and queue a
   // full autosave just for opening the editor.
   refreshHighlightBackdrop(el.notesEdit);
-  el.notesEdit.focus();
   // Assigning .value leaves the caret at the very end in most browsers, so
   // always place it explicitly — a matched offset when we have one, otherwise
   // the top of the notes. Never let a failed match silently dump you at the end.
   const pos = cursorOffset != null
     ? Math.max(0, Math.min(cursorOffset, el.notesEdit.value.length))
     : 0;
+  // Caret BEFORE focus. Focusing first made the browser reveal the caret at the
+  // END of the note and then reveal it again on setSelectionRange — two native
+  // scrolls to override instead of one, both landing after our own.
   el.notesEdit.setSelectionRange(pos, pos);
-  scrollTextareaToOffset(el.notesEdit, pos);
+  el.notesEdit.focus();
+  // Scroll to the caret and draw its line from ONE measurement, then correct
+  // once after the layout settles. Arriving from the rendered view, "did the
+  // jump land where I was reading?" is the first question, and a 1px blinking
+  // bar in a wall of markdown is not an answer you can find quickly.
+  revealNotesCaretAt(pos, { flash: true });
 }

@@ -185,8 +185,10 @@
   cursor: default;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .notes-rendered.is-paged {
-    scroll-behavior: auto;
-  }
+/* No `scroll-behavior: smooth` here, deliberately. The page turn is tweened in
+   JS (goToNotesPage) so that every turn takes the same 260ms regardless of
+   distance; a CSS smooth-scroll on the same element would animate our own
+   per-frame scrollLeft writes on top of that, which reads as lag. */
+.notes-rendered.is-paged {
+  scroll-behavior: auto;
 }

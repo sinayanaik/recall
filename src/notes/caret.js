@@ -105,8 +105,149 @@ export function visualLineTopForOffset(textarea, pos) {
     // converts a viewport rect straight into scroll-content space.
     return hit.rect.top - box.top - hit.backdrop.clientTop + hit.backdrop.scrollTop;
   }
-  const padTop = parseFloat(getComputedStyle(textarea).paddingTop) || 0;
-  return lineIndexAtOffset(textarea.value, pos) * textareaLineHeight(textarea) + padTop;
+  return wrappedLineTopEstimate(textarea, pos);
+}
+
+// ── The no-mirror estimate ─────────────────────────────────────────────────
+//
+// Plain mode has no mirror to measure, and the old estimate here was
+// `newlinesBefore * lineHeight`, which is the very defect described above: it
+// counts hard line breaks and ignores every wrapped row, so it undershoots
+// monotonically. On a plain-mode note (by definition over 60,000 characters)
+// that is enough to put the jump — and the caret ribbon drawn from the same
+// number — most of a screen away from the caret, growing with depth.
+//
+// So estimate the WRAPPED rows, and then use them only as a RATIO of the
+// textarea's real scrollHeight. The ratio is what makes this hold up: the
+// characters-per-row figure is a guess (proportional font, variable content),
+// but the same guess is applied to the prefix and to the whole value, so a
+// uniform bias in it cancels instead of accumulating.
+function averageCharWidth(textarea) {
+  const style = getComputedStyle(textarea);
+  const font = style.font || `${style.fontSize} ${style.fontFamily}`;
+  if (averageCharWidth.font === font) return averageCharWidth.width;
+  let width = 0;
+  try {
+    const ctx = (averageCharWidth.ctx ||= document.createElement("canvas").getContext("2d"));
+    ctx.font = font;
+    // Lowercase-heavy sample: markdown prose, not an alphabet parade, which
+    // over-weights the wide capitals.
+    const sample = "the quick brown fox jumps over the lazy dog, 0123456789";
+    width = ctx.measureText(sample).width / sample.length;
+  } catch {
+    width = 0;
+  }
+  if (!(width > 0)) width = parseFloat(style.fontSize) * 0.5 || 8;
+  averageCharWidth.font = font;
+  averageCharWidth.width = width;
+  return width;
+}
+
+// Visual rows occupied by value[0..end), counting soft wraps.
+function wrappedRowsBefore(value, end, charsPerRow) {
+  let rows = 0;
+  let lineStart = 0;
+  let at = value.indexOf("\n");
+  while (at !== -1 && at < end) {
+    rows += Math.max(1, Math.ceil((at - lineStart) / charsPerRow));
+    lineStart = at + 1;
+    at = value.indexOf("\n", lineStart);
+  }
+  // The partial line the offset sits on contributes the rows above the offset,
+  // not the rows of the whole line.
+  if (end > lineStart) rows += Math.floor((end - lineStart) / charsPerRow);
+  return rows;
+}
+
+export function wrappedLineTopEstimate(textarea, pos) {
+  const style = getComputedStyle(textarea);
+  const padTop = parseFloat(style.paddingTop) || 0;
+  const padBottom = parseFloat(style.paddingBottom) || 0;
+  const value = textarea.value;
+  const inner = textarea.clientWidth
+    - (parseFloat(style.paddingLeft) || 0)
+    - (parseFloat(style.paddingRight) || 0);
+  const charsPerRow = Math.max(1, Math.floor(inner / averageCharWidth(textarea)));
+  const rowsBefore = wrappedRowsBefore(value, Math.min(pos, value.length), charsPerRow);
+  const rowsTotal = wrappedRowsBefore(value, value.length, charsPerRow) + 1;
+  const content = textarea.scrollHeight - padTop - padBottom;
+  if (rowsTotal > 0 && content > 0) return padTop + (rowsBefore / rowsTotal) * content;
+  return lineIndexAtOffset(value, pos) * textareaLineHeight(textarea) + padTop;
+}
+
+// ── The exact answer when there is no mirror ────────────────────────────────
+//
+// A textarea will not report where a character sits, but it WILL scroll one into
+// view — so ask it to, and read back how far it went. Park the scroll at the
+// bottom so `pos` is above the viewport, place the caret, and make the engine
+// perform its own minimal scroll-into-view: the caret's line then sits flush
+// with the top edge, which means the resulting scrollTop IS the line's top in
+// content space. If nothing moved, the caret was already inside the last screen;
+// come at it from scrollTop 0 instead and the minimum DOWNWARD scroll puts the
+// line flush with the bottom edge.
+//
+// blur()+focus() is what triggers the reveal — focusing an already-focused
+// element does nothing. That makes this expensive in the ways that matter to a
+// user (it moves focus, and on a phone it can blink the keyboard), so it is only
+// ever run for an explicit jump. It must never be reachable from `input`,
+// `keyup` or `scroll`; see the raw editor's scroll-hot-path rules.
+let caretProbeRunning = false;
+
+export function isCaretProbeRunning() {
+  return caretProbeRunning;
+}
+
+export function probeCaretTop(textarea, pos) {
+  const max = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+  if (max <= 0) return 0;
+  const active = document.activeElement === textarea;
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const direction = textarea.selectionDirection || "none";
+  const scroll = textarea.scrollTop;
+  const reveal = () => { textarea.blur(); textarea.focus(); };
+  let top = null;
+  caretProbeRunning = true;
+  try {
+    textarea.setSelectionRange(pos, pos);
+    textarea.scrollTop = max;
+    reveal();
+    const up = textarea.scrollTop;
+    if (up < max) {
+      top = up;
+    } else {
+      textarea.scrollTop = 0;
+      reveal();
+      const down = textarea.scrollTop;
+      top = down > 0 ? down + textarea.clientHeight - textareaLineHeight(textarea) : null;
+    }
+  } catch {
+    top = null;
+  } finally {
+    caretProbeRunning = false;
+  }
+  try {
+    textarea.setSelectionRange(start, end, direction);
+  } catch {
+    // A selection that no longer fits the value; the caller is about to place
+    // its own anyway.
+  }
+  textarea.scrollTop = scroll;
+  if (!active) textarea.blur();
+  return top;
+}
+
+// THE measurement for an explicit jump: exact in both modes. The mirror answers
+// directly when there is one; otherwise the probe does; and only if the engine
+// declines to reveal on focus does this fall back to an estimate.
+export function measuredCaretTop(textarea, pos) {
+  const hit = caretRectInBackdrop(textarea, pos);
+  if (hit) {
+    const box = hit.backdrop.getBoundingClientRect();
+    return hit.rect.top - box.top - hit.backdrop.clientTop + hit.backdrop.scrollTop;
+  }
+  const probed = probeCaretTop(textarea, pos);
+  return probed == null ? wrappedLineTopEstimate(textarea, pos) : probed;
 }
 
 // setSelectionRange alone doesn't reliably re-scroll a long textarea in every
@@ -114,8 +255,12 @@ export function visualLineTopForOffset(textarea, pos) {
 // line on the same reading line the rendered view samples from and restores to
 // (notesReadingLineOffset) — previously this centred while the sampler read
 // from near the top, so a round trip drifted by half a viewport.
-export function scrollTextareaToOffset(textarea, pos) {
-  const top = visualLineTopForOffset(textarea, pos);
+// `measured` lets a caller that has already located the caret hand the number
+// in, so the scroll and anything drawn at the caret cannot disagree — two
+// measurements taken a frame apart, across a reflow, is exactly how the ribbon
+// ended up somewhere the caret was not.
+export function scrollTextareaToOffset(textarea, pos, { measured = null } = {}) {
+  const top = measured == null ? measuredCaretTop(textarea, pos) : measured;
   const gap = textarea === el.notesEdit
     ? notesReadingLineOffset(textarea.clientHeight)
     : textarea.clientHeight / 2;

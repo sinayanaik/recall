@@ -8,9 +8,10 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { loadDeckFromLibrary, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
-import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
+import { revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
 import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
+import { NOTES_TOP_LEVEL_SELECTOR, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
@@ -390,20 +391,37 @@ export function buildNotesToc() {
 // scrolled to.
 export const NOTES_HEADING_SCROLL_GAP = 8;
 
+// Measured with the heading's CHUNK forced to lay out. On a chunked note the
+// containment sits on the wrapper, so a heading inside a skipped chunk answers
+// with its chunk's box — the same answer all 40 of its neighbours give, which is
+// a jump landing up to 40 blocks early.
 export function notesHeadingOffset(heading) {
-  return heading.getBoundingClientRect().top - el.notesView.getBoundingClientRect().top;
+  return withChunkRendered(heading, el.notesView, () =>
+    heading.getBoundingClientRect().top - el.notesView.getBoundingClientRect().top);
 }
+
+// How close counts as arrived, and how long we are willing to keep correcting.
+const HEADING_SETTLE_PX = 4;
+
+const HEADING_AIM_BUDGET_MS = 1500;
 
 // A long note doesn't know its own height until you get there: diagrams below
 // the fold are only drawn as they approach the viewport, images only load then,
-// and each one that arrives pushes everything under it down. So aiming once at
-// where the heading LOOKS like it is can land thousands of pixels off. Re-aim
-// until it settles (or until the corrections stop helping).
+// content-visibility chunks swap an estimated height for a real one, and each
+// one that arrives pushes everything under it down. So aiming once at where the
+// heading LOOKS like it is can land thousands of pixels off.
+//
+// The loop therefore runs to CONVERGENCE rather than to a fixed count. It used
+// to be six tries at a flat 130ms — on a big note the corrections were still
+// moving when that ran out, and it simply stopped wherever it had got to, which
+// is what "the TOC takes me to the wrong place" looked like. Now it stops when
+// the residual is small enough, or when two corrections in a row fail to
+// improve it (heights that will not settle — a lazily-loading image below the
+// fold — must not spin forever), or when the budget expires.
 export async function scrollNotesHeadingIntoView(heading) {
   if (!heading || !el.notesView) return;
-  // Paged mode: turn to the heading's page. No re-aiming loop, because there is
-  // nothing to converge on — a page boundary is exact, and the re-aiming exists
-  // for heights that keep changing under a vertical scroll.
+  // Paged mode: turn to the heading's page. Handled by revealInPagedNotes, which
+  // has its own convergence loop over PAGES rather than heights.
   if (revealInPagedNotes(heading)) return;
   const aim = (behavior) => {
     const target = el.notesView.scrollTop + notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP;
@@ -412,10 +430,25 @@ export async function scrollNotesHeadingIntoView(heading) {
   };
 
   aim("smooth");
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 130));
+  const until = performance.now() + HEADING_AIM_BUDGET_MS;
+  let best = Infinity;
+  let stalled = 0;
+  while (performance.now() < until) {
+    // A frame first so the scroll and any chunk that just realised are laid out,
+    // then a short settle for the smooth scroll and lazily-arriving content.
+    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 110)));
     if (!heading.isConnected) return;
-    if (Math.abs(notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP) <= 4) return;
+    const residual = Math.abs(notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP);
+    if (residual <= HEADING_SETTLE_PX) return;
+    // Not improving: one more correction is worth trying (the first measurement
+    // after a smooth scroll is taken mid-flight), two in a row is a stalemate.
+    if (residual >= best - 1) {
+      stalled += 1;
+      if (stalled >= 2) return;
+    } else {
+      stalled = 0;
+    }
+    best = Math.min(best, residual);
     aim("auto");
   }
 }
@@ -449,12 +482,13 @@ export function scrollNotesEditToHeadingIndex(index) {
   }
   if (targetLine < 0) return;
   const pos = lines.slice(0, targetLine).reduce((n, l) => n + l.length + 1, 0);
-  textarea.focus();
+  // Caret before focus, then the shared reveal — same path as opening the editor
+  // from the rendered view, so a raw-mode TOC jump gets the same exact
+  // measurement and the same arrival band. (revealNotesCaretAt also nudges the
+  // highlight backdrop, the workaround this call site used to carry alone.)
   textarea.setSelectionRange(pos, pos);
-  // scrollTextareaToOffset nudges the highlight backdrop itself now — this call
-  // site used to carry that workaround alone, which is why the other two callers
-  // (enterNotesEditing, toggleEditMode) could leave the mirror stale.
-  scrollTextareaToOffset(textarea, pos);
+  textarea.focus();
+  revealNotesCaretAt(pos, { flash: true });
 }
 
 // ── Why this is gated, and searched rather than swept ──────────────────────
@@ -571,7 +605,10 @@ export function blockAtNotesReadingLine() {
   const y = rect.top + notesReadingLineOffset(rect.height);
   const hit = document.elementFromPoint(rect.left + rect.width / 2, y);
   if (!hit || !view.contains(hit)) return null;
-  return hit.closest(NOTES_BLOCK_SELECTOR)?.closest(".notes-rendered > *") || hit.closest(".notes-rendered > *");
+  // NOTES_TOP_LEVEL_SELECTOR, not ".notes-rendered > *": on a long enough note
+  // the direct children are chunk wrappers of 40 blocks, and anchoring the
+  // reading position on one of those is 40 blocks of slop.
+  return hit.closest(NOTES_BLOCK_SELECTOR)?.closest(NOTES_TOP_LEVEL_SELECTOR) || hit.closest(NOTES_TOP_LEVEL_SELECTOR);
 }
 
 export function openNotesToc() {

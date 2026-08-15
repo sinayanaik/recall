@@ -674,6 +674,20 @@ export function positionNotesSelectionButton() {
     // read the live [start,end) directly; this capture only records WHICH
     // editor holds the selection).
     pillSelectionCapture = { targetName: editingTarget.name, editing: true, sel: null, markdown: text };
+    // The pill now carries the inline formatting controls, and those are driven
+    // by the shared [data-render-action] delegation, which reads the target off
+    // the nearest [data-render-target] ancestor. The pill serves the notes AND
+    // both card faces, so that target is whichever surface this selection is
+    // in — not a constant.
+    button.dataset.renderTarget = editingTarget.name;
+    // ...but NOT the formatting slot. Those controls locate the selection in
+    // the markdown by matching the RENDERED text (renderedSelectionStrings), so
+    // in raw-edit mode they have nothing to match against and silently do
+    // nothing. The raw editor's own toolbar is on screen there with the same
+    // bold / italic / underline / strike / code, operating on the textarea
+    // directly — offering a second, broken copy on the pill would be worse than
+    // offering none.
+    if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = true;
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
     // Splitting text into its own note only makes sense from a note. A card
@@ -730,6 +744,8 @@ export function positionNotesSelectionButton() {
     sel: renderedSelectionStrings(renderedTarget.view),
     markdown: cardBtn.dataset.selectionText,
   };
+  button.dataset.renderTarget = renderedTarget.name;
+  if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = false;
   // Highlight and erase work for every rendered face (notes AND card
   // question/answer — renderTargetConfig handles all three). Splitting out a
   // sub-note does not: see the editing branch above.

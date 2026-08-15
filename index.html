@@ -64,6 +64,7 @@
     <link rel="stylesheet" href="styles/16-mobile-reading.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/17-toc-fold.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/18-paged-notes.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/19-notes-chunks.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -153,7 +154,6 @@
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/link-picker.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/note-links.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/notes-head-fold.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-head-overflow.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/paged-view.js?v=__BUILD__">
@@ -400,10 +400,23 @@
 
       <section class="study-layout" aria-label="Flashcard study area">
         <section class="quiz-panel is-deck-empty" aria-label="Flashcard quiz">
-          <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="Deck view">
-            <button class="is-active" type="button" data-view-mode="cards">&#9634; Cards</button>
-            <button type="button" data-view-mode="notes">&#128221; Notes</button>
-            <button type="button" data-view-mode="highlights">&#128308; Highlights</button>
+          <!-- ONE control row for the whole notes view. The Cards/Notes/
+               Highlights tabs, plus the three notes controls that used to sit in
+               a second row of their own inside .notes-stage: the table of
+               contents, the ✎|👁 edit pill and the ⋯ menu. Those are moved in
+               here at boot by initNotesHeadControls, so their handlers (wired by
+               id, and by the [data-render-target] delegation on this row) come
+               with them.
+
+               data-render-target is on this row because the cloze / make-card /
+               pin buttons inside the ⋯ menu resolve their surface from the
+               nearest such ancestor. -->
+          <div class="view-mode-row" id="viewModeRow" data-render-target="notes">
+            <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="Deck view">
+              <button class="is-active" type="button" data-view-mode="cards">&#9634; Cards</button>
+              <button type="button" data-view-mode="notes">&#128221; Notes</button>
+              <button type="button" data-view-mode="highlights">&#128308; Highlights</button>
+            </div>
           </div>
 
           <div class="progress-track" aria-hidden="true">
@@ -509,8 +522,7 @@
                 <span class="face-label">Study Notes</span>
               </div>
               <div class="edit-toolbar" id="notesEditToolbar" hidden></div>
-              <div class="render-toolbar" id="notesRenderToolbar" data-render-target="notes" aria-label="Format the selected notes text"></div>
-              <!-- Three groups, separated by hairlines. Everything in this row
+                <!-- Three groups, separated by hairlines. Everything in this row
                    survives the switch into raw-edit mode; the row below it (the
                    render toolbar) is swapped out for the edit toolbar, which is
                    why the selection tools live down there and these don't.
@@ -542,11 +554,6 @@
                    menu sits inside .notes-head so the [data-render-target]
                    delegation still resolves for the ones that format a
                    selection. -->
-              <!-- Also phones only. The formatting strip is 224px of the ~310px
-                   a 360px phone has to spend on this row, and it is only ever
-                   useful with text selected — so on a phone it is opened when
-                   wanted rather than parked there all the time. -->
-              <button class="edit-card-btn notes-format-toggle-btn" id="notesFormatToggleBtn" type="button" aria-pressed="false" aria-controls="notesRenderToolbar" title="Text formatting" aria-label="Show text formatting" hidden><b aria-hidden="true">A</b></button>
               <button class="edit-card-btn notes-head-more-btn" id="notesHeadMoreBtn" type="button" aria-expanded="false" aria-haspopup="true" aria-controls="notesHeadMoreMenu" title="More notes tools" aria-label="More notes tools" hidden>&#8943;</button>
               <div class="notes-head-more-menu" id="notesHeadMoreMenu" hidden></div>
             </div>

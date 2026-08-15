@@ -16,10 +16,10 @@ import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
-import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
+import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
-import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { notesTopLevelBlocks, renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -256,6 +256,14 @@ export function findRenderedNoteRange(anchor, offset = null) {
     let node;
     while ((node = walker.nextNode())) collect(node);
   };
+  // Where each collected BLOCK begins in `full`, and roughly where it sits in
+  // the markdown source — so a needle that occurs more than once can be
+  // resolved to the copy nearest the position asked for. See pickMatch below.
+  const blockMarks = [];
+  const collectBlock = (block) => {
+    blockMarks.push({ start: full.length, approx: approximateRawOffsetForBlock(view, state.notes || "", block) });
+    collectAll(block);
+  };
 
   if (paged) {
     // Pages, like blocks, are non-decreasing in document order, so the same
@@ -265,7 +273,7 @@ export function findRenderedNoteRange(anchor, offset = null) {
     const centre = Math.round(fraction * Math.max(0, notesPageCount() - 1));
     const lo = centre - PAGED_SEARCH_PAGES;
     const hi = centre + PAGED_SEARCH_PAGES;
-    const blocks = view.children;
+    const blocks = notesTopLevelBlocks(view);
     const pageOf = (i) => notesPageForElement(blocks[i]);
     let low = 0;
     let high = blocks.length - 1;
@@ -278,7 +286,7 @@ export function findRenderedNoteRange(anchor, offset = null) {
     for (let i = first; i < blocks.length; i += 1) {
       if (blocks[i].nodeType !== 1) continue;
       if (pageOf(i) > hi) break;
-      collectAll(blocks[i]);
+      collectBlock(blocks[i]);
     }
   } else if (offset != null) {
     // Windowed: only descend into top-level blocks whose vertical span
@@ -290,7 +298,7 @@ export function findRenderedNoteRange(anchor, offset = null) {
     // auto` blocks: reading a rect forces the browser to lay one out, so the
     // old linear sweep un-skipped the entire document just to decide which
     // handful of blocks to read — on every toggle and every anchor jump.
-    const blocks = view.children;
+    const blocks = notesTopLevelBlocks(view);
     const topOf = (i) => blocks[i].getBoundingClientRect().top;
     let low = 0;
     let high = blocks.length - 1;
@@ -308,20 +316,51 @@ export function findRenderedNoteRange(anchor, offset = null) {
       const block = blocks[i];
       if (block.nodeType !== 1) continue;
       if (topOf(i) > winBottomView) break;
-      collectAll(block);
+      collectBlock(block);
     }
   } else {
     collectAll(view);
   }
   if (!segments.length) return null;
 
-  let matchStart = full.indexOf(needle);
+  // The NEAREST occurrence, not the first one.
+  //
+  // Taking the first match in the window is only right when the needle is
+  // unique, and in real prose it very often is not — a caret resting
+  // mid-paragraph gives a needle like "…to give the block a realistic height",
+  // which recurs. Measured on a 390px phone before this: returning from raw mode
+  // landed 32 paragraphs early at every scroll position, on exactly that needle.
+  // The window narrows the field but its left edge is not the answer; the same
+  // lesson is recorded for the source-side search in matchSnippetInSource.
+  //
+  // "Nearest" is measured in MARKDOWN offsets: each collected block knows
+  // roughly where it starts in the source (approximateRawOffsetForBlock), so a
+  // match inherits the estimate of the block it fell in and the one closest to
+  // the offset asked for wins. With no offset, or no estimates, this degrades to
+  // the first match — which is what it always did.
+  const pickMatch = (text) => {
+    if (!text) return -1;
+    const first = full.indexOf(text);
+    if (first === -1 || offset == null || !blockMarks.length) return first;
+    let best = first;
+    let bestDelta = Infinity;
+    for (let at = first; at !== -1; at = full.indexOf(text, at + 1)) {
+      let mark = null;
+      for (let i = 0; i < blockMarks.length && blockMarks[i].start <= at; i += 1) mark = blockMarks[i];
+      if (mark?.approx == null) continue;
+      const delta = Math.abs(mark.approx - offset);
+      if (delta < bestDelta) { bestDelta = delta; best = at; }
+    }
+    return best;
+  };
+
+  let matchStart = pickMatch(needle);
   let matchLen = needle.length;
   if (matchStart === -1) {
     // The rendered text collapses source whitespace differently — retry with a
     // short prefix, which is far likelier to survive verbatim.
     const prefix = needle.slice(0, 40).trim();
-    matchStart = prefix ? full.indexOf(prefix) : -1;
+    matchStart = pickMatch(prefix);
     if (matchStart === -1) return null;
     matchLen = prefix.length;
   }
@@ -368,7 +407,12 @@ export function estimateNotesScrollForOffset(offset) {
   // sideways — so the same proportional guess becomes a page number.
   if (estimateNotesPageForFraction(fraction)) return;
   markProgrammaticNotesScroll();
-  el.notesView.scrollTop = fraction * el.notesView.scrollHeight;
+  // Of the SCROLLABLE range, not of scrollHeight. A fraction of the full height
+  // overshoots by up to one viewport (fraction 1 asks for a scrollTop the
+  // scroller cannot reach and clamps, fraction 0.5 lands half a screen low), and
+  // this estimate exists to centre a text-search window on the target.
+  const range = Math.max(0, el.notesView.scrollHeight - el.notesView.clientHeight);
+  el.notesView.scrollTop = fraction * range;
 }
 
 // Puts `block` where rawOffsetForCurrentNotesScroll SAMPLES from, so that a
@@ -399,7 +443,19 @@ export function blockForRange(range) {
 export function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
   if (offset == null || !el.notesView || el.notesView.hidden) return;
   const notes = state.notes || "";
-  const forward = notes.slice(offset, offset + 60).trim();
+  // Snap BACK to the start of the line before taking the needle.
+  //
+  // The needle used to be "the 60 characters after the caret", and a caret
+  // resting mid-paragraph makes that a slice of ordinary prose — which in a
+  // real note recurs. Measured on a 390px phone: coming back from raw mode
+  // landed 32 paragraphs early at every scroll position, because the needle was
+  // "rose to give the block a realistic heigh" and the search took a different
+  // copy of it. A line start is where a markdown paragraph, heading or list item
+  // begins, so the needle taken from there is the distinctive part of the text
+  // rather than its middle.
+  const lineStart = notes.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  const from = Number.isFinite(lineStart) && lineStart >= 0 && lineStart <= offset ? lineStart : offset;
+  const forward = notes.slice(from, from + 80).trim();
   const backward = notes.slice(Math.max(0, offset - 60), offset).trim();
   const needle = forward || backward;
   if (!needle) return;

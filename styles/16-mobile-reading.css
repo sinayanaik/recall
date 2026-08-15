@@ -27,62 +27,28 @@
  *      and the view toggle, so scrolling down gives the note the whole screen.
  */
 
-/* ── (c) The notes header joins the fold ──────────────────────────────────
-   Deliberately OUTSIDE the mobile block, exactly like the .appbar rules it
-   mirrors at styles/12-notes.css:1210: the scroll-driven half of the collapse
-   is phone-gated in JS, but the pinned half (focus mode) works at every width.
+/* ── (c) The notes header is gone from read mode ──────────────────────────
+   Its three surviving controls — the table of contents, the ✎|👁 pill and the
+   ⋯ menu — were lifted into the Cards/Notes/Highlights row (see
+   liftNotesControlsIntoRow), so while reading there is nothing in it. It still
+   exists for RAW EDIT mode, where it hosts the editor's own toolbar.
 
-   --notes-head-h is measured and published by src/notes/notes-head-fold.js.
-   The 200px fallback only applies before the first measurement and is
-   deliberately generous — a max-height that is too large merely fails to clip.
-
-   No `transform` here, for the same reason .appbar has none: #notesTocDrawer is
-   positioned inside this subtree, and a non-`none` transform on an ancestor
-   makes that ancestor the containing block for it. */
+   This also retired src/notes/notes-head-fold.js and the --notes-head-h
+   variable it published: they existed only to fold this header away on scroll,
+   and an empty header folds itself. What is left to fold is the control row,
+   which #viewModeToggle's own --view-toggle-h already covers. */
 .notes-mode .notes-head {
-  max-height: var(--notes-head-h, 200px);
+  display: none;
 }
 
-body.chrome-ready .notes-mode .notes-head {
-  transition:
-    max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.16s linear,
-    margin 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-    padding 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-    border-width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* The :not(:has(…)) guard matches the appbar's: the ☰ drawer is a fixed
-   descendant of .appbar, and opacity:0 on a folded ancestor would fade it to
-   invisible even though it isn't clipped. Nothing in .notes-head escapes it the
-   same way, but keeping the two conditions identical means the two bars can
-   never disagree about whether the chrome is folded. */
-body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-head {
-  max-height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  border-bottom-width: 0;
-  opacity: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-/* The header is the .notes-stage's first row and the gap below it belongs to
-   the fold too — untransitioned it vanishes on frame 1, which is a 7px jolt at
-   the start of every collapse. */
-body.chrome-ready .notes-mode .notes-stage {
-  transition: gap 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-stage {
-  gap: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body.chrome-ready .notes-mode .notes-head,
-  body.chrome-ready .notes-mode .notes-stage {
-    transition: none;
-  }
+/* Rooted at the panel and matched by ID, NOT by
+   `.notes-stage:has(> .edit-textarea…)`. That child combinator cannot match:
+   the raw editor is wrapped in .highlight-textarea-wrapper by the highlight
+   mirror, so #notesEdit is a grandchild of .notes-stage, never a child. The
+   pre-existing rule at styles/10-editor.css:598 that hid the TOC button in raw
+   mode has the same shape and has therefore never fired. */
+.quiz-panel:has(#notesEdit:not([hidden])) .notes-head {
+  display: flex;
 }
 
 /* ── The ⋯ overflow menu ──────────────────────────────────────────────────
@@ -90,7 +56,7 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-sta
    which is inside .quiz-panel, so that panel's overflow:hidden cannot clip it —
    and an absolutely positioned box cannot be re-parented by a transform
    appearing on some ancestor the way a fixed one can. */
-.notes-head {
+.view-mode-row {
   position: relative;
 }
 
@@ -154,55 +120,10 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-sta
 
 @media (max-width: 720px) {
   /* ── (a) One row ───────────────────────────────────────────────────────
-     Undoes the full-width promotion at styles/10-editor.css:900. That rule
-     exists because the row was overfull; with six buttons now behind ⋯ it is
-     not — measured at 320px, the widest remaining run (☰ + B I U S </> + two
-     split controls + pill + ⋯) leaves room to spare.
-
-     `flex-wrap: wrap` is KEPT on the header, and the toolbar keeps
-     `overflow-x: visible`. Both are the safety net the comment at
-     styles/10-editor.css:911 spells out: .quiz-panel is overflow:hidden here,
-     so a run that overflows is not scrollable, it is gone. Wrapping turns any
-     future overflow into a visible second line instead of a missing button.
-
-     `overflow-x: auto` would be the other way to fit, and is the wrong one: the
-     colour and highlight menus are absolutely positioned inside .render-split,
-     and a scroll container on their ancestor would clip them. */
-  .notes-mode .notes-head > .render-toolbar {
-    order: 2;
-    flex: 1 0 100%;
-    width: 100%;
-    justify-content: center;
-    overflow-x: visible;
-  }
-
-  /* Collapsed by default: .is-format-collapsible is put on the header by
-     src/notes/notes-head-overflow.js whenever the phone layout is active, and
-     .is-format-open is what the A button adds.
-
-     Measured at 390px with the six ⋯ buttons already moved out, the row was
-     still ☰ 34 + strip 224 + pill 58 + ⋯ 26 + gaps 12 = 354px against 336px of
-     header, so the ⋯ wrapped and the header was two rows again. Collapsed it is
-     ☰ + A + pill + ⋯ ≈ 156px. */
-  .notes-mode .notes-head.is-format-collapsible:not(.is-format-open) > .render-toolbar {
-    display: none;
-  }
-
-  .notes-format-toggle-btn {
-    flex: 0 0 auto;
-  }
-
-  .notes-format-toggle-btn[hidden] {
-    display: none;
-  }
-
-  /* Engaged reads the same as the edit pill and the focus button — one visual
-     language across the header for "this mode is on". */
-  .notes-format-toggle-btn[aria-pressed="true"] {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
-    background: color-mix(in srgb, var(--accent) 20%, transparent);
-    color: var(--accent);
-  }
+     The header is ☰ · ✎|👁 · ⋯ now — the formatting strip that used to be
+     promoted onto a full-width row of its own here (styles/10-editor.css:900)
+     no longer lives in the header at all; it rides in the floating selection
+     pill. Nothing left to reflow. */
 
   .notes-head-more-btn {
     flex: 0 0 auto;
@@ -212,31 +133,7 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-sta
     line-height: 1;
   }
 
-  /* ── (b) A quieter appbar while reading ────────────────────────────────
-     "0/0" and "Known 0 / Review 0" are about the card deck. In Notes and
-     Highlights view there are no cards on screen, so on a phone — where they
-     cost a third of the meta row — they say nothing and are simply noise. They
-     stay in Cards view, and in My Decks, where they are the point.
-
-     :has() rather than a class, because .quiz-panel.notes-mode is a DESCENDANT
-     of a later sibling of .appbar and there is no other way to reach back. The
-     app already relies on :has() for the drawer guard in the collapse rules. */
-  .app-shell:has(.quiz-panel.notes-mode) #positionText,
-  .app-shell:has(.quiz-panel.notes-mode) #scoreText {
-    display: none;
-  }
-
-  /* And the hairline that introduced them. .deck-meta-row2 is
-     category · 🏷 · SEP · 0/0 · Known 0 / Review 0 · SEP · sync, so hiding the
-     two counters leaves the first separator with nothing on its right and the
-     row reads "UNCATEGORIZED 🏷 · · Synced" — two dots in a row, which looks
-     like something failed to load. Matched by what FOLLOWS it rather than by
-     position, so it stays correct if the row ever gains a field. */
-  .app-shell:has(.quiz-panel.notes-mode) .deck-meta-sep:has(+ #positionText) {
-    display: none;
-  }
-
-  /* The countdown is a 1s ticker whose whole content is "↻ 4m". Next to a
+    /* The countdown is a 1s ticker whose whole content is "↻ 4m". Next to a
      wrapped title and a category chip it reads as clutter; the pill's own
      colour and text still say whether the deck is synced, and the full
      interval is in the pill's title attribute either way. */
@@ -346,4 +243,355 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-sta
 .folder-tile .deck-tile-overflow {
   position: static;
   flex: 0 0 auto;
+}
+
+/* ── Inline formatting, in the floating selection pill ────────────────────
+   The B/I/U/S/</> run and the text-colour picker used to be a permanent strip
+   in the notes header, where they were inert: applyRenderFormat refuses with
+   "Select some text in the notes first" unless there is a selection. They now
+   appear with the selection and go with it.
+
+   The pill can get wide — 6 of its own controls plus 6 of these — so it is
+   allowed to wrap. It is position: fixed and already clamps to the viewport. */
+.selection-float {
+  flex-wrap: wrap;
+}
+
+.selection-float-format {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* Overrides .render-toolbar's own box: inside the pill it is a group of
+     buttons, not a panel of its own. */
+  padding: 0;
+  border: none;
+  background: transparent;
+  overflow: visible;
+}
+
+.selection-float-format[hidden] {
+  display: none;
+}
+
+/* The divider belongs to the format group — it goes when the group goes. */
+.selection-float:has(.selection-float-format[hidden]) .selection-float-divider {
+  display: none;
+}
+
+.selection-float-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 3px 2px;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+/* The pill's own buttons and the format buttons come from two different
+   families (.selection-float-btn and .render-btn) — match their heights so the
+   row reads as one control, not two glued together. */
+.selection-float-format .render-btn {
+  min-width: 24px;
+  height: 26px;
+  padding: 0 5px;
+}
+
+/* The pill is fixed and can sit anywhere on screen, so a colour menu anchored
+   below it can fall off the bottom. Flip it above when the pill is in the lower
+   half — cheap approximation, and the menu is small. */
+.selection-float.is-pinned-bottom .selection-float-format .render-color-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+/* ── The single control row ────────────────────────────────────────────────
+   ☰ [ CARDS | NOTES | HIGHLIGHTS ] ✎|👁 ⋯ — the tabs plus the three notes
+   controls that used to occupy a whole second row inside .notes-stage.
+
+   A flex row wrapping the toggle rather than extra grid columns inside it: the
+   toggle's own `repeat(3, minmax(0,1fr))` is what keeps the three tabs equal,
+   and adding columns to it would divide that width four ways. */
+.view-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0 auto 6px;
+  /* The toggle alone was min(320px); the row now also carries ☰, the ✎|👁 pill
+     and ⋯ (~110px together), so it needs their width on top or the three tabs
+     are squeezed until "Highlights" wraps under its own dot. */
+  width: min(440px, 100%);
+}
+
+/* ── Focus mode folds the whole row ────────────────────────────────────────
+   styles/12-notes.css:1262 folds `.quiz-panel .view-mode-toggle`, which is now
+   only part of the row: the table of contents, the edit pill and the ⋯ menu sat
+   beside it and stayed on screen with the chrome supposedly hidden. That is
+   what "the focus toggle does nothing" was.
+
+   Same variable and the same 220ms curve as the appbar, so the two bars read as
+   one panel folding away; --view-toggle-h is measured from the ROW now (see
+   readChromeHeights). No `transform`, for the reason the appbar has none. */
+.view-mode-row {
+  max-height: var(--view-toggle-h, 300px);
+}
+
+body.chrome-ready .view-mode-row {
+  transition:
+    max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.16s linear,
+    margin 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
+  max-height: 0;
+  margin-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.chrome-ready .view-mode-row {
+    transition: none;
+  }
+}
+
+/* The toggle keeps its own sizing; it just no longer owns the row's margin. */
+.quiz-panel .view-mode-row > .view-mode-toggle:not([hidden]) {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  margin: 0;
+}
+
+/* The tabs are three equal columns of a shrinking box, so their labels have to
+   be allowed to ellipsise rather than wrap — a wrapped tab makes the whole row
+   (and --view-toggle-h with it) taller. */
+.view-mode-row .view-mode-toggle button {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* On a phone the row is genuinely tight: three tabs plus three controls in
+   ~340px. The tabs give up their side padding before they give up their
+   labels — "HIGHLIGHT…" reads as a rendering fault in a way that a narrower
+   button does not. */
+@media (max-width: 720px) {
+  .view-mode-row .view-mode-toggle button {
+    padding: 0 2px;
+    letter-spacing: 0;
+  }
+
+  .view-mode-row {
+    gap: 4px;
+  }
+}
+
+/* Only the tabs get the segmented-control styling. The lifted buttons are their
+   own thing and would otherwise be restyled by `.view-mode-toggle button`. */
+.view-mode-row > .notes-toc-toggle,
+.view-mode-row > .edit-toggle-pill,
+.view-mode-row > .notes-head-more-btn {
+  flex: 0 0 auto;
+}
+
+/* 26px to match the tabs, not the 30px the TOC button had in the notes header —
+   a taller button here would grow the row, and --view-toggle-h with it. */
+.view-mode-row > .notes-toc-toggle {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+}
+
+/* The has-toc dot's ring was tuned for the notes-stage card background; on the
+   quiz panel it has to match that surface instead or it draws a halo. */
+.view-mode-row > .notes-toc-toggle.has-toc::after {
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+/* Cards view has tabs but no notes: a table of contents, an edit pill and a
+   notes menu all mean nothing there. */
+.quiz-panel:not(.notes-mode) .view-mode-row > .notes-toc-toggle,
+.quiz-panel:not(.notes-mode) .view-mode-row > .edit-toggle-pill,
+.quiz-panel:not(.notes-mode) .view-mode-row > .notes-head-more-btn,
+.quiz-panel:not(.notes-mode) .view-mode-row > .notes-head-more-menu {
+  display: none;
+}
+
+/* Highlights reuses .notes-mode, but it is not the notes: nothing to edit and
+   no contents to list. */
+.quiz-panel.notes-mode:has(#highlightsStage:not([hidden])) .view-mode-row > .notes-toc-toggle,
+.quiz-panel.notes-mode:has(#highlightsStage:not([hidden])) .view-mode-row > .edit-toggle-pill,
+.quiz-panel.notes-mode:has(#highlightsStage:not([hidden])) .view-mode-row > .notes-head-more-btn {
+  display: none;
+}
+
+/* Raw-edit mode: the TOC button hid itself through a selector rooted at
+   .notes-stage (styles/10-editor.css:598), which stopped matching the moment
+   the button left that subtree. Rooted at the panel instead. */
+.quiz-panel:has(#notesEdit:not([hidden])) .view-mode-row > .notes-toc-toggle {
+  display: none;
+}
+
+/* ── Give the note the rest of the room ───────────────────────────────────
+   In notes mode .quiz-panel paints a border + padding + shadow AROUND a
+   .notes-stage that paints its own border + padding + shadow — two frames one
+   inside the other, costing ~20px vertically and ~20px horizontally to say the
+   same thing twice. The stage's frame is the one that belongs to the note. */
+.quiz-panel.notes-mode {
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The card counters are about the card deck. Hidden while reading at EVERY
+   width now, not just on phones — a desktop appbar spent a whole meta row on
+   "0/0 · Known 0 / Review 0" next to a note. */
+.app-shell:has(.quiz-panel.notes-mode) #positionText,
+.app-shell:has(.quiz-panel.notes-mode) #scoreText {
+  display: none;
+}
+
+.app-shell:has(.quiz-panel.notes-mode) .deck-meta-sep:has(+ #positionText) {
+  display: none;
+}
+
+/* ── The selection bar on a phone ──────────────────────────────────────────
+   The floating pill is a 999px-radius lozenge sized to its contents, which was
+   right when it held six small buttons in one row. It now also carries the
+   inline formatting that used to live in the notes header — fourteen controls —
+   and on a 390px screen that came out as a 200px-wide oval with three ragged
+   rows spilling past the rounded edge. Measured: the B/I/U/S row sat outside
+   the visible shape entirely.
+
+   On a phone it stops pretending to be a pill and becomes what it actually is:
+   a bar across the bottom of the screen, in two clean rows — the actions, then
+   the formatting — with real touch targets. --safe-bottom is already in the
+   base rule's `bottom`, so the home indicator is accounted for. */
+.selection-float.is-pinned-bottom {
+  left: 8px;
+  right: 8px;
+  width: auto;
+  max-width: none;
+  translate: none;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 16px;
+}
+
+/* The divider stops being a vertical hairline between two buttons and becomes
+   the rule BETWEEN the two rows — which is what it means here. */
+.selection-float.is-pinned-bottom .selection-float-divider {
+  flex: 1 0 100%;
+  width: auto;
+  height: 1px;
+  margin: 2px 0;
+  align-self: stretch;
+}
+
+.selection-float.is-pinned-bottom .selection-float-format {
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Touch targets. 26px is a mouse size; a thumb needs the whole row height. */
+.selection-float.is-pinned-bottom .selection-float-btn,
+.selection-float.is-pinned-bottom .render-btn {
+  min-width: 40px;
+  height: 36px;
+}
+
+.selection-float.is-pinned-bottom .render-split-main,
+.selection-float.is-pinned-bottom .render-split-side {
+  height: 36px;
+}
+
+/* The ▾ side of a split control is a modifier, not a peer — it does not need a
+   40px target of its own next to the button it belongs to. */
+.selection-float.is-pinned-bottom .render-split-side {
+  min-width: 26px;
+}
+
+.selection-float.is-pinned-bottom .selection-float-highlight .selection-float-btn.is-highlight-menu {
+  min-width: 26px;
+}
+
+/* ── ...and a sensible ceiling on a desktop ───────────────────────────────
+   The pill follows the selection there, so it is not clamped to the screen the
+   way the bar is: without a ceiling fourteen controls make one very long
+   lozenge that can only just fit a narrow window. */
+.selection-float:not(.is-pinned-bottom) {
+  max-width: min(560px, calc(100vw - 24px));
+  justify-content: center;
+}
+
+/* ── The caret's line, in the raw editor ──────────────────────────────────
+   Triple-clicking a paragraph in the rendered note drops you into raw markdown
+   at that spot — but a 1px blinking caret in a wall of markdown is not
+   something you can FIND, and until you find it you cannot tell whether the
+   jump landed where you were reading. The line it is on gets a band, positioned
+   by src/notes/caret-line.js, and it pulses once on arrival.
+
+   Over the text, not behind it: both the mirror and (in plain mode) the textarea
+   paint an opaque background, so a band underneath them is simply invisible. It
+   is translucent and pointer-events: none instead. */
+.notes-caret-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* Above the mirror (z-index 0) AND the textarea, both of which paint an
+     opaque background — see the note in caret-line.js. Translucent, so the text
+     it covers still reads. */
+  z-index: 3;
+  pointer-events: none;
+  border-left: 3px solid var(--accent);
+  /* 16%, not the 9% this started at. The whole point is that the caret can be
+     FOUND at a glance, and 9% accent over a near-black editor is invisible
+     until you already know where to look — which is the problem, not the fix.
+     Still translucent enough that the text under it reads normally. */
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  transition: top 0.12s ease-out;
+}
+
+.notes-caret-line[hidden] {
+  display: none;
+}
+
+/* The first placement after a jump has no meaningful "from": the band was last
+   wherever the previous caret was, and gliding across the note from there is
+   itself the "the ribbon is nowhere near the caret" complaint. caret-line.js
+   adds this for one frame while it sets the arrival position. */
+.notes-caret-line.is-placing {
+  transition: none;
+}
+
+/* The arrival pulse. Two beats, then it settles to the resting band above —
+   enough to catch the eye without becoming something that blinks at you while
+   you type. */
+.notes-caret-line.is-flash {
+  animation: notes-caret-line-arrive 1.4s ease-out 1;
+}
+
+@keyframes notes-caret-line-arrive {
+  0%   { background: color-mix(in srgb, var(--accent) 46%, transparent); }
+  35%  { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  60%  { background: color-mix(in srgb, var(--accent) 38%, transparent); }
+  100% { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notes-caret-line {
+    transition: none;
+  }
+
+  .notes-caret-line.is-flash {
+    animation: none;
+  }
 }

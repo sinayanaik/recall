@@ -90,6 +90,12 @@ const POST_SPLIT = {
     "scrollLeft. Also the rules that MUST turn content-visibility off there — " +
     "multicol has to measure every block, and its layout containment would " +
     "stop a paragraph flowing across a column boundary at all.",
+  "19-notes-chunks.css":
+    "Containment per GROUP of blocks, for notes far too long to lay out one " +
+    "block at a time. content-visibility per block still leaves the engine " +
+    "tracking one box each — 24,600 of them on a 4.1MB note, measured at 122ms " +
+    "per scroll frame against 11ms of our own JS. Grouping takes that to ~600 " +
+    "boxes: 122ms -> 17ms per frame, layout 853ms -> 41ms.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

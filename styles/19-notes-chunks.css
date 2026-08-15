@@ -1,0 +1,78 @@
+/* Chunked notes: containment per group of blocks, for notes far too long to lay out one block at a time
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * `content-visibility: auto` on every block (styles/12-notes.css:255) skips the
+ * CONTENT of everything off-screen, but the engine still tracks and positions
+ * one box per block. On a 4.1MB note that is 24,600 boxes and it dominates:
+ * measured on a 390x844 profile over a 30-step scroll, 122ms per frame, 853ms
+ * of browser layout, against 11ms of our own JavaScript.
+ *
+ * Grouping blocks into wrappers that carry the containment takes the count the
+ * engine tracks from 24,600 to ~600. Measured on the same note:
+ *
+ *     per frame   122ms -> 17ms      layout   853ms -> 41ms
+ *
+ * Only above NOTES_CHUNK_MIN_BLOCKS (see src/render/block-cache.js) — an
+ * ordinary note keeps exactly the DOM it always had. Every block stays IN the
+ * document, which is what separates this from windowing: Ctrl+F, select-all,
+ * printing and the anchor text search all keep working.
+ */
+
+/* #notesView, not .notes-rendered, and that is load-bearing rather than tidy.
+   styles/12-notes.css:255 is
+   `.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block)`
+   — specificity (0,3,0), and it MATCHES a chunk, so a `.notes-rendered >
+   .notes-chunk` rule at (0,2,0) loses to it. Measured with that mistake in
+   place: every chunk took the per-BLOCK estimate (72px) instead of the
+   per-chunk one, and a 24,600-block note claimed 140,849px of scroll height
+   instead of 1.78 million. An id selector clears (0,3,0) outright, and it is
+   also simply true — chunking is gated on `container === el.notesView` in
+   block-cache.js. The same trap is documented at 12-notes.css:249. */
+#notesView > .notes-chunk {
+  content-visibility: auto;
+  /* One chunk stands in for NOTES_CHUNK_SIZE blocks. --notes-chunk-estimate is
+     measured per note by measureNotesBlockEstimate; the fallback only applies
+     before the first measurement. */
+  contain-intrinsic-size: auto var(--notes-chunk-estimate, 4800px);
+}
+
+/* The blocks inside a chunk must NOT also be skipped. Nested containment buys
+   nothing once the wrapper is doing it, and it is what would stop a paragraph
+   flowing normally inside its group.
+
+   Specificity matters here: styles/12-notes.css:255 is
+   `.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block)`
+   at (0,3,0). A chunk's children are no longer matched by it (they are not
+   direct children of .notes-rendered any more), so this rule is not fighting
+   it — but a future rule that IS must clear (0,3,0) to have any effect. That
+   trap is documented at 12-notes.css:249. */
+#notesView > .notes-chunk > * {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+/* Diagrams and tables are deliberately outside the per-block containment
+   (12-notes.css:255) because their own IntersectionObservers need real geometry
+   and paint containment would clip an image mid-resize-drag. Moving containment
+   up to a wrapper would put it back over them, so blockWantsOwnChunk() gives
+   such a block a chunk of its own and this opts that chunk out entirely. */
+#notesView > .notes-chunk.is-uncontained {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+/* The reading-measure limit and centring belong to the BLOCK, and
+   `.notes-rendered > *` (12-notes.css:213) now lands on the chunk instead. Give
+   the chunk no box of its own and restate the constraint one level in, so a
+   chunked note has exactly the same measure as an unchunked one. */
+#notesView > .notes-chunk {
+  display: block;
+  max-width: none;
+  margin-inline: 0;
+}
+
+#notesView > .notes-chunk > * {
+  max-width: var(--notes-max-width);
+  margin-inline: auto;
+}

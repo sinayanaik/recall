@@ -37,6 +37,7 @@
 // instead of the freeze.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { notesTopLevelBlocks, reshapeRenderedChunks } from "../render/block-cache.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
@@ -51,6 +52,11 @@ export const NOTES_PAGED_MAX_CHARS = 250000;
 const PAGE_EPSILON = 4;
 
 const SETTLE_MS = 140;
+
+// Re-aiming a jump while the columns are still moving. See revealPagedTarget.
+const PAGED_AIM_INTERVAL_MS = 120;
+
+const PAGED_AIM_MAX_ATTEMPTS = 10;
 
 export let notesReadingMode = "continuous";
 
@@ -135,13 +141,64 @@ export function notesPageForRange(range) {
   return notesPageForViewportLeft(first.left);
 }
 
+// How long a page turn takes, and its easing.
+//
+// The browser's own `behavior: "smooth"` is what this replaced, and it is the
+// wrong animation for a page turn: its duration scales with the DISTANCE, so a
+// one-page nudge and an End-key jump to page 148 take wildly different times,
+// and its easing is a slow-in/slow-out curve that reads as sluggish for a
+// gesture you repeat. A fixed 260ms ease-out is the same weight every time —
+// the page leaves immediately and settles, which is what makes repeated turns
+// feel continuous rather than syrupy.
+export const PAGE_TURN_MS = 260;
+
+let pageTurnFrame = 0;
+
+export function cancelNotesPageTween() {
+  if (!pageTurnFrame) return;
+  cancelAnimationFrame(pageTurnFrame);
+  pageTurnFrame = 0;
+}
+
+// Cubic ease-out: fastest at the start, settling at the end.
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
 export function goToNotesPage(page, { smooth = true } = {}) {
   const view = el.notesView;
   if (!view) return;
   const target = Math.max(0, Math.min(notesPageCount() - 1, Math.round(page)));
-  markProgrammaticNotesScroll(smooth ? 800 : 220);
-  view.scrollTo({ left: target * notesPageWidth(), top: 0, behavior: smooth ? "smooth" : "auto" });
+  const to = target * notesPageWidth();
   updateNotesPageIndicator(target);
+  cancelNotesPageTween();
+
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  if (!smooth || reduced) {
+    markProgrammaticNotesScroll(220);
+    view.scrollLeft = to;
+    return;
+  }
+
+  const from = view.scrollLeft;
+  if (Math.abs(to - from) < 1) return;
+  // Held open for the whole tween plus a settle margin, so the scroll listener
+  // does not read one of these frames as the reader moving and snap the page
+  // out from under the animation.
+  markProgrammaticNotesScroll(PAGE_TURN_MS + 160);
+  const started = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - started) / PAGE_TURN_MS);
+    view.scrollLeft = from + (to - from) * easeOutCubic(t);
+    if (t < 1) {
+      pageTurnFrame = requestAnimationFrame(step);
+      return;
+    }
+    pageTurnFrame = 0;
+    // Land exactly on the boundary — the tween's last frame is a float.
+    view.scrollLeft = to;
+  };
+  pageTurnFrame = requestAnimationFrame(step);
 }
 
 export function turnNotesPage(delta) {
@@ -190,14 +247,33 @@ export function revealRangeInPagedNotes(range) {
 function revealPagedTarget(resolve) {
   if (!isNotesPaged()) return false;
   const aim = () => {
-    if (!isNotesPaged()) return;
+    if (!isNotesPaged()) return null;
     const page = resolve();
-    if (page == null) return;
+    if (page == null) return null;
     goToNotesPage(page, { smooth: false });
+    return page;
   };
   aim();
-  requestAnimationFrame(aim);
-  setTimeout(aim, 180);
+  // Then keep re-asking until the answer stops changing. Three fixed attempts
+  // was not enough: a reflow that arrives late — the drawer finishing its close,
+  // an image below the fold loading, a font swapping in — re-columns the note
+  // after the last aim and leaves the target off-screen with nothing left to
+  // correct it. Two identical answers in a row means the columns have settled.
+  let settled = 0;
+  let last = null;
+  let attempts = 0;
+  const again = () => {
+    if (attempts >= PAGED_AIM_MAX_ATTEMPTS) return;
+    attempts += 1;
+    const page = aim();
+    if (page == null) return;
+    if (page === last) settled += 1;
+    else settled = 0;
+    last = page;
+    if (settled >= 1) return;
+    setTimeout(again, PAGED_AIM_INTERVAL_MS);
+  };
+  requestAnimationFrame(again);
   return true;
 }
 
@@ -269,6 +345,10 @@ export function applyNotesPagedLayout() {
   const paged = isNotesPaged();
   const wasPaged = view.classList.contains("is-paged");
   view.classList.toggle("is-paged", paged);
+  // Chunk wrappers cannot exist in a columned layout — see
+  // shouldChunkRenderedBlocks. The class above is what that gate reads, so this
+  // has to follow it, and it moves the existing nodes rather than re-rendering.
+  if (paged !== wasPaged) reshapeRenderedChunks(view);
   view.style.setProperty("--notes-columns", notesReadingMode === "paged-2" ? "2" : "1");
   stage?.classList.toggle("is-paged-reading", paged && !view.hidden);
   if (pageIndicator) pageIndicator.hidden = !paged || view.hidden;
@@ -346,11 +426,11 @@ export function firstVisibleNotesBlock() {
   const view = el.notesView;
   if (!view) return null;
   const origin = view.getBoundingClientRect().left;
-  for (const block of view.children) {
+  for (const block of notesTopLevelBlocks(view)) {
     const rect = block.getBoundingClientRect();
     if (rect.width && rect.left >= origin - PAGE_EPSILON) return block;
   }
-  return view.firstElementChild;
+  return notesTopLevelBlocks(view)[0] || null;
 }
 
 // Wheel → page turn.
@@ -396,6 +476,13 @@ export function initPagedNotes() {
   // Not passive: paging has to preventDefault, or a vertical wheel over a
   // horizontally-scrolling box scrolls the page behind it instead.
   view.addEventListener("wheel", handleNotesWheel, { passive: false });
+
+  // A touch that lands mid-tween takes over: the reader is doing something more
+  // recent than the animation, and leaving the tween running would drag the page
+  // back out from under their finger.
+  view.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "mouse") cancelNotesPageTween();
+  }, { passive: true });
 
   view.addEventListener("scroll", () => {
     if (!isNotesPaged()) return;

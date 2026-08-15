@@ -103,7 +103,12 @@ export function readChromeHeights() {
   const appbar = document.querySelector(".appbar");
   const appbarHeight = naturalHeight(appbar);
   if (appbarHeight) root.style.setProperty("--appbar-h", `${appbarHeight}px`);
-  const toggle = el.viewModeToggle;
+  // The ROW, not the toggle inside it. The Cards/Notes/Highlights tabs now share
+  // a row with the table of contents, the edit pill and the ⋯ menu, and it is
+  // that row which folds away in focus mode — measuring only the tabs left the
+  // three lifted controls on screen with the chrome supposedly hidden, which is
+  // what "the focus toggle does nothing" looked like.
+  const toggle = document.getElementById("viewModeRow") || el.viewModeToggle;
   const toggleHeight = toggle && !toggle.hidden ? naturalHeight(toggle) : 0;
   if (toggleHeight) root.style.setProperty("--view-toggle-h", `${toggleHeight}px`);
 }

@@ -3,6 +3,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
 import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageCount, notesPagedProbeX } from "./paged-view.js?v=__BUILD__";
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
@@ -45,7 +46,9 @@ export function notesReadingLineOffset(viewportHeight) {
 export function notesBlockAtReadingLineGeometric() {
   const view = el.notesView;
   if (!view || view.hidden) return null;
-  const blocks = view.children;
+  // The BLOCKS, not view.children — on a long enough note those are chunk
+  // wrappers of 40, and the search would answer at 40-block granularity.
+  const blocks = notesTopLevelBlocks(view);
   if (!blocks.length) return null;
   // Paged mode breaks the invariant this search rests on. Document order runs
   // along X there, so block `bottom` values are all inside one viewport height

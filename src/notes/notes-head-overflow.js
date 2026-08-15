@@ -1,22 +1,18 @@
-// The notes header's overflow menu, and the phone-only formatting disclosure.
+// The notes header's overflow menu.
 //
 // On a phone the Notes view stacked FOUR bars above the first line of text: the
-// appbar, the Cards/Notes/Highlights toggle, the notes header, and — because
-// styles/10-editor.css:881 deliberately promotes #notesRenderToolbar onto a
-// full-width row of its own below 560px — the B/I/U/S/</>/colour strip. That
-// promotion was the right call at the time: nine controls plus the strip did
-// not fit on one 360px row, and the ones that overflowed did not scroll out of
-// reach, they vanished (.quiz-panel is overflow:hidden on mobile).
+// appbar, the Cards/Notes/Highlights toggle, the notes header, and the
+// B/I/U/S/</>/colour strip that styles/10-editor.css:881 promoted onto a
+// full-width row of its own below 560px. That promotion was the right call at
+// the time: nine controls plus the strip did not fit on one 360px row, and the
+// ones that overflowed did not scroll out of reach, they vanished
+// (.quiz-panel is overflow:hidden on mobile).
 //
 // This takes the other half of that trade. Six low-frequency buttons move into
-// a popover, which leaves the header as ☰ · [format strip] · ✎|👁 · ⋯ — one row,
-// with room to spare at 320px.
-//
-// The move happens at EVERY width, not just on phones. A desktop header carried
-// thirteen controls in one row, and having room for them is not a reason to
-// show them: the same six are the ones you reach for least wherever you are.
-// Only the formatting strip's disclosure is phone-specific, because only there
-// is the row too narrow to hold it.
+// a popover, at EVERY width — a desktop header carried thirteen controls in one
+// row, and having room for them is not a reason to show them. (The formatting
+// strip itself is gone from the header entirely now; it rides in the floating
+// selection pill, where it can actually be used. See initRenderToolbars.)
 //
 // They are MOVED, not cloned. Every one of them already has a handler attached
 // somewhere else (three by id in main.js, three through the document-level
@@ -32,11 +28,24 @@
 // a transform appearing on an ancestor the way a fixed overlay can.
 
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
-import { refreshNotesHeadHeight } from "./notes-head-fold.js?v=__BUILD__";
+
+// The controls that move OUT of .notes-stage entirely and up into the
+// Cards/Notes/Highlights row, so the notes view has one control row instead of
+// two. The TOC button goes before the tabs; the rest after them. Selectors are
+// scoped to `.notes-head >` because they must match only while the button is
+// still in its original home — see overflowHomes below.
+const ROW_LEAD_SELECTORS = [".notes-head > #notesTocBtn"];
+
+const ROW_TRAIL_SELECTORS = [
+  ".notes-head > #editNotesBtn",
+  ".notes-head > #notesHeadMoreBtn",
+  ".notes-head > #notesHeadMoreMenu",
+];
 
 // In the order they should appear in the menu, which is the order they used to
-// appear in the header. Scoped to .notes-head: `[data-render-action]` values
-// like "cloze" and "quick-note" also exist inside the render toolbar itself.
+// appear in the header. Scoped to .notes-head for the same reason, and because
+// `[data-render-action]` values like "cloze" and "quick-note" also exist inside
+// the floating selection pill.
 const OVERFLOW_SELECTORS = [
   ".notes-head > .cloze-make-icon",
   ".notes-head > #clozeToggleNotesBtn",
@@ -48,7 +57,6 @@ const OVERFLOW_SELECTORS = [
 
 let notesHeadMoreBtn = null;
 let notesHeadMoreMenu = null;
-let notesFormatToggleBtn = null;
 // The buttons to move, resolved once at init while they are still in the
 // header. Kept as a list rather than re-queried because the selectors above
 // stop matching the moment the move has happened.
@@ -76,57 +84,11 @@ export function toggleNotesHeadMore() {
   else openNotesHeadMore();
 }
 
-// The formatting strip's phone-only disclosure. Six buttons behind ⋯ was not on
-// its own enough to fit one row: measured at 390px the strip alone is 224px of
-// the 336px the header has, and ☰ + strip + ✎|👁 + ⋯ came to 354px — so the ⋯
-// wrapped onto a second line and the header was two rows again, just with
-// different things on them.
-//
-// The strip is the right thing to fold away. It formats a selection, and there
-// is nothing selected while you read; the floating selection pill already
-// offers highlight, cloze, make-card and pin the moment there IS a selection.
-// Collapsed the row is ☰ + A + ✎|👁 + ⋯ ≈ 156px, which fits a 320px phone with
-// room to spare.
-//
-// Read mode only. The raw editor's own toolbar keeps the full-width row it has
-// at styles/10-editor.css:932 — you are there on purpose, and its thirteen
-// buttons are the reason you went.
-export function isNotesFormatStripOpen() {
-  return Boolean(document.querySelector("#notesStage .notes-head")?.classList.contains("is-format-open"));
-}
-
-export function setNotesFormatStripOpen(open) {
-  const head = document.querySelector("#notesStage .notes-head");
-  if (!head) return;
-  head.classList.toggle("is-format-open", Boolean(open));
-  notesFormatToggleBtn?.setAttribute("aria-pressed", open ? "true" : "false");
-  notesFormatToggleBtn?.setAttribute("aria-label", open ? "Hide text formatting" : "Show text formatting");
-  // The header's max-height is pinned to its last measured height, so without
-  // this the second row would spill over the note instead of pushing it down.
-  refreshNotesHeadHeight();
-}
-
-export function toggleNotesFormatStrip() {
-  setNotesFormatStripOpen(!isNotesFormatStripOpen());
-}
-
 function moveButtonsIntoMenu() {
   if (overflowMoved || !notesHeadMoreMenu) return;
   overflowHomes.forEach(({ node }) => notesHeadMoreMenu.appendChild(node));
   overflowMoved = true;
   if (notesHeadMoreBtn) notesHeadMoreBtn.hidden = false;
-}
-
-// The formatting strip's disclosure is only offered where the row cannot hold
-// it. Turning it off has to CLEAR is-format-open as well: that class is what
-// reveals the strip, and a window dragged back over 720px while the strip was
-// hidden would leave it hidden on a desktop, where the A button that could
-// bring it back is itself hidden.
-function setFormatStripCollapsible(collapsible) {
-  const head = document.querySelector("#notesStage .notes-head");
-  if (notesFormatToggleBtn) notesFormatToggleBtn.hidden = !collapsible;
-  head?.classList.toggle("is-format-collapsible", collapsible);
-  if (!collapsible) head?.classList.remove("is-format-open");
 }
 
 export function applyNotesHeadOverflow() {
@@ -138,16 +100,33 @@ export function applyNotesHeadOverflow() {
   // The same six low-frequency buttons move behind ⋯ at every width, so the two
   // layouts are one design rather than two.
   moveButtonsIntoMenu();
-  // What IS phone-only is folding the formatting strip away: on a desktop the
-  // row has room for it, and hiding it there would cost a click for no gain.
-  setFormatStripCollapsible(Boolean(styleMobileMedia?.matches));
-  refreshNotesHeadHeight();
+}
+
+// Lift the notes controls into the view-mode row. Done once, at boot, before
+// the overflow move below records what it is moving.
+//
+// Moving the nodes rather than rebuilding them keeps every handler: the TOC
+// button and the edit pill are wired by id in main.js, and the ⋯ menu's
+// contents route through the [data-render-target] delegation — which is why the
+// row carries that attribute too.
+function liftNotesControlsIntoRow() {
+  const row = document.getElementById("viewModeRow");
+  const toggle = document.getElementById("viewModeToggle");
+  if (!row || !toggle) return;
+  ROW_LEAD_SELECTORS.forEach((selector) => {
+    const node = document.querySelector(selector);
+    if (node) row.insertBefore(node, toggle);
+  });
+  ROW_TRAIL_SELECTORS.forEach((selector) => {
+    const node = document.querySelector(selector);
+    if (node) row.appendChild(node);
+  });
 }
 
 export function initNotesHeadOverflow() {
+  liftNotesControlsIntoRow();
   notesHeadMoreBtn = document.getElementById("notesHeadMoreBtn");
   notesHeadMoreMenu = document.getElementById("notesHeadMoreMenu");
-  notesFormatToggleBtn = document.getElementById("notesFormatToggleBtn");
   if (!notesHeadMoreBtn || !notesHeadMoreMenu) return;
 
   overflowHomes = OVERFLOW_SELECTORS
@@ -161,23 +140,39 @@ export function initNotesHeadOverflow() {
   // note would throw away the very thing they are there to act on. This has to
   // cover the ⋯ button (which is how you reach them) and the menu's own
   // padding, not just the buttons.
-  [notesHeadMoreBtn, notesHeadMoreMenu, notesFormatToggleBtn].filter(Boolean).forEach((node) => {
+  [notesHeadMoreBtn, notesHeadMoreMenu].forEach((node) => {
     ["pointerdown", "mousedown"].forEach((type) => {
       node.addEventListener(type, (event) => { event.preventDefault(); });
     });
   });
 
   notesHeadMoreBtn.addEventListener("click", () => { toggleNotesHeadMore(); });
-  notesFormatToggleBtn?.addEventListener("click", () => { toggleNotesFormatStrip(); });
 
-  // Bubble phase on the menu, so it runs BEFORE the document-level
-  // [data-render-action] handler (which stops propagation once it has matched).
-  // Deferred by a task rather than closing inline: the click-driven buttons in
-  // here (reveal-all, the cloze list, focus mode) fire after pointerdown, and
-  // hiding their ancestor first would cancel the click.
+  // ── Why the close happens on TWO different events ────────────────────────
+  //
+  // The buttons in here do not all act on the same one. Anything carrying
+  // [data-render-action] is handled by the document-level pointerdown
+  // delegation in main.js; everything else (focus mode, reveal-all, the cloze
+  // list) is an ordinary click handler.
+  //
+  // Closing on pointerdown for BOTH is what made ⤢ look dead. `click` is
+  // dispatched at the nearest common ancestor of the pointerdown and pointerup
+  // targets, so hiding the menu between them means the click never reaches the
+  // button at all. Deferring by setTimeout(…, 0) does not help: that fires
+  // within a millisecond or two, while a real press holds for 80-150ms. The
+  // delegated buttons survived it only because they had already run.
   notesHeadMoreMenu.addEventListener("pointerdown", (event) => {
-    if (!event.target.closest("button")) return;
-    setTimeout(closeNotesHeadMore, 0);
+    const btn = event.target.closest("button");
+    // Already acted on by the pointerdown delegation, so there is nothing left
+    // for the click to do and the menu can go now.
+    if (btn?.matches("[data-render-action], [data-render-color]")) setTimeout(closeNotesHeadMore, 0);
+  });
+
+  // Everything else closes once its click has actually been delivered. Bubble
+  // phase on the menu still runs before the document-level handler, and that
+  // handler's stopPropagation() is on pointerdown, so it cannot suppress this.
+  notesHeadMoreMenu.addEventListener("click", (event) => {
+    if (event.target.closest("button")) closeNotesHeadMore();
   });
 
   // A press anywhere else dismisses it. Capture phase, because the delegated

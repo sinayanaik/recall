@@ -8,6 +8,7 @@ import { codeLanguageLabel, codeLanguageOrGeneric, configurePrismLanguages, decl
 import { EAGER_IMAGE_COUNT, deferrableRenderRoot, runNearViewportAndDefer, scopedQueryAll } from "./deferred-work.js?v=__BUILD__";
 import { addDiagramZoomControl } from "./diagram-zoom.js?v=__BUILD__";
 import { sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
+import { isTopLevelBlockParent } from "./block-cache.js?v=__BUILD__";
 import { noteLinkEntryMatchesId } from "./note-links.js?v=__BUILD__";
 import { normalizeImageUrl } from "./preprocess.js?v=__BUILD__";
 import { fitMarkdownTables } from "./tables.js?v=__BUILD__";
@@ -121,8 +122,11 @@ export function markNumberedEquations(scope) {
     display.classList.add("has-eqn-num");
     const surface = display.closest(".notes-rendered");
     if (!surface) return;
+    // Stops at a chunk as well as at the surface. Climbing past the block to
+    // the chunk would put the class — and with it the content-visibility
+    // exclusion at styles/12-notes.css:255 — on all 40 of that chunk's blocks.
     let block = display;
-    while (block.parentElement && block.parentElement !== surface) block = block.parentElement;
+    while (block.parentElement && !isTopLevelBlockParent(block.parentElement, surface)) block = block.parentElement;
     block.classList.add("has-eqn-num-block");
   });
 }

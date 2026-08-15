@@ -138,6 +138,7 @@ const APP_SHELL = [
   `./styles/16-mobile-reading.css?v=${STAMP}`,
   `./styles/17-toc-fold.css?v=${STAMP}`,
   `./styles/18-paged-notes.css?v=${STAMP}`,
+  `./styles/19-notes-chunks.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -216,10 +217,10 @@ const APP_SHELL = [
   `./src/library/my-decks-selection.js?v=${STAMP}`,
   `./src/library/tombstones.js?v=${STAMP}`,
   `./src/notes/anchors.js?v=${STAMP}`,
+  `./src/notes/caret-line.js?v=${STAMP}`,
   `./src/notes/caret.js?v=${STAMP}`,
   `./src/notes/link-picker.js?v=${STAMP}`,
   `./src/notes/note-links.js?v=${STAMP}`,
-  `./src/notes/notes-head-fold.js?v=${STAMP}`,
   `./src/notes/notes-head-overflow.js?v=${STAMP}`,
   `./src/notes/notes-view.js?v=${STAMP}`,
   `./src/notes/paged-view.js?v=${STAMP}`,
