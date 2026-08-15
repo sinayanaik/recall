@@ -608,6 +608,18 @@
                  this one keeps it, somewhere better. -->
             <button class="selection-float-btn is-extract" id="extractNoteFromSelectionBtn" type="button" title="Move the selection into its own note" aria-label="Move the selection into its own note">&#8618;</button>
             <button class="selection-float-btn is-erase" id="eraseNotesSelectionBtn" type="button" title="Delete the selection" aria-label="Delete the selection">&#9003;</button>
+            <!-- Inline formatting — B I U S </> and the text-colour picker —
+                 filled by initRenderToolbars. It used to be a permanent strip in
+                 the notes header, where it could do nothing: every one of these
+                 refuses unless there is a selection. Here it appears with the
+                 selection and goes with it.
+
+                 data-render-target on the pill (set per selection by
+                 positionNotesSelectionButton, since the pill serves the notes
+                 AND both card faces) is what routes these through the shared
+                 [data-render-action] delegation in main.js. -->
+            <span class="selection-float-divider" aria-hidden="true"></span>
+            <span class="selection-float-format render-toolbar" id="selectionFloatFormat"></span>
           </div>
 
           <div class="controls" aria-label="Card actions">

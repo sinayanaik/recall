@@ -101,7 +101,45 @@ const ACCEPTED = {
   revealRenderedNoteRange:
     "scrollIntoView WOULD move a paged view, but it stops the moment the " +
     "target is visible, which leaves the reader mid-page with a column sliced " +
-    "down the middle of the screen. Land on the page boundary instead.",
+    "down the middle of the screen. Land on the page boundary instead — and " +
+    "compute that page from the RANGE, not from its block: a block that flows " +
+    "across a column break reports the union of its fragments, so paging by " +
+    "the block sent every jump whose target sat in the tail of such a " +
+    "paragraph to the previous page, with the target off-screen.",
+  findRenderedNoteRange:
+    "A paged search window. Its window was built from scrollHeight/scrollTop, " +
+    "both meaningless when the note runs sideways (scrollTop is 0, " +
+    "scrollHeight === clientHeight), so it degenerated to the whole document " +
+    "and indexOf then took the FIRST occurrence of the phrase anywhere in the " +
+    "note — the wrong-copy failure the window exists to prevent. The binary " +
+    "search was invalid there too: paged document order runs along X, so block " +
+    "`bottom` values are not monotonic. Pages are, so the paged branch windows " +
+    "by page instead.",
+
+  // The reading-position sampler, which was silently wrong in paged mode: it
+  // saved "the top of the note" on every call and synced that to every device.
+  rawOffsetForCurrentNotesScroll:
+    "Two paged branches. The probe x was the horizontal middle of the view, " +
+    "which in two-column mode is the COLUMN GAP — elementFromPoint returns " +
+    "#notesView itself there, so layer 1 could never hit text. And the layer-4 " +
+    "fallback computed `scrollHeight - clientHeight`, which is 0 when the note " +
+    "runs sideways, so it returned a literal offset 0 every time. That result " +
+    "is stored as the reader's position and folded into meta.readingPosition, " +
+    "so reading in paged mode saved — and then restored, everywhere — the top " +
+    "of the note.",
+  notesBlockAtReadingLineGeometric:
+    "Delegates to firstVisibleNotesBlock when paged. Its binary search rests " +
+    "on block `bottom` values being monotonic in document order; paged " +
+    "document order runs along X, so they are all inside one viewport height " +
+    "and the search converged on an arbitrary block near page 0.",
+  blockAtNotesReadingLine:
+    "Same, for the hit-testing twin: probing the horizontal midpoint lands in " +
+    "the column gap in two-column mode, where closest('.notes-rendered > *') " +
+    "is null — so this returned null on every call.",
+  renderNotesViewPinned:
+    "Pins by page when paged instead of correcting scrollTop, which is pinned " +
+    "at 0 there. Reached by making a highlight or a cloze, so getting it wrong " +
+    "moved the reader every time they marked something up.",
 
   // ── Reading a whole folder as one deck (src/library/folder-deck.js) ──────
   // A folder open as one document is not a deck and has no record of its own,
@@ -144,10 +182,28 @@ const ACCEPTED = {
     "Restores a kind:'folder' entry by RE-MERGING from the decks as they are " +
     "now, not from a cached document — a stale merge would be written back " +
     "over decks that have since changed.",
+  readChromeHeights:
+    "Measures with scrollHeight instead of offsetHeight. The variables it " +
+    "writes are the SAME ones the CSS clamps these elements with " +
+    "(`.appbar { max-height: var(--appbar-h) }`), so offsetHeight reports the " +
+    "clamped box: once a short height was recorded the element could never be " +
+    "measured taller. Latent until the appbar's height started depending on " +
+    "the view — a height measured while reading was then too small for Cards " +
+    "and Highlights, and the meta row spilled out over the tabs below it.",
+  buildDeckOverflowMenu:
+    "Its inline menu-positioning block moved to positionOverflowMenu(), which " +
+    "the new folder overflow menu shares. Identical code, one copy.",
+  buildFolderTile:
+    "A folder tile gains an action row: Read, plus the same ⋯ overflow menu the " +
+    "deck tiles carry. Folder tiles had NO inline controls, so in Tiles display " +
+    "a folder was the one thing in the library you could not open, rename, move " +
+    "or delete without switching views.",
   buildFolderActionCluster:
-    "One button added: Read, which opens every deck under the folder as a " +
-    "single document. First in the cluster because it is the only one of the " +
-    "six about reading rather than about managing the folder.",
+    "Two visible buttons and a menu, instead of six inline icons. It was Read / " +
+    "Deck / Folder / Import / Rename / Delete — too much furniture for a folder " +
+    "row AND missing the two things people looked for, Open and Move. The two " +
+    "that stay are the two about going somewhere; everything that CHANGES the " +
+    "folder is one press away under ⋯, where each action gets a real name.",
   buildNotesToc:
     "Foldable sections. The list stays flat — the tree is still drawn by the " +
     "rail spans — so the build now also derives the parent/child relation that " +

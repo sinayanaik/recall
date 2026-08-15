@@ -119,6 +119,30 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-sta
   display: none;
 }
 
+/* The hairline group separators went with the buttons they separated — all
+   three of them, at every width, now that the cloze trio, make-card, pin and
+   focus all live in the ⋯ menu. Left in place they were three rules in a row
+   with nothing between them. */
+.notes-mode .notes-head > .notes-head-divider {
+  display: none;
+}
+
+/* .notes-head-divider.is-lead carried the margin-left:auto that pushed the
+   right-hand cluster to the edge, and it has just been hidden. The edit pill is
+   the first of what remains, so it takes the auto-margin over. */
+.notes-mode .notes-head > #editNotesBtn {
+  margin-left: auto;
+}
+
+/* The "Study Notes" caption, dropped at every width rather than only on phones.
+   It says nothing the NOTES half of the Cards/Notes/Highlights toggle directly
+   above it does not already say, and on a desktop it was ~100px of the header
+   spent repeating the tab you are on. (The phone-only version of this rule is
+   at styles/12-notes.css:1301; this one supersedes it.) */
+.notes-mode .notes-head > .face-label-row {
+  display: none;
+}
+
 /* Inside the menu the buttons are a grid of equals, not a right-aligned run —
    the auto-margin and stretch alignment they carry in the header row would
    leave them stranded and full-height here. */
@@ -178,19 +202,6 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-sta
     border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
     background: color-mix(in srgb, var(--accent) 20%, transparent);
     color: var(--accent);
-  }
-
-  /* The hairline group separators go with the buttons they separated. What is
-     left is three single controls and one strip, which needs no punctuation. */
-  .notes-mode .notes-head > .notes-head-divider {
-    display: none;
-  }
-
-  /* .notes-head-divider.is-lead carried the margin-left:auto that pushed the
-     right-hand cluster to the edge, and it has just been hidden. The edit pill
-     is the first of what remains, so it takes the auto-margin over. */
-  .notes-mode .notes-head > #editNotesBtn {
-    margin-left: auto;
   }
 
   .notes-head-more-btn {
@@ -283,4 +294,56 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .notes-mode .notes-sta
   #notesView .diagram-shell.is-resizing .notes-img-delete-btn {
     opacity: 1;
   }
+}
+
+/* ── Folder actions, on a tile ────────────────────────────────────────────
+   Folder tiles used to carry no inline controls at all, so in Tiles display a
+   folder was the one thing in the library you could not open, rename, move or
+   delete without switching views. They now carry the same two-part control the
+   deck tiles do: one visible action plus the ⋯ menu.
+
+   Read is the one that stays visible, because it is the only folder action the
+   tile could not otherwise offer — the tile's own click already Opens. */
+.folder-tile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.folder-tile-read {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: var(--toolbar-button-radius, 8px);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.folder-tile-read:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: var(--accent);
+}
+
+.folder-tile-read svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The tile's ⋯ sits in the action row rather than the absolutely-positioned
+   corner the deck tiles use — a folder tile has no status chips to sit beside,
+   and a corner button on a small tile is easy to hit by accident when the whole
+   tile is a click-to-open target. */
+.folder-tile .deck-tile-overflow {
+  position: static;
+  flex: 0 0 auto;
 }

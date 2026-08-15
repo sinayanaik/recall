@@ -26,6 +26,24 @@
      of pixels tall. `auto` fills each column to the box height and starts
      another, which is what makes a page a page. */
   column-fill: auto;
+  /* ── The one measurement that has to be exact ──────────────────────────
+     A page is scrolled by exactly clientWidth, so the COLUMN PITCH must equal
+     clientWidth too, or every page turn drifts a little further out of
+     alignment with the columns. Measured before this rule: by page 14 of a
+     one-column phone layout the column started 195px into the page, so the
+     heading a table-of-contents jump had just landed on was off the right-hand
+     edge of the screen.
+
+     Pitch is (content width + one gap). Setting the horizontal padding to half
+     the gap on each side makes content width = clientWidth − gap, so the pitch
+     comes back to exactly clientWidth — for any number of columns, since the
+     inter-column gaps are inside the content box either way. The horizontal
+     bleed .notes-rendered normally carries (the negative margins at
+     styles/12-notes.css:200, which let the vertical scrollbar sit at the panel
+     edge) has to go with it: there is no vertical scrollbar here, and it would
+     otherwise offset the whole calculation. */
+  margin-inline: 0;
+  padding-inline: calc(var(--notes-page-gap, 2.6em) / 2);
   /* Free horizontal swiping with momentum, settled to the nearest page
      afterwards by scheduleNotesPageSettle(). pan-x rather than none so
      press-and-hold text selection — which is how highlighting works on a
@@ -83,6 +101,38 @@
   margin-inline: 0;
 }
 
+/* ── The pushed-open table of contents ─────────────────────────────────────
+   Above 721px the TOC drawer PUSHES the note instead of overlaying it, and
+   styles/12-notes.css:831 makes room for it by adding --toc-width to
+   `.notes-rendered`'s padding-left. That rule is `.notes-stage.is-toc-open >
+   .notes-rendered` — specificity (0,2,1) — and it therefore BEAT the paged
+   `padding-inline` above, which is only (0,2,0).
+
+   Which broke paging outright. The pitch invariant is "content width + one gap
+   == clientWidth", and it holds only while the horizontal padding is exactly
+   half a gap on each side. With ~300px of drawer added to padding-left the
+   pitch stopped matching clientWidth, so `scrollLeft = page * clientWidth`
+   drifted further out of alignment with every page — and on a desktop the
+   drawer STAYS OPEN after a TOC click (main.js only closes it when it overlays),
+   so every TOC jump landed wrong, and progressively worse the further down the
+   contents you clicked. That is the same failure the comment above says the
+   padding rule was written to fix, reintroduced through the cascade.
+
+   The fix is not to fight over padding but to push with MARGIN instead. Margin
+   shrinks the scroller's own box, so clientWidth shrinks with it and the pitch
+   is still exactly one page; padding would have had to stay at half a gap
+   regardless. The width change is a resize, so the ResizeObserver in
+   paged-view.js repaginates and keeps the reader's place.
+
+   (0,3,0) here against (0,2,1) there — deliberately, and it has to stay that
+   way. */
+@media (min-width: 721px) {
+  .notes-stage.is-toc-open > .notes-rendered.is-paged {
+    margin-left: var(--toc-width);
+    padding-inline: calc(var(--notes-page-gap, 2.6em) / 2);
+  }
+}
+
 /* ── The page indicator ─────────────────────────────────────────────────── */
 
 .notes-page-indicator {
@@ -133,20 +183,6 @@
 .notes-page-btn:disabled {
   opacity: 0.35;
   cursor: default;
-}
-
-/* Said once, where the setting was applied, rather than left as a silently
-   ignored preference. */
-.notes-paged-notice {
-  flex: 0 0 auto;
-  margin: 0 0 6px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--review) 45%, var(--line));
-  border-radius: var(--toolbar-button-radius, 8px);
-  background: color-mix(in srgb, var(--review) 10%, transparent);
-  color: var(--muted);
-  font-size: 0.74rem;
-  line-height: 1.4;
 }
 
 @media (prefers-reduced-motion: reduce) {

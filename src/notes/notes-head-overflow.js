@@ -1,4 +1,4 @@
-// The notes header's phone-only overflow menu.
+// The notes header's overflow menu, and the phone-only formatting disclosure.
 //
 // On a phone the Notes view stacked FOUR bars above the first line of text: the
 // appbar, the Cards/Notes/Highlights toggle, the notes header, and — because
@@ -11,6 +11,12 @@
 // This takes the other half of that trade. Six low-frequency buttons move into
 // a popover, which leaves the header as ☰ · [format strip] · ✎|👁 · ⋯ — one row,
 // with room to spare at 320px.
+//
+// The move happens at EVERY width, not just on phones. A desktop header carried
+// thirteen controls in one row, and having room for them is not a reason to
+// show them: the same six are the ones you reach for least wherever you are.
+// Only the formatting strip's disclosure is phone-specific, because only there
+// is the row too narrow to hold it.
 //
 // They are MOVED, not cloned. Every one of them already has a handler attached
 // somewhere else (three by id in main.js, three through the document-level
@@ -28,8 +34,8 @@
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 import { refreshNotesHeadHeight } from "./notes-head-fold.js?v=__BUILD__";
 
-// In the order they should appear in the menu, which is the order they appear
-// in the header on desktop. Scoped to .notes-head: `[data-render-action]` values
+// In the order they should appear in the menu, which is the order they used to
+// appear in the header. Scoped to .notes-head: `[data-render-action]` values
 // like "cloze" and "quick-note" also exist inside the render toolbar itself.
 const OVERFLOW_SELECTORS = [
   ".notes-head > .cloze-make-icon",
@@ -43,10 +49,9 @@ const OVERFLOW_SELECTORS = [
 let notesHeadMoreBtn = null;
 let notesHeadMoreMenu = null;
 let notesFormatToggleBtn = null;
-// { node, parent, nextSibling } per moved button, recorded once at init while
-// the header is still in its desktop shape. Restoring walks this in REVERSE:
-// a button's recorded nextSibling is often another moved button, and going
-// backwards guarantees that one is already back in place.
+// The buttons to move, resolved once at init while they are still in the
+// header. Kept as a list rather than re-queried because the selectors above
+// stop matching the moment the move has happened.
 let overflowHomes = [];
 let overflowMoved = false;
 
@@ -110,32 +115,32 @@ function moveButtonsIntoMenu() {
   overflowHomes.forEach(({ node }) => notesHeadMoreMenu.appendChild(node));
   overflowMoved = true;
   if (notesHeadMoreBtn) notesHeadMoreBtn.hidden = false;
-  if (notesFormatToggleBtn) notesFormatToggleBtn.hidden = false;
-  document.querySelector("#notesStage .notes-head")?.classList.add("is-format-collapsible");
 }
 
-function moveButtonsBackToHeader() {
-  if (!overflowMoved) return;
-  closeNotesHeadMore();
-  for (let i = overflowHomes.length - 1; i >= 0; i -= 1) {
-    const { node, parent, nextSibling } = overflowHomes[i];
-    parent.insertBefore(node, nextSibling && nextSibling.parentNode === parent ? nextSibling : null);
-  }
-  overflowMoved = false;
-  if (notesHeadMoreBtn) notesHeadMoreBtn.hidden = true;
-  if (notesFormatToggleBtn) notesFormatToggleBtn.hidden = true;
+// The formatting strip's disclosure is only offered where the row cannot hold
+// it. Turning it off has to CLEAR is-format-open as well: that class is what
+// reveals the strip, and a window dragged back over 720px while the strip was
+// hidden would leave it hidden on a desktop, where the A button that could
+// bring it back is itself hidden.
+function setFormatStripCollapsible(collapsible) {
   const head = document.querySelector("#notesStage .notes-head");
-  head?.classList.remove("is-format-collapsible");
-  // Cleared rather than left set: the class is what hides the strip, and a
-  // window dragged back over 720px with it off would hide the strip on a
-  // desktop, where nothing shows the ⋯/A buttons that could bring it back.
-  head?.classList.remove("is-format-open");
+  if (notesFormatToggleBtn) notesFormatToggleBtn.hidden = !collapsible;
+  head?.classList.toggle("is-format-collapsible", collapsible);
+  if (!collapsible) head?.classList.remove("is-format-open");
 }
 
 export function applyNotesHeadOverflow() {
   if (!overflowHomes.length) return;
-  if (styleMobileMedia?.matches) moveButtonsIntoMenu();
-  else moveButtonsBackToHeader();
+  // The overflow menu is NOT phone-only. A desktop notes header carried
+  // thirteen controls in one row — ☰, the caption, five format buttons, two
+  // split controls, three cloze icons, make-card, pin, the edit pill and focus
+  // — and "there is room for it" is not the same as "it belongs on screen".
+  // The same six low-frequency buttons move behind ⋯ at every width, so the two
+  // layouts are one design rather than two.
+  moveButtonsIntoMenu();
+  // What IS phone-only is folding the formatting strip away: on a desktop the
+  // row has room for it, and hiding it there would cost a click for no gain.
+  setFormatStripCollapsible(Boolean(styleMobileMedia?.matches));
   refreshNotesHeadHeight();
 }
 
@@ -145,12 +150,10 @@ export function initNotesHeadOverflow() {
   notesFormatToggleBtn = document.getElementById("notesFormatToggleBtn");
   if (!notesHeadMoreBtn || !notesHeadMoreMenu) return;
 
-  // Recorded AFTER the ⋯ button and the menu are already in the markup, so
-  // #focusModeBtn's "home" is the ⋯ button rather than the end of the row.
   overflowHomes = OVERFLOW_SELECTORS
     .map((selector) => document.querySelector(selector))
     .filter(Boolean)
-    .map((node) => ({ node, parent: node.parentNode, nextSibling: node.nextSibling }));
+    .map((node) => ({ node }));
 
   // preventDefault on pointerdown, for the same reason the floating selection
   // pill does it: three of the buttons in this menu (cloze, make-card, pin)

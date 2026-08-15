@@ -15,7 +15,7 @@ import { locateSelectionInSource, renderedSelectionStrings } from "../format/loc
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
-import { estimateNotesPageForFraction, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
+import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
@@ -204,6 +204,13 @@ export function resolveRawNoteIndex(anchor) {
 // Build a DOM Range spanning the anchor text inside the rendered notes view, so
 // it can be scrolled to and flashed. Falls back to a shorter prefix when the
 // full selection can't be matched verbatim (e.g. the notes were edited since).
+// How many pages either side of the estimate the paged text search covers.
+// Wider than it needs to be for a good estimate, because being one page short
+// means falling through to "not found" and a visible failure, while being two
+// pages wide costs a TreeWalker over a few extra screens of a note that is at
+// most NOTES_PAGED_MAX_CHARS long by construction.
+export const PAGED_SEARCH_PAGES = 2;
+
 export function findRenderedNoteRange(anchor, offset = null) {
   const view = el.notesView;
   const needle = (anchor.text || "").trim();
@@ -215,9 +222,21 @@ export function findRenderedNoteRange(anchor, offset = null) {
   // document. The window is wide enough to absorb the proportional estimate's
   // error on a note whose block heights are far from uniform. Without an
   // offset (rare), fall back to a full walk.
+  // In paged mode every one of those numbers is a lie: scrollTop is always 0 and
+  // scrollHeight === clientHeight, so `centerDoc` is a fraction of ONE viewport
+  // and `half` (>= 4000) swallows it whole. The window degenerated to "the whole
+  // document", the loop below never broke out of it, and indexOf then took the
+  // FIRST occurrence of the phrase anywhere in the note — which is precisely the
+  // wrong-copy failure the window exists to prevent. The binary search was
+  // invalid there too: paged document order runs along X, so block `bottom`
+  // values are not monotonic.
+  //
+  // The paged equivalent of "a band of pixels around the estimate" is "a band of
+  // PAGES around it", which pageWindow below computes instead.
+  const paged = offset != null && isNotesPaged();
   let winTopView = -Infinity;
   let winBottomView = Infinity;
-  if (offset != null && state.notes) {
+  if (offset != null && !paged && state.notes) {
     const fraction = Math.max(0, Math.min(1, offset / state.notes.length));
     const centerDoc = fraction * view.scrollHeight;
     const half = Math.max(4000, view.clientHeight * 2);
@@ -232,8 +251,36 @@ export function findRenderedNoteRange(anchor, offset = null) {
     segments.push({ node, start: full.length });
     full += node.textContent;
   };
+  const collectAll = (root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) collect(node);
+  };
 
-  if (offset != null) {
+  if (paged) {
+    // Pages, like blocks, are non-decreasing in document order, so the same
+    // binary-search-then-walk shape applies — just on the other axis. A note in
+    // paged mode is at most NOTES_PAGED_MAX_CHARS, so the band can be generous.
+    const fraction = Math.max(0, Math.min(1, offset / (state.notes || " ").length));
+    const centre = Math.round(fraction * Math.max(0, notesPageCount() - 1));
+    const lo = centre - PAGED_SEARCH_PAGES;
+    const hi = centre + PAGED_SEARCH_PAGES;
+    const blocks = view.children;
+    const pageOf = (i) => notesPageForElement(blocks[i]);
+    let low = 0;
+    let high = blocks.length - 1;
+    let first = blocks.length;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (pageOf(mid) < lo) low = mid + 1;
+      else { first = mid; high = mid - 1; }
+    }
+    for (let i = first; i < blocks.length; i += 1) {
+      if (blocks[i].nodeType !== 1) continue;
+      if (pageOf(i) > hi) break;
+      collectAll(blocks[i]);
+    }
+  } else if (offset != null) {
     // Windowed: only descend into top-level blocks whose vertical span
     // overlaps the window, so a huge note isn't flattened in full.
     //
@@ -261,14 +308,10 @@ export function findRenderedNoteRange(anchor, offset = null) {
       const block = blocks[i];
       if (block.nodeType !== 1) continue;
       if (topOf(i) > winBottomView) break;
-      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-      let node;
-      while ((node = walker.nextNode())) collect(node);
+      collectAll(block);
     }
   } else {
-    const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) collect(node);
+    collectAll(view);
   }
   if (!segments.length) return null;
 
@@ -405,7 +448,12 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true } =
   // ancestor, and here that scrolls sideways — but it stops as soon as the
   // target is visible, which leaves the reader mid-page with a column sliced
   // down the middle of the screen. Land on the page boundary instead.
-  if (!revealInPagedNotes(block)) {
+  //
+  // From the RANGE, not from `block`. A block that flows across a column break
+  // reports the union of its fragments, so paging by the block sent every jump
+  // whose target sat in the tail of such a paragraph to the previous page, with
+  // the thing it was pointing at off-screen.
+  if (!revealRangeInPagedNotes(range)) {
     (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
   }
   if (!flash) return true;

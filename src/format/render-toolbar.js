@@ -159,7 +159,11 @@ export const RENDER_HIGHLIGHT_GLYPH =
 // header instead, where they sit beside the other two cloze controls and stay
 // put when you switch to raw-edit mode. A card face has no such header row, so
 // it keeps them here.
-export function createRenderToolbarHtml({ actions = true } = {}) {
+// `highlight: false` is for the floating selection pill, which carries its own
+// highlight swatch + colour menu already (index.html, #highlightSelectionBtn).
+// Emitting the split control there too would put two identical highlight
+// controls side by side, driving the same renderFormatDefaults.highlight.
+export function createRenderToolbarHtml({ actions = true, highlight = true } = {}) {
   const captureGroup = actions
     ? `
     <span class="render-divider" aria-hidden="true"></span>
@@ -175,7 +179,7 @@ export function createRenderToolbarHtml({ actions = true } = {}) {
     <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
     <span class="render-divider" aria-hidden="true"></span>
     ${renderSplitControlHtml("color", RENDER_COLOR_GLYPH, "text colour", RENDER_TEXT_COLORS)}
-    ${renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", MARK_HIGHLIGHT_COLORS)}${captureGroup}`;
+    ${highlight ? renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", MARK_HIGHLIGHT_COLORS) : ""}${captureGroup}`;
 }
 
 // Paint the little swatch on each split-button's side control to the current
@@ -193,8 +197,15 @@ export function initRenderToolbars() {
   [el.questionRenderToolbar, el.answerRenderToolbar].forEach((tb) => {
     if (tb) tb.innerHTML = createRenderToolbarHtml();
   });
-  // Notes: formatting only — the capture/cloze actions are in the notes header.
-  if (el.notesRenderToolbar) el.notesRenderToolbar.innerHTML = createRenderToolbarHtml({ actions: false });
+  // The notes surface has no persistent strip at all any more. Its formatting
+  // rides in the floating selection pill instead, which is where it can be
+  // used: every one of these buttons refuses with "Select some text in the
+  // notes first" unless there IS a selection (see applyRenderFormat), so a
+  // permanent row of them was a row that did nothing while you read.
+  //
+  // No highlight split here — the pill already carries one.
+  const pillFormat = document.getElementById("selectionFloatFormat");
+  if (pillFormat) pillFormat.innerHTML = createRenderToolbarHtml({ actions: false, highlight: false });
   refreshRenderSwatches();
 }
 

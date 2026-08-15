@@ -3,6 +3,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageCount, notesPagedProbeX } from "./paged-view.js?v=__BUILD__";
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 
@@ -46,6 +47,13 @@ export function notesBlockAtReadingLineGeometric() {
   if (!view || view.hidden) return null;
   const blocks = view.children;
   if (!blocks.length) return null;
+  // Paged mode breaks the invariant this search rests on. Document order runs
+  // along X there, so block `bottom` values are all inside one viewport height
+  // and are not monotonic — the search converges on an essentially arbitrary
+  // early block, in practice always something on page 0. The paged view already
+  // knows how to answer "what is the reader looking at": it is the first block
+  // on the current page.
+  if (isNotesPaged()) return firstVisibleNotesBlock();
   const y = view.getBoundingClientRect().top + notesReadingLineOffset(view.clientHeight);
   let low = 0;
   let high = blocks.length - 1;
@@ -86,7 +94,10 @@ export function rawOffsetForCurrentNotesScroll() {
   const notes = state.notes || "";
   if (!notes) return null;
   const rect = view.getBoundingClientRect();
-  const x = rect.left + rect.width / 2;
+  const paged = isNotesPaged();
+  // The horizontal middle of the view is the COLUMN GAP in two-column mode, so
+  // the probe has to be moved inside a column or layer 1 can never hit text.
+  const x = paged ? notesPagedProbeX(rect) : rect.left + rect.width / 2;
   const y = rect.top + notesReadingLineOffset(rect.height);
 
   // 1. Exact: the caret under the reading line, matched by the text either side.
@@ -107,6 +118,19 @@ export function rawOffsetForCurrentNotesScroll() {
   }
 
   // 4. Nothing measurable at all (no block cache yet): the scroll fraction.
+  //
+  // Paged mode has no vertical scroll range — scrollHeight === clientHeight — so
+  // this used to compute `range <= 0` and return a literal 0 on EVERY call. That
+  // is not a harmless fallback: captureCurrentReadingAnchor stores the result as
+  // the reader's position, deckSnapshot folds it into meta.readingPosition, and
+  // it syncs to every device. Reading a note in paged mode saved "the top of the
+  // note" and then restored the top of the note everywhere. The page number is
+  // the paged equivalent of the scroll fraction.
+  if (paged) {
+    const pages = notesPageCount();
+    if (pages <= 1) return 0;
+    return snapOffsetToLineStart(notes, (notesCurrentPage() / (pages - 1)) * notes.length);
+  }
   const range = view.scrollHeight - view.clientHeight;
   if (range <= 0) return 0;
   return snapOffsetToLineStart(notes, (view.scrollTop / range) * notes.length);

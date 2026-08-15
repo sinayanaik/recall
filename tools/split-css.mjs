@@ -108,14 +108,49 @@ const lines = source.split("\n");
 // A boundary should carry the comment block sitting directly above it — that
 // comment explains the rule it precedes, and leaving it at the end of the
 // previous file strands it.
+//
+// It has to carry the WHOLE block, and the first version of this did not. It
+// walked up while each line "looked like a comment" — started with `/*` or `*`,
+// or ended with `*/` — which is wrong for the style used throughout this
+// stylesheet, where continuation lines are indented prose with no leading `*`:
+//
+//     /* ── Headings: one system, six variations ─────────────────
+//        Every level is body-sized (font-size: 1em) — deliberately.
+//        …
+//        headings (card faces, cloze context) must therefore hide ::after — see
+//        `.card-question .rendered` and `.cloze-item .cloze-ctx` below. */
+//     .rendered :is(h1, h2, h3, h4, h5, h6) { font-size: 1em; … }
+//
+// It pulled back exactly ONE line (the one ending `*/`) and stopped at the
+// unindented prose above it. The comment was then split across two files: the
+// opening `/*` stayed at the end of 05-study.css (harmless — an unterminated
+// comment at EOF) while its closing line landed at the top of 06-rendered.css
+// as bare text. A stylesheet is parsed per file, so that orphan is not a
+// comment there: it becomes part of the SELECTOR of the rule beneath it, and an
+// invalid selector drops the whole rule.
+//
+// The rule dropped was `font-size: 1em` on h1–h6. Every heading in every note
+// silently fell back to the UA sizes (h1 2em, h2 1.5em) while the ::after
+// underline ladder immediately below it — a separate, still-valid rule — kept
+// applying. The same thing happened at the 07-library.css boundary.
+//
+// So: when the line above ends a block comment, walk up to the line that OPENS
+// it and take the lot.
 function pullBackComments(startLine) {
-  let i = startLine - 1;               // 0-based index of the boundary line
+  const i = startLine - 1;             // 0-based index of the boundary line
   let j = i;
-  while (j > 0) {
-    const prev = lines[j - 1].trim();
-    if (!prev) { j--; continue; }
-    if (prev.startsWith("/*") || prev.startsWith("*") || prev.endsWith("*/")) { j--; continue; }
-    break;
+  for (;;) {
+    let k = j;
+    while (k > 0 && !lines[k - 1].trim()) k--;   // skip blank lines above
+    if (k === 0) break;
+    const above = lines[k - 1].trim();
+    if (!above.endsWith("*/")) break;
+    // Walk up to the `/*` that opened it. Required to be the first thing on its
+    // line, so a trailing `color: red; /* note */` is never mistaken for one.
+    let start = k - 1;
+    while (start > 0 && !lines[start].trim().startsWith("/*")) start--;
+    if (!lines[start].trim().startsWith("/*")) break;
+    j = start;
   }
   // Don't drag a trailing blank line along with it.
   while (j < i && !lines[j].trim()) j++;

@@ -11,7 +11,7 @@ import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUIL
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { scrollTextareaToOffset, textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
-import { applyNotesPagedLayout } from "./paged-view.js?v=__BUILD__";
+import { applyNotesPagedLayout, isNotesPaged, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
 import { renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource } from "../render/block-cache.js?v=__BUILD__";
@@ -134,10 +134,18 @@ export function renderNotesViewPinned() {
     requestAnimationFrame(() => {
       const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
       if (anchor) {
-        const drift = anchor.node.getBoundingClientRect().top - anchor.top;
-        if (drift) {
-          markProgrammaticNotesScroll();
-          view.scrollTop += drift;
+        // Paged mode pins by PAGE. Correcting `scrollTop` there is meaningless —
+        // the note runs sideways and scrollTop is pinned at 0 — and this path is
+        // reached by making a highlight or a cloze, so getting it wrong moves
+        // the reader every time they mark something up.
+        if (isNotesPaged()) {
+          revealInPagedNotes(anchor.node);
+        } else {
+          const drift = anchor.node.getBoundingClientRect().top - anchor.top;
+          if (drift) {
+            markProgrammaticNotesScroll();
+            view.scrollTop += drift;
+          }
         }
       }
       resolve();

@@ -322,19 +322,3 @@
   user-select: text;
   -webkit-user-select: text;
 }
-
-/* ── Headings: one system, six variations ──────────────────────────────────
-   Every level is body-sized (font-size: 1em) — deliberately. Size used to
-   carry the hierarchy (1.15em → 0.9em) alongside a grab-bag of one-off
-   decorations: only h1 had a rule, h4 was italic, h5/h6 were uppercase. Six
-   levels that each looked like a different idea.
-
-   Now they share ONE idea — a rule underneath the text — and the level is read
-   off that rule's LENGTH and STYLE: full-width and solid at h1, tapering to a
-   short dotted tick at h6. Weight (800→600) and colour (accent-strong → text →
-   muted) reinforce the same ladder without ever changing the type size, so a
-   heading never disturbs the line rhythm of the prose around it.
-
-   The rule is an ::after, not a border-bottom: a border always spans the whole
-   block box, and the varying lengths are the point. Anything that flattens
-   headings (card faces, cloze context) must therefore hide ::after too — see

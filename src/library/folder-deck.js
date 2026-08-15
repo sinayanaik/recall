@@ -155,9 +155,20 @@ export async function openFolderAsDeck(path) {
   const folderPath = normalizeDeckCategory(path);
   const found = decksUnderFolder(folderPath);
   if (!found.length) {
-    showToast("That folder has no decks yet", "error");
+    // Named, because the two ways to get here look identical from the outside:
+    // the folder really is empty, or My Decks has not been painted this session
+    // and decksUnderFolder therefore has nothing to read.
+    setStatus(`No decks found in "${folderPath}".`, "error");
+    showToast(`No decks in "${folderPath}" to read`, "error");
     return false;
   }
+
+  // BEFORE the payloads are read, not after. The deck being left is very often
+  // one of the folder's own decks, and its last 400ms of typing lives only in
+  // memory until this runs — reading first captured the stale copy from disk,
+  // and the merged document then wrote that stale copy back over the edit.
+  // Measured: a 2,687-character note came back as 2,658.
+  flushWorkingDeck();
 
   setStatus(`Opening ${found.length} deck${found.length === 1 ? "" : "s"} in ${folderPath}…`);
 
@@ -191,12 +202,10 @@ export async function openFolderAsDeck(path) {
 
   const writable = members.filter((member) => member.localId);
   if (!writable.length) {
-    setStatus("Couldn't open that folder.", "error");
+    setStatus(`Couldn't read any of the ${found.length} decks in "${folderPath}" on this device.`, "error");
     showToast("None of those decks could be read on this device", "error");
     return false;
   }
-
-  flushWorkingDeck();
 
   const cards = [];
   const statusById = {};
@@ -224,6 +233,18 @@ export async function openFolderAsDeck(path) {
     });
   });
 
+  // Built in full BEFORE anything is assigned, and refused if it came out
+  // empty. Everything above this line is reads; everything below is writes.
+  // Interleaving them is how a throw halfway through leaves `state` describing
+  // a deck that does not exist — the open deck replaced, the notes not yet
+  // written, and all three tabs blank with no way back but a reload.
+  const mergedNotes = buildFolderDeckNotes(writable);
+  if (!mergedNotes.trim()) {
+    setStatus(`The decks in "${folderPath}" have no notes to read.`, "error");
+    showToast(`Nothing to read in "${folderPath}"`, "error");
+    return false;
+  }
+
   state.deckId = null;
   state.localDeckId = null;
   state.folderDeck = { path: folderPath, members: writable, cardOwner, originalCardId, readOnlyCount: members.length - writable.length };
@@ -237,7 +258,7 @@ export async function openFolderAsDeck(path) {
   state.deckCategory = folderPath;
   state.sourceTitle = folderPath;
   state.importTitleHint = folderPath;
-  state.notes = buildFolderDeckNotes(writable);
+  state.notes = mergedNotes;
   setViewMode("notes");
 
   syncResults();

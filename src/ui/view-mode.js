@@ -8,7 +8,7 @@ import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, rend
 import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderHighlightsPanel } from "../panels/highlights-panel.js?v=__BUILD__";
-import { resetChromeAutoHide } from "./chrome.js?v=__BUILD__";
+import { measureChromeHeights, resetChromeAutoHide } from "./chrome.js?v=__BUILD__";
 
 // `options.deferRender` yields one frame between flipping the toggle's own
 // classes and doing the work behind them. Only the user-facing toggle passes
@@ -41,6 +41,14 @@ export function setViewMode(mode, options = {}) {
   hideNotesSelectionButton();
   // Switching views is navigation, not reading — start with the header visible.
   if (changed) resetChromeAutoHide();
+  // The appbar is a different height in each view — the card counters are
+  // hidden on a phone while reading — and its own ResizeObserver cannot see it
+  // GROW, because the box that observer watches is clamped to the last height
+  // recorded (`.appbar { max-height: var(--appbar-h) }`). So a height measured
+  // in Notes view was still in force in Cards and Highlights, where the meta row
+  // then spilled out over the tabs below it. This is the one place that knows
+  // the view just changed.
+  if (changed) measureChromeHeights();
   if (notesActive) {
     // A note you haven't been reading opens at its first line. Done BEFORE the
     // render rather than after it: scheduleNoteJump() calls setViewMode() and

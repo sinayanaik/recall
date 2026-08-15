@@ -1,6 +1,13 @@
 /* My Decks: rows, tiles, folders, drag and drop
  * Part of the split styles.css — see tools/split-css.mjs. Order matters.
  */
+/* Column widths come from the 7-column <colgroup> in index.html (checkbox,
+   Title, Category, Cards, Saved, Sync, Actions) — the single source of truth, so
+   there are no per-cell width overrides here to drift out of sync with it.
+
+   Everything except Title is centred. Title is the column the eye scans down,
+   and centring it left every deck name starting at a different x — the single
+   biggest reason this list read as noise. It gets a left edge; the numeric and
    status columns stay centred under their headers. */
 .my-decks-table th,
 .my-decks-table td,

@@ -489,11 +489,125 @@ export function renderMyDecksBreadcrumb() {
 }
 
 // ── Folder + deck cluster builders (shared by tiles and folder-nav rows) ────
+
+// Everything you can do to a folder, in one place, so the row and the tile
+// cannot offer different sets of actions. Named actions rather than a row of
+// six unlabelled icons: "what does the pencil do to a folder" is a question
+// nobody should have to answer by hovering.
+export function folderActions(path) {
+  return [
+    ["Open", () => setMyDecksCwdAndRender(path)],
+    ["Read as one deck", () => openFolderAsDeck(path)],
+    ["New deck here", () => newDeckInFolder(path)],
+    ["New subfolder", () => createFolder(path)],
+    ["Import here…", () => importIntoFolder(path)],
+    ["Rename", () => renameFolder(path)],
+    ["Move to…", () => moveFolderViaMenu(path)],
+    ["Delete", () => deleteFolder(path)],
+  ];
+}
+
+// The same ⋯ control the deck tiles use, for a folder. Deliberately the same
+// CSS class as theirs (.deck-tile-overflow*) so closeAllDeckTileMenus, the
+// click-outside dismissal and the OVERLAY_LAYERS entry all keep working without
+// learning about a second kind of menu.
+export function buildFolderOverflowMenu(path, name) {
+  const overflow = document.createElement("div");
+  overflow.className = "deck-tile-overflow";
+
+  const ovBtn = document.createElement("button");
+  ovBtn.type = "button";
+  ovBtn.className = "deck-tile-overflow-btn";
+  ovBtn.setAttribute("aria-haspopup", "true");
+  ovBtn.setAttribute("aria-expanded", "false");
+  ovBtn.title = "Folder actions";
+  ovBtn.setAttribute("aria-label", `Actions for folder ${name || path}`);
+  ovBtn.innerHTML = mdIcon("more");
+
+  const menu = document.createElement("div");
+  menu.className = "deck-tile-overflow-menu";
+  menu.hidden = true;
+  folderActions(path).forEach(([label, handler]) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.textContent = label;
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      menu.hidden = true;
+      ovBtn.setAttribute("aria-expanded", "false");
+      handler();
+    });
+    menu.appendChild(item);
+  });
+
+  ovBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.hidden;
+    closeAllDeckTileMenus(menu);
+    menu.hidden = !willOpen;
+    ovBtn.setAttribute("aria-expanded", String(willOpen));
+    if (willOpen) positionOverflowMenu(ovBtn, menu);
+  });
+
+  overflow.append(ovBtn, menu);
+  return overflow;
+}
+
+// Promote an overflow menu to viewport-fixed coordinates computed from its
+// button. The grid/table it lives in scrolls, and near the bottom of a long
+// list the menu would otherwise be clipped by that scroll container.
+export function positionOverflowMenu(button, menu) {
+  const r = button.getBoundingClientRect();
+  menu.style.position = "fixed";
+  // The default CSS anchors with `right: 0`, which would stretch the box once
+  // `left` is also set explicitly below.
+  menu.style.right = "auto";
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const menuW = menu.offsetWidth;
+  const menuH = menu.offsetHeight;
+  menu.style.left = `${Math.max(4, Math.min(r.right - menuW, window.innerWidth - menuW - 4))}px`;
+  menu.style.top = (r.bottom + menuH + 4 > window.innerHeight)
+    ? `${r.top - menuH - 4}px`
+    : `${r.bottom + 4}px`;
+}
+
+// Re-parents a folder by picking its NEW PARENT from the same category picker
+// the deck move uses. Seeded with the folder's current parent, not the folder
+// itself — "move to" means "which folder should hold this one".
+export async function moveFolderViaMenu(path) {
+  const from = normalizeDeckCategory(path);
+  const leaf = folderSegments(from).slice(-1)[0] || from;
+  const currentParent = folderSegments(from).slice(0, -1).join(FOLDER_SEP);
+  const parent = await chooseDeckCategory(currentParent || defaultDeckCategory);
+  if (parent === null) return;
+  // "Uncategorized" is how the picker spells the root; a folder moved there is
+  // a top-level folder, not one nested inside a folder literally called that.
+  const parentPath = normalizeDeckCategory(parent) === defaultDeckCategory ? "" : normalizeDeckCategory(parent);
+  if (isCategoryUnder(parentPath, from)) {
+    showToast("A folder can't be moved inside itself", "error");
+    return;
+  }
+  try {
+    const moved = await moveFolder(from, parentPath);
+    showToast(moved ? `Moved "${leaf}" to ${parentPath || "the top level"}` : "That folder is already there");
+    renderMyDecksList();
+  } catch (error) {
+    console.error("Folder move failed", error);
+    showToast("Couldn't move the folder — offline?", "error");
+  }
+}
+
+// Two visible controls and a menu, not six icons in a row.
+//
+// It used to be Read / Deck / Folder / Import / Rename / Delete, all inline —
+// which was both too much furniture for a folder row AND missing the two things
+// people actually looked for, Open and Move. The two that stay visible are the
+// two that are about going somewhere; everything that CHANGES the folder is one
+// press away under ⋯, where each action can afford a real name.
 export function buildFolderActionCluster(path) {
   const wrap = document.createElement("div");
   wrap.className = "deck-folder-actions";
-  // Icon + label, so the phone layout can drop to icons alone and keep all five
-  // actions on the folder's own line instead of wrapping them onto a second.
   const mk = (icon, text, title, handler) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -509,21 +623,20 @@ export function buildFolderActionCluster(path) {
     return b;
   };
   wrap.append(
-    // First, because it is the only one of these that is about READING rather
-    // than about managing the folder.
+    mk("folder", "Open", "Open this folder", () => setMyDecksCwdAndRender(path)),
     mk("book", "Read", "Read every deck in this folder as one document — edits are saved back to each deck", () => openFolderAsDeck(path)),
-    mk("newDeck", "Deck", "New deck in this folder", () => newDeckInFolder(path)),
-    mk("newFolder", "Folder", "New subfolder", () => createFolder(path)),
-    mk("importDeck", "Import", "Import a file into this folder — as notes, as cards, or both", () => importIntoFolder(path)),
-    mk("pencil", "Rename", "Rename folder", () => renameFolder(path)),
-    mk("trash", "Delete", "Delete folder", () => deleteFolder(path)),
+    buildFolderOverflowMenu(path, folderSegments(path).slice(-1)[0] || path),
   );
   return wrap;
 }
 
 // A folder as a grid tile (Folder view, Tiles display). Double-click / Enter drills
-// in; it is a drop target and is itself draggable for re-parenting. No inline action
-// buttons — folder management lives in the toolbar and Tree view.
+// in; it is a drop target and is itself draggable for re-parenting. Folder
+// MANAGEMENT still lives in the toolbar and Tree view — the one inline control
+// here is "read as one deck", because that is the only thing on the cluster
+// that is about reading rather than about the folder, and a tile with no way to
+// reach it is a feature that does not exist for anyone whose library is in
+// Tiles display.
 export function buildFolderTile(node) {
   const tile = document.createElement("div");
   tile.className = "folder-tile";
@@ -552,9 +665,28 @@ export function buildFolderTile(node) {
   const count = document.createElement("span");
   count.className = "folder-tile-count";
   count.textContent = total === 1 ? "1 deck" : `${total} decks`;
+  // Read stays visible because it is the one action a folder tile could not
+  // otherwise offer at all (the tile's own click already Opens). Everything
+  // else — new deck, new subfolder, import, rename, move, delete — is in the
+  // same ⋯ menu the deck tiles carry, so a folder is no longer the one thing in
+  // the library you cannot manage without switching views.
+  const actions = document.createElement("div");
+  actions.className = "folder-tile-actions";
+  const read = document.createElement("button");
+  read.type = "button";
+  read.className = "folder-tile-read";
+  read.innerHTML = `${mdIcon("book")}<span class="md-btn-label">Read</span>`;
+  read.title = "Read every deck in this folder as one document — edits are saved back to each deck";
+  read.setAttribute("aria-label", read.title);
+  // The tile itself opens the folder, so this press must not also drill in.
+  read.addEventListener("click", (e) => { e.stopPropagation(); openFolderAsDeck(node.path); });
+  read.addEventListener("dblclick", (e) => e.stopPropagation());
+  const overflow = buildFolderOverflowMenu(node.path, node.name);
+  overflow.addEventListener("dblclick", (e) => e.stopPropagation());
+  actions.append(read, overflow);
   // A sibling row below the name (not crammed into the same flex row as the
   // icon) — otherwise a long name has almost no width left to wrap into.
-  tile.append(selWrap, main, count);
+  tile.append(selWrap, main, count, actions);
 
   const enter = () => setMyDecksCwdAndRender(node.path);
   tile.addEventListener("click", enter);
@@ -651,23 +783,7 @@ export function buildDeckOverflowMenu(deck, kind, sel) {
     closeAllDeckTileMenus(menu);
     menu.hidden = !willOpen;
     ovBtn.setAttribute("aria-expanded", String(willOpen));
-    if (willOpen) {
-      // The grid/table this button lives in scrolls, and the menu can otherwise
-      // be clipped by that scroll container near the bottom of the list —
-      // promote it to a viewport-fixed position computed from the button.
-      const r = ovBtn.getBoundingClientRect();
-      menu.style.position = "fixed";
-      menu.style.right = "auto"; // the default CSS anchors with `right: 0`, which
-      // would otherwise stretch the box once `left` is also set explicitly below.
-      menu.style.left = "0px";
-      menu.style.top = "0px";
-      const menuW = menu.offsetWidth;
-      const menuH = menu.offsetHeight;
-      menu.style.left = `${Math.max(4, Math.min(r.right - menuW, window.innerWidth - menuW - 4))}px`;
-      menu.style.top = (r.bottom + menuH + 4 > window.innerHeight)
-        ? `${r.top - menuH - 4}px`
-        : `${r.bottom + 4}px`;
-    }
+    if (willOpen) positionOverflowMenu(ovBtn, menu);
   });
 
   overflow.append(ovBtn, menu);

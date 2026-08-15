@@ -33,16 +33,17 @@
 // So paged mode pays the full-layout cost the continuous view was carefully
 // built to avoid. On an ordinary note that is a few milliseconds. On a very
 // large one it is seconds of frozen tab, which is not something to discover by
-// switching a setting — hence NOTES_PAGED_MAX_CHARS below, and the notice
+// switching a setting — hence NOTES_PAGED_MAX_CHARS below, and one toast
 // instead of the freeze.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 
 // Above this many characters of markdown, paged mode declines to lay the note
-// out and says why. Measured on the harness: a 250KB note paginates in roughly
-// a second on a desktop, and a phone is several times slower again.
+// out and says so once. Measured on the harness: a 250KB note paginates in
+// roughly a second on a desktop, and a phone is several times slower again.
 export const NOTES_PAGED_MAX_CHARS = 250000;
 
 // How close to a page boundary counts as "on that page". Sub-pixel column
@@ -66,6 +67,23 @@ export function notesPagedTooLarge() {
   return (state.notes || "").length > NOTES_PAGED_MAX_CHARS;
 }
 
+export function notesPagedColumns() {
+  return notesReadingMode === "paged-2" ? 2 : 1;
+}
+
+// A point that is guaranteed to be INSIDE a column, for anything that probes
+// the view with elementFromPoint/caretFromPoint.
+//
+// The obvious probe — the horizontal middle of the view — is the one x that is
+// guaranteed to be WRONG in two-column mode: it lands in the column gap, where
+// elementFromPoint returns #notesView itself. Every caller then does
+// `closest(".notes-rendered > *")` on a node that IS `.notes-rendered`, gets
+// null, and falls through to its worst fallback. The centre of the first column
+// is inside real content by construction.
+export function notesPagedProbeX(rect) {
+  return rect.left + rect.width / (2 * notesPagedColumns());
+}
+
 export function notesPageWidth() {
   return Math.max(1, el.notesView?.clientWidth || 1);
 }
@@ -80,14 +98,41 @@ export function notesCurrentPage() {
   return Math.max(0, Math.round(el.notesView.scrollLeft / notesPageWidth()));
 }
 
+// Which page holds a point `left` pixels into the flow?
+export function notesPageForViewportLeft(left) {
+  const view = el.notesView;
+  if (!view) return 0;
+  const flowLeft = left - view.getBoundingClientRect().left + view.scrollLeft;
+  return Math.max(0, Math.min(notesPageCount() - 1, Math.floor((flowLeft + PAGE_EPSILON) / notesPageWidth())));
+}
+
 // Which page is `node` on? Measured against the view's own scroll origin rather
 // than offsetLeft, which would be relative to whichever ancestor happens to be
 // positioned — .notes-rendered is not one.
 export function notesPageForElement(node) {
-  const view = el.notesView;
-  if (!view || !node?.getBoundingClientRect) return 0;
-  const left = node.getBoundingClientRect().left - view.getBoundingClientRect().left + view.scrollLeft;
-  return Math.max(0, Math.min(notesPageCount() - 1, Math.floor((left + PAGE_EPSILON) / notesPageWidth())));
+  if (!node?.getBoundingClientRect) return 0;
+  return notesPageForViewportLeft(node.getBoundingClientRect().left);
+}
+
+// Which page is a RANGE on — which is not the same question as which page its
+// block is on, and the difference is a bug you can see.
+//
+// A block fragmented across a column break has a bounding rect that is the
+// UNION of its fragments, so its `.left` is the leftmost one. Ask it about a
+// <mark> sitting in the tail of a paragraph that began in the previous column
+// and it answers with the PREVIOUS page — and the highlight you asked to see is
+// off-screen. Not an edge case either: the paged rules deliberately turn
+// content-visibility off precisely so that paragraphs DO flow across column
+// breaks, and two columns double the number of breaks.
+//
+// getClientRects() returns one rect per fragment, in document order, so the
+// first is the fragment the range actually starts in.
+export function notesPageForRange(range) {
+  if (!range?.getClientRects) return 0;
+  const rects = range.getClientRects();
+  const first = rects.length ? rects[0] : range.getBoundingClientRect?.();
+  if (!first || (!first.width && !first.height)) return 0;
+  return notesPageForViewportLeft(first.left);
 }
 
 export function goToNotesPage(page, { smooth = true } = {}) {
@@ -115,10 +160,40 @@ export function turnNotesPage(delta) {
 // text. Measured before this: the heading was off-screen after a TOC jump on a
 // 390px viewport, every time.
 export function revealInPagedNotes(node) {
-  if (!isNotesPaged() || !node) return false;
+  if (!node) return false;
+  return revealPagedTarget(() => (node.isConnected ? notesPageForElement(node) : null));
+}
+
+// Same, for a Range — used by every jump that knows the exact text it wants
+// (a highlight, a card's source anchor, a note link), where paging by the
+// enclosing block would land a column early. See notesPageForRange.
+export function revealRangeInPagedNotes(range) {
+  if (!range) return false;
+  return revealPagedTarget(() => {
+    const node = range.startContainer;
+    if (!node?.isConnected) return null;
+    return notesPageForRange(range);
+  });
+}
+
+// Turn to whatever page `resolve()` names, then again on the next frame and
+// once more shortly after — for the same reason the continuous version has a
+// re-aiming loop, except that here what moves is not heights but COLUMNS. The
+// commonest case is the table of contents: on a phone the drawer closes as soon
+// as you tap an entry, which widens #notesView and re-flows every column, so the
+// page the jump landed on now holds different text. Measured before this: the
+// heading was off-screen after a TOC jump on a 390px viewport, every time.
+//
+// `resolve` returns null once its target has left the DOM (an incremental
+// re-render can replace the block under a jump), which ends the re-aiming
+// rather than throwing.
+function revealPagedTarget(resolve) {
+  if (!isNotesPaged()) return false;
   const aim = () => {
-    if (!node.isConnected || !isNotesPaged()) return;
-    goToNotesPage(notesPageForElement(node), { smooth: false });
+    if (!isNotesPaged()) return;
+    const page = resolve();
+    if (page == null) return;
+    goToNotesPage(page, { smooth: false });
   };
   aim();
   requestAnimationFrame(aim);
@@ -198,13 +273,11 @@ export function applyNotesPagedLayout() {
   stage?.classList.toggle("is-paged-reading", paged && !view.hidden);
   if (pageIndicator) pageIndicator.hidden = !paged || view.hidden;
 
-  // Declined, and says so. Only when a paged mode is actually selected — a
-  // reader on continuous mode has no business hearing about this.
-  if (notesReadingMode !== "continuous" && notesPagedTooLarge()) {
-    showPagedTooLargeNotice(stage);
-  } else {
-    stage?.querySelector(".notes-paged-notice")?.remove();
-  }
+  // Declined, and says so ONCE. This used to be a panel pinned above the note
+  // for as long as it was open, which is the wrong shape for the message: it is
+  // news the first time and furniture every time after, and it was stealing
+  // reading space on exactly the notes that have the most to show.
+  if (notesReadingMode !== "continuous" && notesPagedTooLarge()) announcePagedTooLarge();
 
   if (paged) {
     // Leaving continuous mode, scrollTop is whatever the reader had; it means
@@ -216,15 +289,16 @@ export function applyNotesPagedLayout() {
   }
 }
 
-function showPagedTooLargeNotice(stage) {
-  if (!stage || stage.querySelector(".notes-paged-notice")) return;
-  const notice = document.createElement("p");
-  notice.className = "notes-paged-notice";
-  notice.textContent =
-    `This note is too long to lay out in pages (${Math.round((state.notes || "").length / 1000)}KB), `
-    + "so it is being shown as a continuous scroll. Paged mode has to measure every "
-    + "paragraph to find the column breaks, which on a note this size would freeze the app.";
-  stage.insertBefore(notice, stage.firstChild?.nextSibling || null);
+// Which note the notice has already been shown for, by length — enough to tell
+// "the reader opened another huge note" from "the same note re-rendered because
+// they typed a character", without holding on to a megabyte of markdown.
+let pagedTooLargeAnnouncedFor = -1;
+
+function announcePagedTooLarge() {
+  const size = (state.notes || "").length;
+  if (pagedTooLargeAnnouncedFor === size) return;
+  pagedTooLargeAnnouncedFor = size;
+  showToast(`Note too long for pages (${Math.round(size / 1000)}KB) — scrolling instead`);
 }
 
 // Snap to the nearest page after a free swipe, and keep the indicator honest
@@ -279,10 +353,49 @@ export function firstVisibleNotesBlock() {
   return view.firstElementChild;
 }
 
+// Wheel → page turn.
+//
+// A mouse has no horizontal axis to give a horizontally-scrolling box, so
+// without this the whole desktop half of paged mode was two little arrows and
+// the keyboard. The wheel's VERTICAL delta drives the page instead, which is
+// what every reader app does and what the gesture already means here: "further
+// through the document".
+//
+// Rate-limited rather than accumulated: a trackpad flick delivers dozens of
+// events for one physical gesture, and summing them turns a flick into a
+// twenty-page jump. One turn per gesture, with a cooldown that any continuing
+// momentum keeps resetting — so a long flick still turns one page, and turning
+// several means several deliberate flicks.
+const WHEEL_COOLDOWN_MS = 420;
+const WHEEL_THRESHOLD = 8;
+let wheelReadyAt = 0;
+
+export function handleNotesWheel(event) {
+  if (!isNotesPaged() || el.notesView?.hidden) return;
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  if (Math.abs(delta) < WHEEL_THRESHOLD) return;
+  // The box scrolls horizontally, so a vertical wheel would otherwise do
+  // nothing at all and the page behind it would scroll instead.
+  event.preventDefault();
+  const now = performance.now();
+  if (now < wheelReadyAt) {
+    // Still inside the cooldown: this is the tail of the same gesture. Push the
+    // window out so the momentum cannot spill into a second turn.
+    wheelReadyAt = now + WHEEL_COOLDOWN_MS;
+    return;
+  }
+  wheelReadyAt = now + WHEEL_COOLDOWN_MS;
+  turnNotesPage(delta > 0 ? 1 : -1);
+}
+
 export function initPagedNotes() {
   const view = el.notesView;
   if (!view) return;
   ensureNotesPageIndicator();
+
+  // Not passive: paging has to preventDefault, or a vertical wheel over a
+  // horizontally-scrolling box scrolls the page behind it instead.
+  view.addEventListener("wheel", handleNotesWheel, { passive: false });
 
   view.addEventListener("scroll", () => {
     if (!isNotesPaged()) return;

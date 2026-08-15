@@ -11,7 +11,7 @@ import { scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
-import { isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
+import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
@@ -184,7 +184,16 @@ export function applyNotesTocFolding() {
       twisty.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${notesTocHeadings[index]?.textContent.trim() || "section"}`);
     }
   });
-  // The row that was lit may have just been folded away, or revealed.
+  // The row that was lit may have just been folded away, or revealed, so the
+  // scroll-spy has to pick again from scratch. Clearing the class from every
+  // link first is what makes that safe: updateNotesTocActive un-lights
+  // `notesTocLinks[notesTocActiveIndex]`, and resetting the index to -1 without
+  // this leaves the previously-lit row lit forever — two rows highlighted at
+  // once, with the stale one usually winning any querySelector.
+  notesTocLinks.forEach((link) => {
+    link.classList.remove("is-active");
+    link.removeAttribute("aria-current");
+  });
   notesTocActiveIndex = -1;
   updateNotesTocActive();
 }
@@ -553,6 +562,11 @@ export function preserveNotesReadingPosition(mutate) {
 export function blockAtNotesReadingLine() {
   const view = el.notesView;
   if (!view) return null;
+  // Paged mode: the first block on the current page IS what the reader is
+  // looking at, and asking elementFromPoint instead would probe the column gap
+  // in two-column layouts — where it returns #notesView itself, whose
+  // `closest(".notes-rendered > *")` is null, so this returned null every time.
+  if (isNotesPaged()) return firstVisibleNotesBlock();
   const rect = view.getBoundingClientRect();
   const y = rect.top + notesReadingLineOffset(rect.height);
   const hit = document.elementFromPoint(rect.left + rect.width / 2, y);

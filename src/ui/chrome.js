@@ -77,14 +77,35 @@ export function hasStudyTextSelection() {
 }
 
 // The raw write. Only ever called when the chrome is expanded and still.
+//
+// scrollHeight, not offsetHeight — and this is not a nicety. The variables
+// written here are the SAME ones the CSS clamps these elements with
+// (`.appbar { max-height: var(--appbar-h) }`), so offsetHeight reports the
+// clamped box rather than the natural one: once a short height has been
+// recorded, the element can never be measured taller than it, because the clamp
+// is what it is being measured through.
+//
+// Latent until the appbar's height started depending on the VIEW — the card
+// counters are hidden while reading (see styles/16-mobile-reading.css), so a
+// height measured in Notes view was then too small for Cards or Highlights, and
+// the meta row spilled out over the tabs below it. scrollHeight is the content
+// height and ignores max-height entirely; the borders are added back because it
+// excludes them and the clamp is on the border box.
+function naturalHeight(node) {
+  if (!node?.scrollHeight) return 0;
+  const styles = getComputedStyle(node);
+  const borders = (parseFloat(styles.borderTopWidth) || 0) + (parseFloat(styles.borderBottomWidth) || 0);
+  return Math.ceil(node.scrollHeight + borders);
+}
+
 export function readChromeHeights() {
   const root = document.documentElement;
   const appbar = document.querySelector(".appbar");
-  if (appbar?.offsetHeight) root.style.setProperty("--appbar-h", `${appbar.offsetHeight}px`);
+  const appbarHeight = naturalHeight(appbar);
+  if (appbarHeight) root.style.setProperty("--appbar-h", `${appbarHeight}px`);
   const toggle = el.viewModeToggle;
-  if (toggle && !toggle.hidden && toggle.offsetHeight) {
-    root.style.setProperty("--view-toggle-h", `${toggle.offsetHeight}px`);
-  }
+  const toggleHeight = toggle && !toggle.hidden ? naturalHeight(toggle) : 0;
+  if (toggleHeight) root.style.setProperty("--view-toggle-h", `${toggleHeight}px`);
 }
 
 // Two guards, both load-bearing:
