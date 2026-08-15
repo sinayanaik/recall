@@ -3,10 +3,10 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
 import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageCount, notesPagedProbeX } from "./paged-view.js?v=__BUILD__";
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
+import { notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
 
 // A representative raw-markdown offset for whatever's currently at the top of
 // the visible #notesView. Unlike the triple-click path, the "Edit notes"

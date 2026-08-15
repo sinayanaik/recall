@@ -4,11 +4,11 @@
 
 import { ensureMermaid, ensureNomnoml } from "../core/lib-loader.js?v=__BUILD__";
 import { loadNoteLinkIndex, noteLinkEntriesByTitle, parseNoteLinkTarget } from "../notes/note-links.js?v=__BUILD__";
+import { isTopLevelBlockParent } from "./block-cache.js?v=__BUILD__";
 import { codeLanguageLabel, codeLanguageOrGeneric, configurePrismLanguages, declaredCodeLanguage, inferCodeLanguage, normalizeCodeLanguage } from "./code-language.js?v=__BUILD__";
 import { EAGER_IMAGE_COUNT, deferrableRenderRoot, runNearViewportAndDefer, scopedQueryAll } from "./deferred-work.js?v=__BUILD__";
 import { addDiagramZoomControl } from "./diagram-zoom.js?v=__BUILD__";
 import { sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
-import { isTopLevelBlockParent } from "./block-cache.js?v=__BUILD__";
 import { noteLinkEntryMatchesId } from "./note-links.js?v=__BUILD__";
 import { normalizeImageUrl } from "./preprocess.js?v=__BUILD__";
 import { fitMarkdownTables } from "./tables.js?v=__BUILD__";

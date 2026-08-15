@@ -41,14 +41,7 @@
 // and turned into a screen position on scroll with arithmetic alone.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import {
-  backdropForTextarea,
-  isCaretProbeRunning,
-  measuredCaretTop,
-  scrollTextareaToOffset,
-  textareaLineHeight,
-  visualLineTopForOffset,
-} from "./caret.js?v=__BUILD__";
+import { backdropForTextarea, isCaretProbeRunning, measuredCaretTop, scrollTextareaToOffset, textareaLineHeight, visualLineTopForOffset } from "./caret.js?v=__BUILD__";
 
 export const CARET_LINE_FLASH_MS = 1400;
 

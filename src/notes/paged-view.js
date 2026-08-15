@@ -37,10 +37,10 @@
 // instead of the freeze.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { notesTopLevelBlocks, reshapeRenderedChunks } from "../render/block-cache.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
+import { notesTopLevelBlocks, reshapeRenderedChunks } from "../render/block-cache.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Above this many characters of markdown, paged mode declines to lay the note
 // out and says so once. Measured on the harness: a 250KB note paginates in

@@ -52,15 +52,15 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
+import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
+import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
+import { cachedDeckSnapshotSync, finishSaveDeckToLibrary } from "./local-library.js?v=__BUILD__";
+import { myDeckPayload } from "./my-decks-selection.js?v=__BUILD__";
 import { readDeckSnapshot, withDeckLock } from "../storage/deck-store.js?v=__BUILD__";
 import { closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { flushWorkingDeck } from "../ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
-import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
-import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
-import { cachedDeckSnapshotSync, finishSaveDeckToLibrary } from "./local-library.js?v=__BUILD__";
-import { myDeckPayload } from "./my-decks-selection.js?v=__BUILD__";
 
 // One capture group: the member deck's local id. Anchored to a whole line, so a
 // marker mentioned mid-sentence in prose is not one.
