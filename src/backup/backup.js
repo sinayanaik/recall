@@ -573,6 +573,15 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
     return false;
   }
   if (!payloads.length) {
+    // An empty library is a failed BACKUP — the user pressed a button and no
+    // file arrived, so say so. It is not a failed SAFETY STEP: there, having
+    // nothing to protect is the successful outcome, and reporting it in red
+    // over the job that is still running (see applyRestore) reads as the
+    // restore itself having gone wrong.
+    if (autoClosePanel) {
+      progress?.close();
+      return false;
+    }
     setStatus("No decks to back up.", "error");
     progress?.finish("No decks to back up.", { warning: "This device has no decks saved yet." });
     return false;

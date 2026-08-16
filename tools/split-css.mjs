@@ -104,6 +104,13 @@ const POST_SPLIT = {
     "backup panel needs (white-space on .backup-progress-note): missing " +
     "uploads and CORS-blocked web links are separate problems reported as " +
     "separate paragraphs, which collapse into one sentence without it.",
+  "21-app-info-project.css":
+    "The Supabase project rows in App Info — which project URL, ref, anon key " +
+    "and account this device is connected to. Every install brings its own " +
+    "backend and nothing in the app would say WHICH one, so a health check " +
+    "run against the wrong project read as a broken app. Values are a URL, a " +
+    "JWT and a uuid, so the rows stack label-over-value instead of using the " +
+    "shared row's baseline-aligned two-column shape.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

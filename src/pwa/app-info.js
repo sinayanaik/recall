@@ -5,10 +5,10 @@
 // otherwise announces itself as a dozen unrelated symptoms scattered across
 // the app rather than as one missing column.
 
-import { verifiedCloudUserId } from "../cloud/auth.js?v=__BUILD__";
+import { getCachedSession, verifiedCloudUserId } from "../cloud/auth.js?v=__BUILD__";
 import { isMissingRelationError } from "../cloud/deck-list.js?v=__BUILD__";
 import { abortable, withTimeout } from "../cloud/net.js?v=__BUILD__";
-import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
+import { loadSupabaseConfig, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { IS_DEV_BUILD } from "../core/build.js?v=__BUILD__";
 import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { GITHUB_REPO, compareCommits, fetchLiveRelease, fetchRepoRelease, releaseStampsIn, runningAppVersion, runningVersionLabel, setGithubReleaseCache } from "./release-info.js?v=__BUILD__";
@@ -237,6 +237,127 @@ export async function refreshAppInfo() {
   if (!repo) setAppInfoWarning("Couldn't reach GitHub, so this only compares against the live site.");
 }
 
+// ── Which Supabase project this device is connected to ─────────────────────
+// The health check below answers "does it work". This answers "which one" —
+// and on an app where every install brings its own backend, that is the
+// question a failing check is useless without. The URL and key are entered
+// once, on a setup screen the user never sees again, and are then only in
+// localStorage: until now no surface in the app could read them back, so a
+// device pointed at a stale project, a second project, or someone else's
+// reported perfectly real failures about a database the user wasn't thinking
+// of, with no way to notice the mismatch.
+
+export const appInfoProjectUrl = document.getElementById("appInfoProjectUrl");
+
+export const appInfoProjectRef = document.getElementById("appInfoProjectRef");
+
+export const appInfoProjectKey = document.getElementById("appInfoProjectKey");
+
+export const appInfoProjectAccount = document.getElementById("appInfoProjectAccount");
+
+export const appInfoProjectUserId = document.getElementById("appInfoProjectUserId");
+
+// The project ref is the first label of a hosted Supabase URL
+// (https://<ref>.supabase.co) and is what the dashboard URL, the CLI and every
+// support thread are keyed on. Returns "" for a self-hosted or proxied URL,
+// where the concept simply doesn't apply — better to say nothing than to
+// present a hostname fragment as an id that can be looked up.
+export function supabaseProjectRef(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (!/\.supabase\.(co|in|net)$/.test(host)) return "";
+    const ref = host.split(".")[0];
+    return ref && ref !== "www" ? ref : "";
+  } catch {
+    return "";
+  }
+}
+
+// Enough of the key to tell two projects apart, and not enough to paste
+// anywhere. The anon key is public by design — it ships in the page of every
+// Supabase app — but a full credential-shaped string on screen invites being
+// treated as a secret worth sending to someone, so show it the way a card
+// number is shown.
+export function maskSupabaseKey(key) {
+  const value = String(key || "");
+  if (!value) return "";
+  if (value.length <= 20) return value;
+  return `${value.slice(0, 10)}…${value.slice(-6)}`;
+}
+
+// A legacy Supabase key is a JWT whose payload names the role it acts as. Worth
+// reading, because exactly one wrong value here is dangerous rather than
+// merely broken: a `service_role` key pasted in place of the anon key works
+// perfectly — every screen in the app behaves — while bypassing Row Level
+// Security entirely and sitting in localStorage where any script on the origin
+// can read it. It cannot be detected from behaviour, only from the key itself.
+// Returns "" for the newer `sb_publishable_…` keys, which are not JWTs and
+// carry no role to read.
+export function supabaseKeyRole(key) {
+  const parts = String(key || "").split(".");
+  if (parts.length !== 3) return "";
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return typeof payload?.role === "string" ? payload.role : "";
+  } catch {
+    return "";
+  }
+}
+
+export function setProjectRow(node, text, absent = false) {
+  if (!node) return;
+  node.textContent = text;
+  node.classList.toggle("is-absent", absent);
+}
+
+export async function renderSupabaseProjectDetails() {
+  const config = loadSupabaseConfig();
+  if (!config?.url) {
+    setProjectRow(appInfoProjectUrl, "Not connected", true);
+    setProjectRow(appInfoProjectRef, "—", true);
+    setProjectRow(appInfoProjectKey, "—", true);
+    setProjectRow(appInfoProjectAccount, "—", true);
+    setProjectRow(appInfoProjectUserId, "—", true);
+    return;
+  }
+
+  setProjectRow(appInfoProjectUrl, config.url);
+
+  const ref = supabaseProjectRef(config.url);
+  if (ref && appInfoProjectRef) {
+    // A link, because the ref's only real use is getting to the dashboard for
+    // this project — which is where every fix the health check recommends
+    // (re-run the SQL, enable email sign-in, create the bucket) has to happen.
+    appInfoProjectRef.textContent = "";
+    appInfoProjectRef.classList.remove("is-absent");
+    const link = document.createElement("a");
+    link.href = `https://supabase.com/dashboard/project/${ref}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = ref;
+    appInfoProjectRef.appendChild(link);
+  } else {
+    setProjectRow(appInfoProjectRef, "self-hosted", true);
+  }
+
+  const role = supabaseKeyRole(config.key);
+  const masked = maskSupabaseKey(config.key) || "missing";
+  // Said plainly rather than as a status colour: this is the one row where the
+  // value being wrong is a security problem and not a broken feature.
+  setProjectRow(
+    appInfoProjectKey,
+    role && role !== "anon" ? `${masked} — ${role} key, replace it with the anon key` : masked,
+    !config.key
+  );
+
+  // getCachedSession, not verifiedCloudUserId: this row reports what the device
+  // is holding, and a lapsed token is exactly the state worth being able to
+  // see here. Whether that session still works is the health check's job.
+  const session = await getCachedSession();
+  setProjectRow(appInfoProjectAccount, session?.user?.email || "Signed out", !session?.user);
+  setProjectRow(appInfoProjectUserId, session?.user?.id || "—", !session?.user);
+}
+
 // ── Supabase project health check ──────────────────────────────────────────
 // Every user connects their OWN Supabase project, and the setup form validates
 // only the SHAPE of the URL and key — never that the project behind them has the
@@ -449,6 +570,9 @@ export function openAppInfoModal() {
   appInfoModal.hidden = false;
   lockPageScroll();
   refreshAppInfo();
+  // Local reads (localStorage config, cached session) — no network, so these
+  // rows are filled before the version check has finished its first request.
+  renderSupabaseProjectDetails().catch((error) => console.warn("Could not read the Supabase project details", error));
 }
 
 // "Check for updates" should mean it. The 5-minute GitHub cache exists to keep

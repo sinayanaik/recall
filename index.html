@@ -66,6 +66,7 @@
     <link rel="stylesheet" href="styles/18-paged-notes.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/19-notes-chunks.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/20-broken-images.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/21-app-info-project.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -1329,6 +1330,37 @@ What year was the Eiffel Tower built?
                phone this app mostly runs on is nowhere at all. -->
           <div class="app-info-health">
             <h3 class="app-info-health-title">Supabase project</h3>
+            <!-- WHICH project, before whether it works. The health check below
+                 can only ever report on the project this device is configured
+                 for, and nothing in the app said which one that was — so a
+                 check run against a stale or second project (a re-paste, a
+                 shared device, a project restored from a different account)
+                 reported real failures about a database the user wasn't
+                 thinking of. The anon key is masked: it is a public key by
+                 design, but a full JWT on screen invites pasting it into
+                 places a public key should not go. -->
+            <dl class="app-info-list app-info-project">
+              <div class="app-info-row">
+                <dt>Project URL</dt>
+                <dd id="appInfoProjectUrl">—</dd>
+              </div>
+              <div class="app-info-row">
+                <dt>Project ref</dt>
+                <dd id="appInfoProjectRef">—</dd>
+              </div>
+              <div class="app-info-row">
+                <dt>Anon key</dt>
+                <dd id="appInfoProjectKey">—</dd>
+              </div>
+              <div class="app-info-row">
+                <dt>Signed in as</dt>
+                <dd id="appInfoProjectAccount">—</dd>
+              </div>
+              <div class="app-info-row">
+                <dt>User ID</dt>
+                <dd id="appInfoProjectUserId">—</dd>
+              </div>
+            </dl>
             <ul class="app-info-health-list" id="appInfoHealthList"></ul>
             <p class="app-info-warning" id="appInfoHealthSummary" hidden></p>
             <div class="app-info-actions">

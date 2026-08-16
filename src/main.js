@@ -7,7 +7,7 @@
 import { exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
 import { runBrokenImageScan } from "./backup/broken-images.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
-import { appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
+import { appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, resetLocalLibrary, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
 import { clearAllCardDropTargets, closeAllCardsPanel, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
 import { allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
@@ -41,6 +41,7 @@ import { clearImportStaging, commitStagedImport, importDestinationFolder, import
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
+import { readLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
@@ -970,7 +971,55 @@ document.getElementById("loginChangeProjectBtn")?.addEventListener("click", () =
   showSetupScreen();
 });
 
-document.getElementById("logoutBtn")?.addEventListener("click", handleLogout);
+// Signing out takes the decks off the device with it.
+//
+// The library is a mirror of ONE account's cloud data, and leaving it behind
+// on sign-out left that account's entire contents readable by whoever used the
+// browser next — the decks stayed in My Decks and opened normally, because
+// every read is local. (The account switch already wiped it; the sign-out that
+// wasn't followed by another sign-in did not.)
+//
+// Confirmed, never silent, and the count is in the question: a deck that never
+// reached the cloud has no other copy, and "your decks are safe on this
+// device" is a promise this app makes everywhere else. Which is also why the
+// never-synced ones are called out separately — those are the only decks this
+// can actually cost, and the user is the only one who can weigh that.
+document.getElementById("logoutBtn")?.addEventListener("click", () => {
+  const index = readLocalDeckIndex();
+  const total = index.length;
+  const localOnly = index.filter((meta) => !meta.deckId || !meta.lastSyncedAt).length;
+
+  const signOutAndWipe = async () => {
+    // Sign out FIRST. It flips isSignedIn, which is what every sync entry point
+    // gates on — wiping while a reconcile could still start would have it read
+    // an empty library against a full cloud and spend the next few minutes
+    // downloading everything back.
+    await handleLogout();
+    try {
+      await resetLocalLibrary();
+      showToast(total ? `Signed out — ${total} deck${total === 1 ? "" : "s"} removed from this device` : "Signed out", "success");
+    } catch (error) {
+      console.warn("Could not clear the local deck library on sign-out", error);
+      showToast("Signed out, but the decks on this device could not be removed", "error");
+    }
+  };
+
+  if (!total) return void signOutAndWipe();
+
+  showConfirmModal(
+    // One paragraph, no newlines: .confirm-modal-message renders with textContent
+    // and the default white-space, so a "\n\n" here would collapse to a space.
+    `Sign out and remove all ${total} deck${total === 1 ? "" : "s"} from this device? `
+    + "Everything already synced stays in your Supabase project and comes back when you sign in again."
+    + (localOnly
+      ? ` But ${localOnly} deck${localOnly === 1 ? " has" : "s have"} never synced — `
+        + `${localOnly === 1 ? "it exists" : "they exist"} only on this device and will be gone for good. `
+        + "Cancel and use My Decks → ⋯ → Backup first if you need them."
+      : ""),
+    () => { signOutAndWipe(); },
+    { confirmLabel: "Sign out & delete", danger: true }
+  );
+});
 
 document.getElementById("cancelSyncBtn")?.addEventListener("click", () => {
   el.syncModal.hidden = true;

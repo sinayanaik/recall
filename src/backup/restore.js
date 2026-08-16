@@ -629,7 +629,14 @@ export function showRestorePreview(report) {
 }
 
 export async function applyRestore(report, { autoBackup = true } = {}) {
-  if (autoBackup) {
+  // Nothing on the device, nothing to protect. Worth checking BEFORE the panel
+  // is opened rather than letting the backup discover it: on a fresh install —
+  // the single most common place a restore is run — the safety step used to
+  // open a progress panel, count to zero, and finish on a red "This device has
+  // no decks saved yet" that had to be dismissed by hand before the restore the
+  // user actually asked for could be seen. An error-shaped interruption
+  // announcing a non-problem, in front of the thing it was protecting.
+  if (autoBackup && readLocalDeckIndex().length) {
     try {
       await exportLibraryBackupZip({
         fileBaseName: `recall-backup-before-restore-${backupTimestamp()}`,

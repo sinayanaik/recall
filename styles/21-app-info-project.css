@@ -1,0 +1,49 @@
+/* ── Which Supabase project this device is actually talking to ──────────────
+
+   The health check below these rows says whether the project WORKS. It never
+   said which project it was — and on a bring-your-own-backend app that is the
+   first thing you need when something is wrong, because the answer is often
+   "the other one". The URL and key are only in localStorage, behind a setup
+   form that is deliberately hard to reach once configured, so there was no
+   surface in the app that could tell you.
+
+   Reuses .app-info-list / .app-info-row for the label-and-value shape; these
+   are only the differences: room between the rows and the health list, values
+   long enough (a JWT, a uuid) that the shared right-alignment needs help, and
+   a dashboard link that shouldn't repaint itself in link blue inside a
+   monospace value. */
+
+.app-info-project {
+  margin-bottom: 14px;
+}
+
+/* A project URL, an anon key and a uuid are all far too long for the flex row's
+   baseline alignment to look like anything. Below the label, full width, still
+   right-aligned — the same reading order, with somewhere for the value to go. */
+.app-info-project .app-info-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.app-info-project .app-info-row dt {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.app-info-project .app-info-row dd {
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.app-info-project .app-info-row dd a {
+  color: var(--accent, currentColor);
+}
+
+/* "Not connected" / "Signed out" — a real answer, not a value, so it drops the
+   monospace it would otherwise inherit from the shared dd rule. */
+.app-info-project .app-info-row dd.is-absent {
+  font-family: inherit;
+  color: var(--muted, var(--text));
+}

@@ -388,7 +388,16 @@ const ACCEPTED = {
     "reconcile only ever reads id and updated_at off an index row (title and " +
     "category ride along solely for the missing-body push fallback at the " +
     "cloudDeck diff); notes, meta and cards still come from fetchCloudDeckRows " +
-    "for the decks actually moving. Same rows, same order, fewer columns.",
+    "for the decks actually moving. Same rows, same order, fewer columns. " +
+    "Also reports progress on BACKGROUND runs, not just explicit ones: the " +
+    "Sync Now button's label is the only thing on screen describing the job, " +
+    "and it was written once by setButtonLoading as a bare 'Syncing…' and then " +
+    "never again — so a sync working through 700 decks looked exactly like one " +
+    "that had hung, for as long as it took. The status LINE stays " +
+    "explicit-only; it is the app's reply to something the user just did. The " +
+    "pull loop counts per deck for the same reason the push loop already did " +
+    "(it awaits a lock and a snapshot write each time, so it does yield — the " +
+    "note claiming otherwise was wrong).",
 
   // ── Backup: telling a dead link apart from an unreadable one ─────────────
   readBackupAssetBlob:
@@ -406,7 +415,48 @@ const ACCEPTED = {
   runLibraryBackup:
     "Reports those two counts as two different things. One combined figure " +
     "read as 'N of your images are lost' when most of them were pasted web " +
-    "links behaving normally, and only the hosted half is an error condition.",
+    "links behaving normally, and only the hosted half is an error condition. " +
+    "Also: an empty library is a failed backup when the user pressed the " +
+    "button (no file arrived — say so), and a non-event when this is the " +
+    "safety step inside a restore (autoClosePanel), where having nothing to " +
+    "protect is the successful outcome. It used to report both in red.",
+  applyRestore:
+    "Skips the pre-restore safety backup when the device holds no decks at " +
+    "all. Checked BEFORE the panel opens rather than inside the backup, " +
+    "because on a fresh install — the commonest place a restore is run — the " +
+    "safety step opened a progress panel, counted to zero and finished on a " +
+    "red 'This device has no decks saved yet' that had to be dismissed by " +
+    "hand, in front of the restore it was protecting.",
+
+  // ── Reads that only break at a library size the developer never had ──────
+  // Both of these worked for every library anyone had tested and failed for a
+  // 700-deck one, which is a size you reach in a single step by restoring a
+  // backup: every restored deck comes back with lastSyncedAt null, so the very
+  // next sync asks the cloud for all of them at once.
+  fetchCardsForDecks:
+    "Chunked by DECK as well as paged by row. `.in(\"deck_id\", ids)` goes out " +
+    "in the URL, and a uuid costs ~46 characters percent-encoded — 200 decks " +
+    "is ~9KB, past the 8KB request-line ceiling nginx and most proxies ship " +
+    "with, so the server answers 414 and the sync fails outright. The paging " +
+    "and its count check moved into readCardPagesForDecks unchanged, so each " +
+    "chunk is still verified complete on its own rather than averaged into a " +
+    "total that happens to look right.",
+  fetchCloudDeckRows:
+    "chunkSize 200 -> 25. These are full rows — every deck's entire notes " +
+    "markdown — so the chunk is sized by RESPONSE, not by PostgREST's 1000-row " +
+    "cap: 200 book-length notes is tens of megabytes against a 20s timeout " +
+    "meant for a phone, and the whole chunk then fails, retries once and fails " +
+    "again. Extra round trips cost far less than one timeout does.",
+  ensureLocalLibraryOwner:
+    "Pure extraction, no behaviour change: the wipe is now resetLocalLibrary, " +
+    "shared with the explicit sign-out. Both callers must remove exactly the " +
+    "same set and the failure mode of them drifting is silent and delayed — a " +
+    "leftover tombstone suppresses a deck the next account legitimately owns.",
+  openAppInfoModal:
+    "Also fills the Supabase project rows (renderSupabaseProjectDetails). The " +
+    "health check below them can only report on the project this device is " +
+    "configured for, and nothing in the app said which one that was — the URL " +
+    "and key are entered once on a setup screen the user never sees again.",
 
   // ── Storage panel: the check nobody had written ──────────────────────────
   buildStorageReport:
@@ -671,6 +721,16 @@ const RESIDUAL_REWRITES = [
   // storage object no longer exists, and touches nothing else in the menu.
   [/(await runRestoreFlow\(file\); \}\); \} )(\})/,
    '$1document.getElementById("myDecksCheckImagesBtn")?.addEventListener("click", () => { closeMyDecksMoreMenu(); runBrokenImageScan(); }); $2'],
+  // Signing out now takes the local library with it. The baseline handed the
+  // click straight to handleLogout and left every deck on the device: the
+  // library is a mirror of ONE account's cloud data, so it stayed readable in
+  // My Decks by whoever used the browser next, with no session needed because
+  // every read is local. (The account-SWITCH path already wiped it — the
+  // sign-out that wasn't followed by another sign-in did not.) Confirmed
+  // rather than silent, and the never-synced decks are counted separately in
+  // the question, because those are the only ones this can actually cost.
+  [/document\.getElementById\("logoutBtn"\)\?\.addEventListener\("click", handleLogout\); /,
+   () => 'document.getElementById("logoutBtn")?.addEventListener("click", () => { const index = readLocalDeckIndex(); const total = index.length; const localOnly = index.filter((meta) => !meta.deckId || !meta.lastSyncedAt).length; const signOutAndWipe = async () => { await handleLogout(); try { await resetLocalLibrary(); showToast(total ? `Signed out — ${total} deck${total === 1 ? "" : "s"} removed from this device` : "Signed out", "success"); } catch (error) { console.warn("Could not clear the local deck library on sign-out", error); showToast("Signed out, but the decks on this device could not be removed", "error"); } }; if (!total) return void signOutAndWipe(); showConfirmModal( `Sign out and remove all ${total} deck${total === 1 ? "" : "s"} from this device? ` + "Everything already synced stays in your Supabase project and comes back when you sign in again." + (localOnly ? ` But ${localOnly} deck${localOnly === 1 ? " has" : "s have"} never synced — ` + `${localOnly === 1 ? "it exists" : "they exist"} only on this device and will be gone for good. ` + "Cancel and use My Decks → ⋯ → Backup first if you need them." : ""), () => { signOutAndWipe(); }, { confirmLabel: "Sign out & delete", danger: true } ); }); '],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

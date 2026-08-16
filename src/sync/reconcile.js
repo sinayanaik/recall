@@ -487,10 +487,21 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
   // from one that had hung. Writes the button text directly rather than calling
   // setButtonLoading again, which would capture "Syncing…" as the label to
   // restore and leave the button stuck on it.
+  //
+  // The BUTTON is written on every run, background ones included. It used to be
+  // explicit-only, which meant setButtonLoading's bare "Syncing…" was the first
+  // and last thing a background sync ever said — and on a large library (a
+  // restore leaves every deck needing a pull, then a push) that one word sat
+  // there for many minutes, indistinguishable from a sync that had hung. It is
+  // the only thing on screen reporting the job, so it has to report it.
+  //
+  // The STATUS LINE stays explicit-only: it is the app's reply to something the
+  // user just did, and a background job writing over it would erase the answer
+  // to whatever they were actually working on.
   const progress = (message) => {
+    if (el.syncNowBtn) el.syncNowBtn.textContent = message;
     if (!explicit) return;
     setStatus(message);
-    if (el.syncNowBtn) el.syncNowBtn.textContent = message;
   };
   progress("Checking the cloud…");
 
@@ -985,9 +996,6 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       if (redeleteError) console.warn("Tombstone re-delete failed", tombstonedInCloud, redeleteError);
     }
 
-    // The download is the batched fetch below — the loop after it only writes to
-    // localStorage and never yields, so a per-deck "downloading 3 of 8" in there
-    // would never get a chance to paint. Say it once, here, where the wait is.
     if (toPull.length) progress(`Downloading ${toPull.length} deck${toPull.length === 1 ? "" : "s"} from the cloud…`);
     // Cards and deck BODIES together: the index rows above carry no notes or
     // meta, and the pull needs both. Two requests in parallel, for only the
@@ -999,7 +1007,16 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
         ])
       : [new Map(), new Map()];
 
+    // Counted as well as announced. The one-line "Downloading 721 decks…" above
+    // covers the two batched requests; the merge loop below is per deck, awaits
+    // a lock and a snapshot read/write each time, and on a restored library is
+    // by far the longer half of the two. The original note here said the loop
+    // never yields so a counter could not paint — it awaits pullCloudDeckToLibrary
+    // on every iteration, so it does, and without the counter this is exactly
+    // where a long sync looks stopped.
+    let pullDone = 0;
     for (const indexRow of toPull) {
+      progress(`Saving decks from the cloud… (${++pullDone} of ${toPull.length})`);
       // The full row, and ONLY the full row. This used to fall back to the index
       // row when the body was missing, so that a deck deleted between the two
       // requests still pulled "what we know" instead of throwing. But

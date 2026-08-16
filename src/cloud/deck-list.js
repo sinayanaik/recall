@@ -111,7 +111,14 @@ export async function fetchCloudDeckIndex(columns = DECK_INDEX_COLUMNS) {
 export async function fetchCloudDeckRows(deckIds) {
   const byId = new Map();
   if (!deckIds.length) return byId;
-  const chunkSize = 200;
+  // Sized by RESPONSE, not by the row cap. These are full rows — every deck's
+  // entire notes markdown — and a book-length note is megabytes on its own, so
+  // 200 of them in one response is tens of megabytes against a 20s timeout that
+  // is meant for a phone. The whole chunk then fails, retries once, and fails
+  // again, which is how a sync of a large library presented as a hang. 25 keeps
+  // each request small enough to finish and cheap enough to retry; the extra
+  // round trips cost far less than one timeout does.
+  const chunkSize = 25;
   for (let i = 0; i < deckIds.length; i += chunkSize) {
     const chunk = deckIds.slice(i, i + chunkSize);
     const { data, error } = await withTimeout(
@@ -145,9 +152,32 @@ export async function fetchCloudDeckRows(deckIds) {
 // this result, so an unverified partial read here costs a card, not just a
 // deck; see the (now corrected) comment this used to leave in
 // pushLibraryDeckToCloud claiming this always returns a complete list.
+// CHUNKED BY DECK as well as paged by row, and the chunking is a hard limit
+// rather than a tuning choice. `.in("deck_id", ids)` becomes a query STRING —
+// PostgREST reads it from the URL — so the id list has to fit in a request line.
+// A uuid costs ~46 characters once the quotes and commas are percent-encoded,
+// which puts 200 decks at ~9KB, past the 8KB request-line ceiling that nginx
+// and most proxies ship with by default. The server answers 414 and the sync
+// fails outright — and it only starts happening at a library size the developer
+// is unlikely to have, having worked fine for every smaller one. A restore is
+// how you get there in one step: every restored deck needs a pull, so the very
+// next sync asks for all of them at once.
+export const CARD_FETCH_DECK_CHUNK = 50;
+
 export async function fetchCardsForDecks(deckIds, columns = "*") {
   const byDeck = new Map(deckIds.map((id) => [String(id), []]));
   if (!deckIds.length) return byDeck;
+  for (let i = 0; i < deckIds.length; i += CARD_FETCH_DECK_CHUNK) {
+    await readCardPagesForDecks(deckIds.slice(i, i + CARD_FETCH_DECK_CHUNK), columns, byDeck);
+  }
+  return byDeck;
+}
+
+// One chunk of decks, read to completion and verified. Split out of
+// fetchCardsForDecks so the paging and the count check stay a single unit that
+// applies per request set — a chunk that came back short must throw on its own,
+// not be averaged into a total that happens to look right.
+export async function readCardPagesForDecks(deckIds, columns, byDeck) {
   const seen = new Set();
   const pageSize = 1000;
   let expectedTotal = null;
@@ -186,7 +216,6 @@ export async function fetchCardsForDecks(deckIds, columns = "*") {
   if (expectedTotal !== null && seen.size < expectedTotal) {
     throw new Error(`Card read was incomplete (${seen.size} of ${expectedTotal}) — not treating the gap as deletions`);
   }
-  return byDeck;
 }
 
 // Cross-device delete tombstones (see supabase_setup.sql, section 3). A local

@@ -118,37 +118,54 @@ export async function announceProjectHealthOnce() {
 // decks). The previous user's data is safe in their own cloud account.
 export const LAST_USER_STORAGE_KEY = "flashcards_last_user_id";
 
+// Every trace of the on-device library: the snapshots, the index, and each
+// piece of bookkeeping that only means anything ALONGSIDE that library.
+//
+// Extracted rather than written twice. The two callers — an account switch and
+// an explicit sign-out — must remove exactly the same things, and the failure
+// mode of them drifting is silent and delayed: a leftover tombstone suppresses
+// a deck the next account legitimately owns, a leftover missing-deck
+// observation is a head start toward deleting one, and a leftover deck body in
+// memory gets filed into whichever library is open next.
+//
+// Deliberately NOT touched: the Supabase config, the saved style, the theme,
+// and the image outbox. None of them is deck data — and on a sign-out the user
+// is very often about to sign straight back into the same project.
+export async function resetLocalLibrary() {
+  await clearAllDeckSnapshots();
+  localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
+  localStorage.removeItem(LOCAL_DECK_TOMBSTONES_KEY);
+  // Observations about the previous account's decks say nothing about this
+  // one's, and a stale entry is a head start toward deleting a deck.
+  localStorage.removeItem(MISSING_DECK_WATCH_KEY);
+  localStorage.removeItem(LAST_GLOBAL_SYNC_KEY);
+  localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
+  localStorage.removeItem(LAST_BG_SYNC_PROBLEM_KEY);
+  // Unscoped, unlike the quick-note queues, so it would be replayed by
+  // whoever signs in next — uploading one account's style into another's
+  // row on a shared device.
+  localStorage.removeItem(PENDING_STYLE_KEY);
+  localStorage.removeItem(deckStorageKey);
+  // Persisted state was cleared but the OPEN DECK was not: state.deckId,
+  // masterCards and notes survived the switch in memory, so the next
+  // autosave filed the previous account's deck into this one's library and
+  // the next reconcile pushed it to their cloud.
+  state.localDeckId = null;
+  state.deckId = null;
+  state.masterCards = [];
+  // Nothing repaints on this path, so the setViewMode net never runs — the
+  // raw editor would sit there still holding the PREVIOUS account's note,
+  // ready to be typed back into whatever this account opens first.
+  discardNotesEditingForDeckSwap();
+  state.notes = "";
+}
+
 export async function ensureLocalLibraryOwner(userId) {
   if (!userId) return;
   try {
     const previous = localStorage.getItem(LAST_USER_STORAGE_KEY);
     if (previous && previous !== String(userId)) {
-      await clearAllDeckSnapshots();
-      localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
-      localStorage.removeItem(LOCAL_DECK_TOMBSTONES_KEY);
-      // Observations about the previous account's decks say nothing about this
-      // one's, and a stale entry is a head start toward deleting a deck.
-      localStorage.removeItem(MISSING_DECK_WATCH_KEY);
-      localStorage.removeItem(LAST_GLOBAL_SYNC_KEY);
-      localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
-      localStorage.removeItem(LAST_BG_SYNC_PROBLEM_KEY);
-      // Unscoped, unlike the quick-note queues, so it would be replayed by
-      // whoever signs in next — uploading one account's style into another's
-      // row on a shared device.
-      localStorage.removeItem(PENDING_STYLE_KEY);
-      localStorage.removeItem(deckStorageKey);
-      // Persisted state was cleared but the OPEN DECK was not: state.deckId,
-      // masterCards and notes survived the switch in memory, so the next
-      // autosave filed the previous account's deck into this one's library and
-      // the next reconcile pushed it to their cloud.
-      state.localDeckId = null;
-      state.deckId = null;
-      state.masterCards = [];
-      // Nothing repaints on this path, so the setViewMode net never runs — the
-      // raw editor would sit there still holding the PREVIOUS account's note,
-      // ready to be typed back into whatever this account opens first.
-      discardNotesEditingForDeckSwap();
-      state.notes = "";
+      await resetLocalLibrary();
       console.log("Cleared local deck library — different account signed in.");
     }
     localStorage.setItem(LAST_USER_STORAGE_KEY, String(userId));
