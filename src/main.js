@@ -646,6 +646,17 @@ el.eraseNotesSelectionBtn?.addEventListener("pointerdown", (event) => {
 });
 
 
+// The ⋯ disclosure: reveal the formatting row on the bottom-pinned phone bar.
+// pointerdown + preventDefault like every other pill control — a click here
+// would dissolve the very selection the buttons it reveals are for.
+el.selectionFormatToggleBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const open = el.selectionFloat?.classList.toggle("is-format-open");
+  el.selectionFormatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+});
+
+
 el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   // pointerdown, not click: a click would have already destroyed the selection
   // this reads. Same reason as every other button in this strip.
@@ -704,7 +715,7 @@ onDomReady(initNotesCaretLine);
 // second, near-identical listener. Nearest ancestor wins, so a button inside
 // the render toolbar still resolves to the toolbar (which owns the colour menus).
 document.addEventListener("pointerdown", (event) => {
-  const btn = event.target.closest("[data-render-action], [data-render-color]");
+  const btn = event.target.closest("[data-render-action], [data-render-color], [data-render-font]");
   const host = btn?.closest("[data-render-target]");
   if (btn && host) {
     event.preventDefault();

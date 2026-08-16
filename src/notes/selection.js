@@ -75,12 +75,23 @@ export function hideNotesSelectionButton() {
   // tested separately on purpose: it is a child of the pill, so hiding the pill
   // hides it visually while leaving its own `hidden` false, and skipping the
   // reset below would spring it back open on the next selection.
+  // The formatting disclosure is tested here alongside the colour menu and for
+  // the same reason: it is a CLASS on the pill, so hiding the pill hides it
+  // visually while leaving the class set, and the next selection would open
+  // already expanded — the one state the collapsed-by-default bar exists to
+  // avoid. It has to be part of the fast path's "already fully reset" test too,
+  // or that early return skips the only place it gets cleared.
   if (el.selectionFloat?.hidden
       && !pillSelectionCapture
+      && !el.selectionFloat.classList.contains("is-format-open")
       && el.highlightSelectionMenu?.hidden !== false) {
     return;
   }
-  if (el.selectionFloat) el.selectionFloat.hidden = true;
+  if (el.selectionFloat) {
+    el.selectionFloat.hidden = true;
+    el.selectionFloat.classList.remove("is-format-open");
+    el.selectionFormatToggleBtn?.setAttribute("aria-expanded", "false");
+  }
   if (el.makeCardFromSelectionBtn) el.makeCardFromSelectionBtn.dataset.selectionText = "";
   // The colour menu is a child of the pill, so hiding the pill hides it too —
   // but it would come back open on the next selection without this.
@@ -680,14 +691,15 @@ export function positionNotesSelectionButton() {
     // both card faces, so that target is whichever surface this selection is
     // in — not a constant.
     button.dataset.renderTarget = editingTarget.name;
-    // ...but NOT the formatting slot. Those controls locate the selection in
-    // the markdown by matching the RENDERED text (renderedSelectionStrings), so
-    // in raw-edit mode they have nothing to match against and silently do
-    // nothing. The raw editor's own toolbar is on screen there with the same
-    // bold / italic / underline / strike / code, operating on the textarea
-    // directly — offering a second, broken copy on the pill would be worse than
-    // offering none.
-    if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = true;
+    // ...and the formatting slot too, now. These controls used to be hidden
+    // here: they located the selection by matching the RENDERED text
+    // (renderedSelectionStrings), which a textarea has none of, so in raw mode
+    // they silently did nothing and the raw editor's own toolbar was the answer
+    // instead. applyRenderFormat now takes the textarea's exact offsets when the
+    // surface is being edited, so the same buttons work in both modes — which is
+    // what let that toolbar shrink to the three controls a selection can't
+    // express (insert image, bullet, clear formatting).
+    if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = false;
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
     // Splitting text into its own note only makes sense from a note. A card

@@ -19,7 +19,7 @@ import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageFo
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
-import { notesTopLevelBlocks, renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -432,6 +432,91 @@ export function scrollNotesBlockToReadingLine(block, smooth) {
   view.scrollTo({ top: Math.max(0, target), behavior: smooth ? "smooth" : "auto" });
 }
 
+// ── Aiming at a moving target ───────────────────────────────────────────────
+//
+// A long note does not know its own height until you get there: diagrams below
+// the fold are only drawn as they approach the viewport, images only load then,
+// content-visibility chunks swap an estimated height for a real one, and each
+// one that arrives pushes everything under it down. So aiming ONCE at where the
+// target looks like it is can land thousands of pixels off.
+//
+// The loop therefore runs to CONVERGENCE rather than to a fixed count. It stops
+// when the residual is small enough, when two corrections in a row fail to
+// improve it (heights that will not settle — a lazily-loading image below the
+// fold — must not spin forever), or when the budget expires.
+//
+// `residual()` returns the signed pixels still to travel: add it to scrollTop
+// and the target sits where it belongs. Returning null abandons the aim, which
+// is how a caller says "the thing I was pointing at has left the document".
+//
+// Shared by the TOC heading jump (which wants the target at the top, under a
+// small gap) and the anchor/highlight jump (which wants it centred) — they
+// differ only in what they measure, so only `residual` differs.
+export const NOTES_AIM_SETTLE_PX = 4;
+
+export const NOTES_AIM_SETTLE_MS = 110;
+
+export async function convergeNotesScroll(residual, budgetMs) {
+  const view = el.notesView;
+  if (!view) return;
+  const aim = (delta, behavior) => {
+    markProgrammaticNotesScroll(behavior === "smooth" ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
+    view.scrollTo({ top: Math.max(0, view.scrollTop + delta), behavior });
+  };
+  const first = residual();
+  if (first == null) return;
+  aim(first, "smooth");
+  const until = performance.now() + budgetMs;
+  let best = Infinity;
+  let stalled = 0;
+  while (performance.now() < until) {
+    // A frame first so the scroll and any chunk that just realised are laid out,
+    // then a short settle for the smooth scroll and lazily-arriving content.
+    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, NOTES_AIM_SETTLE_MS)));
+    const delta = residual();
+    if (delta == null) return;
+    const left = Math.abs(delta);
+    if (left <= NOTES_AIM_SETTLE_PX) return;
+    // Not improving: one more correction is worth trying (the first measurement
+    // after a smooth scroll is taken mid-flight), two in a row is a stalemate.
+    if (left >= best - 1) {
+      stalled += 1;
+      if (stalled >= 2) return;
+    } else {
+      stalled = 0;
+    }
+    best = Math.min(best, left);
+    aim(delta, "auto");
+  }
+}
+
+// How long the anchor/highlight jump keeps correcting. Shorter than the TOC's
+// budget: a heading jump usually crosses the whole note, while this one is
+// often already close.
+export const NOTE_JUMP_BUDGET_MS = 1200;
+
+// How far `range` still is from the middle of the notes viewport, or null if it
+// has stopped being measurable.
+//
+// Measured through withChunkRendered on the range's own BLOCK, because on a
+// chunked note the containment sits on the wrapper: a target inside a skipped
+// chunk answers with its chunk's box, the same answer all 40 of its neighbours
+// give. The range's rect is preferred over the block's — a paragraph that flows
+// across a column break or runs several screens long would otherwise centre its
+// own midpoint rather than the highlighted words — with the block as the
+// fallback for a range the DOM no longer resolves.
+export function noteRangeCenterResidual(range, block, view) {
+  const target = block || view;
+  if (!view || !target?.isConnected) return null;
+  return withChunkRendered(target, view, () => {
+    const rangeRect = range?.getBoundingClientRect?.();
+    const rect = rangeRect && (rangeRect.height || rangeRect.width) ? rangeRect : target.getBoundingClientRect();
+    if (!rect.height && !rect.width) return null;
+    const viewTop = view.getBoundingClientRect().top;
+    return rect.top - viewTop - Math.max(0, (view.clientHeight - rect.height) / 2);
+  });
+}
+
 export function blockForRange(range) {
   if (!range) return null;
   const startEl = range.startContainer.nodeType === Node.TEXT_NODE
@@ -510,7 +595,15 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true } =
   // whose target sat in the tail of such a paragraph to the previous page, with
   // the thing it was pointing at off-screen.
   if (!revealRangeInPagedNotes(range)) {
-    (block || el.notesView).scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+    // Centre it, then KEEP centring it. This used to be a single
+    // scrollIntoView({block:"center"}), which aims once against heights that are
+    // still estimates below the fold — and on a chunked note it aimed at a
+    // target whose chunk had not laid out, where it and all 40 of its
+    // neighbours report the same box. Between them that is the "Go to takes me
+    // near the highlight but not to it" report. Deliberately not awaited: every
+    // caller reads the boolean to decide whether to keep retrying, and the aim
+    // has already been issued synchronously by the time this returns.
+    convergeNotesScroll(() => noteRangeCenterResidual(range, block, el.notesView), NOTE_JUMP_BUDGET_MS);
   }
   if (!flash) return true;
   // The browser's own selection highlight makes the exact span obvious; the

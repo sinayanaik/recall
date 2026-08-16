@@ -192,6 +192,7 @@ const APP_SHELL = [
   `./styles/19-notes-chunks.css?v=${STAMP}`,
   `./styles/20-broken-images.css?v=${STAMP}`,
   `./styles/21-app-info-project.css?v=${STAMP}`,
+  `./styles/22-selection-bar.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never

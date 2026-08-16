@@ -467,20 +467,51 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
    the visible shape entirely.
 
    On a phone it stops pretending to be a pill and becomes what it actually is:
-   a bar across the bottom of the screen, in two clean rows — the actions, then
-   the formatting — with real touch targets. --safe-bottom is already in the
-   base rule's `bottom`, so the home indicator is accounted for. */
+   a bar near the bottom of the screen, with real touch targets. --safe-bottom is
+   already in the base rule's `bottom`, so the home indicator is accounted for.
+
+   It used to span the full width (left: 8px; right: 8px) with BOTH rows always
+   showing — twelve controls over two rows of 36px targets, about 100px of the
+   screen, permanently over the sentence you had just selected. Two changes fix
+   that without giving up the bottom pinning (which exists because a touch
+   selection drag scrolls the view, and a pill tracking the selection would
+   vanish — see pinSelectionButtonToBottom):
+
+     • it shrinks to its contents and re-centres, so it covers the width it
+       needs rather than the width available;
+     • the formatting row collapses behind the ⋯ disclosure, so the default is
+       ONE row.
+
+   And it stops being an opaque slab: translucent with a blur behind it, so the
+   text it does cover is still legible rather than simply gone. */
 .selection-float.is-pinned-bottom {
-  left: 8px;
-  right: 8px;
-  width: auto;
-  max-width: none;
-  translate: none;
+  /* left / translate deliberately not restated — the base rule in 12-notes.css
+     already centres it, and this file only has to stop overriding that. */
+  width: max-content;
+  max-width: calc(100vw - 16px);
   justify-content: center;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 16px;
+  gap: 4px;
+  padding: 5px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+}
+
+/* The disclosure is a phone-only control (hidden by default in 12-notes.css). */
+.selection-float.is-pinned-bottom .selection-float-btn.is-more {
+  display: inline-flex;
+}
+
+/* Collapsed until ⋯ is pressed — the formatting row AND the rule above it, which
+   is the boundary between two rows and means nothing when there is only one.
+   (0,3,0), so it clears `.selection-float-format { display: inline-flex }`
+   at :260 without needing an id or !important. */
+.selection-float.is-pinned-bottom:not(.is-format-open) .selection-float-format,
+.selection-float.is-pinned-bottom:not(.is-format-open) .selection-float-divider {
+  display: none;
 }
 
 /* The divider stops being a vertical hairline between two buttons and becomes
@@ -500,16 +531,19 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
   gap: 6px;
 }
 
-/* Touch targets. 26px is a mouse size; a thumb needs the whole row height. */
+/* Touch targets. 26px is a mouse size; a thumb needs more. 34x32 rather than the
+   40x36 this used to be: still comfortably above the ~28px a thumb needs, and
+   across a row of six it is 36px of width and 4px of height given back to the
+   note. */
 .selection-float.is-pinned-bottom .selection-float-btn,
 .selection-float.is-pinned-bottom .render-btn {
-  min-width: 40px;
-  height: 36px;
+  min-width: 34px;
+  height: 32px;
 }
 
 .selection-float.is-pinned-bottom .render-split-main,
 .selection-float.is-pinned-bottom .render-split-side {
-  height: 36px;
+  height: 32px;
 }
 
 /* The ▾ side of a split control is a modifier, not a peer — it does not need a

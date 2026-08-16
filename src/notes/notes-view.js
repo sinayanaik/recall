@@ -13,9 +13,10 @@ import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
 import { textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
 import { applyNotesPagedLayout, isNotesPaged, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
+import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
-import { renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource } from "../render/block-cache.js?v=__BUILD__";
+import { renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -117,41 +118,98 @@ export function renderNotesView({ sameNote = false } = {}) {
 // very one being edited, and an edited block is rebuilt rather than reused (see
 // patchRenderedBlocks) — its node is detached and its position unmeasurable
 // afterwards. The preceding sibling is unchanged by definition and stands in.
+// How close the anchor has to land before the settle loop is satisfied, the
+// pause between re-measurements, and how long it is willing to keep correcting.
+// The cadence matches scrollNotesHeadingIntoView, for the same reason: one frame
+// is enough for the patched blocks, and nothing else.
+export const NOTES_PIN_SETTLE_PX = 2;
+
+export const NOTES_PIN_SETTLE_MS = 110;
+
+export const NOTES_PIN_BUDGET_MS = 400;
+
+// A block's top edge, measured with its CHUNK forced to lay out. On a chunked
+// note the containment sits on the wrapper, so a block inside a skipped chunk
+// answers with its chunk's box — the same answer all 40 of its neighbours give.
+// Comparing that against a real measurement taken after the render (when the
+// chunk may well have realised) is comparing two different things, and the
+// difference reads as drift that was never there.
+export function notesAnchorTop(node, view) {
+  return withChunkRendered(node, view, () => node.getBoundingClientRect().top);
+}
+
 export function renderNotesViewPinned() {
   const view = el.notesView;
   if (!view || view.hidden) return renderNotesView({ sameNote: true });
 
-  const at = blockAtNotesReadingLine();
+  // blockAtNotesReadingLine() asks elementFromPoint, which answers nothing
+  // usable in two entirely ordinary situations: the reading line resting in the
+  // margin gap between two blocks (it returns #notesView itself, whose
+  // closest(NOTES_TOP_LEVEL_SELECTOR) is null) and the line sitting under a
+  // floating overlay. Both left `anchors` empty — and an empty `anchors` means
+  // NO drift correction at all, so the repaint moved the reader by however much
+  // the edit changed the layout. That is the "highlighting jumps the note"
+  // report. The geometric search cannot answer null while the note has blocks;
+  // see its own comment in scroll-anchor.js for why it was written.
+  const at = blockAtNotesReadingLine() || notesBlockAtReadingLineGeometric();
   const anchors = [];
   [at, at?.previousElementSibling].forEach((node) => {
-    if (node && view.contains(node)) anchors.push({ node, top: node.getBoundingClientRect().top });
+    if (node && view.contains(node)) anchors.push({ node, top: notesAnchorTop(node, view) });
   });
 
   const done = renderNotesView({ sameNote: true });
   if (!anchors.length) return done;
-  return done.then(() => new Promise((resolve) => {
-    // A frame later: the patched blocks have been laid out, and any block whose
-    // content-visibility state changed has settled.
-    requestAnimationFrame(() => {
-      const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
-      if (anchor) {
-        // Paged mode pins by PAGE. Correcting `scrollTop` there is meaningless —
-        // the note runs sideways and scrollTop is pinned at 0 — and this path is
-        // reached by making a highlight or a cloze, so getting it wrong moves
-        // the reader every time they mark something up.
-        if (isNotesPaged()) {
-          revealInPagedNotes(anchor.node);
-        } else {
-          const drift = anchor.node.getBoundingClientRect().top - anchor.top;
-          if (drift) {
-            markProgrammaticNotesScroll();
-            view.scrollTop += drift;
-          }
-        }
-      }
-      resolve();
-    });
-  }));
+  return done.then(() => settleNotesPin(view, anchors));
+}
+
+// Put the anchor back where it was, then keep checking that it stayed there.
+//
+// One frame is not enough on a long note. The patched blocks lay out on the next
+// frame, but a diagram drawing, a table refitting and a content-visibility chunk
+// swapping its estimate for a real height all land later still — and each one
+// that arrives above the reader moves the text again, after the single
+// correction this used to make had already run. So the residual is re-measured
+// on a settle cadence and re-corrected while it is still shrinking.
+export async function settleNotesPin(view, anchors) {
+  const until = performance.now() + NOTES_PIN_BUDGET_MS;
+  let settleMs = 0;
+  let best = Infinity;
+  let stalled = 0;
+  for (;;) {
+    // The first pass is a bare frame — exactly what this did before — so the
+    // common case (nothing below the fold to settle) still corrects immediately
+    // and returns. Later passes wait for lazily-arriving content.
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => (settleMs ? setTimeout(resolve, settleMs) : resolve())));
+    settleMs = NOTES_PIN_SETTLE_MS;
+    const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
+    if (!anchor) return;
+    // Paged mode pins by PAGE. Correcting `scrollTop` there is meaningless —
+    // the note runs sideways and scrollTop is pinned at 0 — and this path is
+    // reached by making a highlight or a cloze, so getting it wrong moves the
+    // reader every time they mark something up.
+    if (isNotesPaged()) {
+      revealInPagedNotes(anchor.node);
+      return;
+    }
+    const drift = notesAnchorTop(anchor.node, view) - anchor.top;
+    const residual = Math.abs(drift);
+    if (residual <= NOTES_PIN_SETTLE_PX) return;
+    // Not improving: the scroller is clamped at one end and cannot give back
+    // the drift, or heights that will not settle. One more correction is worth
+    // trying, two in a row is a stalemate — spinning out the whole budget just
+    // burns frames on a note that has already stopped moving.
+    if (residual >= best - 1) {
+      stalled += 1;
+      if (stalled >= 2) return;
+    } else {
+      stalled = 0;
+    }
+    best = Math.min(best, residual);
+    markProgrammaticNotesScroll();
+    view.scrollTop += drift;
+    if (performance.now() >= until) return;
+  }
 }
 
 // UI-only exit from notes edit mode. Deliberately does NOT copy the textarea

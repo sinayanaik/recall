@@ -10,7 +10,7 @@ import { makeClozeFromSelection } from "./cloze.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "./highlight-colors.js?v=__BUILD__";
 import { makeHighlightFromSelection, selectionForRenderTarget } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
-import { clozeTextareaSelection } from "./selection-tools.js?v=__BUILD__";
+import { applyFormatToTextarea, clozeTextareaSelection } from "./selection-tools.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
 import { isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { activeEditingTarget, hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
@@ -41,6 +41,11 @@ export function renderTargetConfig(target) {
   if (target === "notes") {
     return {
       view: el.notesView,
+      // The raw editor behind this surface. applyRenderFormat needs it because
+      // the formatting controls now serve BOTH modes from the floating pill —
+      // in raw mode there is no rendered text to match a selection against, so
+      // it works off the textarea's own offsets instead.
+      edit: el.notesEdit,
       label: "notes",
       isEditing: () => isNotesEditing(),
       getSource: () => state.notes,
@@ -58,6 +63,7 @@ export function renderTargetConfig(target) {
   const view = side === "question" ? el.questionView : el.answerView;
   return {
     view,
+    edit: side === "question" ? el.questionEdit : el.answerEdit,
     label: side,
     // The rendered view is hidden (edit mode) or there's simply no card.
     isEditing: () => !state.cards[state.current] || !view || view.hidden,
@@ -85,6 +91,29 @@ export const RENDER_TEXT_COLORS = [
   { name: "Accent", value: "var(--accent-strong)" },
   { name: "White", value: "#ffffff" },
   { name: "Gray", value: "#9ca3af" },
+];
+
+// Font stacks, mirroring the raw editor toolbar's list exactly — this control
+// MOVED here from there, so the same sixteen choices have to survive. `value` is
+// what lands in the markdown's style attribute; `css` is only the preview stack
+// each menu item is drawn in.
+export const RENDER_FONTS = [
+  { name: "Sans-Serif", value: "sans-serif" },
+  { name: "Serif", value: "serif" },
+  { name: "Monospace", value: "monospace" },
+  { name: "Cursive", value: "cursive" },
+  { name: "System UI", value: "system-ui" },
+  { name: "Georgia", value: "georgia", css: "georgia, serif" },
+  { name: "Garamond", value: "Garamond", css: "Garamond, serif" },
+  { name: "Impact", value: "Impact", css: "Impact, sans-serif" },
+  { name: "Trebuchet", value: "Trebuchet MS", css: "'Trebuchet MS', sans-serif" },
+  { name: "Arial", value: "Arial", css: "Arial, sans-serif" },
+  { name: "Times New Roman", value: "Times New Roman", css: "'Times New Roman', serif" },
+  { name: "Verdana", value: "Verdana", css: "Verdana, sans-serif" },
+  { name: "Tahoma", value: "Tahoma", css: "Tahoma, sans-serif" },
+  { name: "Courier New", value: "Courier New", css: "'Courier New', monospace" },
+  { name: "Consolas", value: "Consolas", css: "Consolas, monospace" },
+  { name: "Comic Sans", value: "Comic Sans MS", css: "'Comic Sans MS', cursive" },
 ];
 
 // The currently-chosen default for each split-button's one-click apply. Persisted
@@ -122,6 +151,29 @@ export function renderSplitControlHtml(prop, glyph, label, swatches) {
       <div class="render-color-menu" data-render-menu="${prop}" hidden>
         ${items}
         <button type="button" class="render-swatch-clear" data-render-color="clear" data-render-prop="${prop}" title="Remove ${label}">Clear</button>
+      </div>
+    </span>`;
+}
+
+// The font picker. A plain dropdown rather than a split control: unlike colour
+// and highlight there is no "current default" worth one-tap re-applying — you
+// pick a face because you want that face — so the ▾ side would open the only
+// menu the control has and the main side would do nothing useful.
+//
+// It reuses .render-color-menu so closeAllRenderMenus / the ${prop}-menu branch
+// in handleRenderToolbarAction find it without a second mechanism; the extra
+// .render-font-menu class is only there for the list layout.
+export function renderFontControlHtml() {
+  const items = RENDER_FONTS.map(
+    (f) =>
+      `<button type="button" class="render-font-btn" data-render-font="${f.value}" style="font-family: ${f.css || f.value};">${f.name}</button>`
+  ).join("");
+  return `
+    <span class="render-split" data-render-split="font">
+      <button type="button" class="render-btn render-font-toggle" data-render-action="font-menu" title="Font" aria-haspopup="true" aria-expanded="false">Aa</button>
+      <div class="render-color-menu render-font-menu" data-render-menu="font" hidden>
+        ${items}
+        <button type="button" class="render-swatch-clear" data-render-font="clear" title="Remove font">Clear</button>
       </div>
     </span>`;
 }
@@ -178,6 +230,7 @@ export function createRenderToolbarHtml({ actions = true, highlight = true } = {
     <button type="button" class="render-btn" data-render-action="strikethrough" title="Strikethrough"><s>S</s></button>
     <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
     <span class="render-divider" aria-hidden="true"></span>
+    ${renderFontControlHtml()}
     ${renderSplitControlHtml("color", RENDER_COLOR_GLYPH, "text colour", RENDER_TEXT_COLORS)}
     ${highlight ? renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", MARK_HIGHLIGHT_COLORS) : ""}${captureGroup}`;
 }
@@ -194,14 +247,16 @@ export function refreshRenderSwatches() {
 }
 
 export function initRenderToolbars() {
-  [el.questionRenderToolbar, el.answerRenderToolbar].forEach((tb) => {
-    if (tb) tb.innerHTML = createRenderToolbarHtml();
-  });
-  // The notes surface has no persistent strip at all any more. Its formatting
-  // rides in the floating selection pill instead, which is where it can be
-  // used: every one of these buttons refuses with "Select some text in the
-  // notes first" unless there IS a selection (see applyRenderFormat), so a
-  // permanent row of them was a row that did nothing while you read.
+  // NO surface has a persistent strip any more — not the notes, and as of now
+  // not the card faces either. Formatting rides the floating selection pill,
+  // which is the only place it can actually be used: every one of these buttons
+  // refuses without a selection (see applyRenderFormat), so a permanent row of
+  // them was a row that did nothing while you read, and on a phone a row that
+  // did nothing while covering the text.
+  //
+  // The pill serves all three faces — it stamps data-render-target per
+  // selection (positionNotesSelectionButton) — and works in raw-edit mode too,
+  // so nothing was left behind on the faces that lost their strip.
   //
   // No highlight split here — the pill already carries one.
   const pillFormat = document.getElementById("selectionFloatFormat");
@@ -211,7 +266,12 @@ export function initRenderToolbars() {
 
 export function closeAllRenderMenus() {
   document.querySelectorAll(".render-color-menu").forEach((m) => (m.hidden = true));
-  document.querySelectorAll(".render-split-side").forEach((b) => b.setAttribute("aria-expanded", "false"));
+  // Every control that OPENS a menu, not just the split ones: the font picker's
+  // toggle is a plain button (see renderFontControlHtml), so keying off
+  // .render-split-side alone would leave its aria-expanded stuck on "true".
+  document
+    .querySelectorAll('.render-split-side, [data-render-action$="-menu"]')
+    .forEach((b) => b.setAttribute("aria-expanded", "false"));
 }
 
 // When the located text is exactly the inner content of a <span style="…">…
@@ -232,8 +292,22 @@ export function enclosingStyleSpan(source, idx, end) {
 // { expandStyleSpan: true } (colour/highlight) so an existing style span around
 // the selection is merged into rather than nested.
 export function applyRenderFormat(config, formatFn, opts = {}) {
+  // Raw-edit mode: the textarea hands over exact offsets, so there is no source
+  // search to do — the same formatFn is applied directly (see
+  // applyFormatToTextarea, which is the other half of this contract).
+  //
+  // This used to refuse outright: "Switch the notes to preview to format a
+  // selection there." That was tolerable only while each editor carried its own
+  // toolbar. The floating pill is now the only formatting surface in either
+  // mode, so the refusal would have meant no bold, italic, colour or font in
+  // raw mode at all.
   if (config.isEditing()) {
-    setStatus(`Switch the ${config.label} to preview to format a selection there.`, "error");
+    const textarea = config.edit;
+    if (!textarea || textarea.hidden || textarea.selectionStart === textarea.selectionEnd) {
+      setStatus(`Select some text in the ${config.label} first, then tap a formatting button.`, "error");
+      return;
+    }
+    applyFormatToTextarea(textarea, formatFn);
     return;
   }
   const sel = selectionForRenderTarget(config.view);
@@ -296,8 +370,8 @@ export function handleRenderToolbarAction(btn, toolbar) {
   const action = btn.dataset.renderAction;
   const colorVal = btn.dataset.renderColor;
 
-  // Open/close a split-button's colour menu.
-  if (action === "color-menu" || action === "highlight-menu") {
+  // Open/close a split-button's colour menu, or the font list.
+  if (action === "color-menu" || action === "highlight-menu" || action === "font-menu") {
     const prop = action.slice(0, action.indexOf("-"));
     const menu = toolbar.querySelector(`.render-color-menu[data-render-menu="${prop}"]`);
     const willOpen = menu && menu.hidden;
@@ -324,6 +398,19 @@ export function handleRenderToolbarAction(btn, toolbar) {
     setRenderDefault(prop, colorVal);
     if (prop === "highlight") makeHighlightFromSelection(config, colorVal, sel);
     else applyRenderColor(config, prop, colorVal);
+    return;
+  }
+
+  // A face from the font list. No setRenderDefault here — unlike colour and
+  // highlight there is no one-tap re-apply to keep a default for.
+  const fontVal = btn.dataset.renderFont;
+  if (fontVal !== undefined) {
+    closeAllRenderMenus();
+    const formatFn =
+      fontVal === "clear"
+        ? (v, s, e) => clearInlineStyleProperty(v.slice(s, e), "font-family")
+        : (v, s, e) => applyInlineStyleProperty(v.slice(s, e), "font-family", fontVal);
+    applyRenderFormat(config, formatFn, { expandStyleSpan: true });
     return;
   }
 

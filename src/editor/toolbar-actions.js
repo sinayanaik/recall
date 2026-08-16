@@ -4,6 +4,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { applyInlineStyleProperty, clearFormatting, clearInlineStyleProperty, toggleBulletPoints, toggleCloze, toggleCode, toggleKbd, toggleStrikethrough, toggleUnderline, toggleWrap } from "./text-transforms.js?v=__BUILD__";
 import { toggleMarkColorInText } from "../format/highlight.js?v=__BUILD__";
 import { setRenderDefault } from "../format/render-toolbar.js?v=__BUILD__";
+import { applyFormatToTextarea } from "../format/selection-tools.js?v=__BUILD__";
 import { openImagePicker } from "../images/paste.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
@@ -124,22 +125,9 @@ export function handleToolbarClick(event) {
 
   if (!formatFn) return;
 
-  textarea.focus();
-  const val = textarea.value;
-  const result = formatFn(val, start, end);
-  const isRange = result && typeof result === "object";
-  const replacement = isRange ? result.text : result;
-  const rangeStart = isRange ? result.rangeStart : start;
-  const rangeEnd = isRange ? result.rangeEnd : end;
-
-  textarea.value = val.substring(0, rangeStart) + replacement + val.substring(rangeEnd);
-
-  // Restore selection
-  textarea.selectionStart = rangeStart;
-  textarea.selectionEnd = rangeStart + replacement.length;
-
-  // Trigger input event to save values to state
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  // Shared with the floating pill's formatting buttons, which run the same
+  // formatFns against the same textareas — see applyFormatToTextarea.
+  applyFormatToTextarea(textarea, formatFn);
 
   // Close all open dropdowns after action is applied
   document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach(d => {

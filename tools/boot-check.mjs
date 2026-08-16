@@ -31,6 +31,25 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// State keys that are ALLOWED to differ from the baseline, and why. Keep this
+// short, like split-parity's ACCEPTED — every entry is a place where "boots the
+// same as it always did" was deliberately spent.
+const ACCEPTED_DIFFS = {
+  toolbarsFilled:
+    "15/15/11 -> 3/3/3. The raw-edit toolbars keep only the three controls a " +
+    "SELECTION cannot express (insert image, bullet, clear formatting). " +
+    "Everything else on them — B I U S </>, font, colour, highlight, and the " +
+    "capture group — moved to the floating selection pill, which now works in " +
+    "raw mode too (applyRenderFormat's editing branch). They refused without a " +
+    "selection, so as permanent strips they could do nothing until you made " +
+    "one, while covering the text. The All Cards editor still builds the full " +
+    "strip and is not counted here.",
+  renderToolbars:
+    "3 -> 1. The card faces' two persistent .render-toolbar strips are gone " +
+    "for the same reason the notes one already was; the one that remains is " +
+    "#selectionFloatFormat, the formatting slot inside the pill.",
+};
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const baselineIdx = args.indexOf("--baseline");
@@ -195,11 +214,13 @@ try {
 
   if (baseline) {
     const before = await boot(baseline);
-    const diffs = Object.keys(now.state)
-      .filter((k) => String(before.state[k]) !== String(now.state[k]))
-      .map((k) => `  ${k}\n    ${baselineRef}: ${before.state[k]}\n    now: ${now.state[k]}`);
+    const changed = Object.keys(now.state).filter((k) => String(before.state[k]) !== String(now.state[k]));
+    const fmt = (k) => `  ${k}\n    ${baselineRef}: ${before.state[k]}\n    now: ${now.state[k]}`;
+    const diffs = changed.filter((k) => !(k in ACCEPTED_DIFFS)).map(fmt);
+    const accepted = changed.filter((k) => k in ACCEPTED_DIFFS).map((k) => `${fmt(k)}\n    why: ${ACCEPTED_DIFFS[k]}`);
     console.log(`\n── vs ${baselineRef} ──`);
     console.log(diffs.length ? diffs.join("\n") : "  identical");
+    if (accepted.length) console.log(`\n── accepted differences ──\n${accepted.join("\n")}`);
     if (diffs.length) problems.push(["DIFF", "state differs from the baseline"]);
   }
 

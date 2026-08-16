@@ -67,6 +67,7 @@
     <link rel="stylesheet" href="styles/19-notes-chunks.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/20-broken-images.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/21-app-info-project.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/22-selection-bar.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -485,8 +486,14 @@
                     <span class="face-label">Question</span>
                     <span class="card-status-badge" id="questionStatusBadge" data-status="">Uncategorized</span>
                   </div>
+                  <!-- The persistent render toolbar that used to sit here is
+                       gone. Every one of its buttons refused without a
+                       selection, so it was a permanent strip that could do
+                       nothing until you made one — and the floating selection
+                       pill already appears the moment you do, carrying the same
+                       formatting and the same capture group, for this face and
+                       both others (it sets data-render-target per selection). -->
                   <div class="edit-toolbar" id="questionEditToolbar" hidden></div>
-                  <div class="render-toolbar" id="questionRenderToolbar" data-render-target="question" aria-label="Format the selected question text"></div>
                   <div class="face-header-actions">
                     <button class="edit-card-btn go-to-notes-btn" id="goToNotesBtn" type="button" title="Go to this card's source in the notes" aria-label="Go to this card's source in the notes" hidden>&#128196;</button>
                     <button class="edit-card-btn" id="deleteCardBtn" type="button" title="Delete card" aria-label="Delete card" style="color: #ff4a4a;">&#128465;</button>
@@ -502,8 +509,9 @@
                     <span class="face-label">Answer</span>
                     <span class="card-status-badge" id="answerStatusBadge" data-status="">Uncategorized</span>
                   </div>
+                  <!-- Removed for the same reason as the question face's — see
+                       the comment there. -->
                   <div class="edit-toolbar" id="answerEditToolbar" hidden></div>
-                  <div class="render-toolbar" id="answerRenderToolbar" data-render-target="answer" aria-label="Format the selected answer text"></div>
                   <div class="face-header-actions">
                     <button class="edit-card-btn edit-toggle-pill" id="editAnswerBtn" type="button" title="Edit answer" aria-label="Edit answer"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
                   </div>
@@ -629,6 +637,18 @@
                  positionNotesSelectionButton, since the pill serves the notes
                  AND both card faces) is what routes these through the shared
                  [data-render-action] delegation in main.js. -->
+            <!-- Disclosure for the formatting row, which on a phone is
+                 collapsed by default: the bar carries twelve controls, and as
+                 two permanent rows of 36px targets it covered ~100px of the
+                 text you had just selected. Hidden on desktop, where the pill
+                 follows the selection and shows everything inline.
+
+                 "⋯" rather than the "Aa" you might expect, because the font
+                 picker INSIDE the group it opens is already "Aa" (it kept the
+                 raw toolbar's glyph when it moved here) and two "Aa" buttons
+                 visible at once, one nested in the other's disclosure, read as
+                 a mistake. -->
+            <button class="selection-float-btn is-more" id="selectionFormatToggleBtn" type="button" title="Formatting" aria-label="Show formatting options" aria-expanded="false" aria-controls="selectionFloatFormat"><span aria-hidden="true">&#8943;</span></button>
             <span class="selection-float-divider" aria-hidden="true"></span>
             <span class="selection-float-format render-toolbar" id="selectionFloatFormat"></span>
           </div>
@@ -1168,12 +1188,12 @@
           <section class="help-section">
             <h3 class="help-section-title">5. Edit &amp; Format Cards</h3>
             <p>Click the pencil icon <button type="button" class="edit-card-btn help-demo-btn" tabindex="-1">✏</button> on the question or answer face — or <strong>long-press the card with a mouse</strong> — to edit. Click the save icon <button type="button" class="edit-card-btn help-demo-btn" tabindex="-1">💾</button> to save. Edits are always committed when you navigate away. <em>On phones and tablets, long-press selects text — use the pencil icon to edit.</em></p>
-            <p>While editing, a <strong>formatting toolbar</strong> appears above the text. Select some text, then click a button to wrap it:</p>
+            <p><strong>Select some text</strong> — reading or editing, it makes no difference — and the formatting bar appears with it. There is no permanent toolbar any more: every one of these buttons needs a selection to act on, so they now show up only when you have made one, and go away with it. On a phone the bar is a single row; tap <kbd>⋯</kbd> to fold out the styling controls.</p>
             <table class="help-table">
               <tr><td><kbd>B</kbd> <kbd>I</kbd> <kbd>U</kbd> <kbd>S</kbd></td><td>Bold, Italic, Underline, Strikethrough</td></tr>
               <tr><td><kbd>&lt;/&gt;</kbd></td><td>Inline code</td></tr>
               <tr><td><kbd>[…]</kbd></td><td>Cloze — hide the selection as a fill-in-the-blank. In the editor it wraps the selection in <code>{{ }}</code>; in the rendered card or notes, select some text and tap the <kbd>[…]</kbd> button to cloze it in place (tap again on the same text to un-cloze). Tap a cloze on the card to reveal it, or use the <strong>Reveal clozes</strong> button to flip them all at once (tap again to hide them; you can still tap any single one). In the <strong>notes header</strong> all three cloze tools sit together as one group, each drawn as what it does: a line of text with a solid blank in it and a <strong>+</strong> makes a cloze from your selection; an <strong>eye</strong> shows every answer at once (it gains a slash while they are showing, so tapping hides them again); and <strong>three stacked rows</strong> open <strong>Cloze Review</strong> — a list of every blank in the deck</td></tr>
-              <tr><td><kbd>B I U</kbd></td><td>Format-in-place toolbar — formats the <em>selected</em> text without entering edit mode. In the <strong>notes</strong> it is the centred bottom row and holds formatting only (style, then colour); everything that <em>captures</em> a selection — cloze, <kbd>+</kbd> make a card, <kbd>📌</kbd> pin — lives in the header row above it, grouped, and stays put when you switch to editing. On a <strong>card face</strong> there is no header row, so that strip carries the capture buttons at its right end</td></tr>
+              <tr><td><kbd>B I U</kbd></td><td>Format-in-place — rewrites the markdown under the <em>selected</em> text, in the rendered view and in the raw editor alike. These live on the floating bar that appears with your selection, alongside everything that <em>captures</em> one (cloze, <kbd>+</kbd> make a card, <kbd>📌</kbd> pin, highlight, <kbd>↪</kbd> split out, <kbd>⌫</kbd> delete). The notes header keeps the three cloze tools, which are about the note as a whole rather than about a selection</td></tr>
               <tr><td><kbd>Aa</kbd></td><td>Font family picker</td></tr>
               <tr><td><kbd>A</kbd> <em>(underlined)</em></td><td>Text colour — the letter wears the colour it will apply. Tap it to use that colour in one tap; tap the ▾ beside it to pick another, which becomes the new default. The highlighter is the same idea with the colour behind the letter</td></tr>
               <tr><td><kbd>-</kbd></td><td>Toggle bullet list</td></tr>
@@ -1185,7 +1205,7 @@
             <ul class="help-list">
               <li><strong>Paste</strong> — copy any image (a screenshot, or an image from a webpage) and press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the editor</li>
               <li><strong>Drag &amp; drop</strong> — drag an image file onto the editor <em>(desktop)</em></li>
-              <li><strong>Toolbar 🖼️</strong> — tap the image button to open your file picker. <em>On phones and tablets this offers your camera or photo library</em></li>
+              <li><strong>🖼️ in the editor</strong> — tap the image button (it sits beside <kbd>-</kbd> and <kbd>Tx</kbd> in raw-edit mode, the three controls that act on the caret or the line rather than on a selection) to open your file picker. <em>On phones and tablets this offers your camera or photo library</em></li>
             </ul>
             <p>Each image is <strong>optimized in your browser</strong> (downscaled to 1600px max and re-encoded to WebP) before being uploaded to your own <strong>Supabase Storage</strong> bucket; an <code>![](…)</code> link is then inserted automatically. No separate key to set up — the same sign-in that unlocks sync unlocks image uploads. Images need a connection to upload. Hover a rendered image and use its <strong>🗑</strong> button to remove it from the note — since it's your own storage, that also deletes the file for good, unlike the old ImgBB host.</p>
             <p><strong>Google Drive links</strong> just work: paste a public share link like <code>![](https://drive.google.com/file/d/FILE_ID/view)</code> and it renders directly — no need to convert it first.</p>
@@ -1197,7 +1217,7 @@
             <ul class="help-list">
               <li>Open the <strong>answer</strong> in edit mode (pencil icon — long-press works on desktop — then flip to the answer side)</li>
               <li><strong>Select the text</strong> you want to keep</li>
-              <li>Click the <strong>📌</strong> button at the end of the formatting toolbar</li>
+              <li>Click the <strong>📌</strong> button on the floating bar that appears with your selection</li>
             </ul>
             <p>The selection is saved as a new card in a dedicated <code>quick_notes</code> cloud deck (created automatically the first time). The selected text becomes the card’s <strong>question</strong>, with a blank answer for you to fill in later. A <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Saved to quick_notes</span> toast confirms it worked. Open your <code>quick_notes</code> deck any time from <strong>My Decks</strong>. <em>(Requires sign-in, since notes are stored in the cloud.)</em></p>
           </section>

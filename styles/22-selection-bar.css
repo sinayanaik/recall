@@ -1,0 +1,79 @@
+/* The selection bar's formatting group: the ⋯ disclosure, and the font list
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ * Loaded last, so it settles ties against the slices without having to inflate
+ * its own specificity to win them.
+ *
+ * Both of these exist because the floating selection pill became the ONLY
+ * formatting surface in the app. The persistent strips are gone — the notes
+ * render toolbar first, and now the card faces' one and the B/I/U half of all
+ * three raw-edit toolbars — because every button on them refused without a
+ * selection, so they were permanent rows that could do nothing until you made
+ * one, while covering the text you were reading.
+ *
+ * That move brought two things here that need styling the slices never had a
+ * rule for: the font picker, which had lived only in the raw editor's toolbar
+ * and would otherwise have become unreachable, and a way to keep the phone bar
+ * from growing to two rows now that it carries everything.
+ */
+
+/* ── The ⋯ formatting disclosure ──────────────────────────────────────────
+   Phone-only. On the bottom-pinned bar the formatting row is collapsed by
+   default (see 16-mobile-reading.css) and this opens it; on a desktop the pill
+   tracks the selection and has room to carry the formatting inline, so there is
+   nothing to disclose — and a button that expands something already expanded is
+   worse than no button at all.
+
+   Shown again by `.selection-float.is-pinned-bottom .selection-float-btn.is-more`
+   at (0,4,0), which beats this (0,2,0) rule on specificity rather than on order,
+   so it does not matter that this file loads after that one. */
+.selection-float-btn.is-more {
+  display: none;
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+/* ── The font list ────────────────────────────────────────────────────────
+   Shares .render-color-menu, so it opens, closes and positions through exactly
+   the same machinery as the colour and highlight menus (closeAllRenderMenus and
+   the `${prop}-menu` branch in handleRenderToolbarAction) with no second
+   mechanism to keep in step — including the rule in 16-mobile-reading.css that
+   flips a menu upward when the pill is pinned to the bottom of the screen.
+
+   Only the LAYOUT differs: sixteen names, not a grid of swatches. Same
+   specificity as .render-color-menu (0,1,0), so these win purely by loading
+   after it. Each item is drawn in its own face, because the name of a typeface
+   is not a useful preview of it. */
+.render-font-menu {
+  grid-template-columns: 1fr;
+  gap: 1px;
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  /* The pill can sit anywhere across the screen and this menu is far wider than
+     a swatch grid, so without a ceiling it runs off the near edge. */
+  max-width: min(220px, calc(100vw - 32px));
+}
+
+.render-font-btn {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.render-font-btn:hover {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+}
+
+/* .render-swatch-clear is `grid-column: 1 / -1` for the swatch grids; in a
+   single column that is already true, so it only needs separating from the last
+   font name. */
+.render-font-menu .render-swatch-clear {
+  margin-top: 4px;
+}

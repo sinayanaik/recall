@@ -28,6 +28,40 @@ export function hideNotesSelectionButtonUnlessPinned() {
   hideNotesSelectionButton();
 }
 
+// ── The textarea half of the shared formatting contract ────────────────────
+//
+// A format is a pure function `formatFn(value, start, end)` returning either a
+// replacement string for [start, end) or a { text, rangeStart, rangeEnd } that
+// swallows adjacent markers (see toggleWrapPair — un-bolding has to eat the
+// "**" sitting just OUTSIDE the selection). applyRenderFormat is the rendered
+// half, resolving [start, end) by matching the rendered selection back into the
+// source; this is the raw half, where the textarea hands those offsets over
+// exactly and no search is needed.
+//
+// One definition of the write-back, because there are two callers: the raw
+// editor's own toolbar and — now that it is the only formatting surface in
+// either mode — the floating pill.
+export function applyFormatToTextarea(textarea, formatFn) {
+  if (!textarea || textarea.hidden) return false;
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const value = textarea.value;
+  const result = formatFn(value, start, end);
+  if (result == null) return false;
+  const isRange = typeof result === "object";
+  const replacement = isRange ? result.text : result;
+  const rangeStart = isRange ? result.rangeStart : start;
+  const rangeEnd = isRange ? result.rangeEnd : end;
+  textarea.focus();
+  textarea.value = value.slice(0, rangeStart) + replacement + value.slice(rangeEnd);
+  // The formatted text stays selected, so a second button applies to the same
+  // words rather than to a collapsed caret.
+  textarea.setSelectionRange(rangeStart, rangeStart + replacement.length);
+  // Persist through the editor's own input path, same as any other raw edit.
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+}
+
 // Wrap the raw-editor (textarea) selection in {{ }} — the edit-mode counterpart
 // to makeClozeFromSelection (which works on a rendered-view selection).
 export function clozeTextareaSelection(target) {

@@ -11,6 +11,25 @@ import { CLOZE_MAKE_ICON, RENDER_HIGHLIGHT_GLYPH, refreshRenderSwatches } from "
 // group: this toolbar REPLACES that one while raw-editing, so anything only
 // present there would silently disappear the moment you tapped ✎.
 export function createToolbarHtml(options = {}) {
+  // The three controls a SELECTION cannot express, which is why they have no
+  // home on the floating pill: inserting an image needs a caret, not a
+  // selection, and bullet / clear-formatting act on whole lines.
+  const lineTools = `
+    <button type="button" data-action="bullet" title="Toggle Bullet List">-</button>
+    <button type="button" data-action="insert-image" title="Insert image (upload to Supabase Storage)">🖼️</button>
+    <button type="button" data-action="clear-all" title="Clear Formatting">Tx</button>`;
+  // Everything else this toolbar used to carry — B I U S </>, font, colour,
+  // highlight, and the capture group — now lives on the floating selection pill,
+  // which works in raw mode too (see applyRenderFormat's editing branch). A
+  // permanent row of controls that every one of them refuses without a selection
+  // was a row that did nothing while you read, and on a phone it was a row that
+  // did nothing while covering the text.
+  //
+  // The All Cards editor is the exception and still asks for the full strip: it
+  // is the one editing surface the pill does not serve (SELECTION_TARGETS covers
+  // notes, question and answer only), so its textareas would otherwise lose
+  // formatting altogether.
+  if (options.formatting === false) return lineTools;
   const quickNoteBtn = options.quickNote
     ? `
     <span class="edit-toolbar-divider" aria-hidden="true"></span>
@@ -79,32 +98,28 @@ export function createToolbarHtml(options = {}) {
       </div>
     </div>
 
-    <button type="button" data-action="bullet" title="Toggle Bullet List">-</button>
-    <button type="button" data-action="insert-image" title="Insert image (upload to Supabase Storage)">🖼️</button>
-    <button type="button" data-action="clear-all" title="Clear Formatting">Tx</button>${quickNoteBtn}
+${lineTools}${quickNoteBtn}
   `;
 }
 
 // Populate toolbars for static question & answer fields on load
 export function initToolbars() {
-  const qToolbar = el.questionEditToolbar;
-  if (qToolbar) qToolbar.innerHTML = createToolbarHtml({ quickNote: true });
-
-  const aToolbar = el.answerEditToolbar;
-  if (aToolbar) aToolbar.innerHTML = createToolbarHtml({ quickNote: true });
-
-  // Notes: no capture group and no cloze — the notes header carries all three
-  // and, unlike this toolbar, doesn't disappear when you leave raw-edit mode.
-  const nToolbar = el.notesEditToolbar;
-  if (nToolbar) nToolbar.innerHTML = createToolbarHtml({ quickNote: false, cloze: false });
+  // All three faces get the line-tools strip only. Formatting AND capture (+ /
+  // cloze / 📌) both ride the floating pill now, in raw mode as well as
+  // rendered, so repeating either here would be a second copy of a control that
+  // is already on screen the moment it can be used.
+  [el.questionEditToolbar, el.answerEditToolbar, el.notesEditToolbar].forEach((tb) => {
+    if (tb) tb.innerHTML = createToolbarHtml({ formatting: false });
+  });
 
   if (el.questionEdit) enableSyntaxHighlighting(el.questionEdit);
   if (el.answerEdit) enableSyntaxHighlighting(el.answerEdit);
   if (el.notesEdit) enableSyntaxHighlighting(el.notesEdit);
-  // These toolbars carry their own copy of the highlight glyph (RENDER_HIGHLIGHT_GLYPH,
-  // inside the Highlight dropdown toggle) — paint it now rather than leaving it
-  // unstyled until the reader happens to change the default highlight colour.
-  // Safe to call again: refreshRenderSwatches just re-paints every match.
+  // The All Cards editor's strips still carry their own copy of the highlight
+  // glyph (RENDER_HIGHLIGHT_GLYPH, inside the Highlight dropdown toggle), and
+  // they are built after this runs — but painting here costs nothing and keeps
+  // the swatches right for any strip already in the document. Safe to call
+  // again: refreshRenderSwatches just re-paints every match.
   refreshRenderSwatches();
 }
 

@@ -7,10 +7,9 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { loadDeckFromLibrary, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
-import { scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
+import { convergeNotesScroll, scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
 import { revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
 import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
-import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
@@ -400,57 +399,26 @@ export function notesHeadingOffset(heading) {
     heading.getBoundingClientRect().top - el.notesView.getBoundingClientRect().top);
 }
 
-// How close counts as arrived, and how long we are willing to keep correcting.
-const HEADING_SETTLE_PX = 4;
-
+// How long we are willing to keep correcting. Longer than the anchor jump's
+// budget (NOTE_JUMP_BUDGET_MS): a heading jump usually crosses the whole note,
+// so there is more unrealised height between here and there to settle.
 const HEADING_AIM_BUDGET_MS = 1500;
 
-// A long note doesn't know its own height until you get there: diagrams below
-// the fold are only drawn as they approach the viewport, images only load then,
-// content-visibility chunks swap an estimated height for a real one, and each
-// one that arrives pushes everything under it down. So aiming once at where the
-// heading LOOKS like it is can land thousands of pixels off.
-//
-// The loop therefore runs to CONVERGENCE rather than to a fixed count. It used
-// to be six tries at a flat 130ms — on a big note the corrections were still
-// moving when that ran out, and it simply stopped wherever it had got to, which
-// is what "the TOC takes me to the wrong place" looked like. Now it stops when
-// the residual is small enough, or when two corrections in a row fail to
-// improve it (heights that will not settle — a lazily-loading image below the
-// fold — must not spin forever), or when the budget expires.
+// It used to be six tries at a flat 130ms — on a big note the corrections were
+// still moving when that ran out, and it simply stopped wherever it had got to,
+// which is what "the TOC takes me to the wrong place" looked like. The
+// convergence loop that replaced it now lives in anchors.js, shared with the
+// anchor/highlight jump, which had exactly the same problem for exactly the same
+// reasons; all that differs is what counts as "arrived", which is the callback.
 export async function scrollNotesHeadingIntoView(heading) {
   if (!heading || !el.notesView) return;
   // Paged mode: turn to the heading's page. Handled by revealInPagedNotes, which
   // has its own convergence loop over PAGES rather than heights.
   if (revealInPagedNotes(heading)) return;
-  const aim = (behavior) => {
-    const target = el.notesView.scrollTop + notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP;
-    markProgrammaticNotesScroll(behavior === "smooth" ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
-    el.notesView.scrollTo({ top: Math.max(0, target), behavior });
-  };
-
-  aim("smooth");
-  const until = performance.now() + HEADING_AIM_BUDGET_MS;
-  let best = Infinity;
-  let stalled = 0;
-  while (performance.now() < until) {
-    // A frame first so the scroll and any chunk that just realised are laid out,
-    // then a short settle for the smooth scroll and lazily-arriving content.
-    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 110)));
-    if (!heading.isConnected) return;
-    const residual = Math.abs(notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP);
-    if (residual <= HEADING_SETTLE_PX) return;
-    // Not improving: one more correction is worth trying (the first measurement
-    // after a smooth scroll is taken mid-flight), two in a row is a stalemate.
-    if (residual >= best - 1) {
-      stalled += 1;
-      if (stalled >= 2) return;
-    } else {
-      stalled = 0;
-    }
-    best = Math.min(best, residual);
-    aim("auto");
-  }
+  await convergeNotesScroll(
+    () => (heading.isConnected ? notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP : null),
+    HEADING_AIM_BUDGET_MS
+  );
 }
 
 // Raw-mode counterpart of scrollNotesHeadingIntoView: the rendered notes view is

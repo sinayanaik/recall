@@ -53,12 +53,12 @@ export function flushWorkingDeck() {
 
 export function commitEditIfActive() {
   const sides = [
-    { side: "question", view: el.questionView, edit: el.questionEdit, toolbar: el.questionEditToolbar, renderToolbar: el.questionRenderToolbar, btn: el.editQuestionBtn },
-    { side: "answer",   view: el.answerView,   edit: el.answerEdit,   toolbar: el.answerEditToolbar,   renderToolbar: el.answerRenderToolbar,   btn: el.editAnswerBtn },
+    { side: "question", view: el.questionView, edit: el.questionEdit, toolbar: el.questionEditToolbar, btn: el.editQuestionBtn },
+    { side: "answer",   view: el.answerView,   edit: el.answerEdit,   toolbar: el.answerEditToolbar,   btn: el.editAnswerBtn },
   ];
   const card = state.cards[state.current];
   let committed = false;
-  for (const { side, view, edit, toolbar, renderToolbar, btn } of sides) {
+  for (const { side, view, edit, toolbar, btn } of sides) {
     if (view.hidden === false) continue; // not in edit mode for this side
     committed = true;
     if (card) {
@@ -84,7 +84,6 @@ export function commitEditIfActive() {
     edit.hidden = true;
     edit.value = "";
     if (toolbar) toolbar.hidden = true;
-    if (renderToolbar) renderToolbar.hidden = false;
     if (btn) {
       btn.classList.remove('is-editing');
       btn.title = side === "question" ? "Edit question" : "Edit answer";
@@ -140,7 +139,6 @@ export function toggleEditMode(side, { cursorOffset = null, remember = true } = 
   const view = isQuestion ? el.questionView : el.answerView;
   const edit = isQuestion ? el.questionEdit : el.answerEdit;
   const toolbar = isQuestion ? el.questionEditToolbar : el.answerEditToolbar;
-  const renderToolbar = isQuestion ? el.questionRenderToolbar : el.answerRenderToolbar;
   const currentCard = state.cards[state.current];
 
   if (!currentCard) return;
@@ -153,7 +151,6 @@ export function toggleEditMode(side, { cursorOffset = null, remember = true } = 
     view.hidden = true;
     edit.hidden = false;
     if (toolbar) toolbar.hidden = false;
-    if (renderToolbar) renderToolbar.hidden = true;
     edit.value = isQuestion ? currentCard.question : currentCard.answer;
     if (btn) {
       btn.classList.add('is-editing');
@@ -197,7 +194,6 @@ export function toggleEditMode(side, { cursorOffset = null, remember = true } = 
     view.hidden = false;
     edit.hidden = true;
     if (toolbar) toolbar.hidden = true;
-    if (renderToolbar) renderToolbar.hidden = false;
     if (btn) {
       btn.classList.remove('is-editing');
       btn.title = isQuestion ? 'Edit question' : 'Edit answer';

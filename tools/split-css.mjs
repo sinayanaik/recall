@@ -111,6 +111,13 @@ const POST_SPLIT = {
     "run against the wrong project read as a broken app. Values are a URL, a " +
     "JWT and a uuid, so the rows stack label-over-value instead of using the " +
     "shared row's baseline-aligned two-column shape.",
+  "22-selection-bar.css":
+    "The floating selection pill is now the ONLY formatting surface — the card " +
+    "faces' persistent render toolbar and the B/I/U half of all three raw-edit " +
+    "toolbars are gone, because every button on them refused without a " +
+    "selection. That brought the font picker here from the raw toolbar (it " +
+    "would otherwise be unreachable) and needed a ⋯ disclosure to keep the " +
+    "phone bar at one row now that it carries everything.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

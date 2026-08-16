@@ -42,6 +42,60 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // Declarations that are ALLOWED to differ, and why. Keep this short — every
 // entry is a place where the "pure movement" guarantee was deliberately spent.
 const ACCEPTED = {
+  // ── The floating selection pill becomes the only formatting surface ──────
+  // Every button on a persistent formatting strip refuses without a selection,
+  // so those strips were permanent rows that could do nothing until you made
+  // one — and on a phone, rows that did nothing while covering the text. The
+  // card faces' render toolbar is gone and the raw-edit toolbars keep only the
+  // three controls a selection cannot express (insert image, bullet, clear
+  // formatting). The pill carries the rest, in raw mode as well as rendered.
+  createToolbarHtml:
+    "Takes { formatting: false } to emit only the three controls a SELECTION " +
+    "cannot express — insert-image needs a caret, bullet and clear-formatting " +
+    "act on whole lines. The All Cards editor still asks for the full strip: " +
+    "it is the one editing surface the floating pill does not serve " +
+    "(SELECTION_TARGETS covers notes, question and answer only).",
+  initToolbars:
+    "All three faces now get the line-tools strip only, and no capture group. " +
+    "Formatting and capture both ride the floating pill, which works in raw " +
+    "mode too, so repeating either here would be a second copy of a control " +
+    "already on screen the moment it can be used.",
+  applyRenderFormat:
+    "Raw-edit mode applies the formatFn to the textarea's exact [start, end) " +
+    "instead of refusing with 'switch to preview to format a selection there'. " +
+    "That refusal was only tolerable while each editor carried its own " +
+    "toolbar; the pill is now the only formatting surface, so it would have " +
+    "meant no bold, italic, colour or font in raw mode at all. The write-back " +
+    "is applyFormatToTextarea, shared with the raw toolbar's own handler.",
+  renderTargetConfig:
+    "Carries `edit` (the surface's textarea) so applyRenderFormat can reach it " +
+    "— see above. In raw mode there is no rendered text to match a selection " +
+    "against, so the offsets have to come from the textarea itself.",
+  handleToolbarClick:
+    "The textarea write-back moved into applyFormatToTextarea, so the raw " +
+    "toolbar and the floating pill share one definition of it rather than " +
+    "keeping two copies that could drift.",
+  handleRenderToolbarAction:
+    "Handles the font list: a `font-menu` open/close and a data-render-font " +
+    "apply. The font picker moved here from the raw editor's toolbar when that " +
+    "shrank, and would otherwise have become unreachable.",
+  closeAllRenderMenus:
+    'Resets aria-expanded on every menu opener ([data-render-action$="-menu"]), ' +
+    "not just .render-split-side. The font picker's toggle is a plain button, " +
+    "so the old selector left its aria-expanded stuck on 'true'.",
+  commitEditIfActive:
+    "Drops the renderToolbar entries — the card faces' persistent render " +
+    "toolbar no longer exists to show or hide.",
+  toggleEditMode:
+    "Drops the renderToolbar lookup and its two show/hide calls, for the same " +
+    "reason as commitEditIfActive.",
+  hideNotesSelectionButton:
+    "Also clears the is-format-open class (the phone bar's ⋯ formatting " +
+    "disclosure). It is a CLASS on the pill, so hiding the pill hides it " +
+    "visually while leaving it set, and the next selection would open already " +
+    "expanded — the one state a collapsed-by-default bar exists to avoid. It " +
+    "is in the fast-path test too, or the early return skips the only reset.",
+
   requestedAppVersion:
     "reads the ?v= off its own <script src>, which moved from app.js to src/main.js",
   RELEASE_STAMP_RE:
@@ -770,6 +824,22 @@ const RESIDUAL_REWRITES = [
   // the question, because those are the only ones this can actually cost.
   [/document\.getElementById\("logoutBtn"\)\?\.addEventListener\("click", handleLogout\); /,
    () => 'document.getElementById("logoutBtn")?.addEventListener("click", () => { const index = readLocalDeckIndex(); const total = index.length; const localOnly = index.filter((meta) => !meta.deckId || !meta.lastSyncedAt).length; const signOutAndWipe = async () => { await handleLogout(); try { await resetLocalLibrary(); showToast(total ? `Signed out — ${total} deck${total === 1 ? "" : "s"} removed from this device` : "Signed out", "success"); } catch (error) { console.warn("Could not clear the local deck library on sign-out", error); showToast("Signed out, but the decks on this device could not be removed", "error"); } }; if (!total) return void signOutAndWipe(); showConfirmModal( `Sign out and remove all ${total} deck${total === 1 ? "" : "s"} from this device? ` + "Everything already synced stays in your Supabase project and comes back when you sign in again." + (localOnly ? ` But ${localOnly} deck${localOnly === 1 ? " has" : "s have"} never synced — ` + `${localOnly === 1 ? "it exists" : "they exist"} only on this device and will be gone for good. ` + "Cancel and use My Decks → ⋯ → Backup first if you need them." : ""), () => { signOutAndWipe(); }, { confirmLabel: "Sign out & delete", danger: true } ); }); '],
+  // The ⋯ formatting disclosure on the floating selection pill. It exists
+  // because the pill became the only formatting surface in the app (see the
+  // ACCEPTED entries for createToolbarHtml and applyRenderFormat), which on a
+  // phone made its bottom-pinned bar twelve controls over two rows — about
+  // 100px of screen sitting on the sentence you had just selected. Collapsing
+  // the formatting row behind this halves it. pointerdown + preventDefault like
+  // every other control on the pill: a click would dissolve the selection the
+  // buttons it reveals are for.
+  [/el\.extractNoteFromSelectionBtn\?\.addEventListener\("pointerdown"/,
+   () => 'el.selectionFormatToggleBtn?.addEventListener("pointerdown", (event) => { event.preventDefault(); event.stopPropagation(); const open = el.selectionFloat?.classList.toggle("is-format-open"); el.selectionFormatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false"); }); el.extractNoteFromSelectionBtn?.addEventListener("pointerdown"'],
+
+  // The font picker moved onto the pill from the raw editor's toolbar when that
+  // shrank to three buttons, so the shared [data-render-target] delegation has
+  // to see its buttons too — without this they are inert.
+  [/const btn = event\.target\.closest\("\[data-render-action\], \[data-render-color\]"\);/,
+   () => 'const btn = event.target.closest("[data-render-action], [data-render-color], [data-render-font]");'],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);
