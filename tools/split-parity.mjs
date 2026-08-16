@@ -320,6 +320,51 @@ const ACCEPTED = {
     "menu (src/notes/notes-head-overflow.js). Without it a Back press aimed at " +
     "the open menu falls through to goNavBack() and loads another deck.",
 
+  // ── Long-note containment, and the raw editor's caret ────────────────────
+  // Five bodies that drifted as the notes surface grew a chunked, contained
+  // layout and a measured caret. All predate the egress work below; they were
+  // simply never recorded here.
+  resetNotesBlockEstimate:
+    "Clears --notes-chunk-estimate as well as --notes-block-estimate. Blocks " +
+    "are now grouped into content-visibility wrappers (styles/19-notes-chunks" +
+    ".css), and a chunk's placeholder height is its own custom property. " +
+    "Resetting only the per-block one left the PREVIOUS note's chunk " +
+    "placeholder in place, so a new note's scroll height was sized by content " +
+    "it had never been measured against.",
+  visualLineTopForOffset:
+    "The no-mirror branch returns wrappedLineTopEstimate(textarea, pos) " +
+    "instead of the inline newline-counting arithmetic. Both boxes are " +
+    "`white-space: pre-wrap`, so a paragraph occupies many visual rows per " +
+    "hard break and the old math ignored every one of them — it undershot " +
+    "monotonically, which is why the further into a note you triple-clicked " +
+    "the further off-screen the caret landed. The estimate models wrapped " +
+    "rows and applies them as a RATIO of the textarea's real scrollHeight, so " +
+    "a uniform bias in the characters-per-row guess cancels instead of " +
+    "accumulating.",
+  scrollTextareaToOffset:
+    "Takes an optional `measured` caret top. Measuring the caret in a " +
+    "textarea is O(offset), and taking it twice a frame apart across a reflow " +
+    "is exactly how the scroll and the caret ribbon ended up disagreeing — so " +
+    "a caller that has already located the caret hands the number in and both " +
+    "halves use the one measurement. Absent it, behaviour is as before.",
+  notesHeadingOffset:
+    "Measured inside withChunkRendered(). On a chunked note the containment " +
+    "sits on the wrapper, so a heading inside a skipped chunk answers with its " +
+    "CHUNK's box — the same answer all ~40 of its neighbours give, which is a " +
+    "TOC jump landing up to 40 blocks early. Forcing just that one chunk to " +
+    "lay out is what makes the answer the heading's own, without un-skipping " +
+    "the document the way a full sweep would.",
+  scrollNotesEditToHeadingIndex:
+    "Sets the caret before focusing, then hands off to revealNotesCaretAt() " +
+    "instead of scrolling itself. That is the single entry point for an " +
+    "explicit jump: it owns both halves from ONE measurement (where to scroll " +
+    "and where to draw the reading band) and re-asserts after the reflow that " +
+    "opening the editor causes — the header un-hiding and the browser's own " +
+    "focus-time caret reveal both land after a synchronous scroll. It also " +
+    "absorbs the dispatched scroll-event nudge this call site used to carry " +
+    "alone, so a raw-mode TOC jump now behaves exactly like opening the " +
+    "editor from the rendered view.",
+
   // ── Egress: the same bytes were being re-fetched, forever ────────────────
   // A library of 700 decks and 3,700 images was moving gigabytes a month
   // against a 5GB quota. Three separate causes, none of which changes what
@@ -611,6 +656,21 @@ const RESIDUAL_REWRITES = [
   // src/notes/notes-head-fold.js.
   [/(onDomReady\(initRenderToolbars\); )(document\.addEventListener\("pointerdown")/,
    "$1onDomReady(initNotesHeadOverflow); onDomReady(initNotesTocFolding); onDomReady(initPagedNotes); onDomReady(initNotesCaretLine); $2"],
+  // The chrome ResizeObserver watches the view-mode ROW, not just the toggle
+  // inside it, because that is what readChromeHeights measures. The row also
+  // holds the TOC button, the edit pill and the ⋯ menu, and those show and hide
+  // per view WITHOUT resizing the tabs — so observing only the toggle left
+  // --view-toggle-h stale, and .view-mode-row's own
+  // `max-height: var(--view-toggle-h)` then clipped its contents. The toggle
+  // stays as the fallback for markup without the row.
+  [/(if \(appbarEl\) chromeSizeObserver\.observe\(appbarEl\); )(if \(el\.viewModeToggle\) chromeSizeObserver\.observe\(el\.viewModeToggle\); )/,
+   '$1const viewModeRow = document.getElementById("viewModeRow"); if (viewModeRow) chromeSizeObserver.observe(viewModeRow); else $2'],
+  // One more entry in the My Decks "⋯" menu wiring: Check for broken images
+  // (src/backup/broken-images.js). An ADDITION beside the Restore handler
+  // above it, not a rewrite of anything — it reports image references whose
+  // storage object no longer exists, and touches nothing else in the menu.
+  [/(await runRestoreFlow\(file\); \}\); \} )(\})/,
+   '$1document.getElementById("myDecksCheckImagesBtn")?.addEventListener("click", () => { closeMyDecksMoreMenu(); runBrokenImageScan(); }); $2'],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);
