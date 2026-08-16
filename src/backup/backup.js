@@ -5,7 +5,7 @@
 // working the moment that project went away, which is exactly when a backup
 // matters. Restore re-homes them.
 
-import { mapWithConcurrency } from "../cloud/net.js?v=__BUILD__";
+import { mapWithConcurrency, withRetry } from "../cloud/net.js?v=__BUILD__";
 import { deckPayloadSnapshot } from "../cloud/web-decks.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { allMyDeckSelections } from "../export/decks.js?v=__BUILD__";
@@ -268,6 +268,19 @@ export const BACKUP_IMAGE_REF_RE = new RegExp(
   "gi"
 );
 
+// An image WE host, in a Supabase Storage bucket, as opposed to a third-party
+// link someone pasted. The difference decides two things: whether a failed
+// fetch is worth retrying (a third-party CORS refusal never becomes reachable,
+// however many times it's asked), and how the result is reported — a missing
+// upload of ours is a real gap in the archive, an unreachable external link is
+// a link the archive keeps but cannot inline.
+//
+// Matched on url shape rather than through supabaseImagePathFromUrl, which
+// needs a live client and so classifies everything as external when signed out.
+export function isSupabaseStorageRef(ref) {
+  return /^https:\/\/[a-z0-9-]+\.supabase\.co\/storage\/v1\/object\/public\//i.test(String(ref || ""));
+}
+
 // Refs whose bytes we can actually pack. `data:` images are already inline in
 // the markdown, and in-page `blob:`/anchor urls are meaningless in an archive.
 export function isPackableImageRef(ref) {
@@ -324,6 +337,35 @@ export async function readBackupAssetBlob(ref) {
   } catch (error) {
     console.warn("Could not read a cached image for the backup", ref, error);
   }
+  // Retried ONLY for images we host. withRetry replays anything
+  // isTransientCloudError matches, and a CORS refusal reaches JS as a bare
+  // `TypeError: Failed to fetch` — indistinguishable from a dropped
+  // connection, and matched by that same test. For a third-party host that
+  // sends no Access-Control-Allow-Origin, every replay fails identically, so
+  // retrying there only doubles the requests and the time to finish a backup
+  // (a library with hundreds of pasted external links pays that twice over).
+  // Our own Storage objects are worth a second attempt: a cache-miss image
+  // evicted from recall-images-v1 (see the SW's IMAGE_CACHE_LIMIT) otherwise
+  // gets exactly one shot at the network before being called missing.
+  try {
+    return isSupabaseStorageRef(ref)
+      ? await withRetry(() => fetchBackupAssetOverNetwork(ref), { label: "backup asset" })
+      : await fetchBackupAssetOverNetwork(ref);
+  } catch (error) {
+    // Logged (not surfaced in the UI, which only shows a count) so a run with
+    // devtools open can tell a dead link (HTTP 404/403) apart from a timeout
+    // or a CORS refusal — the three collapse to the same "could not be
+    // reached" message otherwise, which is enough to know something failed
+    // but not enough to know what to do about it.
+    console.warn(`Backup: image unreachable — ${ref}`, error?.message || error);
+    return null;
+  }
+}
+
+// One network attempt for a backup asset. Throws on any failure so withRetry
+// can tell a transient one (worth replaying) from a real one (a 404, a CORS
+// refusal from a non-Supabase host) — see readBackupAssetBlob.
+async function fetchBackupAssetOverNetwork(ref) {
   // A host that accepts the connection and then never answers would otherwise
   // park one of the fetch workers forever, and the whole backup with it — the
   // failure mode that looks exactly like the app having frozen.
@@ -334,11 +376,10 @@ export async function readBackupAssetBlob(ref) {
     // (an old ImgBB/Drive link) may not, in which case this throws and the
     // image is reported as missing rather than failing the backup.
     const response = await fetch(ref, { mode: "cors", credentials: "omit", signal: abort.signal });
-    if (!response.ok) return null;
+    if (!response.ok) throw new Error(`Backup asset fetch failed: HTTP ${response.status}`);
     const blob = await response.blob();
-    return blob.size ? blob : null;
-  } catch {
-    return null;
+    if (!blob.size) throw new Error("Backup asset fetch returned an empty body");
+    return blob;
   } finally {
     clearTimeout(timer);
   }
@@ -476,9 +517,22 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
       + "Files are grouped per deck, named the way that deck's Storage folder is. "
       + "Restore re-homes these into the restoring device's own storage.",
     assets,
-    missing
+    missing,
+    // Split so a restore (and the person reading this file) can tell the two
+    // apart: `missingHosted` are OUR uploads whose Storage object is gone —
+    // a real hole in the archive. `missingExternal` are third-party links the
+    // browser is not allowed to read (no CORS header) or that 404 at source;
+    // the deck text still carries the link, so those images keep working
+    // wherever the original host is reachable.
+    missingHosted: missing.filter(isSupabaseStorageRef),
+    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref))
   }, null, 2)}\n`);
-  return { assets, missing };
+  return {
+    assets,
+    missing,
+    missingHosted: missing.filter(isSupabaseStorageRef),
+    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref))
+  };
 }
 
 export async function exportLibraryBackupZip({
@@ -563,7 +617,7 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
   progress?.setStat("cards", cardTotal);
 
   const deckLabel = `${payloads.length} deck${payloads.length === 1 ? "" : "s"}`;
-  let packed = { assets: [], missing: [] };
+  let packed = { assets: [], missing: [], missingHosted: [], missingExternal: [] };
   if (includeImages) {
     progress?.update("Looking for images…");
     packed = await packBackupAssets(zip, entries, (done, total) => {
@@ -651,19 +705,41 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
   const imageNote = packed.assets.length
     ? ` with ${packed.assets.length} image${packed.assets.length === 1 ? "" : "s"}`
     : "";
-  const missingNote = packed.missing.length
-    ? ` ${packed.missing.length} image${packed.missing.length === 1 ? " was" : "s were"} unreachable and could not be packed.`
+  // Reported as two different things, because they mean two different things
+  // and only one is a problem with YOUR library. An external link the browser
+  // is refused (no CORS header on someone else's server) is the normal state
+  // of a pasted web image and says nothing about the archive's integrity — the
+  // note keeps the link. A missing upload of ours is a genuine gap. Lumping
+  // them together read as "336 of your images are lost", which was alarming
+  // and, for the external ones, simply untrue.
+  const hosted = packed.missingHosted.length;
+  const external = packed.missingExternal.length;
+  const plural = (n, one, many) => (n === 1 ? one : many);
+  const hostedNote = hosted
+    ? ` ${hosted} of your uploaded image${plural(hosted, " is", "s are")} missing from storage.`
     : "";
-  setStatus(`Backed up ${deckLabel}${imageNote} to ${name}.${missingNote}`, packed.missing.length ? "error" : "info");
+  const externalNote = external
+    ? ` ${external} web link${plural(external, "", "s")} couldn't be downloaded (the site blocks it) — the link${plural(external, " is", "s are")} still in your notes.`
+    : "";
+  setStatus(`Backed up ${deckLabel}${imageNote} to ${name}.${hostedNote}${externalNote}`, hosted ? "error" : "info");
   if (autoClosePanel && !packed.missing.length) {
     progress?.close();
   } else {
-    progress?.finish(`Saved ${name}`, {
-      warning: packed.missing.length
-        ? `${packed.missing.length} image${packed.missing.length === 1 ? "" : "s"} could not be reached and ${packed.missing.length === 1 ? "is" : "are"} not in this archive. Everything else is.`
-        : ""
-    });
+    const warnings = [];
+    if (hosted) {
+      warnings.push(
+        `${hosted} image${plural(hosted, "", "s")} you uploaded ${plural(hosted, "is", "are")} no longer in your storage, so ${plural(hosted, "it", "they")} could not be packed. `
+        + "Use More → Check for broken images to see which decks they're in."
+      );
+    }
+    if (external) {
+      warnings.push(
+        `${external} image${plural(external, "", "s")} link${plural(external, "s", "")} to another website that doesn't allow downloading, so ${plural(external, "it", "they")} couldn't be stored in the archive. `
+        + `Your notes still contain the link${plural(external, "", "s")} — nothing of yours is lost.`
+      );
+    }
+    progress?.finish(`Saved ${name}`, { warning: warnings.join("\n\n") });
   }
-  if (!packed.missing.length) showToast("Backup saved", "success");
+  if (!hosted) showToast("Backup saved", "success");
   return true;
 }

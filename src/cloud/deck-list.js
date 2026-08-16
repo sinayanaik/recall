@@ -12,29 +12,41 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { showNotesConflictModal } from "../sync/notes-conflict.js?v=__BUILD__";
 import { tsMs } from "../sync/stats.js?v=__BUILD__";
 
-export async function fetchCloudDeckList() {
-  const { data, error } = await withTimeout(
-    abortable((signal) => supabaseClient
-      .from("decks")
-      .select("*, cards(count)")
-      .order("last_accessed_at", { ascending: false, nullsFirst: false })
-      .order("updated_at", { ascending: false })
-      .abortSignal(signal)),
-    CLOUD_TIMEOUT_MS,
-    "read deck list"
-  );
-  if (error) throw error;
-  return data || [];
-}
-
-// Just enough of every deck to decide which way it needs to sync. The full
-// fetchCloudDeckList above pulls `select("*, cards(count)")` — which means every
+// Just enough of every deck to decide which way it needs to sync, and enough
+// to paint My Decks / list cloud-only decks for export — id, title, category,
+// and the two timestamps are all any caller reads. This used to be a separate,
+// heavier `fetchCloudDeckList` that did `select("*, cards(count)")` — every
 // deck's ENTIRE notes markdown plus a per-deck aggregate over the whole cards
-// table, on every sync, purely to compare two timestamps. For a library of
-// EPUB-imported decks that's megabytes of transfer before any real work starts.
-// The columns here are the ones the decision loops actually read; the bodies
-// come back in fetchCloudDeckRows, for the handful of decks that need them.
+// table, on every sync AND every My Decks render, purely to compare two
+// timestamps or list a title. For a library of EPUB-imported decks that was
+// megabytes of transfer before any real work started, and it fired far more
+// often than sync — every folder click, every category filter change. The
+// columns here are the ones any caller actually reads; the bodies come back in
+// fetchCloudDeckRows, for the handful of decks that need them.
 export const DECK_INDEX_COLUMNS = "id, title, category, updated_at, last_accessed_at, created_at, current_card_index";
+
+// What a SYNC needs, which is less than what My Decks needs. Worth splitting
+// because this is the most frequent query in the app: it runs on every
+// auto-sync, over EVERY deck, whether or not anything changed — so on a
+// 700-deck library it is the one read that repeats forever regardless of how
+// little is happening.
+//
+// `id` and `updated_at` are what the reconcile actually decides on (which deck
+// to pull or push, and the complete id set the deletion pass depends on). The
+// pull and push paths take everything else from fetchCloudDeckRows, for the
+// handful of decks genuinely moving.
+//
+// `title` and `category` ride along for one narrow reason: when a deck's body
+// read comes back missing (it was deleted between the index read and the body
+// read) the push falls back to the index row to diff against, and reads
+// exactly those two to report what changed. Dropping them would save a little
+// more and quietly make that report wrong, which is not a trade worth taking
+// in this file. The three that ARE dropped — last_accessed_at, created_at,
+// current_card_index — are read by the library UI and by nothing in sync.
+//
+// Ordering below sorts on updated_at then id, both present here, so paging
+// stays exactly as deterministic as with the full set.
+export const DECK_SYNC_INDEX_COLUMNS = "id, updated_at, title, category";
 
 // PAGED, and that is now load-bearing rather than tidy: reconcile treats a deck
 // missing from this list as deleted in the cloud (see the deletion-adoption pass
@@ -55,7 +67,7 @@ export const DECK_INDEX_COLUMNS = "id, title, category, updated_at, last_accesse
 //     against the server's own count turns "silently short" into a thrown
 //     error — and a throw is safe, because the caller aborts the sync while a
 //     short list would have deleted decks.
-export async function fetchCloudDeckIndex() {
+export async function fetchCloudDeckIndex(columns = DECK_INDEX_COLUMNS) {
   const byId = new Map();
   const pageSize = 1000;
   let expectedTotal = null;
@@ -63,7 +75,7 @@ export async function fetchCloudDeckIndex() {
     const { data, error, count } = await withTimeout(
       abortable((signal) => supabaseClient
         .from("decks")
-        .select(DECK_INDEX_COLUMNS, { count: "exact" })
+        .select(columns, { count: "exact" })
         .order("updated_at", { ascending: false })
         .order("id", { ascending: true })
         .range(from, from + pageSize - 1)

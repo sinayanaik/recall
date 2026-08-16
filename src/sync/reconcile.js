@@ -9,7 +9,7 @@ import { LAST_USER_STORAGE_KEY } from "../boot.js?v=__BUILD__";
 import { hasActiveDeck } from "../cards/card-status.js?v=__BUILD__";
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { verifiedCloudUserId } from "../cloud/auth.js?v=__BUILD__";
-import { deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingNotesColumnError, isMissingRelationError } from "../cloud/deck-list.js?v=__BUILD__";
+import { DECK_SYNC_INDEX_COLUMNS, deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingNotesColumnError, isMissingRelationError } from "../cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, isTransientCloudError, mapWithConcurrency, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { flushPendingStyleSync } from "../cloud/style-sync.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
@@ -671,7 +671,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     let cloudDecks, remoteDeletedIds;
     try {
       [cloudDecks, remoteDeletedIds] = await Promise.all([
-        withRetry(() => fetchCloudDeckIndex(), { label: "deck index" }),
+        withRetry(() => fetchCloudDeckIndex(DECK_SYNC_INDEX_COLUMNS), { label: "deck index" }),
         withRetry(() => fetchDeletedDeckIds(), { label: "tombstones" })
       ]);
     } catch (error) {

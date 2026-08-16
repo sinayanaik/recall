@@ -65,6 +65,7 @@
     <link rel="stylesheet" href="styles/17-toc-fold.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/18-paged-notes.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/19-notes-chunks.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/20-broken-images.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -83,6 +84,7 @@
          all, which is why they must also be in sw.js's APP_SHELL. -->
     <!-- modulepreload:start -->
     <link rel="modulepreload" href="src/backup/backup.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/broken-images.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/restore.js?v=__BUILD__">
     <link rel="modulepreload" href="src/boot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cards/all-cards-edit.js?v=__BUILD__">
@@ -972,6 +974,7 @@
                   </label>
                   <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore decks &amp; notes from a backup archive (.zip or .json)"><span>Restore backup</span></button>
                   <input id="restoreFileInput" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden>
+                  <button class="md-menu-item" id="myDecksCheckImagesBtn" type="button" data-md-icon="search" title="Check every deck for image references that no longer resolve"><span>Check for broken images</span></button>
                   <div class="md-menu-group">Export all decks</div>
                   <div id="myDecksExportAllMenu">
                     <button class="md-menu-item" type="button" data-export-all="pdf"><span>Cornell PDF</span></button>

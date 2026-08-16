@@ -1,7 +1,7 @@
 // Painting the My Decks library in whichever view is selected, and the render
 // sequencing that keeps a slow cloud fetch from overwriting a newer paint.
 
-import { fetchCloudDeckList, populateMyDecksCategoryFilter } from "../cloud/deck-list.js?v=__BUILD__";
+import { fetchCloudDeckIndex, populateMyDecksCategoryFilter } from "../cloud/deck-list.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -214,7 +214,7 @@ export async function renderMyDecksList() {
   if (!(canCloud && navigator.onLine)) return;
 
   try {
-    const cloudDecks = await fetchCloudDeckList();
+    const cloudDecks = await fetchCloudDeckIndex();
     if (seq !== myDecksRenderSeq) return; // a newer render superseded this one
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudOnly = cloudDecks.filter((deck) => !localCloudIds.has(String(deck.id)) && !isDeckTombstoned(deck.id));

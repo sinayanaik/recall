@@ -52,14 +52,39 @@ const IMAGE_CACHE_NAME = "recall-images-v1";
 // revalidation to do. Keep a ceiling anyway — an image-heavy EPUB import is
 // hundreds of uploads and this would otherwise grow without limit.
 //
-// The trim below drops the oldest INSERTED keys, not the least recently used,
-// which makes a ceiling below the size of the library actively harmful: warming
-// deck B evicts deck A's images, opening A re-warms and evicts B, and no deck is
-// ever warm. The old 400 was well inside that range. Images are stored
-// downscaled to 1600px WebP (see optimizeImage) at roughly 200-400KB each, so
-// this ceiling is a few hundred MB — comfortably inside what a browser grants a
-// persisted origin.
-const IMAGE_CACHE_LIMIT = 1500;
+// The trim below drops the oldest keys in the cache's own iteration order.
+// Both the fetch handler and the cache-images warm loop re-put() an entry on
+// every hit, which moves it to the end of that order — so "oldest" tracks last
+// USE, not last insert. Without that touch, a ceiling below the size of the
+// library was actively harmful: warming deck B evicted deck A's images,
+// opening A re-warmed and evicted B, and no deck was ever warm.
+//
+// The touch fixes WHICH images get evicted; the ceiling decides whether any
+// need to be. A ceiling below the library's image count still guarantees churn
+// however good the eviction order is, and every eviction is a full re-download
+// the next time that image is viewed, warmed by a sync, or packed into a
+// backup — which is what a runaway egress bill actually looks like.
+//
+// 1500 was chosen against an assumed 200-400KB per image. Measured against a
+// real library instead (a 3300-image backup archive at 208MB) the average is
+// nearer 60KB, because optimizeImage's 1600px WebP compresses far better than
+// that guess: the old ceiling was reserving ~500MB of headroom to store ~90MB.
+// At this ceiling the same library fits entirely, so a device re-downloads each
+// image once, ever, rather than continuously.
+const IMAGE_CACHE_LIMIT = 6000;
+
+// A count is only a proxy for bytes, and a library of large photographs would
+// hit a real quota long before 6000 of them. The origin's own storage is the
+// authority, so the trim also stops when the image cache has pushed total usage
+// past this share of the quota — deck data lives in the same bucket (IndexedDB)
+// and must never be the thing squeezed out to hold pictures.
+const IMAGE_CACHE_MAX_QUOTA_FRACTION = 0.6;
+
+// How much of the cache to drop when the quota guard trips. Deliberately a
+// slice rather than a computed exact figure: usage covers IndexedDB and the app
+// shell too, so there is no honest per-image average to divide by. Trimming
+// repeatedly by a fixed fraction converges without needing one.
+const IMAGE_CACHE_QUOTA_TRIM_FRACTION = 0.1;
 
 // trimImageCache materialises every key in the cache, so calling it after each
 // individual put is O(n) work per image on the one thread every image request
@@ -77,12 +102,38 @@ function isSupabaseImageUrl(url) {
     && url.pathname.includes("/storage/v1/object/public/");
 }
 
+// True when the origin is using more of its quota than images are allowed to
+// account for. Best-effort: a browser that doesn't implement estimate(), or
+// reports no quota, simply leaves the count ceiling in charge rather than
+// trimming on a guess.
+async function imageCacheOverQuota() {
+  try {
+    if (!navigator.storage?.estimate) return false;
+    const { usage, quota } = await navigator.storage.estimate();
+    if (!usage || !quota) return false;
+    return usage > quota * IMAGE_CACHE_MAX_QUOTA_FRACTION;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function trimImageCache() {
   imagePutsSinceTrim = 0;
   const cache = await caches.open(IMAGE_CACHE_NAME);
-  const keys = await cache.keys();
-  if (keys.length <= IMAGE_CACHE_LIMIT) return;
-  await Promise.all(keys.slice(0, keys.length - IMAGE_CACHE_LIMIT).map((key) => cache.delete(key)));
+  let keys = await cache.keys();
+  if (keys.length > IMAGE_CACHE_LIMIT) {
+    const excess = keys.slice(0, keys.length - IMAGE_CACHE_LIMIT);
+    await Promise.all(excess.map((key) => cache.delete(key)));
+    keys = keys.slice(excess.length);
+  }
+  // Checked after the count trim, so the cheap ceiling does the ordinary work
+  // and estimate() is only consulted for the case it exists for: fewer, much
+  // larger images than the count assumes.
+  if (keys.length && await imageCacheOverQuota()) {
+    const drop = Math.max(1, Math.floor(keys.length * IMAGE_CACHE_QUOTA_TRIM_FRACTION));
+    console.warn(`[sw] image cache trimmed by ${drop} entries — origin storage is near its quota`);
+    await Promise.all(keys.slice(0, drop).map((key) => cache.delete(key)));
+  }
 }
 
 function maybeTrimImageCache() {
@@ -139,6 +190,7 @@ const APP_SHELL = [
   `./styles/17-toc-fold.css?v=${STAMP}`,
   `./styles/18-paged-notes.css?v=${STAMP}`,
   `./styles/19-notes-chunks.css?v=${STAMP}`,
+  `./styles/20-broken-images.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -149,6 +201,7 @@ const APP_SHELL = [
   // this list against the files on disk.
   `./src/main.js?v=${STAMP}`,
   `./src/backup/backup.js?v=${STAMP}`,
+  `./src/backup/broken-images.js?v=${STAMP}`,
   `./src/backup/restore.js?v=${STAMP}`,
   `./src/boot.js?v=${STAMP}`,
   `./src/cards/all-cards-edit.js?v=${STAMP}`,
@@ -482,7 +535,15 @@ self.addEventListener("message", (event) => {
         while (next < pending.length) {
           const url = pending[next++];
           try {
-            if (await cache.match(url, { ignoreVary: true })) continue;
+            const hit = await cache.match(url, { ignoreVary: true });
+            if (hit) {
+              // Re-put on every hit so trimImageCache's oldest-first eviction
+              // (keys() iteration order) reflects last USE, not last insert —
+              // otherwise a deck that's still being read gets evicted just for
+              // being warmed a while ago (see IMAGE_CACHE_LIMIT's comment).
+              await cache.put(url, hit);
+              continue;
+            }
             const response = await fetchImageForCache(url);
             if (response.ok) await cache.put(url, response);
           } catch (_) { /* offline or gone — nothing to warm */ }
@@ -528,7 +589,12 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       caches.open(IMAGE_CACHE_NAME).then((cache) =>
         cache.match(request.url, { ignoreVary: true }).then((cached) => {
-          if (cached) return cached;
+          if (cached) {
+            // Re-put so this entry moves to the end of keys() iteration order —
+            // see the same touch in the cache-images handler above.
+            cache.put(request.url, cached.clone()).catch(() => {});
+            return cached;
+          }
           return fetchImageForCache(request.url)
             .then((response) => {
               if (response.ok) cache.put(request.url, response.clone()).then(maybeTrimImageCache).catch(() => {});

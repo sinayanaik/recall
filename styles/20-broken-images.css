@@ -1,0 +1,66 @@
+/* The broken-image report (My Decks -> More -> Check for broken images), and
+   the one override the finished-backup panel needs to show its two-paragraph
+   warning.
+
+   A separate file rather than more rules inside 08-panels.css: the original
+   thirteen stylesheets still have to reassemble byte-for-byte into the
+   pre-modular styles.css (see tools/split-css.mjs and the css-parity check),
+   so anything written since the split lives in its own numbered file. */
+
+/* Wider than the backup panel it borrows its shell from — every row is a full
+   storage URL, and wrapping one of those into four lines makes a list of a few
+   hundred unreadable. */
+.broken-images-shell {
+  width: min(640px, 100%);
+}
+
+/* The list scrolls inside the modal instead of growing it past the viewport:
+   this can legitimately be hundreds of entries. */
+.broken-images-results {
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+}
+
+.broken-images-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.broken-images-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.broken-images-item {
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+}
+
+/* break-all, not break-word: a storage URL is one unbroken token, so anything
+   gentler overflows the card horizontally rather than wrapping. */
+.broken-images-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.76rem;
+  word-break: break-all;
+  color: var(--text);
+}
+
+.broken-images-meta {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* The finished-backup warning now carries up to two paragraphs — missing
+   uploads and unreachable web links are different problems and are reported
+   separately — joined by a blank line in a single textContent. Without this
+   they collapse into one run-on sentence. */
+.backup-progress-note {
+  white-space: pre-line;
+}

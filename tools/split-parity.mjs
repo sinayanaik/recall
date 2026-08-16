@@ -319,6 +319,60 @@ const ACCEPTED = {
     "One entry added, in the popover group: the notes header's phone-only ⋯ " +
     "menu (src/notes/notes-head-overflow.js). Without it a Back press aimed at " +
     "the open menu falls through to goNavBack() and loads another deck.",
+
+  // ── Egress: the same bytes were being re-fetched, forever ────────────────
+  // A library of 700 decks and 3,700 images was moving gigabytes a month
+  // against a 5GB quota. Three separate causes, none of which changes what
+  // sync decides — only how much it has to transfer to decide it.
+  renderMyDecksList:
+    "Reads the deck INDEX rather than fetchCloudDeckList's `select(\"*, " +
+    "cards(count)\")`, which pulled every cloud deck's entire notes markdown " +
+    "plus a per-deck aggregate over the whole cards table — on every repaint " +
+    "that hits the network, to show a title and a sync pill. It reads only " +
+    "id/title/category/updated_at, all of which the index carries.",
+  allMyDeckSelections:
+    "Same swap as renderMyDecksList, and the last caller of fetchCloudDeckList " +
+    "— which is now removed. It reads only `id` off each row.",
+  fetchCloudDeckIndex:
+    "Takes the column list as a parameter so sync can ask for less than the " +
+    "library UI does (see DECK_SYNC_INDEX_COLUMNS). Paging, the stable " +
+    "updated_at+id sort and the exact-count completeness check are unchanged " +
+    "— those are what stop a short read reading as deletions.",
+  reconcileAllDecks:
+    "Asks the index for DECK_SYNC_INDEX_COLUMNS instead of all seven. The " +
+    "reconcile only ever reads id and updated_at off an index row (title and " +
+    "category ride along solely for the missing-body push fallback at the " +
+    "cloudDeck diff); notes, meta and cards still come from fetchCloudDeckRows " +
+    "for the decks actually moving. Same rows, same order, fewer columns.",
+
+  // ── Backup: telling a dead link apart from an unreadable one ─────────────
+  readBackupAssetBlob:
+    "Retries the network fetch, but only for images we host. A CORS refusal " +
+    "surfaces as a bare `TypeError: Failed to fetch`, which isTransientCloudError " +
+    "matches — so retrying third-party links doubled the requests for hosts " +
+    "that can never succeed. Also logs the real reason (HTTP status vs " +
+    "timeout vs CORS) instead of collapsing every failure into a silent null.",
+  packBackupAssets:
+    "Splits `missing` into missingHosted (our uploads whose storage object is " +
+    "gone — a real hole) and missingExternal (a third-party link the browser " +
+    "is not allowed to read; the note keeps the link). Both are recorded in " +
+    "assets/index.json. `missing` itself is unchanged, so an older restore " +
+    "reads a new archive exactly as before.",
+  runLibraryBackup:
+    "Reports those two counts as two different things. One combined figure " +
+    "read as 'N of your images are lost' when most of them were pasted web " +
+    "links behaving normally, and only the hosted half is an error condition.",
+
+  // ── Storage panel: the check nobody had written ──────────────────────────
+  buildStorageReport:
+    "Also computes missingRefs — storage paths a deck still points at that " +
+    "have no file behind them. The exact inverse of `orphans`, from the two " +
+    "sets it already had, so it costs no extra request and needs no per-image " +
+    "network probe. Reported only; nothing acts on it.",
+  renderStoragePanel:
+    "Shows missingRefs as a Missing tile beside Unused, with a note saying " +
+    "that deleting unused images will not help — these are the opposite " +
+    "problem, and that was the first thing people tried.",
 };
 
 // Functions whose ONLY change is that a write to a module-level binding now goes
@@ -413,7 +467,14 @@ const REMOVED = {
     "declared TWICE in the baseline (app.js:25472 and app.js:29556). Legal in a " +
     "classic script, where the second silently won for every caller; a hard " +
     "SyntaxError in a module, so the app did not boot at all. Split into " +
-    "fetchImportText (URL import, 45s) and fetchReleaseText (update check, 8s)."
+    "fetchImportText (URL import, 45s) and fetchReleaseText (update check, 8s).",
+  fetchCloudDeckList:
+    "both callers (renderMyDecksList, allMyDeckSelections) read the deck INDEX " +
+    "instead. It selected `*, cards(count)` — every cloud deck's whole notes " +
+    "markdown plus an aggregate over the cards table — to render a title and a " +
+    "sync pill, on every My Decks repaint that hits the network. Nothing ever " +
+    "read `notes` or the count off it, so leaving it in place would only be a " +
+    "trap for the next caller who reached for the obvious-looking name."
 };
 
 function walk(dir, out = []) {

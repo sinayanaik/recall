@@ -96,6 +96,14 @@ const POST_SPLIT = {
     "tracking one box each — 24,600 of them on a 4.1MB note, measured at 122ms " +
     "per scroll frame against 11ms of our own JS. Grouping takes that to ~600 " +
     "boxes: 122ms -> 17ms per frame, layout 853ms -> 41ms.",
+  "20-broken-images.css":
+    "The broken-image report (My Decks -> More -> Check for broken images), " +
+    "which lists every image reference a deck still points at that no longer " +
+    "resolves — a wider shell and a scrolling list, because the rows are full " +
+    "storage URLs and there can be hundreds. Also the one rule the finished " +
+    "backup panel needs (white-space on .backup-progress-note): missing " +
+    "uploads and CORS-blocked web links are separate problems reported as " +
+    "separate paragraphs, which collapse into one sentence without it.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

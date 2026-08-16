@@ -5,6 +5,7 @@
 // tools/module-symbols.mjs both refuse a relative import without it.
 
 import { exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
+import { runBrokenImageScan } from "./backup/broken-images.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
 import { appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
 import { clearAllCardDropTargets, closeAllCardsPanel, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
@@ -1178,6 +1179,11 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
       if (file) await runRestoreFlow(file);
     });
   }
+
+  document.getElementById("myDecksCheckImagesBtn")?.addEventListener("click", () => {
+    closeMyDecksMoreMenu();
+    runBrokenImageScan();
+  });
 }
 el.styleBtn.addEventListener("click", openStylePanel);
 el.closeStyleBtn.addEventListener("click", closeStylePanel);

@@ -1,7 +1,7 @@
 // Exporting one deck, a selection, or the whole library, in whichever format
 // the user picked.
 
-import { fetchCloudDeckList } from "../cloud/deck-list.js?v=__BUILD__";
+import { fetchCloudDeckIndex } from "../cloud/deck-list.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { deckPayloadSnapshot, downloadTextFile, statusByIdFromCards, touchWebDeckAccess, webDeckPayloadMarkdown } from "../cloud/web-decks.js?v=__BUILD__";
 import { buildDocxBytes } from "./docx.js?v=__BUILD__";
@@ -214,7 +214,7 @@ export async function allMyDeckSelections() {
   if (supabaseClient && isSignedIn && navigator.onLine) {
     try {
       const localCloudIds = new Set(localDecks.map((d) => String(d.deckId)).filter((id) => id && id !== "null"));
-      (await fetchCloudDeckList())
+      (await fetchCloudDeckIndex())
         .filter((deck) => !localCloudIds.has(String(deck.id)) && !isDeckTombstoned(deck.id))
         .forEach((deck) => selections.push({ localId: null, deckId: String(deck.id) }));
     } catch (error) {

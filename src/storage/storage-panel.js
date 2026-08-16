@@ -249,10 +249,21 @@ export async function buildStorageReport(onProgress) {
 
     let orphans = [];
     let orphanError = "";
+    // The other direction. `orphans` are files nothing points at — harmless,
+    // and deletable. These are the opposite and far worse: a deck still points
+    // at a storage path that no longer HAS a file, so the image is simply gone
+    // wherever that deck is read (and cannot be packed into a backup, which is
+    // where people first notice). Free to compute — both sets are already here
+    // — and it needs no per-image request, unlike probing each url over the
+    // network. Reported, never acted on: the fix is to remove the reference or
+    // re-add the picture, and only the reader knows which.
+    let missingRefs = [];
     try {
       onProgress?.("Checking which images are still used…");
       const referenced = await collectReferencedStoragePaths(onProgress);
       orphans = objects.filter((object) => !referenced.has(object.path));
+      const objectPaths = new Set(objects.map((object) => object.path));
+      missingRefs = [...referenced].filter((path) => !objectPaths.has(path));
     } catch (error) {
       // Never guess here: an incomplete reference scan would present live
       // images as deletable.
@@ -267,7 +278,8 @@ export async function buildStorageReport(onProgress) {
       groups: Array.from(groups.values()).sort((a, b) => b.bytes - a.bytes),
       orphans,
       orphanBytes: orphans.reduce((sum, object) => sum + object.size, 0),
-      orphanError
+      orphanError,
+      missingRefs
     };
   } catch (error) {
     report.storageError = error?.message || "Could not read the image bucket.";
@@ -414,6 +426,7 @@ export function renderStoragePanel(busyText = "") {
          ${storageStatTile(store.count, "Images")}
          ${storageStatTile(formatStorageBytes(store.bytes), "Used")}
          ${storageStatTile(store.orphanError ? "?" : store.orphans.length, "Unused", store.orphans.length ? "is-warn" : "")}
+         ${storageStatTile(store.orphanError ? "?" : store.missingRefs.length, "Missing", store.missingRefs?.length ? "is-warn" : "")}
        </div>
        ${store.groups.length ? `<ul class="storage-groups">${store.groups.map((group) => `
          <li><span class="storage-group-name">${escapeHtml(group.label)}</span>
@@ -421,9 +434,12 @@ export function renderStoragePanel(busyText = "") {
              <span class="storage-group-size">${escapeHtml(formatStorageBytes(group.bytes))}</span></li>`).join("")}</ul>` : ""}
        ${store.orphanError
         ? `<p class="storage-note is-warning">${escapeHtml(store.orphanError)} Unused-image cleanup is disabled until this succeeds.</p>`
-        : store.orphans.length
+        : `${store.orphans.length
           ? `<p class="storage-note">${store.orphans.length} image${store.orphans.length === 1 ? " is" : "s are"} no longer referenced by any deck or note (${escapeHtml(formatStorageBytes(store.orphanBytes))}). These are what deleting an image or a deck leaves behind.</p>`
-          : `<p class="storage-note">Every stored image is still in use.</p>`}`
+          : `<p class="storage-note">Every stored image is still in use.</p>`}
+       ${store.missingRefs.length
+          ? `<p class="storage-note is-warning">${store.missingRefs.length} image${store.missingRefs.length === 1 ? "" : "s"} referenced by your decks ${store.missingRefs.length === 1 ? "is" : "are"} no longer in storage, so ${store.missingRefs.length === 1 ? "it" : "they"} can't be shown or backed up. Deleting unused images will not help — this is the opposite problem. Use My Decks → More → Check for broken images to see which decks they're in.</p>`
+          : ""}`}`
     : `<p class="storage-note is-warning">${escapeHtml(report.storageError || "No image data.")}</p>`;
 
   body.innerHTML = `
