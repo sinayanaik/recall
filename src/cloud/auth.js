@@ -43,7 +43,21 @@ export async function getCachedSession() {
 export async function verifiedCloudUserId() {
   if (!supabaseClient) return null;
   try {
-    const { data, error } = await supabaseClient.auth.getSession();
+    // BOUNDED, like every other cloud call. getSession() reads local storage in
+    // the common case, but when the access token has expired it goes to the
+    // network to refresh it — and that call is supabase-js's, with no timeout of
+    // ours on it. On a connection that accepts and then answers nothing (the
+    // exact failure withTimeout exists for) it never settles, and because this
+    // is the first thing reconcileAllDecks awaits, the whole sync stops here:
+    // reconcileInFlight stays true forever, the button sits on its first label,
+    // and no later sync can start. A timeout is read as "couldn't confirm the
+    // sign-in", which is already a safe, handled outcome — the sync is skipped
+    // and every local deck is left alone.
+    const { data, error } = await withTimeout(
+      supabaseClient.auth.getSession(),
+      AUTH_TIMEOUT_MS,
+      "confirm sign-in"
+    );
     if (error) return null;
     const session = data?.session;
     // An access token that has already expired means the queries below would go

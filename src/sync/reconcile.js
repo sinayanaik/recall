@@ -585,6 +585,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // back EMPTY AND SUCCESSFUL — and the deletion rules further down read an
     // empty cloud as "deleted on another device". Sync as nobody, lose the
     // library. See verifiedCloudUserId.
+    progress("Checking your sign-in…");
     const cloudUserId = await verifiedCloudUserId();
     if (!cloudUserId) {
       // Not an error state to shout about: a lapsed token on a phone that's been
@@ -638,6 +639,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // both read-merge-write the same JSON blob (serialiseQuickNoteMetaWrite
     // enforces it anyway, but pretending they're independent here would be
     // misleading).
+    progress("Sending queued note changes…");
     const noteCategoriesFlushed = await flushPendingQuickNoteCategories();
     const noteAnchorsFlushed = await flushPendingQuickNoteAnchors();
     // Retire the delete tombstones of any deck a restore explicitly brought
@@ -655,9 +657,16 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // upload rewrites its recall-img: placeholder in the owning deck's snapshot
     // and bumps that deck's updatedAt, and the push pass below is what carries
     // the rewritten markdown up. Flushing later would miss this run entirely.
+    //
+    // Counted WHILE it runs, not just afterwards. A backlog here is real
+    // uploading — potentially hundreds of megabytes of it — happening before a
+    // single deck has been looked at, and reporting it only on completion is
+    // what made a working sync read as a stuck one.
     let imagesUploaded = 0;
     try {
-      imagesUploaded = await flushPendingImageUploads();
+      imagesUploaded = await flushPendingImageUploads((done, total) => {
+        progress(`Uploading queued images… (${done} of ${total})`);
+      });
       if (imagesUploaded) {
         progress(`Uploaded ${imagesUploaded} queued image${imagesUploaded === 1 ? "" : "s"}…`);
         // The rewrite touched state as well as the snapshots, so repaint — the
@@ -679,6 +688,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // dead cell or behind a captive portal — and the sync would then grind
     // through a 20-second timeout per deck before giving up. If the very first
     // request can't get out, treat the cloud as unreachable and stop here.
+    progress("Reading the deck list…");
     let cloudDecks, remoteDeletedIds;
     try {
       [cloudDecks, remoteDeletedIds] = await Promise.all([

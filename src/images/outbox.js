@@ -150,7 +150,23 @@ export async function hydrateLocalImages(root = document) {
 
 // Upload everything the outbox is holding and rewrite the markdown that points
 // at it. Called from reconcileAllDecks. Returns how many images landed.
-export async function flushPendingImageUploads() {
+// How many uploads share one rewrite pass. The rewrite is a cursor scan of the
+// WHOLE library, so doing it per image is O(images x library): measured at 85ms
+// each over 721 decks / 26MB of notes, which is 3.4 seconds for 40 images with
+// the upload itself costing nothing — and a restored library is far bigger than
+// that. Batching makes it one scan per 25.
+//
+// Not one single scan at the very end, because the outbox entry can only be
+// dropped once its rewrite has landed: anything still queued when the tab is
+// closed is uploaded again next time, leaving an orphaned copy in storage. A
+// batch bounds that to 25 rather than to everything.
+export const IMAGE_REWRITE_BATCH = 25;
+
+// `onProgress(done, total)` is not decoration. This runs inside reconcileAllDecks
+// BEFORE the deck index is even read, and used to be completely silent — so a
+// sync with a full outbox sat on "Checking the cloud…" for minutes, having
+// started no deck work at all, which is indistinguishable from a hang.
+export async function flushPendingImageUploads(onProgress = null) {
   if (!supabaseClient || !isSignedIn || !navigator.onLine) return 0;
   let queued;
   try {
@@ -162,6 +178,23 @@ export async function flushPendingImageUploads() {
   if (!queued?.length) return 0;
 
   let uploaded = 0;
+  let pending = new Map();   // token -> url, awaiting one shared rewrite
+  onProgress?.(0, queued.length);
+
+  const settleBatch = async () => {
+    if (!pending.size) return;
+    await rewriteLocalImageReferences(pending);
+    for (const token of pending.keys()) {
+      await deleteOutboxImage(token).catch(() => {});
+      const objectUrl = localImageObjectUrls.get(token);
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        localImageObjectUrls.delete(token);
+      }
+    }
+    pending = new Map();
+  };
+
   for (const entry of queued) {
     let url;
     try {
@@ -176,25 +209,42 @@ export async function flushPendingImageUploads() {
       }
       continue;
     }
-    await rewriteLocalImageReferences(entry.token, url);
-    await deleteOutboxImage(entry.token).catch(() => {});
-    const objectUrl = localImageObjectUrls.get(entry.token);
-    if (objectUrl) {
-      URL.revokeObjectURL(objectUrl);
-      localImageObjectUrls.delete(entry.token);
-    }
+    pending.set(entry.token, url);
     uploaded++;
+    onProgress?.(uploaded, queued.length);
+    if (pending.size >= IMAGE_REWRITE_BATCH) await settleBatch();
   }
+  await settleBatch();
   return uploaded;
 }
 
 // Point every copy of a placeholder at the real URL: the live editor and state
 // (so the change is visible now) and every stored snapshot (so it survives, and
 // so the deck's own updatedAt bump carries it to the cloud).
-export async function rewriteLocalImageReferences(token, url) {
-  const placeholder = LOCAL_IMAGE_SCHEME + token;
-  const swap = (text) => String(text || "").split(placeholder).join(url);
-  const touched = (text) => String(text || "").includes(placeholder);
+// Takes a MAP of token -> url, not one pair, because the library scan below is
+// the expensive part and it costs the same for one replacement or fifty. See
+// IMAGE_REWRITE_BATCH.
+export async function rewriteLocalImageReferences(replacements) {
+  const pairs = [...(replacements instanceof Map ? replacements : new Map(Object.entries(replacements || {})))]
+    .map(([token, url]) => [LOCAL_IMAGE_SCHEME + token, url]);
+  if (!pairs.length) return;
+  const swap = (text) => {
+    let out = String(text || "");
+    // split/join per placeholder rather than one alternating RegExp: a token is
+    // arbitrary text as far as this function knows, and building a pattern out
+    // of it is how a stray metacharacter silently rewrites the wrong thing.
+    for (const [placeholder, url] of pairs) {
+      if (out.includes(placeholder)) out = out.split(placeholder).join(url);
+    }
+    return out;
+  };
+  const touched = (text) => {
+    const value = String(text || "");
+    // Cheap reject first: a note with no placeholder scheme in it at all — the
+    // overwhelming majority — costs one indexOf instead of one per pair.
+    if (!value.includes(LOCAL_IMAGE_SCHEME)) return false;
+    return pairs.some(([placeholder]) => value.includes(placeholder));
+  };
 
   if (touched(state.notes)) state.notes = swap(state.notes);
   for (const list of [state.masterCards, state.cards]) {

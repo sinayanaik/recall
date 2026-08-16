@@ -471,7 +471,15 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
     }
   });
   const refs = Array.from(folderByRef.keys());
-  if (!refs.length) return { assets: [], missing: [] };
+  // The SAME four keys the full path returns. This shortcut kept the two-key
+  // shape it was written with, and splitting `missing` into missingHosted /
+  // missingExternal later only updated the other return — so a library with no
+  // images at all handed the caller a result with two undefined arrays. The
+  // caller reads `.length` off both, unconditionally, at the very end: the
+  // archive was built, compressed and downloaded, and then the run threw
+  // "Cannot read properties of undefined (reading 'length')" while writing the
+  // summary. A backup that had entirely succeeded reported itself as failed.
+  if (!refs.length) return { assets: [], missing: [], missingHosted: [], missingExternal: [] };
 
   let done = 0;
   onProgress?.(0, refs.length);

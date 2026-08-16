@@ -397,7 +397,10 @@ const ACCEPTED = {
     "explicit-only; it is the app's reply to something the user just did. The " +
     "pull loop counts per deck for the same reason the push loop already did " +
     "(it awaits a lock and a snapshot write each time, so it does yield — the " +
-    "note claiming otherwise was wrong).",
+    "note claiming otherwise was wrong). And the pre-flight steps name " +
+    "themselves — sign-in, queued note changes, queued images, deck list — so " +
+    "a stall before any deck work has an address instead of all four sharing " +
+    "one \"Checking the cloud…\".",
 
   // ── Backup: telling a dead link apart from an unreadable one ─────────────
   readBackupAssetBlob:
@@ -411,7 +414,12 @@ const ACCEPTED = {
     "gone — a real hole) and missingExternal (a third-party link the browser " +
     "is not allowed to read; the note keeps the link). Both are recorded in " +
     "assets/index.json. `missing` itself is unchanged, so an older restore " +
-    "reads a new archive exactly as before.",
+    "reads a new archive exactly as before. The no-images shortcut return now " +
+    "carries all four keys: that split only updated the main return, so a " +
+    "library with no images at all handed back two undefined arrays, and the " +
+    "caller reads `.length` off both while writing its summary — the archive " +
+    "was built, compressed and DOWNLOADED, and then the run reported itself " +
+    "failed with \"Cannot read properties of undefined (reading 'length')\".",
   runLibraryBackup:
     "Reports those two counts as two different things. One combined figure " +
     "read as 'N of your images are lost' when most of them were pasted web " +
@@ -427,6 +435,37 @@ const ACCEPTED = {
     "safety step opened a progress panel, counted to zero and finished on a " +
     "red 'This device has no decks saved yet' that had to be dismissed by " +
     "hand, in front of the restore it was protecting.",
+
+  // ── The sync's silent pre-flight ─────────────────────────────────────────
+  // Everything reconcileAllDecks awaits BEFORE it reads the deck list. None of
+  // it reported anything, and one piece of it could not end at all — which
+  // together are why a sync that had started no deck work looked hung.
+  verifiedCloudUserId:
+    "getSession() is wrapped in withTimeout. It reads local storage in the " +
+    "common case, but on an EXPIRED access token it goes to the network to " +
+    "refresh — supabase-js's own call, with no timeout of ours on it. On a " +
+    "connection that accepts and then answers nothing it never settles, and " +
+    "this is the first thing the reconcile awaits: reconcileInFlight stays " +
+    "true forever, the button holds its first label, and no later sync can " +
+    "start. A timeout reads as \"couldn't confirm the sign-in\", which is " +
+    "already a safe handled outcome (skip the sync, touch no local deck).",
+  flushPendingImageUploads:
+    "Reports progress, and batches the rewrite. It runs before the deck index " +
+    "is read and used to be completely silent, so a backlog here — real " +
+    "uploading, potentially hundreds of megabytes of it — showed as a sync " +
+    "stuck on its first message with no deck work started. The rewrite is now " +
+    "shared across IMAGE_REWRITE_BATCH uploads instead of run per image: " +
+    "measured 3415ms -> 242ms for 40 images over a 721-deck library, with the " +
+    "upload itself costing nothing. Outbox entries are still dropped only " +
+    "after their rewrite lands, so an interrupted flush re-uploads at most one " +
+    "batch rather than everything.",
+  rewriteLocalImageReferences:
+    "Takes a MAP of token -> url rather than one pair. The cursor scan over " +
+    "every deck snapshot is the whole cost and it is the same for one " +
+    "replacement or fifty, so doing it per image made the flush " +
+    "O(images x library). Also rejects a note in one indexOf when it holds no " +
+    "recall-img: scheme at all, which is almost all of them, instead of " +
+    "testing every pair against it.",
 
   // ── Reads that only break at a library size the developer never had ──────
   // Both of these worked for every library anyone had tested and failed for a
