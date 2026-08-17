@@ -75,6 +75,19 @@ for (const rel of modules) {
   }
 }
 
+// Every module except the entry point needs a <link rel="modulepreload">.
+// Without one the browser cannot ask for a module until it has parsed whichever
+// module imports it, and the deepest chain here is dozens of hops — on a first
+// load that is dozens of sequential round trips. The deploy workflow enforces
+// this and FAILS THE BUILD without it, which is how four new modules got as far
+// as a push before anyone noticed. Checked here too, so it is caught locally.
+for (const rel of modules) {
+  if (rel === "src/main.js") continue;
+  if (!html.includes(`modulepreload" href="${rel}?v=`)) {
+    problems.push(`${rel} has no <link rel="modulepreload"> in index.html — the deploy workflow rejects this`);
+  }
+}
+
 const sheets = walk("styles").filter((f) => f.endsWith(".css"));
 for (const rel of sheets) {
   const linked = html.includes(`${rel}?v=`);

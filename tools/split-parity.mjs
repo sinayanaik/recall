@@ -1101,8 +1101,12 @@ const RESIDUAL_REWRITES = [
   // The font picker moved onto the pill from the raw editor's toolbar when that
   // shrank to three buttons, so the shared [data-render-target] delegation has
   // to see its buttons too — without this they are inert.
-  [/const btn = event\.target\.closest\("\[data-render-action\], \[data-render-color\]"\);/,
-   () => 'const btn = event.target.closest("[data-render-action], [data-render-color], [data-render-font]");'],
+  // The font picker for a SELECTION is gone: a per-selection typeface is not
+  // something a reading app needs, and the font choices that matter are
+  // settings (Style -> Basics, Style -> Notes font) rather than formatting
+  // actions. Nothing emits [data-render-font] any more, so the delegation stops
+  // looking for it — which is the baseline's own selector, unchanged.
+  ["", ""],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

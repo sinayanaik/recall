@@ -751,7 +751,7 @@ onDomReady(() => setHighlightsChangedHandler(renderHighlightsPanel));
 // second, near-identical listener. Nearest ancestor wins, so a button inside
 // the render toolbar still resolves to the toolbar (which owns the colour menus).
 document.addEventListener("pointerdown", (event) => {
-  const btn = event.target.closest("[data-render-action], [data-render-color], [data-render-font]");
+  const btn = event.target.closest("[data-render-action], [data-render-color]");
   const host = btn?.closest("[data-render-target]");
   if (btn && host) {
     event.preventDefault();

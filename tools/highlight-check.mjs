@@ -344,6 +344,65 @@ const PROBE = `(api) => {
     return true;
   });
 
+  // ── Chapters have to be worth a page ─────────────────────────────────────
+  //
+  // Reported as "headings that have no contents still occupy blank columns,
+  // making the note discontinuous". A paper's shallowest heading is usually
+  // "##", so every section became a chapter and owned a page — including the
+  // one-line ones. Measured before this: an Abstract section filled 11% of a
+  // column and the reader turned a whole page to read one line.
+  const para = (tag, n) => {
+    const out = [];
+    for (let i = 0; i < n; i += 1) {
+      out.push(tag + " " + (i + 1) + ". " + "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore. ".repeat(3));
+    }
+    return out.join("\\n\\n");
+  };
+
+  check("a one-line section does not get a chapter of its own", () => {
+    const md = "## Abstract\\n\\nWe propose a thing.\\n\\n## Keywords\\n\\na, b, c\\n\\n## Introduction\\n\\n" + para("Intro", 12);
+    const chapters = api.chapterIndexFor(md);
+    if (chapters.length !== 1) return "split into " + chapters.length + " chapters: " + JSON.stringify(chapters.map((c) => c.title));
+    return true;
+  });
+
+  check("sections that ARE substantial still get their own chapters", () => {
+    const md = "## One\\n\\n" + para("A", 12) + "\\n\\n## Two\\n\\n" + para("B", 12);
+    const chapters = api.chapterIndexFor(md);
+    if (chapters.length !== 2) return "split into " + chapters.length + ": " + JSON.stringify(chapters.map((c) => c.title));
+    return true;
+  });
+
+  check("a merged chapter keeps the FIRST heading as its title", () => {
+    const md = "## Abstract\\n\\nshort.\\n\\n## Introduction\\n\\n" + para("Intro", 12);
+    const chapters = api.chapterIndexFor(md);
+    if (chapters[0].title !== "Abstract") return "title is " + JSON.stringify(chapters[0].title);
+    return true;
+  });
+
+  check("every block still belongs to exactly one chapter", () => {
+    // Merging moves boundaries; it must never drop or duplicate a block, or a
+    // paged reader would lose text outright.
+    const md = "## A\\n\\nx\\n\\n## B\\n\\ny\\n\\n## C\\n\\n" + para("C", 14) + "\\n\\n## D\\n\\nz";
+    const chapters = api.chapterIndexFor(md);
+    let at = 0;
+    for (const chapter of chapters) {
+      if (chapter.blockStart !== at) return "gap or overlap at block " + at;
+      at = chapter.blockEnd;
+    }
+    const total = api.splitPreparedBlocks(api.preprocessSpecialBlocks(md)).blocks.length;
+    if (at !== total) return "chapters cover " + at + " of " + total + " blocks";
+    return true;
+  });
+
+  // ── The font picker is gone from the selection tools ─────────────────────
+  check("no font-family control is emitted for a selection", () => {
+    const html = api.createRenderToolbarHtml({ actions: false, highlight: false });
+    if (html.indexOf("data-render-font") !== -1) return "the bar still emits a font control";
+    if (html.indexOf("render-style-faces") !== -1) return "the face list is still in the popover";
+    return true;
+  });
+
   return results;
 }`;
 
@@ -354,7 +413,11 @@ const API_SRC = `async () => {
     import("/src/notes/selection.js?v=__BUILD__"),
     import("/src/editor/text-transforms.js?v=__BUILD__"),
     import("/src/panels/highlights-panel.js?v=__BUILD__"),
-    import("/src/format/highlight-edit.js?v=__BUILD__")
+    import("/src/format/highlight-edit.js?v=__BUILD__"),
+    import("/src/notes/chapters.js?v=__BUILD__"),
+    import("/src/render/preprocess.js?v=__BUILD__"),
+    import("/src/render/block-cache.js?v=__BUILD__"),
+    import("/src/format/render-toolbar.js?v=__BUILD__")
   ]);
   const api = {};
   for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];

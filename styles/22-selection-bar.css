@@ -41,43 +41,6 @@
    mechanism to keep in step — including the rule in 16-mobile-reading.css that
    flips a menu upward when the pill is pinned to the bottom of the screen.
 
-   Only the LAYOUT differs: sixteen names, not a grid of swatches. Same
-   specificity as .render-color-menu (0,1,0), so these win purely by loading
-   after it. Each item is drawn in its own face, because the name of a typeface
-   is not a useful preview of it. */
-.render-font-menu {
-  grid-template-columns: 1fr;
-  gap: 1px;
-  max-height: min(320px, 50vh);
-  overflow-y: auto;
-  /* The pill can sit anywhere across the screen and this menu is far wider than
-     a swatch grid, so without a ceiling it runs off the near edge. */
-  max-width: min(220px, calc(100vw - 32px));
-}
-
-.render-font-btn {
-  padding: 6px 10px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text);
-  font-size: 0.85rem;
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.render-font-btn:hover {
-  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
-}
-
-/* .render-swatch-clear is `grid-column: 1 / -1` for the swatch grids; in a
-   single column that is already true, so it only needs separating from the last
-   font name. */
-.render-font-menu .render-swatch-clear {
-  margin-top: 4px;
-}
-
 /* ── Everything rarely reached for, behind one "Aa" ────────────────────────
    Bold, italic, underline, strikethrough, inline code, sixteen font faces and
    twelve text colours were nine controls sitting across the bar, in front of
@@ -126,12 +89,3 @@
   border-top: 1px solid var(--line);
 }
 
-.render-style-faces {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 210px;
-  overflow-y: auto;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-}

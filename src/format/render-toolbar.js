@@ -100,28 +100,6 @@ export const RENDER_TEXT_COLORS = [
   { name: "Gray", value: "#9ca3af" },
 ];
 
-// Font stacks, mirroring the raw editor toolbar's list exactly — this control
-// MOVED here from there, so the same sixteen choices have to survive. `value` is
-// what lands in the markdown's style attribute; `css` is only the preview stack
-// each menu item is drawn in.
-export const RENDER_FONTS = [
-  { name: "Sans-Serif", value: "sans-serif" },
-  { name: "Serif", value: "serif" },
-  { name: "Monospace", value: "monospace" },
-  { name: "Cursive", value: "cursive" },
-  { name: "System UI", value: "system-ui" },
-  { name: "Georgia", value: "georgia", css: "georgia, serif" },
-  { name: "Garamond", value: "Garamond", css: "Garamond, serif" },
-  { name: "Impact", value: "Impact", css: "Impact, sans-serif" },
-  { name: "Trebuchet", value: "Trebuchet MS", css: "'Trebuchet MS', sans-serif" },
-  { name: "Arial", value: "Arial", css: "Arial, sans-serif" },
-  { name: "Times New Roman", value: "Times New Roman", css: "'Times New Roman', serif" },
-  { name: "Verdana", value: "Verdana", css: "Verdana, sans-serif" },
-  { name: "Tahoma", value: "Tahoma", css: "Tahoma, sans-serif" },
-  { name: "Courier New", value: "Courier New", css: "'Courier New', monospace" },
-  { name: "Consolas", value: "Consolas", css: "Consolas, monospace" },
-  { name: "Comic Sans", value: "Comic Sans MS", css: "'Comic Sans MS', cursive" },
-];
 
 // The currently-chosen default for each split-button's one-click apply. Persisted
 // so it survives reloads; seeded from the first palette swatch. A pre-existing
@@ -162,28 +140,13 @@ export function renderSplitControlHtml(prop, glyph, label, swatches) {
     </span>`;
 }
 
-// The font picker. A plain dropdown rather than a split control: unlike colour
-// and highlight there is no "current default" worth one-tap re-applying — you
-// pick a face because you want that face — so the ▾ side would open the only
-// menu the control has and the main side would do nothing useful.
-//
-// It reuses .render-color-menu so closeAllRenderMenus / the ${prop}-menu branch
-// in handleRenderToolbarAction find it without a second mechanism; the extra
-// .render-font-menu class is only there for the list layout.
-export function renderFontControlHtml() {
-  const items = RENDER_FONTS.map(
-    (f) =>
-      `<button type="button" class="render-font-btn" data-render-font="${f.value}" style="font-family: ${f.css || f.value};">${f.name}</button>`
-  ).join("");
-  return `
-    <span class="render-split" data-render-split="font">
-      <button type="button" class="render-btn render-font-toggle" data-render-action="font-menu" title="Font" aria-haspopup="true" aria-expanded="false">Aa</button>
-      <div class="render-color-menu render-font-menu" data-render-menu="font" hidden>
-        ${items}
-        <button type="button" class="render-swatch-clear" data-render-font="clear" title="Remove font">Clear</button>
-      </div>
-    </span>`;
-}
+// (renderFontControlHtml and RENDER_FONTS used to sit here: a picker offering
+// sixteen typefaces for a text SELECTION, which wrote an inline `font-family`
+// into the markdown. Removed — a per-selection typeface is not something a
+// reading app needs, and the font choices that matter are settings rather than
+// formatting actions: Style -> Basics picks the app font, and Style -> Notes
+// font picks one for the reading view alone. Notes that already carry an inline
+// font still render, and the raw editor's Clear formatting strips one.)
 
 // ── Everything you rarely reach for, behind one control ────────────────────
 //
@@ -199,17 +162,13 @@ export function renderFontControlHtml() {
 // `font-menu` action so closeAllRenderMenus and the ${prop}-menu branch in
 // handleRenderToolbarAction find it with no second mechanism.
 export function renderTextStyleControlHtml() {
-  const faces = RENDER_FONTS.map(
-    (f) =>
-      `<button type="button" class="render-font-btn" data-render-font="${f.value}" style="font-family: ${f.css || f.value};">${f.name}</button>`
-  ).join("");
   const colours = RENDER_TEXT_COLORS.map(
     (c) =>
       `<button type="button" class="render-swatch-btn" data-render-color="${c.value}" data-render-prop="color" style="--sw: ${c.swatch || c.value};" title="${c.name}"></button>`
   ).join("");
   return `
     <span class="render-split" data-render-split="font">
-      <button type="button" class="render-btn render-font-toggle" data-render-action="font-menu" title="Text style — bold, italic, font, colour" aria-haspopup="true" aria-expanded="false">Aa</button>
+      <button type="button" class="render-btn render-font-toggle" data-render-action="font-menu" title="Text style — bold, italic, colour" aria-haspopup="true" aria-expanded="false">Aa</button>
       <div class="render-color-menu render-text-style-menu" data-render-menu="font" hidden>
         <div class="render-style-row">
           <button type="button" class="render-btn" data-render-action="bold" title="Bold"><b>B</b></button>
@@ -221,10 +180,6 @@ export function renderTextStyleControlHtml() {
         <div class="render-style-swatches">
           ${colours}
           <button type="button" class="render-swatch-clear" data-render-color="clear" data-render-prop="color" title="Remove colour">Clear</button>
-        </div>
-        <div class="render-style-faces">
-          ${faces}
-          <button type="button" class="render-swatch-clear" data-render-font="clear" title="Remove font">Clear</button>
         </div>
       </div>
     </span>`;
@@ -313,7 +268,7 @@ export function initRenderToolbars() {
 export function closeAllRenderMenus() {
   document.querySelectorAll(".render-color-menu").forEach((m) => (m.hidden = true));
   // Every control that OPENS a menu, not just the split ones: the font picker's
-  // toggle is a plain button (see renderFontControlHtml), so keying off
+  // toggle is a plain button, so keying off
   // .render-split-side alone would leave its aria-expanded stuck on "true".
   document
     .querySelectorAll('.render-split-side, [data-render-action$="-menu"]')
@@ -480,19 +435,6 @@ export function handleRenderToolbarAction(btn, toolbar) {
     setRenderDefault(prop, colorVal);
     if (prop === "highlight") makeHighlightFromSelection(config, colorVal, sel);
     else applyRenderColor(config, prop, colorVal);
-    return;
-  }
-
-  // A face from the font list. No setRenderDefault here — unlike colour and
-  // highlight there is no one-tap re-apply to keep a default for.
-  const fontVal = btn.dataset.renderFont;
-  if (fontVal !== undefined) {
-    closeAllRenderMenus();
-    const formatFn =
-      fontVal === "clear"
-        ? (v, s, e) => clearInlineStyleProperty(v.slice(s, e), "font-family")
-        : (v, s, e) => applyInlineStyleProperty(v.slice(s, e), "font-family", fontVal);
-    applyRenderFormat(config, formatFn, { expandStyleSpan: true });
     return;
   }
 

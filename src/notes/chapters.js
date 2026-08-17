@@ -62,6 +62,55 @@ export function blockStartsChapter(block, level) {
   return Boolean(heading) && heading[1].length === level;
 }
 
+// A chapter is a PAGE's worth of reading, so a section too thin to fill one
+// does not get to be a chapter.
+//
+// Papers are the case this exists for. Their shallowest heading is usually
+// "##", so every section became a chapter — including "Keywords", which is one
+// line. That section then owned a whole page: 11% of a column used, the rest
+// blank, and the reader turning a page to read a single line. Several of those
+// in a row is what "the note looks discontinuous" describes.
+//
+// Measured against a two-column page at a typical reading width, which holds
+// roughly 4,500 characters. A section below this is folded into the next one,
+// keeping its heading exactly where it was — the text is unchanged, only the
+// page boundaries move.
+export const CHAPTER_MIN_CHARS = 1200;
+
+// Merge each too-thin chapter into the one AFTER it (its heading belongs with
+// what follows), or into the one before when it is last and has no `after`.
+export function mergeThinChapters(chapters, blocks) {
+  if (chapters.length < 2) return chapters;
+  const weight = (chapter) => {
+    let total = 0;
+    for (let i = chapter.blockStart; i < chapter.blockEnd; i += 1) total += (blocks[i] || "").length;
+    return total;
+  };
+
+  const out = [];
+  for (const chapter of chapters) {
+    const previous = out[out.length - 1];
+    // Absorbed by the chapter being built when THAT one is still too thin —
+    // which is what makes a run of one-line sections collapse into one page
+    // rather than into pairs.
+    if (previous && weight(previous) < CHAPTER_MIN_CHARS) {
+      previous.blockEnd = chapter.blockEnd;
+      // The merged chapter keeps the FIRST heading as its title: that is the
+      // one the reader sees at the top of the page.
+      continue;
+    }
+    out.push({ ...chapter });
+  }
+
+  // The last chapter can have nothing after it to join, so it goes backwards.
+  const last = out[out.length - 1];
+  if (out.length > 1 && weight(last) < CHAPTER_MIN_CHARS) {
+    out[out.length - 2].blockEnd = last.blockEnd;
+    out.pop();
+  }
+  return out;
+}
+
 // [{ title, blockStart, blockEnd }] — blockEnd exclusive, covering every block
 // exactly once and in order, so `blocks.slice(start, end)` is the chapter.
 export function chapterIndexForBlocks(blocks) {
@@ -83,7 +132,8 @@ export function chapterIndexForBlocks(blocks) {
     last.blockEnd = index + 1;
   });
 
-  return chapters.length ? chapters : [{ title: "", blockStart: 0, blockEnd: blocks.length }];
+  if (!chapters.length) return [{ title: "", blockStart: 0, blockEnd: blocks.length }];
+  return mergeThinChapters(chapters, blocks);
 }
 
 export function chapterIndexFor(source) {

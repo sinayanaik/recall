@@ -522,7 +522,9 @@ try {
       if (bar.topLevelActions.includes(action)) return `${action} is still on the bar itself`;
     }
     if (bar.menuColours < 12) return `only ${bar.menuColours} colours in the popover`;
-    if (bar.menuFonts < 16) return `only ${bar.menuFonts} fonts in the popover`;
+    // No font picker at all any more: a per-selection typeface is not something
+    // a reading app needs, and the font choices that matter are settings.
+    if (bar.menuFonts !== 0) return `${bar.menuFonts} font controls survived`;
     // Bulletify is an ACTION and stays out in front — that is the whole point
     // of moving the styling in.
     if (!bar.topLevelActions.includes("bulletify")) return "bulletify is not on the bar";
