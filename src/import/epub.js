@@ -443,6 +443,21 @@ export function epubContainerToMarkdown(container, doc, chapterPath, imageUrlMap
     }
   });
 
+  // A display equation's number (<span class="math-tag">(16)</span>, the
+  // Nougat layout) is folded onto its math element as data-tag so the
+  // mathml-tex Turndown rule can emit it as a real \tag{16} — rendered
+  // where the book put it, instead of surviving as an orphan "(16)"
+  // paragraph under the equation. Only removed when the fold succeeds.
+  container.querySelectorAll("span.math-tag").forEach((tag) => {
+    const text = (tag.textContent || "").trim().replace(/^\(+|\)+$/g, "").trim();
+    const math = tag.parentElement?.querySelector("span.math-body > math") ||
+      tag.previousElementSibling?.querySelector("math");
+    if (text && math) {
+      math.setAttribute("data-tag", text);
+      tag.remove();
+    }
+  });
+
   // epubMode keeps citation/footnote <sup> markers (and <sub>) instead of
   // stripping them the way the web-paste path does — see htmlToMarkdown.
   return htmlToMarkdown(container.innerHTML, { epubMode: true }).trim();

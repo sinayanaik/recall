@@ -254,6 +254,7 @@ const APP_SHELL = [
   `./src/import/epub.js?v=${STAMP}`,
   `./src/import/files.js?v=${STAMP}`,
   `./src/import/html-to-markdown.js?v=${STAMP}`,
+  `./src/import/mathml-to-tex.js?v=${STAMP}`,
   `./src/import/parse-cards.js?v=${STAMP}`,
   `./src/import/sample.js?v=${STAMP}`,
   `./src/import/staging.js?v=${STAMP}`,

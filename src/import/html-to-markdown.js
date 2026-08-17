@@ -4,6 +4,7 @@ import { ensureTurndown } from "../core/lib-loader.js?v=__BUILD__";
 import { MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
 import { RAW_MATH_ATTR, protectMathInDom, relaxEscapedBrackets } from "../render/math-dom.js?v=__BUILD__";
 import { repairEscapedMathMarkdown } from "../render/math.js?v=__BUILD__";
+import { mathmlToTex, sanitizeMathTex } from "./mathml-to-tex.js?v=__BUILD__";
 
 // Shared HTML→Markdown converter (paste handler + notes selection capture).
 // Returns "" when Turndown is unavailable or conversion fails.
@@ -39,6 +40,63 @@ export function htmlToMarkdown(html, options = {}) {
   }
   const turndownService = turndownServiceFor(options);
   return turndownWithService(turndownService, html, options);
+}
+
+// What kind of math a leading element is, for the adjacency guard below:
+// MathML itself, the app's own rendered math spans, pre-rendered KaTeX from a
+// paste, and protectMathInDom's placeholders.
+function mathKindOf(el) {
+  if (!el || el.nodeType !== 1) return null;
+  if (el.nodeName.toLowerCase() === "math") {
+    return el.getAttribute("display") === "block" ? "display" : "inline";
+  }
+  if (el.classList) {
+    if (el.classList.contains("math-display") || el.classList.contains("katex-display")) return "display";
+    if (el.classList.contains("math-inline") || el.classList.contains("katex")) return "inline";
+  }
+  if (el.hasAttribute(RAW_MATH_ATTR)) {
+    const tex = el.getAttribute(RAW_MATH_ATTR) || "";
+    return tex.startsWith("$$") || tex.startsWith("\\[") ? "display" : "inline";
+  }
+  return null;
+}
+
+// True when the very next thing the conversion will emit after this math node
+// is ANOTHER inline math span — i.e. this rule's "$…$" would run straight
+// into the next one's with no text between. That makes "$=$$12$", and
+// protectMath reads the "$$" as a display-math opener, swallowing the prose
+// after it — the whole-paragraph corruption math-heavy EPUBs hit, whose
+// converter emits adjacent <span class="math-inline">…</span><span class=
+// "math-inline"> with no whitespace between (Wikipedia does the same). The
+// rules below keep the two formulas a space apart. A display follower needs
+// nothing: it starts with newlines.
+export function followedByInlineMath(node) {
+  let host = node;
+  // Climb out of plain inline wrappers (Nougat's span.math-inline, Wikipedia's
+  // mwe-math spans) while this node is their last meaningful child — the
+  // question is what follows the OUTERMOST one.
+  for (;;) {
+    const parent = host.parentNode;
+    if (!parent || parent.nodeName !== "SPAN") break;
+    let sib = host.nextSibling;
+    while (sib && sib.nodeType === 3 && !sib.textContent.trim()) sib = sib.nextSibling;
+    if (sib) break; // not the last meaningful child — answer at this level
+    host = parent;
+  }
+  let sib = host.nextSibling;
+  while (sib && sib.nodeType === 3 && !sib.textContent.trim()) sib = sib.nextSibling;
+  if (!sib || sib.nodeType !== 1) return false;
+  // The sibling's leading element chain must reach a math element before any
+  // text — <span class="math-inline"><math>…, or the app's own math span.
+  let lead = sib;
+  for (;;) {
+    const kind = mathKindOf(lead);
+    if (kind) return kind === "inline";
+    let child = lead.firstChild;
+    while (child && child.nodeType === 3 && !child.textContent.trim()) child = child.nextSibling;
+    if (!child || child.nodeType !== 1) return false;
+    lead = child;
+  }
 }
 
 export function buildTurndownService(options = {}) {
@@ -179,7 +237,7 @@ export function buildTurndownService(options = {}) {
       if (!tex.trim()) return content;
       return node.classList.contains("math-display")
         ? `\n\n$$\n${tex.trim()}\n$$\n\n`
-        : `$${tex.trim()}$`;
+        : `$${tex.trim()}$` + (followedByInlineMath(node) ? " " : "");
     }
   });
 
@@ -203,7 +261,7 @@ export function buildTurndownService(options = {}) {
         // unrendered "$\begin{aligned}…$" text. (recall-clipper's picker.js
         // splits this into katexDisplay/katexInline rules for the same reason.)
         const isDisplay = Boolean(node.closest?.(".katex-display"));
-        return isDisplay ? "\n\n$$\n" + tex + "\n$$\n\n" : "$" + tex + "$";
+        return isDisplay ? "\n\n$$\n" + tex + "\n$$\n\n" : "$" + tex + "$" + (followedByInlineMath(node) ? " " : "");
       }
       // No annotation — KaTeX built with output:"html" emits none, and a clone
       // can lose it. `content` here is the serialized glyph soup, so try the
@@ -215,7 +273,7 @@ export function buildTurndownService(options = {}) {
           if (tex) {
             return host.classList.contains("math-display")
               ? `\n\n$$\n${tex}\n$$\n\n`
-              : `$${tex}$`;
+              : `$${tex}$` + (followedByInlineMath(node) ? " " : "");
           }
         } catch (err) {
           /* fall through to content */
@@ -322,11 +380,28 @@ export function buildTurndownService(options = {}) {
     replacement: (content, node) => {
       const annotation =
         node.querySelector('annotation[encoding="application/x-tex"]') || node.querySelector("annotation");
-      const tex = (annotation?.textContent || node.getAttribute("alttext") || "").trim();
+      let tex = sanitizeMathTex(annotation?.textContent || node.getAttribute("alttext") || "");
+      // No annotation at all (Nougat-OCR books leave dozens of formulas as
+      // bare MathML): convert the presentation MathML itself — anything is
+      // better than the glyph run, which is not even text.
+      if (!tex) tex = mathmlToTex(node);
       if (!tex) return content;
-      return node.getAttribute("display") === "block"
-        ? `\n\n$$\n${tex}\n$$\n\n`
-        : `$${tex}$`;
+      // Nougat marks even display equations display="inline" when they lack
+      // an annotation; the div.math-display wrapper is the reliable signal.
+      const isDisplay = node.getAttribute("display") === "block" ||
+        Boolean(node.closest?.("div.math-display"));
+      if (isDisplay) {
+        // epubContainerToMarkdown folds a display equation's number (<span
+        // class="math-tag">(16)</span>) onto the math as data-tag — emit it
+        // as a real amsmath tag instead of an orphan "(16)" paragraph.
+        const tag = (node.getAttribute("data-tag") || "").replace(/[{}]/g, "").trim();
+        if (tag) tex = `${tex}\\tag{${tag}}`;
+        return `\n\n$$\n${tex}\n$$\n\n`;
+      }
+      // Two inline formulas back to back in the source would concatenate
+      // into "$=$$12$" — which protectMath reads as one display-math
+      // delimiter pair, swallowing the prose around it. Keep them apart.
+      return `$${tex}$` + (followedByInlineMath(node) ? " " : "");
     }
   });
 

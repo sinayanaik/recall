@@ -96,6 +96,12 @@ const ACCEPTED = {
     "expanded — the one state a collapsed-by-default bar exists to avoid. It " +
     "is in the fast-path test too, or the early return skips the only reset.",
 
+  // ── EPUB math fidelity (tools/epub-preview-check.mjs proves it on real books) ──
+  buildTurndownService:
+    "The mathml-tex rule now falls back to mathmlToTex (src/import/mathml-to-tex.js) when a <math> element has no TeX annotation — Nougat books ship dozens bare, and they used to serialize as MathML glyph soup — and sanitizeMathTex strips an unbalanced \\left/\\right pair that KaTeX rejects wholesale. The inline-math rules also append one space when the next element is another inline math span: \"$=$$12$\" reads as a display opener to protectMath and swallowed the prose after it.",
+  epubContainerToMarkdown:
+    "Folds a display equation's <span class=\"math-tag\">(16)</span> onto the math element as data-tag, so the turndown rule emits it as a real \\tag{16} instead of an orphan \"(16)\" paragraph under the equation.",
+
   requestedAppVersion:
     "reads the ?v= off its own <script src>, which moved from app.js to src/main.js",
   RELEASE_STAMP_RE:
