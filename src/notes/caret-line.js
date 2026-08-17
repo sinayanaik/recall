@@ -41,7 +41,8 @@
 // and turned into a screen position on scroll with arithmetic alone.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { backdropForTextarea, isCaretProbeRunning, measuredCaretTop, scrollTextareaToOffset, textareaLineHeight, visualLineTopForOffset } from "./caret.js?v=__BUILD__";
+import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
+import { backdropForTextarea, exactLineTopForOffset, isCaretProbeRunning, lineIndexAtOffset, measuredCaretTop, scrollTextareaToOffset, textareaLineHeight } from "./caret.js?v=__BUILD__";
 
 export const CARET_LINE_FLASH_MS = 1400;
 
@@ -49,9 +50,28 @@ let caretLineEl = null;
 let caretLineTop = null;   // content space, i.e. independent of scrollTop
 let caretLineHeight = 0;
 let caretLineFrame = 0;
+// Options merged across every call that lands in the same frame. `if
+// (caretLineFrame) return` used to DROP the later ones, so a click — which
+// fires click, select and focus in one frame — was answered by whichever
+// arrived first, and an arrival's `flash` could be thrown away by an ordinary
+// caret event landing beside it.
+let caretLinePending = null;
 // Plain mode has no continuous measurement, so a band shown there is only valid
 // until the caret next moves. See the rule at the top.
 let caretLinePinned = false;
+// The line index the pinned band was measured on, and the width it was measured
+// at. In plain mode the band cannot be re-measured (the only exact answer is a
+// focus probe, which moves focus), but it does not need to be while the caret
+// stays on the LINE it was measured on — typing along a line does not move that
+// line. So the band survives ordinary typing instead of vanishing on the first
+// keystroke, and retires only when the caret leaves the line or the box
+// re-wraps.
+let caretLinePinnedLine = -1;
+let caretLinePinnedWidth = 0;
+// The offset the band was last measured for, so an `input` that did not move
+// the caret (an autosave write-back, a programmatic value assignment) does not
+// pay for a measurement that cannot have changed anything.
+let caretLineMeasuredFor = -1;
 // True between a jump's first placement and its post-reflow correction. The
 // blur/focus of the plain-mode probe and the browser's own caret reveal both
 // fire caret events in that window, and letting them re-measure would undo the
@@ -121,25 +141,56 @@ export function refreshNotesCaretLine({ flash = false, measured = null } = {}) {
     if (caretLineEl) caretLineEl.hidden = true;
     return;
   }
+  const pos = textarea.selectionStart ?? 0;
   if (measured == null && !backdropForTextarea(textarea)) {
-    // Plain mode with nothing handed in: there is no exact measurement to be had
-    // without a focus probe, so retire the band rather than guess at it.
+    // Plain mode with nothing handed in. There is no exact measurement to be had
+    // without a focus probe — but the band does not need one while the caret is
+    // still on the line it was placed for: typing along a line does not move
+    // that line. Keeping it costs nothing and is what stopped the band vanishing
+    // on the first keystroke (and, on a phone, the moment the keyboard opened
+    // and fired the ResizeObserver).
+    if (caretLinePinned
+        && caretLinePinnedWidth === textarea.clientWidth
+        && lineIndexAtOffset(textarea.value, pos) === caretLinePinnedLine) {
+      repositionNotesCaretLine();
+      return;
+    }
     hideNotesCaretLine();
     return;
   }
   const band = ensureNotesCaretLine();
   if (!band) return;
-  caretLineTop = measured == null
-    ? visualLineTopForOffset(textarea, textarea.selectionStart ?? 0)
-    : measured;
-  caretLineHeight = textareaLineHeight(textarea);
-  caretLinePinned = measured != null && !backdropForTextarea(textarea);
+  if (measured == null) {
+    // The mirror is rebuilt on its own requestAnimationFrame, and this runs on
+    // one too — so measuring here could read the mirror as it was BEFORE the
+    // keystroke, depending on which callback the browser happened to run first.
+    // A stale mirror is exactly when caretRectInBackdrop answers with the wrong
+    // line (or nothing at all), and that race produced most of the flicker.
+    // Flushing it first makes the measurement deterministic.
+    refreshHighlightBackdrop(textarea);
+    const exact = exactLineTopForOffset(textarea, pos);
+    // No exact answer available. Leave the band exactly where it is rather than
+    // moving it to an estimate: a band in the wrong place does not merely fail
+    // to say where the caret is, it says something false.
+    if (!exact) return;
+    caretLineTop = exact.top;
+    caretLineHeight = exact.height;
+    caretLinePinned = false;
+  } else {
+    caretLineTop = measured;
+    caretLineHeight = textareaLineHeight(textarea);
+    caretLinePinned = !backdropForTextarea(textarea);
+    caretLinePinnedLine = caretLinePinned ? lineIndexAtOffset(textarea.value, pos) : -1;
+    caretLinePinnedWidth = textarea.clientWidth;
+  }
+  caretLineMeasuredFor = pos;
   repositionNotesCaretLine();
   if (!flash) return;
-  // No slide-in on arrival. The band transitions `top` so that ordinary caret
-  // movement glides, but the first placement has no meaningful "from" — letting
-  // it animate in from wherever the band last sat is itself the "the ribbon is
-  // in the wrong place" complaint.
+  // `is-placing` (transition: none) is kept even though the band no longer
+  // transitions `top` — the rule is what guarantees that, and a future style
+  // change reintroducing a tween must not silently reintroduce the slide-in
+  // from wherever the band last sat, which was itself the "the ribbon is in the
+  // wrong place" complaint.
   band.classList.add("is-placing");
   // Restarting an animation needs the class off for a frame, or a second
   // arrival within the flash window does nothing at all.
@@ -153,10 +204,19 @@ export function refreshNotesCaretLine({ flash = false, measured = null } = {}) {
 // Coalesced to one measurement per frame: a click fires several caret-moving
 // events in a row, and every one of them would otherwise pay the O(offset) walk.
 export function scheduleNotesCaretLine(options) {
+  // MERGED, not dropped. A single click fires click, select and focus in one
+  // frame; the old `if (caretLineFrame) return` kept the first call's options
+  // and discarded the rest, so an arrival's `flash` (or a caller's exact
+  // `measured`) could be thrown away by an ordinary caret event landing in the
+  // same frame. `measured` is the one that matters: it is an exact number the
+  // caller already has, and losing it means re-deriving one.
+  caretLinePending = caretLinePending ? { ...caretLinePending, ...options } : { ...options };
   if (caretLineFrame) return;
   caretLineFrame = requestAnimationFrame(() => {
     caretLineFrame = 0;
-    refreshNotesCaretLine(options);
+    const pending = caretLinePending;
+    caretLinePending = null;
+    refreshNotesCaretLine(pending);
   });
 }
 
@@ -164,6 +224,9 @@ export function hideNotesCaretLine() {
   if (caretLineEl) caretLineEl.hidden = true;
   caretLineTop = null;
   caretLinePinned = false;
+  caretLinePinnedLine = -1;
+  caretLinePinnedWidth = 0;
+  caretLineMeasuredFor = -1;
 }
 
 // ── The one entry point for an explicit jump ───────────────────────────────
@@ -210,10 +273,12 @@ export function initNotesCaretLine() {
       // The focus probe blurs and refocuses the textarea to make the engine
       // reveal the caret; without this its own focus event would re-enter here.
       if (isCaretProbeRunning() || revealInFlight) return;
-      // A pinned (plain-mode) band was placed from a jump's exact measurement.
-      // The reader moving the caret invalidates it and there is no cheap way to
-      // measure again, so it retires rather than lingering in the wrong place.
-      if (caretLinePinned) { hideNotesCaretLine(); return; }
+      // Nothing moved. `input` fires for programmatic writes as well as typing
+      // (the autosave write-back, a toolbar action re-assigning .value), and
+      // re-measuring for an offset already measured is a mirror walk that can
+      // only produce the answer already on screen.
+      const pos = textarea.selectionStart ?? 0;
+      if (pos === caretLineMeasuredFor && !caretLinePinned) return;
       scheduleNotesCaretLine();
     }, { passive: true });
   });
@@ -223,7 +288,17 @@ export function initNotesCaretLine() {
   if (typeof ResizeObserver === "function") {
     new ResizeObserver(() => {
       if (revealInFlight) return;
-      if (caretLinePinned) { hideNotesCaretLine(); return; }
+      // A pinned band's measurement belongs to the width it was taken at, and a
+      // re-wrap moves every line — there is no cheap way to take another, so it
+      // retires. Note the WIDTH test: on a phone the soft keyboard opening
+      // resizes the editor's HEIGHT, which re-wraps nothing, and retiring on
+      // that alone is why the band disappeared the moment you started typing.
+      if (caretLinePinned) {
+        if (textarea.clientWidth !== caretLinePinnedWidth) hideNotesCaretLine();
+        else repositionNotesCaretLine();
+        return;
+      }
+      caretLineMeasuredFor = -1;
       scheduleNotesCaretLine();
     }).observe(textarea);
   }

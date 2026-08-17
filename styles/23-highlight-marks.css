@@ -1,0 +1,39 @@
+/* What a <mark> is allowed to cost the layout around it
+ *
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * The colours themselves stay where they are (styles/12-notes.css, `.rendered
+ * mark` and its data-color variants). This file changes one thing about them:
+ * a highlight must not move the text it highlights.
+ *
+ * `.rendered mark` carried `padding: 0 1px`, and wrapAcrossBlocks emits ONE
+ * mark per line, list item and table cell — a <mark> cannot legally straddle a
+ * block boundary, so a highlight over ten bullets is ten separate tags. Each
+ * one added two 1px insets, so that highlight widened its own text by twenty
+ * pixels and could re-wrap the block it lives in.
+ *
+ * Which would be cosmetic, except for WHEN it happens. Highlighting re-renders
+ * the note through renderNotesViewPinned(), which measures an anchor block
+ * BEFORE the repaint and corrects scrollTop by however far that block moved
+ * afterwards. A rewrap changes heights after that measurement, settleNotesPin
+ * then chases the residual for up to 400ms at 110ms intervals, and the reader
+ * watches the note twitch under the sentence they just marked. That is the
+ * "severe shivering when I highlight" report, and this is the half of it that
+ * lives in CSS.
+ *
+ * Cancelling the padding with an equal negative margin keeps the tint painted a
+ * pixel wider than the glyphs — which is what the padding was for — while
+ * advancing nothing. Net inline size: zero.
+ */
+
+.rendered mark {
+  padding-inline: 1px;
+  margin-inline: -1px;
+  /* A mark broken across a soft wrap — or, in paged mode, across a column
+     break — is painted as two fragments. Without `clone` the border-radius is
+     applied once to the union, so the near edge of each fragment is square and
+     the highlight reads as a slab with a bite out of it. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}

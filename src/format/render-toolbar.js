@@ -4,7 +4,7 @@
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { applyInlineStyleProperty, clearInlineStyleProperty, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../editor/text-transforms.js?v=__BUILD__";
+import { applyInlineStyleProperty, clearInlineStyleProperty, smartBulletify, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../editor/text-transforms.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { makeClozeFromSelection } from "./cloze.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "./highlight-colors.js?v=__BUILD__";
@@ -17,6 +17,7 @@ import { activeEditingTarget, hideNotesSelectionButton } from "../notes/selectio
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
+import { pushNotesUndo, syncNotesHistoryBaseline } from "../notes/notes-history.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 
 // Persist a question/answer edit to both the active deck and the master list
@@ -50,8 +51,14 @@ export function renderTargetConfig(target) {
       isEditing: () => isNotesEditing(),
       getSource: () => state.notes,
       setSource: (v) => {
+        // The single choke point for every rendered-view edit to the notes —
+        // highlight, colour, font, bold, cloze, erase all arrive here through
+        // applyRenderFormat. Snapshotting here rather than at each caller is
+        // what keeps one definition of "an undoable notes edit".
+        pushNotesUndo("edit");
         state.notes = v;
         if (el.notesEdit) el.notesEdit.value = v;
+        syncNotesHistoryBaseline(v);
       },
       // Everything routed through here (highlight, erase, cloze, the rendered
       // formatting toolbar) edits the note the reader is looking at, so it
@@ -178,6 +185,51 @@ export function renderFontControlHtml() {
     </span>`;
 }
 
+// ── Everything you rarely reach for, behind one control ────────────────────
+//
+// Bold, italic, underline, strikethrough, inline code, the sixteen font faces
+// and the twelve text colours were nine controls across the bar, in front of
+// the ones that get used — highlight, bulletify, cloze, make-card. They are
+// worth having and are not worth the width, so they fold into a single "Aa"
+// popover and the bar keeps its top row for actions.
+//
+// One menu, not a menu per property: three separate popovers hanging off one
+// bar is three things to open and close, and the reason to open any of them is
+// the same ("style these words"). It reuses .render-color-menu and the
+// `font-menu` action so closeAllRenderMenus and the ${prop}-menu branch in
+// handleRenderToolbarAction find it with no second mechanism.
+export function renderTextStyleControlHtml() {
+  const faces = RENDER_FONTS.map(
+    (f) =>
+      `<button type="button" class="render-font-btn" data-render-font="${f.value}" style="font-family: ${f.css || f.value};">${f.name}</button>`
+  ).join("");
+  const colours = RENDER_TEXT_COLORS.map(
+    (c) =>
+      `<button type="button" class="render-swatch-btn" data-render-color="${c.value}" data-render-prop="color" style="--sw: ${c.swatch || c.value};" title="${c.name}"></button>`
+  ).join("");
+  return `
+    <span class="render-split" data-render-split="font">
+      <button type="button" class="render-btn render-font-toggle" data-render-action="font-menu" title="Text style — bold, italic, font, colour" aria-haspopup="true" aria-expanded="false">Aa</button>
+      <div class="render-color-menu render-text-style-menu" data-render-menu="font" hidden>
+        <div class="render-style-row">
+          <button type="button" class="render-btn" data-render-action="bold" title="Bold"><b>B</b></button>
+          <button type="button" class="render-btn" data-render-action="italic" title="Italic"><i>I</i></button>
+          <button type="button" class="render-btn" data-render-action="underline" title="Underline"><u>U</u></button>
+          <button type="button" class="render-btn" data-render-action="strikethrough" title="Strikethrough"><s>S</s></button>
+          <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
+        </div>
+        <div class="render-style-swatches">
+          ${colours}
+          <button type="button" class="render-swatch-clear" data-render-color="clear" data-render-prop="color" title="Remove colour">Clear</button>
+        </div>
+        <div class="render-style-faces">
+          ${faces}
+          <button type="button" class="render-swatch-clear" data-render-font="clear" title="Remove font">Clear</button>
+        </div>
+      </div>
+    </span>`;
+}
+
 // ── The three cloze icons ──────────────────────────────────────────────
 // Drawn, not typed. Every lettered attempt (👀/🎯, then [ … ]/[A]/[?], then
 // A̶/A/?) failed the same way: the three actions are DIFFERENT, so glyphs that
@@ -224,14 +276,8 @@ export function createRenderToolbarHtml({ actions = true, highlight = true } = {
     <button type="button" class="render-btn render-quick-note" data-render-action="quick-note" title="Save selection to the quick_notes deck">📌</button>`
     : "";
   return `
-    <button type="button" class="render-btn" data-render-action="bold" title="Bold"><b>B</b></button>
-    <button type="button" class="render-btn" data-render-action="italic" title="Italic"><i>I</i></button>
-    <button type="button" class="render-btn" data-render-action="underline" title="Underline"><u>U</u></button>
-    <button type="button" class="render-btn" data-render-action="strikethrough" title="Strikethrough"><s>S</s></button>
-    <button type="button" class="render-btn" data-render-action="code" title="Inline code"><code>&lt;/&gt;</code></button>
-    <span class="render-divider" aria-hidden="true"></span>
-    ${renderFontControlHtml()}
-    ${renderSplitControlHtml("color", RENDER_COLOR_GLYPH, "text colour", RENDER_TEXT_COLORS)}
+    <button type="button" class="render-btn render-bulletify" data-render-action="bulletify" title="Make bullet points from the selection">&#8801;</button>
+    ${renderTextStyleControlHtml()}
     ${highlight ? renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", MARK_HIGHLIGHT_COLORS) : ""}${captureGroup}`;
 }
 
@@ -316,7 +362,13 @@ export function applyRenderFormat(config, formatFn, opts = {}) {
     return;
   }
   const source = config.getSource();
-  const loc = locateSelectionInSource(source, sel);
+  // Block-level actions (bulletify) need the whitespace/marker-tolerant search:
+  // a selection spanning several list items or wrapped lines never matches the
+  // source verbatim, because Turndown pads its markers differently. The inline
+  // formats deliberately do NOT opt in — they wrap the match in a simple pair,
+  // and a fuzzy match across a block boundary would corrupt the markup the same
+  // way a bare <mark> across one used to.
+  const loc = locateSelectionInSource(source, sel, opts.fuzzy ? { fuzzy: true } : undefined);
   if (!loc) {
     setStatus("Couldn't match that selection in the source — try selecting whole words, or use the editor.", "error");
     return;
@@ -338,6 +390,36 @@ export function applyRenderFormat(config, formatFn, opts = {}) {
   window.getSelection()?.removeAllRanges();
   config.rerender();
   scheduleDeckAutosave();
+}
+
+// Bulletify a selection, and detach whatever of its paragraph was NOT selected.
+//
+// A list is a block, so text left on the same line either side of it is not
+// merely untidy — markdown reads it as part of the list. Bulletifying the middle
+// of a paragraph used to leave the run-up glued to the first bullet and, worse,
+// the remainder lazily continuing the LAST one, so a sentence the reader never
+// touched became part of a bullet. A blank line on each side (only where there
+// is actually something to separate) makes the list a block of its own and puts
+// the rest back to being a paragraph.
+export function bulletifyFormat(value, start, end) {
+  // Swallow the spaces either side of the selection: they belonged to the
+  // sentence flow that is being broken up, and left behind they show up as a
+  // trailing space on the run-up and a leading one on the remainder.
+  let from = start;
+  while (from > 0 && (value[from - 1] === " " || value[from - 1] === "\t")) from -= 1;
+  let to = end;
+  while (to < value.length && (value[to] === " " || value[to] === "\t")) to += 1;
+  start = from;
+  end = to;
+  const body = smartBulletify(value.slice(start, end).trim());
+  const before = value.slice(0, start);
+  const after = value.slice(end);
+  // Only what is on THIS line matters: a blank line is already a separation.
+  const runUp = before.slice(before.lastIndexOf("\n") + 1);
+  const runOn = after.slice(0, after.indexOf("\n") === -1 ? after.length : after.indexOf("\n"));
+  const lead = runUp.trim() ? "\n\n" : "";
+  const trail = runOn.trim() ? "\n\n" : "";
+  return { text: lead + body + trail, rangeStart: start, rangeEnd: end };
 }
 
 export const RENDER_INLINE_FORMATS = {
@@ -411,6 +493,19 @@ export function handleRenderToolbarAction(btn, toolbar) {
         ? (v, s, e) => clearInlineStyleProperty(v.slice(s, e), "font-family")
         : (v, s, e) => applyInlineStyleProperty(v.slice(s, e), "font-family", fontVal);
     applyRenderFormat(config, formatFn, { expandStyleSpan: true });
+    return;
+  }
+
+  // Turn the selection into a bullet list — including a run-on line that IS a
+  // list and was never written as one. See smartBulletify.
+  if (action === "bulletify") {
+    const editing2 = config.isEditing?.() ? activeEditingTarget() : null;
+    if (editing2) {
+      pushNotesUndo("bulletify");
+      applyFormatToTextarea(editing2.edit, bulletifyFormat);
+      return;
+    }
+    applyRenderFormat(config, bulletifyFormat, { fuzzy: true });
     return;
   }
 

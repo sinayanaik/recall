@@ -11,8 +11,11 @@ import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUIL
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
+// notes-history.js imports renderNotesViewPinned from here — a cycle whose only
+// crossing bindings are hoisted function declarations. See the note there.
+import { clearNotesHistory, syncNotesHistoryBaseline } from "./notes-history.js?v=__BUILD__";
 import { textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
-import { applyNotesPagedLayout, isNotesPaged, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
+import { applyNotesPagedLayout, firstVisibleNotesBlock, isNotesPaged, notesPageCount, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
@@ -61,6 +64,34 @@ export function markProgrammaticNotesScroll(ms = NOTES_PROGRAMMATIC_SCROLL_MS) {
 
 export function isProgrammaticNotesScroll() {
   return performance.now() < notesProgrammaticScrollUntil;
+}
+
+// ── Telling our own SELECTION apart from the reader's ──────────────────────
+// Same shape, same reasoning, for the other thing the app does on the reader's
+// behalf: every jump that lands on a known span selects it, so the browser's
+// own highlight shows exactly where you were sent (see revealRenderedNoteRange).
+// That is a real Selection, so it fires `selectionchange`, and the floating
+// formatting pill dutifully appeared over a selection nobody made — reported as
+// "when I press go to in highlights the text formatting options come up
+// unnecessarily". Long enough to outlast the jump's own retry loop, which can
+// re-aim for over a second on a paged note.
+export const NOTES_PROGRAMMATIC_SELECTION_MS = 1500;
+
+export let notesProgrammaticSelectionUntil = 0;
+
+export function markProgrammaticNotesSelection(ms = NOTES_PROGRAMMATIC_SELECTION_MS) {
+  notesProgrammaticSelectionUntil = Math.max(notesProgrammaticSelectionUntil, performance.now() + ms);
+}
+
+export function isProgrammaticNotesSelection() {
+  return performance.now() < notesProgrammaticSelectionUntil;
+}
+
+// The reader touching anything ends it early: a jump's selection is theirs to
+// act on the moment they reach for it, and waiting out the rest of the window
+// would make the pill feel broken instead of merely quiet.
+export function clearProgrammaticNotesSelection() {
+  notesProgrammaticSelectionUntil = 0;
 }
 
 // Every path that repaints the rendered notes goes through here, so the "is
@@ -122,11 +153,27 @@ export function renderNotesView({ sameNote = false } = {}) {
 // pause between re-measurements, and how long it is willing to keep correcting.
 // The cadence matches scrollNotesHeadingIntoView, for the same reason: one frame
 // is enough for the patched blocks, and nothing else.
-export const NOTES_PIN_SETTLE_PX = 2;
+// 6px, not the 2px this started at. Every correction below is a WRITE to
+// scrollTop that the reader can see, and at 2px the loop kept firing on
+// sub-pixel churn that nobody could have noticed if it had been left alone —
+// so the cure was more visible than the disease. Six is under half a line of
+// body text: a drift small enough to leave is a drift small enough not to
+// correct. See also the mark-padding rule in styles/23-highlight-marks.css,
+// which removed the thing that was generating most of the churn.
+export const NOTES_PIN_SETTLE_PX = 6;
 
 export const NOTES_PIN_SETTLE_MS = 110;
 
 export const NOTES_PIN_BUDGET_MS = 400;
+
+// A drift has to be there twice running before it is corrected. Content
+// arriving above the reader (a diagram drawing, a table refitting, a chunk
+// swapping its estimate for a real height) moves the note and then moves it
+// back as the next thing lands; correcting each intermediate state wrote
+// scrollTop three or four times for a net displacement of nothing, which is
+// what "severe shivering" describes. Waiting one cadence costs 110ms and skips
+// every transient.
+export const NOTES_PIN_CONFIRM_PASSES = 2;
 
 // A block's top edge, measured with its CHUNK forced to lay out. On a chunked
 // note the containment sits on the wrapper, so a block inside a skipped chunk
@@ -142,6 +189,42 @@ export function renderNotesViewPinned() {
   const view = el.notesView;
   if (!view || view.hidden) return renderNotesView({ sameNote: true });
 
+  // ── Paged mode pins by SCROLL POSITION, not by anchor block ──────────────
+  //
+  // The anchor approach is actively wrong here, and it is the bug behind "when
+  // I highlight in the first column the page jumps, but in the second column it
+  // doesn't". In paged mode both anchor resolvers answer
+  // firstVisibleNotesBlock() — the block at the top of column ONE. Highlighting
+  // that block rebuilds it (patchRenderedBlocks replaces an edited block), so
+  // it is detached by the time the pin looks for it and the fallback is its
+  // previous sibling: the last block of the PREVIOUS page. Paging to that is a
+  // page backwards. Highlight in column two and the column-one anchor survives,
+  // so nothing moves — which is exactly the asymmetry that was reported, right
+  // down to being intermittent, because whether the sibling is on the previous
+  // page depends on where the column break happened to fall.
+  //
+  // An edit in place cannot change which page the reader is on. So remember
+  // where they were and put them back, and only fall back to re-deriving a page
+  // if the note's LENGTH changed under them.
+  if (isNotesPaged()) {
+    const scrollLeft = view.scrollLeft;
+    const pages = notesPageCount();
+    return renderNotesView({ sameNote: true }).then(() => {
+      if (!isNotesPaged()) return;
+      if (notesPageCount() === pages) {
+        if (Math.abs(view.scrollLeft - scrollLeft) > 1) {
+          markProgrammaticNotesScroll();
+          view.scrollLeft = scrollLeft;
+        }
+        return;
+      }
+      // The note grew or shrank by a page. The reader's position is no longer
+      // the same number of pixels in, so aim at the block they were reading.
+      const block = firstVisibleNotesBlock();
+      if (block) revealInPagedNotes(block);
+    });
+  }
+
   // blockAtNotesReadingLine() asks elementFromPoint, which answers nothing
   // usable in two entirely ordinary situations: the reading line resting in the
   // margin gap between two blocks (it returns #notesView itself, whose
@@ -153,7 +236,13 @@ export function renderNotesViewPinned() {
   // see its own comment in scroll-anchor.js for why it was written.
   const at = blockAtNotesReadingLine() || notesBlockAtReadingLineGeometric();
   const anchors = [];
-  [at, at?.previousElementSibling].forEach((node) => {
+  // Both siblings, not just the previous one. The block under the reading line
+  // is very often the one being edited, and an edited block is rebuilt rather
+  // than reused — so the pin falls through to a neighbour. One neighbour is a
+  // single point of failure (it can itself have been rebuilt, or be the last
+  // block of a previous page); taking the block on either side means the
+  // correction still has something real to measure against.
+  [at, at?.previousElementSibling, at?.nextElementSibling].forEach((node) => {
     if (node && view.contains(node)) anchors.push({ node, top: notesAnchorTop(node, view) });
   });
 
@@ -175,6 +264,11 @@ export async function settleNotesPin(view, anchors) {
   let settleMs = 0;
   let best = Infinity;
   let stalled = 0;
+  // How many consecutive passes have seen a drift worth correcting, and in
+  // which direction. A drift that flips sign between passes is content settling,
+  // not the reader being in the wrong place, and resets the count.
+  let confirmed = 0;
+  let confirmedSign = 0;
   for (;;) {
     // The first pass is a bare frame — exactly what this did before — so the
     // common case (nothing below the fold to settle) still corrects immediately
@@ -184,17 +278,25 @@ export async function settleNotesPin(view, anchors) {
     settleMs = NOTES_PIN_SETTLE_MS;
     const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
     if (!anchor) return;
-    // Paged mode pins by PAGE. Correcting `scrollTop` there is meaningless —
-    // the note runs sideways and scrollTop is pinned at 0 — and this path is
-    // reached by making a highlight or a cloze, so getting it wrong moves the
-    // reader every time they mark something up.
-    if (isNotesPaged()) {
-      revealInPagedNotes(anchor.node);
-      return;
-    }
+    // Paged mode never gets here: renderNotesViewPinned handles it by restoring
+    // scrollLeft directly, because re-deriving a page from a block anchor is
+    // what made a highlight in the first column turn the page backwards. If the
+    // mode changed mid-settle there is nothing meaningful left to correct —
+    // scrollTop is pinned at 0 in a sideways note.
+    if (isNotesPaged()) return;
     const drift = notesAnchorTop(anchor.node, view) - anchor.top;
     const residual = Math.abs(drift);
     if (residual <= NOTES_PIN_SETTLE_PX) return;
+    // Seen once is not enough — see NOTES_PIN_CONFIRM_PASSES. A drift that has
+    // reversed direction since the last pass is content settling both ways, so
+    // the count starts again rather than continuing toward a correction.
+    const sign = Math.sign(drift);
+    confirmed = sign === confirmedSign ? confirmed + 1 : 1;
+    confirmedSign = sign;
+    if (confirmed < NOTES_PIN_CONFIRM_PASSES) {
+      if (performance.now() >= until) return;
+      continue;
+    }
     // Not improving: the scroller is clamped at one end and cannot give back
     // the drift, or heights that will not settle. One more correction is worth
     // trying, two in a row is a stalemate — spinning out the whole budget just
@@ -243,6 +345,10 @@ export function resetNotesEditingUI() {
 // body into the new deck, which the autosave then made permanent. Clearing
 // .value is the load-bearing half: resetNotesEditingUI only hides the element.
 export function discardNotesEditingForDeckSwap() {
+  // Whatever is on the stack belongs to the note being left. Carrying it across
+  // would make Ctrl+Z paste the previous deck's note into this one — the same
+  // class of mistake the `startedIn` guard in extractSelectionToNote exists for.
+  clearNotesHistory();
   if (!isNotesEditing()) return;
   el.notesEdit.value = "";
   // The mirror holds its own copy of the text (see refreshHighlightBackdrop);
@@ -291,6 +397,10 @@ export function enterNotesEditing(cursorOffset = null) {
   // marks the deck dirty for an "edit" the reader never made.
   if (state.notes && state.notes.includes("\r")) state.notes = state.notes.replace(/\r\n?/g, "\n");
   el.notesEdit.value = state.notes;
+  // Adopted, not recorded: opening the editor is not an edit, but the history
+  // needs to know what the text is now so the first real keystroke has a
+  // previous value to push.
+  syncNotesHistoryBaseline(state.notes);
   el.notesView.hidden = true;
   el.notesEdit.hidden = false;
   el.notesEditToolbar.hidden = false;

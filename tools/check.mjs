@@ -20,8 +20,21 @@
 //   module-symbols  does every cross-module reference resolve?
 //   css-parity      do the stylesheet slices still reassemble to the original?
 //   port-sync       do the extension's copies still match?
+//   precache        does sw.js precache every module the app imports, and
+//                   nothing that no longer exists? (a missing entry breaks the
+//                   app OFFLINE only; a stale one stops any worker activating)
 //   boot-check      does it actually run?
 //   behaviour       does it still produce the same answers?
+//   render-scale    does a BIG note still render? (2,000+ blocks takes a
+//                   different branch that nothing else here ever reaches — a
+//                   total failure of large notes once passed every other check)
+//   style           does a Style panel setting reach the element it names?
+//   highlight       does highlighting mark the thing that was SELECTED?
+//   paged           can you reach the end of a note in paged reading mode?
+//   ribbon          does the caret band sit where the caret is, and stay still
+//                   when it should?
+//                   (these three assert OUTCOMES rather than parity — a fix
+//                   changes the answer, so parity cannot see it by design)
 //   sync            do the merge PRIMITIVES behave identically, and still
 //                   refuse to lose data? (parity plus invariants — passing one
 //                   is not passing the other)
@@ -54,6 +67,7 @@ const checks = [
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
+  ["precache      ", ["node", ["tools/precache-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
@@ -61,6 +75,11 @@ const checks = [
     ["reconcile     ", ["node", ["tools/reconcile-parity.mjs"], ROOT]],
     ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
+    ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
+    ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
+    ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
+    ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
+    ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];
@@ -71,6 +90,13 @@ const checks = [
 // would train the eye to ignore a red line, so the expected count is pinned
 // here: any OTHER drift, or these two being fixed, changes the number and fails.
 const PORT_SYNC_EXPECTED_DRIFT = 2;
+
+// Was 2 while the render ran as one synchronous burst — a 2.6MB note blocked
+// the main thread for 382ms and showed nothing at all until it finished. The
+// render is now streamed in batches with a frame between them (first visible
+// text at ~170ms instead of ~880ms), so those cases pass and this is 0. It must
+// never go up again.
+const RENDER_SCALE_EXPECTED_FAILURES = 0;
 
 let failed = 0;
 for (const [label, [cmd, args, cwd]] of checks) {
@@ -83,6 +109,12 @@ for (const [label, [cmd, args, cwd]] of checks) {
     const drift = Number(out.match(/(\d+) drifted/)?.[1] ?? -1);
     ok = drift === PORT_SYNC_EXPECTED_DRIFT;
     note = ok ? `(${drift} known pre-existing drift)` : `expected ${PORT_SYNC_EXPECTED_DRIFT} drifted, got ${drift}`;
+  } else if (label.trim() === "render-scale") {
+    const failedCases = Number(out.match(/·\s*(\d+) failed/)?.[1] ?? -1);
+    ok = failedCases === RENDER_SCALE_EXPECTED_FAILURES;
+    note = ok
+      ? `${out.trim().split("\n").filter(Boolean).pop()}${failedCases ? ` (${failedCases} known)` : ""}`
+      : `expected ${RENDER_SCALE_EXPECTED_FAILURES} known failure(s), got ${failedCases}`;
   } else {
     note = out.trim().split("\n").filter(Boolean).pop() || "";
   }

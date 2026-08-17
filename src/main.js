@@ -58,7 +58,11 @@ import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgramma
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { currentNotesSelectionMarkdown, hideNotesSelectionButton, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, endSelectionGesture, hideNotesSelectionButton, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
+import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
+import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
+import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
+import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
@@ -254,6 +258,11 @@ el.editNotesBtn?.addEventListener("click", () => {
 
 el.notesEdit?.addEventListener("input", () => {
   state.notes = el.notesEdit.value;
+  // Before anything else reacts to the new text. recordNotesTyping is told what
+  // the note BECAME; it keeps the previous value itself, because a keystroke can
+  // only ever report the result. Consecutive keystrokes coalesce into one undo
+  // step, and an action that already pushed its own snapshot is not folded in.
+  recordNotesTyping(state.notes);
   // Typing edits the note you're already in — it doesn't open a new one. Kept
   // in step here so leaving the editor for the cards and coming back doesn't
   // read as "different note" and throw away your place.
@@ -514,6 +523,29 @@ el.notesView?.addEventListener("keydown", (event) => {
 
 document.addEventListener("selectionchange", scheduleNotesSelectionCheck);
 
+// ── The selection GESTURE, so the pill can wait for it to finish ───────────
+//
+// Registered on the document with capture, because a drag routinely leaves the
+// element it started in (that is what auto-scrolling to extend a selection IS),
+// and pointercancel is as much an ending as pointerup — a touch taken over by
+// the scroller never sends pointerup at all, and without it the pill would stay
+// suppressed until the next gesture.
+//
+// A press on the pill itself is not a selection gesture: those handlers
+// preventDefault precisely so the selection survives, and treating one as the
+// start of a drag would hide the bar the user is reaching for.
+document.addEventListener("pointerdown", (event) => {
+  if (event.target?.closest?.(".selection-float")) return;
+  beginSelectionGesture();
+}, { capture: true, passive: true });
+
+["pointerup", "pointercancel"].forEach((type) => {
+  document.addEventListener(type, endSelectionGesture, { capture: true, passive: true });
+});
+
+// A drag released outside the window never delivers pointerup to the document.
+window.addEventListener("blur", endSelectionGesture);
+
 // Pay back a question refit that fitLiveQuestion skipped to avoid reflowing text
 // out from under a live selection.
 document.addEventListener("selectionchange", () => {
@@ -706,6 +738,10 @@ onDomReady(initNotesHeadOverflow);
 onDomReady(initNotesTocFolding);
 onDomReady(initPagedNotes);
 onDomReady(initNotesCaretLine);
+onDomReady(initMarkMenu);
+// So an edit made on a mark in the note refreshes the Highlights tab, without
+// highlight-edit.js having to import the panel that owns it.
+onDomReady(() => setHighlightsChangedHandler(renderHighlightsPanel));
 
 
 // pointerdown (not click) so preventDefault preserves the live selection.
@@ -1649,6 +1685,32 @@ document.addEventListener("keydown", (event) => {
     } else if (state.viewMode === "cards" && state.cards[state.current]) {
       toggleEditMode(state.flipped ? "answer" : "question");
     }
+    return;
+  }
+  // ── Notes undo/redo ──────────────────────────────────────────────────────
+  //
+  // Checked BEFORE the card stack and before the textarea guard below, and that
+  // reverses a deliberate old decision: those guards exist because "notes
+  // textareas already get native per-keystroke undo from the browser". They do
+  // not. Every toolbar action, every pill button, every pasted image, every
+  // cloze and every highlight writes `textarea.value = …`, and a programmatic
+  // value assignment DISCARDS the element's undo transaction — so from the
+  // first time you used any feature of the editor, Ctrl+Z could not step back
+  // past it. In the rendered view, where highlights are actually made,
+  // `state.notes` is mutated directly and there was never any undo at all.
+  //
+  // Scoped to the notes surface: a card face or any other input keeps the
+  // browser's own undo, which for plain typing is finer-grained than this.
+  const inNotesSurface = state.viewMode === "notes"
+    && (event.target === el.notesEdit || !event.target.matches("input, textarea"));
+  if ((event.ctrlKey || event.metaKey) && inNotesSurface && (event.key === "z" || event.key === "Z")) {
+    event.preventDefault();
+    event.shiftKey ? redoNotes() : undoNotes();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && inNotesSurface && (event.key === "y" || event.key === "Y")) {
+    event.preventDefault();
+    redoNotes();
     return;
   }
   // Structural card undo/redo (add/delete/reorder) — checked before the

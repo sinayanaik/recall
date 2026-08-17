@@ -77,3 +77,61 @@
 .render-font-menu .render-swatch-clear {
   margin-top: 4px;
 }
+
+/* ── Everything rarely reached for, behind one "Aa" ────────────────────────
+   Bold, italic, underline, strikethrough, inline code, sixteen font faces and
+   twelve text colours were nine controls sitting across the bar, in front of
+   the ones that actually get used — highlight, bulletify, cloze, make-card.
+   They fold into one popover so the bar's row belongs to actions.
+
+   Three groups in one menu rather than three menus: the reason to open any of
+   them is the same ("style these words"), and three popovers hanging off one
+   bar is three things to open and close. */
+.render-text-style-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 232px;
+  padding: 8px;
+}
+
+.render-style-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The B/I/U/S/code buttons keep their own look inside the menu, but the menu
+   is a popover on a dark panel rather than a strip on the bar, so they need a
+   surface of their own to sit on. */
+.render-text-style-menu .render-btn {
+  flex: 1 1 auto;
+  min-width: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+}
+
+.render-text-style-menu .render-btn:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.render-style-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.render-style-faces {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 210px;
+  overflow-y: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}

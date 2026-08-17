@@ -48,6 +48,7 @@ export const defaultStyleProfiles = {
     // Answer and notes
     "answerLineHeight": "1.58",
     "answerFontWeight": "300",
+    "notesFontFamily": "inherit",
     "notesLineHeight": "1.5",
     "notesFontWeight": "400",
     "notesPadding": "4px",
@@ -101,6 +102,7 @@ export const defaultStyleProfiles = {
     // Answer and notes
     "answerLineHeight": "1.58",
     "answerFontWeight": "400",
+    "notesFontFamily": "inherit",
     "notesLineHeight": "1.58",
     "notesFontWeight": "400",
     "notesPadding": "6px",
@@ -209,6 +211,13 @@ export const styleControlGroups = [
     fields: [
       { key: "answerLineHeight", label: "Answer line spacing", type: "text", probe: "line-height", hint: "Reading spacing on the answer side." },
       { key: "answerFontWeight", label: "Answer weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Answer text thickness." },
+      // Not in styleCssVariables: the generic loop writes a setting's value
+      // straight into its custom property, and this one is a KEY into
+      // fontFamilyChoices rather than a font stack. "inherit" leaves
+      // --notes-font-family aliasing --app-font-family, which is what it has
+      // always done — so the default is exactly today's behaviour and only an
+      // explicit choice makes the notes differ from the rest of the app.
+      { key: "notesFontFamily", label: "Notes font", type: "select", options: ["inherit", "system", "serif", "mono", "rounded"], hint: "Typeface for the Study Notes view only. \u201cInherit\u201d follows the app font in Basics." },
       { key: "notesLineHeight", label: "Notes line spacing", type: "text", probe: "line-height", hint: "Reading spacing in the Study Notes view." },
       { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
       { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing around the Study Notes content." }

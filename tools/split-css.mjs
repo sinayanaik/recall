@@ -118,6 +118,24 @@ const POST_SPLIT = {
     "selection. That brought the font picker here from the raw toolbar (it " +
     "would otherwise be unreachable) and needed a ⋯ disclosure to keep the " +
     "phone bar at one row now that it carries everything.",
+  "24-highlight-tools.css":
+    "The controls for a highlight that already exists, on the mark itself in " +
+    "the note. A highlight used to be something you could read and jump to and " +
+    "nothing else: changing its colour or removing it meant going back and " +
+    "re-selecting exactly the same words, which the source search cannot " +
+    "reliably do once there are tags around them. The menu addresses the mark " +
+    "by its ORDINAL, so there is no text matching involved and no way to edit a " +
+    "different copy of the same words. See src/notes/mark-menu.js.",
+  "23-highlight-marks.css":
+    "A highlight must not move the text it highlights. `.rendered mark` carried " +
+    "`padding: 0 1px`, and wrapAcrossBlocks emits one mark per line/list item/" +
+    "table cell — so a ten-bullet highlight widened its own text by 20px and " +
+    "could re-wrap the block. renderNotesViewPinned measures its anchor BEFORE " +
+    "the repaint, so that rewrap lands after the measurement and settleNotesPin " +
+    "chases the residual for 400ms: the 'everything shivers when I highlight' " +
+    "report. Cancels the padding with an equal negative margin (tint unchanged, " +
+    "zero net advance) and adds box-decoration-break so a mark broken across a " +
+    "wrap or a column break keeps its radius on both fragments.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

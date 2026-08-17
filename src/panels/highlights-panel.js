@@ -189,6 +189,7 @@ export function collectDeckHighlights() {
     if (!text) return;
     items.push({
       markdown,
+      color: group.color,
       prevSentence: parts ? parts.prev : "",
       nextSentence: parts ? parts.next : "",
       markIndex: group.pieces[0].markIndex,

@@ -12,6 +12,12 @@ import { HIGHLIGHT_MIRROR_MAX_CHARS } from "../editor/highlight-mirror.js?v=__BU
 import { renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { lineIndexAtOffset } from "./caret.js?v=__BUILD__";
+// notes-view.js imports hideNotesSelectionButton from here, so this is a cycle.
+// Safe because the only binding crossing it in this direction is a hoisted
+// `function` declaration called at runtime — never a `const` read while either
+// module body is still evaluating, which is the shape that once aborted the
+// whole of app.js.
+import { clearProgrammaticNotesSelection, isProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { codeLanguageOrGeneric, inferCodeLanguage, normalizeCodeLanguage } from "../render/code-language.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 
@@ -293,6 +299,25 @@ export const TIGHT_BLOCK_TAGS = new Set(["LI"]);
 
 export const LOOSE_BLOCK_TAGS = new Set(["P", "DIV", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TABLE", "HR", "UL", "OL"]);
 
+// A table's own structure, which the two sets above could not express.
+//
+// Neither TD/TH nor TR was in either set, so a selected table row came back as
+// one run-together string — "ElementSymbolHydrogenH" for a source that reads
+// "| Element | Symbol |". Nothing downstream can recover from that: the plain-
+// text needle can never match the source, and `occurrence` (counted against the
+// same string) is meaningless, so a table highlight either missed outright or
+// fell through to looseMarkupMatch's first-hit-anywhere fallback and marked a
+// different table. Cells are joined the way the source writes them so the needle
+// is findable; rows get their own line, same as any other block.
+export const CELL_TAGS = new Set(["TD", "TH"]);
+
+// TR plus the section wrappers. THEAD/TBODY/TFOOT are in here too because a
+// table's children are those sections, not its rows — without them the header
+// row and the first body row were emitted back to back with nothing between.
+export const ROW_TAGS = new Set(["TR", "THEAD", "TBODY", "TFOOT"]);
+
+export const CELL_SEPARATOR = " | ";
+
 // The markdown source behind a rendered atomic block, from what
 // preprocessSpecialBlocks stashed on the host: `$…$`/`$$…$$` for a formula (see
 // mathNode) or the original fence for a diagram. Returns "" for anything else.
@@ -337,7 +362,15 @@ export function textWithLineBreaks(node) {
     if (child.tagName === "STYLE" || child.tagName === "SCRIPT") return;
     const isTight = TIGHT_BLOCK_TAGS.has(child.tagName);
     const isLoose = LOOSE_BLOCK_TAGS.has(child.tagName);
-    if ((isTight || isLoose) && text) {
+    const isCell = CELL_TAGS.has(child.tagName);
+    const isRow = ROW_TAGS.has(child.tagName);
+    // A cell is separated from the previous cell IN THE SAME ROW, never from
+    // the row above — hence the prevBlockTag check rather than a bare `text`
+    // one, which would put " | " in front of the first cell of every row.
+    if (isCell && text && CELL_TAGS.has(prevBlockTag)) text += CELL_SEPARATOR;
+    else if (isRow && text) {
+      if (!text.endsWith("\n")) text = text.replace(/[ \t]+$/, "") + "\n";
+    } else if ((isTight || isLoose) && text) {
       const gap = isTight && prevBlockTag === "LI" ? "\n" : "\n\n";
       if (!text.endsWith(gap)) text = text.replace(/\n+$/, "") + gap;
     }
@@ -349,8 +382,11 @@ export function textWithLineBreaks(node) {
     // which is why highlighting, clozing, erasing and a card's "go to notes"
     // anchor all silently missed on any selection containing math.
     const atomicSource = atomicSourceForNode(child);
-    text += atomicSource || textWithLineBreaks(child);
-    if (isTight || isLoose) prevBlockTag = child.tagName;
+    const inner = atomicSource || textWithLineBreaks(child);
+    // A cell's own padding is layout, not content: the source writes
+    // "| Hydrogen |" and the separator above already supplies the spaces.
+    text += isCell ? inner.trim() : inner;
+    if (isTight || isLoose || isCell || isRow) prevBlockTag = child.tagName;
   });
   return text;
 }
@@ -551,6 +587,117 @@ export function currentNotesSelectionMarkdown() {
   return range ? notesSelectionMarkdown(range, renderedTarget) : "";
 }
 
+// ── When the pill is allowed to appear ─────────────────────────────────────
+//
+// Not while you are still choosing the words. A flat 160ms debounce on
+// selectionchange put the bar on screen mid-drag — over the text being read, on
+// a selection that was not finished — and then moved it again on every
+// subsequent tick. It also meant the expensive capture below ran six times a
+// second for the whole gesture.
+//
+// So the gesture is tracked, and the pill waits for the finger or the mouse
+// button to come up. A keyboard selection (shift+arrow) has no gesture and is
+// unaffected: it shows on the debounce exactly as before.
+export let selectionGestureActive = false;
+
+let gestureReleaseTimer = null;
+
+// The browser places its own selection handles slightly after pointerup on
+// touch, and the final `selectionchange` can arrive after the release. Long
+// enough to let both land, short enough not to read as lag.
+export const SELECTION_GESTURE_SETTLE_MS = 45;
+
+// When the current gesture started, so one that never ended cannot suppress the
+// pill for the rest of the session. A `pointerup` can genuinely go missing — a
+// touch taken over by another surface, a pointer released over a element that
+// was removed mid-gesture — and without this the bar simply stopped appearing,
+// with no way back short of a reload. No real drag lasts this long.
+export const SELECTION_GESTURE_MAX_MS = 5000;
+
+let gestureStartedAt = 0;
+
+export function selectionGestureIsLive() {
+  if (!selectionGestureActive) return false;
+  if (performance.now() - gestureStartedAt > SELECTION_GESTURE_MAX_MS) {
+    selectionGestureActive = false;
+    return false;
+  }
+  return true;
+}
+
+export function beginSelectionGesture() {
+  selectionGestureActive = true;
+  gestureStartedAt = performance.now();
+  // The reader has put a finger down, so whatever the app had selected on their
+  // behalf is no longer "ours" — see markProgrammaticNotesSelection.
+  clearProgrammaticNotesSelection();
+  if (gestureReleaseTimer) {
+    clearTimeout(gestureReleaseTimer);
+    gestureReleaseTimer = null;
+  }
+}
+
+export function endSelectionGesture() {
+  if (!selectionGestureActive) return;
+  selectionGestureActive = false;
+  if (gestureReleaseTimer) clearTimeout(gestureReleaseTimer);
+  gestureReleaseTimer = setTimeout(() => {
+    gestureReleaseTimer = null;
+    positionNotesSelectionButton();
+  }, SELECTION_GESTURE_SETTLE_MS);
+}
+
+// Does the range contain an image? Only asked when the range has no text, so
+// the clone is paid for by a selection that is a picture and nothing else.
+export function rangeHasImage(range) {
+  try {
+    const node = range.commonAncestorContainer;
+    const host = node.nodeType === 1 ? node : node.parentElement;
+    if (!host?.querySelector?.("img")) return false;
+    return range.cloneContents().querySelector("img") !== null;
+  } catch (_) {
+    return false;
+  }
+}
+
+let pillCaptureTimer = null;
+
+// Fill in the expensive half of the capture. Idempotent, and safe to call from
+// a button handler: if the scheduled pass has not run yet this does it now,
+// which is still while the selection is alive because a press cannot precede
+// the release that showed the bar.
+export function ensurePillSelectionCapture() {
+  if (!pillSelectionCapture?.pending) return pillSelectionCapture;
+  const target = SELECTION_TARGETS.find((t) => t.name === pillSelectionCapture.targetName);
+  const range = target ? notesSelectionRange(target) : null;
+  if (!range) {
+    // The selection went away before we could describe it. Leave `pending` set
+    // rather than writing nulls in as though they were an answer.
+    return pillSelectionCapture;
+  }
+  const markdown = notesSelectionMarkdown(range, target);
+  pillSelectionCapture.sel = renderedSelectionStrings(target.view);
+  pillSelectionCapture.markdown = markdown;
+  pillSelectionCapture.pending = false;
+  if (el.makeCardFromSelectionBtn) {
+    el.makeCardFromSelectionBtn.dataset.selectionText = markdown;
+    const words = range.toString().trim().split(/\s+/).filter(Boolean).length;
+    el.makeCardFromSelectionBtn.title = words ? `Make a card · ${words} word${words === 1 ? "" : "s"}` : "Make a card";
+  }
+  return pillSelectionCapture;
+}
+
+export function schedulePillSelectionCapture() {
+  if (pillCaptureTimer) clearTimeout(pillCaptureTimer);
+  // A timeout, not an idle callback: this has to land before the reader can
+  // press anything, and requestIdleCallback can be several hundred ms away on a
+  // busy tab — which is exactly the tab this runs in.
+  pillCaptureTimer = setTimeout(() => {
+    pillCaptureTimer = null;
+    ensurePillSelectionCapture();
+  }, 0);
+}
+
 export function scheduleNotesSelectionCheck() {
   if (notesSelectionTimer) clearTimeout(notesSelectionTimer);
   notesSelectionTimer = setTimeout(positionNotesSelectionButton, 160);
@@ -662,6 +809,26 @@ export function positionNotesSelectionButton() {
   const button = el.selectionFloat;
   const cardBtn = el.makeCardFromSelectionBtn;
   if (!button || !cardBtn) return;
+  // Still dragging. Everything below is either a DOM write the reader would see
+  // (the bar appearing over the words they are choosing) or the expensive
+  // capture — three clones of the selected fragment, two Turndown runs, and an
+  // occurrence count that walks the note above the selection. At six ticks a
+  // second on a book-sized note that is why a long-press took so long to start
+  // a selection at all: the main thread was busy describing the last one.
+  // endSelectionGesture() calls back in once the pointer is up.
+  if (selectionGestureIsLive()) {
+    if (!button.hidden) hideNotesSelectionButton();
+    return;
+  }
+  // A selection the APP made, to show the reader where a jump landed. It is a
+  // real Selection and fires a real selectionchange, but nobody asked for a
+  // formatting bar over it — see markProgrammaticNotesSelection. The window is
+  // short and any pointerdown ends it, so a reader who does then reach for the
+  // pill gets it on their next selectionchange.
+  if (isProgrammaticNotesSelection()) {
+    if (!button.hidden) hideNotesSelectionButton();
+    return;
+  }
   const mobile = Boolean(styleMobileMedia?.matches);
   if (!mobile) button.classList.remove("is-pinned-bottom");
 
@@ -715,10 +882,11 @@ export function positionNotesSelectionButton() {
     const editRect = editingTarget.edit.getBoundingClientRect();
     const btnRect = button.getBoundingClientRect();
     const margin = 8;
-    let top = selRect.bottom + margin;
-    if (top + btnRect.height > window.innerHeight - margin) {
-      top = Math.max(margin, selRect.top - btnRect.height - margin);
-    }
+    // Above by preference, same as the rendered branch (see
+    // placeSelectionPillNearRange) — a bar under the selection covers the lines
+    // being written toward.
+    let top = selRect.top - btnRect.height - margin;
+    if (top < margin || top < editRect.top) top = selRect.bottom + margin;
     top = Math.min(Math.max(top, editRect.top + margin), editRect.bottom - btnRect.height - margin);
     const left = Math.min(
       Math.max(margin, selRect.left + (selRect.right - selRect.left) / 2 - btnRect.width / 2),
@@ -731,31 +899,37 @@ export function positionNotesSelectionButton() {
 
   const renderedTarget = activeRenderedTarget();
   const range = renderedTarget ? notesSelectionRange(renderedTarget) : null;
-  const fragment = range ? cleanedSelectionFragment(range) : null;
-  const text = fragment ? fragment.textContent.trim() : "";
-  const imageCount = fragment ? fragment.querySelectorAll("img").length : 0;
-  if (!text && !imageCount) {
+  // CHEAP emptiness test. This used to be cleanedSelectionFragment().textContent
+  // — a clone of the selection plus its table/list repair — just to answer "is
+  // there anything selected", which is what Range.toString() answers for free.
+  const quickText = range ? range.toString().trim() : "";
+  if (!range || (!quickText && !rangeHasImage(range))) {
     hideNotesSelectionButton();
     return;
   }
-  // Capture the selection as markdown now: tapping the button may dissolve
-  // the selection before the click handler runs.
-  cardBtn.dataset.selectionText = notesSelectionMarkdown(range, renderedTarget);
-  // Reflect how much is being captured in the tooltip (the button itself is
-  // icon-only now, so the count lives on hover/long-press instead of inline).
-  const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
-  const parts = [];
-  if (words) parts.push(`${words} word${words === 1 ? "" : "s"}`);
-  if (imageCount) parts.push(imageCount === 1 ? "1 image" : `${imageCount} images`);
-  cardBtn.title = `Make a card${parts.length ? ` · ${parts.join(" + ")}` : ""}`;
-  // Snapshot everything the pill's buttons will need — tapping one can kill
-  // the live selection before its handler reads it (mobile).
+
+  // ── Show first, describe afterwards ──────────────────────────────────────
+  //
+  // Everything the pill's BUTTONS need — the markdown serialisation, the
+  // occurrence count, the word tally — used to be computed here, before
+  // `button.hidden = false`. That is three clones of the selected fragment, two
+  // Turndown conversions, and an occurrence count that clones the whole note
+  // above the selection, all on the path between letting go of the mouse and
+  // the bar appearing. On a book it is the entire reason the bar felt late.
+  //
+  // None of it is needed to DRAW the bar. The capture is scheduled immediately
+  // afterwards instead, and any button pressed before it lands resolves it on
+  // the spot (see ensurePillSelectionCapture) — so the snapshot is still taken
+  // while the selection is alive, which is the reason it exists.
   pillSelectionCapture = {
     targetName: renderedTarget.name,
     editing: false,
-    sel: renderedSelectionStrings(renderedTarget.view),
-    markdown: cardBtn.dataset.selectionText,
+    sel: null,
+    markdown: null,
+    pending: true,
   };
+  cardBtn.title = "Make a card";
+  schedulePillSelectionCapture();
   button.dataset.renderTarget = renderedTarget.name;
   if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = false;
   // Highlight and erase work for every rendered face (notes AND card
@@ -766,16 +940,38 @@ export function positionNotesSelectionButton() {
   if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = renderedTarget.name !== "notes";
   button.hidden = false;
   if (mobile) return pinSelectionButtonToBottom(button);
-  const rect = range.getBoundingClientRect();
+  placeSelectionPillNearRange(button, range);
+}
+
+// Above the selection by preference, below only when there is no room.
+//
+// This used to be the other way round — `rect.bottom + margin`, flipping up only
+// when the bar would fall off the bottom of the window — which put a bar of
+// twelve controls directly over the lines you were about to read next. Reading
+// runs downward, so the space a reader has already used is the safer place to
+// cover.
+//
+// The horizontal anchor is the LAST client rect, not the union's centre. A
+// selection spanning several lines has a union as wide as the column, whose
+// centre has nothing to do with where the drag ended; anchoring to the final
+// fragment puts the bar next to the words the pointer just left.
+export function placeSelectionPillNearRange(button, range) {
+  const rects = range.getClientRects();
+  const union = range.getBoundingClientRect();
+  const last = rects.length ? rects[rects.length - 1] : union;
   const btnRect = button.getBoundingClientRect();
   const margin = 8;
-  let top = rect.bottom + margin;
-  if (top + btnRect.height > window.innerHeight - margin) {
-    top = Math.max(margin, rect.top - btnRect.height - margin);
+
+  let top = union.top - btnRect.height - margin;
+  if (top < margin) {
+    // No room above — go below, and clamp into the window rather than off it.
+    top = Math.min(union.bottom + margin, window.innerHeight - btnRect.height - margin);
+    top = Math.max(margin, top);
   }
+  const anchorX = last.left + last.width / 2;
   const left = Math.min(
-    Math.max(margin, rect.left + rect.width / 2 - btnRect.width / 2),
-    window.innerWidth - btnRect.width - margin
+    Math.max(margin, anchorX - btnRect.width / 2),
+    Math.max(margin, window.innerWidth - btnRect.width - margin)
   );
   button.style.top = `${top}px`;
   button.style.left = `${left}px`;

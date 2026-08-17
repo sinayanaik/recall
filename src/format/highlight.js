@@ -7,7 +7,7 @@
 import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT } from "./highlight-colors.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults } from "./render-toolbar.js?v=__BUILD__";
-import { SELECTION_TARGETS, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
+import { SELECTION_TARGETS, ensurePillSelectionCapture, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -77,7 +77,20 @@ export const TABLE_ROW_RE = /^[ \t]*(?:>[ \t]?)*\|/;
 // Lines that render no text of their own, so there is nothing to highlight and
 // wrapping them only turns markup into visible characters: "---", a table's
 // "| --- | :-: |" delimiter row, and a code fence.
-export const NO_TEXT_LINE_RE = /^[ \t]{0,3}(?:(?:[-*_][ \t]*){3,}|\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?)[ \t]*$/;
+//
+// "=" is in the first alternative for setext headings. A run of "=" under a line
+// is what makes that line an H1, and it renders nothing — but it was not matched
+// here, so a drag across a setext heading wrapped the underline in a <mark>, the
+// line stopped being a heading at all, and the "=" characters appeared as text.
+// (Setext H2 uses "-", which the "---" alternative already covered.)
+export const NO_TEXT_LINE_RE = /^[ \t]{0,3}(?:(?:[-*_=][ \t]*){3,}|\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?)[ \t]*$/;
+
+// Four spaces (or a tab) of indent starts an indented code block, where marked
+// escapes HTML — so a <mark> dropped in shows up as literal "<mark>" text in the
+// rendered code, exactly like the fenced case FENCE_LINE_RE already guards. Only
+// meaningful after a blank line: an indented CONTINUATION of a list item or a
+// wrapped paragraph is ordinary prose and must stay highlightable.
+export const INDENTED_CODE_RE = /^(?: {4}|\t)/;
 
 export const FENCE_LINE_RE = /^[ \t]{0,3}(```+|~~~+)/;
 
@@ -92,6 +105,18 @@ export function wrapAcrossBlocks(source, color) {
   const out = [];
   let group = [];
   let fence = null;
+  // Whether the NEXT indented line would open an indented code block, i.e.
+  // whether we are at a block boundary. True at the very start of the slice,
+  // and again after every blank line; any content line clears it, so an indented
+  // continuation of a paragraph or list item is not mistaken for code.
+  let atBlockStart = true;
+  let indentedCode = false;
+  // Indentation means two different things, and only one of them is code. Inside
+  // a list, four spaces after a blank line is the ITEM'S OWN continuation — real
+  // prose the reader expects to highlight — not a code block. Getting that
+  // backwards would break the commonest selection there is to fix the rarest, so
+  // once a list marker has been seen in this slice, indentation is never code.
+  let sawListMarker = false;
   const flush = () => {
     if (!group.length) return;
     out.push(wrapKeepingPrefix(group.join("\n"), color));
@@ -108,13 +133,31 @@ export function wrapAcrossBlocks(source, color) {
       flush();
       out.push(line);
       fence = fenceMatch[1];
+      indentedCode = false;
+      atBlockStart = false;
       return;
     }
     if (!line.trim() || NO_TEXT_LINE_RE.test(line)) {
       flush();
       out.push(line);
+      // A blank line ends an indented code block and opens the next one's door.
+      if (!line.trim()) {
+        indentedCode = false;
+        atBlockStart = true;
+      }
       return;
     }
+    // Inside an indented code block, or opening one: emit verbatim.
+    if (!sawListMarker && INDENTED_CODE_RE.test(line) && (indentedCode || atBlockStart)) {
+      flush();
+      out.push(line);
+      indentedCode = true;
+      atBlockStart = false;
+      return;
+    }
+    indentedCode = false;
+    atBlockStart = false;
+    if (LIST_MARKER_RE.test(line)) sawListMarker = true;
     if (TABLE_ROW_RE.test(line)) {
       // One mark per cell: a single mark spanning the row would swallow the
       // "|" separators that tell marked where the cells are.
@@ -229,6 +272,8 @@ export function selectionForRenderTarget(view, selOverride = null) {
   if (selOverride) return selOverride;
   const live = renderedSelectionStrings(view);
   if (live) return live;
+  // Deferred capture, resolved on demand — see pillActionTarget.
+  ensurePillSelectionCapture();
   if (pillSelectionCapture && !pillSelectionCapture.editing && pillSelectionCapture.sel) {
     const captured = SELECTION_TARGETS.find((t) => t.name === pillSelectionCapture.targetName);
     if (captured && captured.view === view) return pillSelectionCapture.sel;

@@ -133,6 +133,92 @@
   }
 }
 
+/* ── One chapter at a time ─────────────────────────────────────────────────
+   Paged mode used to refuse any note over 250KB ("Note too long for pages —
+   scrolling instead"), because multi-column layout has to MEASURE every block
+   it is given to know where the columns break. There is no skipping to be had:
+   content-visibility is switched off above precisely because layout containment
+   would stop a paragraph flowing across a column boundary. So a whole book cost
+   a whole book's layout, every time.
+
+   Giving the columns one chapter instead bounds that cost by chapter length
+   rather than book length, at any size. The chunk wrappers the renderer already
+   builds are grouped by chapter in paged mode (see notesChunkBoundaries), and
+   the two rules below are the whole mechanism:
+
+   `display: none` on an inactive chapter costs no layout at all, while leaving
+   its nodes in the DOM — so the Highlights panel's mark count, the TOC and every
+   querySelectorAll still see the whole note.
+
+   `display: contents` on the active one generates no box of its own, so its
+   BLOCKS become the multi-column items directly. That is what keeps the
+   column-pitch invariant above untouched: the columns still divide #notesView's
+   own content box, exactly as when the blocks were its direct children.
+
+   The id selector is deliberate — it beats `#notesView > .notes-chunk` in
+   styles/19-notes-chunks.css, which would otherwise keep containment on. */
+#notesView.is-paged > .notes-chunk {
+  display: none;
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+#notesView.is-paged > .notes-chunk.is-active-chapter {
+  display: contents;
+}
+
+/* The blocks themselves, now one level deeper than the `.notes-rendered.is-paged
+   > *` rule above can reach. Same reasoning as that rule: multicol must be free
+   to break inside them. */
+#notesView.is-paged > .notes-chunk.is-active-chapter > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block) {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+#notesView.is-paged > .notes-chunk.is-active-chapter > :is(h1, h2, h3, h4, h5, h6) {
+  break-after: avoid;
+  break-inside: avoid;
+}
+
+#notesView.is-paged > .notes-chunk.is-active-chapter > :is(.diagram-shell, .markdown-table-wrap, pre, blockquote, table) {
+  break-inside: avoid;
+}
+
+#notesView.is-paged > .notes-chunk.is-active-chapter > * {
+  max-width: 100%;
+  margin-inline: 0;
+}
+
+/* ── The last page ─────────────────────────────────────────────────────────
+   A two-column note whose content stops in the FIRST column of its last page
+   leaves the flow half a page short: scrollWidth is (pages - 0.5) * clientWidth,
+   so the furthest the box can scroll is half a page before the last page
+   starts. Turning to the end then showed the previous page's right-hand column
+   on the left of the screen and the final column on the right — one column of
+   already-read text sitting where the reader expects the page to begin. That is
+   "at the end of the note there is only one column and not two, and I'm seeing
+   problem".
+
+   Padding the flow out is not available: the column-pitch invariant above needs
+   the horizontal padding to be exactly half a gap, and widening it would
+   misalign every page turn in the note in order to fix its last one. An empty
+   trailing COLUMN costs the pitch nothing — it is one more column of exactly
+   the same width, which is all the flow was missing.
+
+   Conditional, because it is only ever right for a half-empty last page: added
+   to a flow that already ends on a page boundary it would create an entirely
+   blank extra page. updateNotesPagedFiller() measures the remainder and toggles
+   the class; it is never applied in one-column mode, where a column IS a page
+   and the remainder is always zero. */
+.notes-rendered.is-paged.has-page-filler::after {
+  content: "";
+  display: block;
+  break-before: column;
+  /* Full height so the column is occupied rather than collapsing to nothing —
+     an empty zero-height box does not necessarily claim a column of its own. */
+  height: 100%;
+}
+
 /* ── The page indicator ─────────────────────────────────────────────────── */
 
 .notes-page-indicator {

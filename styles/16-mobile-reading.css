@@ -591,7 +591,15 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
      Still translucent enough that the text under it reads normally. */
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
-  transition: top 0.12s ease-out;
+  /* No transition on `top`, deliberately — it used to carry
+     `transition: top 0.12s ease-out` and that was wrong twice over.
+     repositionNotesCaretLine() rewrites `top` on every scroll event, so the
+     band spent every scroll gliding 120ms BEHIND the text it is supposed to be
+     marking; and when the measurement behind it was alternating between two
+     values (see exactLineTopForOffset, which used to fall through to an
+     estimate) the tween turned two wrong answers into continuous motion. A
+     band that snaps is telling the truth about where the caret is. A band that
+     glides is telling you where it was. */
 }
 
 .notes-caret-line[hidden] {

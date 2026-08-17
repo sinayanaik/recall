@@ -1,0 +1,84 @@
+/* The controls for a highlight that already exists, on the highlight itself
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * A highlight used to be something you could read and jump to and nothing else.
+ * Changing its colour or removing it meant going back to the note and
+ * re-selecting exactly the same words, which the source search cannot reliably
+ * do once there are tags around them — the honest answer was "clear each piece
+ * individually".
+ *
+ * So the controls sit on the mark, in the note, which is where a wrong colour is
+ * actually noticed. See src/notes/mark-menu.js.
+ */
+
+.mark-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  /* Chrome, not content: a drag that starts here is a mis-tap, not a selection. */
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.mark-menu[hidden] {
+  display: none;
+}
+
+.mark-menu-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+  border-radius: 50%;
+  background: var(--sw, #e0b400);
+  cursor: pointer;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+
+.mark-menu-swatch:hover {
+  transform: scale(1.15);
+}
+
+/* The colour this highlight already is. Without it six identical circles give
+   no clue which one is current, and the only way to find out is to press one —
+   which is a change you then have to undo. */
+.mark-menu-swatch.is-current {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3.5px var(--accent);
+  cursor: default;
+}
+
+.mark-menu-remove {
+  width: 24px;
+  height: 24px;
+  margin-left: 2px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.mark-menu-remove:hover {
+  border-color: color-mix(in srgb, #ef4444 55%, transparent);
+  background: color-mix(in srgb, #ef4444 16%, transparent);
+  color: #ef4444;
+}
+
+/* A highlight is now something you can press, so it should look like it —
+   faintly, because the note is still text and not a row of buttons. */
+#notesView mark {
+  cursor: pointer;
+}

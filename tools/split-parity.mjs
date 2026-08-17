@@ -67,10 +67,6 @@ const ACCEPTED = {
     "toolbar; the pill is now the only formatting surface, so it would have " +
     "meant no bold, italic, colour or font in raw mode at all. The write-back " +
     "is applyFormatToTextarea, shared with the raw toolbar's own handler.",
-  renderTargetConfig:
-    "Carries `edit` (the surface's textarea) so applyRenderFormat can reach it " +
-    "— see above. In raw mode there is no rendered text to match a selection " +
-    "against, so the offsets have to come from the textarea itself.",
   handleToolbarClick:
     "The textarea write-back moved into applyFormatToTextarea, so the raw " +
     "toolbar and the floating pill share one definition of it rather than " +
@@ -95,6 +91,221 @@ const ACCEPTED = {
     "visually while leaving it set, and the next selection would open already " +
     "expanded — the one state a collapsed-by-default bar exists to avoid. It " +
     "is in the fast-path test too, or the early return skips the only reset.",
+
+  // ── The selection bar appears before it describes the selection ──────────
+  // Reported as "the text select options are coming very delayed after
+  // selection happening". Everything the bar's BUTTONS need — the markdown
+  // serialisation, the occurrence count, the word tally — used to be computed
+  // before it was drawn: three clones of the selected fragment, two Turndown
+  // conversions, and a count that clones the whole note above the selection
+  // (measured 43ms on an 8,000-paragraph note, far more on a real book). None
+  // of it is needed to DRAW the bar, so it is scheduled immediately afterwards
+  // and resolved on demand if a button is pressed first.
+  pillActionTarget:
+    "Resolves the deferred half of the capture before reading it.",
+  selectionForRenderTarget:
+    "Resolves the deferred half of the capture before falling back to it.",
+
+  // ── Highlights you can manage ────────────────────────────────────────────
+  collectDeckHighlights:
+    "Reports each row's colour, so the menu on the mark can show which of the " +
+    "six swatches the highlight already is. Six identical circles otherwise " +
+    "give no clue which is current, and the only way to find out is to press " +
+    "one — which is a change you then have to undo.",
+
+  // ── Opening a book without freezing the tab ──────────────────────────────
+  renderMarkdown:
+    "Awaits patchRenderedBlocks, slices enhancement, and defers the render tail " +
+    "on a large note. A cold render used to be one synchronous burst: measured " +
+    "on a 2.6MB / 18,000-block note, the tab answered nothing for 382ms and the " +
+    "reader saw no text at all until 876ms. It is now built in batches with a " +
+    "frame between them — first visible text at ~170ms — which is also what " +
+    "stops a long press being classified as a scroll on a phone, because the " +
+    "browser's long-press timer needs the events delivered on time.",
+  patchRenderedBlocks:
+    "Async, and streams a large build through streamRenderedBlocks instead of " +
+    "parsing every missing block in one pass. Takes `sequenceOk` so a run whose " +
+    "container a newer render has already claimed abandons itself at a batch " +
+    "boundary rather than writing into a view it no longer owns.",
+  shouldChunkRenderedBlocks:
+    "Always wraps in paged mode, at any size, because there a wrapper is one " +
+    "CHAPTER and showing a chapter is a class rather than a re-render. It used " +
+    "to do the opposite — never wrap when paged — which is why paged mode had " +
+    "to lay out the whole book and why it refused above 250,000 characters " +
+    "with \"Note too long for pages — scrolling instead\".",
+  reshapeRenderedChunks:
+    "Regroups even when the chunked/unchunked answer is unchanged, and passes " +
+    "notesChunkBoundaries: going continuous -> paged keeps wrapping but changes " +
+    "what a wrapper IS, from a run of forty blocks to a whole chapter.",
+  rechunkRenderedBlocks:
+    "Reuses the existing chunk ELEMENTS rather than rebuilding them, and takes " +
+    "optional chapter boundaries. content-visibility: auto remembers the size a " +
+    "box last laid out at and that memory belongs to the element, so " +
+    "replaceChildren() on fresh wrappers reset every off-screen chunk to the " +
+    "flat estimate — hundreds of thousands of pixels of document height moving " +
+    "under the reader on every repaint. Re-homing is appendChild in plan order " +
+    "with a global planned-set sweep; an earlier attempt held a firstChild " +
+    "cursor per chunk, which any cross-chunk move invalidates, and it threw " +
+    "NotFoundError on every note over 2,000 blocks.",
+  firstVisibleNotesBlock:
+    "Binary search rather than a linear sweep (document order runs along X in a " +
+    "columned layout, so `left` is monotonic), and scoped to the ACTIVE chapter " +
+    "— every other block is display:none and reports a zero rect the search " +
+    "cannot order.",
+  isNotesPaged:
+    "No longer consults notesPagedTooLarge. There is no size at which paged " +
+    "mode refuses now that it lays out one chapter at a time.",
+  notesPagedTooLarge:
+    "Always false — kept only so importers do not break. See isNotesPaged.",
+  notesPageCount:
+    "Math.ceil rather than Math.round: a note whose content stops partway " +
+    "through its final page leaves scrollWidth a fractional multiple of " +
+    "clientWidth, and rounding dropped that page from the count entirely — the " +
+    "End key clamped early, the forward arrow disabled itself, and the settle " +
+    "snapped the reader back off the last page.",
+  notesCurrentPage:
+    "Parked at the end of the flow IS the last page, whatever the arithmetic " +
+    "says; without that the final clamped scroll position rounded back to the " +
+    "second-to-last page.",
+  goToNotesPage:
+    "Clamps the tween's target to notesMaxScrollLeft(), so it lands where the " +
+    "scroller will actually stop instead of at a value the browser refuses.",
+  turnNotesPage:
+    "Crosses chapter boundaries: past the last page of a chapter opens the next " +
+    "one at page 1, before the first opens the previous at its end. Paging is " +
+    "per chapter now, and without this a book would read as a set of separate " +
+    "documents.",
+  updateNotesPageIndicator:
+    "Reads \"Ch 3/121 · 2/9\" when the note has chapters, and the arrows are " +
+    "only disabled at the two ends of the BOOK rather than of the chapter.",
+  revealInPagedNotes:
+    "Activates the target's chapter before aiming, and on every re-aim. A node " +
+    "in an inactive chapter is display:none — no box, no page — so \"Go to\" " +
+    "from the Highlights panel scrolled nowhere once paging became per chapter.",
+  revealRangeInPagedNotes:
+    "Same as revealInPagedNotes, for a Range.",
+  applyNotesPagedLayout:
+    "Marks the active chapter before measuring, and no longer announces a " +
+    "too-large note — there is no such thing now.",
+  scheduleNotesPageSettle:
+    "Leaves the last page alone instead of snapping off it, and clamps its " +
+    "target to the reachable maximum.",
+
+  // ── Undo and redo for the notes ──────────────────────────────────────────
+  // The app relied on the browser's own per-keystroke undo inside the raw
+  // editor, and said so out loud: all-cards-edit.js keeps its stack scoped to
+  // the card ARRAY "because question/answer/notes textareas already get native
+  // per-keystroke undo from the browser", and main.js excluded text fields from
+  // Ctrl+Z for the same reason. That premise is false. A programmatic
+  // `textarea.value = …` DISCARDS the element's undo transaction, and every
+  // toolbar action, pill button, pasted image, cloze, highlight and link insert
+  // does exactly that — so from the first time you used any feature of the
+  // editor, Ctrl+Z could not step back past it. In the rendered view, where
+  // highlights are actually made, `state.notes` is mutated directly and there
+  // was no undo at all. Each entry below snapshots the note before it changes
+  // it; see src/notes/notes-history.js.
+  applyFormatToTextarea:
+    "Snapshots the note before the write-back when the target is #notesEdit. " +
+    "This function IS the shared write-back for the whole raw toolbar and the " +
+    "floating pill, so it is the one place that has to record a formatting edit.",
+  clozeTextareaSelection:
+    "Snapshots the note before wrapping the selection in {{ }} — see above.",
+  highlightTextareaSelection:
+    "Snapshots the note before wrapping the selection in <mark> — see above.",
+  eraseTextareaSelection:
+    "Snapshots the note before splicing the selection out — see above.",
+  discardNotesEditingForDeckSwap:
+    "Clears the undo stack. Whatever is on it belongs to the note being left, " +
+    "and carrying it across would let Ctrl+Z paste the previous deck's note " +
+    "into this one — the same class of mistake the `startedIn` guard in " +
+    "extractSelectionToNote exists to prevent.",
+  renderTargetConfig:
+    "setSource snapshots the note first and re-adopts the baseline after. It " +
+    "is the single choke point every rendered-view edit reaches through " +
+    "applyRenderFormat — highlight, colour, font, bold, cloze, erase — so one " +
+    "line here is one definition of \"an undoable notes edit\". (It also still " +
+    "carries `edit`, the surface's textarea, for the reason recorded below.)",
+
+  // ── Highlighting the things a note is actually made of ───────────────────
+  // Reported as "it says Highlighted but I see no highlight", most often on
+  // bullets and tables. Four separate defects, each of which either put the
+  // <mark> somewhere the reader was not looking or turned markup into visible
+  // characters. None of them is reachable from a test of a moved function; all
+  // of them are one-line facts about markdown.
+  textWithLineBreaks:
+    "Reconstructs TABLE structure. Neither TD/TH nor TR was in TIGHT_ or " +
+    "LOOSE_BLOCK_TAGS, so a selected row came back as one run-together string " +
+    "— \"ElementSymbolHydrogenH\" for a source reading \"| Element | Symbol |\". " +
+    "Nothing downstream survives that: the plain-text needle can never match " +
+    "the source, and sel.occurrence is counted against the same string, so a " +
+    "table highlight either missed outright or fell through to " +
+    "looseMarkupMatch's first-hit-anywhere and marked a different table. Cells " +
+    "are joined with \" | \" (a cell separator only applies BETWEEN cells of the " +
+    "same row — prevBlockTag, not a bare `text` check, or every row got a " +
+    "leading one) and trimmed; rows and the THEAD/TBODY/TFOOT sections each " +
+    "start a line, because a table's children are its sections, not its rows.",
+  NO_TEXT_LINE_RE:
+    "Matches a setext heading's \"===\" underline. A run of \"=\" under a line is " +
+    "what makes that line an H1 and it renders no text of its own, but it was " +
+    "not listed here — so a drag across a setext heading wrapped the underline " +
+    "in a <mark>, the line stopped being a heading, and the \"=\" showed up as " +
+    "prose. (Setext H2 uses \"-\", already covered by the \"---\" alternative.)",
+  wrapAcrossBlocks:
+    "Skips INDENTED code blocks, not just fenced ones. marked escapes HTML in " +
+    "both, so a <mark> dropped into four-space-indented code rendered as the " +
+    "literal text \"<mark>\". Tracked with the same line walk the fence state " +
+    "already uses: indentation only opens a code block at a block boundary " +
+    "(start of the slice, or after a blank line), never mid-paragraph. And " +
+    "never once a list marker has been seen — inside a list, four spaces after " +
+    "a blank line is the ITEM'S continuation, which is ordinary prose the " +
+    "reader expects to highlight. Reading that as code would break the " +
+    "commonest selection there is in order to fix the rarest.",
+  locateSelectionInSource:
+    "Runs every stage's hit through balancedHit, not just looseMarkupMatch's. " +
+    "expandToBalancedBounds has always widened a match that starts or ends " +
+    "halfway through an inline construct, but only the last-resort stage asked " +
+    "for it — so an exact or whitespace-fuzzy hit running from inside a " +
+    "**bold** run to past its closing marker produced tags crossing the " +
+    "emphasis they were opened inside. Same slack budget, so the eraser still " +
+    "refuses a match that grew far beyond what was selected.",
+  extractSelectionToNote:
+    "Repaints with renderNotesViewPinned() instead of clearing " +
+    "notesScrolledSource and calling a bare renderNotesView(). Splitting a " +
+    "selection out edits the note the reader is looking at, exactly like a " +
+    "highlight or a cloze — but this was the one such path still repainting as " +
+    "though a DIFFERENT note had been opened, which releases the deferred-work " +
+    "queue and re-derives the measured block-height estimate for the whole " +
+    "document. Every off-screen block gets resized, including the ones ABOVE " +
+    "the viewport, so the reader was moved by far more than the text this " +
+    "actually removed." +
+    " ALSO snapshots the note before splicing the [[link]] in, in both the raw " +
+    "and rendered branches: moving a section into a note of its own is the most " +
+    "destructive thing on the pill and was the least reversible.",
+
+  INLINE_REGION_PATTERNS:
+    "Each pattern is now { re, literal } rather than a bare regex. `literal` " +
+    "marks a construct whose CONTENTS are not markdown — a code span, a formula " +
+    "— where nothing can be inserted at all, so a hit landing wholly inside one " +
+    "still has to be widened. Everything else is a container that markup nests " +
+    "inside perfectly well, and a hit wholly inside one is already balanced. " +
+    "That distinction is load-bearing: highlightToggleInSource recognises an " +
+    "existing highlight by finding <mark> immediately before the hit and " +
+    "</mark> immediately after, so widening a hit that already sits inside a " +
+    "mark hid the very tags the toggle looks for, and re-highlighting the same " +
+    "words nested a second mark instead of removing the first.",
+  inlineRegionsIn:
+    "Destructures { re, literal } and carries `literal` onto each region it " +
+    "reports — see INLINE_REGION_PATTERNS.",
+  expandToBalancedBounds:
+    "Skips a region that CONTAINS the hit outright unless it is a literal (see " +
+    "INLINE_REGION_PATTERNS); straddling one edge still widens, which is the " +
+    '"**foo <mark>bar** baz</mark>" case this mechanism exists for. Also ' +
+    "scans a WINDOW around each edge (inlineRegionsNear) instead of the whole " +
+    "note. Only the two edges of a hit can be unbalanced and no region it " +
+    "considers exceeds INLINE_REGION_MAX_CHARS, so a region able to widen an " +
+    "edge must begin within that distance of it. Required by the change above: " +
+    "this used to run once per highlight only as a last resort, and putting " +
+    "eleven regexes over a 4MB note on the fast path is not affordable.",
 
   // ── EPUB math fidelity (tools/epub-preview-check.mjs proves it on real books) ──
   buildTurndownService:
@@ -214,7 +425,10 @@ const ACCEPTED = {
     "such element.",
   enterNotesEditing:
     "No longer hides #notesRenderToolbar on entering raw mode; there is no " +
-    "such element. The raw editor's own toolbar is unaffected.",
+    "such element. The raw editor's own toolbar is unaffected. Also adopts the " +
+    "current text as the undo baseline (syncNotesHistoryBaseline) — opening the " +
+    "editor is not an edit, but the history has to know what the text is now so " +
+    "the first real keystroke has a previous value to push.",
   createRenderToolbarHtml:
     "A `highlight` option. The floating selection pill already carries a " +
     "highlight swatch + colour menu driving the same renderFormatDefaults, so " +
@@ -662,6 +876,17 @@ const REMOVED = {
     "classic script, where the second silently won for every caller; a hard " +
     "SyntaxError in a module, so the app did not boot at all. Split into " +
     "fetchImportText (URL import, 45s) and fetchReleaseText (update check, 8s).",
+  visualLineTopForOffset:
+    "it returned the exact measured position OR a completely different " +
+    "estimate, with nothing for the caller to tell them apart. Its one caller " +
+    "was the caret ribbon, which is the single thing that must never be drawn " +
+    "from a guess — a band in the wrong place does not merely fail to say " +
+    "where the caret is, it says something false — and the silent swap between " +
+    "the two is what made it flicker while typing on ONE line. Replaced by " +
+    "exactLineTopForOffset, which returns null instead of guessing (the ribbon " +
+    "then stays where it is), plus the estimate's own name where an " +
+    "approximation is genuinely correct: measuredCaretTop, because a jump has " +
+    "to land somewhere.",
   fetchCloudDeckList:
     "both callers (renderMyDecksList, allMyDeckSelections) read the deck INDEX " +
     "instead. It selected `*, cards(count)` — every cloud deck's whole notes " +
@@ -840,6 +1065,38 @@ const RESIDUAL_REWRITES = [
   // buttons it reveals are for.
   [/el\.extractNoteFromSelectionBtn\?\.addEventListener\("pointerdown"/,
    () => 'el.selectionFormatToggleBtn?.addEventListener("pointerdown", (event) => { event.preventDefault(); event.stopPropagation(); const open = el.selectionFloat?.classList.toggle("is-format-open"); el.selectionFormatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false"); }); el.extractNoteFromSelectionBtn?.addEventListener("pointerdown"'],
+
+  // The notes input handler records a typing step for undo. See the ACCEPTED
+  // block for why the browser's own undo was not enough.
+  ["state.notes = el.notesEdit.value; notesScrolledSource = state.notes; if (el.exportNotesBtn)",
+   "state.notes = el.notesEdit.value; recordNotesTyping(state.notes); notesScrolledSource = state.notes; if (el.exportNotesBtn)"],
+
+  // Notes undo/redo, checked BEFORE the card stack and before the textarea
+  // guard — see the ACCEPTED block for why that guard's premise was false.
+  ['} return; } if ((event.ctrlKey || event.metaKey) && !event.target.matches("input, textarea") && (event.key === "z"',
+   '} return; } const inNotesSurface = state.viewMode === "notes" && (event.target === el.notesEdit || !event.target.matches("input, textarea")); '
+   + 'if ((event.ctrlKey || event.metaKey) && inNotesSurface && (event.key === "z" || event.key === "Z")) { event.preventDefault(); event.shiftKey ? redoNotes() : undoNotes(); return; } '
+   + 'if ((event.ctrlKey || event.metaKey) && inNotesSurface && (event.key === "y" || event.key === "Y")) { event.preventDefault(); redoNotes(); return; } '
+   + 'if ((event.ctrlKey || event.metaKey) && !event.target.matches("input, textarea") && (event.key === "z"'],
+
+  // The mark menu (tap a highlight in the note to recolour or remove it), and
+  // the hook that lets an edit made there refresh the Highlights tab without
+  // highlight-edit.js importing the panel that owns it.
+  ["onDomReady(initNotesCaretLine); ",
+   "onDomReady(initNotesCaretLine); onDomReady(initMarkMenu); onDomReady(() => setHighlightsChangedHandler(renderHighlightsPanel)); "],
+
+  // The floating pill waits for the selection GESTURE to finish before it
+  // appears. An ADDITION beside the selectionchange registration, not a rewrite
+  // of it: the debounce still runs, but positionNotesSelectionButton returns
+  // early while a pointer is down. Reported as "the text options spawn almost
+  // immediately after I start selecting and not after completing the select",
+  // and it is also what took the expensive capture — three fragment clones and
+  // two Turndown runs — off the drag's hot path. Capture and pointercancel
+  // because a drag routinely leaves the element it started in, and a touch
+  // taken over by the scroller never sends pointerup at all.
+  // See tools/selection-check.mjs.
+  [/(document\.addEventListener\("selectionchange", scheduleNotesSelectionCheck\); )(document\.addEventListener\("selectionchange", \(\) => \{ if \(questionFitDeferredBySelection)/,
+   '$1document.addEventListener("pointerdown", (event) => { if (event.target?.closest?.(".selection-float")) return; beginSelectionGesture(); }, { capture: true, passive: true }); ["pointerup", "pointercancel"].forEach((type) => { document.addEventListener(type, endSelectionGesture, { capture: true, passive: true }); }); window.addEventListener("blur", endSelectionGesture); $2'],
 
   // The font picker moved onto the pill from the raw editor's toolbar when that
   // shrank to three buttons, so the shared [data-render-target] delegation has

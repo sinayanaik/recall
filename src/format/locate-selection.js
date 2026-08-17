@@ -278,23 +278,37 @@ export function normalizeMarkupForMatch(str) {
 // `*` or `_` must not be able to drag a highlight across half the note.
 export const INLINE_REGION_MAX_CHARS = 400;
 
+// `literal: true` marks a construct whose CONTENTS are not markdown — a code
+// span, a formula. Nothing may be inserted inside one, so a hit landing wholly
+// within it still has to be widened to swallow the whole thing, or wrapping it
+// produces `<mark>foo</mark>` shown as literal code.
+//
+// Everything else is a container: markup nests inside it perfectly well, so a
+// hit that sits wholly INSIDE one is already balanced and must be left exactly
+// where it is. That distinction is load-bearing rather than cosmetic —
+// highlightToggleInSource recognises an existing highlight by finding <mark>
+// immediately BEFORE the hit and </mark> immediately after, so widening a hit
+// that already sits inside a mark hides the very tags the toggle looks for, and
+// re-highlighting the same words nested a second mark instead of removing the
+// first. Straddling one edge of a container is still widened: that is the
+// "**foo <mark>bar** baz</mark>" case this whole mechanism exists for.
 export const INLINE_REGION_PATTERNS = [
-  /(`+)[^\n]*?\1/g,
-  /<(mark|u|kbd|span|b|i|em|strong|sub|sup|del|ins|small)\b[^>]*>[\s\S]*?<\/\1>/gi,
-  /\*\*[^\n]+?\*\*/g,
-  /__[^\n]+?__/g,
-  /~~[^\n]+?~~/g,
-  /\{\{[^\n]*?\}\}/g,
-  /!?\[[^\]\n]*\]\([^)\n]*\)/g,
-  /\$\$[\s\S]*?\$\$/g,
-  /\$[^\n$]+?\$/g,
-  /(^|[^*\w])(\*[^\s*][^\n*]*?\*)/g,
-  /(^|[^_\w])(_[^\s_][^\n_]*?_)/g
+  { re: /(`+)[^\n]*?\1/g, literal: true },
+  { re: /<(mark|u|kbd|span|b|i|em|strong|sub|sup|del|ins|small)\b[^>]*>[\s\S]*?<\/\1>/gi },
+  { re: /\*\*[^\n]+?\*\*/g },
+  { re: /__[^\n]+?__/g },
+  { re: /~~[^\n]+?~~/g },
+  { re: /\{\{[^\n]*?\}\}/g },
+  { re: /!?\[[^\]\n]*\]\([^)\n]*\)/g },
+  { re: /\$\$[\s\S]*?\$\$/g, literal: true },
+  { re: /\$[^\n$]+?\$/g, literal: true },
+  { re: /(^|[^*\w])(\*[^\s*][^\n*]*?\*)/g },
+  { re: /(^|[^_\w])(_[^\s_][^\n_]*?_)/g }
 ];
 
 export function inlineRegionsIn(source) {
   const regions = [];
-  for (const pattern of INLINE_REGION_PATTERNS) {
+  for (const { re: pattern, literal } of INLINE_REGION_PATTERNS) {
     pattern.lastIndex = 0;
     let m;
     while ((m = pattern.exec(source)) !== null) {
@@ -305,24 +319,66 @@ export function inlineRegionsIn(source) {
       // Patterns with a leading guard group report the construct in m[2].
       const body = m[2] !== undefined ? m[2] : m[0];
       const start = m.index + m[0].indexOf(body);
-      if (body.length <= INLINE_REGION_MAX_CHARS) regions.push({ start, end: start + body.length });
+      if (body.length <= INLINE_REGION_MAX_CHARS) regions.push({ start, end: start + body.length, literal: Boolean(literal) });
     }
   }
   return regions;
 }
 
+// Only the two EDGES of a hit can be unbalanced, and no region this cares about
+// is longer than INLINE_REGION_MAX_CHARS — so a region that could widen an edge
+// must begin within that many characters of it. Scanning a window around each
+// edge instead of the whole note is what makes this affordable on the fast path:
+// eleven regexes over a 4MB note, on every highlight, is not.
+//
+// The window is padded by a full four widening passes' worth so a chain of
+// nested constructs (a link inside bold inside a quote) still resolves the same
+// way it would have against the whole document. Lines are never crossed by these
+// patterns anyway, apart from the two multi-line ones, which the padding covers.
+export const INLINE_REGION_WINDOW_CHARS = INLINE_REGION_MAX_CHARS * 4;
+
+// Spread, never rebuilt field by field: a region carries `literal` as well as
+// its bounds, and a `{ start, end }` literal here silently dropped it — which
+// turned every code span and formula back into a container and undid the
+// containment rule below.
+export function shiftRegions(regions, offset) {
+  return regions.map((r) => ({ ...r, start: r.start + offset, end: r.end + offset }));
+}
+
+export function inlineRegionsNear(source, start, end) {
+  const from = Math.max(0, start - INLINE_REGION_WINDOW_CHARS);
+  const to = Math.min(source.length, end + INLINE_REGION_WINDOW_CHARS);
+  // One window when the edges are close enough to share it, which is the common
+  // case — a selection is usually far shorter than the padding.
+  if (to - from <= INLINE_REGION_WINDOW_CHARS * 3) {
+    return shiftRegions(inlineRegionsIn(source.slice(from, to)), from);
+  }
+  const headTo = Math.min(source.length, start + INLINE_REGION_WINDOW_CHARS);
+  const tailFrom = Math.max(headTo, end - INLINE_REGION_WINDOW_CHARS);
+  return [
+    ...shiftRegions(inlineRegionsIn(source.slice(from, headTo)), from),
+    ...shiftRegions(inlineRegionsIn(source.slice(tailFrom, to)), tailFrom)
+  ];
+}
+
 export function expandToBalancedBounds(source, start, end) {
-  const regions = inlineRegionsIn(source);
+  const regions = inlineRegionsNear(source, start, end);
   let s = start;
   let e = end;
   for (let pass = 0; pass < 4; pass += 1) {
     let changed = false;
     for (const region of regions) {
-      if (region.start < s && s < region.end) {
+      const startsInside = region.start < s && s < region.end;
+      const endsInside = region.start < e && e < region.end;
+      // Wholly inside a container (markup nests there) — already balanced, and
+      // widening would hide the tags highlightToggleInSource reads. Literals
+      // still widen: nothing can be inserted inside a code span or a formula.
+      if (!region.literal && startsInside && endsInside) continue;
+      if (startsInside) {
         s = region.start;
         changed = true;
       }
-      if (region.start < e && e < region.end) {
+      if (endsInside) {
         e = region.end;
         changed = true;
       }
@@ -380,6 +436,25 @@ export const FUZZY_OVERMATCH_SLACK_CHARS = 40;
 
 export const FUZZY_OVERMATCH_SLACK_RATIO = 1.15;
 
+// Widen a hit so it cannot start or end halfway through an inline construct.
+//
+// looseMarkupMatch has done this since it was written (its projection drops the
+// syntax characters, so a hit landing between a code span's backticks is its
+// normal failure mode) — but the exact and whitespace-fuzzy stages never did,
+// and they can land the same way: the rendered text of `**bold text**` is
+// "bold text", so selecting "old te" finds that substring verbatim in the
+// source and wrapping it yields "**b<mark>old te</mark>xt**"… which is fine,
+// while selecting from mid-bold to past the closing "**" yields tags crossing
+// the emphasis they were opened inside. Same widening, same slack budget, so
+// the eraser still refuses a match that grew far beyond what was selected.
+export function balancedHit(source, hit, bounded) {
+  if (!hit) return null;
+  const bounds = expandToBalancedBounds(source, hit.idx, hit.end);
+  if (bounds.start === hit.idx && bounds.end === hit.end) return hit;
+  if (bounded && (hit.idx - bounds.start) + (bounds.end - hit.end) > FUZZY_OVERMATCH_SLACK_CHARS) return null;
+  return { idx: bounds.start, end: bounds.end, needle: source.slice(bounds.start, bounds.end) };
+}
+
 export function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = false } = {}) {
   const attempts = [];
   if (sel.asText) attempts.push({ needle: sel.asText, occurrence: sel.occurrence || 0 });
@@ -393,7 +468,8 @@ export function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuz
     let idx = nthIndexOf(source, needle, occurrence);
     if (idx === -1) idx = source.indexOf(needle); // occurrence miscounted → first match
     if (idx === -1) continue;
-    return { idx, end: idx + needle.length, needle };
+    const hit = balancedHit(source, { idx, end: idx + needle.length, needle }, boundedFuzzy);
+    if (hit) return hit;
   }
   if (fuzzy) {
     for (const { needle, occurrence } of attempts) {
@@ -403,7 +479,8 @@ export function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuz
         const budget = Math.max(needle.length * FUZZY_OVERMATCH_SLACK_RATIO, needle.length + FUZZY_OVERMATCH_SLACK_CHARS);
         if (match.needle.length > budget) continue;
       }
-      return match;
+      const hit = balancedHit(source, match, boundedFuzzy);
+      if (hit) return hit;
     }
     // Still nothing: needle and source disagree about markup, not whitespace.
     const normalizedSource = normalizeMarkupForMatch(source);

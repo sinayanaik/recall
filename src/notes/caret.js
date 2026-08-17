@@ -96,17 +96,41 @@ export function backdropTextOffset(backdrop, node, offsetInNode) {
 //
 // The \n-counting math survives only as the plain-mode fallback, where there is
 // no mirror to measure and an approximation is the only thing on offer.
-export function visualLineTopForOffset(textarea, pos) {
+// The EXACT measurement, or null. Never an estimate.
+//
+// This used to fall through to wrappedLineTopEstimate, which is a completely
+// different number arrived at a completely different way — so a caller asking
+// "where is the caret" could get a measured answer on one call and a guess on
+// the next, with nothing to tell them apart. caretRectInBackdrop returns null
+// routinely (a mid-rebuild mirror, an offset past the mirror's text, plain
+// mode), so that swap happened constantly while typing, and the caret ribbon
+// drawn from it snapped between the two: the "violent flicker even though I am
+// on the same line" report.
+//
+// Callers that can legitimately act on a guess now say so by calling
+// wrappedLineTopEstimate themselves — measuredCaretTop is the one place where
+// an approximation is the right answer, because a jump has to land somewhere.
+export function exactLineTopForOffset(textarea, pos) {
   const hit = caretRectInBackdrop(textarea, pos);
-  if (hit) {
-    const box = hit.backdrop.getBoundingClientRect();
-    // The backdrop scrolls in lockstep with the textarea (see syncScroll) and
-    // shares its padding, so subtracting the border and adding back the scroll
-    // converts a viewport rect straight into scroll-content space.
-    return hit.rect.top - box.top - hit.backdrop.clientTop + hit.backdrop.scrollTop;
-  }
-  return wrappedLineTopEstimate(textarea, pos);
+  if (!hit) return null;
+  const box = hit.backdrop.getBoundingClientRect();
+  // The backdrop scrolls in lockstep with the textarea (see syncScroll) and
+  // shares its padding, so subtracting the border and adding back the scroll
+  // converts a viewport rect straight into scroll-content space.
+  return {
+    top: hit.rect.top - box.top - hit.backdrop.clientTop + hit.backdrop.scrollTop,
+    // The measured line box, so a band drawn from this matches a WRAPPED row
+    // rather than assuming every row is exactly one line-height tall.
+    height: hit.rect.height || textareaLineHeight(textarea)
+  };
 }
+
+// (visualLineTopForOffset used to sit here: "the exact answer, or an estimate,
+// and you cannot tell which". Its single caller was the caret ribbon, which is
+// the one thing that must never be drawn from a guess — see the rule at the top
+// of caret-line.js — so it now asks exactLineTopForOffset and keeps the band
+// still when there is no answer. measuredCaretTop remains the place where an
+// approximation is correct, because a jump has to land somewhere.)
 
 // ── The no-mirror estimate ─────────────────────────────────────────────────
 //

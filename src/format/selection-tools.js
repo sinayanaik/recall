@@ -9,12 +9,13 @@ import { makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.j
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults, renderTargetConfig } from "./render-toolbar.js?v=__BUILD__";
 import { createLinkedNoteFlow } from "../notes/note-links.js?v=__BUILD__";
-import { renderNotesView, setNotesScrolledSource } from "../notes/notes-view.js?v=__BUILD__";
+import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
-import { activeEditingTarget, activeRenderedTarget, hideNotesSelectionButton, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
+import { activeEditingTarget, activeRenderedTarget, ensurePillSelectionCapture, hideNotesSelectionButton, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
 import { noteLinkMarkupFor } from "../render/note-links.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
+import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 
 // On mobile the button is pinned to a fixed spot at the bottom of the screen
@@ -43,6 +44,11 @@ export function hideNotesSelectionButtonUnlessPinned() {
 // either mode — the floating pill.
 export function applyFormatToTextarea(textarea, formatFn) {
   if (!textarea || textarea.hidden) return false;
+  // Every formatting button in either mode ends up here, and the assignment
+  // below is what throws away the browser's own undo for this field. Snapshot
+  // first so Ctrl+Z has somewhere to go back to. Notes only: a card face keeps
+  // native undo, which is finer-grained for plain typing.
+  if (textarea === el.notesEdit) pushNotesUndo("formatting");
   const start = textarea.selectionStart;
   const end = textarea.selectionEnd;
   const value = textarea.value;
@@ -70,6 +76,7 @@ export function clozeTextareaSelection(target) {
   const start = ta.selectionStart;
   const end = ta.selectionEnd;
   if (start === end) return;
+  if (ta === el.notesEdit) pushNotesUndo("cloze");
   const result = toggleWrapPair(ta.value, start, end, "{{", "}}");
   ta.value = ta.value.slice(0, result.rangeStart) + result.text + ta.value.slice(result.rangeEnd);
   const caret = result.rangeStart + result.text.length;
@@ -87,6 +94,11 @@ export function clozeTextareaSelection(target) {
 // platforms where the tap itself dissolved it. Returns
 //   { kind:"rendered", name, sel } | { kind:"editing", target } | null
 export function pillActionTarget() {
+  // The expensive half of the capture is deferred so the bar can appear at once
+  // (see schedulePillSelectionCapture). If a button is pressed before that pass
+  // has run, this is where it gets paid for — still with the selection alive,
+  // because a press cannot come before the release that showed the bar.
+  ensurePillSelectionCapture();
   const rendered = activeRenderedTarget();
   if (rendered) {
     const sel = pillSelectionCapture && !pillSelectionCapture.editing && pillSelectionCapture.targetName === rendered.name
@@ -113,6 +125,7 @@ export function highlightTextareaSelection(target, color = renderFormatDefaults.
   const start = ta.selectionStart;
   const end = ta.selectionEnd;
   if (start === end) return;
+  if (ta === el.notesEdit) pushNotesUndo("highlight");
   const selected = ta.value.slice(start, end);
   const wrapped = toggleMarkColorInText(selected, color);
   ta.value = ta.value.slice(0, start) + wrapped + ta.value.slice(end);
@@ -135,6 +148,7 @@ export function eraseTextareaSelection(target) {
   const start = ta.selectionStart;
   const end = ta.selectionEnd;
   if (start === end) return;
+  if (ta === el.notesEdit) pushNotesUndo("erase");
   ta.value = ta.value.slice(0, start) + ta.value.slice(end);
   ta.setSelectionRange(start, start);
   ta.focus();
@@ -248,6 +262,7 @@ export async function extractSelectionToNote() {
     }
     body = textarea.value.slice(start, end);
     applyLink = (link) => {
+      pushNotesUndo("split into its own note");
       textarea.value = textarea.value.slice(0, start) + link + textarea.value.slice(end);
       const at = start + link.length;
       textarea.setSelectionRange(at, at);
@@ -270,10 +285,22 @@ export async function extractSelectionToNote() {
     body = sel.asMarkdown || sel.asText || "";
     applyLink = (link) => {
       const notes = state.notes || "";
+      pushNotesUndo("split into its own note");
       state.notes = notes.slice(0, loc.idx) + link + notes.slice(loc.end);
       window.getSelection()?.removeAllRanges();
-      setNotesScrolledSource(null);
-      renderNotesView();
+      // renderNotesViewPinned, not a bare renderNotesView(). This is an edit to
+      // the note the reader is looking at, exactly like a highlight or a cloze,
+      // and it was the one such path still repainting as though a DIFFERENT note
+      // had been opened: that releases the deferred-work queue and re-derives
+      // the measured block-height estimate, which re-sizes every off-screen
+      // block INCLUDING the ones above the viewport. The reader was moved by
+      // however much the whole document's estimate shifted — a much bigger jump
+      // than the one this text actually removed.
+      //
+      // setNotesScrolledSource(null) went with it: it exists to tell the next
+      // render "this is a new document", which is precisely the claim that was
+      // wrong here.
+      renderNotesViewPinned();
       scheduleDeckAutosave();
     };
   } else {

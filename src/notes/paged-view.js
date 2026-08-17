@@ -31,21 +31,17 @@
 // The rules that turn it off live with the paged rules in the stylesheet.
 //
 // So paged mode pays the full-layout cost the continuous view was carefully
-// built to avoid. On an ordinary note that is a few milliseconds. On a very
-// large one it is seconds of frozen tab, which is not something to discover by
-// switching a setting — hence NOTES_PAGED_MAX_CHARS below, and one toast
-// instead of the freeze.
+// built to avoid — for whatever it is given. It used to be given the whole note,
+// which is why it refused above 250,000 characters with a toast. It is now given
+// ONE CHAPTER (see src/notes/chapters.js and the .is-active-chapter rules in the
+// stylesheet), so the cost is bounded by chapter length rather than book length
+// and the ceiling is gone.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { notesTopLevelBlocks, reshapeRenderedChunks } from "../render/block-cache.js?v=__BUILD__";
-import { showToast } from "../ui/feedback.js?v=__BUILD__";
-
-// Above this many characters of markdown, paged mode declines to lay the note
-// out and says so once. Measured on the harness: a 250KB note paginates in
-// roughly a second on a desktop, and a phone is several times slower again.
-export const NOTES_PAGED_MAX_CHARS = 250000;
+import { chapterIndexFor } from "./chapters.js?v=__BUILD__";
 
 // How close to a page boundary counts as "on that page". Sub-pixel column
 // widths mean scrollLeft is almost never an exact multiple of clientWidth.
@@ -56,7 +52,13 @@ const SETTLE_MS = 140;
 // Re-aiming a jump while the columns are still moving. See revealPagedTarget.
 const PAGED_AIM_INTERVAL_MS = 120;
 
-const PAGED_AIM_MAX_ATTEMPTS = 10;
+// Three, not ten. Each attempt WRITES scrollLeft, so a target that keeps moving
+// showed the reader up to ten page jumps over 1.2 seconds — visible as the note
+// juddering after any jump, and a large part of the "severe shivering" report.
+// Two identical answers in a row (see `settled` below) is the normal exit and
+// almost always arrives on the second attempt; the extra seven were only ever
+// paying for a reflow that had already stopped.
+const PAGED_AIM_MAX_ATTEMPTS = 3;
 
 export let notesReadingMode = "continuous";
 
@@ -66,11 +68,88 @@ let pageLabel = null;
 let refitFrame = 0;
 
 export function isNotesPaged() {
-  return notesReadingMode !== "continuous" && !notesPagedTooLarge();
+  return notesReadingMode !== "continuous";
 }
 
+// Kept only so nothing that imports it breaks; it is always false now. Paged
+// mode used to refuse above NOTES_PAGED_MAX_CHARS because multi-column layout
+// has to measure everything it is given, and giving it a whole book cost
+// seconds of frozen tab. It is now given ONE CHAPTER at a time, so the cost is
+// bounded by chapter length rather than book length and there is nothing left
+// to refuse. See src/notes/chapters.js.
 export function notesPagedTooLarge() {
-  return (state.notes || "").length > NOTES_PAGED_MAX_CHARS;
+  return false;
+}
+
+// ── One chapter at a time ────────────────────────────────────────────────
+//
+// Only the active chapter is displayed (the rest are `display: none`, which
+// costs no layout at all while keeping their nodes in the DOM, so the Highlights
+// panel's mark count and every querySelectorAll still see the whole note). The
+// active one is `display: contents`, so its blocks flow straight into
+// #notesView's own multi-column context and the column-pitch invariant is
+// untouched — that invariant is what every page turn depends on.
+export let activeChapterIndex = 0;
+
+export function notesChapters() {
+  return chapterIndexFor(state.notes || "");
+}
+
+export function notesChapterCount() {
+  return notesChapters().length;
+}
+
+// Re-marks the wrappers. Cheap: two class writes, no layout of its own.
+export function applyActiveChapter() {
+  const view = el.notesView;
+  if (!view) return;
+  const wrappers = view.querySelectorAll(":scope > .notes-chunk");
+  if (!wrappers.length) return;
+  const total = wrappers.length;
+  activeChapterIndex = Math.max(0, Math.min(activeChapterIndex, total - 1));
+  wrappers.forEach((node, i) => node.classList.toggle("is-active-chapter", i === activeChapterIndex));
+}
+
+// Show chapter `index`, landing on its first or last page. Returns false when
+// there is no such chapter, which is how the page-turn code knows it has
+// reached one end of the book.
+export function goToNotesChapter(index, { atEnd = false } = {}) {
+  const view = el.notesView;
+  if (!view || !isNotesPaged()) return false;
+  const total = view.querySelectorAll(":scope > .notes-chunk").length;
+  if (!total || index < 0 || index >= total) return false;
+  activeChapterIndex = index;
+  applyActiveChapter();
+  // The filler depends on where THIS chapter ends, so it is recomputed before
+  // the page count is read.
+  updateNotesPagedFiller();
+  goToNotesPage(atEnd ? notesPageCount() - 1 : 0, { smooth: false });
+  updateNotesPageIndicator();
+  return true;
+}
+
+// The chapter a node lives in, activated. Everything that reveals something in
+// the notes has to go through this first now: a mark, heading or block inside an
+// inactive chapter is `display: none`, so it has no box, no page, and scrolling
+// to it does nothing at all. That is the "go to in highlights stopped working"
+// regression that came with paging by chapter.
+//
+// Returns false when the node is not in the notes, or is already in view.
+export function activateChapterForNode(node) {
+  const view = el.notesView;
+  if (!view || !node || !isNotesPaged()) return false;
+  const wrapper = node.nodeType === 1
+    ? node.closest(".notes-chunk")
+    : node.parentElement?.closest(".notes-chunk");
+  if (!wrapper || wrapper.parentElement !== view) return false;
+  if (wrapper.classList.contains("is-active-chapter")) return false;
+  const wrappers = [...view.querySelectorAll(":scope > .notes-chunk")];
+  const index = wrappers.indexOf(wrapper);
+  if (index === -1) return false;
+  activeChapterIndex = index;
+  applyActiveChapter();
+  updateNotesPagedFiller();
+  return true;
 }
 
 export function notesPagedColumns() {
@@ -94,14 +173,78 @@ export function notesPageWidth() {
   return Math.max(1, el.notesView?.clientWidth || 1);
 }
 
+// Ceil, not round — a partial last page is still a page.
+//
+// A note whose content stops halfway through the final page leaves scrollWidth a
+// FRACTIONAL multiple of clientWidth, and Math.round dropped that page from the
+// count entirely. Everything that reads this then agreed the note was one page
+// shorter than it is: goToNotesPage clamped the End key one page early,
+// updateNotesPageIndicator disabled the ▸ button, notesPageForViewportLeft
+// clamped every reveal and TOC jump short of the last page, and
+// scheduleNotesPageSettle snapped back off it. The old code only worked at all
+// because a two-column layout lands on exactly k + 0.5 and JS rounds .5 up — one
+// sub-pixel of fractional clientWidth or em-resolved column gap either way and
+// the last column vanished.
+//
+// The epsilon stops a scrollWidth that is a hair OVER a whole multiple (sub-pixel
+// column widths, which is the normal case) from inventing an empty extra page.
 export function notesPageCount() {
   if (!el.notesView) return 1;
-  return Math.max(1, Math.round(el.notesView.scrollWidth / notesPageWidth()));
+  return Math.max(1, Math.ceil((el.notesView.scrollWidth - PAGE_EPSILON) / notesPageWidth()));
+}
+
+// How far the flow can actually be scrolled. On a note whose content stops
+// partway through the final page this is LESS than (pageCount - 1) * pageWidth,
+// and every page-turn target has to be clamped to it or the scroller silently
+// refuses and the settle logic reads back a position nobody asked for.
+//
+// Deliberately NOT fixed by padding the flow out to a whole multiple: the column
+// pitch invariant (see 18-paged-notes.css) requires the horizontal padding to be
+// exactly half a gap, so widening the box there would misalign every page turn
+// in the note to fix its last page. The last page overlapping the one before it
+// by the unused remainder is what every paged reader does at the end of a book.
+// Give the last page its missing column, when it is missing one.
+//
+// See the .has-page-filler rules. A two-column note ending in the first column
+// of its final page leaves the flow half a page short, so the reader can never
+// scroll the last page into place and the end of the note shares the screen
+// with a column they have already read.
+//
+// The class has to come OFF before measuring: with the filler in, scrollWidth
+// already includes it and the remainder reads as zero, so leaving it on would
+// answer "no filler needed" and the two states would alternate. Cheap enough to
+// do this way — it runs on a layout change, not on a page turn — and the
+// alternative (tracking the filler's own width) is a second source of truth for
+// something the box can simply be asked.
+export function updateNotesPagedFiller() {
+  const view = el.notesView;
+  if (!view) return;
+  view.classList.remove("has-page-filler");
+  // One column IS one page, so the flow is always a whole number of pages and
+  // there is never anything to fill.
+  if (!isNotesPaged() || notesPagedColumns() < 2) return;
+  const width = view.clientWidth;
+  if (width <= 0) return;
+  const remainder = view.scrollWidth % width;
+  if (remainder > PAGE_EPSILON && width - remainder > PAGE_EPSILON) view.classList.add("has-page-filler");
+}
+
+export function notesMaxScrollLeft() {
+  const view = el.notesView;
+  if (!view) return 0;
+  return Math.max(0, view.scrollWidth - view.clientWidth);
 }
 
 export function notesCurrentPage() {
-  if (!el.notesView) return 0;
-  return Math.max(0, Math.round(el.notesView.scrollLeft / notesPageWidth()));
+  const view = el.notesView;
+  if (!view) return 0;
+  // Parked at the end of the flow IS the last page, whatever the arithmetic
+  // says. Without this the final (clamped) scroll position rounds back to the
+  // second-to-last page, so the indicator claimed there was still a page to turn
+  // to and ▸ stayed enabled with nowhere to go.
+  const max = notesMaxScrollLeft();
+  if (max > 0 && view.scrollLeft >= max - PAGE_EPSILON) return notesPageCount() - 1;
+  return Math.max(0, Math.round(view.scrollLeft / notesPageWidth()));
 }
 
 // Which page holds a point `left` pixels into the flow?
@@ -169,7 +312,11 @@ export function goToNotesPage(page, { smooth = true } = {}) {
   const view = el.notesView;
   if (!view) return;
   const target = Math.max(0, Math.min(notesPageCount() - 1, Math.round(page)));
-  const to = target * notesPageWidth();
+  // Clamped, so the tween lands where the scroller will actually stop. Left
+  // unclamped, the last page's target was a value the browser refused, the tween
+  // "arrived" somewhere else, and scheduleNotesPageSettle then snapped back a
+  // page — the note bouncing off its own ending.
+  const to = Math.min(target * notesPageWidth(), notesMaxScrollLeft());
   updateNotesPageIndicator(target);
   cancelNotesPageTween();
 
@@ -202,7 +349,13 @@ export function goToNotesPage(page, { smooth = true } = {}) {
 }
 
 export function turnNotesPage(delta) {
-  goToNotesPage(notesCurrentPage() + delta);
+  const target = notesCurrentPage() + delta;
+  // Past either end of this chapter, the turn continues into the next one —
+  // which is what makes a book of chapters read as one book rather than as a
+  // set of documents you have to pick between.
+  if (target < 0 && goToNotesChapter(activeChapterIndex - 1, { atEnd: true })) return;
+  if (target > notesPageCount() - 1 && goToNotesChapter(activeChapterIndex + 1)) return;
+  goToNotesPage(target);
 }
 
 // Put `node` on screen, paged-style: turn to its page rather than scrolling it
@@ -218,7 +371,13 @@ export function turnNotesPage(delta) {
 // 390px viewport, every time.
 export function revealInPagedNotes(node) {
   if (!node) return false;
-  return revealPagedTarget(() => (node.isConnected ? notesPageForElement(node) : null));
+  // Before the aim, and on every re-aim: the target may be in a chapter that is
+  // not on screen, and an unactivated chapter has no geometry to aim at.
+  return revealPagedTarget(() => {
+    if (!node.isConnected) return null;
+    activateChapterForNode(node);
+    return notesPageForElement(node);
+  });
 }
 
 // Same, for a Range — used by every jump that knows the exact text it wants
@@ -229,6 +388,7 @@ export function revealRangeInPagedNotes(range) {
   return revealPagedTarget(() => {
     const node = range.startContainer;
     if (!node?.isConnected) return null;
+    activateChapterForNode(node);
     return notesPageForRange(range);
   });
 }
@@ -264,6 +424,10 @@ function revealPagedTarget(resolve) {
   let attempts = 0;
   const again = () => {
     if (attempts >= PAGED_AIM_MAX_ATTEMPTS) return;
+    // A hidden tab reflows nothing, so re-aiming there is a scroll write against
+    // a layout that cannot have changed — and the reader comes back to whatever
+    // the last attempt guessed instead of where they left off.
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     attempts += 1;
     const page = aim();
     if (page == null) return;
@@ -320,10 +484,16 @@ export function updateNotesPageIndicator(pageHint = null) {
   if (!pageIndicator) return;
   const total = notesPageCount();
   const page = pageHint == null ? notesCurrentPage() : pageHint;
-  if (pageLabel) pageLabel.textContent = `${Math.min(page + 1, total)} / ${total}`;
+  if (pageLabel) {
+    const chapters = el.notesView?.querySelectorAll(":scope > .notes-chunk").length || 1;
+    pageLabel.textContent = chapters > 1
+      ? `Ch ${activeChapterIndex + 1}/${chapters} · ${Math.min(page + 1, total)}/${total}`
+      : `${Math.min(page + 1, total)} / ${total}`;
+  }
   const [back, , forward] = pageIndicator.children;
-  if (back) back.disabled = page <= 0;
-  if (forward) forward.disabled = page >= total - 1;
+  const chapters = el.notesView?.querySelectorAll(":scope > .notes-chunk").length || 1;
+  if (back) back.disabled = page <= 0 && activeChapterIndex <= 0;
+  if (forward) forward.disabled = page >= total - 1 && activeChapterIndex >= chapters - 1;
 }
 
 // ── Applying the mode ──────────────────────────────────────────────────────
@@ -353,32 +523,22 @@ export function applyNotesPagedLayout() {
   stage?.classList.toggle("is-paged-reading", paged && !view.hidden);
   if (pageIndicator) pageIndicator.hidden = !paged || view.hidden;
 
-  // Declined, and says so ONCE. This used to be a panel pinned above the note
-  // for as long as it was open, which is the wrong shape for the message: it is
-  // news the first time and furniture every time after, and it was stealing
-  // reading space on exactly the notes that have the most to show.
-  if (notesReadingMode !== "continuous" && notesPagedTooLarge()) announcePagedTooLarge();
-
   if (paged) {
     // Leaving continuous mode, scrollTop is whatever the reader had; it means
     // nothing here and a non-zero value would offset every column.
     view.scrollTop = 0;
+    // Before the filler and the indicator: both read the flow's width, and the
+    // flow is only this chapter.
+    applyActiveChapter();
+    // Before the indicator: the filler changes the page COUNT, and an indicator
+    // drawn from the pre-filler width would be one page short of what it is
+    // about to become.
+    updateNotesPagedFiller();
     updateNotesPageIndicator();
   } else if (wasPaged) {
+    view.classList.remove("has-page-filler");
     view.scrollLeft = 0;
   }
-}
-
-// Which note the notice has already been shown for, by length — enough to tell
-// "the reader opened another huge note" from "the same note re-rendered because
-// they typed a character", without holding on to a megabyte of markdown.
-let pagedTooLargeAnnouncedFor = -1;
-
-function announcePagedTooLarge() {
-  const size = (state.notes || "").length;
-  if (pagedTooLargeAnnouncedFor === size) return;
-  pagedTooLargeAnnouncedFor = size;
-  showToast(`Note too long for pages (${Math.round(size / 1000)}KB) — scrolling instead`);
 }
 
 // Snap to the nearest page after a free swipe, and keep the indicator honest
@@ -396,10 +556,19 @@ export function scheduleNotesPageSettle() {
     // and a real swipe never sets it.
     if (isProgrammaticNotesScroll()) { scheduleNotesPageSettle(); return; }
     const width = notesPageWidth();
+    const max = notesMaxScrollLeft();
+    // Already at the end of the flow: this is the last page and there is nothing
+    // to snap to. Snapping anyway is what pulled the reader off the final page
+    // every time they swiped to it.
+    if (max > 0 && view.scrollLeft >= max - PAGE_EPSILON) {
+      updateNotesPageIndicator(notesPageCount() - 1);
+      return;
+    }
     const nearest = Math.round(view.scrollLeft / width);
-    if (Math.abs(view.scrollLeft - nearest * width) > PAGE_EPSILON) {
+    const to = Math.min(nearest * width, max);
+    if (Math.abs(view.scrollLeft - to) > PAGE_EPSILON) {
       markProgrammaticNotesScroll(400);
-      view.scrollTo({ left: nearest * width, behavior: "smooth" });
+      view.scrollTo({ left: to, behavior: "smooth" });
     }
     updateNotesPageIndicator(nearest);
   }, SETTLE_MS);
@@ -415,6 +584,10 @@ export function repaginateNotesPreservingPlace() {
   cancelAnimationFrame(refitFrame);
   refitFrame = requestAnimationFrame(() => {
     refitFrame = 0;
+    // A resize re-flows every column, so whether the last page is short has
+    // changed too — measured before the page is aimed, since the filler moves
+    // the page boundaries the aim is computed against.
+    updateNotesPagedFiller();
     if (anchor?.isConnected) goToNotesPage(notesPageForElement(anchor), { smooth: false });
     updateNotesPageIndicator();
   });
@@ -422,15 +595,46 @@ export function repaginateNotesPreservingPlace() {
 
 // The first top-level block whose left edge is at or past the current page's
 // left edge — i.e. the first thing the reader can actually see.
+// Binary search, not a sweep. Document order runs along X in a columned layout,
+// so a block's `left` is monotonic across the list — and this is called from
+// every re-aim, every repagination and (via blockAtNotesReadingLine) every pin,
+// where a linear walk forced a getBoundingClientRect on every block in the note
+// before finding one near the front. On a long note that is thousands of forced
+// layouts per page turn.
+//
+// `left` is the union of a fragmented block's rects, i.e. its FIRST fragment,
+// which is the right key here: a paragraph flowing across a column break belongs
+// to the column it starts in.
 export function firstVisibleNotesBlock() {
   const view = el.notesView;
   if (!view) return null;
+  // Only the active chapter is laid out in paged mode; every other block
+  // reports a zero rect, which the search below cannot order. Scoping to the
+  // chapter on screen is also simply the right answer to "what is the reader
+  // looking at".
+  const active = view.querySelector(":scope > .notes-chunk.is-active-chapter");
+  const blocks = active && isNotesPaged()
+    ? [...active.children].filter((n) => n.nodeType === 1)
+    : notesTopLevelBlocks(view);
+  if (!blocks.length) return null;
   const origin = view.getBoundingClientRect().left;
-  for (const block of notesTopLevelBlocks(view)) {
-    const rect = block.getBoundingClientRect();
-    if (rect.width && rect.left >= origin - PAGE_EPSILON) return block;
+  let low = 0;
+  let high = blocks.length - 1;
+  let found = null;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const rect = blocks[mid].getBoundingClientRect();
+    // A zero-width block (an empty or fully-collapsed one) has no position to
+    // compare; treat it as "before" so the search keeps moving forward rather
+    // than converging on it.
+    if (!rect.width || rect.left < origin - PAGE_EPSILON) {
+      low = mid + 1;
+    } else {
+      found = blocks[mid];
+      high = mid - 1;
+    }
   }
-  return notesTopLevelBlocks(view)[0] || null;
+  return found || blocks[0];
 }
 
 // Wheel → page turn.

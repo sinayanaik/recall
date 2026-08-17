@@ -11,6 +11,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { buildNotesToc } from "../notes/toc.js?v=__BUILD__";
+import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
 
@@ -480,8 +481,13 @@ export function liveBlockNodes(container, nodes, claimed) {
 // chunked in continuous mode is flattened on the way into pages and re-chunked
 // on the way out.
 export function shouldChunkRenderedBlocks(container, blockCount) {
-  if (container !== el.notesView || blockCount < NOTES_CHUNK_MIN_BLOCKS) return false;
-  return !container.classList.contains("is-paged");
+  if (container !== el.notesView || !blockCount) return false;
+  // Paged mode ALWAYS wraps, at any size, because there the wrapper is what
+  // makes one chapter showable on its own — see notesChapterBoundaries. It used
+  // to be the opposite (never wrap when paged), which is why paged mode had to
+  // lay out the entire book and why it refused above 250,000 characters.
+  if (container.classList.contains("is-paged")) return true;
+  return blockCount >= NOTES_CHUNK_MIN_BLOCKS;
 }
 
 // Put `container` into whichever shape shouldChunkRenderedBlocks now wants,
@@ -498,39 +504,253 @@ export function reshapeRenderedChunks(container) {
   if (container !== el.notesView) return;
   const blocks = notesTopLevelBlocks(container).filter((node) => node.nodeType === 1);
   const want = shouldChunkRenderedBlocks(container, blocks.length);
-  if (want === isChunkedSurface(container)) return;
-  if (want) rechunkRenderedBlocks(container, blocks.map((node) => [node]));
+  // Regrouped even when the answer to "should this be chunked" is unchanged:
+  // going from continuous to paged keeps wrapping but changes WHAT a wrapper
+  // is, from a run of forty blocks to a whole chapter.
+  if (want === isChunkedSurface(container) && !container.classList.contains("is-paged")) return;
+  if (want) rechunkRenderedBlocks(container, blocks.map((node) => [node]), notesChunkBoundaries(blocks.length));
   else container.replaceChildren(...blocks);
 }
 
-export function rechunkRenderedBlocks(container, groups) {
-  const fragment = document.createDocumentFragment();
-  let chunk = null;
+// Where a chunk must start. Paged mode chapters; continuous mode has no opinion
+// and lets the fixed run size decide.
+export function notesChunkBoundaries(blockCount) {
+  if (!el.notesView?.classList.contains("is-paged")) return null;
+  const chapters = chapterIndexFor(state.notes || "");
+  const starts = new Set();
+  chapters.forEach((chapter) => {
+    if (chapter.blockStart < blockCount) starts.add(chapter.blockStart);
+  });
+  return starts.size ? starts : null;
+}
+
+// ── Why the existing chunk ELEMENTS are reused ─────────────────────────────
+//
+// `content-visibility: auto` remembers the size a box last laid out at, and
+// that memory belongs to the ELEMENT. Building a fresh set of wrappers and
+// calling container.replaceChildren() on them — which is what this did — threw
+// that memory away for every off-screen chunk in the note, so each one snapped
+// back to the flat `contain-intrinsic-size` estimate. On a 4MB note that is
+// hundreds of thousands of pixels of document height changing in one frame,
+// under a reader whose scrollTop suddenly points somewhere else entirely.
+//
+// It happened on EVERY same-note re-render: making a highlight on a long note
+// went through here, and settleNotesPin was then left trying to claw back a
+// displacement that the repaint itself had just invented. That is the "abrupt
+// and unintended page jump" on a big note.
+//
+// So the wrappers are kept and only their CONTENTS are re-homed. Blocks that
+// are already in the right chunk in the right order are not touched at all,
+// which is the overwhelmingly common case (one edited block out of thousands).
+// `boundaries` is an optional Set of BLOCK INDEXES at which a new chunk must
+// begin. Continuous mode passes nothing and gets fixed runs of NOTES_CHUNK_SIZE;
+// paged mode passes its chapter starts, so one chunk is exactly one chapter and
+// showing a chapter is a CSS class rather than a re-render.
+export function rechunkRenderedBlocks(container, groups, boundaries = null) {
+  // The chunk each group belongs to, decided first so the walk below can be a
+  // straight comparison against what is already there.
+  const plan = [];
   let filled = 0;
-  const startChunk = () => {
-    chunk = document.createElement("div");
-    chunk.className = NOTES_CHUNK_CLASS;
-    fragment.appendChild(chunk);
-    filled = 0;
-    return chunk;
-  };
-  groups.forEach((nodes) => {
+  let index = -1;
+  let soloOpen = false;
+  groups.forEach((nodes, blockIndex) => {
     if (!nodes || !nodes.length) return;
     const solo = nodes.some(blockWantsOwnChunk);
-    if (!chunk || filled >= NOTES_CHUNK_SIZE || solo) startChunk();
-    if (solo) chunk.classList.add("is-uncontained");
-    nodes.forEach((node) => chunk.appendChild(node));
+    // With explicit boundaries the size cap does not apply: a chapter is one
+    // chunk however many blocks it holds, and splitting it would put half of it
+    // behind `display: none`.
+    const forced = boundaries ? boundaries.has(blockIndex) : (filled >= NOTES_CHUNK_SIZE || solo || soloOpen);
+    if (index === -1 || forced) {
+      index += 1;
+      filled = 0;
+    }
+    plan.push({ nodes, index, solo: boundaries ? false : solo });
     filled += 1;
     // A block that had to stand alone must not collect neighbours after it.
-    if (solo) chunk = null;
+    soloOpen = solo;
   });
-  container.replaceChildren(fragment);
+
+  const wanted = index + 1;
+  const existing = Array.from(container.children).filter((node) => node.classList?.contains(NOTES_CHUNK_CLASS));
+  const chunks = [];
+  for (let i = 0; i < wanted; i += 1) {
+    let chunk = existing[i];
+    if (!chunk) {
+      chunk = document.createElement("div");
+      chunk.className = NOTES_CHUNK_CLASS;
+      container.appendChild(chunk);
+    }
+    chunks.push(chunk);
+  }
+  // Anything left over from a shorter note. Removed rather than emptied so the
+  // container's children stay exactly the chunk list.
+  for (let i = wanted; i < existing.length; i += 1) existing[i].remove();
+  // Any stray child that is not a chunk (a mode flip left blocks at top level).
+  Array.from(container.children).forEach((node) => {
+    if (!node.classList?.contains(NOTES_CHUNK_CLASS)) node.remove();
+  });
+  // Order the chunks themselves, which a fresh append may have got wrong.
+  chunks.forEach((chunk, i) => {
+    if (container.children[i] !== chunk) container.insertBefore(chunk, container.children[i] || null);
+  });
+
+  // ── Re-home with appendChild, and NO sibling cursors ─────────────────────
+  //
+  // The cursor walk used further down for the unchunked case cannot be lifted
+  // here, and trying to do so is what broke every note over 2,000 blocks. That
+  // walk is correct only because it has ONE container: hold a `firstChild`
+  // cursor per chunk and the first block that moves from chunk A to chunk B is
+  // detached from A by B's insertBefore — so A's cursor now points at a node
+  // that is no longer A's child, and the cleanup pass throws NotFoundError.
+  //
+  // appendChild in plan order has no such state. It moves a node out of
+  // wherever it was, and the destination order falls out of the call order.
+  // This is exactly what the original code did; the only thing that changed is
+  // that the wrappers above are reused instead of rebuilt.
+  const solos = new Array(wanted).fill(false);
+  const planned = new Set();
+  plan.forEach(({ nodes, index: at, solo }) => {
+    if (solo) solos[at] = true;
+    const chunk = chunks[at];
+    nodes.forEach((node) => {
+      planned.add(node);
+      chunk.appendChild(node);
+    });
+  });
+  // Anything still sitting in a chunk that no block claimed never made it into
+  // the new document. Tested against the whole plan, not against one chunk's
+  // remainder, so a node that moved between chunks is never mistaken for a
+  // leftover.
+  chunks.forEach((chunk) => {
+    Array.from(chunk.childNodes).forEach((node) => {
+      if (!planned.has(node)) chunk.removeChild(node);
+    });
+  });
+  chunks.forEach((chunk, i) => chunk.classList.toggle("is-uncontained", solos[i]));
+}
+
+// ── Streaming the first render ─────────────────────────────────────────────
+//
+// A cold render of a book is one synchronous burst, and that burst is what makes
+// opening a large note feel broken. Measured on a 2MB / 18,061-block note:
+// marked.parse per block plus one DOMPurify pass is 323ms, the lexer another
+// 125ms, and the whole renderNotesView 884ms — during which the tab answers
+// nothing. A long press lands inside that and is classified as a scroll, which
+// is why selection "needs pressing over and over" on a big note.
+//
+// So a cold render is done in batches with a yield between them. Blocks are
+// appended in DOCUMENT ORDER, so what appears first is the top of the note and
+// content only ever arrives BELOW what is already on screen — never a blank gap
+// above the viewport, which is what made the old placeholder + IntersectionObserver
+// attempt jitter (see the note in patchRenderedBlocks; do not reintroduce that).
+//
+// Only for a cold render of a big note. A warm re-render — an edit, a highlight,
+// the raw↔rendered toggle — reuses nearly every block and its placement walk is
+// already fast; routing that through here would add yields to something that is
+// imperceptible anyway, and would make an edit visibly repaint.
+export const RENDER_BATCH_BUDGET_MS = 16;
+
+export const RENDER_STREAM_MIN_BLOCKS = 400;
+
+// How many freshly built nodes are enhanced per frame. Much bigger than a build
+// batch: enhancement is far cheaper per node, and each slice costs a whole frame
+// to yield. At 600 an 18,000-block note spent thirty frames — half a second — of
+// pure waiting and the full render went from 1.0s to 2.4s for no gain the reader
+// could see. Sized so a very large note is a handful of slices, not dozens.
+export const ENHANCE_BATCH_BLOCKS = 3000;
+
+// Yields in a way that actually lets the browser DRAW.
+//
+// scheduler.yield() was the obvious choice and is the wrong one here: its
+// continuation is prioritised above timers and rendering, so the batches ran
+// back to back and nothing was painted until the whole note was built —
+// measured as "time to first visible block: never, until the end". It keeps a
+// task responsive to input, which is not the same as letting the page show
+// progress.
+//
+// A frame callback is the thing that guarantees a paint opportunity. The
+// timeout is a floor, not a preference: requestAnimationFrame does not fire in
+// a background tab, and without it a note opened in a tab the reader then
+// switched away from would stop rendering half-built.
+export const RENDER_FRAME_TIMEOUT_MS = 32;
+
+export function yieldToEventLoop() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(); } };
+    requestAnimationFrame(done);
+    setTimeout(done, RENDER_FRAME_TIMEOUT_MS);
+  });
+}
+
+// Build every block of a cold render, appending as it goes. Returns the node
+// groups, in block order, so the caller can record them in the cache.
+export async function streamRenderedBlocks(container, blocks, prelude, sequenceOk, prebuilt = null) {
+  // `prebuilt` carries the node groups the cache could reuse, so a big edit
+  // streams only what actually changed while still placing the untouched blocks
+  // in order. Without it the condition below had to demand that NOTHING was
+  // reusable, which almost never holds — two notes from the same source share
+  // their headings and list blocks — and the streaming path went untaken on
+  // exactly the renders it was written for.
+  const groups = prebuilt ? prebuilt.slice() : new Array(blocks.length);
+  const chunked = shouldChunkRenderedBlocks(container, blocks.length);
+  const boundaries = chunked ? notesChunkBoundaries(blocks.length) : null;
+  container.replaceChildren();
+
+  let chunk = null;
+  let filled = 0;
+  const place = (blockIndex, nodes) => {
+    if (!chunked) {
+      nodes.forEach((node) => container.appendChild(node));
+      return;
+    }
+    const forced = boundaries ? boundaries.has(blockIndex) : filled >= NOTES_CHUNK_SIZE;
+    if (!chunk || forced) {
+      chunk = document.createElement("div");
+      chunk.className = NOTES_CHUNK_CLASS;
+      container.appendChild(chunk);
+      filled = 0;
+    }
+    nodes.forEach((node) => chunk.appendChild(node));
+    filled += 1;
+  };
+
+  let at = 0;
+  while (at < blocks.length) {
+    const started = performance.now();
+    // One batch is however many blocks fit in the budget, re-measured every
+    // time: block cost varies by two orders of magnitude between a one-line
+    // paragraph and a big table, so a fixed batch size is either too slow to
+    // yield or too small to be efficient.
+    let end = at;
+    do {
+      end = Math.min(blocks.length, end + 24);
+      // Only the blocks with no reusable DOM are parsed; the rest are already
+      // built and just need placing in order.
+      const buildAt = [];
+      for (let i = at; i < end; i += 1) if (!groups[i]) buildAt.push(i);
+      if (buildAt.length) {
+        const parts = renderPreparedBlocks(buildAt.map((i) => blocks[i]), prelude);
+        buildAt.forEach((i, n) => { groups[i] = nodesFromHtml(parts[n] ?? ""); });
+      }
+      for (let i = at; i < end; i += 1) place(i, groups[i] || []);
+      at = end;
+    } while (at < blocks.length && performance.now() - started < RENDER_BATCH_BUDGET_MS);
+
+    if (at < blocks.length) {
+      await yieldToEventLoop();
+      // A newer render started while this one was yielding; its own
+      // replaceChildren has already taken the container.
+      if (!sequenceOk()) return null;
+    }
+  }
+  return groups;
 }
 
 // Rebuilds `container`'s children to match `blocks`, reusing the DOM of every
 // block whose source is unchanged. Returns the new block list plus the nodes
 // that were freshly built, which are the only ones needing enhancement.
-export function patchRenderedBlocks(container, blocks, prelude, cached) {
+export async function patchRenderedBlocks(container, blocks, prelude, cached, sequenceOk = () => true) {
   const pool = new Map(); // block source -> reusable node groups, in document order
   if (cached) {
     const claimed = new Set();
@@ -551,6 +771,30 @@ export function patchRenderedBlocks(container, blocks, prelude, cached) {
     if (reused) groups[index] = reused;
     else missing.push(index);
   });
+
+  // Cold and large: stream it, so the top of the note is on screen in a few
+  // milliseconds instead of after the whole book has been parsed.
+  //
+  // The test is "nothing was reusable", not "there was no cache entry". A stale
+  // entry — from another note, or from before a theme change bumped the render
+  // generation — is an object that exists and reuses nothing, and testing for
+  // its presence sent every genuinely cold render of a book down the
+  // synchronous path. Measured: the streaming path was never once taken by a
+  // reader opening a note.
+  if (missing.length >= RENDER_STREAM_MIN_BLOCKS) {
+    const streamed = await streamRenderedBlocks(container, blocks, prelude, sequenceOk, groups);
+    if (!streamed) return null;
+    // Only the newly built blocks are `fresh`: enhanceRenderedMarkdown re-runs
+    // KaTeX, diagram deferral and code highlighting over whatever it is handed,
+    // and handing it a reused block would redo work whose result is already in
+    // the DOM.
+    const built = new Set(missing);
+    const fresh = [];
+    streamed.forEach((nodes, index) => {
+      if (built.has(index)) nodes.forEach((node) => fresh.push(node));
+    });
+    return { blocks: blocks.map((key, index) => ({ key, nodes: streamed[index] })), fresh };
+  }
 
   // Large notes used to get lightweight placeholder nodes here, upgraded to
   // real content as they scrolled into view. That made the FIRST paint fast,
@@ -579,7 +823,7 @@ export function patchRenderedBlocks(container, blocks, prelude, cached) {
     // BLOCK. Re-homing is O(n) appendChild on nodes that mostly already exist,
     // which against the 20-odd seconds a note this size takes to lay out at all
     // is not measurable.
-    rechunkRenderedBlocks(container, groups);
+    rechunkRenderedBlocks(container, groups, notesChunkBoundaries(groups.length));
   } else {
     // Walk the target order once: a node already in the right place is stepped
     // over, anything else is moved (reused) or inserted (fresh) in front of the
@@ -650,7 +894,14 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
     // Every block is parsed behind the document's link reference definitions, so
     // a change to those changes what any block could render to: start over.
     const reusable = cached && cached.prelude === split.prelude ? cached : null;
-    const patched = patchRenderedBlocks(container, split.blocks, split.prelude, reusable);
+    // Awaited: a cold render of a big note is streamed in batches with a yield
+    // between them, so this can span many frames. `sequenceOk` is how it knows
+    // to abandon a run whose container a newer render has already taken.
+    const patched = await patchRenderedBlocks(
+      container, split.blocks, split.prelude, reusable,
+      () => renderSequence.get(container) === sequence
+    );
+    if (!patched) return; // superseded mid-stream
     roots = patched.fresh;
     resetRenderedClozes(container);
     // Committed before the awaits below: another render can start while mermaid
@@ -666,7 +917,19 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
     if (cacheable) renderedBlockCache.delete(container);
   }
 
-  await enhanceRenderedMarkdown(container, roots);
+  // Sliced for a big note, for the same reason the build is: enhancement runs
+  // KaTeX over every fresh node and several document-wide queries, which on
+  // 18,000 blocks is one ~300ms task landing immediately after the reader can
+  // already see the text. Slicing lets those frames paint and keeps input alive.
+  if (roots && roots.length >= RENDER_STREAM_MIN_BLOCKS) {
+    for (let i = 0; i < roots.length; i += ENHANCE_BATCH_BLOCKS) {
+      await enhanceRenderedMarkdown(container, roots.slice(i, i + ENHANCE_BATCH_BLOCKS));
+      if (renderSequence.get(container) !== sequence) return;
+      if (i + ENHANCE_BATCH_BLOCKS < roots.length) await yieldToEventLoop();
+    }
+  } else {
+    await enhanceRenderedMarkdown(container, roots);
+  }
   // Images still waiting to upload live in IndexedDB behind a recall-img: URL,
   // which no browser can load directly — swap in a blob URL so they're visible
   // straight away rather than only after they eventually reach the cloud.
@@ -679,5 +942,16 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
   // never just the fresh blocks: an inserted or deleted block shifts the token
   // indices every other image's resize handler was bound to. Runs synchronously
   // here (the print/export path reads the grips right after this resolves).
-  scheduleSurfaceFinalize(container, { sync: true });
+  // Synchronous for everything except a big note. The tail is buildNotesToc
+  // (every heading) plus the block-height estimate (a forced layout of a
+  // 48-block sample) — measured at 70ms and 126ms respectively on an
+  // 18,000-block note, both landing right after the reader can already see and
+  // scroll the text. Neither is needed for the note to be readable, so on a
+  // large note they wait a frame instead of holding the thread.
+  //
+  // It stays sync below the threshold, and always for the card faces and the
+  // print/export roots: exportPdf reads the image grips immediately after this
+  // resolves, and those are small surfaces where the tail costs nothing.
+  const bigNotes = container === el.notesView && (split?.blocks.length || 0) >= RENDER_STREAM_MIN_BLOCKS;
+  scheduleSurfaceFinalize(container, { sync: !bigNotes });
 }

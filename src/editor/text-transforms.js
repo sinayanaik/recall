@@ -180,6 +180,71 @@ export function toggleBulletPoints(text) {
   return formatted.join("\n");
 }
 
+// ── Smart bulletify ────────────────────────────────────────────────────────
+//
+// toggleBulletPoints above is line-based: it puts a "- " in front of every line
+// and takes it off again. That is the right answer when the text is already one
+// idea per line, and useless for the case this exists for — a run-on paragraph
+// that IS a list and was never written as one:
+//
+//   "You need eggs, flour and milk; whisk them together, then rest the batter."
+//
+// So a single-line selection is SEGMENTED first. Explicit separators win over
+// sentence ends, because a writer who typed "1)" or " - " has already said where
+// the breaks go. Sentence splitting is last and deliberately conservative — it
+// reuses nothing clever, just the end-of-sentence punctuation followed by a
+// capital, so an abbreviation mid-sentence does not become a bullet of its own.
+export const BULLET_INLINE_NUMBER_RE = /\s+(?=\d+[.)]\s+\S)/g;
+
+export const BULLET_INLINE_DASH_RE = /\s+(?:[-–—•]|\u2022)\s+/g;
+
+export const BULLET_SENTENCE_RE = /(?<=[.!?])\s+(?=[A-Z(“"'\[])/g;
+
+// A separator only counts if it produces more than one non-trivial piece —
+// otherwise "e.g. one thing" becomes a single bullet with its "e.g." shaved off.
+export function segmentForBullets(line) {
+  const tidy = (parts) => parts.map((p) => p.trim()).filter((p) => p.length > 1);
+
+  const numbered = tidy(line.split(BULLET_INLINE_NUMBER_RE)).map((p) => p.replace(/^\d+[.)]\s*/, ""));
+  if (numbered.length > 1) return numbered;
+
+  const dashed = tidy(line.split(BULLET_INLINE_DASH_RE));
+  if (dashed.length > 1) return dashed;
+
+  const semis = tidy(line.split(";"));
+  if (semis.length > 1) return semis;
+
+  const sentences = tidy(line.split(BULLET_SENTENCE_RE));
+  if (sentences.length > 1) return sentences;
+
+  return [line.trim()].filter(Boolean);
+}
+
+export function smartBulletify(text) {
+  const lines = String(text || "").split("\n");
+  const content = lines.filter((line) => line.trim());
+  if (!content.length) return text;
+
+  // Already a list? Then this is the "off" half of the toggle, exactly as
+  // toggleBulletPoints does it — pressing the button twice has to give the text
+  // back, not bullet the bullets.
+  if (content.every((line) => LIST_LINE_RE.test(line))) {
+    return lines.map((line) => line.replace(/^(\s*)(?:[-*+]|\d+[.)])[ \t]+/, "$1")).join("\n");
+  }
+
+  // Several lines already: one bullet each, which is what the reader means by
+  // selecting several lines and pressing this.
+  if (content.length > 1) {
+    return lines
+      .map((line) => (line.trim() ? line.replace(/^(\s*)/, "$1- ") : line))
+      .join("\n");
+  }
+
+  return segmentForBullets(content[0]).map((part) => `- ${part}`).join("\n");
+}
+
+export const LIST_LINE_RE = /^\s*(?:[-*+]|\d+[.)])[ \t]+/;
+
 export function clearFormatting(text) {
   let cleared = text;
   

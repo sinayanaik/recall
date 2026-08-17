@@ -506,6 +506,18 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // "system") meant the inheritance never took effect, and "Base font family"
   // appeared to do nothing to any card or note — it only reached app chrome.
   root.style.setProperty("--app-font-family", resolveFontFamily(settings.fontFamily));
+  // …except the notes, which can now opt out of it. Same reason this one is
+  // hand-written rather than left to the styleCssVariables loop below: the
+  // stored value is a KEY into fontFamilyChoices, not a font stack, so it has to
+  // go through resolveFontFamily. "inherit" clears the override entirely rather
+  // than writing the word "inherit" into the property — the :root declaration is
+  // already `var(--app-font-family)`, so removing ours restores that alias and
+  // the Basics font keeps reaching the notes exactly as before.
+  if (settings.notesFontFamily && settings.notesFontFamily !== "inherit") {
+    root.style.setProperty("--notes-font-family", resolveFontFamily(settings.notesFontFamily));
+  } else {
+    root.style.removeProperty("--notes-font-family");
+  }
   root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
   Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
     root.style.setProperty(cssVariable, usable(key));

@@ -145,6 +145,10 @@ const server = await serveOn(ROOT);
 await new Promise((r) => setTimeout(r, 900));
 const browser = await puppeteer.launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 const failures = [];
+// Counted, not written down. The summary line used to carry a literal "7", so
+// adding a case left it reporting the old number — a check whose own tally can
+// go stale is a check nobody can trust the tally of.
+const ran = { count: 0 };
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 900, height: 800 });
@@ -170,9 +174,18 @@ try {
     // createNewDeck opens the raw editor for an empty note; this case is about
     // the RENDERED view, which is where a reader actually selects.
     api.resetNotesEditingUI();
-    api.renderNotesView();
-    await new Promise((r) => setTimeout(r, 1500));
+    // Awaited, and then waited on for real geometry. A fixed sleep here is what
+    // made this file fail in bursts when the suite runs it after several other
+    // headless browsers: the render had not finished, every case measured an
+    // unlaid-out paragraph, and ten assertions failed at once as though the app
+    // were broken.
+    await api.renderNotesView();
   }, MODULE_API, FAKE, probeNote());
+
+  await page.waitForFunction(() => {
+    const view = document.querySelector("#notesView");
+    return Boolean(view) && !view.hidden && view.clientWidth > 200 && view.querySelectorAll("p").length > 10;
+  }, { timeout: 45000 });
 
   const stage = await page.evaluate(() => ({
     blocks: document.querySelector("#notesView")?.children.length || 0,
@@ -192,17 +205,61 @@ try {
   // three), which reads exactly like a catastrophic app bug and is not one.
   // A character's own rect has a real interior, and its vertical middle is a
   // line rather than the seam between two.
-  const charIn = (marker, index) => page.evaluate(({ m, i }) => {
-    const p = Array.from(document.querySelectorAll("#notesView p")).find((n) => n.textContent.trim().startsWith(m));
-    if (!p) return null;
-    p.scrollIntoView({ block: "center" });
-    const text = p.firstChild;
-    const range = document.createRange();
-    range.setStart(text, i);
-    range.setEnd(text, i + 1);
-    const r = range.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  }, { m: marker, i: index });
+  // Measured AFTER the scroll has actually happened, not in the same task as the
+  // request for it. scrollIntoView only schedules the scroll; reading a rect
+  // immediately afterwards can return the pre-scroll position, and a drag aimed
+  // there lands on whatever is really at those coordinates — usually nothing
+  // selectable. That is the intermittent "every drag selected 0 characters" run
+  // this file has been producing, which looks exactly like the app being broken
+  // and is not. Two frames plus a settled-position check, then measure.
+  const charIn = async (marker, index, tries = 10) => {
+    for (let attempt = 0; attempt < tries; attempt += 1) {
+      const at = await charInOnce(marker, index);
+      if (at) return at;
+      // Under load the scroll can still be settling, or a re-render can have
+      // replaced the paragraph between the scroll and the measure. Retrying is
+      // about the HARNESS reaching a stable state, never about giving the app
+      // another go: the assertions below are unchanged either way. Backs off,
+      // because the slow case is a machine that has just finished running
+      // another headless browser, not one that needs another 250ms.
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+    }
+    return null;
+  };
+
+  const charInOnce = async (marker, index) => {
+    const found = await page.evaluate((m) => {
+      const p = Array.from(document.querySelectorAll("#notesView p")).find((n) => n.textContent.trim().startsWith(m));
+      if (!p) return false;
+      p.scrollIntoView({ block: "center" });
+      return true;
+    }, marker);
+    if (!found) return null;
+    // Wait for scrollTop to stop changing — a smooth or interrupted scroll can
+    // still be in flight a frame later.
+    await page.evaluate(async () => {
+      const view = document.querySelector("#notesView");
+      let last = NaN;
+      for (let i = 0; i < 20; i += 1) {
+        await new Promise((r) => requestAnimationFrame(r));
+        if (view.scrollTop === last) return;
+        last = view.scrollTop;
+      }
+    });
+    return page.evaluate(({ m, i }) => {
+      const p = Array.from(document.querySelectorAll("#notesView p")).find((n) => n.textContent.trim().startsWith(m));
+      if (!p) return null;
+      const text = p.firstChild;
+      const range = document.createRange();
+      range.setStart(text, i);
+      range.setEnd(text, i + 1);
+      const r = range.getBoundingClientRect();
+      // Off-screen after all: aiming a drag here would press on whatever is at
+      // those coordinates instead, so say so rather than return a bad point.
+      if (r.bottom < 0 || r.top > window.innerHeight || !r.width) return null;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }, { m: marker, i: index });
+  };
 
   // Drop whatever is selected AND wait for the floating pill to go with it.
   // The pill is positioned just below the last selection and is a real element
@@ -234,12 +291,29 @@ try {
   async function check(name, run) {
     let got = null;
     let problem = null;
+    ran.count += 1;
     try { problem = await run(); } catch (e) { problem = `threw: ${e.message}`; }
     if (SHOT) await page.screenshot({ path: `/tmp/selection-${String(shot++).padStart(2, "0")}.png` });
     console.log(`  ${problem ? "FAIL" : "ok  "}  ${name}${problem ? ` — ${problem}` : ""}`);
     if (problem) failures.push(name);
     return got;
   }
+
+  // Wait for the fixture to be MEASURABLE, not merely present. `stage.blocks`
+  // only says the note rendered; a case aims at a character's own rect, and
+  // under load (the suite runs this straight after several other headless
+  // browsers) the layout can still be settling when the first drag is measured.
+  // Every case then fails at once with an unmeasurable point, which reads as a
+  // catastrophic selection bug and is the harness not being ready.
+  const ready = await (async () => {
+    for (let i = 0; i < 60; i += 1) {
+      const at = await charInOnce("P05", 4);
+      if (at) return true;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return false;
+  })();
+  if (!ready) throw new Error("the probe note never became measurable — the harness was not ready, so no case ran");
 
   console.log("── selecting text in a rendered note ──");
 
@@ -295,6 +369,64 @@ try {
     // this was fixed a drag here returned its entire contents, 369 characters
     // of every button in the app.
     if (sel.len > 0) return `selected ${sel.len} characters: ${JSON.stringify(sel.text.slice(0, 80))}`;
+    return null;
+  });
+
+  // ── When the pill appears, and where ──────────────────────────────────────
+  //
+  // Reported as "the text options spawn almost immediately after I start
+  // selecting, before I've finished selecting, and block the actual content".
+  // Both halves are checked here because both were true: the bar came up on a
+  // 160ms debounce mid-drag, and it was positioned below the selection, over
+  // the lines about to be read.
+
+  await check("the pill stays away while the drag is still going", async () => {
+    await clearSelection();
+    const from = await charIn("P05", 4);
+    const to = await charIn("P05", 40);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 20; i++) {
+      await page.mouse.move(from.x + ((to.x - from.x) * i) / 20, from.y + ((to.y - from.y) * i) / 20);
+      await new Promise((r) => setTimeout(r, 14));
+    }
+    // Well past the 160ms debounce that used to put it on screen here.
+    await new Promise((r) => setTimeout(r, 450));
+    const shown = await page.evaluate(() => {
+      const p = document.querySelector("#selectionFloat");
+      return Boolean(p && !p.hidden);
+    });
+    const selected = await page.evaluate(() => (window.getSelection()?.toString() || "").length);
+    await page.mouse.up();
+    await new Promise((r) => setTimeout(r, 400));
+    if (!selected) return "the drag selected nothing, so nothing was actually tested";
+    if (shown) return "the pill appeared mid-drag, on an unfinished selection";
+    const after = await page.evaluate(() => {
+      const p = document.querySelector("#selectionFloat");
+      return Boolean(p && !p.hidden);
+    });
+    if (!after) return "the pill never appeared after the drag was released";
+    return null;
+  });
+
+  await check("the pill sits above the selection, not over what comes next", async () => {
+    const at = await charIn("P05", 4);
+    await dragTo(at, await charIn("P05", 40), 20);
+    const geo = await page.evaluate(() => {
+      const p = document.querySelector("#selectionFloat");
+      if (!p || p.hidden) return null;
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return null;
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      const b = p.getBoundingClientRect();
+      return { pillBottom: b.bottom, pillTop: b.top, selTop: r.top, selBottom: r.bottom, innerHeight: window.innerHeight };
+    });
+    if (!geo) return "the pill never appeared for a live selection";
+    // Above by preference. Below is only correct when there was no room above,
+    // which this fixture (a paragraph well down the note) does not produce.
+    if (geo.pillBottom > geo.selTop + 1) {
+      return `the pill covers the text after the selection (pill ${Math.round(geo.pillTop)}-${Math.round(geo.pillBottom)}, selection starts ${Math.round(geo.selTop)})`;
+    }
     return null;
   });
 
@@ -364,10 +496,128 @@ try {
     }
     return null;
   });
+
+  // Reported as "bundle bold, italic, underline, code, strikethrough, text
+  // colour inside a separate nested item because I rarely use them". Nine
+  // controls sat across the bar in front of the ones that get used.
+  await check("the rarely-used formatting is behind one control", async () => {
+    const bar = await page.evaluate(() => {
+      const slot = document.getElementById("selectionFloatFormat");
+      if (!slot) return null;
+      const menu = slot.querySelector(".render-text-style-menu");
+      return {
+        topLevelActions: [...slot.children]
+          .map((n) => n.dataset.renderAction || (n.dataset.renderSplit ? "split:" + n.dataset.renderSplit : n.tagName))
+          .filter(Boolean),
+        hasMenu: Boolean(menu),
+        menuActions: menu ? [...menu.querySelectorAll("[data-render-action]")].map((b) => b.dataset.renderAction) : [],
+        menuColours: menu ? menu.querySelectorAll("[data-render-color]").length : 0,
+        menuFonts: menu ? menu.querySelectorAll("[data-render-font]").length : 0,
+      };
+    });
+    if (!bar) return "the formatting slot is not in the page";
+    if (!bar.hasMenu) return "there is no text-style popover";
+    for (const action of ["bold", "italic", "underline", "strikethrough", "code"]) {
+      if (!bar.menuActions.includes(action)) return `${action} is not inside the popover`;
+      if (bar.topLevelActions.includes(action)) return `${action} is still on the bar itself`;
+    }
+    if (bar.menuColours < 12) return `only ${bar.menuColours} colours in the popover`;
+    if (bar.menuFonts < 16) return `only ${bar.menuFonts} fonts in the popover`;
+    // Bulletify is an ACTION and stays out in front — that is the whole point
+    // of moving the styling in.
+    if (!bar.topLevelActions.includes("bulletify")) return "bulletify is not on the bar";
+    return null;
+  });
+
+  // Reported as: "it is annoying that when I click go to in highlights I am
+  // taken to the right place but the text formatting options come up
+  // unnecessarily". revealRenderedNoteRange deliberately SELECTS the span it
+  // jumped to, so the browser's own highlight shows exactly where you landed —
+  // and that is a real selectionchange, so the pill followed it up.
+  await check("a Go to jump lands without raising the formatting bar", async () => {
+    const ok = await page.evaluate(async () => {
+      const api = window.__api;
+      api.setViewMode("notes");
+      // A highlight to jump TO, placed well down the note so the jump has to
+      // scroll and the retry loop actually runs.
+      api.state.notes = api.state.notes.replace("P40 alpha", "P40 <mark>alpha</mark>");
+      api.setNotesScrolledSource(null);
+      await api.renderNotesView();
+      await new Promise((r) => setTimeout(r, 600));
+      document.querySelector("#notesView").scrollTop = 0;
+      window.getSelection()?.removeAllRanges();
+      await new Promise((r) => setTimeout(r, 400));
+      const marks = document.querySelectorAll("#notesView mark");
+      if (!marks.length) return "no <mark> rendered to jump to";
+      // Exactly what the Highlights panel's button does.
+      api.scheduleNoteJump({ offset: api.state.notes.indexOf("<mark>") }, undefined,
+        { markIndex: 0, markCount: marks.length });
+      return null;
+    });
+    if (ok) return ok;
+    // Past the jump's own retry loop AND the pill's 160ms debounce.
+    await new Promise((r) => setTimeout(r, 1400));
+    const state = await page.evaluate(() => ({
+      pill: Boolean(document.querySelector("#selectionFloat") && !document.querySelector("#selectionFloat").hidden),
+      selected: (window.getSelection()?.toString() || "").trim(),
+    }));
+    if (state.pill) return "the formatting bar appeared over a selection the reader never made";
+    // The span must still be visibly selected — that is what the selection is
+    // there for, and suppressing the pill must not cost it.
+    if (!state.selected) return "the jump target was not left selected";
+    return null;
+  });
+
+  // Reported as "the text select options are coming very delayed after selection
+  // happening". The bar used to compute everything its BUTTONS need — three
+  // clones of the selected fragment, two Turndown conversions, and an occurrence
+  // count that clones the whole note above the selection — before drawing
+  // itself. None of that is needed to draw it, and on a book it was the entire
+  // delay. Measured on a note big enough for the difference to be real.
+  await check("the bar appears promptly on a big note", async () => {
+    await page.evaluate(async () => {
+      const api = window.__api;
+      const words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet".split(" ");
+      const out = ["# Big probe", ""];
+      for (let i = 0; i < 3000; i++) out.push("Q" + String(i).padStart(4, "0") + " " + words.join(" ") + ".", "");
+      api.state.notes = out.join("\n");
+      api.setNotesScrolledSource(null);
+      await api.renderNotesView();
+      await new Promise((r) => setTimeout(r, 2500));
+    });
+    const from = await charIn("Q0005", 4);
+    const to = await charIn("Q0005", 40);
+    if (!from || !to) return "the probe paragraph never came into view";
+    await clearSelection();
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 12; i++) {
+      await page.mouse.move(from.x + ((to.x - from.x) * i) / 12, from.y + ((to.y - from.y) * i) / 12);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const released = Date.now();
+    await page.mouse.up();
+    // Poll rather than sleep: the number this reports IS the assertion.
+    let shownAfter = null;
+    while (Date.now() - released < 3000) {
+      const shown = await page.evaluate(() => {
+        const p = document.querySelector("#selectionFloat");
+        return Boolean(p && !p.hidden);
+      });
+      if (shown) { shownAfter = Date.now() - released; break; }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    if (shownAfter === null) return "the bar never appeared at all";
+    // The deliberate settle after release is 45ms; anything much past that is
+    // work that should not be on this path.
+    if (shownAfter > 400) return `the bar took ${shownAfter}ms to appear after the mouse came up`;
+    return null;
+  });
+
 } finally {
   await browser.close();
   server.proc.kill();
 }
 
-console.log(failures.length ? `\n${failures.length} selection problem(s).` : "\n7 selection cases, all clean.");
+console.log(failures.length ? `\n${failures.length} selection problem(s).` : `\n${ran.count} selection cases, all clean.`);
 process.exit(failures.length ? 1 : 0);

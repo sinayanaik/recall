@@ -14,7 +14,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
-import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
+import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll, markProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
@@ -608,6 +608,13 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true } =
   if (!flash) return true;
   // The browser's own selection highlight makes the exact span obvious; the
   // block flash draws the eye there first.
+  //
+  // Declared as OURS before it is made. This is a real Selection and it fires
+  // `selectionchange` like any other, so the floating formatting pill used to
+  // appear over a span the reader never selected — every "Go to" from the
+  // Highlights panel, every card's "Go to notes", every Quick Notes jump ended
+  // with a toolbar in the way of the thing you had just asked to be shown.
+  markProgrammaticNotesSelection();
   const sel = window.getSelection();
   sel?.removeAllRanges();
   try { sel?.addRange(range); } catch (_) {}
