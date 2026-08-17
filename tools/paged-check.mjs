@@ -475,6 +475,29 @@ const PROBE = `async (api) => {
       return true;
     });
 
+    // Reported as "I want continuous chapters, no gap between successive
+    // chapters". The filler column exists so a flow ending half a page short
+    // still has a reachable last page — right when the flow was the whole note,
+    // wrong once every chapter has that ending. Measured before this: 642px of
+    // blank flow after the content of EVERY chapter, a whole empty column
+    // between each pair.
+    big("no empty column is padded onto the end of a chapter", () => {
+      if (wrappers().length < 2) return "only one chapter, so nothing was tested";
+      if (view.classList.contains("has-page-filler")) return "the filler is applied while paging by chapter";
+      const origin = view.getBoundingClientRect().left;
+      const rects = [...view.querySelectorAll(".notes-chunk.is-active-chapter > *")]
+        .map((b) => b.getBoundingClientRect()).filter((r) => r.width);
+      if (!rects.length) return "the active chapter has no laid-out blocks";
+      const contentEnds = Math.max(...rects.map((r) => r.right)) - origin + view.scrollLeft;
+      const blank = view.scrollWidth - contentEnds;
+      // Less than a column. A padded column is ~half a page wide in two-column
+      // mode, so this cannot pass with one present.
+      if (blank > api.notesPageWidth() / 3) {
+        return Math.round(blank) + "px of blank flow after the chapter's content";
+      }
+      return true;
+    });
+
     big("the indicator names the chapter", () => {
       const label = document.querySelector(".notes-page-label")?.textContent || "";
       // Checked without a regex on purpose: the backslash classes in one are

@@ -223,6 +223,20 @@ export function updateNotesPagedFiller() {
   // One column IS one page, so the flow is always a whole number of pages and
   // there is never anything to fill.
   if (!isNotesPaged() || notesPagedColumns() < 2) return;
+  // ...and NEVER between chapters. The filler exists so a flow that ends half a
+  // page short still has a reachable final page — written when the flow was the
+  // whole note and there was exactly one such ending. Paging by chapter gives
+  // every chapter that ending, so this was appending an empty column at the end
+  // of each one: measured at 642px of blank flow per chapter, a whole column of
+  // nothing between every pair. That is the gap.
+  //
+  // Without it a short final page overlaps the one before rather than being
+  // padded — the reader sees the tail of the chapter beside a column they have
+  // already read, which is how a book ends a chapter anyway. It stays reachable
+  // and stable regardless: notesMaxScrollLeft() clamps the target,
+  // notesCurrentPage() treats the end of the flow as the last page, and
+  // scheduleNotesPageSettle leaves it alone.
+  if (view.querySelectorAll(":scope > .notes-chunk").length > 1) return;
   const width = view.clientWidth;
   if (width <= 0) return;
   const remainder = view.scrollWidth % width;

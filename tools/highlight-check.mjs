@@ -19,7 +19,7 @@
 
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -438,7 +438,26 @@ try {
   try {
     const page = await browser.newPage();
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.goto(`${server.base}/index.html`, { waitUntil: "networkidle2", timeout: 90000 });
+    // Injected BEFORE navigation, and the CDN cut off. These cases call
+    // splitPreparedBlocks, which needs `marked`: without it the split returns
+    // null, every note looks like zero blocks, and the chapter assertions fail
+    // for a reason that has nothing to do with the code under test. This file
+    // used to rely on the CDN answering, so it passed or failed on the network.
+    await page.setRequestInterception(true);
+    page.on("request", (r) => (r.url().includes("cdn.jsdelivr.net") ? r.abort() : r.continue()));
+    for (const lib of [
+      "recall-clipper/vendor/marked.min.js", "recall-clipper/vendor/purify.min.js",
+      "recall-clipper/vendor/katex/katex.min.js", "recall-clipper/vendor/katex/auto-render.min.js"
+    ]) {
+      const full = path.join(ROOT, lib);
+      if (existsSync(full)) await page.evaluateOnNewDocument(readFileSync(full, "utf8"));
+    }
+    await page.goto(`${server.base}/index.html`, { waitUntil: "domcontentloaded", timeout: 90000 });
+    await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 })
+      .catch(() => {});
+    if (!(await page.evaluate(() => Boolean(window.marked && window.DOMPurify)))) {
+      throw new Error("marked/DOMPurify never loaded — the chapter cases would fail for the wrong reason");
+    }
     results = await page.evaluate(
       async (probeSrc, apiSrc) => {
         const api = await (0, eval)(apiSrc)();
