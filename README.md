@@ -43,7 +43,13 @@ There is **no local-only mode.** The first screen asks for a Supabase URL and ke
 
 **Your data stays yours.** It's your Supabase project; there is no service in the middle. Row Level Security scopes every row to the account that created it, so several people can share one deployment without seeing each other's libraries.
 
-**The first load needs internet** — the app pulls its libraries (marked, DOMPurify, KaTeX, Prism, Mermaid, nomnoml, JSZip, Turndown, Panzoom, supabase-js) from `cdn.jsdelivr.net`, and sign-in obviously needs the network. After that first successful load, the service worker has cached everything and the app works offline.
+**Everything the app needs to start is in this repo.** The libraries the first render depends on — marked, DOMPurify, KaTeX (with its fonts), Prism (with 46 grammars) and supabase-js — are served from `vendor/`, same-origin, and precached before the service worker takes over. So the app opens with no network at all, on a connection that hangs, and on a network that blocks `cdn.jsdelivr.net` outright.
+
+They used to be parser-blocking `<script>` tags pointed at that CDN, which meant a blocked or merely *hanging* CDN gave you a blank page — nothing in this app paints before its JavaScript runs. Worse, the worker cached them under a name containing the commit sha, so **every release threw them away**, and any launch without a connection between the update and the next successful download had nothing to load.
+
+The heavy on-demand libraries (Mermaid, JSZip, nomnoml, Turndown) are still fetched from `cdn.jsdelivr.net` the first time you draw a diagram, run a backup or paste rich text — but they now live in a cache a release does not touch, so they are downloaded once rather than once per deploy. Until one has been fetched at least once, that one feature degrades: a diagram renders as its source, a backup asks you to go online. Everything else works.
+
+**Sign-in still needs the network**, once. After that the session is stored on the device, and a launch with no connection opens straight into your library.
 
 ---
 
@@ -617,7 +623,8 @@ Two more worth doing if you plan to use more than one device:
 | Account created, but it says the email isn't confirmed | "Confirm email" is still on | Step 4 |
 | **Create account** says "Check your email for a confirmation link" | "Confirm email" is on, and the account genuinely exists but can't sign in yet | Step 4, or click the link. On a project with no SMTP configured that mail never arrives, so turning confirmation off is the real fix |
 | **Create account** says the email already has an account | It does — Supabase hides this behind a fake success, so the app infers it from an empty `identities` list | Switch to Sign In |
-| "Couldn't load the sign-in library" on launch | `cdn.jsdelivr.net` is blocked or unreachable, so `supabase-js` never loaded | Try again; check content blockers and proxies. **Don't** use "Change Supabase project" — your saved settings aren't the problem |
+| "Couldn't load the sign-in library" on launch | `vendor/supabase-js` didn't load — a content blocker, or a half-finished install | Reload. If you already have decks on the device the app opens them anyway and only sync is paused. **Don't** use "Change Supabase project" — your saved settings aren't the problem |
+| "Recall couldn't load some files it needs: …" on a near-blank screen | One of the vendored libraries is missing from the install | Reload on a working connection. The named file is the one to look for in devtools → Network |
 | Pill reads **Signed out · tap to sign in** | The session lapsed (a refresh token expires after long disuse) | Tap it and sign in again. Nothing was lost — the decks are on the device |
 | Something says the app is running a "mixed build" | The service worker had to serve one release's files under another release's URL, usually after a release picked up on a poor connection | Reload on a working connection |
 | Sync seems to happen less often than expected | Auto-sync is per-device. It defaults to every 5 minutes, but an explicit **Off** is remembered | ☰ → the auto-sync interval control |
@@ -794,7 +801,13 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
   An unsubstituted checkout is not broken, just unversioned: App Info reports it as a development build and skips the update check rather than comparing a placeholder against a real commit.
 
-- **CDN libraries are pinned by version** in `index.html` and precached by `sw.js`. Change a version in one place and you must change it in the other, or that library won't be there offline. This matters most for `@supabase/supabase-js`, which is deliberately pinned to an exact version rather than a floating `@2`: the service worker caches it cache-first and never revalidates, so a floating tag froze whatever the CDN happened to resolve on the day each user's cache was populated, leaving different people running different auth clients from identical code.
+- **Vendored libraries carry their version in the path**, not in a `?v=` stamp — `vendor/katex-0.16.11/katex.min.js`. That makes each URL immutable, which is what lets `sw.js` keep them in `recall-vendor-v1`, a cache the release sweep spares, and never re-download them. Never add `?v=__BUILD__` to a `vendor/` URL; the deploy refuses it. To change a version, edit the manifest in `tools/vendor-sync.mjs` and run it — it downloads, rewrites `vendor/lock.json`, and regenerates `VENDOR_ASSETS` in `sw.js`. `node tools/vendor-sync.mjs --check` verifies the hashes and runs as part of `check.mjs`.
+
+  `@supabase/supabase-js` is pinned to an exact version for a reason worth keeping in mind: it is served cache-first and never revalidated, so back when it was a floating CDN `@2` it froze whatever jsDelivr happened to resolve on the day each user's cache was populated, leaving different people running different auth clients from identical code.
+
+- **The remaining CDN libraries are pinned too**, in `LIB_URLS` (`src/core/lib-loader.js`) and `CDN_ASSETS` (`sw.js`), and the two lists must stay byte-identical — the cache is keyed by exact URL, so a mismatch precaches a file nothing asks for and sends the real request to a network that may not be there. They live in `recall-cdn-v1`, which a release also spares.
+
+- **Nothing on the boot path may be a third-party request.** `index.html` must not carry a blocking `<script src="https://…">` or `<link rel="stylesheet" href="https://…">`. Both `tools/precache-check.mjs` and the deploy workflow refuse one, because the failure it causes — a blank page whenever that origin is slow, blocked or filtered — is invisible to every other check here.
 
 - **A zero-row write is not an error.** PostgREST reports an `UPDATE` that matched nothing as a success, which under Row Level Security is also what "this row isn't yours" looks like. Writers that care use `.select("id")` and check what came back; if you add one, do the same.
 
@@ -853,10 +866,11 @@ Two deliberate omissions, both explained in comments in the file: there is **no 
 
 | File | Role |
 |---|---|
-| `index.html` | The whole UI, the pinned CDN `<script>` tags, and the `<link>`s for everything below |
-| `src/` | All application logic, as ES modules — 130 files. `src/main.js` is the entry point the page loads and holds no logic of its own; everything else is imported from it |
-| `styles/` | All styling, including the 10 themes — 13 files, **loaded in numeric order** |
-| `sw.js` | Service worker — app-shell precache, CDN precache, image cache |
+| `index.html` | The whole UI, the pre-JavaScript boot placeholder, the vendored `<script>` tags, and the `<link>`s for everything below |
+| `src/` | All application logic, as ES modules — 141 files. `src/main.js` is the entry point the page loads and holds no logic of its own; everything else is imported from it |
+| `styles/` | All styling, including the 10 themes — 25 files, **loaded in numeric order** |
+| `vendor/` | Third-party libraries the first render needs, served same-origin so the app boots with no network. Generated by `tools/vendor-sync.mjs`; do not hand-edit |
+| `sw.js` | Service worker — app-shell precache (per release), vendor + CDN + image caches (across releases) |
 | `manifest.webmanifest`, `icons/` | PWA install metadata and icons |
 | **`supabase_setup.sql`** | **The only SQL file. Run it once; re-run it to upgrade** |
 | `tools/` | Development checks — not served, not needed to run the app |
@@ -881,16 +895,19 @@ another:
 | `port-sync` | Do the browser extension's copied functions still match the app's? |
 | `boot-check` | Does the app boot, and reach the same state as the pre-split build? |
 | `behaviour` | Do rendering, math, clozes, card parsing and the text transforms still produce identical output? (150 probes) |
-| `sync` | Do the merge primitives behave identically, **and** still refuse to lose data? (43 scenarios + 15 invariants + 11 storage round-trips) |
+| `sync` | Do the merge primitives behave identically, **and** still refuse to lose data? (43 scenarios + 15 invariants + 11 storage round-trips + 12 concurrency/batching checks) |
 | `reconcile` | Does the whole two-way sync behave identically end to end against a stand-in backend? |
 | `ui-smoke` | Does the app still *work*? 35 real actions driven through the DOM on both builds and compared step by step |
 | `selection` | Can you select text in a note without dragging the app's own chrome in with it? 7 real mouse drags |
-| `release-check` | Does a release actually reach an existing install, and does it work offline? |
+| `vendor` | Are the vendored libraries present, unmodified, and precached? |
+| `offline` | Does the app **start** with no network, a blocked CDN, or a CDN that hangs? |
+| `release-check` | Does a release reach an existing install, does it work offline — and does it still work offline *after* the update? |
 
-The browser-driven ones block `cdn.jsdelivr.net` and inject the library copies
-under `recall-clipper/vendor/`, so they do not depend on the network being up,
-and they take a free port from the OS rather than a fixed one. Both were
-sources of failures that had nothing to do with the code.
+The browser-driven ones block `cdn.jsdelivr.net` and take a free port from the
+OS rather than a fixed one. Both were sources of failures that had nothing to do
+with the code. `offline-check` blocks it deliberately, as the thing under test:
+it asserts the app still starts, and that nothing on the boot path asked for
+that origin at all.
 
 Serve every one of them; `sw.js` and the icons are what make the app installable and usable offline.
 

@@ -196,8 +196,8 @@ export function renderWelcomeSyncReport() {
     node.innerHTML = "";
     return;
   }
-  const { deckLog, pulled, pushed, failed } = lastStartupSyncReport;
-  node.innerHTML = `<p class="deck-empty-sync-report-title">Startup Sync Report</p>${buildSyncReportHtml(deckLog, { pulled, pushed, failed })}`;
+  const { deckLog, pulled, pushed, failed, timings } = lastStartupSyncReport;
+  node.innerHTML = `<p class="deck-empty-sync-report-title">Startup Sync Report</p>${buildSyncReportHtml(deckLog, { pulled, pushed, failed, timings })}`;
   // The report can carry a "Restore my notes" button; a background sync's
   // report is the one the user is most likely to be looking at, so it has to
   // work here too, not only in the explicit-sync modal.

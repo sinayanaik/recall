@@ -6,7 +6,7 @@
 // than failing the whole sync, because each install owns its own database and
 // may simply not have run the latest setup SQL.
 
-import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./net.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, abortable, mapWithConcurrency, withTimeout } from "./net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "./supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { showNotesConflictModal } from "../sync/notes-conflict.js?v=__BUILD__";
@@ -119,8 +119,24 @@ export async function fetchCloudDeckRows(deckIds) {
   // each request small enough to finish and cheap enough to retry; the extra
   // round trips cost far less than one timeout does.
   const chunkSize = 25;
-  for (let i = 0; i < deckIds.length; i += chunkSize) {
-    const chunk = deckIds.slice(i, i + chunkSize);
+  const chunks = [];
+  for (let i = 0; i < deckIds.length; i += chunkSize) chunks.push(deckIds.slice(i, i + chunkSize));
+
+  // CONCURRENT, where this was a plain `for … await`. Each chunk is an
+  // independent read of a disjoint set of ids, so nothing about the sequence
+  // was load-bearing — it was simply how the loop was written, and it cost a
+  // full round trip per 25 decks before a single deck could be merged. On a
+  // library of 700 that is 28 trips end to end, on a phone, before the sync
+  // appears to do anything.
+  //
+  // The concurrency is small on purpose. These are FULL deck rows — every
+  // deck's entire notes markdown — so the ceiling that matters is not the
+  // server's, it is the 20s timeout each request is given and the bandwidth
+  // they are sharing. Five 25-deck responses in flight is roughly one large
+  // response's worth of data at a time, which is the size this was tuned to
+  // finish; raising it trades the round trips saved for requests that start
+  // timing out, and a timeout here costs a retry and then the deck.
+  const results = await mapWithConcurrency(chunks, 5, async (chunk) => {
     const { data, error } = await withTimeout(
       abortable((signal) => supabaseClient
         .from("decks")
@@ -130,8 +146,16 @@ export async function fetchCloudDeckRows(deckIds) {
       CLOUD_TIMEOUT_MS,
       "read deck bodies"
     );
+    // Thrown, not collected. mapWithConcurrency runs its workers under
+    // Promise.all, so this rejects the whole read — which is the required
+    // behaviour, not a convenience: the caller treats a deck missing from this
+    // map as "not in the cloud", and a partial map would therefore read a
+    // failed chunk as a batch of deleted decks.
     if (error) throw error;
-    for (const row of data || []) byId.set(String(row.id), row);
+    return data || [];
+  });
+  for (const rows of results) {
+    for (const row of rows) byId.set(String(row.id), row);
   }
   return byId;
 }
@@ -167,9 +191,30 @@ export const CARD_FETCH_DECK_CHUNK = 50;
 export async function fetchCardsForDecks(deckIds, columns = "*") {
   const byDeck = new Map(deckIds.map((id) => [String(id), []]));
   if (!deckIds.length) return byDeck;
+  const chunks = [];
   for (let i = 0; i < deckIds.length; i += CARD_FETCH_DECK_CHUNK) {
-    await readCardPagesForDecks(deckIds.slice(i, i + CARD_FETCH_DECK_CHUNK), columns, byDeck);
+    chunks.push(deckIds.slice(i, i + CARD_FETCH_DECK_CHUNK));
   }
+
+  // CONCURRENT, for the same reason as fetchCloudDeckRows above, with one extra
+  // thing to be careful about: each chunk is itself a PAGING loop, so this is
+  // four page-walks at a time rather than four requests. That is deliberate —
+  // the paging inside a chunk must stay sequential (each page's `from` depends
+  // on the last one having come back short or not), and it is exactly the part
+  // that made a large library slow: 14 chunks of 50 decks, each walking several
+  // 1000-row pages, all strictly one after another.
+  //
+  // Every chunk writes into DIFFERENT buckets of `byDeck` — the buckets are
+  // pre-created above, keyed by deck id, and a chunk only ever touches the ids
+  // it asked for — so concurrent writes cannot interleave into the same array.
+  // Order within a bucket is preserved by the per-chunk ordering in
+  // readCardPagesForDecks, which is what the position tiebreak is for.
+  //
+  // A short read still throws from inside readCardPagesForDecks and still takes
+  // the whole call down with it. That is the guarantee mergeCloudCardsIntoSnapshot
+  // depends on: it drops a local card the moment the card is absent from this
+  // result, so a partial answer here costs cards, not just time.
+  await mapWithConcurrency(chunks, 4, (chunk) => readCardPagesForDecks(chunk, columns, byDeck));
   return byDeck;
 }
 

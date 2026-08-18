@@ -7,6 +7,7 @@
 
 import { LAST_USER_STORAGE_KEY } from "../boot.js?v=__BUILD__";
 import { isMissingColumnError } from "../cloud/deck-list.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -234,14 +235,25 @@ export async function writeQuickNoteCategoryOpsToCloud(deckId, ops) {
   try {
     // Merge into whatever meta the deck already has so we don't clobber future
     // sibling keys (noteAnchors above all — they live in the same blob).
-    const { data: existing } = await supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle();
+    // BOUNDED. flushPendingQuickNoteCategories is awaited by reconcileAllDecks
+    // before it reads the deck list, so an unbounded call here hung the whole
+    // sync before any deck work had started.
+    const { data: existing } = await withTimeout(
+      abortable((signal) => supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle().abortSignal(signal)),
+      CLOUD_TIMEOUT_MS,
+      "read quick-note categories"
+    );
     const base = existing?.meta && typeof existing.meta === "object" ? existing.meta : {};
     // Replay our ops onto the CLOUD's current list, not over the top of it.
     // This is the whole fix: a category another device added while we were
     // offline is in `base` and no op names it, so it survives untouched.
     const merged = applyCategoryOpsToList(quickNoteCategoriesFromMeta(base), ops);
     const meta = { ...base, quickNoteCategories: merged };
-    let { data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id");
+    let { data: updated, error } = await withTimeout(
+      abortable((signal) => supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id").abortSignal(signal)),
+      CLOUD_TIMEOUT_MS,
+      "write quick-note categories"
+    );
     // By error code first, not by the word "meta" appearing anywhere in the
     // message — see isMissingColumnError. The loose check would read an
     // unrelated failure that happened to name the column as "the migration
@@ -262,7 +274,11 @@ export async function writeQuickNoteCategoryOpsToCloud(deckId, ops) {
       const userId = cachedUserId();
       if (!userId) return "failed";
       await ensureQuickNotesDeck(userId);
-      ({ data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id"));
+      ({ data: updated, error } = await withTimeout(
+        abortable((signal) => supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id").abortSignal(signal)),
+        CLOUD_TIMEOUT_MS,
+        "write quick-note categories"
+      ));
       if (error) throw error;
       if (!updated || !updated.length) return "failed";
     }

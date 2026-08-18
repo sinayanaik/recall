@@ -26,9 +26,21 @@
          favicon. -->
     <link rel="icon" type="image/png" href="icons/icon-192.png">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <!-- Still worth a preconnect: mermaid, jszip, nomnoml and turndown are
+         still fetched from here on demand (LIB_URLS in src/core/lib-loader.js).
+         Nothing on the BOOT path comes from this origin any more — see vendor/. -->
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
+    <!-- The manifest used to be injected by JS (installManifestLink), which
+         meant a boot that stalled before src/main.js ran had no manifest at
+         all — the one situation an installed PWA most needs it. -->
+    <link rel="manifest" href="manifest.webmanifest">
+    <!-- ── Vendored libraries ─────────────────────────────────────────────
+         These two were render-blocking requests to cdn.jsdelivr.net, so the
+         page could not paint AT ALL until a third-party origin answered. They
+         are same-origin files now; see tools/vendor-sync.mjs for why the
+         version is in the path and carries no ?v= stamp. -->
+    <link rel="stylesheet" href="vendor/katex-0.16.11/katex.min.css">
+    <link rel="stylesheet" href="vendor/prismjs-1.30.0/prism-tomorrow.min.css">
     <!-- The ?v= placeholder on the next two asset URLs (and in sw.js and
          app.js) is substituted with the deploying commit's short SHA by
          .github/workflows/deploy.yml. It stays an unsubstituted placeholder in
@@ -70,6 +82,7 @@
     <link rel="stylesheet" href="styles/22-selection-bar.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/23-highlight-marks.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/24-highlight-tools.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/25-sync-report.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -109,6 +122,7 @@
     <link rel="modulepreload" href="src/core/build.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/constants.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/dom.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/core/lib-guard.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/lib-loader.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/state.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/text.js?v=__BUILD__">
@@ -303,6 +317,65 @@
     </script>
   </head>
   <body>
+    <!-- ── Boot skeleton ──────────────────────────────────────────────────
+         The one thing in this file that can paint without JavaScript, and the
+         reason it exists: everything below — the app shell and all four boot
+         overlays — ships `hidden`, and the ONLY code that unhides any of them
+         is showBootScreen(), which is reachable only from bootApp() at the end
+         of a 140-module import graph. So every stall anywhere on the boot path
+         used to present as a completely blank screen with no way to tell a slow
+         launch from a dead one. That was the whole of "the app doesn't work
+         offline": usually it was working, and simply had nothing to say.
+
+         Styled inline rather than from styles/, because a stylesheet is itself
+         a request that can stall — this has to be correct with nothing loaded
+         but the HTML. showBootScreen() removes it (see src/ui/boot-screens.js);
+         the 8-second message is what turns "blank" into a diagnosis. -->
+    <style>
+      #bootSkeleton{position:fixed;inset:0;z-index:9;display:flex;flex-direction:column;
+        align-items:center;justify-content:center;gap:18px;background:#0d1110;color:#e8efec;
+        font:400 15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:center;padding:24px}
+      #bootSkeleton .boot-name{font-size:26px;font-weight:600;letter-spacing:.02em}
+      #bootSkeleton .boot-spinner{width:26px;height:26px;border:2px solid #2a3733;
+        border-top-color:#5eead4;border-radius:50%;animation:bootspin .8s linear infinite}
+      @keyframes bootspin{to{transform:rotate(360deg)}}
+      #bootSkeleton .boot-slow{max-width:34ch;color:#93a5a0;font-size:13px;opacity:0;
+        transition:opacity .4s ease}
+      #bootSkeleton.is-slow .boot-slow{opacity:1}
+      #bootSkeleton .boot-retry{margin-top:2px;padding:9px 18px;border:1px solid #33443f;
+        border-radius:9px;background:#141b19;color:#e8efec;font:inherit;font-size:14px;cursor:pointer}
+      @media (prefers-reduced-motion:reduce){#bootSkeleton .boot-spinner{animation-duration:2.4s}}
+    </style>
+    <div id="bootSkeleton" role="status" aria-live="polite">
+      <div class="boot-name">Recall</div>
+      <div class="boot-spinner" aria-hidden="true"></div>
+      <p class="boot-slow" id="bootSkeletonSlow">Still starting up. If this doesn't clear, your
+        connection may be stalled — your decks are stored on this device and are safe.</p>
+      <button class="boot-retry" type="button" id="bootSkeletonRetry" hidden>Reload</button>
+    </div>
+    <script>
+      // Reveals the "still starting" line, and only then offers Reload. Both
+      // are deliberately late: a normal cold launch is well under a second, and
+      // an offer to reload at that point reads as an app that has already given
+      // up. The timers are cleared by showBootScreen().
+      window.__recallBootSkeleton = (function () {
+        var node = document.getElementById("bootSkeleton");
+        var slow = setTimeout(function () { node && node.classList.add("is-slow"); }, 8000);
+        var retry = setTimeout(function () {
+          var button = document.getElementById("bootSkeletonRetry");
+          if (button) button.hidden = false;
+        }, 15000);
+        var button = document.getElementById("bootSkeletonRetry");
+        if (button) button.addEventListener("click", function () { location.reload(); });
+        return {
+          clear: function () {
+            clearTimeout(slow);
+            clearTimeout(retry);
+            if (node) { node.remove(); node = null; }
+          }
+        };
+      })();
+    </script>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
     <!-- hidden until bootApp() decides which of setup / login / app to show.
          Without it the whole logged-out UI painted and accepted clicks for the
@@ -1269,12 +1342,14 @@
             <h3 class="help-section-title">10. Offline &amp; My Decks 💾</h3>
             <p>Once you’ve opened the app online once, it keeps working with no connection:</p>
             <ul class="help-list">
+              <li><strong>It opens straight into your library</strong> with no network — no waiting, no sign-in wall. Everything Recall needs to start is stored on the device, so a plane, a tunnel or a blocked network changes nothing about reading and editing.</li>
               <li><strong>You stay signed in</strong> offline (after signing in online at least once), so you go straight to your decks.</li>
               <li><strong>Saving is automatic</strong> — every edit is written to the on-device library in the background; there is no manual save button. A reload starts on the clean home screen; reopen your deck from <strong>My Decks</strong>.</li>
               <li><strong>Every cloud deck is mirrored</strong> onto the device automatically, so the whole library is available offline — load, rename, or delete with no connection.</li>
               <li>An <strong>Offline</strong> badge appears bottom-left when you lose connection.</li>
             </ul>
             <p>A first-time login needs internet. Edits made offline (including deletes) sync automatically once the connection returns.</p>
+            <p>Two things do need a connection the first time you use them: <strong>diagrams</strong> and <strong>backup/export archives</strong> load a library on demand. Until then a diagram shows its source text and export asks you to go online; once fetched, both keep working offline through every future update.</p>
           </section>
 
           <section class="help-section">
@@ -1462,20 +1537,27 @@ What year was the Eiffel Tower built?
       </div>
     </div>
 
-    <!-- Shown when this device HAS a saved Supabase project but the sign-in
-         library (supabase-js, loaded from a CDN) didn't arrive. Previously that
-         case fell through to the setup screen above, which is actively harmful:
-         it tells a correctly-configured user their project is missing, and the
-         obvious next move — "Change Supabase project" — destroys the working
-         credentials that were never the problem. -->
+    <!-- Shown when this device HAS a saved Supabase project but supabase-js
+         didn't arrive. Previously that case fell through to the setup screen
+         above, which is actively harmful: it tells a correctly-configured user
+         their project is missing, and the obvious next move — "Change Supabase
+         project" — destroys the working credentials that were never the problem.
+
+         Much rarer now, and narrower. The library is a same-origin file in
+         vendor/, precached before the worker activates, so it no longer depends
+         on a third-party CDN answering. And bootApp reaches this screen only
+         when there is ALSO no local library to fall back on: a device with
+         decks on it opens them instead, because none of them needs Supabase to
+         be read. This used to be the offline experience — an eight-second wait
+         and then a wall, in front of data sitting in IndexedDB the whole time. -->
     <div id="offlineBootOverlay" class="login-overlay" hidden>
       <div class="login-card">
         <h1 class="login-title">Recall</h1>
         <p class="setup-subtitle">Couldn't load the sign-in library</p>
         <p class="setup-hint">
-          Recall needs one file from <code>cdn.jsdelivr.net</code> to sign in, and this device couldn't
-          fetch it. That's usually a connection, a proxy, or a content blocker — not your account.
-          Your saved project settings are untouched.
+          Recall couldn't load <code>vendor/supabase-js</code>, which it needs to sign in. That's
+          usually a content blocker or a half-installed copy of the app — not your account. Your
+          saved project settings are untouched, and any decks already on this device are safe.
         </p>
         <p id="offlineBootError" class="login-error" aria-live="polite"></p>
         <button id="offlineBootRetryBtn" class="login-btn-primary" type="button">Try again</button>
@@ -1503,14 +1585,29 @@ What year was the Eiffel Tower built?
       </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked@14.1.2/marked.min.js"></script>
+    <!-- ── Vendored, same-origin, parser-blocking ────────────────────────
+         These eight were <script src="https://cdn.jsdelivr.net/…"> tags. They
+         are parser-blocking by necessity (the first render needs marked,
+         DOMPurify and KaTeX, and bootApp needs supabase-js), which meant the
+         whole app — which paints nothing before src/main.js runs — was gated
+         on a third-party origin answering. A CDN that merely HUNG produced a
+         permanent blank screen, and the service worker could not help on the
+         load after a release, because its CDN cache was keyed to the commit
+         sha and every deploy emptied it.
+         Now they are same-origin files precached with the app shell. See
+         tools/vendor-sync.mjs. Deliberately UNSTAMPED — no ?v= query on any of
+         them: the version is in the path, so the URL is already immutable and
+         is never re-downloaded. (Spelling the placeholder out here would be
+         rewritten into a commit sha by deploy.yml's blind global substitution,
+         which is why this sentence names the query rather than showing it.) -->
+    <script src="vendor/dompurify-3.1.6/purify.min.js"></script>
+    <script src="vendor/marked-14.1.2/marked.min.js"></script>
     <script>window.Prism = window.Prism || {}; window.Prism.manual = true;</script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-python.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+    <script src="vendor/prismjs-1.30.0/prism-core.min.js"></script>
+    <script src="vendor/prismjs-1.30.0/components/prism-python.min.js"></script>
+    <script src="vendor/prismjs-1.30.0/prism-autoloader.min.js"></script>
+    <script src="vendor/katex-0.16.11/katex.min.js"></script>
+    <script src="vendor/katex-0.16.11/auto-render.min.js"></script>
     <!-- mermaid, jszip, graphre+nomnoml, turndown+its gfm plugin and an unused
          zoom library used to sit here. Together they were ~3.6MB of blocking
          JS that had to download AND execute before app.js could start — and since
@@ -1529,15 +1626,18 @@ What year was the Eiffel Tower built?
 
          What remains below is the set the FIRST render genuinely needs
          (dompurify, marked, prism, katex) plus supabase-js, which bootApp
-         needs. Do not add to it without checking whether the feature can wait. -->
-    <!-- Pinned, unlike every other CDN tag here, for a reason worth stating: the
-         service worker precaches this URL cache-first and never revalidates it,
-         so an unpinned "@2" froze whatever jsDelivr happened to resolve on the
+         needs. Do not add to it without checking whether the feature can wait —
+         and if it must be added, vendor it rather than putting a third-party
+         origin back on the boot path. -->
+    <!-- Version pinned in the PATH, for a reason worth stating: this file is
+         served cache-first and never revalidated, so back when it was an
+         unpinned CDN "@2" it froze whatever jsDelivr happened to resolve on the
          day each user's cache was populated. Two people on identical code were
          running different auth clients, and the developer — whose localhost
          build unregisters the worker and refetches every load — always had the
-         newest. Bump this deliberately, and match it in sw.js's CDN_ASSETS. -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.2"></script>
+         newest. Bump it in tools/vendor-sync.mjs, which is the only place the
+         version is written now. -->
+    <script src="vendor/supabase-js-2.112.2/supabase.min.js"></script>
     <!-- type="module" so the app can be split into src/**. Two consequences
          worth knowing, both verified rather than assumed:
 

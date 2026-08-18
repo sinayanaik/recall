@@ -5,7 +5,7 @@
 // overwrote everyone else — that row is still READ so an account that has never
 // synced inherits it, but it is no longer written.
 
-import { CLOUD_TIMEOUT_MS, withTimeout } from "./net.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "./net.js?v=__BUILD__";
 import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -131,14 +131,14 @@ export async function writeStyleToCloud(settings) {
   if (!supabaseClient || !navigator.onLine) return "offline";
   try {
     const { error } = await withTimeout(
-      supabaseClient.from("app_style_settings").upsert({
+      abortable((signal) => supabaseClient.from("app_style_settings").upsert({
         // This user's own row (see styleSettingsRowId) — never the legacy
         // shared "global" one, which writing would push onto every other
         // account on the deployment.
         id: styleSettingsRowId(),
         settings,
         updated_at: new Date().toISOString()
-      }, { onConflict: "id" }),
+      }, { onConflict: "id" }).abortSignal(signal)),
       CLOUD_TIMEOUT_MS,
       "sync style"
     );

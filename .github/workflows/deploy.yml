@@ -163,6 +163,44 @@ jobs:
             exit 1
           fi
 
+          # vendor/ is a deliberately UNSTAMPED category. Those files carry
+          # their library's version in the path, so their URLs are already
+          # immutable — stamping them would change the URL on every release and
+          # defeat the whole reason they live in a cache the release sweep
+          # spares. Two things must hold instead: nothing in vendor/ may carry a
+          # ?v=, and every file in it must be precached.
+          if stamped_vendor=$(grep -rn 'vendor/[^"]*?v=' index.html sw.js 2>/dev/null); then
+            echo "::error::A vendor/ URL carries a ?v= stamp. Its version is in the path already:"
+            echo "$stamped_vendor"
+            exit 1
+          fi
+          missing=""
+          while read -r f; do
+            grep -qF "\"./$f\"" sw.js || missing="$missing $f"
+          done < <(find vendor -type f ! -name lock.json | sort)
+          if [ -n "$missing" ]; then
+            echo "::error::These vendored files are not in sw.js VENDOR_ASSETS:$missing"
+            echo "::error::Run: node tools/vendor-sync.mjs"
+            exit 1
+          fi
+
+          # And nothing on the boot path may be a third-party request. This is
+          # the check that would have caught the failure this whole area was
+          # rebuilt for: index.html loaded eight parser-blocking scripts and two
+          # render-blocking stylesheets from cdn.jsdelivr.net, so a CDN that
+          # merely hung gave every user a permanent blank page — and no test
+          # anywhere said it should not.
+          # Anchored at the start of the line, which is what distinguishes a
+          # real tag (always indented on its own line) from this file's own
+          # prose about the tags it used to have. A multi-line HTML comment
+          # cannot be stripped with sed, and trying was a guaranteed false
+          # positive on the very comment that explains the rule.
+          if third_party=$(grep -nE '^[[:space:]]*<(script src|link rel="stylesheet" href)="https://' index.html); then
+            echo "::error::index.html loads a blocking third-party asset. Vendor it (tools/vendor-sync.mjs):"
+            echo "$third_party"
+            exit 1
+          fi
+
           # Every module on disk must be precached by the worker. A module the
           # worker does not know about still WORKS — the miss handler fetches
           # and caches it — but it is absent on a first offline launch, which is

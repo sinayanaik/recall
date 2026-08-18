@@ -1,5 +1,6 @@
 // Where each quick note was pinned from, so it can jump back to its source.
 
+import { CLOUD_TIMEOUT_MS, abortable, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
@@ -141,7 +142,16 @@ export async function writeQuickNoteAnchors(deckId, patch, { keepIds = null } = 
   if (!hasPatch && !keepIds) return false;
   if (!supabaseClient || !isSignedIn || !navigator.onLine) return false;
   try {
-    const { data: existing } = await supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle();
+    // BOUNDED, like every other cloud call — and this one more than most: it
+    // runs from flushPendingQuickNoteAnchors, which reconcileAllDecks awaits
+    // BEFORE it reads the deck list. Unbounded, a stalled connection here hung
+    // the entire sync before a single deck had been looked at, with the button
+    // still showing its first label.
+    const { data: existing } = await withTimeout(
+      abortable((signal) => supabaseClient.from("decks").select("meta").eq("id", deckId).maybeSingle().abortSignal(signal)),
+      CLOUD_TIMEOUT_MS,
+      "read quick-note anchors"
+    );
     const base = existing?.meta && typeof existing.meta === "object" ? existing.meta : {};
     let anchors = { ...noteAnchorsFromMeta(base), ...(patch || {}) };
     if (keepIds) {
@@ -151,13 +161,21 @@ export async function writeQuickNoteAnchors(deckId, patch, { keepIds = null } = 
     // `.select()` because an UPDATE matching no row is not an error — it just
     // does nothing, which is exactly what happens on an account whose
     // quick_notes deck row doesn't exist yet. Same trap the category writer hit.
-    let { data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id");
+    let { data: updated, error } = await withTimeout(
+      abortable((signal) => supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id").abortSignal(signal)),
+      CLOUD_TIMEOUT_MS,
+      "write quick-note anchors"
+    );
     if (error) throw error;
     if (!updated || !updated.length) {
       const userId = cachedUserId();
       if (!userId) return false;
       await ensureQuickNotesDeck(userId);
-      ({ data: updated, error } = await supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id"));
+      ({ data: updated, error } = await withTimeout(
+        abortable((signal) => supabaseClient.from("decks").update({ meta }).eq("id", deckId).select("id").abortSignal(signal)),
+        CLOUD_TIMEOUT_MS,
+        "write quick-note anchors"
+      ));
       if (error) throw error;
       if (!updated || !updated.length) return false;
     }
@@ -208,7 +226,11 @@ export async function loadDeckNotesForSearch() {
   // Then any cloud deck this device has no local copy of.
   if (supabaseClient && isSignedIn && navigator.onLine) {
     try {
-      const { data, error } = await supabaseClient.from("decks").select("id, title, notes");
+      const { data, error } = await withTimeout(
+        abortable((signal) => supabaseClient.from("decks").select("id, title, notes").abortSignal(signal)),
+        CLOUD_TIMEOUT_MS,
+        "read deck notes"
+      );
       if (error) throw error;
       for (const deck of data || []) {
         if (!deck || String(deck.id) === qid || seen.has(String(deck.id))) continue;

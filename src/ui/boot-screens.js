@@ -7,6 +7,16 @@
 // One switch for the four mutually exclusive boot states, so a new one can't be
 // added by remembering to hide three things somewhere else and forgetting one.
 export function showBootScreen(which) {
+  // The pre-JavaScript placeholder in index.html. This is the only place that
+  // takes it down, for the same reason this function is the only place that
+  // unhides a screen: whatever we are about to show IS the answer it was
+  // standing in for, and clearing it anywhere else would open a window where
+  // neither is on screen.
+  try {
+    window.__recallBootSkeleton?.clear();
+  } catch (error) {
+    console.warn("Could not clear the boot placeholder", error);
+  }
   const overlays = {
     setup: "setupOverlay",
     login: "loginOverlay",

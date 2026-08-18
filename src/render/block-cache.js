@@ -13,6 +13,7 @@ import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfac
 import { buildNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
+import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
 import { SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
 
 // ── Incremental rendering ──────────────────────────────────────────────────
@@ -328,6 +329,9 @@ export const BLOCK_BREAK_HTML = '\n<hr data-recall-block-break="1">\n';
 export const BLOCK_BREAK_RE = /<hr\b[^>]*\bdata-recall-block-break\b[^>]*>/;
 
 export function renderPreparedBlocks(sources, prelude = "") {
+  // Same reasoning as safeHtmlFromPrepared, which is where each block lands on
+  // this path: without the libraries, render the source rather than throw.
+  if (!markdownLibrariesReady()) return sources.map((source) => safeHtmlFromPrepared(source));
   const head = prelude ? prelude + "\n\n" : "";
   // Parse each block on its own: marked needs a block in isolation to detect
   // its structure (a heading, list, etc.). Joining them into ONE marked.parse

@@ -20,6 +20,7 @@ import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openSt
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
+import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
 import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
 import { handleToolbarClick } from "./editor/toolbar-actions.js?v=__BUILD__";
@@ -41,7 +42,7 @@ import { clearImportStaging, commitStagedImport, importDestinationFolder, import
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
-import { readLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
+import { flushIndexBatch, readLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
@@ -136,12 +137,24 @@ import { FOCUS_MODE_KEY, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 // had no door.
 
 
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-  mangle: false,
-  headerIds: false
-});
+// Before anything reads one of the vendored globals. Returns false only when
+// markdown itself is unavailable, in which case it has already put a message on
+// screen naming the file — and carrying on would mean a blank app instead.
+const bootLibrariesPresent = assertBootLibraries();
+
+// GUARDED, and the guard is the point. This is module-scope code in the entry
+// module: an absent `marked` here was a ReferenceError that stopped the whole
+// 140-module graph from evaluating, so registerServiceWorker() and bootApp() at
+// the bottom of this file never ran and the page stayed blank forever — with no
+// worker registered, which meant the next load failed exactly the same way.
+if (typeof marked !== "undefined") {
+  marked.setOptions({
+    breaks: true,
+    gfm: true,
+    mangle: false,
+    headerIds: false
+  });
+}
 
 
  // confident: this is what the block is
@@ -152,8 +165,12 @@ marked.setOptions({
  // enough signal; keeps long blocks cheap
 
 
+// Vendored, like the core grammar. The autoloader injects a <script> for a
+// language the first time a code block uses it, so pointing this at the CDN
+// meant syntax highlighting silently reached the network mid-render — and got
+// nothing offline. tools/vendor-sync.mjs keeps this directory populated.
 if (window.Prism?.plugins?.autoloader) {
-  Prism.plugins.autoloader.languages_path = "https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/";
+  Prism.plugins.autoloader.languages_path = "vendor/prismjs-1.30.0/components/";
 }
 
 
@@ -1822,7 +1839,13 @@ trackKeyboardInset();
 // entry as the base rather than leaving whatever the page loaded with.
 initBackGesture();
 
-bootApp();
+// The service worker is registered above regardless, and deliberately: if a
+// library really is missing, the single most useful thing this load can do is
+// leave behind a worker that has precached the whole app, so the NEXT load
+// works. Only the app itself is held back, and only when markdown — which
+// every view in Recall goes through — could not be loaded at all.
+if (bootLibrariesPresent) bootApp();
+else console.error("Boot halted: the markdown libraries are unavailable. See the message on screen.");
 
 
 // Deck storage is asynchronous now (IndexedDB), so a large amount of this app
@@ -1843,6 +1866,13 @@ window.addEventListener("unhandledrejection", (event) => {
 
 window.addEventListener("pagehide", () => {
   flushWorkingDeck();
+  // A sync in progress holds the deck index in memory between checkpoints (see
+  // beginIndexBatch), so a tab that goes away mid-sync would leave the last few
+  // pulled decks with a snapshot in IndexedDB and no index entry naming it —
+  // which the next boot's orphan sweep would then throw away. Backgrounding a
+  // phone mid-sync is the ordinary way that happens, and this is the moment to
+  // close it. Nothing to do when no batch is open.
+  try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); }
   // Blob URLs for still-queued images are per-document; releasing them here
   // keeps a long-lived PWA session from accumulating them across navigations.
   revokeLocalImageUrls();
@@ -1853,6 +1883,9 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
     setLastHiddenAt(Date.now());
     flushWorkingDeck();
+    // Same reason as the pagehide handler above; on mobile this is the event
+    // that actually fires when the app is swiped away.
+    try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); }
     return;
   }
   // Coming back to a backgrounded PWA used to show whatever was on screen when

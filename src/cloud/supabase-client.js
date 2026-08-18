@@ -56,7 +56,37 @@ export function initSupabaseClient() {
   if (!config?.url || !config?.key) return "no-config";
   if (!window.supabase) return "no-library";
   try {
-    supabaseClient = window.supabase.createClient(config.url, config.key);
+    // Options passed explicitly, where this used to pass none at all.
+    //
+    // The v2 defaults happen to be the ones this app needs — but "happen to be"
+    // is the problem: session persistence and automatic token refresh are load
+    // -bearing here (an offline launch reads the stored session; a phone that
+    // has been in a pocket for a week needs the refresh), and a supabase-js
+    // bump changing either would present as "sync just stopped working" with
+    // nothing in this repo to point at. Writing them down makes that a diff.
+    supabaseClient = window.supabase.createClient(config.url, config.key, {
+      auth: {
+        // The stored session is what makes an offline launch possible at all.
+        persistSession: true,
+        // And this is what stops an hour-old tab silently becoming unable to
+        // sync. Recall additionally refreshes by hand when a request comes back
+        // with an expired token (see refreshSessionOnce); this is the ambient
+        // half that means it usually never has to.
+        autoRefreshToken: true,
+        // Left ON: handleSignup sets emailRedirectTo, so a confirmation link
+        // comes back to this page carrying the session in the URL, and turning
+        // this off would silently break account creation on every project with
+        // Supabase's default "Confirm email" enabled.
+        detectSessionInUrl: true
+        // storageKey is deliberately NOT set. It is tempting — scoping it to
+        // the project would stop two installs on one origin sharing a session —
+        // but the key is where the CURRENT session lives, so changing it does
+        // not migrate anything: it makes every already-signed-in user's session
+        // unreadable, and the first load after the release signs them all out.
+        // A one-off mass sign-out is a real cost; two projects on one origin is
+        // a scenario nobody has.
+      }
+    });
   } catch (error) {
     // A malformed URL or key that passed the setup form's shape check can throw
     // here. Treated as "no client" rather than allowed to abort boot.

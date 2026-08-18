@@ -346,6 +346,205 @@ const INVARIANTS = String.raw`(api) => {
 // Everything above is pure functions over JSON. This is where the decks
 // actually LIVE — if a write silently no-ops or a read returns the wrong
 // snapshot, the merge logic being perfect does not help.
+// ── Concurrency and batching ────────────────────────────────────────────────
+// Two things in the sync were made faster in ways that could, done wrong, cost
+// data rather than time. Neither is visible to the parity comparison — the
+// baseline has no equivalent to compare against — so they are asserted here on
+// their own terms, exactly as the invariants above are.
+//
+//   1. The chunked cloud READS (fetchCloudDeckRows, fetchCardsForDecks) run
+//      through mapWithConcurrency instead of a sequential for-await. Their
+//      results are read as facts about what exists in the cloud — a deck
+//      missing from the map means "deleted", a card missing means "delete this
+//      card" — so a chunk that fails MUST take the whole read down with it. A
+//      partial answer is not slower, it is wrong, and it is wrong in the one
+//      direction this app has already lost a library to.
+//
+//   2. The deck index is written in batches, because a 700-deck pull otherwise
+//      did 700 synchronous whole-library writes to localStorage. The batch must
+//      be invisible to every reader, and it must not be able to strand data.
+const CONCURRENCY = String.raw`async (api) => {
+  const results = [];
+  const must = async (name, fn) => {
+    try {
+      const ok = await fn();
+      results.push([ok === true, name, ok === true ? "" : String(ok)]);
+    } catch (e) { results.push([false, name, "THREW: " + e.message]); }
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  await must("concurrent reads come back in INPUT order, not completion order", async () => {
+    // Deliberately inverted: the first item takes longest. A naive
+    // "push as they finish" would return them backwards, and the callers build
+    // id-keyed maps from these, so a reordering would silently mis-key them.
+    const items = [40, 30, 20, 10, 0];
+    const out = await api.mapWithConcurrency(items, 3, async (ms) => { await sleep(ms); return ms; });
+    return JSON.stringify(out) === JSON.stringify(items)
+      || ("got " + JSON.stringify(out));
+  });
+
+  await must("never more than the concurrency limit is in flight", async () => {
+    let live = 0, peak = 0;
+    await api.mapWithConcurrency([1,2,3,4,5,6,7,8,9,10], 4, async () => {
+      live++; peak = Math.max(peak, live);
+      await sleep(15);
+      live--;
+    });
+    return peak <= 4 || ("peak concurrency was " + peak);
+  });
+
+  await must("a failing chunk rejects the WHOLE read", async () => {
+    // The guarantee mergeCloudCardsIntoSnapshot depends on. If this ever
+    // resolves with the surviving chunks instead, a dropped chunk becomes a
+    // batch of cards the merge deletes.
+    let resolved = false;
+    try {
+      await api.mapWithConcurrency([1, 2, 3, 4], 2, async (n) => {
+        if (n === 2) throw new Error("chunk failed");
+        await sleep(5);
+        return n;
+      });
+      resolved = true;
+    } catch (e) {
+      return /chunk failed/.test(e.message) || ("wrong error: " + e.message);
+    }
+    return resolved ? "it resolved with a partial result instead of throwing" : "no error";
+  });
+
+  await must("a second failure does not surface as an unhandled rejection", async () => {
+    let unhandled = null;
+    const onUnhandled = (event) => { unhandled = String(event.reason && event.reason.message); };
+    window.addEventListener("unhandledrejection", onUnhandled);
+    try {
+      await api.mapWithConcurrency([1, 2, 3, 4], 4, async (n) => {
+        await sleep(n * 5);
+        throw new Error("fail " + n);
+      });
+    } catch (_) { /* expected */ }
+    await sleep(120);
+    window.removeEventListener("unhandledrejection", onUnhandled);
+    return unhandled === null || ("unhandled rejection escaped: " + unhandled);
+  });
+
+  // ── the batched deck index ────────────────────────────────────────────────
+  const entries = (n) => Array.from({ length: n }, (_, i) => ({
+    id: "local-" + i, deckId: "cloud-" + i, title: "Deck " + i,
+    updatedAt: "2026-01-0" + ((i % 9) + 1) + "T00:00:00.000Z", lastSyncedAt: "2026-01-01T00:00:00.000Z"
+  }));
+
+  await must("batched writes produce an index identical to unbatched ones", async () => {
+    const list = entries(60);
+    // Unbatched, one write per deck, exactly as the old pull loop did.
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    for (let i = 0; i < list.length; i++) api.writeLocalDeckIndex(list.slice(0, i + 1));
+    const unbatched = localStorage.getItem("flashcards_local_decks_index_v1");
+
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.beginIndexBatch();
+    for (let i = 0; i < list.length; i++) api.writeLocalDeckIndex(list.slice(0, i + 1));
+    api.endIndexBatch();
+    const batched = localStorage.getItem("flashcards_local_decks_index_v1");
+
+    return batched === unbatched || "the batched index differs from the unbatched one";
+  });
+
+  await must("a read during a batch sees the pending writes", async () => {
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.beginIndexBatch();
+    api.writeLocalDeckIndex(entries(3));
+    const seen = api.readLocalDeckIndex();
+    api.endIndexBatch();
+    return seen.length === 3 || ("read " + seen.length + " entries mid-batch, expected 3");
+  });
+
+  await must("readLocalDeckIndex still returns a FRESH array, batch or no batch", async () => {
+    // 48 call sites read this and some of them mutate what they get. Handing
+    // out a shared array would be faster and would make one caller's edit
+    // visible to every other reader without anything having been saved.
+    api.discardIndexBatch();
+    api.beginIndexBatch();
+    api.writeLocalDeckIndex(entries(3));
+    const first = api.readLocalDeckIndex();
+    first[0].title = "MUTATED";
+    first.pop();
+    const second = api.readLocalDeckIndex();
+    api.endIndexBatch();
+    return (second.length === 3 && second[0].title === "Deck 0")
+      || ("a mutation leaked between reads: " + JSON.stringify(second).slice(0, 120));
+  });
+
+  await must("a batch checkpoints, so a crash cannot strand the whole run", async () => {
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.beginIndexBatch();
+    // One more write than a checkpoint interval, then NO flush — the tab dying
+    // mid-sync. What is on disk must be the checkpoint, not nothing.
+    const n = api.INDEX_CHECKPOINT_EVERY + 1;
+    for (let i = 0; i < n; i++) api.writeLocalDeckIndex(entries(i + 1));
+    const onDisk = JSON.parse(localStorage.getItem("flashcards_local_decks_index_v1") || "[]");
+    api.discardIndexBatch();
+    return onDisk.length === api.INDEX_CHECKPOINT_EVERY
+      || ("expected the checkpoint to have persisted " + api.INDEX_CHECKPOINT_EVERY + " entries, found " + onDisk.length);
+  });
+
+  await must("flushIndexBatch persists what is pending", async () => {
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.beginIndexBatch();
+    api.writeLocalDeckIndex(entries(4));
+    api.flushIndexBatch();
+    const onDisk = JSON.parse(localStorage.getItem("flashcards_local_decks_index_v1") || "[]");
+    api.discardIndexBatch();
+    return onDisk.length === 4 || ("found " + onDisk.length + " entries on disk");
+  });
+
+  await must("discardIndexBatch throws the pending copy away", async () => {
+    // resetLocalLibrary deletes the index key on an account switch. A pending
+    // batch flushed afterwards would write the PREVIOUS account's library
+    // straight back over the removal.
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.beginIndexBatch();
+    api.writeLocalDeckIndex(entries(5));
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.flushIndexBatch();
+    return localStorage.getItem("flashcards_local_decks_index_v1") === null
+      || "a discarded batch was written back anyway";
+  });
+
+  await must("nested batches only flush at the outermost end", async () => {
+    // The reconcile opens one for the pull pass and one for the push pass, and
+    // closes both in its finally. A count that drifted would leave a batch open
+    // for the life of the page, and every later deck save would live in memory
+    // and never reach disk.
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.beginIndexBatch();
+    api.beginIndexBatch();
+    api.writeLocalDeckIndex(entries(2));
+    api.endIndexBatch();
+    const midway = localStorage.getItem("flashcards_local_decks_index_v1");
+    api.endIndexBatch();
+    const after = JSON.parse(localStorage.getItem("flashcards_local_decks_index_v1") || "[]");
+    return (midway === null && after.length === 2)
+      || ("midway=" + String(midway).slice(0, 40) + " after=" + after.length);
+  });
+
+  await must("writes outside a batch still go straight to disk", async () => {
+    api.discardIndexBatch();
+    localStorage.removeItem("flashcards_local_decks_index_v1");
+    api.writeLocalDeckIndex(entries(7));
+    const onDisk = JSON.parse(localStorage.getItem("flashcards_local_decks_index_v1") || "[]");
+    return onDisk.length === 7 || ("found " + onDisk.length + " entries on disk");
+  });
+
+  localStorage.removeItem("flashcards_local_decks_index_v1");
+  return results;
+}`;
+
 const STORAGE = String.raw`async (api) => {
   const results = [];
   const must = async (name, fn) => {
@@ -566,6 +765,24 @@ try {
   }
   const storeBad = store.value.filter(([ok]) => !ok).length;
   console.log(`  ${store.value.length} storage checks · ${storeBad} violated`);
+
+  const CONCURRENCY_API = `async () => {
+    const mods = await Promise.all([
+      import("/src/cloud/net.js?v=__BUILD__"), import("/src/library/local-library.js?v=__BUILD__")
+    ]);
+    const api = {};
+    for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
+    return api;
+  }`;
+  const conc = await withPage(`${__s_ROOT.base}/index.html`, (p) =>
+    p.evaluate(async (src, api) => (0, eval)("(" + src + ")")(await (0, eval)(api)()), CONCURRENCY, CONCURRENCY_API));
+  console.log("\n── concurrency & batched index writes ──");
+  for (const [ok, name, detail] of conc.value) {
+    console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);
+    if (!ok) failures++;
+  }
+  const concBad = conc.value.filter(([ok]) => !ok).length;
+  console.log(`  ${conc.value.length} concurrency checks · ${concBad} violated`);
 
   if (after.errors.length) console.log(`\n  page errors: ${after.errors.slice(0, 3).join(" | ")}`);
   console.log(failures ? `\n${failures} sync problem(s).` : "\nSync verified: identical behaviour, and every data-loss invariant holds.");

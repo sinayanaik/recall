@@ -38,6 +38,25 @@ const NETWORK_TIMEOUT_MS = 2500;
 // why this only ever broke for other people.
 const ASSET_NETWORK_TIMEOUT_MS = 15000;
 
+// Resolve `null` instead of waiting forever.
+//
+// Every "the app hung with a blank page" report in this repo traces back to a
+// fetch with no ceiling on it. `fetch` does not have one of its own: offline
+// fails fast, but a connection that is accepted and then never answered leaves
+// the promise pending for as long as the browser feels like it, and a
+// respondWith() waiting on that is a request the page can never finish.
+//
+// Deliberately resolves rather than rejects, and deliberately lets the
+// underlying request keep running: the caller decides what a null means (a
+// cached copy, a Response.error()), and a late arrival can still populate the
+// cache for next time.
+function withNetworkTimeout(promise, ms) {
+  return Promise.race([
+    promise.catch(() => null),
+    new Promise((resolve) => setTimeout(() => resolve(null), ms))
+  ]);
+}
+
 // Uploaded images live in the user's own Supabase Storage bucket, on a
 // different origin from both the app and the CDN — so nothing here used to
 // intercept them and EVERY image in EVERY deck was a broken icon offline.
@@ -46,6 +65,27 @@ const ASSET_NETWORK_TIMEOUT_MS = 15000;
 // to be re-downloaded (and are unavailable offline until they are). The
 // activate sweep below spares it by name for the same reason.
 const IMAGE_CACHE_NAME = "recall-images-v1";
+
+// The vendored third-party libraries (see vendor/ and tools/vendor-sync.mjs).
+//
+// NOT versioned with CACHE_NAME, and that is the entire point. Every one of
+// these URLs carries its library's version in the PATH, so the bytes behind a
+// URL never change — and a cache keyed to the commit sha would therefore throw
+// away ~920KB of files that are still perfectly correct on every single deploy,
+// then have to fetch them all again. That is precisely what used to happen to
+// the CDN copies of these libraries, and it is why a release left every install
+// unable to launch offline until it had been online again.
+//
+// Spared by name in the activate sweep, exactly as the image cache is.
+const VENDOR_CACHE_NAME = "recall-vendor-v1";
+
+// The libraries that are still fetched from cdn.jsdelivr.net — mermaid, jszip,
+// nomnoml+graphre, turndown+its plugin, and their friends. Same reasoning:
+// their URLs are version-pinned and immutable, so a release has no business
+// invalidating them. mermaid alone is 3.3MB, and re-downloading it on every
+// deploy is how a device that was updated on wifi still had no diagrams on the
+// train afterwards.
+const CDN_CACHE_NAME = "recall-cdn-v1";
 
 // Objects are written at immutable, randomly-named paths (see
 // uploadImageToSupabase), so a cache hit is always correct and there is no
@@ -195,6 +235,7 @@ const APP_SHELL = [
   `./styles/22-selection-bar.css?v=${STAMP}`,
   `./styles/23-highlight-marks.css?v=${STAMP}`,
   `./styles/24-highlight-tools.css?v=${STAMP}`,
+  `./styles/25-sync-report.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -226,6 +267,7 @@ const APP_SHELL = [
   `./src/core/build.js?v=${STAMP}`,
   `./src/core/constants.js?v=${STAMP}`,
   `./src/core/dom.js?v=${STAMP}`,
+  `./src/core/lib-guard.js?v=${STAMP}`,
   `./src/core/lib-loader.js?v=${STAMP}`,
   `./src/core/state.js?v=${STAMP}`,
   `./src/core/text.js?v=${STAMP}`,
@@ -350,6 +392,100 @@ const APP_SHELL = [
   "./icons/apple-touch-icon.png"
 ];
 
+// ── Vendored libraries ──────────────────────────────────────────────────────
+// Everything in vendor/, precached into VENDOR_CACHE_NAME at install BEFORE
+// skipWaiting(). That ordering is deliberate and it is the fix for the failure
+// that made this app unusable offline: the CDN precache is best-effort and used
+// to run AFTER skipWaiting, so a new worker took control with an empty
+// third-party cache — and index.html's parser-blocking library tags then had
+// nothing to answer them on the next offline launch. These are same-origin,
+// they are what the first paint needs, and they belong in the same
+// all-or-nothing bracket as the HTML.
+//
+// Cheap to keep there: entries already present are skipped, so the cost is paid
+// once per library version rather than once per release.
+//
+// Generated from vendor/lock.json by tools/vendor-sync.mjs. Do not hand-edit.
+// vendor-assets:start
+const VENDOR_ASSETS = [
+  "./vendor/dompurify-3.1.6/purify.min.js",
+  "./vendor/katex-0.16.11/auto-render.min.js",
+  "./vendor/katex-0.16.11/fonts/KaTeX_AMS-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Caligraphic-Bold.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Caligraphic-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Fraktur-Bold.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Fraktur-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Main-Bold.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Main-BoldItalic.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Main-Italic.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Main-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Math-BoldItalic.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Math-Italic.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_SansSerif-Bold.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_SansSerif-Italic.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_SansSerif-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Script-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Size1-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Size2-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Size3-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Size4-Regular.woff2",
+  "./vendor/katex-0.16.11/fonts/KaTeX_Typewriter-Regular.woff2",
+  "./vendor/katex-0.16.11/katex.min.css",
+  "./vendor/katex-0.16.11/katex.min.js",
+  "./vendor/marked-14.1.2/marked.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-bash.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-c.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-clike.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-coffeescript.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-cpp.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-csharp.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-css-extras.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-css.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-dart.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-diff.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-docker.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-fsharp.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-git.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-go.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-graphql.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-haskell.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-http.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-ini.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-java.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-javascript.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-json.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-jsx.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-kotlin.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-latex.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-lua.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-makefile.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-markdown.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-markup-templating.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-markup.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-matlab.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-nginx.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-perl.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-php.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-powershell.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-python.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-r.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-regex.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-ruby.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-rust.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-scala.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-sql.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-swift.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-toml.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-tsx.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-typescript.min.js",
+  "./vendor/prismjs-1.30.0/components/prism-yaml.min.js",
+  "./vendor/prismjs-1.30.0/prism-autoloader.min.js",
+  "./vendor/prismjs-1.30.0/prism-core.min.js",
+  "./vendor/prismjs-1.30.0/prism-tomorrow.min.css",
+  "./vendor/supabase-js-2.112.2/supabase.min.js"
+];
+// vendor-assets:end
+
 // Third-party runtime dependencies. These are loaded from cdn.jsdelivr.net and
 // are what make the difference between "works offline because I happened to
 // exercise every feature while online" and "actually works offline". We
@@ -444,7 +580,7 @@ async function cacheCdnAsset(cache, url) {
 // export. Nothing ever went back for them, because the cache is only rebuilt
 // when CACHE_NAME changes. This is that repair pass. Returns how many landed.
 async function repairCdnCache() {
-  const cache = await caches.open(CACHE_NAME);
+  const cache = await caches.open(CDN_CACHE_NAME);
   const missing = [];
   for (const url of CDN_ASSETS) {
     if (!(await cache.match(url))) missing.push(url);
@@ -452,6 +588,33 @@ async function repairCdnCache() {
   if (!missing.length) return 0;
   const results = await Promise.allSettled(missing.map((url) => cacheCdnAsset(cache, url)));
   return results.filter((r) => r.status === "fulfilled").length;
+}
+
+// Fill any hole in the vendored set. These are same-origin and precached before
+// activation, so a gap here should be impossible — but "should be impossible"
+// is what the CDN precache was assumed to be too, and a quota rejection or an
+// evicted cache can still take one out. A missing file here is a blank app, so
+// it is worth the handful of cache.match calls this costs on every reconnect.
+// Returns how many landed.
+async function repairVendorCache() {
+  const cache = await caches.open(VENDOR_CACHE_NAME);
+  const missing = [];
+  for (const asset of VENDOR_ASSETS) {
+    if (!(await cache.match(asset))) missing.push(asset);
+  }
+  if (!missing.length) return 0;
+  const results = await Promise.allSettled(missing.map((asset) => cacheVendorAsset(cache, asset)));
+  return results.filter((r) => r.status === "fulfilled").length;
+}
+
+// Same-origin, so a plain fetch gives a real response with nothing to rebuild.
+// no-cache rather than no-store: these URLs are immutable, but the browser's
+// own HTTP cache must not be allowed to answer with something it kept from
+// before a version bump.
+async function cacheVendorAsset(cache, asset) {
+  const response = await fetch(asset, { cache: "no-cache", credentials: "same-origin" });
+  if (!response.ok) throw new Error(`${asset} -> ${response.status}`);
+  await cache.put(asset, response);
 }
 
 self.addEventListener("install", (event) => {
@@ -477,28 +640,66 @@ self.addEventListener("install", (event) => {
     if (!shell.ok) throw new Error(`app shell fetch failed: ${shell.status}`);
     await cache.put("./", shell);
 
-    // Take over NOW. The 83-asset CDN precache below is best-effort by design
+    // The vendored libraries, BEFORE taking over.
+    //
+    // index.html cannot paint without marked, DOMPurify and KaTeX — they are
+    // parser-blocking tags ahead of src/main.js — so a worker that activates
+    // without them has not made the app available offline, it has only made it
+    // fail differently. They are same-origin and ~920KB, they are skipped when
+    // already present (their URLs carry their version, so a release re-fetches
+    // nothing), and on the very first install they are the difference between
+    // an app and a blank page.
+    //
+    // Still allSettled rather than addAll: one missing font must not cost the
+    // whole install, and repairVendorCache goes back for it.
+    const vendorCache = await caches.open(VENDOR_CACHE_NAME);
+    await Promise.allSettled(VENDOR_ASSETS.map(async (asset) => {
+      if (await vendorCache.match(asset)) return;
+      await cacheVendorAsset(vendorCache, asset);
+    }));
+
+    // Take over NOW. The CDN precache below is best-effort by design
     // (allSettled) and already has a repair pass, so it has no business gating
     // activation — yet it used to, and on a phone that meant a release could sit
-    // unactivated behind 3.2MB of mermaid and 20 KaTeX fonts until the browser
-    // killed the install, silently, permanently. Availability of the shell is
-    // what a release needs; the libraries can land afterwards or later.
+    // unactivated behind 3.2MB of mermaid until the browser killed the install,
+    // silently, permanently. Availability of the shell is what a release needs;
+    // the on-demand libraries can land afterwards or later.
     await self.skipWaiting();
 
-    await Promise.allSettled(CDN_ASSETS.map((url) => cacheCdnAsset(cache, url)));
+    // Into a cache that survives the next release, and skipping what is already
+    // there. Previously this went into CACHE_NAME, so every deploy discarded all
+    // 82 files and re-downloaded 3.5MB — while the new worker had already taken
+    // over. Any launch in that window with no connection had no libraries.
+    const cdnCache = await caches.open(CDN_CACHE_NAME);
+    await Promise.allSettled(CDN_ASSETS.map(async (url) => {
+      if (await cdnCache.match(url)) return;
+      await cacheCdnAsset(cdnCache, url);
+    }));
   })());
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      // IMAGE_CACHE_NAME is spared: it holds the user's own uploaded images,
-      // which are expensive to re-fetch and simply unavailable offline once
-      // dropped. Deleting every non-CACHE_NAME key would wipe it on every
-      // single app update.
+      // Three caches are spared, all for the same reason: their contents are
+      // addressed by URLs that already carry a version, so a release cannot
+      // make any entry in them stale — and re-downloading them costs exactly
+      // what an app update should not cost.
+      //
+      //   IMAGE_CACHE_NAME   the user's own uploaded images; expensive to
+      //                      re-fetch and simply unavailable offline once
+      //                      dropped.
+      //   VENDOR_CACHE_NAME  the libraries the first paint needs. Wiping these
+      //                      per release is what made every deploy hand each
+      //                      install a worker that could not launch offline.
+      //   CDN_CACHE_NAME     mermaid and the other on-demand libraries, 3.5MB
+      //                      of them.
       .then((keys) => Promise.all(
         keys
-          .filter((key) => key !== CACHE_NAME && key !== IMAGE_CACHE_NAME)
+          .filter((key) => key !== CACHE_NAME
+            && key !== IMAGE_CACHE_NAME
+            && key !== VENDOR_CACHE_NAME
+            && key !== CDN_CACHE_NAME)
           .map((key) => caches.delete(key))
       ))
       .then(() => trimImageCache())
@@ -526,8 +727,12 @@ self.addEventListener("message", (event) => {
   // filled. Cheap when there's nothing to do: a cache.match per asset, no
   // network at all.
   if (event.data && event.data.type === "repair-offline-cache") {
-    event.waitUntil(repairCdnCache().then((count) => {
-      if (count) console.info(`[sw] refetched ${count} offline asset(s) that were missing`);
+    event.waitUntil(Promise.all([
+      repairVendorCache().catch(() => 0),
+      repairCdnCache().catch(() => 0)
+    ]).then(([vendor, cdn]) => {
+      if (vendor) console.info(`[sw] refetched ${vendor} vendored library file(s) that were missing`);
+      if (cdn) console.info(`[sw] refetched ${cdn} offline asset(s) that were missing`);
     }).catch(() => {}));
     return;
   }
@@ -572,6 +777,7 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   const isSameOrigin = url.origin === self.location.origin;
+  const isVendorAsset = isSameOrigin && /(^|\/)vendor\//.test(url.pathname);
   const isCdnAsset = url.hostname === "cdn.jsdelivr.net";
   const isImage = !isSameOrigin && isSupabaseImageUrl(url);
 
@@ -620,17 +826,51 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  if (isVendorAsset) {
+    // Cache-first, out of the cache a release does not touch. The version is in
+    // the path, so a hit is always the right bytes and there is nothing to
+    // revalidate — which is what makes an offline launch as fast as an online
+    // one, and what makes a release cost nothing here.
+    //
+    // A miss should not happen (these are precached before the worker
+    // activates), but it can: an evicted cache, a quota rejection, a file added
+    // without re-running vendor-sync. Fetch it, keep it, and bound the wait —
+    // this is a parser-blocking <script> on the other end, so an unbounded
+    // fetch here is a blank page for as long as the network stalls.
+    event.respondWith((async () => {
+      const cache = await caches.open(VENDOR_CACHE_NAME);
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      try {
+        const response = await withNetworkTimeout(fetch(request), ASSET_NETWORK_TIMEOUT_MS);
+        if (response && response.ok) cache.put(request, response.clone()).catch(() => {});
+        return response || Response.error();
+      } catch (_) {
+        return Response.error();
+      }
+    })());
+    return;
+  }
+
   if (isCdnAsset) {
     // CDN assets (scripts, KaTeX CSS/fonts, Prism grammars): cache-first. They
     // live at versioned URLs whose contents never change, so a cache hit is
     // always correct — and cache-first is what guarantees they resolve offline.
     // On a miss we fetch, cache a clean (non-redirected) copy, and serve it.
     event.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
+      caches.open(CDN_CACHE_NAME).then((cache) =>
         cache.match(request).then((cached) => {
           if (cached) return cached;
-          return fetch(request)
+          // BOUNDED. This used to be a bare fetch with no timeout at all, and
+          // it was reachable from a parser-blocking <script> — so a CDN that
+          // accepted the connection and then answered nothing (a captive
+          // portal, a filtering proxy) hung the page indefinitely with nothing
+          // painted. Nothing behind this branch is on the boot path any more,
+          // but a diagram that never renders should still fail rather than wait
+          // forever.
+          return withNetworkTimeout(fetch(request), ASSET_NETWORK_TIMEOUT_MS)
             .then(async (response) => {
+              if (!response) return Response.error();
               if (response.ok || response.type === "opaque") {
                 try {
                   const body = await response.clone().blob();
@@ -812,14 +1052,27 @@ async function sameOriginNetworkFirst(event, request) {
 
   if (!cached) {
     // Genuinely nothing to fall back to (a first visit, or an asset this build
-    // never precached) — the network is the only answer there is, so wait for
-    // it however long it takes rather than failing the load outright. A `null`
+    // never precached) — the network is the only answer there is. A `null`
     // here is the coherence refusal above with no cached copy to refuse in
     // favour of, which can only happen if this worker's own install never
     // stored "./"; serving the newer markup is then strictly better than
     // serving nothing.
+    //
+    // BOUNDED, unlike before. "Wait however long it takes" was the reading, and
+    // on a connection that accepts and then answers nothing it meant a blank
+    // page with no error, no timeout and no way to tell it from a hang — the
+    // one case the rest of this file is built around. The budget is the
+    // generous one: this is the shell with no cached copy, so giving up early
+    // costs the whole launch, and Response.error() at least lets the browser
+    // show its own message instead of a white screen forever.
     try {
-      return (await network) || (await fetch(request.url, { cache: "no-store", credentials: "same-origin" }));
+      const answer = await withNetworkTimeout(network, ASSET_NETWORK_TIMEOUT_MS);
+      if (answer) return answer;
+      const retry = await withNetworkTimeout(
+        fetch(request.url, { cache: "no-store", credentials: "same-origin" }),
+        ASSET_NETWORK_TIMEOUT_MS
+      );
+      return retry || Response.error();
     } catch (_) {
       return Response.error();
     }

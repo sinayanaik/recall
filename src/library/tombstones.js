@@ -125,17 +125,28 @@ export function clearPendingUntombstones() {
 // Returns how many ids were retired. Called from reconcileAllDecks BEFORE the
 // deck index and tombstone list are read, so the un-delete is already in place
 // by the time the passes that act on tombstones run.
+// Ids per delete request. Same reasoning and roughly the same size as
+// CARD_FETCH_DECK_CHUNK; kept local rather than imported so this module does
+// not depend on the cloud deck-list reader for a constant about URL length.
+export const UNTOMBSTONE_CHUNK = 50;
+
 export async function flushPendingUntombstones() {
   const ids = readPendingUntombstones();
   if (!ids.length) return 0;
   if (!supabaseClient || !isSignedIn || !navigator.onLine) return 0;
   try {
-    const { error } = await withTimeout(
-      abortable((signal) => supabaseClient.from("deleted_decks").delete().in("deck_id", ids).abortSignal(signal)),
-      CLOUD_TIMEOUT_MS,
-      "clear delete tombstones"
-    );
-    if (error) throw error;
+    // CHUNKED, same 8KB request-line ceiling as every other `.in()` in this
+    // app (see CARD_FETCH_DECK_CHUNK). A Restore is what gets you here with
+    // hundreds of ids at once, and a 414 would leave every restored deck still
+    // tombstoned — which the next sync would honour by deleting it again.
+    for (let i = 0; i < ids.length; i += UNTOMBSTONE_CHUNK) {
+      const { error } = await withTimeout(
+        abortable((signal) => supabaseClient.from("deleted_decks").delete().in("deck_id", ids.slice(i, i + UNTOMBSTONE_CHUNK)).abortSignal(signal)),
+        CLOUD_TIMEOUT_MS,
+        "clear delete tombstones"
+      );
+      if (error) throw error;
+    }
   } catch (error) {
     // Keep the queue: replaying a delete-by-id is idempotent, and until it
     // lands the local tombstone has to stay too (see the ordering note above).

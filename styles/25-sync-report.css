@@ -1,0 +1,52 @@
+/* Where a sync's time went.
+   Collapsed by default: it is a diagnostic, and a report that opens with a
+   table of numbers buries the thing the user came to read — which decks moved. */
+.sync-report-timing {
+  margin: 0 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 45%, transparent);
+  font-size: 0.82rem;
+}
+
+.sync-report-timing > summary {
+  padding: 7px 10px;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.sync-report-timing > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sync-report-timing > summary::before {
+  content: "▸ ";
+  color: var(--muted);
+}
+
+.sync-report-timing[open] > summary::before {
+  content: "▾ ";
+}
+
+.sync-report-timing ul {
+  margin: 0;
+  padding: 0 10px 8px;
+  list-style: none;
+}
+
+.sync-report-timing li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  color: var(--text);
+}
+
+/* The number is the point of each row, so it gets the alignment: a column of
+   right-aligned tabular figures can be scanned for the outlier at a glance,
+   which is the entire reason this panel exists. */
+.sync-report-timing li > span:last-child {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

@@ -20,6 +20,9 @@
 //   module-symbols  does every cross-module reference resolve?
 //   css-parity      do the stylesheet slices still reassemble to the original?
 //   port-sync       do the extension's copies still match?
+//   vendor          are the vendored libraries on disk, unmodified, and
+//                   precached? (a hole here is a blank page offline, not a
+//                   missing feature — they are blocking tags before main.js)
 //   precache        does sw.js precache every module the app imports, and
 //                   nothing that no longer exists? (a missing entry breaks the
 //                   app OFFLINE only; a stale one stops any worker activating)
@@ -46,6 +49,10 @@
 //   selection       can you still select text in a note without dragging the
 //                   app's own chrome in with it? Real mouse drags, because
 //                   selection is a browser behaviour, not a function
+//   offline         does it START with no network, a blocked CDN, or a CDN
+//                   that hangs? (the one question nothing used to ask — every
+//                   other check here runs with a working connection, and the
+//                   app shipped unable to launch offline because of it)
 //   release-check   (--full) does a release reach an existing install, and
 //                   does it work offline?
 
@@ -67,6 +74,7 @@ const checks = [
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
+  ["vendor        ", ["node", ["tools/vendor-sync.mjs", "--check"], ROOT]],
   ["precache      ", ["node", ["tools/precache-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
@@ -80,6 +88,7 @@ const checks = [
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
+    ["offline       ", ["node", ["tools/offline-check.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];

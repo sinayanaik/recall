@@ -19,6 +19,11 @@
 // Stylesheets get the same treatment against index.html, because a sheet that is
 // precached but never linked is dead weight and one that is linked but never
 // precached is an unstyled app offline.
+//
+// And vendor/ hardest of all. Those files are parser-blocking <script> tags
+// ahead of src/main.js, so one of them missing from the worker's VENDOR_ASSETS
+// is not a degraded feature — it is a blank page on the next offline launch,
+// which is precisely the failure this whole area was rebuilt to remove.
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -67,6 +72,44 @@ function reachableModules() {
 }
 
 const problems = [];
+
+// ── vendor/ ────────────────────────────────────────────────────────────────
+// Three facts have to agree: what is on disk, what vendor/lock.json recorded,
+// and what sw.js precaches. tools/vendor-sync.mjs writes all three, so a
+// disagreement means someone edited one by hand.
+const vendorLockPath = path.join(ROOT, "vendor", "lock.json");
+if (!existsSync(vendorLockPath)) {
+  problems.push("vendor/lock.json is missing — run: node tools/vendor-sync.mjs");
+} else {
+  const vendorFiles = Object.keys(JSON.parse(readFileSync(vendorLockPath, "utf8")));
+  for (const rel of vendorFiles) {
+    if (!existsSync(path.join(ROOT, rel))) {
+      problems.push(`${rel} is in vendor/lock.json but not on disk — run: node tools/vendor-sync.mjs`);
+      continue;
+    }
+    if (!sw.includes(`"./${rel}"`)) {
+      problems.push(`${rel} is not in sw.js VENDOR_ASSETS — it would be absent on a first offline launch`);
+    }
+  }
+  // The other direction: a file left on disk after a version bump is dead
+  // weight the worker would go on precaching forever.
+  for (const rel of walk("vendor")) {
+    if (rel.endsWith("lock.json")) continue;
+    const url = rel.replace(/\\/g, "/");
+    if (!vendorFiles.includes(url)) problems.push(`${url} is on disk but not in vendor/lock.json — delete it or re-run vendor-sync`);
+  }
+  // Nothing on the boot path may point at a third-party origin any more. This
+  // is the check that would have caught the original bug: index.html loaded
+  // eight blocking scripts from cdn.jsdelivr.net, and no test anywhere said it
+  // shouldn't.
+  // Comments stripped first: this file documents what it moved away from, and
+  // a check that fires on its own explanation is a check people delete.
+  const markup = html.replace(/<!--[\s\S]*?-->/g, "");
+  const bootTags = markup.match(/<script src="https:\/\/[^"]+"/g) || [];
+  for (const tag of bootTags) problems.push(`index.html loads a blocking third-party script: ${tag} — vendor it instead`);
+  const bootSheets = markup.match(/<link rel="stylesheet" href="https:\/\/[^"]+"/g) || [];
+  for (const tag of bootSheets) problems.push(`index.html loads a render-blocking third-party stylesheet: ${tag} — vendor it instead`);
+}
 
 const modules = reachableModules();
 for (const rel of modules) {

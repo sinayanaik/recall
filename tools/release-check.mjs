@@ -20,6 +20,7 @@
 //   3. go offline, reload — the app must still boot from cache
 //   4. swap the served tree to release B and reload
 //   5. the new worker must install, and the page must end up on B, not A
+//   6. go offline again and reload — B must ALSO boot with no network
 //
 // The app skips worker registration on localhost and 127.0.0.1, so this serves
 // under a hostname that is neither and tells Chrome to treat it as secure.
@@ -87,7 +88,7 @@ const SRC_REF = (process.argv.find((a) => a.startsWith("--from=")) || "").slice(
 for (const d of [dirA, dirB]) {
   if (SRC_REF) execFileSync("bash", ["-c", `cd ${ROOT} && git archive ${SRC_REF} | tar -x -C ${d}`]);
   else execFileSync("bash", ["-c",
-    `cd ${ROOT} && tar -c index.html sw.js manifest.webmanifest src styles icons | tar -x -C ${d}`]);
+    `cd ${ROOT} && tar -c index.html sw.js manifest.webmanifest src styles icons vendor | tar -x -C ${d}`]);
 }
 stamp(dirA, "aaaaaa1");
 stamp(dirB, "bbbbbb2");
@@ -176,8 +177,30 @@ try {
   });
   check(cachedA.name === "recall-aaaaaa1", `release A: cache is ${cachedA.name} (want recall-aaaaaa1)`);
   if (!SRC_REF) {
-    check(cachedA.modules >= 130, `release A: ${cachedA.modules} modules precached (want >= 130)`);
-    check(cachedA.styles === 13, `release A: ${cachedA.styles} stylesheets precached (want 13)`);
+    // Counted from what is on disk rather than typed in. The stylesheet
+    // expectation was a literal 13, written when there were 13 slices, and it
+    // had been silently wrong ever since 14-selection.css — a check that only
+    // runs behind --full and fails for a reason nobody acts on is worse than no
+    // check, because it teaches the eye to skip the red line next to it.
+    const wantModules = walk(path.join(ROOT, "src")).length;
+    const wantStyles = walk(path.join(ROOT, "styles")).length;
+    check(cachedA.modules === wantModules, `release A: ${cachedA.modules} modules precached (want ${wantModules})`);
+    check(cachedA.styles === wantStyles, `release A: ${cachedA.styles} stylesheets precached (want ${wantStyles})`);
+  }
+
+  // The vendored libraries, in their own cache. Release A has to have them
+  // before the offline step below means anything: they are parser-blocking
+  // <script> tags ahead of src/main.js, so without them the page cannot boot at
+  // all, with or without a network.
+  const vendorA = await page.evaluate(async () => {
+    const names = await caches.keys();
+    if (!names.includes("recall-vendor-v1")) return { present: false, count: 0, names };
+    return { present: true, count: (await (await caches.open("recall-vendor-v1")).keys()).length, names };
+  });
+  if (!SRC_REF) {
+    const wantVendor = walk(path.join(ROOT, "vendor")).filter((f) => !f.endsWith("lock.json")).length;
+    check(vendorA.count === wantVendor,
+      `release A: ${vendorA.count} vendored files precached (want ${wantVendor}) — caches: ${vendorA.names.join(", ")}`);
   }
 
   // ── 2. Offline ──────────────────────────────────────────────────────────
@@ -277,7 +300,55 @@ try {
   check(after.caches.includes("recall-bbbbbb2"), `update: cache recall-bbbbbb2 exists (${after.caches.join(", ")})`);
   check(!after.caches.includes("recall-aaaaaa1"), "update: release A's cache was swept");
 
-  console.log(failures ? `\n${failures} release check(s) failed.` : "\nRelease path verified: install, offline, and update.");
+  // ── 6. Offline AFTER the update ─────────────────────────────────────────
+  //
+  // The step this file was missing, and the one the app actually shipped
+  // broken. Everything above proves release A works offline and that release B
+  // arrives — but it only ever checked B while ONLINE, so the state every
+  // single deploy put people into went untested.
+  //
+  // What used to happen there: the worker precached the third-party libraries
+  // into CACHE_NAME, which is the commit sha, and called skipWaiting() BEFORE
+  // refilling it. So the moment a release activated, its library cache was
+  // empty — and index.html's parser-blocking <script> tags had nothing to
+  // answer them. Go offline in that window and the page was blank. Every
+  // deploy re-armed it for every install.
+  //
+  // The libraries are same-origin files in vendor/ now, precached before the
+  // worker activates, in caches the activate sweep spares by name. This asserts
+  // that: same tab, same install, one release later, no network.
+  const bVendor = await page.evaluate(async () => {
+    const names = await caches.keys();
+    const count = async (name) => names.includes(name) ? (await (await caches.open(name)).keys()).length : 0;
+    return { names, vendor: await count("recall-vendor-v1"), cdn: await count("recall-cdn-v1") };
+  });
+  check(bVendor.vendor >= 70,
+    `offline after update: the vendor cache survived the release (${bVendor.vendor} entries)`);
+
+  await cdp.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  const afterUpdateErrors = [];
+  page.on("pageerror", (e) => afterUpdateErrors.push(e.message));
+  await page.goto(`${ORIGIN}/index.html`, { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => null);
+  await new Promise((r) => setTimeout(r, 2500));
+  const offlineAfterUpdate = await page.evaluate(() => {
+    const shell = document.querySelector(".app-shell");
+    const visible = (id) => { const n = document.getElementById(id); return Boolean(n && !n.hidden); };
+    return {
+      decided: visible("setupOverlay") || visible("loginOverlay") || visible("offlineBootOverlay") || Boolean(shell && !shell.hidden),
+      skeletonGone: !document.getElementById("bootSkeleton"),
+      text: (document.body.innerText || "").replace(/\s+/g, " ").trim().slice(0, 60),
+      libs: typeof window.marked !== "undefined" && typeof window.DOMPurify !== "undefined"
+        && typeof window.katex !== "undefined" && typeof window.supabase !== "undefined"
+    };
+  });
+  check(offlineAfterUpdate.decided, `offline after update: the app rendered a screen (${offlineAfterUpdate.text})`);
+  check(offlineAfterUpdate.skeletonGone, "offline after update: the boot placeholder was replaced");
+  check(offlineAfterUpdate.libs, "offline after update: every boot library resolved from cache");
+  check(afterUpdateErrors.length === 0,
+    `offline after update: no page errors${afterUpdateErrors.length ? " — " + afterUpdateErrors[0] : ""}`);
+  await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+
+  console.log(failures ? `\n${failures} release check(s) failed.` : "\nRelease path verified: install, offline, update, and offline again after the update.");
 } finally {
   await browser.close();
   server.kill();

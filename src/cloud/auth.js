@@ -11,12 +11,40 @@ import { withTimeout } from "./net.js?v=__BUILD__";
 import { PENDING_STYLE_KEY } from "./style-sync.js?v=__BUILD__";
 import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
 
-// Reads the session straight from local storage — no network — so a user who
-// has signed in at least once can keep using the app while offline.
+// How long boot will wait for a session before carrying on without one.
+// Much shorter than AUTH_TIMEOUT_MS because of what is on the other side of it:
+// this call sits on the boot path with nothing painted, so every second here is
+// a second of blank screen, and the fallback is not an error — it is "start
+// offline", which this app is built to do.
+export const SESSION_RESTORE_TIMEOUT_MS = 8000;
+
+// The session, for a caller that must not hang waiting for one.
+//
+// This is NOT a pure local read, despite what its name and its old comment
+// both claimed. getSession() returns the stored session as-is while the access
+// token is live, but the moment that token has expired it goes to the network
+// to refresh it — see the identical call in verifiedCloudUserId below, which
+// has been wrapped in a timeout for exactly that reason since long before this
+// one was.
+//
+// Unwrapped, on a connection that accepts and then answers nothing (a captive
+// portal, a dead cell), it never settled. And it is awaited by bootApp() before
+// ANY screen has been shown, so the app did not fall back, did not show the
+// login wall, did not show the offline library: it sat on a blank page
+// indefinitely. That is the "blank screen when the network is slow" report, and
+// it needed nothing more than an expired token and a bad connection.
+//
+// Timing out is a safe answer here. It means "no session right now", the same
+// as being signed out — and the caller's response to that is to open the local
+// library, which is where the user's decks already are.
 export async function getCachedSession() {
   if (!supabaseClient) return null;
   try {
-    const { data } = await supabaseClient.auth.getSession();
+    const { data } = await withTimeout(
+      supabaseClient.auth.getSession(),
+      SESSION_RESTORE_TIMEOUT_MS,
+      "restore session"
+    );
     return data?.session ?? null;
   } catch (error) {
     console.warn("Could not read cached session", error);
@@ -81,6 +109,31 @@ export function setExplicitLogout(value) {
   explicitLogout = value;
 }
 
+// Is this the sign-in having lapsed, rather than anything the user did wrong?
+//
+// Shared with the sync path (see describeSyncFailure) because the two surfaces
+// were reporting the same event in two different, equally unhelpful ways. Both
+// of these are ordinary — an access token lives about an hour, and a phone that
+// spent a week in a pocket comes back to a refresh that has to happen — and
+// neither said so. The user saw the provider's own words instead: "JWT expired",
+// "invalid JWT", "Invalid Refresh Token: Already Used". None of those name a
+// thing anybody can act on, and all of them read like the app is broken.
+//
+// PGRST301 is PostgREST's code for a request whose JWT did not verify; the
+// GoTrue shapes cover the refresh itself failing.
+export function isSessionExpiredError(error) {
+  if (error?.code === "PGRST301") return true;
+  const message = String(error?.message || error || "");
+  return /\bjwt\b|token is expired|invalid claim|bad_jwt|refresh[_ ]token[_ ]not[_ ]found|invalid refresh token|already used/i
+    .test(message);
+}
+
+// What to say when the sign-in has lapsed. One sentence, in both places it can
+// happen, and it always ends by saying the decks are safe — because the first
+// thing this failure makes anybody wonder is whether their data went with it.
+export const SESSION_EXPIRED_MESSAGE =
+  "Your sign-in expired — sign in again. Your decks are safe on this device.";
+
 // Raw provider strings were shown verbatim, which is fine for "Invalid login
 // credentials" and useless for the rest. "Failed to fetch" reads like a bug in
 // the app; "Invalid API key" is a truthful message about a cause the user has no
@@ -92,6 +145,9 @@ export function describeAuthError(error) {
   if (!navigator.onLine || /failed to fetch|networkerror|load failed|timed out/i.test(message)) {
     return "Couldn't reach your Supabase project — check your connection, then try again.";
   }
+  // Before the API-key check below, which "invalid JWT" would otherwise not
+  // reach but which a rotated legacy anon key can be mistaken for.
+  if (isSessionExpiredError(error)) return SESSION_EXPIRED_MESSAGE;
   if (/invalid api key/i.test(message)) {
     return "This project's anon key isn't valid. Use “Change Supabase project” below and paste it again.";
   }
@@ -102,6 +158,32 @@ export function describeAuthError(error) {
     return "This Supabase project has email sign-in turned off. Enable it under Authentication → Providers → Email.";
   }
   return message;
+}
+
+// Refresh the access token once, by hand.
+//
+// isTransientCloudError deliberately refuses to retry a coded PostgREST error,
+// and it is right to: replaying a request with the same expired token just
+// fails again. But the fix for THIS error is not to replay it — it is to get a
+// new token first, which nothing did, so a token that lapsed mid-sync aborted
+// the whole run and every run after it until the user happened to reload.
+//
+// Bounded like every other auth call. Returns whether there is now a usable
+// session; the caller decides whether to re-run its phase.
+export async function refreshSessionOnce() {
+  if (!supabaseClient || !navigator.onLine) return false;
+  try {
+    const { data, error } = await withTimeout(
+      supabaseClient.auth.refreshSession(),
+      AUTH_TIMEOUT_MS,
+      "refresh sign-in"
+    );
+    if (error) return false;
+    return Boolean(data?.session?.access_token);
+  } catch (error) {
+    console.warn("Could not refresh the session", error);
+    return false;
+  }
 }
 
 // Every cloud data call is wrapped in withTimeout; these three never were, and

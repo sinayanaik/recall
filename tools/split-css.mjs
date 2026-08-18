@@ -118,6 +118,13 @@ const POST_SPLIT = {
     "selection. That brought the font picker here from the raw toolbar (it " +
     "would otherwise be unreachable) and needed a ⋯ disclosure to keep the " +
     "phone bar at one row now that it carries everything.",
+  "25-sync-report.css":
+    "The per-phase timing panel in the sync report. \"Sync is slow\" used to be " +
+    "unanswerable: the only thing on screen during a run was a button label, so " +
+    "40 seconds spent reading deck bodies and 40 seconds spent waiting on one " +
+    "stalled request looked identical — to the user and to anyone trying to fix " +
+    "it. Collapsed by default, because which decks moved is still the headline. " +
+    "See buildSyncTimingHtml in src/sync/report.js.",
   "24-highlight-tools.css":
     "The controls for a highlight that already exists, on the mark itself in " +
     "the note. A highlight used to be something you could read and jump to and " +

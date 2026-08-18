@@ -42,6 +42,107 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // Declarations that are ALLOWED to differ, and why. Keep this short — every
 // entry is a place where the "pure movement" guarantee was deliberately spent.
 const ACCEPTED = {
+  // ── Offline: the app must always paint, and sync must name its failures ──
+  // The app loaded eight parser-blocking <script> tags and two render-blocking
+  // <link>s from cdn.jsdelivr.net, and paints nothing before src/main.js runs —
+  // so a CDN that was blocked, or merely hanging, was a blank screen for as
+  // long as it lasted. Those libraries are same-origin files in vendor/ now,
+  // precached before the worker activates, in caches a release does not touch.
+  // The entries below are the rest of that work: bounding the waits that were
+  // unbounded, opening the local library instead of a sign-in wall, and saying
+  // "your sign-in expired" where the provider's own "JWT expired" used to land.
+  bootApp:
+    "Local data paints BEFORE any Supabase work. The session check was awaited " +
+    "with nothing on screen, and getCachedSession goes to the network when the " +
+    "access token has expired — so a lapsed token on a stalled connection was a " +
+    "blank page indefinitely. Now: a device with a configured project, a known " +
+    "owner and decks on disk opens its library immediately and confirms the " +
+    "session behind it (confirmSessionInBackground); the 8-second " +
+    "waitForSupabaseLibrary retry is skipped when offline, where it could only " +
+    "ever buy blank screen; and the library-failed wall is shown only when " +
+    "there is genuinely nothing local to fall back on. Also paints the Offline " +
+    "pill during boot rather than only when connectivity CHANGES.",
+  getCachedSession:
+    "Wrapped in withTimeout. Its name and its old comment both said 'no " +
+    "network', and that was false — getSession() refreshes over the network " +
+    "once the access token has expired, which verifiedCloudUserId twenty lines " +
+    "below had already been bounded for. Unwrapped and awaited by bootApp " +
+    "before any screen exists, it was the single most direct cause of the " +
+    "blank-screen report. A timeout reads as 'no session', which is a state " +
+    "the app already handles by opening the local library.",
+  showBootScreen:
+    "Clears the pre-JavaScript boot placeholder in index.html. Here and " +
+    "nowhere else, for the same reason this function is the only place that " +
+    "unhides a screen: whatever it is about to show IS the answer the " +
+    "placeholder stood in for.",
+  initSupabaseClient:
+    "createClient now receives its auth options explicitly instead of relying " +
+    "on the v2 defaults. persistSession and autoRefreshToken are load-bearing " +
+    "here (an offline launch reads the stored session; a phone left for a week " +
+    "needs the refresh), so a supabase-js bump changing either would present " +
+    "as 'sync just stopped working' with nothing in the repo to point at. " +
+    "storageKey is deliberately still unset — see the comment there.",
+  describeAuthError:
+    "Names an expired sign-in before falling through to the raw provider " +
+    "string. That fallback is where 'JWT expired' and 'Invalid Refresh Token: " +
+    "Already Used' were reaching the login screen verbatim — true, useless, " +
+    "and indistinguishable from the app being broken.",
+  safeHtmlFromPrepared:
+    "Renders the markdown SOURCE when marked or DOMPurify is missing instead " +
+    "of throwing. Throwing took the whole view down and left an empty pane " +
+    "with nothing to explain it; the source is still readable and copyable, " +
+    "and the boot guard has already named the missing file on screen.",
+  renderPreparedBlocks:
+    "Same guard as safeHtmlFromPrepared, which is where each block lands on " +
+    "this path.",
+
+  // ── Sync: speed, and every wait bounded ──────────────────────────────────
+  readLocalDeckIndex:
+    "Reads the batch's pending copy when a sync has one open. Still returns a " +
+    "FRESH PARSE on every call — the aliasing that handing out a shared array " +
+    "would introduce is not worth the saving across 48 call sites.",
+  writeLocalDeckIndex:
+    "Batchable. The index is one localStorage key holding the whole library " +
+    "and every deck a sync touches rewrites all of it, so a 700-deck pull did " +
+    "700 synchronous ~200KB disk writes on the main thread — the largest " +
+    "single cost in a sync, and it presented as the app freezing rather than " +
+    "as sync being slow. Inside a batch the writes accumulate in memory and " +
+    "reach disk on a checkpoint (see INDEX_CHECKPOINT_EVERY), on pagehide, and " +
+    "at the end of the run.",
+  pushDeckRowsToCloud:
+    "Three calls that were wrapped in withTimeout without abortable() now have " +
+    "it: the fallback card read, the card prune and the final deck bump. " +
+    "Without it a timeout only stops WAITING for the answer — the request " +
+    "stays open holding one of six per-host sockets, which is what turned one " +
+    "stalled request into a whole sync crawling behind its own dead " +
+    "connections.",
+  writeStyleToCloud: "abortable(), for the reason in pushDeckRowsToCloud.",
+  writeQuickNoteAnchors:
+    "withTimeout + abortable, where there was no timeout at all. " +
+    "flushPendingQuickNoteAnchors is awaited by reconcileAllDecks BEFORE the " +
+    "deck list is read, so an unbounded call here hung the entire sync before " +
+    "a single deck had been looked at.",
+  writeQuickNoteCategoryOpsToCloud:
+    "withTimeout + abortable, same position in the sync and same reason as " +
+    "writeQuickNoteAnchors.",
+  loadDeckNotesForSearch: "withTimeout + abortable; it had neither.",
+  flushPendingUntombstones:
+    "The delete is CHUNKED. An `.in()` list becomes part of the request URL " +
+    "and a uuid costs ~46 characters percent-encoded, so past a few hundred " +
+    "ids it crosses the 8KB request-line ceiling nginx and most proxies ship " +
+    "with — the same trap CARD_FETCH_DECK_CHUNK exists for. A 414 here would " +
+    "leave every restored deck still tombstoned, and the next sync would " +
+    "honour that by deleting it again.",
+
+  // ── Sync report: where the time went ─────────────────────────────────────
+  buildSyncReportHtml:
+    "Takes per-phase timings and renders them collapsed above the deck list. " +
+    "'Sync is slow' was unanswerable: the only thing on screen during a run " +
+    "was a changing button label, so 40 seconds spent reading deck bodies and " +
+    "40 seconds spent waiting on one stalled request looked identical.",
+  showSyncReport: "Passes timings through to buildSyncReportHtml.",
+  renderWelcomeSyncReport: "Passes timings through, so a background sync reports them too.",
+
   // ── The floating selection pill becomes the only formatting surface ──────
   // Every button on a persistent formatting strip refuses without a selection,
   // so those strips were permanent rows that could do nothing until you made
@@ -1107,6 +1208,50 @@ const RESIDUAL_REWRITES = [
   // actions. Nothing emits [data-render-font] any more, so the delegation stops
   // looking for it — which is the baseline's own selector, unchanged.
   ["", ""],
+
+  // marked.setOptions is guarded, and the guard is load-bearing. This is
+  // module-scope code in the ENTRY module: `marked` being undefined here was a
+  // ReferenceError during evaluation of src/main.js, so registerServiceWorker()
+  // and bootApp() at the bottom of the file never ran and the page stayed blank
+  // — permanently, on that device, because no worker was ever registered to fix
+  // the next load either. It was reachable any time cdn.jsdelivr.net was
+  // blocked or slow, which is why "the app is not offline friendly" so often
+  // meant a white screen rather than a missing feature. The library is vendored
+  // now (see tools/vendor-sync.mjs); this makes its absence survivable rather
+  // than fatal. See assertBootLibraries in src/core/lib-guard.js.
+  [/marked\.setOptions\(\{ breaks: true, gfm: true, mangle: false, headerIds: false \}\);/,
+   "if (typeof marked !== \"undefined\") { marked.setOptions({ breaks: true, gfm: true, mangle: false, headerIds: false }); }"],
+
+  // The Prism autoloader points at the vendored grammars. It injects a <script>
+  // for a language the first time a code block uses one, so leaving it on the
+  // CDN meant syntax highlighting quietly reached the network mid-render — and
+  // got nothing at all offline, which is where the other 46 grammars sw.js
+  // precached were being spent. tools/vendor-sync.mjs keeps that directory
+  // populated and the deploy refuses a vendor URL carrying a ?v= stamp.
+  [/Prism\.plugins\.autoloader\.languages_path = "https:\/\/cdn\.jsdelivr\.net\/npm\/prismjs@1\.30\.0\/components\/";/,
+   'Prism.plugins.autoloader.languages_path = "vendor/prismjs-1.30.0/components/";'],
+
+  // bootApp() only runs if markdown is actually available. The service worker
+  // is still registered on the line above it either way, and deliberately: if a
+  // library really is missing, the single most useful thing that load can do is
+  // leave behind a worker that has precached the whole app, so the NEXT load
+  // works. See assertBootLibraries.
+  [/initBackGesture\(\); bootApp\(\);/,
+   'initBackGesture(); if (bootLibrariesPresent) bootApp(); else console.error("Boot halted: the markdown libraries are unavailable. See the message on screen.");'],
+
+  // Both handlers that mean "this page may be about to go away" now also flush
+  // the batched deck index. A sync holds it in memory between checkpoints (see
+  // beginIndexBatch), so a tab that disappears mid-sync would otherwise leave
+  // the last few pulled decks with a snapshot in IndexedDB and no index entry
+  // naming it — which the next boot's orphan sweep would throw away. Swiping a
+  // phone's app away mid-sync is the ordinary way that happens.
+  [/window\.addEventListener\("pagehide", \(\) => \{ flushWorkingDeck\(\); revokeLocalImageUrls\(\); \}\);/,
+   'window.addEventListener("pagehide", () => { flushWorkingDeck(); try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); } revokeLocalImageUrls(); });'],
+  // Written in the BASELINE's form (a bare `lastHiddenAt = …`), because these
+  // patterns are applied to the baseline text and compared against the current
+  // tree with unroute() having already undone the setter rewrite.
+  [/if \(document\.visibilityState === "hidden"\) \{ lastHiddenAt = Date\.now\(\); flushWorkingDeck\(\); return; \}/,
+   'if (document.visibilityState === "hidden") { lastHiddenAt = Date.now(); flushWorkingDeck(); try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); } return; }'],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

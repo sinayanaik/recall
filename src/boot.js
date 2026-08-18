@@ -13,9 +13,10 @@ import { initSupabaseClient, isSignedIn, loadSupabaseConfig, setSignedIn, supaba
 import { deckStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
-import { pruneOrphanedDeckSnapshots, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
+import { discardIndexBatch, pruneOrphanedDeckSnapshots, readLocalDeckIndex, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "./notes/notes-view.js?v=__BUILD__";
 import { checkProjectHealth } from "./pwa/app-info.js?v=__BUILD__";
+import { updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
 import { clearAllDeckSnapshots, initDeckStorage, requestPersistentStorage } from "./storage/deck-store.js?v=__BUILD__";
@@ -133,6 +134,10 @@ export const LAST_USER_STORAGE_KEY = "flashcards_last_user_id";
 // is very often about to sign straight back into the same project.
 export async function resetLocalLibrary() {
   await clearAllDeckSnapshots();
+  // Before the removal, not after: a sync in flight may be holding a batched
+  // copy of the index in memory, and flushing it afterwards would write the
+  // previous account's library straight back over this.
+  discardIndexBatch();
   localStorage.removeItem(LOCAL_DECKS_INDEX_KEY);
   localStorage.removeItem(LOCAL_DECK_TOMBSTONES_KEY);
   // Observations about the previous account's decks say nothing about this
@@ -160,18 +165,26 @@ export async function resetLocalLibrary() {
   state.notes = "";
 }
 
+// Returns whether it actually cleared the library. The caller needs to know
+// because the check no longer always runs before the app is on screen: the
+// offline-first boot path opens the library first and confirms the account
+// behind it, so a reset can now happen with the previous account's decks
+// already painted, and nothing else repaints on this path.
 export async function ensureLocalLibraryOwner(userId) {
-  if (!userId) return;
+  if (!userId) return false;
   try {
     const previous = localStorage.getItem(LAST_USER_STORAGE_KEY);
     if (previous && previous !== String(userId)) {
       await resetLocalLibrary();
       console.log("Cleared local deck library — different account signed in.");
+      localStorage.setItem(LAST_USER_STORAGE_KEY, String(userId));
+      return true;
     }
     localStorage.setItem(LAST_USER_STORAGE_KEY, String(userId));
   } catch (error) {
     console.warn("Could not verify local library owner", error);
   }
+  return false;
 }
 
 // The other half of the offline-SIGNED_OUT forgiveness in setupAuthListener.
@@ -255,6 +268,24 @@ export function setupAuthListener() {
   authListenerSubscription = data.subscription;
 }
 
+// Is there a full local library belonging to a known account on this device?
+//
+// The three conditions together are what make it safe to open the app before
+// the cloud has been consulted at all: a configured project, a recorded owner
+// (so ensureLocalLibraryOwner has something to compare against later), and
+// decks actually on disk. Without any one of them there is nothing to show
+// early and the ordinary sign-in path is the right answer.
+export function hasUsableLocalLibrary() {
+  try {
+    if (!loadSupabaseConfig()) return false;
+    if (!localStorage.getItem(LAST_USER_STORAGE_KEY)) return false;
+    return readLocalDeckIndex().length > 0;
+  } catch (error) {
+    console.warn("Could not check for a local library", error);
+    return false;
+  }
+}
+
 export async function bootApp() {
   // Before anything reads a deck: set up the IndexedDB-backed deck store
   // (and migrate any pre-existing localStorage snapshots into it) so every
@@ -265,13 +296,24 @@ export async function bootApp() {
   await initDeckStorage();
   requestPersistentStorage();
   await runEscapedMathRepair();
+  // Painted as part of the first screen rather than only when connectivity
+  // CHANGES, which is all the online/offline listeners can tell us. A launch
+  // that was already offline used to show no indicator at all — the one launch
+  // where saying so matters most.
+  updateOnlineIndicator();
 
   let status = initSupabaseClient();
 
   // A configured device whose library didn't arrive gets one patient retry
   // before being told anything: the script is a blocking tag, so if it is merely
   // slow rather than blocked it will land within this window.
-  if (status === "no-library" && loadSupabaseConfig()) {
+  //
+  // Skipped when offline. The wait can only be rewarded by a request completing,
+  // and there is no request to complete — so offline it was eight seconds of
+  // blank screen bought for certain and paid for nothing. (Since the library was
+  // vendored it is same-origin and precached, so reaching here at all now means
+  // something is genuinely wrong rather than merely slow.)
+  if (status === "no-library" && loadSupabaseConfig() && navigator.onLine) {
     if (await waitForSupabaseLibrary()) status = initSupabaseClient();
   }
 
@@ -280,6 +322,16 @@ export async function bootApp() {
     return;
   }
   if (status !== "ok") {
+    // A device that cannot build a client can still READ. The decks are in
+    // IndexedDB on this machine and need nothing from Supabase to be opened,
+    // studied or edited, so telling someone with a full library that the app
+    // is unavailable — which is what this screen amounts to — is simply untrue.
+    // The wall is now only for the case it describes: no client AND nothing
+    // local to fall back on.
+    if (hasUsableLocalLibrary()) {
+      openLocalLibraryOffline();
+      return;
+    }
     // Deliberately NOT the setup screen. See initSupabaseClient.
     showLibraryFailedScreen();
     return;
@@ -287,8 +339,25 @@ export async function bootApp() {
 
   setupAuthListener();
 
-  // Use the cached session (local, no network) so offline / flaky-network loads
-  // still let a signed-in user reach their decks instead of the login wall.
+  // ── Local first, cloud second ──────────────────────────────────────────
+  // The session check below can take seconds (getCachedSession refreshes an
+  // expired token over the network), and it used to be awaited with NOTHING on
+  // screen — so a lapsed token on a slow connection was a blank page for as
+  // long as it took, and a hung one was a blank page forever.
+  //
+  // Nothing about opening this device's own decks depends on the answer. So
+  // open them now, and let the session confirm itself behind the app. The only
+  // thing the deferred answer can still do is send the user to the login
+  // screen, and only when it is certain — see confirmSessionInBackground.
+  if (hasUsableLocalLibrary()) {
+    openLocalLibraryOffline();
+    confirmSessionInBackground();
+    return;
+  }
+
+  // No local library to show: the session answer is the only thing that can
+  // decide this screen, so it is worth waiting for. Bounded now (see
+  // getCachedSession), so the wait cannot be unbounded even here.
   const session = await getCachedSession();
   if (session?.user) {
     setSignedIn(true);
@@ -304,4 +373,70 @@ export async function bootApp() {
   } else {
     showLoginScreen();
   }
+}
+
+// Open this device's library immediately, without having confirmed anything
+// with the cloud.
+//
+// Deliberately read-WRITE. Every edit already goes to IndexedDB first and is
+// carried to the cloud later by the dirty flags and the pending queues, so a
+// read-only mode would forbid something the app is built to do — and would do
+// it at the one moment (a plane, a tunnel, a dead cell) when someone most wants
+// to sit and read their notes. Nothing here can push: reconcileAllDecks bails
+// on `isSignedIn`, which stays false until a session is actually verified.
+export function openLocalLibraryOffline() {
+  showAuthenticatedUI();
+  if (!appInitialized) {
+    setAppInitialized(true);
+    initAppForUser();
+  }
+  warmDeferredLibraries();
+}
+
+// Settle the session after the app is already usable.
+//
+// Three outcomes, and the difference between the last two is the whole reason
+// this is not just `await`ed inline:
+//
+//   • a session          -> mark signed in, verify the library's owner, sync
+//   • no session, online -> genuinely signed out; the login screen is correct
+//   • no session, offline / the check timed out -> say nothing, change nothing
+//
+// That third case is the one that used to throw people out of their own offline
+// decks. It is indistinguishable from the second by return value alone, which
+// is why navigator.onLine is consulted here as well; recoverSessionIfPossible()
+// retries on the next `online` event either way.
+export async function confirmSessionInBackground() {
+  let session = null;
+  try {
+    session = await getCachedSession();
+  } catch (error) {
+    console.warn("Background session check failed", error);
+    return;
+  }
+
+  if (session?.user) {
+    setSignedIn(true);
+    // A different account: the library on screen was just wiped out from under
+    // the view, so repaint before anything can be clicked on a deck that no
+    // longer exists.
+    if (await ensureLocalLibraryOwner(session.user.id)) showCard();
+    refreshSyncIndicatorBaseline();
+    // initAppForUser only schedules a sync when it runs while online AND the
+    // session was already known, which on this path it was not — so ask for one
+    // here rather than leaving the first sync until the auto-sync deadline.
+    if (navigator.onLine) setTimeout(() => reconcileAllDecks({ explicit: false }), 1200);
+    return;
+  }
+
+  if (!navigator.onLine) {
+    setSyncIndicator("offline");
+    return;
+  }
+
+  // Demonstrably online and demonstrably without a session. The decks stay on
+  // the device; this only closes the door on syncing them.
+  setSignedIn(false);
+  setAppInitialized(false);
+  showLoginScreen();
 }

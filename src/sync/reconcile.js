@@ -8,8 +8,8 @@
 import { LAST_USER_STORAGE_KEY } from "../boot.js?v=__BUILD__";
 import { hasActiveDeck } from "../cards/card-status.js?v=__BUILD__";
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
-import { verifiedCloudUserId } from "../cloud/auth.js?v=__BUILD__";
-import { DECK_SYNC_INDEX_COLUMNS, deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingNotesColumnError, isMissingRelationError } from "../cloud/deck-list.js?v=__BUILD__";
+import { SESSION_EXPIRED_MESSAGE, isSessionExpiredError, refreshSessionOnce, verifiedCloudUserId } from "../cloud/auth.js?v=__BUILD__";
+import { CARD_FETCH_DECK_CHUNK, DECK_SYNC_INDEX_COLUMNS, deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingNotesColumnError, isMissingRelationError } from "../cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, isTransientCloudError, mapWithConcurrency, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { flushPendingStyleSync } from "../cloud/style-sync.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
@@ -19,7 +19,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus, slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { flushPendingImageUploads } from "../images/outbox.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { deleteDeckFromLibrary, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrary, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
+import { beginIndexBatch, deleteDeckFromLibrary, endIndexBatch, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrary, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { TOMBSTONE_ORIGIN_INFERRED, TOMBSTONE_ORIGIN_USER, clearDeckTombstone, deckTombstoneOrigin, flushPendingUntombstones, isDeckTombstoned, readDeckTombstones, removeDecksMissingFromCloud, resetActiveDeckAfterDelete, tombstoneDeck } from "../library/tombstones.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
@@ -448,6 +448,33 @@ export let reconcilePromise = null;
 
 // The full bidirectional sync. Pulls every cloud deck that's missing locally or
 // newer in the cloud; pushes every local deck that's new or newer locally.
+// Run a READ phase, and if it fails only because the sign-in lapsed, get a new
+// token and run it once more.
+//
+// isTransientCloudError deliberately refuses to retry a coded PostgREST error,
+// and it is right to — replaying the same request with the same dead token just
+// fails again, twice as slowly. But the answer to THIS error was never to
+// replay it, it was to refresh first, and nothing did. So an access token
+// expiring partway through a long sync (they last about an hour; a large
+// library takes minutes, and a Restore takes longer) aborted the whole run —
+// and then the next run, and the one after, because each started from the same
+// expired token until something happened to reload the page.
+//
+// READS ONLY, and deliberately. A push that fails leaves its deck stamped
+// PENDING_TS (see pushDeckRowsToCloud) and is re-pushed by the next sync, which
+// is the safer of the two recoveries; re-running a half-finished write pass
+// after a token refresh is not something worth being clever about.
+async function withSessionRetry(label, run) {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isSessionExpiredError(error)) throw error;
+    console.warn(`Sign-in expired during "${label}" — refreshing and retrying once`);
+    if (!(await refreshSessionOnce())) throw error;
+    return run();
+  }
+}
+
 export async function reconcileAllDecks({ explicit = false } = {}) {
   if (!supabaseClient || !isSignedIn) {
     if (explicit) showToast("Sign in to sync with the cloud", "info");
@@ -498,8 +525,35 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
   // The STATUS LINE stays explicit-only: it is the app's reply to something the
   // user just did, and a background job writing over it would erase the answer
   // to whatever they were actually working on.
-  const progress = (message) => {
+  // Wall clock per phase, attributed by the progress() call that opened it.
+  //
+  // Free — one Date.now() per phase change, of which there are about a dozen —
+  // and it is the difference between "sync is slow" being a complaint and being
+  // a bug report. The phases are the ones the user already sees in the button,
+  // so a line in the report always corresponds to something they watched happen.
+  const timings = [];
+  let phaseLabel = null;
+  let phaseStartedAt = Date.now();
+  // Idempotent: it clears phaseLabel, so calling it before the report is built
+  // AND again in the finally cannot double-count the last phase.
+  const closePhase = () => {
+    if (!phaseLabel) return;
+    const ms = Date.now() - phaseStartedAt;
+    // Same phase re-announced with a changed counter ("… (7 of 40)") is one
+    // phase, not forty — accumulate rather than appending a row per deck.
+    const existing = timings.find(([label]) => label === phaseLabel);
+    if (existing) existing[1] += ms;
+    else timings.push([phaseLabel, ms]);
+    phaseLabel = null;
+  };
+
+  const progress = (message, phase = message) => {
     if (el.syncNowBtn) el.syncNowBtn.textContent = message;
+    if (phase !== phaseLabel) {
+      closePhase();
+      phaseLabel = phase;
+      phaseStartedAt = Date.now();
+    }
     if (!explicit) return;
     setStatus(message);
   };
@@ -665,7 +719,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     let imagesUploaded = 0;
     try {
       imagesUploaded = await flushPendingImageUploads((done, total) => {
-        progress(`Uploading queued images… (${done} of ${total})`);
+        progress(`Uploading queued images… (${done} of ${total})`, "Uploading queued images");
       });
       if (imagesUploaded) {
         progress(`Uploaded ${imagesUploaded} queued image${imagesUploaded === 1 ? "" : "s"}…`);
@@ -691,10 +745,10 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     progress("Reading the deck list…");
     let cloudDecks, remoteDeletedIds;
     try {
-      [cloudDecks, remoteDeletedIds] = await Promise.all([
+      [cloudDecks, remoteDeletedIds] = await withSessionRetry("deck list", () => Promise.all([
         withRetry(() => fetchCloudDeckIndex(DECK_SYNC_INDEX_COLUMNS), { label: "deck index" }),
         withRetry(() => fetchDeletedDeckIds(), { label: "tombstones" })
-      ]);
+      ]));
     } catch (error) {
       if (!isTransientCloudError(error)) throw error;
       setSyncIndicator("offline");
@@ -1002,19 +1056,29 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
         if (recordError) console.warn("Could not record cross-device delete tombstones", recordError);
         else for (const row of missingRecords) remoteDeletedSet.add(String(row.deck_id));
       }
-      const { error: redeleteError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().in("id", tombstonedInCloud).abortSignal(signal)), CLOUD_TIMEOUT_MS, "re-delete decks");
-      if (redeleteError) console.warn("Tombstone re-delete failed", tombstonedInCloud, redeleteError);
+      // CHUNKED, for the reason CARD_FETCH_DECK_CHUNK spells out at length: an
+      // `.in()` list becomes part of the request URL, a uuid costs ~46
+      // characters percent-encoded, and past a few hundred ids the request line
+      // crosses the 8KB ceiling nginx and most proxies ship with. The server
+      // answers 414 and this silently stops working — at a library size the
+      // developer is unlikely to have, and which one Restore reaches in a single
+      // step. Sequential: these are deletes, and there is no hurry.
+      for (let i = 0; i < tombstonedInCloud.length; i += CARD_FETCH_DECK_CHUNK) {
+        const chunk = tombstonedInCloud.slice(i, i + CARD_FETCH_DECK_CHUNK);
+        const { error: redeleteError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().in("id", chunk).abortSignal(signal)), CLOUD_TIMEOUT_MS, "re-delete decks");
+        if (redeleteError) console.warn("Tombstone re-delete failed", chunk, redeleteError);
+      }
     }
 
-    if (toPull.length) progress(`Downloading ${toPull.length} deck${toPull.length === 1 ? "" : "s"} from the cloud…`);
+    if (toPull.length) progress(`Downloading ${toPull.length} deck${toPull.length === 1 ? "" : "s"} from the cloud…`, "Downloading decks");
     // Cards and deck BODIES together: the index rows above carry no notes or
     // meta, and the pull needs both. Two requests in parallel, for only the
     // decks actually being pulled, instead of every deck's notes up front.
     const [pullCardsByDeck, pullBodyById] = toPull.length
-      ? await Promise.all([
+      ? await withSessionRetry("download decks", () => Promise.all([
           withRetry(() => fetchCardsForDecks(toPull.map((d) => d.id)), { label: "deck cards" }),
           withRetry(() => fetchCloudDeckRows(toPull.map((d) => d.id)), { label: "deck bodies" })
-        ])
+        ]))
       : [new Map(), new Map()];
 
     // Counted as well as announced. The one-line "Downloading 721 decks…" above
@@ -1024,9 +1088,15 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // never yields so a counter could not paint — it awaits pullCloudDeckToLibrary
     // on every iteration, so it does, and without the counter this is exactly
     // where a long sync looks stopped.
+    // Batch the deck-index writes for the length of this loop. Each iteration
+    // rewrites the WHOLE index — one localStorage.setItem of the entire library
+    // per deck — so a 700-deck pull did 700 synchronous ~200KB disk writes on
+    // the main thread. That, not the network, is what made a large sync feel
+    // like the app had locked up. endIndexBatch is in the finally below.
+    beginIndexBatch();
     let pullDone = 0;
     for (const indexRow of toPull) {
-      progress(`Saving decks from the cloud… (${++pullDone} of ${toPull.length})`);
+      progress(`Saving decks from the cloud… (${++pullDone} of ${toPull.length})`, "Saving decks from the cloud");
       // The full row, and ONLY the full row. This used to fall back to the index
       // row when the body was missing, so that a deck deleted between the two
       // requests still pulled "what we know" instead of throwing. But
@@ -1091,10 +1161,10 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // rows have no notes, so without this every push would claim "notes edited".
     const pushDiffIds = toPush.filter((e) => e.cloud).map((e) => e.localMeta.deckId);
     const [pushCardsByDeck, pushBodyById] = pushDiffIds.length
-      ? await Promise.all([
+      ? await withSessionRetry("read decks to diff", () => Promise.all([
           withRetry(() => fetchCardsForDecks(pushDiffIds, "id, deck_id, question, answer, position, status, category"), { label: "push diff cards" }),
           withRetry(() => fetchCloudDeckRows(pushDiffIds), { label: "push diff bodies" })
-        ])
+        ]))
       : [new Map(), new Map()];
 
     // Bounded concurrency, not one deck at a time. Each push is ≥3 sequential
@@ -1106,6 +1176,42 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // Safe to parallelise because the read-modify-write of the shared deck index
     // inside pushLibraryDeckToCloud contains no `await` between its read and its
     // write, so it is atomic under JS's single thread. Do not add one.
+    // Same for the push pass, which rewrites the index once per deck too.
+    // Reentrant with the pull batch above, and the flush is in the same finally.
+    beginIndexBatch();
+
+    // Re-confirm the sign-in before writing anything.
+    //
+    // verifiedCloudUserId ran once at the top, and everything since then — the
+    // image uploads, the deck list, the pull of every changed deck — can take
+    // minutes on a large library. An access token lasts about an hour, so on a
+    // Restore it can genuinely lapse in between, and the writes about to start
+    // are the half where running as nobody is expensive: an RLS-scoped write
+    // that matches nothing succeeds and does nothing, so a push would report
+    // success, stamp every deck as synced, and have uploaded none of it.
+    //
+    // Free when the token is live (getSession reads local storage), and it
+    // refreshes when it can rather than giving up.
+    if (toPush.length) {
+      let stillSignedIn = await verifiedCloudUserId();
+      if (!stillSignedIn && await refreshSessionOnce()) stillSignedIn = await verifiedCloudUserId();
+      if (!stillSignedIn) {
+        // Not a failure of the pull that already succeeded — say what happened
+        // and stop, leaving every local deck exactly as it is. Everything still
+        // needing a push is still marked as needing one, so the next sync after
+        // a sign-in carries it.
+        console.warn("Sync stopped before pushing — the sign-in lapsed mid-run.");
+        setSyncIndicator("signedout");
+        if (explicit) {
+          setStatus(SESSION_EXPIRED_MESSAGE, "error");
+          showToast("Your sign-in expired — sign in again", "error");
+        } else {
+          reportBackgroundSyncProblem("signed-out", SESSION_EXPIRED_MESSAGE);
+        }
+        return;
+      }
+    }
+
     let pushDone = 0;
     await mapWithConcurrency(toPush, 3, async ({ localMeta, cloud }) => {
       try {
@@ -1135,7 +1241,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       // Counted as decks finish rather than as they start — with three in flight
       // a "3 of 12" that meant "started" would race ahead of what's actually done.
       pushDone++;
-      progress(`Uploading decks… (${pushDone} of ${toPush.length})`);
+      progress(`Uploading decks… (${pushDone} of ${toPush.length})`, "Uploading decks");
     });
 
     // A flushed meta edit (categories or source anchors) is real sync work and
@@ -1190,6 +1296,10 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     if (heldDeckIds.size && !removalNeedsConfirmation) {
       parts.push(`${heldDeckIds.size} deck${heldDeckIds.size === 1 ? "" : "s"} missing from the cloud kept here for now`);
     }
+    // Before the report reads `timings`: the finally below also closes the open
+    // phase, but that runs after this, so without this call the last (often
+    // largest) phase would be missing from every successful run's report.
+    closePhase();
     if (imagesUploaded) parts.push(`${imagesUploaded} image${imagesUploaded === 1 ? "" : "s"} uploaded`);
     const changes = describeSyncStats(totalSyncStats(deckLog), { asTotals: true });
     const detail = changes.length ? ` — ${changes.join(", ")}` : "";
@@ -1219,13 +1329,13 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       showToast(summary, failed ? "error" : "success");
       // Detailed report modal — only for the explicit "Sync Now" click, and
       // only when there's actually something to report.
-      if (deckLog.length) showSyncReport(deckLog, { pulled, pushed, failed });
+      if (deckLog.length) showSyncReport(deckLog, { pulled, pushed, failed, timings });
     } else {
       // Silent startup/reconnect sync never pops a modal — its report is
       // rendered inline on the welcome screen instead (see
       // renderWelcomeSyncReport), so it's only ever seen if that screen is
       // already what the user is looking at.
-      lastStartupSyncReport = deckLog.length ? { deckLog, pulled, pushed, failed } : null;
+      lastStartupSyncReport = deckLog.length ? { deckLog, pulled, pushed, failed, timings } : null;
       if (el.deckEmptyState && !el.deckEmptyState.hidden) renderDeckEmptyState(hasActiveDeck() ? "active" : "none");
     }
 
@@ -1258,15 +1368,22 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     }
   } catch (error) {
     console.error("Reconcile failed", error);
-    setSyncIndicator("error");
+    // A lapsed sign-in is not a broken sync, and reporting it as one is what
+    // put the provider's own words on screen — "Sync failed — JWT expired",
+    // which names nothing anybody can act on and reads like the app is
+    // defective. It gets the pill that says what to do about it instead.
+    const sessionLapsed = isSessionExpiredError(error);
+    setSyncIndicator(sessionLapsed ? "signedout" : "error");
     localStorage.setItem(LAST_GLOBAL_SYNC_ERROR_KEY, "1");
+    const offlineNow = !navigator.onLine || /failed to fetch|networkerror|load failed/i.test(error?.message || "");
     if (!explicit) {
       // A background failure used to leave nothing but a console line and a pill
       // the user may not have on screen — so a sync that had been broken for
       // weeks looked exactly like one that had never needed to do anything.
       // Classified so a persistent schema fault reports once, not hourly.
-      const offlineNow = !navigator.onLine || /failed to fetch|networkerror|load failed/i.test(error?.message || "");
-      if (!offlineNow) {
+      if (sessionLapsed) {
+        reportBackgroundSyncProblem("signed-out", SESSION_EXPIRED_MESSAGE);
+      } else if (!offlineNow) {
         reportBackgroundSyncProblem(
           isMissingRelationError(error) || isMissingNotesColumnError(error) ? "schema" : "failed",
           `Sync failed — ${isQuotaExceededError(error) ? describeSyncError(error) : (error?.message || "unknown error")}. Your decks are safe on this device.`
@@ -1274,17 +1391,41 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       }
     }
     if (explicit) {
-      // A dropped connection mid-sync is by far the most common failure, and
-      // the raw error for it ("Failed to fetch") reads like a bug rather than
-      // "your network went away" — say so in words the user can act on.
-      const offlineNow = !navigator.onLine || /failed to fetch|networkerror|load failed/i.test(error?.message || "");
-      const reason = offlineNow
-        ? "Couldn't reach the cloud — check your connection"
-        : (isQuotaExceededError(error) ? describeSyncError(error) : error?.message || "Unknown error");
-      setStatus(`Sync failed — ${reason}. Your decks are safe on this device.`, "error");
-      showToast(`Sync failed — ${reason}`, "error");
+      if (sessionLapsed) {
+        setStatus(SESSION_EXPIRED_MESSAGE, "error");
+        showToast("Your sign-in expired — sign in again", "error");
+      } else {
+        // A dropped connection mid-sync is by far the most common failure, and
+        // the raw error for it ("Failed to fetch") reads like a bug rather than
+        // "your network went away" — say so in words the user can act on.
+        const reason = offlineNow
+          ? "Couldn't reach the cloud — check your connection"
+          : (isQuotaExceededError(error) ? describeSyncError(error) : error?.message || "Unknown error");
+        setStatus(`Sync failed — ${reason}. Your decks are safe on this device.`, "error");
+        showToast(`Sync failed — ${reason}`, "error");
+      }
     }
   } finally {
+    // Unconditionally, before anything else in here: the batches above are
+    // opened inside the try, so a throw anywhere between them and here would
+    // otherwise leave one open for the life of the page — and every subsequent
+    // deck save would then live in memory and never reach disk. endIndexBatch
+    // is reentrant and a no-op when nothing is open, and the outermost call
+    // flushes what is pending.
+    //
+    // Twice, matching the two beginIndexBatch calls. A count that drifts is the
+    // one way this can go wrong, so they are paired here rather than each being
+    // closed at the end of its own pass — where an early `return` or a throw
+    // between the two would skip one.
+    try {
+      endIndexBatch();
+      endIndexBatch();
+    } catch (error) {
+      console.warn("Could not flush the deck index after syncing", error);
+    }
+    // Close whatever phase was open, so the last one (and a run that ended in
+    // an error) is measured too rather than silently missing from the report.
+    closePhase();
     reconcileInFlight = false;
     // Release anyone waiting on this run before they re-run. Resolved, never
     // rejected — the catch above has already reported whatever went wrong, and

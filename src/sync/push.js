@@ -112,10 +112,17 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
     let existing = webCards;
     if (!existing) {
       const { data, error } = await withTimeout(
-        supabaseClient
+        // abortable(), like every other cloud call. Without it withTimeout only
+        // stops WAITING for the answer — the request stays open, holding one of
+        // the browser's six per-host sockets for as long as the connection
+        // takes to die on its own. On a flaky mobile link that is how one
+        // stalled request turned into a whole sync crawling behind its own
+        // abandoned connections.
+        abortable((signal) => supabaseClient
           .from("cards")
           .select("id, question, answer, position, status, category")
-          .eq("deck_id", deckId),
+          .eq("deck_id", deckId)
+          .abortSignal(signal)),
         CLOUD_TIMEOUT_MS,
         "read cards"
       );
@@ -129,7 +136,9 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
       cardsDeleted = idsToDelete.length;
       if (idsToDelete.length > 0) {
         const { error: deleteError } = await withTimeout(
-          supabaseClient.from("cards").delete().eq("deck_id", deckId).in("id", idsToDelete),
+          abortable((signal) => supabaseClient
+            .from("cards").delete().eq("deck_id", deckId).in("id", idsToDelete)
+            .abortSignal(signal)),
           CLOUD_TIMEOUT_MS,
           "prune cards"
         );
@@ -187,7 +196,9 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
   // local deck's lastSyncedAt only after this whole function resolves, and it
   // throws on any failure above, so a partial push is never marked synced.
   const { error: bumpError } = await withTimeout(
-    supabaseClient.from("decks").update({ updated_at: now, last_accessed_at: now }).eq("id", deckId),
+    abortable((signal) => supabaseClient
+      .from("decks").update({ updated_at: now, last_accessed_at: now }).eq("id", deckId)
+      .abortSignal(signal)),
     CLOUD_TIMEOUT_MS,
     "finalize deck"
   );

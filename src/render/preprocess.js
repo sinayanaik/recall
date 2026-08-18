@@ -1,7 +1,8 @@
 // The markdown -> sanitised HTML pipeline, and the fenced blocks (mermaid,
 // nomnoml) that are lifted out of it before marked ever sees them.
 
-import { encodeAttribute } from "../core/text.js?v=__BUILD__";
+import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
+import { encodeAttribute, escapeHtml } from "../core/text.js?v=__BUILD__";
 import { normalizeMarkdown } from "../import/parse-cards.js?v=__BUILD__";
 import { normalizeCitations, protectInline, renderImageRows } from "./inline.js?v=__BUILD__";
 
@@ -113,7 +114,14 @@ export const SANITIZE_CONFIG = {
 // on ONE changed block: preprocessSpecialBlocks has already been applied to the
 // whole document (its math/cloze/code protection reads across block boundaries,
 // so it must never be re-run on a fragment of its own output).
+// The one place marked and DOMPurify are actually invoked for a whole document,
+// and therefore the one place worth guarding. If either failed to load, showing
+// the markdown SOURCE is a far better answer than throwing: the note is still
+// readable, still selectable, still copyable, and the boot guard has already
+// said on screen which file is missing. Throwing here took the whole view down
+// and left an empty pane with nothing to explain it.
 export function safeHtmlFromPrepared(prepared) {
+  if (!markdownLibrariesReady()) return `<pre class="md-unrendered">${escapeHtml(prepared)}</pre>`;
   return DOMPurify.sanitize(marked.parse(prepared), SANITIZE_CONFIG);
 }
 

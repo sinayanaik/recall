@@ -9,7 +9,32 @@ import { describeSyncStats } from "./stats.js?v=__BUILD__";
 // what direction it went, and exactly what changed (cards added/updated/
 // deleted, notes). Used both by the explicit-sync modal and the inline
 // startup report on the welcome screen.
-export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
+// Where a sync's wall clock actually went.
+//
+// "Sync is slow" was, for a long time, unanswerable: the only thing on screen
+// was a button label that changed phase, so a run that spent 40 seconds reading
+// deck bodies and a run that spent 40 seconds waiting on one stalled request
+// looked exactly alike — to the user AND to anyone trying to fix it. This turns
+// the next such report into a number.
+//
+// Phases under 200ms are dropped: they are noise, and listing eleven rows of
+// "0.0s" would bury the one that matters.
+export function buildSyncTimingHtml(timings) {
+  if (!timings || !timings.length) return "";
+  const shown = timings.filter(([, ms]) => ms >= 200);
+  if (!shown.length) return "";
+  const total = timings.reduce((sum, [, ms]) => sum + ms, 0);
+  const rows = shown
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, ms]) => `<li><span>${escapeHtml(label)}</span><span>${(ms / 1000).toFixed(1)}s</span></li>`)
+    .join("");
+  return `<details class="sync-report-timing">
+    <summary>Took ${(total / 1000).toFixed(1)}s — where the time went</summary>
+    <ul>${rows}</ul>
+  </details>`;
+}
+
+export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0, timings = null } = {}) {
   const describeCounts = (entry) => {
     const parts = describeSyncStats(entry);
     return parts.length ? parts.join(", ") : "no per-card changes (deck metadata only)";
@@ -41,6 +66,7 @@ export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 
 
   return `
     <p class="sync-report-summary">${pulled} deck${pulled === 1 ? "" : "s"} downloaded, ${pushed} deck${pushed === 1 ? "" : "s"} uploaded${failed ? `, ${failed} failed` : ""}</p>
+    ${buildSyncTimingHtml(timings)}
     <ul class="sync-report-list">${rows}</ul>
   `;
 }
@@ -51,7 +77,7 @@ export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 
 // Reuses the (otherwise-dead, since the manual "Sync to Cloud" button it was
 // written for no longer exists) #syncModal chrome, repurposed as a plain
 // report instead of a confirm-before-you-sync prompt.
-export function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0 } = {}) {
+export function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0, timings = null } = {}) {
   const modal = el.syncModal;
   const content = el.syncDetailsContent;
   if (!modal || !content) return;
@@ -63,7 +89,7 @@ export function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0 } =
   if (confirmBtn) confirmBtn.hidden = true;
   if (cancelBtn) cancelBtn.textContent = "Close";
 
-  content.innerHTML = buildSyncReportHtml(deckLog, { pulled, pushed, failed });
+  content.innerHTML = buildSyncReportHtml(deckLog, { pulled, pushed, failed, timings });
   // Delegated so the buttons keep working across re-renders of the report.
   content.onclick = async (event) => {
     const button = event.target.closest("[data-recover-notes]");

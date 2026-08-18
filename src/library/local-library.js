@@ -24,9 +24,83 @@ import { resetChromeAutoHide } from "../ui/chrome.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
 
+// ── Batched index writes ────────────────────────────────────────────────────
+//
+// The deck index is one localStorage key holding the whole library, and every
+// deck a sync touches rewrites all of it. That is fine for one deck and
+// quadratic for a library: a sync that pulls 700 decks called
+// localStorage.setItem 700 times with a ~200KB string each time — a synchronous
+// disk write per deck, on the main thread, on a phone. Measured against a
+// restored library it was the largest single cost in a sync, larger than the
+// network, and it presented as the app freezing rather than as sync being slow.
+//
+// So the reconcile passes open a batch. Writes go to a string held in memory,
+// and reach localStorage on a checkpoint and at the end.
+//
+// What is deliberately NOT changed: readLocalDeckIndex still returns a FRESH
+// PARSE on every call, exactly as before — it just reads the pending string
+// when there is one. Handing callers a live shared array would have been faster
+// still and is not worth it: there are 48 call sites, some of which mutate what
+// they get, and a mutation that silently became visible to everyone else is
+// precisely the class of bug this file cannot afford.
+let pendingIndexJson = null;
+let indexBatchDepth = 0;
+let writesSinceCheckpoint = 0;
+
+// How many deck writes may accumulate before the batch touches localStorage.
+// This is the crash budget, not a tuning knob: a tab killed mid-sync loses at
+// most this many index entries — and even then the deck BODIES are already in
+// IndexedDB, so what is lost is the listing, which the next sync rebuilds from
+// the cloud. 25 keeps the setItem count down by more than an order of magnitude
+// while keeping that window small enough to be uninteresting.
+export const INDEX_CHECKPOINT_EVERY = 25;
+
+// Reentrant, because the pull pass calls into functions that open their own
+// batches; only the outermost flush actually ends it.
+export function beginIndexBatch() {
+  indexBatchDepth++;
+}
+
+export function endIndexBatch() {
+  if (indexBatchDepth === 0) return;
+  indexBatchDepth--;
+  if (indexBatchDepth === 0) flushIndexBatch();
+}
+
+// Push whatever is pending to localStorage. Safe to call at any time, including
+// when no batch is open.
+export function flushIndexBatch() {
+  if (pendingIndexJson === null) return;
+  const json = pendingIndexJson;
+  // Cleared BEFORE the write, not after. If setItem throws (a full quota is the
+  // realistic case), leaving the pending copy in place would mean every
+  // subsequent read kept returning an index that is not on disk and never will
+  // be — the app would look correct and persist nothing.
+  pendingIndexJson = null;
+  writesSinceCheckpoint = 0;
+  try {
+    localStorage.setItem(LOCAL_DECKS_INDEX_KEY, json);
+  } catch (error) {
+    console.warn("Could not save the local deck index", error);
+    throw error;
+  }
+}
+
+// Throw the batch away without writing it. For the one caller that deletes the
+// key outright (resetLocalLibrary, on an account switch or a sign-out): a
+// pending copy would otherwise be flushed straight back over the removal and
+// restore the previous account's library, which is the exact thing that reset
+// exists to prevent.
+export function discardIndexBatch() {
+  pendingIndexJson = null;
+  writesSinceCheckpoint = 0;
+  indexBatchDepth = 0;
+}
+
 export function readLocalDeckIndex() {
   try {
-    const list = JSON.parse(localStorage.getItem(LOCAL_DECKS_INDEX_KEY) || "[]");
+    const raw = pendingIndexJson ?? localStorage.getItem(LOCAL_DECKS_INDEX_KEY) ?? "[]";
+    const list = JSON.parse(raw);
     return Array.isArray(list) ? list : [];
   } catch {
     return [];
@@ -38,7 +112,17 @@ export function readLocalDeckIndex() {
 // save" messaging actually fires instead of the error going uncaught.
 export function writeLocalDeckIndex(list) {
   try {
-    localStorage.setItem(LOCAL_DECKS_INDEX_KEY, JSON.stringify(list));
+    const json = JSON.stringify(list);
+    if (indexBatchDepth > 0) {
+      pendingIndexJson = json;
+      // Still invalidated on every write, batched or not: it is an in-memory
+      // cache of "what decks exist and what are they called", and a reader
+      // during the batch must see the same answer readLocalDeckIndex would give.
+      invalidateNoteLinkIndex();
+      if (++writesSinceCheckpoint >= INDEX_CHECKPOINT_EVERY) flushIndexBatch();
+      return;
+    }
+    localStorage.setItem(LOCAL_DECKS_INDEX_KEY, json);
     // The one choke point for "what decks exist and what are they called", so
     // it is also the one place the [[note]] link index can be invalidated
     // without having to find every rename, delete, import and sync by hand.
