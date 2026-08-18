@@ -19,7 +19,7 @@ import { applyNotesPagedLayout, firstVisibleNotesBlock, isNotesPaged, notesPageC
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
-import { renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { releaseNotesChunkEstimateObserver, renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -123,7 +123,10 @@ export function renderNotesView({ sameNote = false } = {}) {
     // A different note replaces every block, so everything queued against the old
     // one describes nodes that are about to be detached. Released here, while we
     // can still name the root, rather than left for the next render to notice.
-    if (notesScrolledSource !== state.notes) releaseDeferredWork(el.notesView);
+    if (notesScrolledSource !== state.notes) {
+      releaseDeferredWork(el.notesView);
+      releaseNotesChunkEstimateObserver(el.notesView);
+    }
     setNotesScrolledSource(state.notes);
     syncNotesBlockEstimateSource();
   }

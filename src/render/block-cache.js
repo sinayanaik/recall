@@ -15,6 +15,7 @@ import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
 import { SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
+import { DEFERRED_WORK_MARGIN } from "./deferred-work.js?v=__BUILD__";
 
 // ── Incremental rendering ──────────────────────────────────────────────────
 // Flipping the notes between raw and rendered used to throw the entire rendered
@@ -69,6 +70,7 @@ export function finalizeRenderedSurface(container) {
   if (container === el.notesView) {
     buildNotesToc();
     scheduleNotesBlockEstimate(container);
+    scheduleNotesChunkEstimates(container);
   }
 }
 
@@ -445,6 +447,116 @@ export function withChunkRendered(node, container, read) {
       if (!chunk.style.length) chunk.removeAttribute("style");
     }
   }
+}
+
+// ── Per-chunk height, measured ahead of the reader rather than guessed ─────
+//
+// --notes-chunk-estimate (measureNotesBlockEstimate above) is ONE number for
+// the whole note — the per-block average scaled up by NOTES_CHUNK_SIZE — and a
+// chunk's real content very often isn't average. A chapter of short list items
+// next to a chapter of long paragraphs and fenced code differ by 10x in actual
+// height, so applying the note-wide figure to both means whichever one the
+// reader reaches first replaces a wrong placeholder with its real size in one
+// jump. Measured on a 2,490-block note alternating dense/sparse chapters: 30
+// jumps over one scroll-through, up to 1,462px each — every one of them a
+// visible lurch of the page, which is what a highlight drag through a big note
+// feels like ("shaking") when the browser auto-scrolls it past a chunk
+// boundary mid-selection.
+//
+// The fix takes the same shape as the lookahead diagrams and tables already
+// get (runNearViewportAndDefer / DEFERRED_WORK_MARGIN): measure each chunk for
+// real, but only once it is close enough that the reader will reach it soon —
+// not on cold render, where forcing every chunk to lay out is exactly the
+// O(document) cost chunking exists to avoid.
+//
+// It runs through its OWN observer rather than the shared deferred-work one,
+// though, because that shared queue only ever drains on an idle callback —
+// right for mermaid/table work, which can cost real milliseconds and must
+// never run inside a scroll-driven callback, wrong here, where the whole job
+// is one forced layout and one property read. Routing it through the idle
+// queue stacked up to 250ms of drain latency (headless Chrome never reports a
+// genuinely idle period under a scripted scroll, so every drain sat at the
+// timeout floor) ON TOP of the runway, and a fast drag-to-select auto-scroll
+// covers 1,200px well inside that: measured half the chunks in a 63-chunk note
+// still landing on the guess by the time the scroll reached them. Reading
+// straight off the intersection entry removes that stacked delay — the
+// runway is the only lead time this has left to work with, so it needs all of it.
+export const measuredChunkEstimates = new WeakSet();
+
+// Force `chunk` to lay out, read its ACTUAL height (not a sample — the forced
+// layout already paid for all 40 blocks, so summing them via offsetHeight is
+// free), and pin that as its own contain-intrinsic-size. From then on this
+// specific chunk's placeholder is exact, not a note-wide guess, so the browser
+// never has anything to correct when it later skips and re-shows it.
+//
+// Deliberately once per chunk, same as measureNotesBlockEstimate: a mid-scroll
+// revision would itself be the jump this exists to prevent. An edit inside an
+// already-measured chunk can leave its pinned size stale — accepted for the
+// same reason the note-wide estimate accepts it (see the comment there): being
+// exactly right before the reader gets there matters far more than staying
+// exactly right forever, and the wrapper is rebuilt (a fresh, unmeasured
+// element) whenever the edit is big enough to change chunk membership at all.
+export function measureNotesChunkEstimate(chunk) {
+  if (measuredChunkEstimates.has(chunk)) return;
+  measuredChunkEstimates.add(chunk);
+  const had = chunk.style.contentVisibility;
+  chunk.style.contentVisibility = "visible";
+  const height = chunk.offsetHeight;
+  if (had) chunk.style.contentVisibility = had;
+  else chunk.style.removeProperty("content-visibility");
+  if (height > 0) chunk.style.setProperty("contain-intrinsic-size", `auto ${height}px`);
+}
+
+// One observer per scroll root, same memoization shape as deferredWorkObserver
+// — a fresh IntersectionObserver per call would mean every finalize pass (one
+// per render, so every edit) re-registers the SAME chunks against a NEW
+// observer, and the old one leaks (it holds a strong reference to every target
+// it was ever given, same trap documented on runNearViewportAndDefer).
+export const notesChunkEstimateObservers = new Map();
+
+export function notesChunkEstimateObserver(root) {
+  const existing = notesChunkEstimateObservers.get(root);
+  if (existing) return existing;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        // One-shot: measureNotesChunkEstimate is idempotent anyway (the WeakSet
+        // guards it), but leaving a measured chunk under observation would mean
+        // every scroll tick re-delivers an entry for it forever.
+        observer.unobserve(entry.target);
+        measureNotesChunkEstimate(entry.target);
+      });
+    },
+    { root, rootMargin: `${DEFERRED_WORK_MARGIN}px 0px` }
+  );
+  notesChunkEstimateObservers.set(root, observer);
+  return observer;
+}
+
+// Drops the observer for `root` outright rather than unobserving one target at
+// a time — called when the note under it is replaced wholesale, where every
+// currently-watched chunk is about to be detached anyway. Mirrors
+// releaseDeferredWork, and is called from the same place (renderNotesView).
+export function releaseNotesChunkEstimateObserver(root) {
+  const observer = notesChunkEstimateObservers.get(root);
+  if (observer) {
+    observer.disconnect();
+    notesChunkEstimateObservers.delete(root);
+  }
+}
+
+// Registers every not-yet-measured chunk in `container`. A chunk already
+// intersecting the runway gets its entry (and so its measurement) on the very
+// next microtask — there is no separate "near" path to write, the observer's
+// own initial callback IS it.
+export function scheduleNotesChunkEstimates(container) {
+  if (container !== el.notesView || !isChunkedSurface(container)) return;
+  if (typeof IntersectionObserver !== "function") return;
+  const observer = notesChunkEstimateObserver(container);
+  Array.from(container.querySelectorAll(`:scope > .${NOTES_CHUNK_CLASS}`))
+    .filter((chunk) => !measuredChunkEstimates.has(chunk))
+    .forEach((chunk) => observer.observe(chunk));
 }
 
 export function isTopLevelBlockParent(node, container) {

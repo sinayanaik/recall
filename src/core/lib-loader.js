@@ -48,6 +48,110 @@ export const LIB_URLS = {
   turndownGfm: `${CDN_BASE}turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js`
 };
 
+// ── Webfonts (Style → Basics/Notes → Font) ──────────────────────────────────
+//
+// Deliberately NOT in CDN_ASSETS, unlike everything above. Those six libraries
+// are precached at install so a feature that has never been used still works
+// the first time it's reached offline (a diagram, an export). A typeface is
+// cosmetic: picking one is something you do while looking at the Style panel,
+// which means online, and sw.js's fetch handler already caches ANY
+// cdn.jsdelivr.net request on first fetch (see isCdnAsset in sw.js) — so a font
+// used once is available offline forever after, same as the libraries, just
+// without paying to eagerly download all 28 of them (~50 files) for every
+// install regardless of whether Style is ever opened. The one degradation this
+// accepts: choosing a font you have never used before, while offline, silently
+// keeps the previous one — the same tradeoff already made for an unfetched
+// Prism grammar (see PRISM_LANGS in sw.js).
+//
+// Keyed by the exact string fontFamilyChoices uses, in theme-catalog.js — that
+// object is both the font-family CSS stack AND (via WEBFONT_PACKAGES below)
+// the answer to "does this choice need a network fetch at all", so the two
+// must name the same fonts the same way or a choice silently renders in the
+// fallback typeface forever.
+//
+// Each entry points at the per-weight stylesheet of an @fontsource package
+// (self-hosted woff2, no Google Fonts origin involved). Only 400/700 are
+// loaded — the app's weight control is a separate setting (300..900), and the
+// browser matches whatever weight is asked for to the nearest one actually
+// registered rather than refusing to render, so two real weights cover it
+// without fetching all nine. Every package here ships both; the one exception
+// (Patrick Hand, a single-weight handwriting face) lists only 400 — 700 would
+// 404.
+//
+// The CSS also declares subsets this app never authors in (cyrillic, greek,
+// vietnamese, latin-ext) — left in rather than hand-filtered to "latin" only,
+// because @font-face's unicode-range means the BROWSER only ever fetches the
+// woff2 for a subset some rendered character actually falls in. Plain English
+// notes cost exactly the "latin" file; nothing else is ever requested.
+export const FONT_CDN_BASE = `${CDN_BASE}@fontsource/`;
+
+export const WEBFONT_PACKAGES = {
+  // Sans-serif
+  Inter: { pkg: "inter", version: "5.3.0", weights: [400, 700] },
+  Roboto: { pkg: "roboto", version: "5.3.0", weights: [400, 700] },
+  "Open Sans": { pkg: "open-sans", version: "5.3.0", weights: [400, 700] },
+  Lato: { pkg: "lato", version: "5.3.0", weights: [400, 700] },
+  Montserrat: { pkg: "montserrat", version: "5.3.0", weights: [400, 700] },
+  Poppins: { pkg: "poppins", version: "5.3.0", weights: [400, 700] },
+  "Work Sans": { pkg: "work-sans", version: "5.3.0", weights: [400, 700] },
+  Nunito: { pkg: "nunito", version: "5.3.0", weights: [400, 700] },
+  Raleway: { pkg: "raleway", version: "5.3.0", weights: [400, 700] },
+  "IBM Plex Sans": { pkg: "ibm-plex-sans", version: "5.3.0", weights: [400, 700] },
+
+  // Serif
+  Lora: { pkg: "lora", version: "5.3.0", weights: [400, 700] },
+  Merriweather: { pkg: "merriweather", version: "5.3.0", weights: [400, 700] },
+  "Playfair Display": { pkg: "playfair-display", version: "5.3.0", weights: [400, 700] },
+  "PT Serif": { pkg: "pt-serif", version: "5.3.0", weights: [400, 700] },
+  "Source Serif 4": { pkg: "source-serif-4", version: "5.3.0", weights: [400, 700] },
+  "Crimson Pro": { pkg: "crimson-pro", version: "5.3.0", weights: [400, 700] },
+  "Libre Baskerville": { pkg: "libre-baskerville", version: "5.3.0", weights: [400, 700] },
+  "EB Garamond": { pkg: "eb-garamond", version: "5.3.0", weights: [400, 700] },
+
+  // Monospace
+  "JetBrains Mono": { pkg: "jetbrains-mono", version: "5.3.0", weights: [400, 700] },
+  "Fira Code": { pkg: "fira-code", version: "5.3.0", weights: [400, 700] },
+  "Source Code Pro": { pkg: "source-code-pro", version: "5.3.0", weights: [400, 700] },
+  "IBM Plex Mono": { pkg: "ibm-plex-mono", version: "5.3.0", weights: [400, 700] },
+  "Space Mono": { pkg: "space-mono", version: "5.3.0", weights: [400, 700] },
+
+  // Rounded
+  Quicksand: { pkg: "quicksand", version: "5.3.0", weights: [400, 700] },
+  Comfortaa: { pkg: "comfortaa", version: "5.3.0", weights: [400, 700] },
+  "Baloo 2": { pkg: "baloo-2", version: "5.3.0", weights: [400, 700] },
+
+  // Handwriting
+  Caveat: { pkg: "caveat", version: "5.3.0", weights: [400, 700] },
+  Kalam: { pkg: "kalam", version: "5.3.0", weights: [400, 700] },
+  "Patrick Hand": { pkg: "patrick-hand", version: "5.3.0", weights: [400] }
+};
+
+// url -> true. Same shape as loadedScripts, for a <link> instead of a
+// <script>: idempotent per URL, so re-applying settings (every control change
+// re-runs applyStyleSettings) doesn't inject a second copy of the stylesheet.
+export const loadedStylesheets = new Set();
+
+export function loadStylesheetOnce(url) {
+  if (loadedStylesheets.has(url)) return;
+  loadedStylesheets.add(url);
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = url;
+  document.head.appendChild(link);
+}
+
+// Injects the stylesheet(s) for a font-family CHOICE, if it names one that
+// needs a network fetch at all — "system", "serif", "mono", "rounded" and
+// "inherit" all resolve here to nothing, same as any typo, which is the
+// correct behaviour: those already render from fonts the OS ships.
+export function ensureWebfont(key) {
+  const font = WEBFONT_PACKAGES[key];
+  if (!font) return;
+  font.weights.forEach((weight) => {
+    loadStylesheetOnce(`${FONT_CDN_BASE}${font.pkg}@${font.version}/${weight}.css`);
+  });
+}
+
 // url -> Promise<boolean>. Cached by URL so concurrent callers (a note with
 // twelve diagrams in it) share one <script>, and so a failed load isn't retried
 // on a loop — it resolves false and the caller degrades.

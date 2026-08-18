@@ -10,6 +10,7 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { styleStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { ensureWebfont } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeRegExp } from "../core/text.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "../notes/caret.js?v=__BUILD__";
@@ -23,6 +24,12 @@ import { fontFamilyChoices } from "./theme-catalog.js?v=__BUILD__";
 import { currentThemeId } from "./theme.js?v=__BUILD__";
 
 export function resolveFontFamily(value) {
+  // Fires the network fetch (idempotent, cached by URL) for a choice that
+  // names a real webfont; a no-op for "system"/"serif"/"mono"/"rounded"/
+  // "inherit". Belongs here rather than at each call site because this is the
+  // one function every font CHOICE — Basics or Notes — passes through on its
+  // way to becoming a CSS value.
+  ensureWebfont(value);
   return fontFamilyChoices[value] || value;
 }
 
@@ -383,12 +390,26 @@ export function renderStyleControls() {
       let control;
       if (field.type === "select") {
         control = document.createElement("select");
-        field.options.forEach((value) => {
+        const makeOption = (value) => {
           const option = document.createElement("option");
           option.value = value;
           option.textContent = value.charAt(0).toUpperCase() + value.slice(1);
-          control.appendChild(option);
-        });
+          return option;
+        };
+        // Only the font pickers set `groups` — everything else (weights,
+        // alignments, notes layout) is short enough that a flat list is still
+        // the fastest way to scan it, so this stays opt-in per field rather
+        // than a blanket change to every select.
+        if (field.groups) {
+          field.groups.forEach(({ label: groupLabel, options }) => {
+            const optgroup = document.createElement("optgroup");
+            optgroup.label = groupLabel;
+            options.forEach((value) => optgroup.appendChild(makeOption(value)));
+            control.appendChild(optgroup);
+          });
+        } else {
+          field.options.forEach((value) => control.appendChild(makeOption(value)));
+        }
         control.dataset.styleKey = field.key;
         label.appendChild(control);
       } else {

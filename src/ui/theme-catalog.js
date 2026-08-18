@@ -78,9 +78,80 @@ export const themeAliases = {
   light: "light-paper"
 };
 
+// The four "system" entries need nothing but what the OS already ships, so
+// they render instantly and work offline from a cold install. Every entry
+// after them names a real webfont — the key is looked up in WEBFONT_PACKAGES
+// (src/core/lib-loader.js) by resolveFontFamily, which injects its stylesheet
+// the moment it's chosen, and the value below is the CSS stack the browser
+// paints with WHILE that fetch is in flight (font-display: swap in the
+// fetched CSS is what swaps it in the moment the real face lands) and forever
+// after if the fetch never lands at all (no connection, a typo in the key).
+// The two must name fonts the same way — see the comment on WEBFONT_PACKAGES.
 export const fontFamilyChoices = {
   system: "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
   serif: "Georgia, \"Times New Roman\", Times, serif",
   mono: "\"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
-  rounded: "ui-rounded, \"Avenir Next\", \"Nunito Sans\", Inter, ui-sans-serif, system-ui, sans-serif"
+  rounded: "ui-rounded, \"Avenir Next\", \"Nunito Sans\", Inter, ui-sans-serif, system-ui, sans-serif",
+
+  // ── Sans-serif ──
+  Inter: "\"Inter\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  Roboto: "\"Roboto\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  "Open Sans": "\"Open Sans\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  Lato: "\"Lato\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  Montserrat: "\"Montserrat\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  Poppins: "\"Poppins\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  "Work Sans": "\"Work Sans\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  Nunito: "\"Nunito\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  Raleway: "\"Raleway\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+  "IBM Plex Sans": "\"IBM Plex Sans\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
+
+  // ── Serif ──
+  Lora: "\"Lora\", Georgia, \"Times New Roman\", Times, serif",
+  Merriweather: "\"Merriweather\", Georgia, \"Times New Roman\", Times, serif",
+  "Playfair Display": "\"Playfair Display\", Georgia, \"Times New Roman\", Times, serif",
+  "PT Serif": "\"PT Serif\", Georgia, \"Times New Roman\", Times, serif",
+  "Source Serif 4": "\"Source Serif 4\", Georgia, \"Times New Roman\", Times, serif",
+  "Crimson Pro": "\"Crimson Pro\", Georgia, \"Times New Roman\", Times, serif",
+  "Libre Baskerville": "\"Libre Baskerville\", Georgia, \"Times New Roman\", Times, serif",
+  "EB Garamond": "\"EB Garamond\", Georgia, \"Times New Roman\", Times, serif",
+
+  // ── Monospace ──
+  "JetBrains Mono": "\"JetBrains Mono\", \"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
+  "Fira Code": "\"Fira Code\", \"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
+  "Source Code Pro": "\"Source Code Pro\", \"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
+  "IBM Plex Mono": "\"IBM Plex Mono\", \"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
+  "Space Mono": "\"Space Mono\", \"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
+
+  // ── Rounded ──
+  Quicksand: "\"Quicksand\", ui-rounded, \"Avenir Next\", \"Nunito Sans\", sans-serif",
+  Comfortaa: "\"Comfortaa\", ui-rounded, \"Avenir Next\", \"Nunito Sans\", sans-serif",
+  "Baloo 2": "\"Baloo 2\", ui-rounded, \"Avenir Next\", \"Nunito Sans\", sans-serif",
+
+  // ── Handwriting ──
+  Caveat: "\"Caveat\", cursive",
+  Kalam: "\"Kalam\", cursive",
+  "Patrick Hand": "\"Patrick Hand\", cursive"
 };
+
+// The Font select's options, grouped for the <optgroup>s the style panel draws
+// them into — a flat 32-entry dropdown is not what "exhaustive" should feel
+// like to scroll through. Single source for both the Basics and Notes font
+// pickers in style-schema.js; keep new fontFamilyChoices entries listed here
+// too; a font missing from every group here still WORKS (fontFamilyChoices is
+// what actually resolves it) but is unreachable from either picker.
+export const fontFamilyOptionGroups = [
+  { label: "System", options: ["system", "serif", "mono", "rounded"] },
+  {
+    label: "Sans-serif",
+    options: ["Inter", "Roboto", "Open Sans", "Lato", "Montserrat", "Poppins", "Work Sans", "Nunito", "Raleway", "IBM Plex Sans"]
+  },
+  {
+    label: "Serif",
+    options: ["Lora", "Merriweather", "Playfair Display", "PT Serif", "Source Serif 4", "Crimson Pro", "Libre Baskerville", "EB Garamond"]
+  },
+  { label: "Monospace", options: ["JetBrains Mono", "Fira Code", "Source Code Pro", "IBM Plex Mono", "Space Mono"] },
+  { label: "Rounded", options: ["Quicksand", "Comfortaa", "Baloo 2"] },
+  { label: "Handwriting", options: ["Caveat", "Kalam", "Patrick Hand"] }
+];
+
+export const fontFamilyOptions = fontFamilyOptionGroups.flatMap((group) => group.options);

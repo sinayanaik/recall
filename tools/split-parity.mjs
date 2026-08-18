@@ -480,6 +480,16 @@ const ACCEPTED = {
     "Samples the BLOCKS, not container.children — on a chunked note those are " +
     "wrappers of 40, and the estimate would come out 40x too large for exactly " +
     "the notes it matters most on. Also publishes --notes-chunk-estimate.",
+  finalizeRenderedSurface:
+    "Also calls scheduleNotesChunkEstimates(container). --notes-chunk-estimate " +
+    "is one number for the whole note, and a chunk's real content is very often " +
+    "not average — measured on a note alternating dense/sparse chapters, " +
+    "scrolling through it hit up to 1,462px of jump per chunk boundary, which " +
+    "is what a highlight drag through a big note feels like as 'shaking'. Each " +
+    "chunk is now measured for real (one forced layout, one offsetHeight read) " +
+    "as it nears the viewport, same lookahead shape as the diagram/table " +
+    "deferral, so the placeholder it is skipped at is its own real size instead " +
+    "of the note-wide guess.",
   approximateRawOffsetForBlock:
     "Climbs to a chunk's child as well as the root's. Climbing past the block " +
     "to the chunk finds nothing in entry.nodes, so this returned null for every " +
@@ -544,6 +554,31 @@ const ACCEPTED = {
     "nearest [data-render-target] ancestor. The pill serves the notes AND both " +
     "card faces, so the target has to follow the selection rather than be " +
     "hard-coded in the markup.",
+
+  // ── Font picker: 4 choices -> 28 webfonts (src/core/lib-loader.js) ───────
+  // Style -> Basics/Notes only ever offered four OS-native stacks. Added 28
+  // named typefaces across sans-serif/serif/monospace/rounded/handwriting,
+  // each an @fontsource package self-hosted on the same jsdelivr origin the
+  // rest of the app's CDN libraries already use — no Google Fonts origin, no
+  // new third party. Deliberately NOT added to sw.js's CDN_ASSETS/vendor-sync
+  // like those libraries are: a typeface is chosen while looking at the Style
+  // panel, which means online, and the fetch handler already caches any
+  // cdn.jsdelivr.net request on first use — so eagerly precaching ~50 files
+  // for a control most installs never open was not worth paying for.
+  fontFamilyChoices:
+    "28 webfont entries added alongside the original 4 system stacks — see " +
+    "WEBFONT_PACKAGES in src/core/lib-loader.js, which this must name fonts " +
+    "identically to.",
+  resolveFontFamily:
+    "Calls ensureWebfont(value) before resolving. A no-op for the four " +
+    "original system stacks (and any typo); for a real webfont choice it " +
+    "injects that font's <link rel=stylesheet> the first time it's chosen, " +
+    "idempotently by URL so re-applying settings never injects a second copy.",
+  renderStyleControls:
+    "The Font/Notes font <select>s now render <optgroup>s (System/Sans-serif/" +
+    "Serif/Monospace/Rounded/Handwriting) when a field declares `groups` — a " +
+    "flat 32-entry dropdown was not a usable way to browse that many choices. " +
+    "Opt-in per field; every other select is short enough to stay flat.",
 
   // ── Paged reading mode (src/notes/paged-view.js) ─────────────────────────
   // #notesView gains columns and is paged with scrollLeft, so every "reveal

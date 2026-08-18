@@ -5,6 +5,8 @@
 // applies them live elsewhere, which is what lets this be read without
 // understanding either.
 
+import { fontFamilyOptionGroups, fontFamilyOptions } from "./theme-catalog.js?v=__BUILD__";
+
 // One entry per control in styleControlGroups, per profile — nothing more.
 // Keys the panel doesn't expose used to accumulate here (stackCard*,
 // sidePanelWidthPercent, the per-face font families) and normalizeStyleSettings
@@ -152,7 +154,7 @@ export const styleControlGroups = [
       // variable, because the paged layout is a different set of rules rather
       // than a different number. See src/notes/paged-view.js.
       { key: "notesReadingMode", label: "Notes layout", type: "select", options: ["continuous", "paged-1", "paged-2"], hint: "Continuous scrolls the whole note. Paged lays it out in fixed pages you turn — one column, or two side by side like a book." },
-      { key: "fontFamily", label: "Font", type: "select", options: ["system", "serif", "mono", "rounded"], hint: "Typeface for the whole app — cards, notes and chrome." },
+      { key: "fontFamily", label: "Font", type: "select", options: fontFamilyOptions, groups: fontFamilyOptionGroups, hint: "Typeface for the whole app — cards, notes and chrome." },
       { key: "baseFontSize", label: "Text size", type: "text", unit: "px", probe: "font-size", hint: "General Markdown and interface text size." }
     ]
   },
@@ -217,7 +219,12 @@ export const styleControlGroups = [
       // --notes-font-family aliasing --app-font-family, which is what it has
       // always done — so the default is exactly today's behaviour and only an
       // explicit choice makes the notes differ from the rest of the app.
-      { key: "notesFontFamily", label: "Notes font", type: "select", options: ["inherit", "system", "serif", "mono", "rounded"], hint: "Typeface for the Study Notes view only. \u201cInherit\u201d follows the app font in Basics." },
+      {
+        key: "notesFontFamily", label: "Notes font", type: "select",
+        options: ["inherit", ...fontFamilyOptions],
+        groups: [{ label: "Notes", options: ["inherit"] }, ...fontFamilyOptionGroups],
+        hint: "Typeface for the Study Notes view only. \u201cInherit\u201d follows the app font in Basics."
+      },
       { key: "notesLineHeight", label: "Notes line spacing", type: "text", probe: "line-height", hint: "Reading spacing in the Study Notes view." },
       { key: "notesFontWeight", label: "Notes weight", type: "select", options: ["300", "400", "500", "600", "700", "800", "900"], hint: "Notes text thickness." },
       { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing around the Study Notes content." }
