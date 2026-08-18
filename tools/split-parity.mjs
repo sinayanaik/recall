@@ -42,6 +42,68 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // Declarations that are ALLOWED to differ, and why. Keep this short — every
 // entry is a place where the "pure movement" guarantee was deliberately spent.
 const ACCEPTED = {
+  // ── Using the app while a book-sized note is open ───────────────────────
+  // Four separate reports, one theme: the note renders quickly now, and then
+  // everything else is slow. Each entry below is measured in
+  // tools/interaction-scale-check.mjs, which drives a 2.6MB / 24,000-block note
+  // on a phone-sized viewport and was red on all of them.
+  renderedSelectionStrings:
+    "`occurrence` — which copy of the selected text this is — was counted by " +
+    "cloneContents() over a range from the top of the view to the selection: a " +
+    "deep clone of every node above the reader plus the multi-megabyte string " +
+    "built from it, per selection, on the thread a long press is waiting for. " +
+    "Measured at 218ms two thirds down a 2.6MB note. It is now counted by " +
+    "walking to the selection through a sink that keeps only a short tail " +
+    "(countRenderedTextBefore), and the walk is deferred behind a lazy getter " +
+    "because only the pill's ACTIONS need the number — selecting text does not.",
+  surfaceLexTokens:
+    "Memoized on the source string, and hands mutating callers a copy. " +
+    "marked.lexer() over a whole note is ~125ms on a book and this was called " +
+    "on the tail of EVERY render — every edit, every highlight, every " +
+    "raw<->rendered toggle.",
+  enhanceSurfaceImageControls:
+    "Returns before lexing when the source cannot contain an image " +
+    "(sourceMayHaveImages). A note with no images had nothing to attach and " +
+    "still paid for a full lex of itself on every render.",
+  enhanceSurfaceDiagramControls:
+    "Returns before the fence walk when the source names no diagram " +
+    "(sourceMayHaveDiagrams). The `diagrams.length` test below it was always " +
+    "the real gate — it just sat downstream of a regex walk of the whole note.",
+  commitDeepImageWidth: "Asks surfaceLexTokens for a mutable copy — see its entry.",
+  commitImageWidth: "Asks surfaceLexTokens for a mutable copy — see its entry.",
+  removeImageAt: "Asks surfaceLexTokens for a mutable copy — see its entry.",
+  scheduleSurfaceFinalize:
+    "The deferred (big-note) path waits for an idle callback rather than the " +
+    "next animation frame, and so stores which kind of handle it holds. The " +
+    "frame right after a big note paints is exactly when the reader's first " +
+    "press arrives — they can see the text, so they believe the app is ready — " +
+    "and a rAF callback runs before that press is delivered.",
+  openNotesToc:
+    "Builds the contents list on the way open (ensureNotesTocBuilt). It used " +
+    "to be rebuilt on the tail of every render — ~70ms of heading walk and DOM " +
+    "for a drawer that is shut almost all the time — and a rebuild also forgot " +
+    "which row was lit, which is the other half of \"the TOC does not reliably " +
+    "update\": nothing re-lit it until the reader scrolled again.",
+  captureCurrentReadingAnchor:
+    "Stamps the anchor with `at` and writes it to a store of its own " +
+    "(src/notes/reading-position.js). The anchor used to reach disk ONLY as a " +
+    "passenger on a deck save that happened for some other reason, so a reader " +
+    "who reads and does not edit saved nothing at all and lost their place on " +
+    "every reload. The deck's meta.readingPosition is unchanged and still what " +
+    "travels between devices; `at` is what lets the two be compared on open.",
+  scheduleNoteJump:
+    "An ambient resume (options.resume) keeps trying for NOTE_RESUME_BUDGET_MS " +
+    "instead of ~1 second, lands on the block the offset falls in rather than " +
+    "on a fraction of scrollHeight, and stops the moment the reader touches " +
+    "anything. A book is streamed into the document and its chunk heights " +
+    "settle after that again, so the old loop gave up — silently, being an " +
+    "ambient landing — before the target block existed; and scrollHeight is " +
+    "mostly estimates until the reader has been there, which on a 2.6MB note " +
+    "put the proportional landing half a million pixels out.",
+  loadWebDeck:
+    "Resumes from the newer of the deck's meta.readingPosition and this " +
+    "device's own stored position (betterReadingPosition) — see " +
+    "captureCurrentReadingAnchor.",
   // ── Offline: the app must always paint, and sync must name its failures ──
   // The app loaded eight parser-blocking <script> tags and two render-blocking
   // <link>s from cdn.jsdelivr.net, and paints nothing before src/main.js runs —
@@ -1146,6 +1208,28 @@ function residual(text, decls) {
 // on purpose — by the restructure, or by a fix landed since it — spelled out
 // so that everything around it keeps being compared byte for byte.
 const RESIDUAL_REWRITES = [
+  // ── Interaction cost with a book-sized note open ────────────────────────
+  // Four module-scope handlers, all of them on a path that runs for EVERY press
+  // or resize, all changed for the same reason: with a multi-megabyte note in
+  // the document, a `document.querySelectorAll` whose selector cannot be
+  // answered from an index is a CSS match against a couple of hundred thousand
+  // elements. See tools/interaction-scale-check.mjs.
+  //
+  // The dropdown handler's two sweeps become one scoped call
+  // (closeAllEditToolbarDropdowns, over the three known toolbars).
+  [/document\.querySelectorAll\("\.edit-toolbar \.toolbar-dropdown"\)\.forEach\(d => \{ d\.classList\.remove\("is-open"\); \}\); if \(!wasOpen\)/,
+   "closeAllEditToolbarDropdowns(); if (!wasOpen)"],
+  [/if \(!e\.target\.closest\("\.edit-toolbar \.toolbar-dropdown-content"\)\) \{ document\.querySelectorAll\("\.edit-toolbar \.toolbar-dropdown"\)\.forEach\(d => \{ d\.classList\.remove\("is-open"\); \}\); \}/,
+   'if (!e.target.closest(".edit-toolbar .toolbar-dropdown-content")) { closeAllEditToolbarDropdowns(); }'],
+  // The highlight-mirror resync drops a child combinator for a class lookup
+  // plus a query inside each small wrapper. Same nodes, same writes.
+  [/document\.querySelectorAll\("\.highlight-textarea-wrapper > textarea"\)\.forEach\(\(textarea\) => \{ const backdrop = textarea\.parentElement\?\.querySelector\("\.highlight-textarea-backdrop"\); if \(!backdrop\) return; backdrop\.scrollTop = textarea\.scrollTop; backdrop\.scrollLeft = textarea\.scrollLeft; \}\);/,
+   'document.querySelectorAll(".highlight-textarea-wrapper").forEach((wrapper) => { const textarea = wrapper.querySelector("textarea"); const backdrop = wrapper.querySelector(".highlight-textarea-backdrop"); if (!textarea || !backdrop) return; backdrop.scrollTop = textarea.scrollTop; backdrop.scrollLeft = textarea.scrollLeft; });'],
+  // A table is fitted to the WIDTH it has to fit in. On a phone `resize` is
+  // mostly the keyboard and the URL bar changing the height, and a refit walks
+  // every table in the note before it reaches the binary search for a font size.
+  [/window\.addEventListener\("resize", \(\) => \{ scheduleMarkdownTableFit\(\); scheduleLiveQuestionFit\(\); \}\);/,
+   'window.addEventListener("resize", () => { if (window.innerWidth !== lastTableFitWidth) { lastTableFitWidth = window.innerWidth; scheduleMarkdownTableFit(); } scheduleLiveQuestionFit(); });'],
   // Phase 1: a deferred module script sees readyState "interactive", so the
   // old inline `else` branch fired mid-file. See onDomReady in src/main.js.
   [/if \(document\.readyState === "loading"\) \{ document\.addEventListener\("DOMContentLoaded", (\w+)\); \} else \{ \1\(\); \}/g,
@@ -1280,13 +1364,17 @@ const RESIDUAL_REWRITES = [
   // the last few pulled decks with a snapshot in IndexedDB and no index entry
   // naming it — which the next boot's orphan sweep would throw away. Swiping a
   // phone's app away mid-sync is the ordinary way that happens.
+  //
+  // They also flush the reading position, which now has a store of its own (see
+  // src/notes/reading-position.js) rather than only ever riding along on a deck
+  // save that happened for some other reason.
   [/window\.addEventListener\("pagehide", \(\) => \{ flushWorkingDeck\(\); revokeLocalImageUrls\(\); \}\);/,
-   'window.addEventListener("pagehide", () => { flushWorkingDeck(); try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); } revokeLocalImageUrls(); });'],
+   'window.addEventListener("pagehide", () => { flushReadingPositionSave(); flushWorkingDeck(); try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); } revokeLocalImageUrls(); });'],
   // Written in the BASELINE's form (a bare `lastHiddenAt = …`), because these
   // patterns are applied to the baseline text and compared against the current
   // tree with unroute() having already undone the setter rewrite.
   [/if \(document\.visibilityState === "hidden"\) \{ lastHiddenAt = Date\.now\(\); flushWorkingDeck\(\); return; \}/,
-   'if (document.visibilityState === "hidden") { lastHiddenAt = Date.now(); flushWorkingDeck(); try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); } return; }'],
+   'if (document.visibilityState === "hidden") { lastHiddenAt = Date.now(); flushReadingPositionSave(); flushWorkingDeck(); try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); } return; }'],
 ];
 
 let baseResidual = residual(baseSrc, baseAllDecls);

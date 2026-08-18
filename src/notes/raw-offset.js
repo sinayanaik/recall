@@ -227,6 +227,51 @@ export function matchSnippetInSource(source, before, after, allowNewline, hint =
 // so prepared offsets and raw offsets differ by a factor that a proportion
 // cancels out. Returns null when there's no cache to read, and the caller
 // simply searches without a hint.
+// The total length of every cached block's source key, memoized on the cache
+// entry itself.
+//
+// Both of the functions below need it, and both used to add it up from scratch
+// on every call — 24,000 string reads per call on a book, and
+// findRenderedNoteRange asks once per block inside its search window, which made
+// one anchor jump O(window x note). The entry is a fresh object per render (see
+// renderedBlockCache.set), so there is nothing to invalidate.
+export function blockKeyLengthTotal(cached) {
+  if (cached.totalKeyLength == null) {
+    let total = 0;
+    for (const entry of cached.blocks) total += (entry.key || "").length;
+    cached.totalKeyLength = total;
+  }
+  return cached.totalKeyLength;
+}
+
+// The rendered block a raw-markdown offset falls in, by the same proportion
+// approximateRawOffsetForBlock works in — its exact inverse.
+//
+// This is how a reading position is restored, and it is deliberately not a
+// pixel calculation. A note's HEIGHT is mostly guesses until the reader has
+// been there (content-visibility hands every unvisited chunk an estimate), so
+// "scroll to 40% of scrollHeight" can be tens of thousands of pixels from 40%
+// of the TEXT — measured on a 2.6MB book: the reader's real position was at
+// scrollTop 179,543 and the proportional guess was 690,550. Block keys are the
+// source itself, so this answer does not move as the layout settles.
+export function notesBlockForRawOffset(root, source, offset) {
+  const cached = renderedBlockCache.get(root);
+  if (!cached || !Array.isArray(cached.blocks) || !cached.blocks.length || !source) return null;
+  if (!Number.isFinite(offset)) return null;
+  const total = blockKeyLengthTotal(cached);
+  if (!total) return null;
+  const want = Math.max(0, Math.min(1, offset / source.length)) * total;
+  let seen = 0;
+  let last = null;
+  for (const entry of cached.blocks) {
+    const node = (entry.nodes || []).find((n) => n && n.nodeType === 1 && n.isConnected);
+    if (node) last = node;
+    seen += (entry.key || "").length;
+    if (seen >= want && node) return node;
+  }
+  return last;
+}
+
 export function approximateRawOffsetForBlock(root, source, node) {
   const cached = renderedBlockCache.get(root);
   if (!cached || !Array.isArray(cached.blocks) || !cached.blocks.length || !source) return null;
@@ -243,21 +288,22 @@ export function approximateRawOffsetForBlock(root, source, node) {
   }
   if (!topLevel || !isTopLevelBlockParent(topLevel.parentElement, root)) return null;
 
+  // Stops at the block it was asked about. The total comes from the memo above,
+  // so there is no reason to keep walking past the answer — which on a book is
+  // the difference between reading 24,000 keys and reading as far as the
+  // reader has got.
   let before = 0;
-  let total = 0;
   let found = false;
-  let precedingLength = 0;
   for (const entry of cached.blocks) {
-    const length = (entry.key || "").length;
-    if (!found && Array.isArray(entry.nodes) && entry.nodes.includes(topLevel)) {
+    if (Array.isArray(entry.nodes) && entry.nodes.includes(topLevel)) {
       found = true;
-      precedingLength = before;
+      break;
     }
-    if (!found) before += length;
-    total += length;
+    before += (entry.key || "").length;
   }
+  const total = blockKeyLengthTotal(cached);
   if (!found || !total) return null;
-  return (precedingLength / total) * source.length;
+  return (before / total) * source.length;
 }
 
 // `root` is the rendered container (notes view, or a card's question/answer

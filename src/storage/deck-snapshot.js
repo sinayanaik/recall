@@ -13,6 +13,7 @@ import { importTargetCategory } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
+import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
@@ -179,9 +180,20 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     state.notes = payloadNotes;
     setViewMode("notes");
     // Cross-device resume — see the identical call in loadWebDeck for why
-    // flash/smooth are both off. Only reached on this non-append branch, so
+    // flash/smooth are both off and why the local store is consulted alongside
+    // the deck's meta. Only reached on this non-append branch, so
     // merge-importing more cards into an already-open deck never triggers it.
-    if (state.meta?.readingPosition) scheduleNoteJump(state.meta.readingPosition, { flash: false, smooth: false });
+    // In a microtask, because currentDeckKey() is not yet the key this deck's
+    // position was SAVED under: loadDeckFromLibrary sets state.localDeckId on
+    // the line after this function returns, and the key is
+    // [deckId, localDeckId, folderPath]. Reading it synchronously here looked up
+    // a deck with no local id and found nothing, on every library deck — the
+    // common case. A microtask runs after the caller's own synchronous block,
+    // which is exactly when the identity is complete.
+    queueMicrotask(() => {
+      const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
+      if (resumeAt) scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true });
+    });
   }
   syncResults();
   closeAllCardsPanel();

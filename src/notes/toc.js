@@ -10,10 +10,10 @@ import { loadDeckFromLibrary, readLocalDeckIndex } from "../library/local-librar
 import { convergeNotesScroll, scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
 import { revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
 import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
-import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
+import { activeChapterIndex, firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
-import { NOTES_TOP_LEVEL_SELECTOR, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS, NOTES_TOP_LEVEL_SELECTOR, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
 import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -25,6 +25,61 @@ import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 // scrolls that heading to the top of the notes viewport, and a scroll-spy
 // keeps the entry for the section you're reading highlighted.
 export let notesTocHeadings = [];
+
+// ── Built when it is looked at, not when the note renders ──────────────────
+//
+// buildNotesToc walks every heading in the note, slugifies each one and makes
+// three DOM nodes per row. On a book that is ~70ms, it used to run on the tail
+// of EVERY render (an edit, a highlight, a raw<->rendered toggle), and the
+// drawer it draws into is closed almost all of the time — so the reader paid it
+// to produce something nobody was looking at, right at the moment they were
+// reaching for a control.
+//
+// So the render tail only marks the list stale. It is built when the drawer
+// opens, and rebuilt on the next frame if a render lands while it is open —
+// which is also the fix for the other half of the report, "the TOC does not
+// reliably update": a rebuild used to forget which row was lit, and nothing
+// re-lit it until the reader scrolled again.
+export let notesTocDirty = true;
+
+export function markNotesTocDirty() {
+  notesTocDirty = true;
+  // The drawer is on screen right now, so "stale" is not good enough. One frame
+  // later, so a burst of renders (a streamed note finishing, an edit committing)
+  // costs one rebuild rather than one each.
+  if (isNotesTocOpen()) scheduleNotesTocRebuild();
+}
+
+export let notesTocRebuildFrame = 0;
+
+export function scheduleNotesTocRebuild() {
+  if (notesTocRebuildFrame) return;
+  notesTocRebuildFrame = requestAnimationFrame(() => {
+    notesTocRebuildFrame = 0;
+    if (!notesTocDirty) return;
+    buildNotesToc();
+    // Re-light the row for wherever the reader is. buildNotesToc resets
+    // notesTocActiveIndex to -1 because every link it held is now detached, and
+    // without this the drawer sat with nothing active until the next scroll.
+    updateNotesTocActive();
+  });
+}
+
+// Build it if it is stale. THE entry point for anything that is about to read
+// the list or the arrays beside it.
+export function ensureNotesTocBuilt() {
+  if (notesTocDirty) buildNotesToc();
+}
+
+// Does this note have any headings at all? The only thing the render tail still
+// needs to know, because it decides whether the ☰ button offers a contents at
+// all — and `querySelector` stops at the first hit instead of collecting every
+// heading in the book.
+export function refreshNotesTocAvailability() {
+  if (!el.notesView || !el.notesTocBtn) return;
+  const has = Boolean(el.notesView.querySelector("h1, h2, h3, h4, h5, h6"));
+  el.notesTocBtn.classList.toggle("has-toc", has);
+}
 
 export let notesTocScrollFrame = 0;
 
@@ -258,6 +313,7 @@ export function initNotesTocFolding() {
 
 export function buildNotesToc() {
   if (!el.notesView || !el.notesTocList) return;
+  notesTocDirty = false;
   notesTocHeadings = ensureNotesHeadingIds();
 
   el.notesTocList.innerHTML = "";
@@ -482,10 +538,14 @@ export function isNotesTocOpen() {
 }
 
 export function updateNotesTocActive() {
-  if (!el.notesTocList || !notesTocHeadings.length) return;
+  if (!el.notesTocList) return;
   // Closed drawer: nothing to show, so nothing to compute. openNotesToc() calls
   // this on the way open, so it still lands on the right entry.
   if (!isNotesTocOpen()) return;
+  // An open drawer over a stale list is a list of detached nodes — every link
+  // this would light belongs to a note that is no longer on screen.
+  ensureNotesTocBuilt();
+  if (!notesTocHeadings.length) return;
 
   // The active section is the last heading whose top has scrolled to (or above)
   // a line a little below the viewport top — or, in paged mode, the last one
@@ -494,9 +554,44 @@ export function updateNotesTocActive() {
   const paged = isNotesPaged();
   const page = paged ? notesCurrentPage() : 0;
   const mark = el.notesView.getBoundingClientRect().top + 24;
-  const atOrAbove = (index) => (paged
-    ? notesPageForElement(notesTocHeadings[index]) <= page
-    : notesTocHeadings[index].getBoundingClientRect().top <= mark);
+  // ── Paged mode asks the question in TWO parts ────────────────────────────
+  //
+  // Paging is per CHAPTER: only the active chapter is laid out and the rest are
+  // display:none, so a heading outside it has no box at all and
+  // notesPageForElement answers with whatever page the current scrollLeft
+  // happens to be on. "page <= current page" was therefore TRUE for every
+  // heading in every chapter the reader had not reached — the search below ran
+  // straight off the end of the book and lit its last heading. Measured on a
+  // 60-chapter fixture: reading chapter 37, the contents lit "Chapter 60", and
+  // it did that on every multi-chapter note.
+  //
+  // Chapter index first (monotonic in document order, and knowable without a
+  // box), page only within the chapter being read.
+  const chapterOf = new Map();
+  if (paged) {
+    Array.from(el.notesView.querySelectorAll(`:scope > .${NOTES_CHUNK_CLASS}`))
+      .forEach((chunk, index) => chapterOf.set(chunk, index));
+  }
+  const chapterIndexOf = (heading) => {
+    const chunk = heading.parentElement?.closest(`.${NOTES_CHUNK_CLASS}`);
+    const found = chunk ? chapterOf.get(chunk) : undefined;
+    return found === undefined ? activeChapterIndex : found;
+  };
+  const atOrAbove = (index) => {
+    const heading = notesTocHeadings[index];
+    if (!paged) {
+      // Deliberately a bare rect, with no withChunkRendered: the chunk holding
+      // the reading line is on screen and therefore laid out, so its headings
+      // answer honestly, and the chunks either side of it answer with their own
+      // (monotonic) boxes — which is all a binary search needs. Forcing chunks
+      // to lay out here would cost 40 blocks of layout per probe, on a handler
+      // that runs on every scroll frame.
+      return heading.getBoundingClientRect().top <= mark;
+    }
+    const chapter = chapterIndexOf(heading);
+    if (chapter !== activeChapterIndex) return chapter < activeChapterIndex;
+    return notesPageForElement(heading) <= page;
+  };
   let low = 0;
   let high = notesTocHeadings.length - 1;
   let activeIndex = 0;
@@ -581,6 +676,9 @@ export function blockAtNotesReadingLine() {
 
 export function openNotesToc() {
   if (!el.notesTocDrawer) return;
+  // Built here rather than on every render — see notesTocDirty. Before the
+  // drawer is revealed, so it never opens on a list belonging to another note.
+  ensureNotesTocBuilt();
   el.notesTocDrawer.hidden = false;
   // Force reflow so the open transition runs from the hidden state.
   void el.notesTocDrawer.offsetWidth;

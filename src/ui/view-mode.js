@@ -6,6 +6,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
+import { flushReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { renderHighlightsPanel } from "../panels/highlights-panel.js?v=__BUILD__";
 import { measureChromeHeights, resetChromeAutoHide } from "./chrome.js?v=__BUILD__";
@@ -39,6 +40,11 @@ export function setViewMode(mode, options = {}) {
     button.classList.toggle("is-active", button.dataset.viewMode === next);
   });
   hideNotesSelectionButton();
+  // Leaving the notes is the moment the reading position is final — write out
+  // an armed-but-unfired save now rather than letting its timer fire against a
+  // view the reader has already left. (The save carries the deck key it was
+  // captured with, so this is safe even mid-deck-swap.)
+  if (changed && !notesActive) flushReadingPositionSave();
   // Switching views is navigation, not reading — start with the header visible.
   if (changed) resetChromeAutoHide();
   // The appbar is a different height in each view — the card counters are

@@ -1,6 +1,7 @@
 // The raw editor's toolbar: which button does which transform.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { closeAllEditToolbarDropdowns } from "./toolbars.js?v=__BUILD__";
 import { applyInlineStyleProperty, clearFormatting, clearInlineStyleProperty, toggleBulletPoints, toggleCloze, toggleCode, toggleKbd, toggleStrikethrough, toggleUnderline, toggleWrap } from "./text-transforms.js?v=__BUILD__";
 import { toggleMarkColorInText } from "../format/highlight.js?v=__BUILD__";
 import { setRenderDefault } from "../format/render-toolbar.js?v=__BUILD__";
@@ -48,9 +49,7 @@ export function handleToolbarClick(event) {
     // Capture before closing menus / dropping the selection, so a pin from the
     // raw notes editor can link the quick_notes card back to this spot.
     const anchor = captureSourceAnchor();
-    document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach(d => {
-      d.classList.remove("is-open");
-    });
+    closeAllEditToolbarDropdowns();
     saveQuickNote(selectedText, button, anchor);
     return;
   }
@@ -64,9 +63,7 @@ export function handleToolbarClick(event) {
       return;
     }
     const anchor = captureNotesAnchor();
-    document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach((d) => {
-      d.classList.remove("is-open");
-    });
+    closeAllEditToolbarDropdowns();
     createCardFromNotesSelection(selectedText, anchor);
     return;
   }
@@ -130,7 +127,5 @@ export function handleToolbarClick(event) {
   applyFormatToTextarea(textarea, formatFn);
 
   // Close all open dropdowns after action is applied
-  document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach(d => {
-    d.classList.remove("is-open");
-  });
+  closeAllEditToolbarDropdowns();
 }

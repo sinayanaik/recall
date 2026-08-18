@@ -16,7 +16,7 @@ import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll, markProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
-import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock } from "./raw-offset.js?v=__BUILD__";
+import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
 import { notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
@@ -693,23 +693,96 @@ export function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}, l
   return revealRenderedNoteRange(range, { flash, smooth });
 }
 
+// ── Resuming where you were reading ────────────────────────────────────────
+//
+// How long an ambient resume keeps trying, and how often. Both are far beyond
+// what a deliberate jump needs, and deliberately so: a book is STREAMED into the
+// document (see streamRenderedBlocks) and its chunk heights settle after that
+// again, so for the first few seconds the block the reader wants may not exist
+// yet. The old loop gave up after 8 tries at 120ms — about a second — and, being
+// an ambient landing, it gave up SILENTLY. On the notes this feature exists for,
+// it therefore did nothing at all, every time.
+export const NOTE_RESUME_BUDGET_MS = 8000;
+
+export const NOTE_RESUME_RETRY_MS = 150;
+
+// A resume is the app moving the reader somewhere they did not ask to go. That
+// is welcome as an opening position and unwelcome the moment they start reading,
+// so anything that says "I am here now" ends it.
+export const READER_INTERRUPTION_EVENTS = ["pointerdown", "touchstart", "wheel", "keydown"];
+
+export function watchForReaderInterruption() {
+  let interrupted = false;
+  const stop = () => {
+    interrupted = true;
+    cancel();
+  };
+  const cancel = () => {
+    READER_INTERRUPTION_EVENTS.forEach((type) => document.removeEventListener(type, stop, true));
+  };
+  // Input events only, deliberately NOT the scroll event. A note that is still
+  // streaming moves its own scrollTop as blocks land above the viewport and as
+  // content-visibility chunks swap an estimate for a real height, and every one
+  // of those fires `scroll` — so watching for scrolls would have this abandon
+  // the resume within a frame or two of starting it, on exactly the long notes
+  // it exists for. isProgrammaticNotesScroll cannot rescue that either: its
+  // window is 250ms and the settling goes on for seconds. A finger or a wheel
+  // is unambiguous.
+  READER_INTERRUPTION_EVENTS.forEach((type) => document.addEventListener(type, stop, { capture: true, passive: true }));
+  return { interrupted: () => interrupted, cancel };
+}
+
 // Switch to the notes view (if needed) and reveal the anchor. setViewMode
 // re-renders the notes markdown asynchronously, so retry across a few frames
 // before giving up. Two rAFs cover the initial render; the timeout loop is a
 // belt-and-braces fallback for slower renders / a just-loaded deck. `options`
 // (flash/smooth) is threaded straight through to revealNoteAnchor, as is
 // `locator` (the exact-<mark> shortcut used by the Highlights panel).
+//
+// `options.resume` marks an ambient landing — see the block above.
 export function scheduleNoteJump(anchor, options, locator = null) {
   if (state.viewMode !== "notes") setViewMode("notes");
+  const resume = Boolean(options?.resume);
   let estimatedOnce = false;
+  const until = performance.now() + NOTE_RESUME_BUDGET_MS;
+  const reader = resume ? watchForReaderInterruption() : null;
+  const done = () => { reader?.cancel(); };
   const attempt = (retries) => {
-    if (revealNoteAnchor(anchor, options, locator)) return;
+    // The reader took over. Their position is the real one now.
+    if (reader?.interrupted()) return;
+    if (revealNoteAnchor(anchor, options, locator)) { done(); return; }
     // findRenderedNoteRange (inside revealNoteAnchor) does a text search over
-    // the rendered DOM. Nudge toward a proportional estimate once so the
-    // windowed search is centred near the target before retrying.
-    if (!estimatedOnce && Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0])) {
+    // the rendered DOM. Nudge toward a proportional estimate so the windowed
+    // search is centred near the target before retrying.
+    //
+    // For a resume this is also the landing itself, and it is re-aimed on every
+    // pass rather than once: the note is still streaming, so its height — and
+    // therefore where a given fraction of it sits — changes under us. That is
+    // what "land straight away, then correct" means here. The reader is put
+    // roughly in the right chapter within a frame or two and converges on the
+    // exact paragraph as the note settles, instead of sitting at the top of a
+    // book waiting for a search that has nothing to search yet.
+    if (Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0]) && (resume || !estimatedOnce)) {
       estimatedOnce = true;
-      estimateNotesScrollForOffset(anchor.offset);
+      // By BLOCK where the block cache can answer, by pixel fraction only as a
+      // fallback. See notesBlockForRawOffset: a fraction of scrollHeight is a
+      // fraction of a height that is mostly estimates on a note nobody has
+      // scrolled through yet, and on a 2.6MB book that put the landing half a
+      // million pixels from where the reader actually was.
+      const block = notesBlockForRawOffset(el.notesView, state.notes || "", anchor.offset);
+      if (block) scrollNotesBlockToReadingLine(block, false);
+      else estimateNotesScrollForOffset(anchor.offset);
+    }
+    if (resume) {
+      if (performance.now() < until) setTimeout(() => attempt(0), NOTE_RESUME_RETRY_MS);
+      else {
+        done();
+        // Never a toast — nobody asked for this jump — but not silent either.
+        // "The resume quietly did nothing" was impossible to tell from "there
+        // was nothing to resume to".
+        console.warn("Reading position not found in the rendered note", anchor?.offset);
+      }
+      return;
     }
     if (retries > 0) setTimeout(() => attempt(retries - 1), 120);
     else if (!options || options.flash !== false) {

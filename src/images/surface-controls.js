@@ -42,8 +42,51 @@ export function lexMarkdownTokens(source) {
   return marked.lexer(source || "");
 }
 
-export function surfaceLexTokens(surface) {
-  return lexMarkdownTokens(surface?.getSource?.() || "");
+// ── One lex per note, not one per render ───────────────────────────────────
+// marked.lexer() over a whole note is 125ms on a 2.6MB book, and
+// enhanceSurfaceImageControls asks for it on EVERY render — every edit, every
+// highlight, every raw<->rendered toggle, and once more each time the surface
+// is finalized. The answer only depends on the source string, so remember the
+// last one: a repeat render of an unchanged note now costs a string compare.
+//
+// One entry, not a map. The three surfaces are re-lexed in turn but a reader is
+// only ever editing one of them, and holding a token tree per surface would
+// keep two notes' worth of tokens alive for nothing.
+export let lastSurfaceLexSource = null;
+
+export let lastSurfaceLexTokens = null;
+
+// `mutable: true` hands back a private copy. The callers that REWRITE a note
+// (commitImageWidth and friends) splice their own entries into the array before
+// rebuilding the source from it, and doing that to the cached array would leave
+// the cache describing neither the note that is there nor the one about to be.
+export function surfaceLexTokens(surface, { mutable = false } = {}) {
+  const source = surface?.getSource?.() || "";
+  if (lastSurfaceLexTokens && lastSurfaceLexSource === source) {
+    return mutable ? lastSurfaceLexTokens.slice() : lastSurfaceLexTokens;
+  }
+  const tokens = lexMarkdownTokens(source);
+  lastSurfaceLexSource = source;
+  lastSurfaceLexTokens = tokens;
+  return mutable ? tokens.slice() : tokens;
+}
+
+// There is deliberately no invalidate() to call: the cache key IS the source
+// string, so a note that has been rewritten simply misses and is re-lexed.
+
+// Could this note contain an image at all? A regex over the source is single
+// digit milliseconds where the lexer is over a hundred, and a note with no
+// images has nothing for enhanceSurfaceImageControls to attach anyway. Covers
+// both markdown images and the raw <img> tags a resize writes back.
+export function sourceMayHaveImages(source) {
+  return /!\[|<img\b/i.test(source || "");
+}
+
+// Same idea for diagrams: findDiagramFences walks every fence in the note, and
+// a note with no mermaid/nomnoml fence cannot have a diagram to attach a grip
+// to. (The fence walk is the expensive half — the DOM query below it is not.)
+export function sourceMayHaveDiagrams(source) {
+  return /mermaid|nomnoml/i.test(source || "");
 }
 
 export function parseImgTagFromHtml(html) {
@@ -206,7 +249,7 @@ export function collectImagesDeep(token, results) {
 // width), so repeated drags keep working.
 export function commitDeepImageWidth(surface, tokenIndex, imageRaw, info, px) {
   const widthPx = Math.min(2000, Math.max(20, Math.round(px)));
-  const tokens = surfaceLexTokens(surface);
+  const tokens = surfaceLexTokens(surface, { mutable: true });
   const token = tokens[tokenIndex];
   if (!token) return;
   const idx = token.raw.indexOf(imageRaw);
@@ -247,7 +290,7 @@ export function rebuildSurfaceFromTokens(surface, tokens) {
 // the surrounding text is left untouched, no promotion/extraction needed.
 export function commitImageWidth(surface, tokenIndex, subPos, px) {
   const widthPx = Math.min(2000, Math.max(20, Math.round(px)));
-  const tokens = surfaceLexTokens(surface);
+  const tokens = surfaceLexTokens(surface, { mutable: true });
   const token = tokens[tokenIndex];
   if (!token) return;
   const entries = findImageTokens(tokens).filter((e) => e.tokenIndex === tokenIndex);
@@ -281,7 +324,7 @@ export function commitImageWidth(surface, tokenIndex, subPos, px) {
 // surrounding list/quote untouched; every other case rewrites or drops the
 // whole token, same as a resize commit would.
 export function removeImageAt(surface, tokenIndex, subPos, imageRaw) {
-  const tokens = surfaceLexTokens(surface);
+  const tokens = surfaceLexTokens(surface, { mutable: true });
   const token = tokens[tokenIndex];
   if (!token) return;
 
@@ -485,6 +528,9 @@ export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, ref
 export function enhanceSurfaceImageControls(surface) {
   const view = surface?.view;
   if (!view) return;
+  // Cheapest test first — see sourceMayHaveImages. This runs on the tail of
+  // every render of every surface, and most notes hold no images at all.
+  if (!sourceMayHaveImages(surface.getSource?.() || "")) return;
   const tokens = surfaceLexTokens(surface);
   const imageTokens = findImageTokens(tokens);
   const shells = Array.from(view.querySelectorAll(".diagram-shell")).filter((s) => s.querySelector("img"));
@@ -584,6 +630,11 @@ export function commitDiagramWidth(surface, fenceIndex, px) {
 export function enhanceSurfaceDiagramControls(surface) {
   const view = surface?.view;
   if (!view) return;
+  // Before the fence walk, not after it. The `diagrams.length` test below is
+  // the real gate and it always was — but it sat downstream of a regex walk of
+  // the whole note, so a book with no diagrams in it paid for the walk on every
+  // single render just to be told there was nothing to do.
+  if (!sourceMayHaveDiagrams(surface.getSource?.() || "")) return;
   const fences = findDiagramFences(surface.getSource());
   const diagrams = Array.from(view.querySelectorAll(".mermaid, .nomnoml-diagram"));
   if (!diagrams.length || diagrams.length !== fences.length) return;

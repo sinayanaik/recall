@@ -24,7 +24,7 @@ import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
 import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
 import { handleToolbarClick } from "./editor/toolbar-actions.js?v=__BUILD__";
-import { initToolbars, setCloseMainMenu, setIsMainMenuOpen, toggleClozes } from "./editor/toolbars.js?v=__BUILD__";
+import { closeAllEditToolbarDropdowns, initToolbars, setCloseMainMenu, setIsMainMenuOpen, toggleClozes } from "./editor/toolbars.js?v=__BUILD__";
 import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/triple-click.js?v=__BUILD__";
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
 import { closePrintPreview, printPreviewOpen } from "./export/pdf.js?v=__BUILD__";
@@ -58,6 +58,7 @@ import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD_
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
+import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
 import { beginSelectionGesture, currentNotesSelectionMarkdown, endSelectionGesture, hideNotesSelectionButton, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
@@ -1807,8 +1808,19 @@ window.addEventListener("afterprint", () => {
   }
 });
 
+// The width a table fit was last computed against. A table is fitted to the
+// width it has to fit in, and nothing else — so a resize that did not change
+// the width has nothing to redo. That matters because on a phone `resize` is
+// mostly the keyboard and the URL bar changing the HEIGHT, and a refit walks
+// every table in the note (re-wrapping, re-labelling and re-columning each one)
+// before it even gets to the binary search for a font size.
+let lastTableFitWidth = window.innerWidth;
+
 window.addEventListener("resize", () => {
-  scheduleMarkdownTableFit();
+  if (window.innerWidth !== lastTableFitWidth) {
+    lastTableFitWidth = window.innerWidth;
+    scheduleMarkdownTableFit();
+  }
   scheduleLiveQuestionFit();
 });
 if (styleMobileMedia?.addEventListener) {
@@ -1865,6 +1877,10 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 window.addEventListener("pagehide", () => {
+  // Before flushWorkingDeck, which builds the deck snapshot the anchor rides
+  // in: this is a synchronous localStorage write and it is the copy that
+  // survives an OS killing a backgrounded phone app mid-IndexedDB-write.
+  flushReadingPositionSave();
   flushWorkingDeck();
   // A sync in progress holds the deck index in memory between checkpoints (see
   // beginIndexBatch), so a tab that goes away mid-sync would leave the last few
@@ -1882,6 +1898,7 @@ window.addEventListener("pagehide", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
     setLastHiddenAt(Date.now());
+    flushReadingPositionSave();
     flushWorkingDeck();
     // Same reason as the pagehide handler above; on mobile this is the event
     // that actually fires when the app is swiped away.
@@ -2209,9 +2226,15 @@ document.addEventListener("keydown", (e) => {
 // editor textareas on every render, and each captured listener would pin the
 // detached DOM subtree in memory forever.)
 window.addEventListener("resize", () => {
-  document.querySelectorAll(".highlight-textarea-wrapper > textarea").forEach((textarea) => {
-    const backdrop = textarea.parentElement?.querySelector(".highlight-textarea-backdrop");
-    if (!backdrop) return;
+  // By class, then down. `.highlight-textarea-wrapper > textarea` is a child
+  // combinator, which no engine can answer from a class index — so it was a
+  // full CSS match over the document, and on a phone `resize` fires every time
+  // the keyboard or the URL bar moves. The two-step form is a class lookup
+  // (indexed) plus a query inside a handful of small boxes.
+  document.querySelectorAll(".highlight-textarea-wrapper").forEach((wrapper) => {
+    const textarea = wrapper.querySelector("textarea");
+    const backdrop = wrapper.querySelector(".highlight-textarea-backdrop");
+    if (!textarea || !backdrop) return;
     backdrop.scrollTop = textarea.scrollTop;
     backdrop.scrollLeft = textarea.scrollLeft;
   });
@@ -2233,12 +2256,7 @@ document.addEventListener("click", (e) => {
     e.stopPropagation();
     const dropdown = dropdownToggle.closest(".toolbar-dropdown");
     const wasOpen = dropdown.classList.contains("is-open");
-    
-    // Close all dropdowns first
-    document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach(d => {
-      d.classList.remove("is-open");
-    });
-    
+    closeAllEditToolbarDropdowns();
     // Toggle current
     if (!wasOpen) {
       dropdown.classList.add("is-open");
@@ -2246,11 +2264,12 @@ document.addEventListener("click", (e) => {
     return;
   }
 
-  // Close dropdowns if clicked anywhere else
+  // Close dropdowns if clicked anywhere else. Scoped to the three toolbars
+  // rather than swept out of the document — see closeAllEditToolbarDropdowns:
+  // this branch runs on every click in the app, and the sweep it replaces was
+  // a full-document CSS match with a book-sized note in the way of it.
   if (!e.target.closest(".edit-toolbar .toolbar-dropdown-content")) {
-    document.querySelectorAll(".edit-toolbar .toolbar-dropdown").forEach(d => {
-      d.classList.remove("is-open");
-    });
+    closeAllEditToolbarDropdowns();
   }
 });
 

@@ -265,14 +265,45 @@ export function initRenderToolbars() {
   refreshRenderSwatches();
 }
 
+// ── Closing the menus without walking the document ─────────────────────────
+//
+// This is called from a document-level pointerdown handler (see main.js), so it
+// runs on EVERY press anywhere in the app — and it used to run two
+// `document.querySelectorAll` sweeps to do it, one of them a selector list with
+// an attribute-suffix match, which no engine can answer from an index. That is
+// a full CSS match against every element in the document, and with a book open
+// the document is a couple of hundred thousand elements. Paid twice per tap,
+// on the thread the reader is waiting for.
+//
+// Nothing is ever open in the common case, so the flag answers it outright, and
+// when something IS open the search is scoped to the toolbars that can hold a
+// menu — of which there is one (the floating selection pill).
+export let anyRenderMenuOpen = false;
+
+export function setAnyRenderMenuOpen(value) {
+  anyRenderMenuOpen = Boolean(value);
+}
+
+// The containers a render toolbar is ever painted into — today just the
+// floating selection pill's formatting slot (see initRenderToolbars: no surface
+// carries a persistent strip any more). Named rather than queried for, for the
+// same reason as the flag above: this is the press path.
+export function renderToolbarHosts() {
+  return [el.selectionFloatFormat].filter(Boolean);
+}
+
 export function closeAllRenderMenus() {
-  document.querySelectorAll(".render-color-menu").forEach((m) => (m.hidden = true));
-  // Every control that OPENS a menu, not just the split ones: the font picker's
-  // toggle is a plain button, so keying off
-  // .render-split-side alone would leave its aria-expanded stuck on "true".
-  document
-    .querySelectorAll('.render-split-side, [data-render-action$="-menu"]')
-    .forEach((b) => b.setAttribute("aria-expanded", "false"));
+  if (!anyRenderMenuOpen) return;
+  anyRenderMenuOpen = false;
+  renderToolbarHosts().forEach((host) => {
+    host.querySelectorAll(".render-color-menu").forEach((m) => (m.hidden = true));
+    // Every control that OPENS a menu, not just the split ones: the font
+    // picker's toggle is a plain button, so keying off .render-split-side alone
+    // would leave its aria-expanded stuck on "true".
+    host
+      .querySelectorAll('.render-split-side, [data-render-action$="-menu"]')
+      .forEach((b) => b.setAttribute("aria-expanded", "false"));
+  });
 }
 
 // When the located text is exactly the inner content of a <span style="…">…
@@ -416,6 +447,7 @@ export function handleRenderToolbarAction(btn, toolbar) {
     if (menu && willOpen) {
       menu.hidden = false;
       btn.setAttribute("aria-expanded", "true");
+      setAnyRenderMenuOpen(true);
     }
     return;
   }

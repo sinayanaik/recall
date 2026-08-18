@@ -883,8 +883,8 @@ node tools/check.mjs --quick   # static checks only, no browser (~5s)
 node tools/check.mjs --full    # ...and drive a real install / offline / update
 ```
 
-Eleven checks, each answering a different question, and none of them subsuming
-another:
+Twenty-one checks, each answering a different question, and none of them
+subsuming another:
 
 | Check | Question |
 |---|---|
@@ -899,6 +899,13 @@ another:
 | `reconcile` | Does the whole two-way sync behave identically end to end against a stand-in backend? |
 | `ui-smoke` | Does the app still *work*? 35 real actions driven through the DOM on both builds and compared step by step |
 | `selection` | Can you select text in a note without dragging the app's own chrome in with it? 7 real mouse drags |
+| `render-scale` | Does a note still render when it is BIG? Four sizes straddling the 2,000-block chunking threshold, plus how long the thread is blocked while a 2.6MB note opens |
+| `interaction` | Once a book-sized note is open, does the app still answer? A press, a selection, the TOC's active row, and a reading position saved and resumed — each measured on a 2.6MB / 24,000-block note at phone size |
+| `style` | Do the style-panel settings still reach the CSS variables they name? |
+| `highlight` | Does a highlight land on the copy of the text you actually selected, in both views? |
+| `paged` | Can you reach the end of a note in paged reading mode, at every note length? |
+| `ribbon` | Does the chapter ribbon agree with where the reader is? |
+| `precache` | Is every module, stylesheet and vendored file the app needs actually in the worker's precache — and preloaded? |
 | `vendor` | Are the vendored libraries present, unmodified, and precached? |
 | `offline` | Does the app **start** with no network, a blocked CDN, or a CDN that hangs? |
 | `release-check` | Does a release reach an existing install, does it work offline — and does it still work offline *after* the update? |

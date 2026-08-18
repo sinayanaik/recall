@@ -172,3 +172,21 @@ export let closeMainMenu = () => {};
 export function setCloseMainMenu(value) {
   closeMainMenu = value;
 }
+
+// ── The three edit toolbars, by name ───────────────────────────────────────
+//
+// Their dropdowns used to be closed with `document.querySelectorAll(".edit-toolbar
+// .toolbar-dropdown")` — a descendant combinator, so no fast path, so a full CSS
+// match against every element in the document. One of those ran on EVERY click
+// anywhere in the app (see the dropdown handler in main.js), which with a
+// book-sized note open means walking a couple of hundred thousand elements to
+// close menus that live in three known boxes.
+export function editToolbars() {
+  return [el.notesEditToolbar, el.questionEditToolbar, el.answerEditToolbar].filter(Boolean);
+}
+
+export function closeAllEditToolbarDropdowns() {
+  editToolbars().forEach((toolbar) => {
+    toolbar.querySelectorAll(".toolbar-dropdown").forEach((d) => d.classList.remove("is-open"));
+  });
+}

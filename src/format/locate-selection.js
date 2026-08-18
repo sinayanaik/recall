@@ -6,7 +6,7 @@
 // quadratic.
 
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
-import { cleanedSelectionFragment, textWithLineBreaks } from "../notes/selection.js?v=__BUILD__";
+import { cleanedSelectionFragment, countRenderedTextBefore, textWithLineBreaks } from "../notes/selection.js?v=__BUILD__";
 
 // The current selection inside `view`, captured both as markdown (so inline
 // bold/math/etc. survive) and as plain text — either may be the string that
@@ -25,26 +25,43 @@ export function renderedSelectionStrings(view) {
     asMarkdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
   } catch { asMarkdown = ""; }
   if (!asText && !asMarkdown) return null;
+  // ── occurrence, computed only if someone asks ────────────────────────────
+  //
   // Which occurrence of the plain-text selection this is within the rendered
-  // view — i.e. how many identical copies precede it. Without this a repeated
+  // view — i.e. how many identical copies precede it. Without it a repeated
   // word (e.g. "the") would always cloze the FIRST copy in the source, not the
   // one you highlighted, so the toast says "Cloze added" while your selection
   // visibly stays put. 0 = first occurrence, so a match is still found even if
   // this measurement is off.
-  let occurrence = 0;
-  if (asText) {
-    try {
-      const pre = document.createRange();
-      pre.setStart(view, 0);
-      pre.setEnd(range.startContainer, range.startOffset);
-      // textWithLineBreaks, not Range.toString() — the native stringifier
-      // drops <br> the same way .textContent does, which would make this
-      // count come up short (or zero) against an asText that now legitimately
-      // contains "\n" from a wrapped line, for the same reason described above.
-      occurrence = countOccurrences(textWithLineBreaks(pre.cloneContents()), asText);
-    } catch { occurrence = 0; }
-  }
-  return { asText, asMarkdown, occurrence };
+  //
+  // It is a lazy getter, and that is the point. Only the pill's ACTIONS need
+  // it (highlight, cloze, erase, split-out, a card's note anchor), while this
+  // function is called for every selection the reader makes — so counting
+  // eagerly charged the cost of the whole note to the act of dragging across a
+  // sentence, which on a phone is where a long press is trying to happen.
+  // Charged to the press that uses it instead, where it is one discrete
+  // 60-millisecond beat rather than a stutter under the reader's finger.
+  //
+  // The range is captured now (cheap — a Range is two node/offset pairs, not a
+  // copy of anything) so a later read still measures the selection that was
+  // made, not whatever is selected by then. Memoized on first read, because
+  // every consumer reads it while the DOM still matches and the answer must not
+  // change underneath one of them.
+  const countFrom = range.cloneRange();
+  const result = { asText, asMarkdown };
+  Object.defineProperty(result, "occurrence", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      let value = 0;
+      try {
+        if (asText) value = countRenderedTextBefore(view, countFrom.startContainer, countFrom.startOffset, asText);
+      } catch { value = 0; }
+      Object.defineProperty(result, "occurrence", { value, enumerable: true, configurable: true, writable: true });
+      return value;
+    }
+  });
+  return result;
 }
 
 // Non-overlapping count of `needle` in `haystack`.

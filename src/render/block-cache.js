@@ -10,7 +10,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
-import { buildNotesToc } from "../notes/toc.js?v=__BUILD__";
+import { markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
 import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
@@ -49,8 +49,8 @@ export function invalidateRenderedBlockCache() {
 
 // ── Coalesced surface finalization ─────────────────────────────────────────
 // enhanceSurfaceImageControls re-lexes the WHOLE note (surfaceLexTokens),
-// enhanceSurfaceDiagramControls re-scans it for diagram fences, and
-// buildNotesToc re-queries every heading — each an O(whole document) pass.
+// enhanceSurfaceDiagramControls re-scans it for diagram fences, and the notes
+// tail re-derives the table of contents — each an O(whole document) pass.
 // renderMarkdown runs them once, but EVERY placeholder-upgrade batch (one per
 // scroll chunk on a large note) ran them again synchronously, turning a single
 // render into O(document) × O(number of scroll batches). That is what made a
@@ -61,6 +61,12 @@ export function invalidateRenderedBlockCache() {
 // window.
 export const surfaceFinalizeFrames = new WeakMap();
 
+// How long the deferred tail may wait for an idle moment before it is run
+// anyway. Long enough to let a first tap through, short enough that the block
+// estimate is in place well before the reader can scroll anywhere near the
+// bottom of what they can see.
+export const SURFACE_FINALIZE_IDLE_TIMEOUT_MS = 300;
+
 export function finalizeRenderedSurface(container) {
   const surface = imageSurfaceForView(container);
   if (surface) {
@@ -68,7 +74,12 @@ export function finalizeRenderedSurface(container) {
     enhanceSurfaceDiagramControls(surface);
   }
   if (container === el.notesView) {
-    buildNotesToc();
+    // Not buildNotesToc(). The list is drawn when the drawer is looked at (see
+    // notesTocDirty in toc.js) — all this tail owes is "the note changed", plus
+    // the one thing that is visible with the drawer shut: whether the ☰ button
+    // has a contents to offer.
+    markNotesTocDirty();
+    refreshNotesTocAvailability();
     scheduleNotesBlockEstimate(container);
     scheduleNotesChunkEstimates(container);
   }
@@ -78,18 +89,34 @@ export function scheduleSurfaceFinalize(container, { sync = false } = {}) {
   if (sync) {
     const pending = surfaceFinalizeFrames.get(container);
     if (pending) {
-      cancelAnimationFrame(pending);
+      if (pending.frame) cancelAnimationFrame(pending.frame);
+      else if (pending.idle && typeof cancelIdleCallback === "function") cancelIdleCallback(pending.idle);
       surfaceFinalizeFrames.delete(container);
     }
     finalizeRenderedSurface(container);
     return;
   }
-  if (surfaceFinalizeFrames.get(container)) return; // already queued this frame
+  if (surfaceFinalizeFrames.get(container)) return; // already queued
+  // requestIdleCallback, not requestAnimationFrame. The frame immediately after
+  // a big note renders is precisely when the reader's first press arrives —
+  // they can see the text, so they believe the app is ready — and a rAF
+  // callback runs BEFORE that press is delivered. An idle callback yields to
+  // input; the timeout is the backstop so it still lands promptly on a page
+  // that never goes idle. Cancellation goes through the matching canceller, so
+  // the handle is stored with which kind it is.
+  if (typeof requestIdleCallback === "function") {
+    const idle = requestIdleCallback(() => {
+      surfaceFinalizeFrames.delete(container);
+      finalizeRenderedSurface(container);
+    }, { timeout: SURFACE_FINALIZE_IDLE_TIMEOUT_MS });
+    surfaceFinalizeFrames.set(container, { idle });
+    return;
+  }
   const frame = requestAnimationFrame(() => {
     surfaceFinalizeFrames.delete(container);
     finalizeRenderedSurface(container);
   });
-  surfaceFinalizeFrames.set(container, frame);
+  surfaceFinalizeFrames.set(container, { frame });
 }
 
 // ── Adaptive block-height estimate ─────────────────────────────────────────
@@ -724,20 +751,54 @@ export function rechunkRenderedBlocks(container, groups, boundaries = null) {
   // This is exactly what the original code did; the only thing that changed is
   // that the wrappers above are reused instead of rebuilt.
   const solos = new Array(wanted).fill(false);
-  const planned = new Set();
+  const wantedNodes = [];
+  for (let i = 0; i < wanted; i += 1) wantedNodes.push([]);
   plan.forEach(({ nodes, index: at, solo }) => {
     if (solo) solos[at] = true;
+    nodes.forEach((node) => wantedNodes[at].push(node));
+  });
+
+  // ── A chunk that is already right is not touched ─────────────────────────
+  //
+  // Everything below moves nodes with appendChild, which moves a node even when
+  // it is already exactly where it should be — and that is a detach plus an
+  // insert, invalidating the chunk's layout, for every block in the note on
+  // every render. An edit reuses the DOM of every block it did not change (see
+  // patchRenderedBlocks), so on a book that was ~18,000 pointless DOM moves to
+  // relocate one paragraph: measured as roughly half the 232ms a single
+  // highlight spent on the main thread.
+  //
+  // Comparing first is safe in a way that a per-chunk cursor is not (see the
+  // note below): a chunk whose children ALREADY equal its planned list has, by
+  // definition, nothing planned for another chunk inside it and nothing
+  // unclaimed to sweep out — every node lives in exactly one parent. So it can
+  // be skipped whole, and the chunks that genuinely changed take the original
+  // path unchanged.
+  const chunkAlreadyHolds = (chunk, want) => {
+    const children = chunk.childNodes;
+    if (children.length !== want.length) return false;
+    for (let i = 0; i < want.length; i += 1) if (children[i] !== want[i]) return false;
+    return true;
+  };
+
+  const planned = new Set();
+  const stale = [];
+  chunks.forEach((chunk, at) => {
+    if (chunkAlreadyHolds(chunk, wantedNodes[at])) return;
+    stale.push(at);
+    wantedNodes[at].forEach((node) => planned.add(node));
+  });
+
+  stale.forEach((at) => {
     const chunk = chunks[at];
-    nodes.forEach((node) => {
-      planned.add(node);
-      chunk.appendChild(node);
-    });
+    wantedNodes[at].forEach((node) => chunk.appendChild(node));
   });
   // Anything still sitting in a chunk that no block claimed never made it into
   // the new document. Tested against the whole plan, not against one chunk's
   // remainder, so a node that moved between chunks is never mistaken for a
   // leftover.
-  chunks.forEach((chunk) => {
+  stale.forEach((at) => {
+    const chunk = chunks[at];
     Array.from(chunk.childNodes).forEach((node) => {
       if (!planned.has(node)) chunk.removeChild(node);
     });
@@ -1058,12 +1119,11 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
   // never just the fresh blocks: an inserted or deleted block shifts the token
   // indices every other image's resize handler was bound to. Runs synchronously
   // here (the print/export path reads the grips right after this resolves).
-  // Synchronous for everything except a big note. The tail is buildNotesToc
-  // (every heading) plus the block-height estimate (a forced layout of a
-  // 48-block sample) — measured at 70ms and 126ms respectively on an
-  // 18,000-block note, both landing right after the reader can already see and
-  // scroll the text. Neither is needed for the note to be readable, so on a
-  // large note they wait a frame instead of holding the thread.
+  // Synchronous for everything except a big note, where the tail is the
+  // block-height estimate — a forced layout of a 48-block sample, measured at
+  // 126ms on an 18,000-block note — landing right after the reader can already
+  // see and scroll the text. It is not needed for the note to be readable, so
+  // on a large note it waits for an idle moment instead of holding the thread.
   //
   // It stays sync below the threshold, and always for the card faces and the
   // print/export roots: exportPdf reads the image grips immediately after this

@@ -15,6 +15,7 @@ import { warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
 import { discardIndexBatch, pruneOrphanedDeckSnapshots, readLocalDeckIndex, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "./notes/notes-view.js?v=__BUILD__";
+import { forgetAllReadingPositions } from "./notes/reading-position.js?v=__BUILD__";
 import { checkProjectHealth } from "./pwa/app-info.js?v=__BUILD__";
 import { updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
@@ -150,6 +151,9 @@ export async function resetLocalLibrary() {
   // whoever signs in next — uploading one account's style into another's
   // row on a shared device.
   localStorage.removeItem(PENDING_STYLE_KEY);
+  // Reading positions describe the decks that were just removed, and each one
+  // carries a snippet of the note's own text.
+  forgetAllReadingPositions();
   localStorage.removeItem(deckStorageKey);
   // Persisted state was cleared but the OPEN DECK was not: state.deckId,
   // masterCards and notes survived the switch in memory, so the next

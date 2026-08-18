@@ -16,6 +16,8 @@ import { setKnownWebDeckCategories, webDeckCategories } from "../library/categor
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { readLocalDeckIndex, saveDeckToLibrary, syncLocalLibraryMetaForDeck, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
+import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { isQuickNotesDeck, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, writeCachedQuickNoteCategories } from "../quick-notes/categories.js?v=__BUILD__";
 import { flushPendingDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
@@ -368,11 +370,13 @@ export async function loadWebDeck(deckId) {
     state.importTitleHint = deckData.title || "";
     setViewMode("notes");
     // Cross-device resume: this deck's meta may carry a reading position
-    // synced from another device. Ambient landing, not a deliberate jump —
-    // no flash, no animated scroll. scheduleNoteJump no-ops quietly if the
-    // anchor can't be found (notes changed since, or this is the first time
-    // this deck has ever had a position saved).
-    if (state.meta?.readingPosition) scheduleNoteJump(state.meta.readingPosition, { flash: false, smooth: false });
+    // synced from another device, and this device has its own copy of wherever
+    // it last got to (see src/notes/reading-position.js). The newer of the two
+    // wins. Ambient landing, not a deliberate jump — no flash, no animated
+    // scroll. scheduleNoteJump no-ops quietly if the anchor can't be found
+    // (notes changed since, or this deck has never had a position saved).
+    const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
+    if (resumeAt) scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true });
 
     syncResults();
     touchWebDeckAccess(deckData.id).catch((error) => console.error("Failed to touch deck access", error));

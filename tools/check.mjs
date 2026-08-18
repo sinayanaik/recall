@@ -84,6 +84,7 @@ const checks = [
     ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
+    ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],

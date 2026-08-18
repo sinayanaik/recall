@@ -6,6 +6,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageCount, notesPagedProbeX } from "./paged-view.js?v=__BUILD__";
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
+import { scheduleReadingPositionSave } from "./reading-position.js?v=__BUILD__";
 import { notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
 
 // A representative raw-markdown offset for whatever's currently at the top of
@@ -140,12 +141,16 @@ export function rawOffsetForCurrentNotesScroll() {
 }
 
 // ── Cross-device reading-position resume ────────────────────────────────
-// currentReadingAnchor is tracked in memory ONLY — no IndexedDB/localStorage
-// write here, no debounce/timer. It's folded into deckSnapshot()'s meta bag
-// (see the `readingPosition` line there) purely as a piggyback on whatever
-// save is already about to happen for some other reason (a notes edit, a
-// card change, the pagehide flush) — the user's explicit "no advanced/costly
-// logic, just sync the current location whenever the sync happens" call.
+// currentReadingAnchor is the in-memory copy. It is folded into deckSnapshot()'s
+// meta bag (see the `readingPosition` line there) as a piggyback on whatever
+// save is already about to happen for some other reason (a notes edit, a card
+// change, the pagehide flush), which is what carries it to the other devices.
+//
+// That piggyback used to be the ONLY way it was ever written down, and reading
+// a book triggers none of those saves — so the position a reader had was lost
+// on every reload. It is now also written to a small store of its own (see
+// src/notes/reading-position.js), which costs nothing on the scroll path
+// because it never touches the note itself.
 export let currentReadingAnchor = null;
 
 // Setter: an imported binding is read-only, and cards/study.js clears this when
@@ -181,8 +186,17 @@ export function captureCurrentReadingAnchor() {
   const notes = state.notes || "";
   const text = notes.slice(offset, offset + 80).trim() || notes.slice(Math.max(0, offset - 80), offset).trim();
   if (!text) return;
-  setCurrentReadingAnchor(trimNoteAnchor({ offset, source: notes.slice(offset, offset + 80), text }));
-  setCurrentReadingAnchorDeckKey(currentDeckKey());
+  // `at` is what lets a position from another device be compared with this
+  // one's on open — see betterReadingPosition. It rides into meta.readingPosition
+  // with the rest of the anchor, so the comparison works in both directions.
+  const anchor = trimNoteAnchor({ offset, source: notes.slice(offset, offset + 80), text, at: Date.now() });
+  const key = currentDeckKey();
+  setCurrentReadingAnchor(anchor);
+  setCurrentReadingAnchorDeckKey(key);
+  // ...and write it down. The in-memory anchor above is still what a deck save
+  // folds into meta, but a reader who only reads never triggers a deck save, and
+  // that is exactly the reader this feature is for.
+  scheduleReadingPositionSave(key, anchor);
 }
 
 // Deliberately a TRAILING debounce rather than the rAF coalescing this used to

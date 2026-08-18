@@ -339,40 +339,155 @@ export function atomicSourceForNode(node) {
   return `\`\`\`${lang}\n${decoded}\n\`\`\``;
 }
 
-export function textWithLineBreaks(node) {
+// ── Two ways to consume the same walk ──────────────────────────────────────
+//
+// textWithLineBreaks used to be the only reader of the walk below, and it
+// builds the whole string. That is fine for a selection and ruinous for the
+// other caller: renderedSelectionStrings counts how many copies of the selected
+// text precede it, which meant building the text of EVERYTHING above the
+// selection — a deep DOM clone plus a multi-megabyte string, per selection, on
+// the main thread. Measured on a 2.6MB note with the reader two thirds of the
+// way down: 218ms on a desktop, and that is the work a phone is doing while the
+// reader waits for a long press to take.
+//
+// So the walk emits into a SINK. One sink accumulates the string; the other
+// keeps only a short tail and counts matches as they go by, so the same answer
+// costs no allocation at all. Both are needed and they must agree exactly —
+// `occurrence` is counted against the very string `asText` is taken from.
+export function stringSink() {
   let text = "";
-  let prevBlockTag = null;
-  node.childNodes.forEach((child) => {
-    if (child.nodeType === Node.TEXT_NODE) {
-      text += child.data;
-      return;
+  let written = 0;
+  return {
+    push(value) { text += value; written += value.length; },
+    // Monotonic, and deliberately not affected by dropTrailing: the walk uses
+    // it only to ask "did that child emit anything at all", which is what the
+    // original's per-level `text` variable answered.
+    written() { return written; },
+    endsWith(value) { return text.endsWith(value); },
+    dropTrailing(pattern) { text = text.replace(pattern, ""); },
+    value() { return text; }
+  };
+}
+
+// Keeps a window of the tail rather than the whole string, and counts
+// non-overlapping matches of `needle` exactly the way countOccurrences does:
+// left to right, each match consuming its own length.
+//
+// The window has to cover three things at once — a match that straddles two
+// pushes, the endsWith() tests the walk makes, and the trailing-whitespace
+// rewrites it makes — so it is the needle's length with a floor under it. A
+// trailing whitespace run longer than the window is the one case where this
+// could differ from the string sink, and it cannot arise from rendered markdown.
+export const COUNTING_SINK_MIN_TAIL = 512;
+
+export function countingSink(needle) {
+  const size = Math.max(COUNTING_SINK_MIN_TAIL, needle.length * 2);
+  let tail = "";
+  let searchAt = 0;
+  let count = 0;
+  let written = 0;
+  const scan = () => {
+    if (!needle) return;
+    for (;;) {
+      const at = tail.indexOf(needle, searchAt);
+      if (at === -1) break;
+      count += 1;
+      searchAt = at + needle.length;
     }
-    if (child.nodeType !== Node.ELEMENT_NODE) return;
+    // Everything before the last (needle.length - 1) characters has been seen
+    // in full, so no future match can start there. Keeping `size` of it anyway
+    // is what leaves room for the walk's own tail rewrites.
+    const drop = Math.max(0, tail.length - size);
+    if (!drop) return;
+    tail = tail.slice(drop);
+    searchAt = Math.max(0, searchAt - drop);
+  };
+  return {
+    push(value) { tail += value; written += value.length; scan(); },
+    written() { return written; },
+    endsWith(value) { return tail.endsWith(value); },
+    dropTrailing(pattern) {
+      // Un-emitting characters means un-searching them: anything the scan had
+      // already consumed past the new end no longer exists.
+      //
+      // A match already counted can never be undone by this, and that is what
+      // keeps the two sinks in agreement rather than merely close: both
+      // patterns here only ever remove a run of TRAILING whitespace, and the
+      // needle is `asText`, which is trimmed — so no match can end inside the
+      // run being removed.
+      tail = tail.replace(pattern, "");
+      searchAt = Math.min(searchAt, tail.length);
+    },
+    count() { return count; }
+  };
+}
+
+export function textWithLineBreaks(node) {
+  const sink = stringSink();
+  emitTextWithLineBreaks(node, sink, null);
+  return sink.value();
+}
+
+// Walks `node`'s children in document order, emitting the text a reader sees.
+//
+// `stop`, when given, is a { node, offset } boundary: the walk emits everything
+// before it and then returns true, which every caller up the stack uses to stop
+// walking. That is what lets the occurrence count cover "the note above the
+// selection" without materialising a Range or a clone of it.
+export function emitTextWithLineBreaks(node, sink, stop) {
+  let emittedHere = false;
+  let prevBlockTag = null;
+  let reached = false;
+  // A node the boundary sits inside must be descended into, not summarised.
+  const holdsStop = (child) => Boolean(stop) && (child === stop.node || (child.nodeType === 1 && child.contains(stop.node)));
+  const children = Array.from(node.childNodes);
+  // The boundary can also be expressed as "before the Nth child of this node".
+  const limit = stop && node === stop.node ? Math.min(stop.offset, children.length) : children.length;
+  if (stop && node === stop.node) reached = true;
+  for (let i = 0; i < limit; i += 1) {
+    const child = children[i];
+    if (child.nodeType === Node.TEXT_NODE) {
+      if (stop && child === stop.node) {
+        const part = child.data.slice(0, stop.offset);
+        if (part) { sink.push(part); emittedHere = true; }
+        return true;
+      }
+      if (child.data) { sink.push(child.data); emittedHere = true; }
+      continue;
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) continue;
     if (child.tagName === "BR") {
-      text += "\n";
-      return;
+      sink.push("\n");
+      emittedHere = true;
+      continue;
     }
     // KaTeX emits every formula TWICE: a hidden MathML tree for screen readers
     // and the visible glyph spans. Descending into both doubles every symbol.
     // Skipped even where there's no data-tex host to short-circuit on, so math
     // from the \[…\] auto-render safety net comes back single, not doubled.
-    if (child.classList?.contains("katex-mathml")) return;
+    if (child.classList?.contains("katex-mathml")) continue;
     // Mermaid inlines a stylesheet into its SVG; reading it as text emits the
     // whole thing as a wall of CSS.
-    if (child.tagName === "STYLE" || child.tagName === "SCRIPT") return;
+    if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
     const isTight = TIGHT_BLOCK_TAGS.has(child.tagName);
     const isLoose = LOOSE_BLOCK_TAGS.has(child.tagName);
     const isCell = CELL_TAGS.has(child.tagName);
     const isRow = ROW_TAGS.has(child.tagName);
     // A cell is separated from the previous cell IN THE SAME ROW, never from
-    // the row above — hence the prevBlockTag check rather than a bare `text`
-    // one, which would put " | " in front of the first cell of every row.
-    if (isCell && text && CELL_TAGS.has(prevBlockTag)) text += CELL_SEPARATOR;
-    else if (isRow && text) {
-      if (!text.endsWith("\n")) text = text.replace(/[ \t]+$/, "") + "\n";
-    } else if ((isTight || isLoose) && text) {
+    // the row above — hence the prevBlockTag check rather than a bare "has
+    // anything been emitted" one, which would put " | " in front of the first
+    // cell of every row.
+    //
+    // `emittedHere`, not "has the sink got anything", because in the original
+    // this tested a string local to THIS level of the recursion: the first
+    // child of a nested element must not be given a gap just because something
+    // further up already wrote text.
+    if (isCell && emittedHere && CELL_TAGS.has(prevBlockTag)) sink.push(CELL_SEPARATOR);
+    else if (isRow && emittedHere) {
+      if (!sink.endsWith("\n")) { sink.dropTrailing(/[ \t]+$/); sink.push("\n"); }
+    } else if ((isTight || isLoose) && emittedHere) {
       const gap = isTight && prevBlockTag === "LI" ? "\n" : "\n\n";
-      if (!text.endsWith(gap)) text = text.replace(/\n+$/, "") + gap;
+      if (!sink.endsWith(gap)) { sink.dropTrailing(/\n+$/); sink.push(gap); }
     }
     // A rendered formula or diagram reads back as its own source, not as its
     // glyphs/SVG — the gap handling above still runs (both are <div>s at block
@@ -382,13 +497,53 @@ export function textWithLineBreaks(node) {
     // which is why highlighting, clozing, erasing and a card's "go to notes"
     // anchor all silently missed on any selection containing math.
     const atomicSource = atomicSourceForNode(child);
-    const inner = atomicSource || textWithLineBreaks(child);
-    // A cell's own padding is layout, not content: the source writes
-    // "| Hydrogen |" and the separator above already supplies the spaces.
-    text += isCell ? inner.trim() : inner;
     if (isTight || isLoose || isCell || isRow) prevBlockTag = child.tagName;
-  });
-  return text;
+    if (atomicSource) {
+      sink.push(atomicSource);
+      emittedHere = emittedHere || Boolean(atomicSource);
+      if (holdsStop(child)) return true;
+      continue;
+    }
+    // A cell's own padding is layout, not content: the source writes
+    // "| Hydrogen |" and the separator above already supplies the spaces. That
+    // trim is the one thing a streaming sink cannot express, so a cell is
+    // rendered into a string of its own first — cells are small, and this is
+    // exactly what the original did at every level.
+    if (isCell) {
+      const cellSink = stringSink();
+      const hit = emitTextWithLineBreaks(child, cellSink, holdsStop(child) ? stop : null);
+      const trimmed = cellSink.value().trim();
+      if (trimmed) { sink.push(trimmed); emittedHere = true; }
+      if (hit || holdsStop(child)) return true;
+      continue;
+    }
+    // Whether the child emitted ANYTHING is the question, not whether it was
+    // visited: an empty <span> left the original's `text` empty, and so must
+    // not make the next sibling look like it needs a gap in front of it.
+    const before = sink.written();
+    const hit = emitTextWithLineBreaks(child, sink, holdsStop(child) ? stop : null);
+    if (sink.written() > before) emittedHere = true;
+    if (hit || holdsStop(child)) return true;
+  }
+  return reached;
+}
+
+// How many times `needle` appears in the rendered text of `root` BEFORE the
+// boundary — the number renderedSelectionStrings hands to
+// locateSelectionInSource as `occurrence`, so that highlighting a phrase that
+// recurs marks the copy the reader actually selected.
+export function countRenderedTextBefore(root, boundaryNode, boundaryOffset, needle) {
+  if (!root || !boundaryNode || !needle) return 0;
+  // A boundary that is no longer in the view cannot stop the walk, and without
+  // this the walk would run to the END of the note and return a count for the
+  // whole document — expensive, and wrong in the one direction that matters
+  // (too high, so the caller would look for a copy that does not exist).
+  // Answering 0 is the documented fallback everywhere else here: a miscounted
+  // occurrence degrades to "the first match", never to no match at all.
+  if (!root.contains(boundaryNode)) return 0;
+  const sink = countingSink(needle);
+  emitTextWithLineBreaks(root, sink, { node: boundaryNode, offset: boundaryOffset });
+  return sink.count();
 }
 
 // The <pre> a range boundary sits in, or null. Both the container and (for an
