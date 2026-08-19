@@ -1,0 +1,32 @@
+/* The Highlights tab: no pre/post context line any more (just the
+ * highlighted line — see collectDeckHighlights/highlightUnitSpan in
+ * src/panels/highlights-panel.js; the old .highlight-ctx rules in
+ * 12-notes.css are dead now but harmless, left in place rather than
+ * hand-edited out of a slice), and a row that merged several same-line
+ * highlights (see the same file) needs more than one "Go to" button.
+ */
+.highlight-jumps {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+/* .rendered img (06-rendered.css) caps width at --visual-max-width — a Style
+ * setting meant for the full-width notes reading column (50% of it, by
+ * default). A highlight row is a compact list item, not that column, so the
+ * SAME percentage against the row's much wider containing block rendered a
+ * plain (never resized) image far larger here than the same image looks in
+ * the actual notes — the "images render huge in the Highlights panel"
+ * report. A flat pixel cap fixes the absolute size regardless of container
+ * width; it only tightens max-width, so an image the reader deliberately
+ * resized SMALLER in the notes (an inline width, set by the resize grip —
+ * see src/images/surface-controls.js) is unaffected, and larger than 220px
+ * only shrinks to fit here, exactly like it already does at 100% width on a
+ * narrow phone screen.
+ */
+.highlight-preview img,
+.highlight-note-body img {
+  max-width: 220px;
+}

@@ -14,9 +14,12 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "../format/highlight-colors.js?v=__BUILD__";
 import { recolourHighlightAt, removeHighlightAt } from "../format/highlight-edit.js?v=__BUILD__";
+import { decodeHighlightNote } from "../format/highlight-notes.js?v=__BUILD__";
+import { openHighlightNoteEditor } from "./highlight-note-editor.js?v=__BUILD__";
 
 let menuEl = null;
 let openForIndex = -1;
+let openForMark = null;
 
 export function isMarkMenuOpen() {
   return Boolean(menuEl && !menuEl.hidden);
@@ -26,6 +29,7 @@ export function closeMarkMenu() {
   if (!menuEl || menuEl.hidden) return;
   menuEl.hidden = true;
   openForIndex = -1;
+  openForMark = null;
 }
 
 function ensureMarkMenu() {
@@ -46,6 +50,18 @@ function ensureMarkMenu() {
     swatch.dataset.markColor = colour.value;
     menuEl.appendChild(swatch);
   });
+
+  // A note is Kindle-style commentary attached to the highlight (see
+  // format/highlight-notes.js) — a "written" glyph rather than a colour, so
+  // it doesn't read as an eighth swatch.
+  const note = document.createElement("button");
+  note.type = "button";
+  note.className = "mark-menu-note";
+  note.title = "Add or edit a note on this highlight";
+  note.setAttribute("aria-label", "Add or edit a note on this highlight");
+  note.dataset.markColor = "note";
+  note.innerHTML = "&#9998;";
+  menuEl.appendChild(note);
 
   const remove = document.createElement("button");
   remove.type = "button";
@@ -69,6 +85,16 @@ function ensureMarkMenu() {
     event.preventDefault();
     event.stopPropagation();
     const index = openForIndex;
+    const mark = openForMark;
+    if (button.dataset.markColor === "note") {
+      // Keep the menu's own popup replaced by the note editor's, not both —
+      // close before opening so they don't stack.
+      const rect = mark?.getBoundingClientRect();
+      closeMarkMenu();
+      if (index < 0 || !rect) return;
+      openHighlightNoteEditor(index, rect, decodeHighlightNote(mark.dataset.note));
+      return;
+    }
     closeMarkMenu();
     if (index < 0) return;
     if (button.dataset.markColor === "remove") removeHighlightAt(index);
@@ -91,12 +117,14 @@ export function openMarkMenuFor(mark) {
 
   const menu = ensureMarkMenu();
   openForIndex = index;
+  openForMark = mark;
   menu.hidden = false;
   // Mark the colour it already is, so six identical circles say which one is
   // current rather than making you press one to find out.
   const current = mark.dataset.color || "yellow";
   menu.querySelectorAll("[data-mark-color]").forEach((button) => {
     button.classList.toggle("is-current", button.dataset.markColor === current);
+    if (button.dataset.markColor === "note") button.classList.toggle("has-note", Boolean(mark.dataset.note));
   });
 
   const rect = mark.getBoundingClientRect();

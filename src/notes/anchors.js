@@ -740,9 +740,22 @@ export function watchForReaderInterruption() {
 // `locator` (the exact-<mark> shortcut used by the Highlights panel).
 //
 // `options.resume` marks an ambient landing — see the block above.
+//
+// `options.patient` asks for the SAME generous retry budget as a resume
+// (NOTE_RESUME_BUDGET_MS, re-aimed on every pass) without the rest of what
+// makes a resume a resume — it still reports failure with a status message,
+// and a touch/scroll doesn't cancel it, because this IS the deliberate
+// action the reader asked for (the Highlights panel's "Go to →"). Without
+// this, revealNoteMark's exact <mark>-ordinal path (see below) silently gives
+// up the instant the target's block hasn't streamed into the DOM yet — which
+// on a large book is routine for a mark near the end — and falls back to a
+// text search whose windowed estimate can be wrong on an unstreamed note.
+// Patience is what lets the exact path win once streaming catches up instead
+// of settling for that guess after ~1s.
 export function scheduleNoteJump(anchor, options, locator = null) {
   if (state.viewMode !== "notes") setViewMode("notes");
   const resume = Boolean(options?.resume);
+  const patient = resume || Boolean(options?.patient);
   let estimatedOnce = false;
   const until = performance.now() + NOTE_RESUME_BUDGET_MS;
   const reader = resume ? watchForReaderInterruption() : null;
@@ -755,14 +768,15 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     // the rendered DOM. Nudge toward a proportional estimate so the windowed
     // search is centred near the target before retrying.
     //
-    // For a resume this is also the landing itself, and it is re-aimed on every
-    // pass rather than once: the note is still streaming, so its height — and
-    // therefore where a given fraction of it sits — changes under us. That is
-    // what "land straight away, then correct" means here. The reader is put
-    // roughly in the right chapter within a frame or two and converges on the
-    // exact paragraph as the note settles, instead of sitting at the top of a
-    // book waiting for a search that has nothing to search yet.
-    if (Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0]) && (resume || !estimatedOnce)) {
+    // For a resume (and a patient jump) this is also the landing itself, and
+    // it is re-aimed on every pass rather than once: the note is still
+    // streaming, so its height — and therefore where a given fraction of it
+    // sits — changes under us. That is what "land straight away, then
+    // correct" means here. The reader is put roughly in the right chapter
+    // within a frame or two and converges on the exact paragraph as the note
+    // settles, instead of sitting at the top of a book waiting for a search
+    // that has nothing to search yet.
+    if (Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0]) && (patient || !estimatedOnce)) {
       estimatedOnce = true;
       // By BLOCK where the block cache can answer, by pixel fraction only as a
       // fallback. See notesBlockForRawOffset: a fraction of scrollHeight is a
@@ -773,14 +787,18 @@ export function scheduleNoteJump(anchor, options, locator = null) {
       if (block) scrollNotesBlockToReadingLine(block, false);
       else estimateNotesScrollForOffset(anchor.offset);
     }
-    if (resume) {
+    if (patient) {
       if (performance.now() < until) setTimeout(() => attempt(0), NOTE_RESUME_RETRY_MS);
       else {
         done();
-        // Never a toast — nobody asked for this jump — but not silent either.
-        // "The resume quietly did nothing" was impossible to tell from "there
-        // was nothing to resume to".
-        console.warn("Reading position not found in the rendered note", anchor?.offset);
+        if (resume) {
+          // Never a toast — nobody asked for this jump — but not silent
+          // either. "The resume quietly did nothing" was impossible to tell
+          // from "there was nothing to resume to".
+          console.warn("Reading position not found in the rendered note", anchor?.offset);
+        } else if (!options || options.flash !== false) {
+          setStatus("Couldn't find that spot in the notes — it may have been edited.", "info");
+        }
       }
       return;
     }

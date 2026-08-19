@@ -62,8 +62,12 @@ export function renderTargetConfig(target) {
       },
       // Everything routed through here (highlight, erase, cloze, the rendered
       // formatting toolbar) edits the note the reader is looking at, so it
-      // repaints in place and leaves them exactly where they were.
-      rerender: () => renderNotesViewPinned(),
+      // repaints in place and leaves them exactly where they were. An
+      // optional raw-offset hint (only makeHighlightFromSelection passes one
+      // today) lets the pin anchor on the block that was actually just
+      // edited instead of guessing one from where the reading line happens
+      // to sit — see renderNotesViewPinned.
+      rerender: (offsetHint) => renderNotesViewPinned(offsetHint),
     };
   }
   const side = target === "answer" ? "answer" : "question";

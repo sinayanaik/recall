@@ -128,9 +128,10 @@ export function buildTurndownService(options = {}) {
     }
   });
 
-  // <mark> carries its colour as data-color (see MARK_HIGHLIGHT_COLORS) — the
-  // generic keep-tag loop below would drop it, so a copied highlight would
-  // always turn yellow (or lose the highlight entirely) on the far side
+  // <mark> carries its colour as data-color (see MARK_HIGHLIGHT_COLORS) and,
+  // optionally, a note as data-note (see format/highlight-notes.js) — the
+  // generic keep-tag loop below would drop both, so a copied highlight would
+  // always turn yellow (or lose the highlight/note entirely) on the far side
   // regardless of what it actually was. Unlike the preserveInlineStyles-gated
   // rules below, this one is unconditional: a highlight is this app's own
   // semantic markup, not web/Office style noise, so it must survive being
@@ -140,7 +141,8 @@ export function buildTurndownService(options = {}) {
     filter: (node) => node.nodeName === "MARK",
     replacement: (content, node) => {
       const color = node.getAttribute("data-color");
-      return `${markOpenTag(color)}${content}${MARK_CLOSE_TAG}`;
+      const note = node.getAttribute("data-note");
+      return `${markOpenTag(color, note)}${content}${MARK_CLOSE_TAG}`;
     }
   });
 

@@ -1,0 +1,12 @@
+/* The "Export highlights" dialog (#exportHighlightsModal) — reuses the
+ * .confirm-modal/.sync-modal-actions chrome the other small dialogs already
+ * have (frame-card modal, sync modal); only the bits specific to this one
+ * (the context-size number input, the three-way format row) live here.
+ */
+.export-highlights-context {
+  width: 5em;
+}
+
+.export-highlights-formats {
+  flex-wrap: wrap;
+}

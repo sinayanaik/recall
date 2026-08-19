@@ -13,6 +13,7 @@ import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { exportBaseName, formatCardList, normalizeCardStatus } from "./markdown.js?v=__BUILD__";
 import { installPdfPrintStyle, printPreparedDocument, revealPrintRootClozes } from "./run.js?v=__BUILD__";
 import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
+import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
@@ -405,6 +406,85 @@ export function buildNotesPrintDocument(title, notesMarkdown) {
       </header>
       <section class="rendered" aria-label="${escapeHtml(title)} notes">
         ${markdownToSafeHtml(notesMarkdown)}
+      </section>
+    </div>
+  `;
+}
+
+// One highlight's export markup: its own `contextLines` of surrounding
+// source (see collectDeckHighlightsForExport), the highlighted line itself
+// (mark colours intact), and its note if it has one. Shared by the Markdown/
+// HTML body and the print document — the two differ only in the wrapper
+// around a list of these.
+function highlightExportEntryHtml(item) {
+  const context = (units) => units.map((u) => `<p class="highlight-export-context">${markdownToSafeHtml(u)}</p>`).join("");
+  const note = item.note
+    ? `<div class="highlight-export-note"><p class="highlight-export-note-label">Note</p>${markdownToSafeHtml(item.note)}</div>`
+    : "";
+  return `
+    <div class="highlight-export-entry">
+      ${context(item.before)}
+      <div class="highlight-export-mark rendered">${markdownToSafeHtml(item.markdown)}</div>
+      ${context(item.after)}
+      ${note}
+    </div>
+  `;
+}
+
+function highlightsExportBodyHtml(items) {
+  return items.length
+    ? items.map(highlightExportEntryHtml).join("")
+    : `<p class="flat-export-empty">No highlights in this deck.</p>`;
+}
+
+// `contextLines`: how many source lines/sentences either side of each
+// highlight to include — the export dialog's own opt-in setting (see
+// src/export/run.js exportHighlightsFlat/exportHighlightsPdf), separate from
+// the Highlights panel itself, which shows none.
+export function buildHighlightsExportBody(title, contextLines = 0) {
+  const items = collectDeckHighlightsForExport(contextLines);
+  return `
+    <header class="flat-export-cover">
+      <h1>${escapeHtml(title)}</h1>
+      <p>Highlights &middot; ${new Date().toLocaleString()}</p>
+    </header>
+    <section class="flat-export-notes rendered highlights-export-body">
+      ${highlightsExportBodyHtml(items)}
+    </section>
+  `;
+}
+
+// Plain markdown, not an HTML fragment — the highlight's own markdown (mark
+// tags and all, same as how "Export Notes" markdown carries state.notes'
+// own <mark> tags unwrapped) plus its context/note as ordinary lines,
+// entries separated by a thematic break.
+export function buildHighlightsExportMarkdown(title, contextLines = 0) {
+  const items = collectDeckHighlightsForExport(contextLines);
+  if (!items.length) return `# ${title}\n\nNo highlights in this deck.\n`;
+  const entries = items.map((item) => {
+    const lines = [...item.before, item.markdown, ...item.after];
+    if (item.note) lines.push(`> **Note:** ${item.note.replace(/\n/g, "\n> ")}`);
+    return lines.join("\n\n");
+  });
+  return `# ${title}\n\n${entries.join("\n\n---\n\n")}\n`;
+}
+
+export function buildHighlightsPrintDocument(title, contextLines = 0) {
+  const items = collectDeckHighlightsForExport(contextLines);
+  return `
+    <div class="print-preview-actions" data-print-ui>
+      <button type="button" data-print-close>Close</button>
+      <button type="button" data-print-now>Download PDF</button>
+    </div>
+    <div class="cornell-print-document">
+      <header class="cornell-print-cover">
+        <div>
+          <h1>${escapeHtml(title)}</h1>
+          <p>Highlights &middot; ${new Date().toLocaleString()}</p>
+        </div>
+      </header>
+      <section class="rendered highlights-export-body" aria-label="${escapeHtml(title)} highlights">
+        ${highlightsExportBodyHtml(items)}
       </section>
     </div>
   `;

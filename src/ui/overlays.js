@@ -2,6 +2,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { isHighlightNoteEditorOpen } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { appInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { helpModal } from "./help.js?v=__BUILD__";
 
@@ -38,6 +39,8 @@ export function anyModalOpen() {
     (el.confirmModal && !el.confirmModal.hidden) ||
     (el.promptModal && !el.promptModal.hidden) ||
     (el.frameCardModal && !el.frameCardModal.hidden) ||
+    (el.exportHighlightsModal && !el.exportHighlightsModal.hidden) ||
+    isHighlightNoteEditorOpen() ||
     (el.myDecksPanel && !el.myDecksPanel.hidden) ||
     (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) ||
     (typeof appInfoModal !== "undefined" && appInfoModal && !appInfoModal.hidden) ||

@@ -15,7 +15,8 @@ import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { buildDocxBytes } from "./docx.js?v=__BUILD__";
 import { prepareExportHtml, wrapStandaloneHtmlDocument } from "./html.js?v=__BUILD__";
 import { exportBaseName, slugifyFileName } from "./markdown.js?v=__BUILD__";
-import { buildCornellFlatDocument, buildCornellPrintDocument, buildNotesExportBody, buildNotesPrintDocument, cardsForScope, closePrintPreview, exportJson, exportMarkdown, pdfPrintStyleId, printableCardCount, scopeTitle, setPrintTitleBeforeExport } from "./pdf.js?v=__BUILD__";
+import { buildCornellFlatDocument, buildCornellPrintDocument, buildHighlightsExportBody, buildHighlightsExportMarkdown, buildHighlightsPrintDocument, buildNotesExportBody, buildNotesPrintDocument, cardsForScope, closePrintPreview, exportJson, exportMarkdown, pdfPrintStyleId, printableCardCount, scopeTitle, setPrintTitleBeforeExport } from "./pdf.js?v=__BUILD__";
+import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=__BUILD__";
 import { exportSql } from "./sql.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
@@ -105,6 +106,104 @@ export async function exportNotesFlat(format) {
   } finally {
     if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
   }
+}
+
+export function highlightsExportBaseName() {
+  return `${slugifyFileName(state.deckTitle || state.sourceTitle || "recall")} - highlights`;
+}
+
+// Markdown/HTML, modeled directly on exportNotesFlat — the highlights
+// counterpart just builds its body from collectDeckHighlightsForExport
+// (via buildHighlightsExportBody/buildHighlightsExportMarkdown in pdf.js)
+// instead of the raw notes string, with `contextLines` (from the export
+// dialog's number input) threaded through.
+export async function exportHighlightsFlat(format, contextLines = 0) {
+  const items = collectDeckHighlightsForExport();
+  if (!items.length) {
+    setStatus("No highlights to export.", "error");
+    return;
+  }
+  const title = state.deckTitle || "Highlights";
+  const docTitle = highlightsExportBaseName();
+
+  if (format === "markdown") {
+    downloadTextFile(buildHighlightsExportMarkdown(title, contextLines), `${docTitle}.md`, "text/markdown;charset=utf-8");
+    setStatus("Exported highlights as Markdown.");
+    return;
+  }
+
+  setStatus("Preparing highlights standalone HTML export...");
+  if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = true;
+  try {
+    const rawBodyHtml = buildHighlightsExportBody(title, contextLines);
+    const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
+    const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
+    downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
+    setStatus(`Exported highlights as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
+  } catch (error) {
+    console.error("Highlights export failed", error);
+    setStatus("Could not prepare the highlights export.", "error");
+  } finally {
+    if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = false;
+  }
+}
+
+export async function exportHighlightsPdf(contextLines = 0) {
+  const items = collectDeckHighlightsForExport();
+  if (!items.length) {
+    setStatus("No highlights to export as PDF.", "error");
+    return;
+  }
+  const title = state.deckTitle || "Highlights";
+
+  setStatus("Preparing highlights PDF...");
+  if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = true;
+  el.printRoot.innerHTML = "";
+  el.printRoot.classList.add("is-preparing");
+  el.printRoot.classList.remove("is-preview");
+  el.printRoot.setAttribute("aria-hidden", "true");
+  setPrintTitleBeforeExport(document.title);
+  document.title = highlightsExportBaseName();
+  try {
+    await afterPaint();
+    el.printRoot.innerHTML = buildHighlightsPrintDocument(title, contextLines);
+    // Must precede configureMermaid("print") — see exportNotesPdf's own
+    // comment: an unloaded mermaid makes that call a silent no-op, and the
+    // enhanceRenderedMarkdown below would load it configured for the SCREEN
+    // theme instead.
+    await ensureMermaid();
+    configureMermaid("print");
+    try {
+      await enhanceRenderedMarkdown(el.printRoot);
+    } finally {
+      configureMermaid(currentThemeId());
+    }
+    revealPrintRootClozes();
+    await (document.fonts?.ready || Promise.resolve());
+    await afterPaint();
+
+    installPdfPrintStyle();
+    const opened = printPreparedDocument();
+    setStatus(opened
+      ? "Opening highlights PDF — choose Save as PDF in the dialog."
+      : "Could not prepare the highlights PDF export.", opened ? undefined : "error");
+  } catch (error) {
+    console.error("Highlights PDF export failed", error);
+    setStatus("Could not prepare the highlights PDF export.", "error");
+  } finally {
+    closePrintPreview();
+    if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = false;
+  }
+}
+
+export function handleExportHighlightsAction(format, contextLines = 0) {
+  if (el.exportHighlightsModal) el.exportHighlightsModal.hidden = true;
+  if (format === "pdf") {
+    setStatus("Opening highlights PDF export...");
+    window.setTimeout(() => exportHighlightsPdf(contextLines), 0);
+    return;
+  }
+  exportHighlightsFlat(format, contextLines);
 }
 
 export function markOversizePrintRows() {

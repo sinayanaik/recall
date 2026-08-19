@@ -143,6 +143,22 @@ const POST_SPLIT = {
     "report. Cancels the padding with an equal negative margin (tint unchanged, " +
     "zero net advance) and adds box-decoration-break so a mark broken across a " +
     "wrap or a column break keeps its radius on both fragments.",
+  "26-highlights-panel-rows.css":
+    "The Highlights tab dropped its pre/post context line (just the " +
+    "highlighted line is shown now — see collectDeckHighlights/" +
+    "highlightUnitSpan in src/panels/highlights-panel.js) and gained the " +
+    "ability to merge several same-line highlights into one row, which needs " +
+    "more than one 'Go to' button per row.",
+  "27-highlight-notes.css":
+    "Note-over-highlight: the mark-menu's Note button, the Highlights panel's " +
+    "per-mark note button and rendered note block, and the popup editor " +
+    "itself (src/notes/highlight-note-editor.js). Data lives in the " +
+    "<mark data-note> attribute (src/format/highlight-notes.js) — no new " +
+    "storage, so this file is presentation only.",
+  "28-export-highlights.css":
+    "The 'Export highlights' dialog (#exportHighlightsModal) — reuses the " +
+    ".confirm-modal/.sync-modal-actions chrome other small dialogs already " +
+    "have; only the context-size number input and the format row are new.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

@@ -1,0 +1,252 @@
+/* Note-over-highlight (Kindle-style): the mark-menu's "Note" button, the
+ * Highlights panel's per-mark note button + rendered note block, and the
+ * popup editor itself (src/notes/highlight-note-editor.js). Data lives in
+ * the <mark data-note> attribute (src/format/highlight-notes.js) — no new
+ * storage, so nothing here concerns persistence, only presentation.
+ */
+
+/* ── mark-menu.js: the "Note" (pencil) button ─────────────────────────── */
+.mark-menu-note {
+  color: var(--text);
+  opacity: 0.75;
+}
+
+.mark-menu-note.has-note {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* ── highlights-panel.js: per-mark actions + the rendered note block ───── */
+.highlight-mark-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.highlight-note-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  opacity: 0.75;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.highlight-note-btn.has-note {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--accent);
+}
+
+.highlight-note {
+  margin-top: 4px;
+  padding: 6px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-radius: 0 8px 8px 0;
+}
+
+.highlight-note-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.highlight-note-body {
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.highlight-note-body > :first-child {
+  margin-top: 0;
+}
+
+.highlight-note-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── The popup editor itself ────────────────────────────────────────────
+   Desktop: a floating popover, positioned in JS (openHighlightNoteEditor)
+   near whatever mark/button opened it. Mobile: the media query below
+   overrides that positioning entirely with a fixed bottom sheet — same DOM,
+   no separate code path. */
+.highlight-note-editor {
+  position: fixed;
+  z-index: 260;
+  /* Wide enough for the full formatting toolbar (createToolbarHtml) not to
+     wrap onto a second row on an ordinary desktop window; still clamped to
+     the viewport for anything narrower. */
+  width: min(460px, calc(100vw - 24px));
+  max-height: min(75vh, 560px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  padding: 12px;
+}
+
+.highlight-note-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+}
+
+.highlight-note-editor-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.highlight-note-editor-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.highlight-note-editor-modes {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.highlight-note-editor-mode {
+  flex: 1 1 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.highlight-note-editor-mode.is-active {
+  background: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--accent-contrast, #fff);
+}
+
+/* The toolbar strip (createToolbarHtml's bold/lists/image-upload/etc — see
+   highlight-note-editor.js) scrolls sideways rather than wrapping, matching
+   the notes header's own edit-toolbar treatment: a popup 460px wide has no
+   room for the full strip's natural width. */
+.highlight-note-editor-toolbar-wrap {
+  flex: 0 0 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.highlight-note-editor-toolbar-wrap::-webkit-scrollbar {
+  display: none;
+}
+
+.highlight-note-editor-toolbar-wrap .edit-toolbar {
+  width: max-content;
+}
+
+/* .edit-textarea / .highlight-textarea-wrapper / .highlight-textarea-backdrop
+   carry their own sizing rules (styles/10-editor.css, mostly !important —
+   see enableSyntaxHighlighting's own comment on why backdrop and textarea
+   must agree on every metric) — the wrapper's min-height is the one knob
+   this popup still needs to set itself, since the base rule's 100px reads as
+   cramped in a 75vh popup that has real room to give it. */
+.highlight-note-editor .highlight-textarea-wrapper {
+  min-height: 160px;
+}
+
+.highlight-note-editor-rendered {
+  flex: 1 1 auto;
+  min-height: 140px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+/* Same fix as the Highlights panel rows (26-highlights-panel-rows.css): the
+ * base --visual-max-width percentage is tuned for the full notes reading
+ * column, not a ~430px popup, so an unresized image reads oversized here too
+ * without a flat cap. */
+.highlight-note-editor-rendered img {
+  max-width: 220px;
+}
+
+.highlight-note-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.highlight-note-editor-spacer {
+  flex: 1 1 auto;
+}
+
+.highlight-note-editor-delete {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--danger, #dc2626);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.highlight-note-editor-cancel {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.highlight-note-editor-save {
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .highlight-note-editor {
+    left: 0 !important;
+    right: 0;
+    bottom: 0;
+    top: auto !important;
+    width: 100%;
+    max-height: 80vh;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.3);
+  }
+}

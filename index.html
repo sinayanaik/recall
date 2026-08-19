@@ -83,6 +83,9 @@
     <link rel="stylesheet" href="styles/23-highlight-marks.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/24-highlight-tools.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/25-sync-report.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/26-highlights-panel-rows.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/27-highlight-notes.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/28-export-highlights.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -141,8 +144,9 @@
     <link rel="modulepreload" href="src/export/zip.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/cloze.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-colors.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/format/highlight.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-edit.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/highlight-notes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/highlight.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/render-toolbar.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/selection-tools.js?v=__BUILD__">
@@ -174,14 +178,15 @@
     <link rel="modulepreload" href="src/library/tombstones.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/anchors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret-line.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/mark-menu.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/highlight-note-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/link-picker.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/mark-menu.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/note-links.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-head-overflow.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/notes-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-history.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/notes-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/paged-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/raw-offset.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/reading-position.js?v=__BUILD__">
@@ -681,6 +686,7 @@
               <div class="face-label-row">
                 <span class="face-label">Highlights</span>
               </div>
+              <button class="tool-button" id="exportHighlightsBtn" type="button" title="Export highlighted lines">&#8659; Export&#8230;</button>
             </div>
             <div class="highlights-list" id="highlightsList"></div>
             <p class="highlights-empty" id="highlightsEmpty" hidden>No highlights yet. Select text in your notes and tap the highlight button to mark it.</p>
@@ -1510,6 +1516,24 @@ What year was the Eiffel Tower built?
         <div class="sync-modal-actions">
           <button id="frameCardCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
           <button id="frameCardAddBtn" type="button" class="sync-modal-btn is-primary">Add card</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="confirm-modal" id="exportHighlightsModal" hidden aria-label="Export highlighted lines">
+      <div class="confirm-modal-content export-highlights-content">
+        <h3 class="prompt-modal-title">Export highlights</h3>
+        <div class="frame-card-field">
+          <span class="frame-card-label" id="exportHighlightsContextLabel">Lines of context before/after each highlight</span>
+          <input type="number" id="exportHighlightsContext" class="prompt-modal-input export-highlights-context" min="0" max="10" step="1" value="0" aria-labelledby="exportHighlightsContextLabel">
+        </div>
+        <div class="sync-modal-actions export-highlights-formats">
+          <button type="button" class="sync-modal-btn" data-export-highlights="markdown">Markdown</button>
+          <button type="button" class="sync-modal-btn" data-export-highlights="pdf">PDF</button>
+          <button type="button" class="sync-modal-btn" data-export-highlights="html">Standalone HTML</button>
+        </div>
+        <div class="sync-modal-actions">
+          <button id="exportHighlightsCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
         </div>
       </div>
     </section>

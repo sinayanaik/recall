@@ -23,13 +23,22 @@ export function markHighlightSwatchButtonsHtml() {
 
 // A <mark>, optionally coloured via data-color (see MARK_HIGHLIGHT_COLORS —
 // omitted entirely for the default token, so plain old <mark> highlights from
-// before colour existed keep matching this and still toggle/recolour fine).
-export const MARK_OPEN_RE = /<mark(?:\s+data-color="([a-z]+)")?>$/;
+// before colour existed keep matching this and still toggle/recolour fine)
+// and optionally carrying a note (data-note, base64 — see
+// format/highlight-notes.js) in that fixed order. A raw <mark> hand-typed
+// with the attributes the other way round won't match — same accepted
+// limitation as every other canonical-form assumption already made about a
+// hand-typed mark (see e.g. Turndown's own canonicalisation, noted in the
+// highlight-mark-system history).
+export const MARK_OPEN_RE = /<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=]*)")?>$/;
 
 export const MARK_CLOSE_TAG = "</mark>";
 
-export function markOpenTag(color) {
-  return color && color !== MARK_HIGHLIGHT_DEFAULT ? `<mark data-color="${color}">` : "<mark>";
+export function markOpenTag(color, note) {
+  const attrs = [];
+  if (color && color !== MARK_HIGHLIGHT_DEFAULT) attrs.push(` data-color="${color}"`);
+  if (note) attrs.push(` data-note="${note}"`); // pre-encoded — see encodeHighlightNote
+  return attrs.length ? `<mark${attrs.join("")}>` : "<mark>";
 }
 
 // A selection spanning a block boundary can't be wrapped in ONE <mark>: each
@@ -175,6 +184,62 @@ export function wrapAcrossBlocks(source, color) {
   return out.join("\n");
 }
 
+// A highlight is a literal <mark>…</mark> pair sitting in source — same regex
+// collectDeckHighlights (src/panels/highlights-panel.js) and the mark-edit
+// path (src/format/highlight-edit.js) both need, so it's owned here alongside
+// the code that WRITES a <mark> open tag (markOpenTag) rather than duplicated.
+// data-color/data-note make the open tag's length variable, which is why
+// callers that need an offset measure it off the actual match rather than a
+// fixed "<mark>".length constant. Capture groups: 1 = colour token, 2 = note
+// (base64, see format/highlight-notes.js), 3 = inner text.
+export const HIGHLIGHT_SCAN_RE = /<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=]*)")?>([\s\S]+?)<\/mark>/g;
+
+// What can legally sit between two adjacent <mark>s that wrapAcrossBlocks
+// produced from ONE highlight action: nothing but the block boundary itself —
+// a blank line, or a newline plus the next list item's own "- "/"1. " marker.
+export const HIGHLIGHT_GROUP_GAP_RE = /^\n+(?:[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?$/;
+
+// The mark at ordinal `markIndex` (how many <mark> opens precede it in the
+// source) — the same ordinal collectDeckHighlights reports and the DOM
+// `querySelectorAll("mark")` index (marked/DOMPurify preserve document
+// order), so a caller with a DOM node's index can find its exact source span
+// without a text search. `note` is the raw base64 attribute value (or null) —
+// see format/highlight-notes.js for encode/decode.
+export function markSpanAt(source, markIndex) {
+  HIGHLIGHT_SCAN_RE.lastIndex = 0;
+  let m;
+  let i = 0;
+  while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
+    if (i === markIndex) {
+      const inner = m[3];
+      const openLength = m[0].length - inner.length - MARK_CLOSE_TAG.length;
+      return { start: m.index, end: m.index + m[0].length, inner, openLength, color: m[1] || MARK_HIGHLIGHT_DEFAULT, note: m[2] || null };
+    }
+    i += 1;
+  }
+  return null;
+}
+
+// A highlight the reader made in one action can be several adjacent <mark>s —
+// wrapAcrossBlocks emits one per block, list item and table cell — so editing
+// only the first would recolour/remove a fraction of it. The whole group
+// moves together, using the same adjacency rule the Highlights panel groups
+// rows by (HIGHLIGHT_GROUP_GAP_RE).
+export function markGroupSpanAt(source, markIndex) {
+  const first = markSpanAt(source, markIndex);
+  if (!first) return null;
+  let last = first;
+  let i = markIndex + 1;
+  for (;;) {
+    const next = markSpanAt(source, i);
+    if (!next) break;
+    if (!HIGHLIGHT_GROUP_GAP_RE.test(source.slice(last.end, next.start))) break;
+    last = next;
+    i += 1;
+  }
+  return { start: first.start, end: last.end, count: i - markIndex };
+}
+
 export function wrapTableRow(line, color) {
   return line
     .split(/(?<!\\)\|/)
@@ -212,28 +277,25 @@ export function highlightToggleInSource(source, sel, color) {
     const openStart = idx - openMatch[0].length;
     const closeEnd = end + MARK_CLOSE_TAG.length;
     if (color === "clear" || color === existingColor) {
-      return { text: source.slice(0, openStart) + needle + source.slice(closeEnd), action: "removed" };
+      return { text: source.slice(0, openStart) + needle + source.slice(closeEnd), action: "removed", idx: openStart };
     }
     return {
-      text: source.slice(0, openStart) + markOpenTag(color) + needle + MARK_CLOSE_TAG + source.slice(closeEnd),
-      action: "recolored"
+      // Preserves any existing note (openMatch[2]) — recolouring an annotated
+      // highlight this way must not silently drop its note.
+      text: source.slice(0, openStart) + markOpenTag(color, openMatch[2]) + needle + MARK_CLOSE_TAG + source.slice(closeEnd),
+      action: "recolored",
+      idx: openStart
     };
   }
-  if (color === "clear") return { text: source, action: "not-highlighted" };
+  if (color === "clear") return { text: source, action: "not-highlighted", idx };
   // Sub-selection inside a larger existing highlight (an unclosed <mark>
   // precedes the match, with a </mark> still to come): wrapping it would nest
   // <mark> tags rather than extend the existing highlight.
   const before = source.slice(0, idx);
   if (before.lastIndexOf("<mark") > before.lastIndexOf(MARK_CLOSE_TAG) && source.indexOf(MARK_CLOSE_TAG, end) !== -1) {
-    return { text: source, action: "already" };
+    return { text: source, action: "already", idx };
   }
-  return { text: source.slice(0, idx) + wrapAcrossBlocks(needle, color) + source.slice(end), action: "added" };
-}
-
-export function highlightToastMessage(action) {
-  if (action === "removed") return "Highlight removed";
-  if (action === "recolored") return "Highlight recoloured";
-  return "Highlighted";
+  return { text: source.slice(0, idx) + wrapAcrossBlocks(needle, color) + source.slice(end), action: "added", idx };
 }
 
 export function highlightInfoMessage(action) {
@@ -246,11 +308,12 @@ export function highlightInfoMessage(action) {
 // notes/card editor's Highlight dropdown (handleToolbarClick's data-highlight
 // branch), the edit-mode equivalent of the rendered-view highlight button.
 export function toggleMarkColorInText(text, color) {
-  const whole = /^<mark(?:\s+data-color="([a-z]+)")?>([\s\S]*)<\/mark>$/.exec(text);
+  const whole = /^<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=]*)")?>([\s\S]*)<\/mark>$/.exec(text);
   if (whole) {
     const existingColor = whole[1] || MARK_HIGHLIGHT_DEFAULT;
-    if (color === "clear" || color === existingColor) return whole[2];
-    return markOpenTag(color) + whole[2] + MARK_CLOSE_TAG;
+    if (color === "clear" || color === existingColor) return whole[3];
+    // Preserves an existing note (whole[2]) across a recolour.
+    return markOpenTag(color, whole[2]) + whole[3] + MARK_CLOSE_TAG;
   }
   if (color === "clear") return text;
   return wrapAcrossBlocks(text, color);
@@ -281,11 +344,74 @@ export function selectionForRenderTarget(view, selOverride = null) {
   return null;
 }
 
+// The ordinal (DOM-index-among-<mark>s, same as collectDeckHighlights'
+// markIndex) of the single EXISTING highlight the live selection overlaps, or
+// -1 if there's no live selection in `view`, or it overlaps none/more than
+// one. Range.intersectsNode is exact regardless of markup, which is what
+// makes this route immune to every text-matching failure mode below.
+export function overlappingMarkIndex(view) {
+  if (!view) return -1;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return -1;
+  const range = selection.getRangeAt(0);
+  if (!view.contains(range.commonAncestorContainer)) return -1;
+  const marks = view.querySelectorAll("mark");
+  let hit = -1;
+  for (let i = 0; i < marks.length; i += 1) {
+    if (!range.intersectsNode(marks[i])) continue;
+    if (hit !== -1) return -1; // touches more than one — not a clean edit
+    hit = i;
+  }
+  return hit;
+}
+
+// Re-selecting an existing highlight (to recolour or toggle it off) and
+// having it addressed by ORDINAL instead of a text search — the search can't
+// see past the <mark> tags already sitting in the match, which is worst for a
+// highlight wrapAcrossBlocks split into several adjacent marks (a paragraph
+// or list-item drag): that "Couldn't match that selection" was the single
+// biggest source of the report, because re-highlighting/adjusting a highlight
+// is routine. Same recolour/remove/toggle semantics as
+// highlightToggleInSource's own mark-already-here branch, just reached
+// without searching for text that's already uniquely addressable by
+// position. Returns null when the selection doesn't cleanly overlap exactly
+// one existing highlight, so the caller falls through to the normal path.
+export function highlightToggleByOverlap(source, markIndex, color) {
+  const span = markGroupSpanAt(source, markIndex);
+  const first = markSpanAt(source, markIndex);
+  if (!span || !first) return null;
+  const remove = color === "clear" || color === first.color;
+  // Preserves whichever piece's own note (each piece keeps its own capture —
+  // only the first piece has one by construction, see highlight-notes.js).
+  const rewritten = source.slice(span.start, span.end).replace(HIGHLIGHT_SCAN_RE, (_all, _c, note, inner) =>
+    remove ? inner : markOpenTag(color, note) + inner + MARK_CLOSE_TAG);
+  return {
+    text: source.slice(0, span.start) + rewritten + source.slice(span.end),
+    action: remove ? "removed" : "recolored",
+    idx: span.start
+  };
+}
+
 // Driver for the highlight button — same shape as makeClozeFromSelection.
 // `color` defaults to the shared last-used swatch (renderFormatDefaults.highlight)
 // so a plain tap of the floating pill applies/toggles that colour; the render
 // toolbar's split-button menu passes a specific token instead.
 export function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight, selOverride = null) {
+  // Only for a LIVE selection — selOverride (the pill's position-time
+  // snapshot) has no DOM range left to test overlap against by the time it's
+  // used, so it always falls through to the text-search path below.
+  const overlapIndex = selOverride ? -1 : overlappingMarkIndex(view);
+  if (overlapIndex !== -1) {
+    const result = highlightToggleByOverlap(getSource(), overlapIndex, color);
+    if (result) {
+      setSource(result.text);
+      window.getSelection()?.removeAllRanges();
+      rerender(result.idx);
+      scheduleDeckAutosave();
+      return;
+    }
+  }
+
   const sel = selectionForRenderTarget(view, selOverride);
   if (!sel) {
     showToast(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
@@ -302,7 +428,6 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
   }
   setSource(result.text);
   window.getSelection()?.removeAllRanges();
-  rerender();
+  rerender(result.idx);
   scheduleDeckAutosave();
-  showToast(highlightToastMessage(result.action));
 }

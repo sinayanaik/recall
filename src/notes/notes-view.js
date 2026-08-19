@@ -16,6 +16,7 @@ import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUIL
 import { clearNotesHistory, syncNotesHistoryBaseline } from "./notes-history.js?v=__BUILD__";
 import { textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
 import { applyNotesPagedLayout, firstVisibleNotesBlock, isNotesPaged, notesPageCount, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
+import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
@@ -169,6 +170,16 @@ export const NOTES_PIN_SETTLE_MS = 110;
 
 export const NOTES_PIN_BUDGET_MS = 400;
 
+// A very long note has more content-visibility chunks settling late (images,
+// diagrams, table refits below the fold) than the base budget assumes, so the
+// settle loop can still time out with a residual left uncorrected. Only
+// scaled up past a real book-sized note — the base budget already covers
+// everything shorter, and a longer window costs nothing when nothing is left
+// to correct (the loop still exits the moment two passes agree).
+export const NOTES_PIN_LARGE_NOTE_CHARS = 500000;
+
+export const NOTES_PIN_LARGE_NOTE_BUDGET_MS = 1200;
+
 // A drift has to be there twice running before it is corrected. Content
 // arriving above the reader (a diagram drawing, a table refitting, a chunk
 // swapping its estimate for a real height) moves the note and then moves it
@@ -188,7 +199,16 @@ export function notesAnchorTop(node, view) {
   return withChunkRendered(node, view, () => node.getBoundingClientRect().top);
 }
 
-export function renderNotesViewPinned() {
+// `offsetHint`: the raw markdown offset of the edit that's about to be
+// repainted, when the caller already knows it (makeHighlightFromSelection
+// does — see format/highlight.js). Resolving the anchor from THAT is more
+// reliable than the reading-line hit-test below ever can be: elementFromPoint
+// answers nothing when the reading line rests in the margin gap between two
+// blocks or under a floating overlay, which left `anchors` empty and meant NO
+// drift correction ran at all (the "highlighting jumps the note" report).
+// Knowing exactly where the edit happened removes the guess entirely for the
+// case that matters most here.
+export function renderNotesViewPinned(offsetHint) {
   const view = el.notesView;
   if (!view || view.hidden) return renderNotesView({ sameNote: true });
 
@@ -228,16 +248,20 @@ export function renderNotesViewPinned() {
     });
   }
 
-  // blockAtNotesReadingLine() asks elementFromPoint, which answers nothing
-  // usable in two entirely ordinary situations: the reading line resting in the
-  // margin gap between two blocks (it returns #notesView itself, whose
+  // Prefer the block the edit is actually IN (see the function comment)
+  // before falling back to the reading-line hit-test. blockAtNotesReadingLine()
+  // asks elementFromPoint, which answers nothing usable in two entirely
+  // ordinary situations: the reading line resting in the margin gap between
+  // two blocks (it returns #notesView itself, whose
   // closest(NOTES_TOP_LEVEL_SELECTOR) is null) and the line sitting under a
   // floating overlay. Both left `anchors` empty — and an empty `anchors` means
   // NO drift correction at all, so the repaint moved the reader by however much
-  // the edit changed the layout. That is the "highlighting jumps the note"
-  // report. The geometric search cannot answer null while the note has blocks;
-  // see its own comment in scroll-anchor.js for why it was written.
-  const at = blockAtNotesReadingLine() || notesBlockAtReadingLineGeometric();
+  // the edit changed the layout. The geometric search cannot answer null while
+  // the note has blocks; see its own comment in scroll-anchor.js for why it
+  // was written.
+  const at = (offsetHint != null && notesBlockForRawOffset(view, state.notes || "", offsetHint))
+    || blockAtNotesReadingLine()
+    || notesBlockAtReadingLineGeometric();
   const anchors = [];
   // Both siblings, not just the previous one. The block under the reading line
   // is very often the one being edited, and an edited block is rebuilt rather
@@ -263,7 +287,10 @@ export function renderNotesViewPinned() {
 // correction this used to make had already run. So the residual is re-measured
 // on a settle cadence and re-corrected while it is still shrinking.
 export async function settleNotesPin(view, anchors) {
-  const until = performance.now() + NOTES_PIN_BUDGET_MS;
+  const budget = (state.notes || "").length > NOTES_PIN_LARGE_NOTE_CHARS
+    ? NOTES_PIN_LARGE_NOTE_BUDGET_MS
+    : NOTES_PIN_BUDGET_MS;
+  const until = performance.now() + budget;
   let settleMs = 0;
   let best = Infinity;
   let stalled = 0;

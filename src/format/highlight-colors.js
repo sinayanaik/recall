@@ -24,13 +24,18 @@
 // reaches the note itself.
 export const MARK_HIGHLIGHT_DEFAULT = "yellow";
 
+// Trimmed to 4 picker colours (2026-08-19) — a highlight already made in
+// "orange" or "purple" before this change still renders correctly (see the 6
+// hardcoded `.rendered mark[data-color=...]` rules in styles/12-notes.css,
+// deliberately left untouched), it's just no longer offered going forward.
+// Any default/preview code reading this table already falls back to
+// MARK_HIGHLIGHT_DEFAULT for an unknown token, same as it always has for a
+// pre-colour plain <mark>.
 export const MARK_HIGHLIGHT_HEX = {
   yellow: "#e0b400",
   green: "#22c55e",
   blue: "#3b82f6",
   pink: "#ec4899",
-  orange: "#f97316",
-  purple: "#8b5cf6",
 };
 
 export const MARK_HIGHLIGHT_COLORS = Object.entries(MARK_HIGHLIGHT_HEX).map(([token, hex]) => ({

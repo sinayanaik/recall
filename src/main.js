@@ -28,7 +28,7 @@ import { closeAllEditToolbarDropdowns, initToolbars, setCloseMainMenu, setIsMain
 import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/triple-click.js?v=__BUILD__";
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
 import { closePrintPreview, printPreviewOpen } from "./export/pdf.js?v=__BUILD__";
-import { generatePdfDirectly, handleExportAction, handleExportNotesAction } from "./export/run.js?v=__BUILD__";
+import { generatePdfDirectly, handleExportAction, handleExportHighlightsAction, handleExportNotesAction } from "./export/run.js?v=__BUILD__";
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
@@ -88,7 +88,7 @@ import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edi
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
 import { goNavBack } from "./ui/nav-history.js?v=__BUILD__";
-import { anyModalOpen } from "./ui/overlays.js?v=__BUILD__";
+import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
@@ -1567,6 +1567,23 @@ el.exportNotesMenu?.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-export-notes]");
   if (!button) return;
   handleExportNotesAction(button.dataset.exportNotes);
+});
+el.exportHighlightsBtn?.addEventListener("click", () => {
+  if (!el.exportHighlightsModal) return;
+  el.exportHighlightsModal.hidden = false;
+  lockPageScroll();
+});
+el.exportHighlightsCancelBtn?.addEventListener("click", () => {
+  if (!el.exportHighlightsModal) return;
+  el.exportHighlightsModal.hidden = true;
+  unlockPageScroll();
+});
+el.exportHighlightsModal?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-export-highlights]");
+  if (!button) return;
+  const contextLines = Math.max(0, Number(el.exportHighlightsContext?.value) || 0);
+  unlockPageScroll();
+  handleExportHighlightsAction(button.dataset.exportHighlights, contextLines);
 });
 el.printRoot.addEventListener("click", (event) => {
   if (event.target.closest("[data-print-close]")) {

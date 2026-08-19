@@ -133,9 +133,6 @@ export function highlightTextareaSelection(target, color = renderFormatDefaults.
   ta.focus();
   // Persist through the editor's own input path, same as any other raw edit.
   ta.dispatchEvent(new Event("input", { bubbles: true }));
-  // wrapAcrossBlocks keeps list markers OUTSIDE the marks, so an added wrap
-  // doesn't necessarily start with "<mark" — length is the honest tell.
-  showToast(wrapped.length > selected.length ? "Highlighted" : "Highlight removed");
 }
 
 // Raw-editor counterpart of the eraser: splice the selection out of the

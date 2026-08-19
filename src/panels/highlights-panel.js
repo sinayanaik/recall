@@ -3,11 +3,13 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
-import { LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
+import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
+import { decodeHighlightNote } from "../format/highlight-notes.js?v=__BUILD__";
 import { notesAnchorPlainText, scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
-import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
 // A highlight is a literal <mark>…</mark> pair sitting in state.notes — same
@@ -24,14 +26,10 @@ import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 // "<mark>".length constant — a coloured highlight would otherwise report an
 // anchor that starts a few characters into its own text. Colour is captured
 // (not just detected) so adjacent matches can be compared when grouping below.
-export const HIGHLIGHT_SCAN_RE = /<mark(?:\s+data-color="([a-z]+)")?>([\s\S]+?)<\/mark>/g;
-
-// What can legally sit between two adjacent <mark>s that wrapAcrossBlocks
-// produced from ONE highlight action: nothing but the block boundary itself —
-// a blank line, or a newline plus the next list item's own "- "/"1. " marker.
-// Real note content between two marks (including a non-highlighted list item)
-// is always more than this, so it never matches and those stay separate rows.
-export const HIGHLIGHT_GROUP_GAP_RE = /^\n+(?:[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?$/;
+// HIGHLIGHT_SCAN_RE/HIGHLIGHT_GROUP_GAP_RE now live in format/highlight.js,
+// alongside markOpenTag (the code that WRITES a <mark> open tag) — imported
+// above rather than duplicated, since format/highlight-edit.js needs the same
+// pair to address a mark by ordinal.
 
 // wrapAcrossBlocks always keeps a list item's own marker OUTSIDE the mark
 // (see its comment for why one inside breaks marked's list parsing), so a
@@ -49,26 +47,50 @@ export function precedingListMarker(source, start) {
   return match && match[0].length === prefix.length ? prefix : null;
 }
 
-// A highlight is usually a FRAGMENT of a sentence — a phrase mid-clause, not a
-// whole line — and showing only the marked words left the panel full of rows
+// A highlight is usually a FRAGMENT of a line — a phrase mid-clause, not the
+// whole thing — and showing only the marked words left the panel full of rows
 // that read as gibberish out of context ("eigenvalue problem", "treating a song
-// as a list of air pressure readings"). Every part of a row is therefore widened
-// to whole sentences: the highlight is shown inside the complete sentence it
-// lives in, between the sentence before and the sentence after.
+// as a list of air pressure readings"). Each row is therefore widened to the
+// whole LINE it lives in (just the line — no sentence-before/sentence-after
+// context; that used to double as export context, which is now the export
+// dialog's own, opt-in "lines before/after" setting — see src/export/pdf.js).
 //
-// The unit index is the cloze panel's (clozeUnitIndex / clozeUnitAt, which split
-// on sentence ends AND newlines and drop table rules): built once per panel
-// render rather than per highlight, and searched by bisection. Reusing it keeps
-// one definition of "a sentence" for both panels, including the awkward parts —
-// a cloze's own punctuation never splits a unit, and a lone |---|---| row is
-// never offered as context.
+// The unit index is the cloze panel's (clozeUnitIndex / clozeUnitAt, which
+// split on sentence ends AND newlines and drop table rules): built once per
+// panel render rather than per highlight, and searched by bisection. Reusing
+// it keeps one definition of "a line/sentence" for both panels.
 //
-// Returns null when no unit covers the highlight (all-whitespace, or a dropped
-// table rule), and the caller falls back to the bare marked fragment.
-// clozeUnitIndex drops table rules but not code-fence markers, and a lone "```js"
-// offered as context opens a block that never closes — swallowing the rest of the
-// row into a code block. Neighbours therefore step outward past any unit that
-// isn't showable on its own.
+// Returns null when no unit covers the highlight (all-whitespace, or a
+// dropped table rule), and the caller falls back to the bare marked fragment.
+export function highlightUnitSpan(units, source, group) {
+  const first = clozeUnitAt(units, group.pieces[0].start);
+  if (first === -1) return null;
+  // A highlight can run past the end of its own line (a drag across two of
+  // them, or across a block boundary), so the closing unit is looked up
+  // separately and everything between the two is kept.
+  const lastFrom = clozeUnitAt(units, Math.max(group.pieces[0].start, group.end - 1));
+  const last = lastFrom === -1 ? first : Math.max(first, lastFrom);
+  const cur = source.slice(units[first].start, units[last].end);
+  // A slice that ends between a <mark> and its </mark> would render as an
+  // element the browser closes at the end of the row, highlighting all the
+  // text after it. Only reachable if the closing tag's own unit was dropped
+  // (a table rule), so the cheap answer is to decline and let the caller fall
+  // back to the bare fragment rather than to widen and guess.
+  if ((cur.match(/<mark\b/g) || []).length !== (cur.match(/<\/mark>/g) || []).length) return null;
+  // Raw source, not a rebuilt fragment: the <mark> tags keep their colours and
+  // the line keeps its own list marker / quote / heading prefix, so a
+  // highlighted bullet still renders as a bullet here — including every OTHER
+  // highlight already sitting in the same line/unit, which is exactly what
+  // lets collectDeckHighlights merge same-line highlights into one row below
+  // instead of rendering that line twice.
+  return { cur, first, last };
+}
+
+// Kept for the highlights EXPORT feature (src/export/pdf.js /
+// src/export/run.js), which offers pre/post context as an opt-in,
+// user-sized setting rather than something every row always carries. Steps
+// outward from a unit past anything that can't stand alone (a lone fence
+// marker would open a code block that never closes).
 export const HIGHLIGHT_CONTEXT_FENCE_RE = /^\s*(?:```|~~~)/;
 
 export function highlightContextUnit(units, index, step) {
@@ -79,61 +101,43 @@ export function highlightContextUnit(units, index, step) {
   return "";
 }
 
-export function highlightSentenceParts(units, source, group) {
-  const first = clozeUnitAt(units, group.pieces[0].start);
-  if (first === -1) return null;
-  // A highlight can run past the end of its own sentence (a drag across two of
-  // them, or across a block boundary), so the closing unit is looked up
-  // separately and everything between the two is kept.
-  const lastFrom = clozeUnitAt(units, Math.max(group.pieces[0].start, group.end - 1));
-  const last = lastFrom === -1 ? first : Math.max(first, lastFrom);
-  const cur = source.slice(units[first].start, units[last].end);
-  // A slice that ends between a <mark> and its </mark> would render as an
-  // element the browser closes at the end of the row, highlighting all the
-  // context after it. Only reachable if the closing tag's own unit was dropped
-  // (a table rule), so the cheap answer is to decline and let the caller fall
-  // back to the bare fragment rather than to widen and guess.
-  if ((cur.match(/<mark\b/g) || []).length !== (cur.match(/<\/mark>/g) || []).length) return null;
-  return {
-    // Raw source, not a rebuilt fragment: the <mark> tags keep their colours and
-    // each line keeps its own list marker / quote / heading prefix, so a
-    // highlighted bullet still renders as a bullet here.
-    cur,
-    // Neighbours are normalised the way the cloze panel normalises its side
-    // context — a lone table row becomes "a · b", a heading loses its hashes —
-    // because a fragment of a construct is not valid standalone markdown.
-    prev: highlightContextUnit(units, first, -1),
-    next: highlightContextUnit(units, last, 1)
-  };
-}
-
-// One entry per highlight: the complete sentence it sits in (rendered as-is in
-// the Highlights tab, not flattened to plain text or cropped — see
-// renderHighlightsPanel), the sentences either side of it, and a
-// trimNoteAnchor-shaped anchor (offset + exact source span + plain text) so
-// "Go to →" can reuse scheduleNoteJump/revealNoteAnchor exactly as the
-// note-origin and cloze-jump features already do — no separate jump logic.
+// One entry per ROW — usually one highlight, but see the same-line merge
+// below. `marks` carries one { markIndex, markCount, anchor } per underlying
+// highlight in the row, so "Go to →" still reaches each one individually
+// even when several are shown as a single line.
 //
-// `markIndex`/`markCount` are what make the jump EXACT: see revealNoteMark. The
-// anchor is still carried for the raw editor and as the fallback.
+// `markIndex`/`markCount` are what make the jump EXACT: see revealNoteMark.
+// The anchor is still carried for the raw editor and as the text-search
+// fallback.
 //
 // Highlighting a selection that crosses a paragraph or list-item boundary
 // (wrapAcrossBlocks, see makeHighlightFromSelection) leaves several adjacent
 // <mark> tags behind — one per block, because a single one can't legally span
 // a boundary. Without the grouping pass below, that ONE highlight action
-// showed up here as three separate rows. Adjacent same-colour matches
-// separated by nothing but boundary syntax (HIGHLIGHT_GROUP_GAP_RE) are
-// merged back into one entry, matching what the user actually did — and each
-// piece's own list marker (if it had one) is restored so a highlighted list
-// still LOOKS like a list here, not three plain-text lines.
-export function collectDeckHighlights() {
-  const source = state.notes || "";
+// showed up as three separate rows. Adjacent same-colour matches separated by
+// nothing but boundary syntax (HIGHLIGHT_GROUP_GAP_RE) are merged back into
+// one GROUP first (one highlight action, however many <mark>s it left behind)
+// — and each piece's own list marker (if it had one) is restored so a
+// highlighted list still LOOKS like a list, not several plain-text lines.
+//
+// A SECOND pass then merges adjacent groups into one ROW when they land in
+// the same source unit (line/sentence) — two separately-made highlights that
+// both happen to sit on one line no longer render that line twice.
+//
+// Shared by collectDeckHighlights (the panel) and collectDeckHighlightsForExport
+// (src/export/pdf.js) — the scan-and-adjacency-group pass is the same for
+// both; they differ only in what they do with a group afterwards (the panel
+// additionally merges groups that land on the same line into one row; export
+// wants every highlight as its own entry, with its own configurable amount of
+// surrounding context).
+export function scanHighlightGroups(source) {
   const raw = [];
   HIGHLIGHT_SCAN_RE.lastIndex = 0;
   let m;
   while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
     const color = m[1] || MARK_HIGHLIGHT_DEFAULT;
-    const inner = m[2];
+    const noteB64 = m[2] || null;
+    const inner = m[3];
     const openTagLength = m[0].length - inner.length - MARK_CLOSE_TAG.length;
     const start = m.index;
     raw.push({
@@ -145,6 +149,9 @@ export function collectDeckHighlights() {
       offset: start + openTagLength,
       color,
       inner,
+      // Only ever set on a group's FIRST piece (see format/highlight-notes.js),
+      // decoded lazily below rather than for every piece.
+      note: noteB64 ? decodeHighlightNote(noteB64) : null,
       marker: precedingListMarker(source, start)
     });
   }
@@ -160,19 +167,24 @@ export function collectDeckHighlights() {
     }
   });
 
-  // One pass for the whole note, shared by every row below — see
-  // highlightSentenceParts, and clozeUnitIndex's own comment for why this is
-  // built once rather than per highlight.
+  // One pass for the whole note, shared by every group below — see
+  // highlightUnitSpan, and clozeUnitIndex's own comment for why this is built
+  // once rather than per highlight.
   const units = clozeUnitIndex(source);
 
-  const items = [];
+  return { source, raw, groups, units };
+}
+
+export function collectDeckHighlights() {
+  const { source, raw, groups, units } = scanHighlightGroups(state.notes || "");
+  const rows = [];
   groups.forEach((group) => {
-    const parts = highlightSentenceParts(units, source, group);
-    // Fallback only: no sentence unit covers this highlight. Marks are reapplied
+    const span = highlightUnitSpan(units, source, group);
+    // Fallback only: no line unit covers this highlight. Marks are reapplied
     // (not just the bare inner text) so a highlight's own colour still shows
-    // here, and each piece's list marker is restored so a highlighted list still
-    // LOOKS like a list rather than three plain-text lines.
-    const markdown = parts ? parts.cur : group.pieces.reduce((acc, piece, i) => {
+    // here, and each piece's list marker is restored so a highlighted list
+    // still LOOKS like a list rather than several plain-text lines.
+    const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
       const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
       const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
       if (i === 0) return rendered;
@@ -187,15 +199,75 @@ export function collectDeckHighlights() {
     // highlight that spans several blocks.
     const text = notesAnchorPlainText(group.pieces[0].inner);
     if (!text) return;
-    items.push({
-      markdown,
-      color: group.color,
-      prevSentence: parts ? parts.prev : "",
-      nextSentence: parts ? parts.next : "",
+    const mark = {
       markIndex: group.pieces[0].markIndex,
       markCount: raw.length,
+      note: group.pieces[0].note,
       anchor: trimNoteAnchor({ offset: group.offset, source: group.pieces[0].inner, text, deckId: state.deckId, deckTitle: state.deckTitle })
-    });
+    };
+    const prevRow = rows[rows.length - 1];
+    // Same source unit as the row just built (both resolved to a real unit,
+    // and it's the SAME one) → this is a second highlight on a line already
+    // shown; its <mark> is already part of `markdown` (the unit slice
+    // includes every mark inside it), so only the jump target is new.
+    //
+    // ...UNLESS either highlight carries a note. Merging was only ever about
+    // not showing the same bare line twice for no reason — once one of them
+    // has its own commentary attached, showing it under a shared "which
+    // highlight is this about?" row would be ambiguous, and collapsing two
+    // notes under one line reads as one. So a noted highlight always gets its
+    // own row (the line renders again, once per instance — duplicated text,
+    // but no longer duplicated NOTHING, which is what merging exists to
+    // avoid). A highlight without a note still merges into a neighbour that
+    // does, since it's the row identity that needs to split, not any
+    // particular highlight's content.
+    const merges = span && prevRow?.span && prevRow.span.first === span.first && prevRow.span.last === span.last;
+    const eitherHasNote = mark.note || prevRow?.marks?.some((m) => m.note);
+    if (merges && !eitherHasNote) {
+      prevRow.marks.push(mark);
+      return;
+    }
+    rows.push({ markdown, span, marks: [mark] });
+  });
+  return rows;
+}
+
+// Like highlightContextUnit, but collects up to `count` units stepping
+// outward instead of just the nearest one — the highlights EXPORT feature
+// (src/export/pdf.js/run.js) offers a user-configurable "lines of context"
+// size, unlike the panel above (which shows none — see #3/#4's history).
+// Returned in natural reading order regardless of which direction it walked.
+export function highlightContextUnits(units, index, step, count) {
+  const found = [];
+  let i = index;
+  while (found.length < count) {
+    i += step;
+    if (i < 0 || i >= units.length) break;
+    const text = clozeCleanUnit(units[i].text);
+    if (text && !HIGHLIGHT_CONTEXT_FENCE_RE.test(text)) found.push(text);
+  }
+  return step < 0 ? found.reverse() : found;
+}
+
+// One entry per highlight (never merged, unlike collectDeckHighlights' rows —
+// export wants every highlight listed, each with its own surrounding
+// context) with `before`/`after` arrays of `contextLines` source units
+// either side. `contextLines` of 0 (the default, matching what the panel
+// itself shows) yields no context at all.
+export function collectDeckHighlightsForExport(contextLines = 0) {
+  const { source, groups, units } = scanHighlightGroups(state.notes || "");
+  const items = [];
+  groups.forEach((group) => {
+    const span = highlightUnitSpan(units, source, group);
+    const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
+      const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
+      const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
+      if (i === 0) return rendered;
+      return acc + (piece.marker ? "\n" : "\n\n") + rendered;
+    }, "");
+    const before = span && contextLines > 0 ? highlightContextUnits(units, span.first, -1, contextLines) : [];
+    const after = span && contextLines > 0 ? highlightContextUnits(units, span.last, 1, contextLines) : [];
+    items.push({ markdown, color: group.color, note: group.pieces[0].note, before, after });
   });
   return items;
 }
@@ -203,86 +275,96 @@ export function collectDeckHighlights() {
 // Redraws the Highlights tab from scratch — cheap enough to just always
 // rebuild (same choice collectDeckClozes/renderClozePanel already make)
 // rather than diffing, and it only runs when that tab is actually opened.
-// Each row renders its markdown fragment exactly like the notes view does —
-// bold/links/images/lists intact, nothing flattened to plain text or cropped
-// with an ellipsis — via the same synchronous safe-HTML pass renderMarkdown
-// itself is built on (markdownToSafeHtml), since a highlight preview is
-// always short enough not to need that function's viewport-deferral machinery.
-// The neighbouring source lines are rendered the same way, dimmed and clamped by
-// CSS (never truncated as a string — cutting markdown mid-syntax renders broken
-// output), so a row can be recognised without opening the note.
-// The markdown each pending context node is waiting to render, keyed by the node
-// so nothing large ends up in a dataset attribute.
-export const pendingHighlightContext = new WeakMap();
-
-export let highlightContextObserver = null;
-
-// A context line, left EMPTY until it is near the viewport.
-//
-// Each of these is a full marked + DOMPurify pass, and there are two per
-// highlight on top of the preview — so a note with a couple of hundred
-// highlights paid six hundred parses on the single tap that opens this panel,
-// nearly all of them for rows nobody had scrolled to yet.
-export function highlightContextNode(markdown) {
-  const node = document.createElement("div");
-  node.className = "highlight-ctx is-side rendered";
-  if (!highlightContextObserver && typeof IntersectionObserver !== "undefined") {
-    highlightContextObserver = new IntersectionObserver((entries, observer) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-        observer.unobserve(entry.target);
-        renderPendingHighlightContext(entry.target);
-      });
-    }, { rootMargin: "600px 0px" });
-  }
-  if (!highlightContextObserver) {
-    node.innerHTML = markdownToSafeHtml(markdown);
-    return node;
-  }
-  pendingHighlightContext.set(node, markdown);
-  highlightContextObserver.observe(node);
-  return node;
-}
-
-export function renderPendingHighlightContext(node) {
-  const markdown = pendingHighlightContext.get(node);
-  if (markdown == null) return;
-  pendingHighlightContext.delete(node);
-  node.innerHTML = markdownToSafeHtml(markdown);
-}
-
+// Each row renders its markdown fragment through the FULL pipeline
+// (renderMarkdown), not the bare marked+DOMPurify pass markdownToSafeHtml
+// gives you — bold/links/lists round-trip through either, but LaTeX and
+// images do not: KaTeX rendering and swapping a queued-offline image's
+// recall-img: placeholder for a loadable blob: URL both happen in
+// enhanceRenderedMarkdown/hydrateLocalImages, which markdownToSafeHtml never
+// runs (it's only the marked+DOMPurify half renderMarkdown itself is BUILT
+// on, not the whole pipeline — a highlight containing math or a
+// still-uploading image rendered as a raw "$…$" or a broken image icon
+// without this). renderMarkdown is async and every non-notes/card container
+// it's given (this one included) is treated as uncached — see
+// isCachedRenderSurface — so this is the same call the Quick Notes board and
+// the paste preview already make for exactly this reason.
+// No pre/post context line any more — see collectDeckHighlights/
+// highlightUnitSpan: the highlighted line is enough, and export (with its own
+// opt-in context-size setting) is where surrounding lines belong now.
 export function renderHighlightsPanel() {
   const list = el.highlightsList;
   if (!list) return;
-  // Rows from the previous render are about to be discarded; drop their
-  // observations rather than leaving the observer holding detached nodes.
-  highlightContextObserver?.disconnect();
   list.innerHTML = "";
-  const items = collectDeckHighlights();
-  if (el.highlightsEmpty) el.highlightsEmpty.hidden = items.length > 0;
-  items.forEach((item) => {
+  const rows = collectDeckHighlights();
+  if (el.highlightsEmpty) el.highlightsEmpty.hidden = rows.length > 0;
+  // Every preview/note body is rendered AFTER the whole list is in the
+  // document (below), not inline as each row is built — a mermaid diagram
+  // inside a highlight needs real layout to size itself against, which a
+  // still-detached node doesn't have.
+  const toRender = [];
+  rows.forEach((item) => {
     const row = document.createElement("div");
     row.className = "highlight-row";
-    // The three stacked lines share one column so the jump button still sits
-    // BESIDE the highlight rather than under the context below it.
     const body = document.createElement("div");
     body.className = "highlight-body";
     const preview = document.createElement("div");
     preview.className = "highlight-preview rendered";
-    preview.innerHTML = markdownToSafeHtml(item.markdown);
-    if (item.prevSentence) body.appendChild(highlightContextNode(item.prevSentence));
     body.appendChild(preview);
-    if (item.nextSentence) body.appendChild(highlightContextNode(item.nextSentence));
-    const jumpBtn = document.createElement("button");
-    jumpBtn.type = "button";
-    jumpBtn.className = "highlight-jump-btn";
-    jumpBtn.title = "Go to this highlight in the notes";
-    jumpBtn.setAttribute("aria-label", "Go to this highlight in the notes");
-    jumpBtn.textContent = "Go to →";
-    jumpBtn.addEventListener("click", () =>
-      scheduleNoteJump(item.anchor, undefined, { markIndex: item.markIndex, markCount: item.markCount })
-    );
-    row.append(body, jumpBtn);
+    toRender.push([preview, item.markdown]);
+    // Any attached note (see format/highlight-notes.js) renders under the
+    // highlight, distinguished as commentary rather than the highlighted
+    // text itself — labelled with an ordinal only when the row holds more
+    // than one highlight (see the same-line merge in collectDeckHighlights).
+    item.marks.forEach((mark, i) => {
+      if (!mark.note) return;
+      const noteBlock = document.createElement("div");
+      noteBlock.className = "highlight-note";
+      if (item.marks.length > 1) {
+        const label = document.createElement("div");
+        label.className = "highlight-note-label";
+        label.textContent = `Note on highlight ${i + 1}`;
+        noteBlock.appendChild(label);
+      }
+      const noteBody = document.createElement("div");
+      noteBody.className = "highlight-note-body rendered";
+      noteBlock.appendChild(noteBody);
+      body.appendChild(noteBlock);
+      toRender.push([noteBody, mark.note]);
+    });
+    // Usually one mark, one pair of buttons. A row that merged several
+    // same-line highlights (see collectDeckHighlights) gets one "Go to" +
+    // "Note" pair per mark so each is still individually reachable.
+    const jumps = document.createElement("div");
+    jumps.className = "highlight-jumps";
+    item.marks.forEach((mark, i) => {
+      const actions = document.createElement("div");
+      actions.className = "highlight-mark-actions";
+      const jumpBtn = document.createElement("button");
+      jumpBtn.type = "button";
+      jumpBtn.className = "highlight-jump-btn";
+      const jumpLabel = item.marks.length > 1 ? `Go to highlight ${i + 1} of ${item.marks.length} in the notes` : "Go to this highlight in the notes";
+      jumpBtn.title = jumpLabel;
+      jumpBtn.setAttribute("aria-label", jumpLabel);
+      jumpBtn.textContent = item.marks.length > 1 ? `Go to → (${i + 1})` : "Go to →";
+      jumpBtn.addEventListener("click", () =>
+        scheduleNoteJump(mark.anchor, { patient: true }, { markIndex: mark.markIndex, markCount: mark.markCount })
+      );
+      const noteBtn = document.createElement("button");
+      noteBtn.type = "button";
+      noteBtn.className = "highlight-note-btn";
+      noteBtn.classList.toggle("has-note", Boolean(mark.note));
+      const noteLabel = mark.note ? "Edit the note on this highlight" : "Add a note to this highlight";
+      noteBtn.title = noteLabel;
+      noteBtn.setAttribute("aria-label", noteLabel);
+      noteBtn.innerHTML = "&#9998;";
+      noteBtn.addEventListener("click", () =>
+        openHighlightNoteEditor(mark.markIndex, noteBtn.getBoundingClientRect(), mark.note)
+      );
+      actions.append(jumpBtn, noteBtn);
+      jumps.appendChild(actions);
+    });
+    row.append(body, jumps);
     list.appendChild(row);
   });
+  toRender.forEach(([container, markdown]) => renderMarkdown(container, markdown));
 }

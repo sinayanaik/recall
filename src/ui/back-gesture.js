@@ -13,6 +13,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { closeMainMenu, isMainMenuOpen } from "../editor/toolbars.js?v=__BUILD__";
 import { closeAllDeckTileMenus } from "../library/folder-tree.js?v=__BUILD__";
 import { closeMyDecksMoreMenu } from "../library/my-decks-menu.js?v=__BUILD__";
+import { closeHighlightNoteEditor, isHighlightNoteEditorOpen } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { closeNotesHeadMore, isNotesHeadMoreOpen } from "../notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { closeNotesToc, isNotesTocOpen } from "../notes/toc.js?v=__BUILD__";
@@ -62,6 +63,7 @@ export const OVERLAY_LAYERS = [
   // press aimed at the open menu would fall through to goNavBack() and load
   // another deck underneath it.
   { isOpen: () => isNotesHeadMoreOpen(), close: () => closeNotesHeadMore() },
+  { isOpen: () => isHighlightNoteEditorOpen(), close: () => closeHighlightNoteEditor() },
 
   // The hamburger drawer sits here, above the dialogs, because it genuinely is
   // above them: .toolbar is z-index 500 against the help modal's 240 and the
@@ -74,6 +76,7 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(el.confirmModal && !el.confirmModal.hidden), close: () => el.confirmModalCancelBtn?.click() },
   { isOpen: () => Boolean(el.promptModal && !el.promptModal.hidden), close: () => el.promptModalCancelBtn?.click() },
   { isOpen: () => Boolean(el.frameCardModal && !el.frameCardModal.hidden), close: () => el.frameCardCancelBtn?.click() },
+  { isOpen: () => Boolean(el.exportHighlightsModal && !el.exportHighlightsModal.hidden), close: () => el.exportHighlightsCancelBtn?.click() },
   { isOpen: () => Boolean(el.qnCatModal && !el.qnCatModal.hidden), close: () => closeQnCatModal() },
   // These two are read off the DOM rather than through their `helpModal` /
   // `appInfoModal` bindings, which are top-level `const`s declared thousands of
