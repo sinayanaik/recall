@@ -10,3 +10,18 @@
 .export-highlights-formats {
   flex-wrap: wrap;
 }
+
+/* The Highlights tab's own header row — deliberately its own class, not
+ * .notes-head (see index.html's comment on this element): that div is
+ * unconditionally hidden whenever the panel is in notes/highlights mode,
+ * so a button placed inside it (as this one originally was) is invisible
+ * regardless of anything else being correct. */
+.highlights-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}

@@ -95,6 +95,7 @@ export const el = {
   exportNotesBtn: document.querySelector("#exportNotesBtn"),
   exportNotesMenu: document.querySelector("#exportNotesMenu"),
   exportHighlightsBtn: document.querySelector("#exportHighlightsBtn"),
+  drawerExportHighlightsBtn: document.querySelector("#drawerExportHighlightsBtn"),
   exportHighlightsModal: document.querySelector("#exportHighlightsModal"),
   exportHighlightsContext: document.querySelector("#exportHighlightsContext"),
   exportHighlightsCancelBtn: document.querySelector("#exportHighlightsCancelBtn"),

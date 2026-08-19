@@ -1568,11 +1568,13 @@ el.exportNotesMenu?.addEventListener("click", (event) => {
   if (!button) return;
   handleExportNotesAction(button.dataset.exportNotes);
 });
-el.exportHighlightsBtn?.addEventListener("click", () => {
+const openExportHighlightsModal = () => {
   if (!el.exportHighlightsModal) return;
   el.exportHighlightsModal.hidden = false;
   lockPageScroll();
-});
+};
+el.exportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
+el.drawerExportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
 el.exportHighlightsCancelBtn?.addEventListener("click", () => {
   if (!el.exportHighlightsModal) return;
   el.exportHighlightsModal.hidden = true;

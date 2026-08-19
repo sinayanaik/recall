@@ -460,6 +460,11 @@
               <button type="button" data-export-notes="markdown">Markdown</button>
             </div>
           </div>
+          <!-- Same drawer section as Export Cards/Export Notes above — a
+               reader looking for "export my highlights" checks here first,
+               not the Highlights tab's own small header button (which still
+               opens the identical dialog — see #exportHighlightsModal). -->
+          <button class="tool-button" id="drawerExportHighlightsBtn" type="button" title="Export highlighted lines">&#128308;&#8659; Export Highlights&#8230;</button>
 
           <span class="drawer-section-label">App</span>
           <button class="tool-button" id="styleBtn" type="button" title="Themes &amp; Style" aria-label="Themes and style">&#9711; Themes &amp; Style</button>
@@ -682,10 +687,13 @@
             <textarea class="edit-textarea notes-edit" id="notesEdit" hidden spellcheck="false" placeholder="Write your notes here…"></textarea>
           </div>
           <div class="highlights-stage" id="highlightsStage" hidden>
-            <div class="notes-head">
-              <div class="face-label-row">
-                <span class="face-label">Highlights</span>
-              </div>
+            <!-- NOT .notes-head: that div is unconditionally display:none
+                 whenever the panel is in notes/highlights mode
+                 (styles/16-mobile-reading.css) — its old controls only ever
+                 worked because JS lifts them into #viewModeRow first. This
+                 bar is its own, always-visible row instead. -->
+            <div class="highlights-toolbar">
+              <span class="face-label">Highlights</span>
               <button class="tool-button" id="exportHighlightsBtn" type="button" title="Export highlighted lines">&#8659; Export&#8230;</button>
             </div>
             <div class="highlights-list" id="highlightsList"></div>
