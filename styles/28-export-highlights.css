@@ -38,20 +38,32 @@
  * docx, PDF/print — see buildHighlightsExportBody/buildHighlightsPrintDocument
  * in src/export/pdf.js): the plain-paragraph wall of text was the "no
  * segregation between highlights" report. Each highlight is now a bordered
- * card with a left-edge accent in its own colour (the same yellow/green/blue/
- * pink the app itself uses — see MARK_HIGHLIGHT_HEX in
- * src/format/highlight-colors.js — plus the two legacy tokens an older
- * highlight may still carry), context lines visually recede behind the
- * highlighted line itself, and a chapter/section change gets a real heading
- * instead of being repeated on every card.
+ * card with a left-edge accent in its own colour, context lines visually
+ * recede behind the highlighted line itself, and a chapter/section change
+ * gets a real heading instead of being repeated on every card.
+ *
+ * Deliberately built ONLY from --print-* (styles/01-tokens.css) — the same
+ * fixed, theme-INDEPENDENT palette .print-root/.cornell-print-document
+ * already use for exactly this reason — never --bg/--text/--panel-2/--line/
+ * --accent (the LIVE app theme). Using the live theme here was the actual
+ * bug behind "why does this look awful": the exported page's own background
+ * already resolves through --print-bg (always the same light tone,
+ * regardless of whether the app happens to be in a dark theme when you
+ * export), so a card styled with --panel-2 rendered as a dark box floating
+ * on a light page the moment you exported from a dark theme — not a
+ * caching or specificity problem, a genuinely wrong token. color-mix keeps
+ * the card/note tints as subtle variants of the SAME fixed base rather than
+ * a second unrelated palette, so nothing here can go dark again no matter
+ * what theme is active when you export.
  */
 .highlight-export-entry {
   margin: 0 0 14px;
   padding: 10px 14px;
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--accent);
+  border: 1px solid color-mix(in srgb, var(--print-text, #17201c) 15%, var(--print-bg, #eef2f2));
+  border-left: 4px solid var(--print-accent, #16796c);
   border-radius: 0 8px 8px 0;
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--print-text, #17201c) 4%, var(--print-bg, #eef2f2));
+  color: var(--print-text, #17201c);
 }
 
 .highlight-export-entry[data-color="yellow"] { border-left-color: #e0b400; }
@@ -63,22 +75,23 @@
 
 .highlight-export-context {
   margin: 0 0 4px;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--print-text, #17201c) 60%, var(--print-bg, #eef2f2));
   font-size: 0.88em;
   font-style: italic;
-  opacity: 0.85;
 }
 
 .highlight-export-mark {
   margin: 0;
+  color: var(--print-text, #17201c);
 }
 
 .highlight-export-note {
   margin-top: 8px;
   padding: 6px 10px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 60%, var(--line));
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-left: 3px solid var(--print-accent, #16796c);
+  background: color-mix(in srgb, var(--print-accent, #16796c) 8%, var(--print-bg, #eef2f2));
   border-radius: 0 6px 6px 0;
+  color: var(--print-text, #17201c);
 }
 
 .highlight-export-note-label {
@@ -87,16 +100,16 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.02em;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--print-text, #17201c) 60%, var(--print-bg, #eef2f2));
 }
 
 .highlight-export-chapter-heading {
   margin: 28px 0 12px;
   padding-bottom: 6px;
-  border-bottom: 2px solid var(--line);
+  border-bottom: 2px solid color-mix(in srgb, var(--print-text, #17201c) 20%, var(--print-bg, #eef2f2));
   font-size: 1.1rem;
   font-weight: 800;
-  color: var(--text);
+  color: var(--print-text, #17201c);
 }
 
 .highlight-export-chapter-heading:first-child {
