@@ -25,8 +25,23 @@
  * see src/images/surface-controls.js) is unaffected, and larger than 220px
  * only shrinks to fit here, exactly like it already does at 100% width on a
  * narrow phone screen.
+ *
+ * The real reason a plain max-width rule alone did nothing: every rendered
+ * <img> — not just an actual diagram — gets wrapped in a .diagram-shell by
+ * addDiagramZoomControl (the zoom-button affordance, see
+ * src/render/enhance.js / src/render/diagram-zoom.js), and
+ * ".diagram-shell img" (06-rendered.css) sets `width: var(--visual-max-width,
+ * 100%) !important; max-width: none !important;` — an !important rule beats
+ * ANY non-!important rule regardless of source order or specificity. Only a
+ * more specific !important rule can win, hence both below.
  */
 .highlight-preview img,
 .highlight-note-body img {
   max-width: 220px;
+}
+
+.highlight-preview .diagram-shell img,
+.highlight-note-body .diagram-shell img {
+  width: 220px !important;
+  max-width: 220px !important;
 }

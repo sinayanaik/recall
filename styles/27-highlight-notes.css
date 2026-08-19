@@ -189,9 +189,17 @@
 /* Same fix as the Highlights panel rows (26-highlights-panel-rows.css): the
  * base --visual-max-width percentage is tuned for the full notes reading
  * column, not a ~430px popup, so an unresized image reads oversized here too
- * without a flat cap. */
+ * without a flat cap. And same reason a plain max-width alone does nothing:
+ * every rendered <img> is wrapped in a .diagram-shell (the zoom-button
+ * affordance), whose "!important" width rule (06-rendered.css) beats any
+ * non-!important rule outright — only a more specific !important wins. */
 .highlight-note-editor-rendered img {
   max-width: 220px;
+}
+
+.highlight-note-editor-rendered .diagram-shell img {
+  width: 220px !important;
+  max-width: 220px !important;
 }
 
 .highlight-note-editor-foot {
