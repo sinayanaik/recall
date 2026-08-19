@@ -23,6 +23,7 @@ import { beginIndexBatch, deleteDeckFromLibrary, endIndexBatch, loadDeckFromLibr
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { TOMBSTONE_ORIGIN_INFERRED, TOMBSTONE_ORIGIN_USER, clearDeckTombstone, deckTombstoneOrigin, flushPendingUntombstones, isDeckTombstoned, readDeckTombstones, removeDecksMissingFromCloud, resetActiveDeckAfterDelete, tombstoneDeck } from "../library/tombstones.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
+import { captureCurrentReadingAnchor, currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { warmDeckImageCache } from "../pwa/service-worker-client.js?v=__BUILD__";
 import { flushPendingQuickNoteAnchors } from "../quick-notes/anchors.js?v=__BUILD__";
 import { flushPendingQuickNoteCategories } from "../quick-notes/categories.js?v=__BUILD__";
@@ -592,14 +593,77 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     console.warn("Could not commit active edit before sync", error);
   }
 
+  // Reading a book, and doing nothing else, arms no autosave timer at all —
+  // scheduleReadingPositionSave (reading-position.js) only ever writes the
+  // small local-only position store, and meta.readingPosition otherwise rides
+  // into a deck save purely as a piggyback on some OTHER edit (see
+  // deckSnapshot). Worse: even flushing an ordinary deck save here wouldn't
+  // help — finishSaveDeckToLibrary (local-library.js) deliberately refuses to
+  // advance updatedAt for a position-only change (deckContentMatches doesn't
+  // look at meta at all), specifically so idly reading a book can never make a
+  // stale local copy falsely "win" last-write-wins over a genuine edit made on
+  // another device. That protection is correct and must stay — but it also
+  // means a position-only change is NEVER push-eligible through the ordinary
+  // `toPush` path below, no matter what gets flushed here. So without this,
+  // "Sync Now" after nothing but reading correctly found nothing queued to
+  // push — not a wrong report, a push that genuinely never happened.
+  //
+  // The fix is a narrow write that bypasses that gate on purpose: only the
+  // `meta.readingPosition` key, for the one deck open right now, never
+  // touching notes/cards/updatedAt/LWW at all. Safe to skip the whole
+  // content-diff machinery because the position's OWN `at` timestamp is what
+  // resolves cross-device ordering on read (see betterReadingPosition) — the
+  // deck row's updated_at was never part of that comparison to begin with.
+  captureCurrentReadingAnchor();
+  const readingPositionMoved = Boolean(currentReadingAnchor)
+    && currentReadingAnchorDeckKey === currentDeckKey()
+    && currentReadingAnchor.offset !== state.meta?.readingPosition?.offset;
+  let readingPositionSyncedHere = false;
+  if (readingPositionMoved && state.deckId) {
+    try {
+      const { data: currentRow, error: readError } = await withTimeout(
+        abortable((signal) => supabaseClient.from("decks").select("meta").eq("id", state.deckId).abortSignal(signal)),
+        CLOUD_TIMEOUT_MS, "read deck meta"
+      );
+      if (!readError && currentRow) {
+        const cloudMeta = (currentRow.meta && typeof currentRow.meta === "object") ? currentRow.meta : {};
+        const mergedMeta = { ...cloudMeta, readingPosition: currentReadingAnchor };
+        const { error: writeError } = await withTimeout(
+          abortable((signal) => supabaseClient.from("decks").update({ meta: mergedMeta }).eq("id", state.deckId).abortSignal(signal)),
+          CLOUD_TIMEOUT_MS, "save reading position"
+        );
+        if (!writeError) {
+          readingPositionSyncedHere = true;
+          // Keep the in-memory and on-disk copies in step with what the cloud
+          // now holds, so this doesn't look "moved" again on the very next
+          // sync, and so a content save right after doesn't clobber it back.
+          state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), readingPosition: currentReadingAnchor };
+          if (state.localDeckId) {
+            const snap = await readDeckSnapshot(state.localDeckId);
+            if (snap) {
+              snap.meta = { ...(snap.meta && typeof snap.meta === "object" ? snap.meta : {}), readingPosition: currentReadingAnchor };
+              writeDeckSnapshot(state.localDeckId, snap);
+            }
+          }
+        } else {
+          console.warn("Could not sync reading position", writeError);
+        }
+      }
+    } catch (error) {
+      console.warn("Could not sync reading position", error);
+    }
+  }
+
   // Flush any pending debounced autosave. Without this, an edit made in the last
   // ~400ms lives only in memory (deckAutosaveTimer hasn't fired), so the library
   // copy's `updatedAt` is stale — a cloud copy could then read as "newer" and
   // the pull below would overwrite and reload the deck, silently discarding that
   // in-flight edit. Flushing writes it out and bumps the timestamp so local
   // edits correctly win the last-write-wins comparison. Also runs when we just
-  // committed an editor edit above, which schedules no timer of its own.
-  if (deckAutosaveTimer || committedActiveEdit) {
+  // committed an editor edit above, which schedules no timer of its own, and
+  // when the reading position moved, which schedules a DIFFERENT timer that
+  // this sync doesn't otherwise know to wait for.
+  if (deckAutosaveTimer || committedActiveEdit || readingPositionMoved) {
     if (deckAutosaveTimer) {
       clearTimeout(deckAutosaveTimer);
       setDeckAutosaveTimer(null);
@@ -1318,6 +1382,11 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // largest) phase would be missing from every successful run's report.
     closePhase();
     if (imagesUploaded) parts.push(`${imagesUploaded} image${imagesUploaded === 1 ? "" : "s"} uploaded`);
+    // The narrow reading-position write above (see readingPositionSyncedHere)
+    // never touches `pushed`/`deckLog` — it's not a deck push — so without
+    // this it would be real cloud activity with nothing in `parts` to show
+    // for it, falling through to "already up to date" exactly like before.
+    if (readingPositionSyncedHere) parts.push("reading position synced");
     const changes = describeSyncStats(totalSyncStats(deckLog), { asTotals: true });
     const detail = changes.length ? ` — ${changes.join(", ")}` : "";
     // Name the decks that failed. "See console" asked the user to open devtools
