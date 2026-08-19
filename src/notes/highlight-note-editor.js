@@ -12,6 +12,7 @@
 import { createToolbarHtml } from "../editor/toolbars.js?v=__BUILD__";
 import { enableSyntaxHighlighting, refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { clearHighlightNoteAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
+import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 
@@ -116,6 +117,40 @@ function ensureHighlightNoteEditor() {
     toolbar.querySelectorAll(".toolbar-dropdown.is-open").forEach((d) => d.classList.remove("is-open"));
   });
 
+  // Corner-drag resize/delete for an image or diagram in the note, same as
+  // the main notes editor — enhanceSurfaceImageControls/
+  // enhanceSurfaceDiagramControls (src/images/surface-controls.js) don't
+  // care which of the app's fixed surfaces they're pointed at; they only
+  // need something shaped like a render target (view + getSource/setSource/
+  // rerender), so this popup gets its own rather than needing to be one of
+  // the 3 hardcoded names (notes/question/answer). A resize/delete commits
+  // through setSource into THIS note's own textarea, not state.notes.
+  const noteSurface = {
+    view: rendered,
+    getSource: () => textarea.value,
+    setSource: (v) => {
+      textarea.value = v;
+      // A programmatic .value write fires no "input" event, which the
+      // syntax-highlight backdrop normally syncs itself from.
+      refreshHighlightBackdrop(textarea);
+    },
+    rerender: () => renderPreview()
+  };
+
+  function renderPreview() {
+    // Unhidden BEFORE rendering, not after: a mermaid diagram inside the note
+    // needs real layout to size against, which a `hidden` (display:none)
+    // container has none of — see renderMarkdown/enhanceRenderedMarkdown.
+    // Same full pipeline the Highlights panel now uses (not the bare
+    // markdownToSafeHtml pass) so LaTeX and images in a note actually render
+    // instead of showing raw "$…$" or a broken image icon — and so the
+    // resize/delete grips below have real <img>/diagram elements to attach to.
+    return renderMarkdown(rendered, textarea.value).then(() => {
+      enhanceSurfaceImageControls(noteSurface);
+      enhanceSurfaceDiagramControls(noteSurface);
+    });
+  }
+
   const setMode = (mode) => {
     const write = mode === "write";
     writeBtn.classList.toggle("is-active", write);
@@ -123,13 +158,7 @@ function ensureHighlightNoteEditor() {
     toolbarWrap.hidden = !write;
     textareaWrapper.hidden = !write;
     rendered.hidden = write;
-    // Unhidden BEFORE rendering, not after: a mermaid diagram inside the note
-    // needs real layout to size against, which a `hidden` (display:none)
-    // container has none of — see renderMarkdown/enhanceRenderedMarkdown.
-    // Same full pipeline the Highlights panel now uses (not the bare
-    // markdownToSafeHtml pass) so LaTeX and images in a note actually render
-    // instead of showing raw "$…$" or a broken image icon.
-    if (!write) renderMarkdown(rendered, textarea.value);
+    if (!write) renderPreview();
     if (write) textarea.focus();
   };
   writeBtn.addEventListener("click", () => setMode("write"));

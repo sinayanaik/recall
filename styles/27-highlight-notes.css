@@ -202,6 +202,28 @@
   max-width: 220px !important;
 }
 
+/* This popup's note is a genuine editable surface (its own textarea — see
+ * highlight-note-editor.js), so an image can be corner-drag resized exactly
+ * like one in the main notes. A resized (.has-custom-size) image must win
+ * over the flat 220px default above: same "more specific !important beats
+ * !important" shape as #notesView's own img.has-custom-size rule
+ * (06-rendered.css), scoped here to this popup instead of a fixed view id. */
+.highlight-note-editor-rendered .diagram-shell img.has-custom-size,
+.highlight-note-editor-rendered .diagram-shell .mermaid.has-custom-size,
+.highlight-note-editor-rendered .diagram-shell .nomnoml-diagram.has-custom-size {
+  width: var(--notes-img-w) !important;
+  max-width: var(--notes-img-w) !important;
+}
+
+/* The resize grip sits bottom-right of the shell, same spot the Zoom pill
+ * defaults to — move the pill aside wherever a grip is present, matching
+ * the main notes' own treatment. */
+.highlight-note-editor-rendered .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
+  float: left;
+  left: 0;
+  right: auto;
+}
+
 .highlight-note-editor-foot {
   display: flex;
   align-items: center;
