@@ -302,64 +302,19 @@ export function notesPageForRange(range) {
 //
 // The browser's own `behavior: "smooth"` is what this replaced, and it is the
 // wrong animation for a page turn: its duration scales with the DISTANCE, so a
-// one-page nudge and an End-key jump to page 148 take wildly different times,
-// and its easing is a slow-in/slow-out curve that reads as sluggish for a
-// gesture you repeat. A fixed 260ms ease-out is the same weight every time —
-// the page leaves immediately and settles, which is what makes repeated turns
-// feel continuous rather than syrupy.
-export const PAGE_TURN_MS = 260;
+// Page changes are a plain, immediate jump — no eased tween. `smooth` is kept
+// as a no-op parameter rather than removed from every call site, so callers
+// that used to ask for the animated turn don't need touching.
+export function cancelNotesPageTween() {}
 
-let pageTurnFrame = 0;
-
-export function cancelNotesPageTween() {
-  if (!pageTurnFrame) return;
-  cancelAnimationFrame(pageTurnFrame);
-  pageTurnFrame = 0;
-}
-
-// Cubic ease-out: fastest at the start, settling at the end.
-function easeOutCubic(t) {
-  return 1 - Math.pow(1 - t, 3);
-}
-
-export function goToNotesPage(page, { smooth = true } = {}) {
+export function goToNotesPage(page, { smooth = true } = {}) { // eslint-disable-line no-unused-vars
   const view = el.notesView;
   if (!view) return;
   const target = Math.max(0, Math.min(notesPageCount() - 1, Math.round(page)));
-  // Clamped, so the tween lands where the scroller will actually stop. Left
-  // unclamped, the last page's target was a value the browser refused, the tween
-  // "arrived" somewhere else, and scheduleNotesPageSettle then snapped back a
-  // page — the note bouncing off its own ending.
   const to = Math.min(target * notesPageWidth(), notesMaxScrollLeft());
   updateNotesPageIndicator(target);
-  cancelNotesPageTween();
-
-  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  if (!smooth || reduced) {
-    markProgrammaticNotesScroll(220);
-    view.scrollLeft = to;
-    return;
-  }
-
-  const from = view.scrollLeft;
-  if (Math.abs(to - from) < 1) return;
-  // Held open for the whole tween plus a settle margin, so the scroll listener
-  // does not read one of these frames as the reader moving and snap the page
-  // out from under the animation.
-  markProgrammaticNotesScroll(PAGE_TURN_MS + 160);
-  const started = performance.now();
-  const step = (now) => {
-    const t = Math.min(1, (now - started) / PAGE_TURN_MS);
-    view.scrollLeft = from + (to - from) * easeOutCubic(t);
-    if (t < 1) {
-      pageTurnFrame = requestAnimationFrame(step);
-      return;
-    }
-    pageTurnFrame = 0;
-    // Land exactly on the boundary — the tween's last frame is a float.
-    view.scrollLeft = to;
-  };
-  pageTurnFrame = requestAnimationFrame(step);
+  markProgrammaticNotesScroll(220);
+  view.scrollLeft = to;
 }
 
 export function turnNotesPage(delta) {
@@ -659,13 +614,21 @@ export function firstVisibleNotesBlock() {
 // what every reader app does and what the gesture already means here: "further
 // through the document".
 //
+// One clean page turn per gesture — deliberately NOT continuous. A wheel
+// tick fires the same eased tween goToNotesPage() already gives keyboard and
+// button turns, so it reads as a page flipping, not content being dragged.
+//
 // Rate-limited rather than accumulated: a trackpad flick delivers dozens of
-// events for one physical gesture, and summing them turns a flick into a
-// twenty-page jump. One turn per gesture, with a cooldown that any continuing
-// momentum keeps resetting — so a long flick still turns one page, and turning
-// several means several deliberate flicks.
-const WHEEL_COOLDOWN_MS = 420;
-const WHEEL_THRESHOLD = 8;
+// wheel events for one physical gesture, and turning a page per event would
+// turn one flick into a many-page jump. The FIRST event of a gesture turns
+// the page immediately (low effort — a light nudge is enough, no need to
+// build up distance), and the cooldown below just swallows the rest of that
+// same gesture's tail so it doesn't fire again. Kept short (250ms, was
+// 420ms) so it only debounces one gesture's own momentum rather than also
+// eating a second, deliberate scroll right after — that's what read as
+// "resistance"/unresponsive before.
+const WHEEL_COOLDOWN_MS = 250;
+const WHEEL_THRESHOLD = 4;
 let wheelReadyAt = 0;
 
 export function handleNotesWheel(event) {

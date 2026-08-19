@@ -9,6 +9,7 @@ import { adjustCornellRows } from "../cards/all-cards.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { notesStreamBusy } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { FOCUS_MODE_KEY } from "./view-mode.js?v=__BUILD__";
 
@@ -122,6 +123,14 @@ export function readChromeHeights() {
 export function measureChromeHeights() {
   if (document.body.classList.contains("chrome-collapsed")) return;
   if (performance.now() < chromeSettleUntil) return;
+  // A big note mid-stream has a backlog of freshly appended, never-laid-out
+  // blocks; forcing a layout read here (of the appbar, nothing to do with the
+  // note) would flush that backlog synchronously right inside whatever click
+  // triggered the collapse. Skip it — the last known --appbar-h/--view-toggle-h
+  // stay in place, which is correct in the overwhelmingly common case where
+  // those elements haven't actually changed size — and scheduleChromeRefit's
+  // own deferred read (also stream-gated) will catch up once the note settles.
+  if (notesStreamBusy) return;
   readChromeHeights();
 }
 
@@ -136,6 +145,13 @@ export let chromeRefitTimer = 0;
 export function scheduleChromeRefit() {
   clearTimeout(chromeRefitTimer);
   chromeRefitTimer = setTimeout(() => {
+    // A big note is still streaming in — re-arm rather than force the read now
+    // (see measureChromeHeights). Rare: only matters for a note large enough to
+    // still be streaming CHROME_SETTLE_MS+40ms after the toggle.
+    if (notesStreamBusy) {
+      chromeRefitTimer = setTimeout(() => scheduleChromeRefit(), CHROME_SETTLE_MS);
+      return;
+    }
     chromeRefitTimer = 0;
     // Straight to the unguarded read: the settle window has just expired and
     // this is the one moment we know the chrome is expanded AND still, so

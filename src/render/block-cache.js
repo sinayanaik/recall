@@ -37,6 +37,49 @@ import { DEFERRED_WORK_MARGIN } from "./deferred-work.js?v=__BUILD__";
 // where a cache could never hit.
 export const renderedBlockCache = new WeakMap();
 
+// True while a large note's blocks are still being streamed in (see
+// renderMarkdown/streamRenderedBlocks below). Read by ui/chrome.js and other
+// callers that force a synchronous layout read from a generic UI action, so
+// they can defer themselves rather than pay for the note's layout backlog.
+export let notesStreamBusy = false;
+
+// The notes view is a single persistent element, so the WeakMap above holds
+// exactly one entry for it — opening note B evicts note A's parsed cache, so
+// switching back to A re-pays preprocessSpecialBlocks + marked.lexer (the
+// synchronous, unyielded part of a render — see renderMarkdown) even though
+// A's markdown hasn't changed. Reusing A's rendered DOM nodes isn't safe here
+// (they may already be detached/re-chunked by B's render), so this only
+// remembers the PARSE result — prepared markdown and the block-key list — by
+// note id, small and bounded. A hit still goes through the normal
+// patch/stream path to rebuild the DOM, which is the part that's already
+// yielded and chunked; it just skips the one long synchronous pass.
+export const NOTES_PARSE_HISTORY_LIMIT = 3;
+
+export const notesParseHistory = new Map(); // noteId -> { source, prepared, split }
+
+export function rememberNotesParseHistory(noteId, entry) {
+  if (noteId == null) return;
+  notesParseHistory.delete(noteId);
+  notesParseHistory.set(noteId, entry);
+  while (notesParseHistory.size > NOTES_PARSE_HISTORY_LIMIT) {
+    const oldest = notesParseHistory.keys().next().value;
+    notesParseHistory.delete(oldest);
+  }
+}
+
+export function clearNotesParseHistory() {
+  notesParseHistory.clear();
+}
+
+// Same identity a note keeps across sync/import/rename — a title change or a
+// remote-id assignment must not look like a different note. Mirrors
+// notes/scroll-anchor.js's currentDeckKey(); duplicated rather than imported
+// because that module already imports FROM this one (block-cache.js ->
+// scroll-anchor.js would be circular).
+export function currentNotesParseKey() {
+  return JSON.stringify([state.deckId || null, state.localDeckId || null, state.folderDeck?.path || null]);
+}
+
 export const renderSequence = new WeakMap();
 
 // Bumped when something outside the markdown changes what a render would
@@ -1064,13 +1107,42 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
   const sequence = (renderSequence.get(container) || 0) + 1;
   renderSequence.set(container, sequence);
 
-  const prepared = preprocessSpecialBlocks(displayMarkdown);
-  const split = cacheable ? splitPreparedBlocks(prepared) : null;
+  // A switch back to a recently-open note: preprocessSpecialBlocks + the
+  // marked.lexer split are a single unyielded synchronous pass (measured at
+  // 100-300ms+ on a large note), and renderedBlockCache above only remembers
+  // the CURRENT note — a note switch away and back re-paid that pass in full
+  // even though this note's markdown hadn't changed at all. Reuse the parse
+  // when the identity and the exact markdown both match; the rebuild below
+  // still goes through the normal (already yielded/chunked) patch/stream path.
+  const notesKey = container === el.notesView ? currentNotesParseKey() : null;
+  const parseHistory = notesKey ? notesParseHistory.get(notesKey) : null;
+  const reuseParse = parseHistory
+    && parseHistory.generation === renderGeneration
+    && parseHistory.source === displayMarkdown
+    ? parseHistory
+    : null;
+
+  const prepared = reuseParse ? reuseParse.prepared : preprocessSpecialBlocks(displayMarkdown);
+  const split = cacheable
+    ? (reuseParse ? reuseParse.split : splitPreparedBlocks(prepared))
+    : null;
+  if (notesKey && split) {
+    rememberNotesParseHistory(notesKey, { generation: renderGeneration, source: displayMarkdown, prepared, split });
+  }
   let roots = null;
   if (split) {
     // Every block is parsed behind the document's link reference definitions, so
     // a change to those changes what any block could render to: start over.
     const reusable = cached && cached.prelude === split.prelude ? cached : null;
+    // A freshly appended block has had no layout pass at all yet — contained or
+    // not, establishing its box is real work — so while a big note is streaming
+    // in, ANY forced layout read anywhere in the app (even of an unrelated
+    // fixed-size element — see readChromeHeights in ui/chrome.js) flushes that
+    // backlog synchronously wherever it happens to land, which is what makes an
+    // unrelated button feel like it hung. Flagged here so those callers can
+    // defer themselves a frame instead of forcing it mid-stream.
+    const tracksStream = container === el.notesView && split.blocks.length >= RENDER_STREAM_MIN_BLOCKS;
+    if (tracksStream) notesStreamBusy = true;
     // Awaited: a cold render of a big note is streamed in batches with a yield
     // between them, so this can span many frames. `sequenceOk` is how it knows
     // to abandon a run whose container a newer render has already taken.
@@ -1078,6 +1150,7 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
       container, split.blocks, split.prelude, reusable,
       () => renderSequence.get(container) === sequence
     );
+    if (tracksStream) notesStreamBusy = false;
     if (!patched) return; // superseded mid-stream
     roots = patched.fresh;
     resetRenderedClozes(container);

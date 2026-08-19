@@ -225,7 +225,15 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       deckCategoryChanged: normalizeDeckCategory(oldSnapshot.deckCategory) !== normalizeDeckCategory(snapshot.deckCategory),
       // The quick-note category DEFINITIONS live in decks.meta, so a rename or
       // recolour on another device arrives here and nowhere else.
-      noteCategoriesChanged: quickNoteCategoriesDiffer(oldSnapshot.meta, snapshot.meta)
+      noteCategoriesChanged: quickNoteCategoriesDiffer(oldSnapshot.meta, snapshot.meta),
+      // Symmetric with the push side's readingPositionSynced (see
+      // pushLibraryDeckToCloud): another device's reading position can be the
+      // ONLY thing that moved, and it touches neither a card nor the notes
+      // text, so none of the diffs above would ever notice it on their own.
+      // Compared by offset, not `at` — `at` is a fresh timestamp on every
+      // capture even when the position didn't actually move.
+      readingPositionSynced: Boolean(snapshot.meta?.readingPosition)
+        && snapshot.meta.readingPosition.offset !== oldSnapshot.meta?.readingPosition?.offset
     };
   } else {
     stats = { ...emptySyncStats(), cardsAdded: snapshot.cards.length, notesChanged: Boolean(snapshot.notes.trim()) };
@@ -424,10 +432,19 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   stats.cardsAdoptedHere = cardsAdoptedHere;
   if (isNewDeck) {
     stats.notesChanged = Boolean(String(snapshot.notes || "").trim());
+    stats.readingPositionSynced = Boolean(snapshot.meta?.readingPosition);
   } else {
     stats.notesChanged = syncTextChanged(snapshot.notes, cloudDeck?.notes || "");
     stats.titleChanged = syncTextChanged(title, cloudDeck?.title || "");
     stats.deckCategoryChanged = normalizeDeckCategory(cloudDeck?.category) !== deckCategory;
+    // The reader's place moved — a change no card/notes diff above would ever
+    // catch, since it touches neither. Compared by offset, not by `at`: `at`
+    // is a fresh Date.now() on every capture even when the reader hasn't
+    // scrolled at all, which would make this true on every push.
+    const localPosition = snapshot.meta?.readingPosition;
+    const cloudPosition = cloudDeck?.meta?.readingPosition;
+    stats.readingPositionSynced = Boolean(localPosition)
+      && localPosition.offset !== cloudPosition?.offset;
   }
   // `localCardsChanged` tells the caller the on-device card list moved under the
   // user's feet, so an open deck has to be reloaded to show it (the same reason

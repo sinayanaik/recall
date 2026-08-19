@@ -49,7 +49,14 @@ export function emptySyncStats() {
     // The whole deck was deleted on another device, so this device dropped its
     // copy instead of re-uploading it. A deck-level flag, not a card count —
     // there is no card detail to report once the deck is gone.
-    deckRemovedHere: false
+    deckRemovedHere: false,
+    // meta.readingPosition (where paged/continuous reading last left off) moved.
+    // This can be the ONLY thing a push actually changed — reading a book edits
+    // no card and no note text — and without its own flag that push's stats
+    // come back all-zero and get reported as "already up to date", which is
+    // false: a write did just happen, and it's the write another device needs
+    // to pick up the reader's place. See reconcile.js's pushLibraryDeckToCloud.
+    readingPositionSynced: false
   };
 }
 
@@ -57,7 +64,7 @@ export function emptySyncStats() {
 // booleans below them, which are counted as "how many decks".
 export const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere"];
 
-export const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesSyncFailed", "deckRemovedHere"];
+export const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesSyncFailed", "deckRemovedHere", "readingPositionSynced"];
 
 // Human phrases for a diff, most consequential first. Returns an array so
 // callers can join, count, or truncate it. With `asTotals`, the deck-level
@@ -85,6 +92,7 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   flag(stats.notesConflicted, "your notes edit was replaced by a newer one (a copy was kept)");
   flag(stats.notesSyncFailed, "notes could NOT be synced — run supabase_setup.sql in Supabase");
   flag(stats.deckRemovedHere, "removed here (deleted on another device)");
+  flag(stats.readingPositionSynced, "reading position synced");
   return parts;
 }
 
