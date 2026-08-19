@@ -1,0 +1,83 @@
+/* Print-safe rendered content OUTSIDE a Cornell card row.
+ *
+ * .cornell-print-row .rendered ... (09-all-cards.css) already rebases every
+ * rendered-markdown colour (links, headings, blockquote, inline code) from
+ * the live theme onto the fixed --print-* palette — but it's scoped to
+ * .cornell-print-row specifically, so it only ever covered a card's own
+ * question/answer. buildNotesPrintDocument and buildHighlightsPrintDocument
+ * (src/export/pdf.js) both put their `.rendered` section directly under
+ * .cornell-print-document instead — nothing wraps them in a .cornell-print-row
+ * — so their links/headings/quotes fell through to the plain screen rules
+ * (.rendered a[href] etc., 12-notes.css) that read the LIVE theme. Exporting
+ * a note (or a highlight) that contains a link while the app happens to be
+ * in a dark theme rendered that link the same colour as the fixed light
+ * print background it was sitting on — invisible, not merely mistinted.
+ *
+ * .highlights-export-page (src/export/pdf.js buildHighlightsExportBody) is
+ * the SAME fix for the standalone HTML/docx path: that one otherwise inlines
+ * the LIVE theme for the whole page on purpose (it's meant to carry the
+ * theme you exported in — see html.js), so the highlight cards' fixed
+ * print-safe styling gets its own self-contained wrapper instead, covered
+ * here by the same selector list.
+ *
+ * Same fix, same values, wider selector: covers both the un-rowed notes/
+ * highlights sections AND (redundantly, harmlessly — a .cornell-print-row is
+ * already inside .cornell-print-document) the card rows the narrower rule
+ * already handled.
+ */
+.cornell-print-document .rendered,
+.highlights-export-page .rendered {
+  color: var(--print-text);
+}
+
+.cornell-print-document .rendered :is(h1, h2, h3, h4, h5, h6, p, li, dd, dt, th, td, strong, b, em, i),
+.highlights-export-page .rendered :is(h1, h2, h3, h4, h5, h6, p, li, dd, dt, th, td, strong, b, em, i) {
+  color: inherit;
+}
+
+.cornell-print-document .rendered :is(h1, h2, h3, h4, h5, h6),
+.highlights-export-page .rendered :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--print-text);
+  font-weight: 900;
+}
+
+.cornell-print-document .rendered :is(h1, h2)::after,
+.highlights-export-page .rendered :is(h1, h2)::after {
+  border-top-color: var(--print-accent);
+}
+
+.cornell-print-document .rendered blockquote,
+.highlights-export-page .rendered blockquote {
+  border-left-color: var(--print-accent);
+  background: color-mix(in srgb, var(--print-accent) 7%, #ffffff);
+  color: var(--print-text);
+}
+
+.cornell-print-document .rendered a,
+.highlights-export-page .rendered a {
+  color: color-mix(in srgb, var(--print-accent) 74%, #10221e);
+}
+
+.cornell-print-document .rendered :not(pre) > code,
+.highlights-export-page .rendered :not(pre) > code {
+  background: color-mix(in srgb, var(--print-accent) 10%, #f4f6f6);
+  color: var(--print-text);
+}
+
+/* The cover header (title/date) around a highlights export — same fixed
+ * palette, so it doesn't sit half-themed against the print-safe content
+ * below it. */
+.highlights-export-page {
+  background: var(--print-bg, #eef2f2);
+  color: var(--print-text, #17201c);
+  padding: 20px;
+  border-radius: 10px;
+}
+
+.highlights-export-page .flat-export-cover {
+  border-bottom-color: color-mix(in srgb, var(--print-text, #17201c) 20%, var(--print-bg, #eef2f2));
+}
+
+.highlights-export-page .flat-export-cover p {
+  color: color-mix(in srgb, var(--print-text, #17201c) 60%, var(--print-bg, #eef2f2));
+}

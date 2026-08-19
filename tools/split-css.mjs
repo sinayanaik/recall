@@ -159,6 +159,14 @@ const POST_SPLIT = {
     "The 'Export highlights' dialog (#exportHighlightsModal) — reuses the " +
     ".confirm-modal/.sync-modal-actions chrome other small dialogs already " +
     "have; only the context-size number input and the format row are new.",
+  "29-print-safe-rendered.css":
+    "Widens .cornell-print-row .rendered's print-safe link/heading/quote/code " +
+    "colours (09-all-cards.css) to .cornell-print-document .rendered and " +
+    "the new .highlights-export-page wrapper — the notes/highlights print " +
+    "and standalone-HTML export paths put rendered content directly under " +
+    "those instead of a Cornell row, so it fell through to the live-theme " +
+    "screen rules and could render invisible (same colour as the fixed " +
+    "print background) when exported from a dark theme.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

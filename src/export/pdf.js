@@ -461,16 +461,27 @@ function highlightsExportBodyHtml(items) {
 // `options`: { contextLines, includeChapter, includeNotes } — the export
 // dialog's own keep-or-drop toggles (src/export/run.js), threaded straight
 // through to collectDeckHighlightsForExport.
+// Wrapped in .highlights-export-page — unlike the flat notes/Cornell export
+// bodies (which deliberately carry the theme active at export time, straight
+// through exportExtraCss's live-theme tokens), this content is styled with
+// the fixed --print-* palette throughout (styles/28-export-highlights.css /
+// 29-print-safe-rendered.css) so it looks the same whether it lands in the
+// PDF/print path (already print-safe end to end via .cornell-print-document)
+// or the standalone HTML/docx path (which otherwise inlines the LIVE theme
+// for everything around it) — without this wrapper, the highlight cards'
+// fixed light styling would sit on a page background that could be dark.
 export function buildHighlightsExportBody(title, options = {}) {
   const items = collectDeckHighlightsForExport(options);
   return `
-    <header class="flat-export-cover">
-      <h1>${escapeHtml(title)}</h1>
-      <p>Highlights &middot; ${new Date().toLocaleString()}</p>
-    </header>
-    <section class="flat-export-notes rendered highlights-export-body">
-      ${highlightsExportBodyHtml(items)}
-    </section>
+    <div class="highlights-export-page">
+      <header class="flat-export-cover">
+        <h1>${escapeHtml(title)}</h1>
+        <p>Highlights &middot; ${new Date().toLocaleString()}</p>
+      </header>
+      <section class="flat-export-notes rendered highlights-export-body">
+        ${highlightsExportBodyHtml(items)}
+      </section>
+    </div>
   `;
 }
 
