@@ -252,6 +252,20 @@ export function normalizeEpubTitleCandidate(text) {
   return value;
 }
 
+// A TOC anchor almost always points straight at the chapter's own in-body
+// heading, so extracting "from the anchor onward" pulls that heading in too
+// — right after we've already emitted it as the chapter's numbered title
+// (see convertEpubChapters). Detecting that exact case lets the extractor
+// skip past it instead of rendering the same title twice in a row. Anything
+// that reads as a *different* label (a distinct sub-heading, a subtitle) is
+// left alone — only a same-text heading is a duplicate, not real content.
+export function isEpubDuplicateHeadingNode(node, title) {
+  if (!node || node.nodeType !== 1 || !/^H[1-6]$/.test(node.tagName)) return false;
+  const nodeText = normalizeEpubTitleCandidate(node.textContent).toLowerCase();
+  const titleText = normalizeEpubTitleCandidate(title).toLowerCase();
+  return !!nodeText && nodeText === titleText;
+}
+
 // Shared title-resolution priority used by both the real import and the
 // table-of-contents preview shown before it starts, so the preview never
 // shows a chapter name the actual import wouldn't also produce: the book's
@@ -488,10 +502,12 @@ export function buildEpubIdMap(doc) {
 // split points to land on clean element boundaries. This is what lets a
 // single physical chapter file be divided at its own internal sub-heading
 // anchors — see planEpubChapters / convertEpubChapters.
-export function extractEpubRangeMarkdown(doc, body, startNode, endNode, chapterPath, imageUrlMap) {
+export function extractEpubRangeMarkdown(doc, body, startNode, endNode, chapterPath, imageUrlMap, skipStartNode) {
   const range = doc.createRange();
-  if (startNode) range.setStartBefore(startNode);
-  else range.setStart(body, 0);
+  if (startNode) {
+    if (skipStartNode) range.setStartAfter(startNode);
+    else range.setStartBefore(startNode);
+  } else range.setStart(body, 0);
   if (endNode) range.setEndBefore(endNode);
   else range.setEnd(body, body.childNodes.length);
   if (range.collapsed) return "";
@@ -760,7 +776,8 @@ export async function convertEpubChapters(zip, spine, markers, imageUrlMap, prog
         const startNode = positions[i].node;
         const endNode = positions[i + 1]?.node || null;
         startChapter(positions[i].marker.title);
-        const segment = extractEpubRangeMarkdown(doc, body, startNode, endNode, spineEntry.path, imageUrlMap);
+        const skipStartNode = isEpubDuplicateHeadingNode(startNode, positions[i].marker.title);
+        const segment = extractEpubRangeMarkdown(doc, body, startNode, endNode, spineEntry.path, imageUrlMap, skipStartNode);
         if (segment) current.parts.push(segment);
       }
     } catch (error) {

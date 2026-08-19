@@ -73,11 +73,15 @@
   contain-intrinsic-size: auto;
 }
 
-/* Things that must not be sliced down the middle by a column break. A heading
-   stranded at the foot of a column with its first paragraph on the next page is
-   the classic multi-column tell. */
+/* A heading's own text must never be sliced mid-line by a column break — but
+   deliberately NOT break-after:avoid here. Gluing a heading to enough of its
+   following content to avoid ever orphaning it meant that when that combined
+   group didn't fit the remaining column space, the WHOLE group got pushed to
+   the next column, leaving a large blank gap at the foot of the previous one.
+   Continuous column flow (even if that occasionally leaves a heading as the
+   last line of a column, its body continuing next column) reads better than
+   that gap. */
 .notes-rendered.is-paged > :is(h1, h2, h3, h4, h5, h6) {
-  break-after: avoid;
   break-inside: avoid;
 }
 
@@ -176,7 +180,6 @@
 }
 
 #notesView.is-paged > .notes-chunk.is-active-chapter > :is(h1, h2, h3, h4, h5, h6) {
-  break-after: avoid;
   break-inside: avoid;
 }
 
