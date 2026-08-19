@@ -84,6 +84,14 @@ const ACCEPTED = {
     "for a drawer that is shut almost all the time — and a rebuild also forgot " +
     "which row was lit, which is the other half of \"the TOC does not reliably " +
     "update\": nothing re-lit it until the reader scrolled again.",
+  renderNotesBacklinks:
+    "Caches its result per open note instead of re-running findBacklinksToOpenNote " +
+    "on every open. That scan reads every deck body in the whole library (see its " +
+    "own comment) — real work the drawer paid again on every single tap, which on " +
+    "a large library is what \"the menu freezes\" looked like: opening the TOC ISN'T " +
+    "awaited there, so the drawer visually opens, and the scan then owns the main " +
+    "thread for whatever's tapped next. Reused until a different note opens; the " +
+    "staleness that trades against is documented at the cache itself.",
   captureCurrentReadingAnchor:
     "Stamps the anchor with `at` and writes it to a store of its own " +
     "(src/notes/reading-position.js). The anchor used to reach disk ONLY as a " +

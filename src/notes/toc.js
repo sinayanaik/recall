@@ -747,25 +747,31 @@ export async function findBacklinksToOpenNote() {
 
 export let backlinksToken = 0;
 
-export async function renderNotesBacklinks() {
-  const section = el.notesBacklinks;
-  const list = el.notesBacklinksList;
-  if (!section || !list) return;
-  // Opening the drawer, switching decks and opening it again can overlap; only
-  // the newest request may write to the list.
-  const token = ++backlinksToken;
-  list.innerHTML = "";
-  section.hidden = true;
+// findBacklinksToOpenNote reads every deck body in the library (see its own
+// comment) — real work, not "far too much to do speculatively" but also not
+// free, and openNotesToc runs it on EVERY open with nothing remembered between
+// them. A reader flipping the ☰ drawer open and shut repeatedly while
+// navigating a book's chapters — the ordinary way this button gets used — paid
+// that full-library scan again each time, which is what "the menu freezes"
+// looked like: the drawer itself opens (this call isn't awaited there), but
+// the scan then owns the main thread for whatever's tapped next.
+//
+// Cached per open note (keyed the same way currentNotesParseKey is) and
+// reused until a different note opens. Staleness this accepts: a link added to
+// SOME OTHER note while this one has stayed open since the last scan won't
+// show up until this note is reopened. That's the right trade against a
+// multi-second freeze on every tap — the same trade notesTocDirty already
+// makes for the heading list itself.
+let notesBacklinksCacheKey = null;
 
-  let hits = [];
-  try {
-    hits = await findBacklinksToOpenNote();
-  } catch (error) {
-    console.warn("Could not work out backlinks", error);
+let notesBacklinksCache = null;
+
+function paintNotesBacklinks(section, list, hits) {
+  list.innerHTML = "";
+  if (!hits.length) {
+    section.hidden = true;
     return;
   }
-  if (token !== backlinksToken || !hits.length) return;
-
   for (const hit of hits) {
     const li = document.createElement("li");
     const button = document.createElement("button");
@@ -782,6 +788,36 @@ export async function renderNotesBacklinks() {
     list.appendChild(li);
   }
   section.hidden = false;
+}
+
+export async function renderNotesBacklinks() {
+  const section = el.notesBacklinks;
+  const list = el.notesBacklinksList;
+  if (!section || !list) return;
+
+  const key = `${state.localDeckId || ""}:${state.deckId || ""}`;
+  if (key === notesBacklinksCacheKey && notesBacklinksCache) {
+    paintNotesBacklinks(section, list, notesBacklinksCache);
+    return;
+  }
+
+  // Opening the drawer, switching decks and opening it again can overlap; only
+  // the newest request may write to the list or the cache.
+  const token = ++backlinksToken;
+  list.innerHTML = "";
+  section.hidden = true;
+
+  let hits = [];
+  try {
+    hits = await findBacklinksToOpenNote();
+  } catch (error) {
+    console.warn("Could not work out backlinks", error);
+    return;
+  }
+  if (token !== backlinksToken) return;
+  notesBacklinksCacheKey = key;
+  notesBacklinksCache = hits;
+  paintNotesBacklinks(section, list, hits);
 }
 
 export function closeNotesToc() {

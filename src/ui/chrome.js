@@ -9,7 +9,7 @@ import { adjustCornellRows } from "../cards/all-cards.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { notesStreamBusy } from "../render/block-cache.js?v=__BUILD__";
+import { isNotesStreamBusy } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { FOCUS_MODE_KEY } from "./view-mode.js?v=__BUILD__";
 
@@ -130,7 +130,7 @@ export function measureChromeHeights() {
   // stay in place, which is correct in the overwhelmingly common case where
   // those elements haven't actually changed size — and scheduleChromeRefit's
   // own deferred read (also stream-gated) will catch up once the note settles.
-  if (notesStreamBusy) return;
+  if (isNotesStreamBusy()) return;
   readChromeHeights();
 }
 
@@ -148,7 +148,7 @@ export function scheduleChromeRefit() {
     // A big note is still streaming in — re-arm rather than force the read now
     // (see measureChromeHeights). Rare: only matters for a note large enough to
     // still be streaming CHROME_SETTLE_MS+40ms after the toggle.
-    if (notesStreamBusy) {
+    if (isNotesStreamBusy()) {
       chromeRefitTimer = setTimeout(() => scheduleChromeRefit(), CHROME_SETTLE_MS);
       return;
     }

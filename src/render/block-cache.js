@@ -37,11 +37,23 @@ import { DEFERRED_WORK_MARGIN } from "./deferred-work.js?v=__BUILD__";
 // where a cache could never hit.
 export const renderedBlockCache = new WeakMap();
 
-// True while a large note's blocks are still being streamed in (see
+// >0 while at least one large note's blocks are still being streamed in (see
 // renderMarkdown/streamRenderedBlocks below). Read by ui/chrome.js and other
 // callers that force a synchronous layout read from a generic UI action, so
 // they can defer themselves rather than pay for the note's layout backlog.
-export let notesStreamBusy = false;
+//
+// A COUNTER, not a boolean: an edit-triggered re-render can start on the same
+// container while the initial cold stream of a big note is still in flight
+// (e.g. a highlight applied the instant the note finishes appearing scrolls
+// it, which re-renders the block under the cursor) — two overlapping streams
+// that finish at different times. A shared boolean had the faster one clear it
+// while the slower one was still mid-stream, silently reopening the exact
+// forced-layout freeze this exists to prevent.
+let notesStreamBusyCount = 0;
+
+export function isNotesStreamBusy() {
+  return notesStreamBusyCount > 0;
+}
 
 // The notes view is a single persistent element, so the WeakMap above holds
 // exactly one entry for it — opening note B evicts note A's parsed cache, so
@@ -1142,15 +1154,22 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
     // unrelated button feel like it hung. Flagged here so those callers can
     // defer themselves a frame instead of forcing it mid-stream.
     const tracksStream = container === el.notesView && split.blocks.length >= RENDER_STREAM_MIN_BLOCKS;
-    if (tracksStream) notesStreamBusy = true;
+    if (tracksStream) notesStreamBusyCount += 1;
     // Awaited: a cold render of a big note is streamed in batches with a yield
     // between them, so this can span many frames. `sequenceOk` is how it knows
     // to abandon a run whose container a newer render has already taken.
-    const patched = await patchRenderedBlocks(
-      container, split.blocks, split.prelude, reusable,
-      () => renderSequence.get(container) === sequence
-    );
-    if (tracksStream) notesStreamBusy = false;
+    // try/finally: a superseded or errored stream must still release its count,
+    // or a caller that never reaches "if (!patched) return" below leaves the
+    // flag stuck busy for the rest of the session.
+    let patched;
+    try {
+      patched = await patchRenderedBlocks(
+        container, split.blocks, split.prelude, reusable,
+        () => renderSequence.get(container) === sequence
+      );
+    } finally {
+      if (tracksStream) notesStreamBusyCount = Math.max(0, notesStreamBusyCount - 1);
+    }
     if (!patched) return; // superseded mid-stream
     roots = patched.fresh;
     resetRenderedClozes(container);

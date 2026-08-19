@@ -30,6 +30,7 @@ import { flushPendingQuickNoteCategories } from "../quick-notes/categories.js?v=
 import { QUICK_NOTES_DECK_TITLE } from "../quick-notes/palette.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
 import { deckStoreUnreadable, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { pushReadingPositionNow } from "./reading-position-cloud.js?v=__BUILD__";
 import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, MISSING_DECK_MIN_AGE_MS, MISSING_DECK_MIN_SIGHTINGS, NOTES_CONFLICT_SUFFIX, clearBackgroundSyncProblem, clearMissingDeckWatch, readMissingDeckWatch, reportBackgroundSyncProblem, writeMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
@@ -618,40 +619,13 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
   const readingPositionMoved = Boolean(currentReadingAnchor)
     && currentReadingAnchorDeckKey === currentDeckKey()
     && currentReadingAnchor.offset !== state.meta?.readingPosition?.offset;
+  // The write itself (read-merge-write of just meta.readingPosition) is shared
+  // with the eager, scroll-driven push in reading-position-cloud.js — see that
+  // module's comment for why a full sync alone isn't enough to get a short
+  // reading session's position off the device.
   let readingPositionSyncedHere = false;
   if (readingPositionMoved && state.deckId) {
-    try {
-      const { data: currentRow, error: readError } = await withTimeout(
-        abortable((signal) => supabaseClient.from("decks").select("meta").eq("id", state.deckId).abortSignal(signal)),
-        CLOUD_TIMEOUT_MS, "read deck meta"
-      );
-      if (!readError && currentRow) {
-        const cloudMeta = (currentRow.meta && typeof currentRow.meta === "object") ? currentRow.meta : {};
-        const mergedMeta = { ...cloudMeta, readingPosition: currentReadingAnchor };
-        const { error: writeError } = await withTimeout(
-          abortable((signal) => supabaseClient.from("decks").update({ meta: mergedMeta }).eq("id", state.deckId).abortSignal(signal)),
-          CLOUD_TIMEOUT_MS, "save reading position"
-        );
-        if (!writeError) {
-          readingPositionSyncedHere = true;
-          // Keep the in-memory and on-disk copies in step with what the cloud
-          // now holds, so this doesn't look "moved" again on the very next
-          // sync, and so a content save right after doesn't clobber it back.
-          state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), readingPosition: currentReadingAnchor };
-          if (state.localDeckId) {
-            const snap = await readDeckSnapshot(state.localDeckId);
-            if (snap) {
-              snap.meta = { ...(snap.meta && typeof snap.meta === "object" ? snap.meta : {}), readingPosition: currentReadingAnchor };
-              writeDeckSnapshot(state.localDeckId, snap);
-            }
-          }
-        } else {
-          console.warn("Could not sync reading position", writeError);
-        }
-      }
-    } catch (error) {
-      console.warn("Could not sync reading position", error);
-    }
+    readingPositionSyncedHere = await pushReadingPositionNow(state.deckId, state.localDeckId, currentReadingAnchor);
   }
 
   // Flush any pending debounced autosave. Without this, an edit made in the last

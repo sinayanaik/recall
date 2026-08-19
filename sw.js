@@ -373,6 +373,7 @@ const APP_SHELL = [
   `./src/sync/indicator.js?v=${STAMP}`,
   `./src/sync/notes-conflict.js?v=${STAMP}`,
   `./src/sync/push.js?v=${STAMP}`,
+  `./src/sync/reading-position-cloud.js?v=${STAMP}`,
   `./src/sync/reconcile.js?v=${STAMP}`,
   `./src/sync/report.js?v=${STAMP}`,
   `./src/sync/stats.js?v=${STAMP}`,
