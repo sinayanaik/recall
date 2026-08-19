@@ -1535,6 +1535,16 @@ What year was the Eiffel Tower built?
           <span class="frame-card-label" id="exportHighlightsContextLabel">Lines of context before/after each highlight</span>
           <input type="number" id="exportHighlightsContext" class="prompt-modal-input export-highlights-context" min="0" max="10" step="1" value="0" aria-labelledby="exportHighlightsContextLabel">
         </div>
+        <div class="export-highlights-toggles">
+          <label class="export-highlights-toggle">
+            <input type="checkbox" id="exportHighlightsChapterToggle" checked>
+            Show which chapter/section each highlight is from
+          </label>
+          <label class="export-highlights-toggle">
+            <input type="checkbox" id="exportHighlightsNotesToggle" checked>
+            Include notes attached to highlights
+          </label>
+        </div>
         <div class="sync-modal-actions export-highlights-formats">
           <button type="button" class="sync-modal-btn" data-export-highlights="markdown">Markdown</button>
           <button type="button" class="sync-modal-btn" data-export-highlights="pdf">PDF</button>

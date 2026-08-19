@@ -1583,9 +1583,13 @@ el.exportHighlightsCancelBtn?.addEventListener("click", () => {
 el.exportHighlightsModal?.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-export-highlights]");
   if (!button) return;
-  const contextLines = Math.max(0, Number(el.exportHighlightsContext?.value) || 0);
+  const options = {
+    contextLines: Math.max(0, Number(el.exportHighlightsContext?.value) || 0),
+    includeChapter: el.exportHighlightsChapterToggle?.checked !== false,
+    includeNotes: el.exportHighlightsNotesToggle?.checked !== false
+  };
   unlockPageScroll();
-  handleExportHighlightsAction(button.dataset.exportHighlights, contextLines);
+  handleExportHighlightsAction(button.dataset.exportHighlights, options);
 });
 el.printRoot.addEventListener("click", (event) => {
   if (event.target.closest("[data-print-close]")) {

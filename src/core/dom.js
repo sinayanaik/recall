@@ -98,6 +98,8 @@ export const el = {
   drawerExportHighlightsBtn: document.querySelector("#drawerExportHighlightsBtn"),
   exportHighlightsModal: document.querySelector("#exportHighlightsModal"),
   exportHighlightsContext: document.querySelector("#exportHighlightsContext"),
+  exportHighlightsChapterToggle: document.querySelector("#exportHighlightsChapterToggle"),
+  exportHighlightsNotesToggle: document.querySelector("#exportHighlightsNotesToggle"),
   exportHighlightsCancelBtn: document.querySelector("#exportHighlightsCancelBtn"),
   allCardsBtn: document.querySelector("#allCardsBtn"),
   allCardsPanel: document.querySelector("#allCardsPanel"),

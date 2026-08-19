@@ -54,6 +54,50 @@ export function chapterHeadingLevel(blocks) {
   return min === 7 ? 0 : min;
 }
 
+// ── Nearest heading for a raw offset ────────────────────────────────────────
+// Unlike chapterHeadingLevel/blockStartsChapter above (built for pagination,
+// which only cares about the SHALLOWEST heading level and works in block
+// indices), this walks raw state.notes directly and remembers a heading of
+// ANY level — for the highlights EXPORT feature's "which chapter/section did
+// this highlight come from" label (src/export/pdf.js), which wants whatever
+// heading is actually nearest, not just the top-level chapter break.
+//
+// Built once per export (headingIndexFor) and searched by bisection
+// (headingForOffset) — same "index once, binary-search per item" shape
+// clozeUnitIndex/clozeUnitAt already use for the same reason: a linear scan
+// per highlight would be O(highlights × note length).
+export function headingIndexFor(source) {
+  const headings = [];
+  let pos = 0;
+  let fence = null;
+  for (const line of String(source || "").split("\n")) {
+    const start = pos;
+    pos += line.length + 1; // +1 for the newline the split ate
+    const fenceMatch = CHAPTER_FENCE_RE.exec(line);
+    if (fence) {
+      if (fenceMatch && fenceMatch[1][0] === fence[0] && fenceMatch[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (fenceMatch) { fence = fenceMatch[1]; continue; }
+    const heading = CHAPTER_HEADING_RE.exec(line);
+    if (heading) headings.push({ start, level: heading[1].length, title: heading[2].trim() });
+  }
+  return headings;
+}
+
+// The last heading (of any level) starting at or before `offset`, or null
+// when the highlight sits before the note's first heading.
+export function headingForOffset(headings, offset) {
+  let lo = 0;
+  let hi = headings.length - 1;
+  let best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (headings[mid].start <= offset) { best = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return best === -1 ? null : headings[best];
+}
+
 export function blockStartsChapter(block, level) {
   if (!level) return false;
   const first = block.split("\n").find((line) => line.trim());

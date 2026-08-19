@@ -115,10 +115,11 @@ export function highlightsExportBaseName() {
 // Markdown/HTML, modeled directly on exportNotesFlat — the highlights
 // counterpart just builds its body from collectDeckHighlightsForExport
 // (via buildHighlightsExportBody/buildHighlightsExportMarkdown in pdf.js)
-// instead of the raw notes string, with `contextLines` (from the export
-// dialog's number input) threaded through.
-export async function exportHighlightsFlat(format, contextLines = 0) {
-  const items = collectDeckHighlightsForExport();
+// instead of the raw notes string, with `options` (contextLines/
+// includeChapter/includeNotes — the export dialog's own keep-or-drop
+// toggles) threaded through.
+export async function exportHighlightsFlat(format, options = {}) {
+  const items = collectDeckHighlightsForExport(options);
   if (!items.length) {
     setStatus("No highlights to export.", "error");
     return;
@@ -127,7 +128,7 @@ export async function exportHighlightsFlat(format, contextLines = 0) {
   const docTitle = highlightsExportBaseName();
 
   if (format === "markdown") {
-    downloadTextFile(buildHighlightsExportMarkdown(title, contextLines), `${docTitle}.md`, "text/markdown;charset=utf-8");
+    downloadTextFile(buildHighlightsExportMarkdown(title, options), `${docTitle}.md`, "text/markdown;charset=utf-8");
     setStatus("Exported highlights as Markdown.");
     return;
   }
@@ -135,7 +136,7 @@ export async function exportHighlightsFlat(format, contextLines = 0) {
   setStatus("Preparing highlights standalone HTML export...");
   if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = true;
   try {
-    const rawBodyHtml = buildHighlightsExportBody(title, contextLines);
+    const rawBodyHtml = buildHighlightsExportBody(title, options);
     const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
     const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
     downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
@@ -148,8 +149,8 @@ export async function exportHighlightsFlat(format, contextLines = 0) {
   }
 }
 
-export async function exportHighlightsPdf(contextLines = 0) {
-  const items = collectDeckHighlightsForExport();
+export async function exportHighlightsPdf(options = {}) {
+  const items = collectDeckHighlightsForExport(options);
   if (!items.length) {
     setStatus("No highlights to export as PDF.", "error");
     return;
@@ -166,7 +167,7 @@ export async function exportHighlightsPdf(contextLines = 0) {
   document.title = highlightsExportBaseName();
   try {
     await afterPaint();
-    el.printRoot.innerHTML = buildHighlightsPrintDocument(title, contextLines);
+    el.printRoot.innerHTML = buildHighlightsPrintDocument(title, options);
     // Must precede configureMermaid("print") — see exportNotesPdf's own
     // comment: an unloaded mermaid makes that call a silent no-op, and the
     // enhanceRenderedMarkdown below would load it configured for the SCREEN
@@ -196,14 +197,14 @@ export async function exportHighlightsPdf(contextLines = 0) {
   }
 }
 
-export function handleExportHighlightsAction(format, contextLines = 0) {
+export function handleExportHighlightsAction(format, options = {}) {
   if (el.exportHighlightsModal) el.exportHighlightsModal.hidden = true;
   if (format === "pdf") {
     setStatus("Opening highlights PDF export...");
-    window.setTimeout(() => exportHighlightsPdf(contextLines), 0);
+    window.setTimeout(() => exportHighlightsPdf(options), 0);
     return;
   }
-  exportHighlightsFlat(format, contextLines);
+  exportHighlightsFlat(format, options);
 }
 
 export function markOversizePrintRows() {

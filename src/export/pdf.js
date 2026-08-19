@@ -416,13 +416,19 @@ export function buildNotesPrintDocument(title, notesMarkdown) {
 // (mark colours intact), and its note if it has one. Shared by the Markdown/
 // HTML body and the print document — the two differ only in the wrapper
 // around a list of these.
+//
+// `data-color` carries the highlight's own colour through to a left-border
+// accent (styles/28-export-highlights.css) — the main "no segregation
+// between highlights" complaint: a flat wall of unstyled paragraphs read as
+// one undifferentiated block, with nothing marking where one highlight ends
+// and the next begins.
 function highlightExportEntryHtml(item) {
   const context = (units) => units.map((u) => `<p class="highlight-export-context">${markdownToSafeHtml(u)}</p>`).join("");
   const note = item.note
     ? `<div class="highlight-export-note"><p class="highlight-export-note-label">Note</p>${markdownToSafeHtml(item.note)}</div>`
     : "";
   return `
-    <div class="highlight-export-entry">
+    <div class="highlight-export-entry" data-color="${escapeHtml(item.color)}">
       ${context(item.before)}
       <div class="highlight-export-mark rendered">${markdownToSafeHtml(item.markdown)}</div>
       ${context(item.after)}
@@ -431,18 +437,32 @@ function highlightExportEntryHtml(item) {
   `;
 }
 
+// A chapter/section heading (see notes/chapters.js headingForOffset) drawn
+// once, the first time a highlight from under it appears — not repeated per
+// highlight, which would be exactly the noisy, un-toggleable version the
+// user didn't want. Only inserted when `item.chapter` is truthy: null means
+// either the "include chapter" toggle is off (collectDeckHighlightsForExport
+// then returns chapter: null for everything) or this highlight sits before
+// the note's first heading — both cases correctly render as "no heading
+// here" rather than a misleading "Untitled section" filler.
 function highlightsExportBodyHtml(items) {
-  return items.length
-    ? items.map(highlightExportEntryHtml).join("")
-    : `<p class="flat-export-empty">No highlights in this deck.</p>`;
+  if (!items.length) return `<p class="flat-export-empty">No highlights in this deck.</p>`;
+  let lastChapter = null;
+  return items.map((item) => {
+    let chapterHtml = "";
+    if (item.chapter && item.chapter !== lastChapter) {
+      lastChapter = item.chapter;
+      chapterHtml = `<h2 class="highlight-export-chapter-heading">${escapeHtml(item.chapter)}</h2>`;
+    }
+    return chapterHtml + highlightExportEntryHtml(item);
+  }).join("");
 }
 
-// `contextLines`: how many source lines/sentences either side of each
-// highlight to include — the export dialog's own opt-in setting (see
-// src/export/run.js exportHighlightsFlat/exportHighlightsPdf), separate from
-// the Highlights panel itself, which shows none.
-export function buildHighlightsExportBody(title, contextLines = 0) {
-  const items = collectDeckHighlightsForExport(contextLines);
+// `options`: { contextLines, includeChapter, includeNotes } — the export
+// dialog's own keep-or-drop toggles (src/export/run.js), threaded straight
+// through to collectDeckHighlightsForExport.
+export function buildHighlightsExportBody(title, options = {}) {
+  const items = collectDeckHighlightsForExport(options);
   return `
     <header class="flat-export-cover">
       <h1>${escapeHtml(title)}</h1>
@@ -457,20 +477,29 @@ export function buildHighlightsExportBody(title, contextLines = 0) {
 // Plain markdown, not an HTML fragment — the highlight's own markdown (mark
 // tags and all, same as how "Export Notes" markdown carries state.notes'
 // own <mark> tags unwrapped) plus its context/note as ordinary lines,
-// entries separated by a thematic break.
-export function buildHighlightsExportMarkdown(title, contextLines = 0) {
-  const items = collectDeckHighlightsForExport(contextLines);
+// entries separated by a thematic break. A chapter/section change gets its
+// own `## Heading` — same "draw it once, not per entry" rule as the HTML
+// path above, using ## rather than # so it nests under the document's own
+// # title instead of competing with it.
+export function buildHighlightsExportMarkdown(title, options = {}) {
+  const items = collectDeckHighlightsForExport(options);
   if (!items.length) return `# ${title}\n\nNo highlights in this deck.\n`;
-  const entries = items.map((item) => {
+  const blocks = [];
+  let lastChapter = null;
+  items.forEach((item) => {
+    if (item.chapter && item.chapter !== lastChapter) {
+      lastChapter = item.chapter;
+      blocks.push(`## ${item.chapter}`);
+    }
     const lines = [...item.before, item.markdown, ...item.after];
     if (item.note) lines.push(`> **Note:** ${item.note.replace(/\n/g, "\n> ")}`);
-    return lines.join("\n\n");
+    blocks.push(lines.join("\n\n"));
   });
-  return `# ${title}\n\n${entries.join("\n\n---\n\n")}\n`;
+  return `# ${title}\n\n${blocks.join("\n\n---\n\n")}\n`;
 }
 
-export function buildHighlightsPrintDocument(title, contextLines = 0) {
-  const items = collectDeckHighlightsForExport(contextLines);
+export function buildHighlightsPrintDocument(title, options = {}) {
+  const items = collectDeckHighlightsForExport(options);
   return `
     <div class="print-preview-actions" data-print-ui>
       <button type="button" data-print-close>Close</button>

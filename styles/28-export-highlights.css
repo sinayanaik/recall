@@ -11,6 +11,108 @@
   flex-wrap: wrap;
 }
 
+.export-highlights-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-highlights-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.export-highlights-toggle input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+/* ── The exported document itself ───────────────────────────────────────────
+ * Reaches every export format that renders through HTML (standalone HTML,
+ * docx, PDF/print — see buildHighlightsExportBody/buildHighlightsPrintDocument
+ * in src/export/pdf.js): the plain-paragraph wall of text was the "no
+ * segregation between highlights" report. Each highlight is now a bordered
+ * card with a left-edge accent in its own colour (the same yellow/green/blue/
+ * pink the app itself uses — see MARK_HIGHLIGHT_HEX in
+ * src/format/highlight-colors.js — plus the two legacy tokens an older
+ * highlight may still carry), context lines visually recede behind the
+ * highlighted line itself, and a chapter/section change gets a real heading
+ * instead of being repeated on every card.
+ */
+.highlight-export-entry {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--panel-2);
+}
+
+.highlight-export-entry[data-color="yellow"] { border-left-color: #e0b400; }
+.highlight-export-entry[data-color="green"]  { border-left-color: #22c55e; }
+.highlight-export-entry[data-color="blue"]   { border-left-color: #3b82f6; }
+.highlight-export-entry[data-color="pink"]   { border-left-color: #ec4899; }
+.highlight-export-entry[data-color="orange"] { border-left-color: #f97316; }
+.highlight-export-entry[data-color="purple"] { border-left-color: #8b5cf6; }
+
+.highlight-export-context {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.88em;
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.highlight-export-mark {
+  margin: 0;
+}
+
+.highlight-export-note {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-radius: 0 6px 6px 0;
+}
+
+.highlight-export-note-label {
+  margin: 0 0 2px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.highlight-export-chapter-heading {
+  margin: 28px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--line);
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.highlight-export-chapter-heading:first-child {
+  margin-top: 0;
+}
+
+/* One chapter's highlights per printed page, once there's more than one
+ * chapter — flowing every highlight onto one continuous scroll defeats the
+ * whole point of a chapter label. Ignored outside paged media (screen/HTML),
+ * where "page" means nothing anyway. */
+@media print {
+  .highlight-export-chapter-heading:not(:first-of-type) {
+    break-before: page;
+  }
+}
+
 /* The Highlights tab's own header row — deliberately its own class, not
  * .notes-head (see index.html's comment on this element): that div is
  * unconditionally hidden whenever the panel is in notes/highlights mode,

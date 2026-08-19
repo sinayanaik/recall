@@ -8,6 +8,7 @@ import { decodeHighlightNote, setHighlightNoteAt } from "../format/highlight-not
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { notesAnchorPlainText, scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
@@ -261,8 +262,14 @@ export function highlightContextUnits(units, index, step, count) {
 // context) with `before`/`after` arrays of `contextLines` source units
 // either side. `contextLines` of 0 (the default, matching what the panel
 // itself shows) yields no context at all.
-export function collectDeckHighlightsForExport(contextLines = 0) {
+//
+// `includeChapter`/`includeNotes` are the export dialog's own keep-or-drop
+// toggles (src/export/run.js) — each entry still carries `chapter`/`note` as
+// null when its toggle is off, rather than the caller having to know to
+// omit them, so every export builder (Markdown/HTML/PDF) reads one shape.
+export function collectDeckHighlightsForExport({ contextLines = 0, includeChapter = true, includeNotes = true } = {}) {
   const { source, groups, units } = scanHighlightGroups(state.notes || "");
+  const headings = includeChapter ? headingIndexFor(source) : null;
   const items = [];
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group);
@@ -274,7 +281,15 @@ export function collectDeckHighlightsForExport(contextLines = 0) {
     }, "");
     const before = span && contextLines > 0 ? highlightContextUnits(units, span.first, -1, contextLines) : [];
     const after = span && contextLines > 0 ? highlightContextUnits(units, span.last, 1, contextLines) : [];
-    items.push({ markdown, color: group.color, note: group.pieces[0].note, before, after });
+    const chapter = headings ? headingForOffset(headings, group.offset) : null;
+    items.push({
+      markdown,
+      color: group.color,
+      note: includeNotes ? group.pieces[0].note : null,
+      before,
+      after,
+      chapter: chapter?.title || null
+    });
   });
   return items;
 }
