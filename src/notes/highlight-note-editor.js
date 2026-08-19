@@ -209,7 +209,12 @@ export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkd
   refreshHighlightBackdrop(textarea);
   deleteBtn.hidden = !existingNoteMarkdown;
   root.hidden = false;
-  setMode("write");
+  // An existing note opens rendered — same as the rest of the app's notes,
+  // which you normally see rendered, not raw — so an image inside it (and
+  // its resize handle) is visible immediately instead of hiding behind a
+  // tap on "Preview" the reader has no reason to expect. A blank note opens
+  // in Write mode, since there's nothing yet to preview.
+  setMode(existingNoteMarkdown ? "preview" : "write");
 
   if (styleMobileMedia?.matches) return; // full-width sheet, positioned by CSS alone
   const box = root.getBoundingClientRect();
