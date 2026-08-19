@@ -4,7 +4,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
-import { decodeHighlightNote } from "../format/highlight-notes.js?v=__BUILD__";
+import { decodeHighlightNote, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { notesAnchorPlainText, scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
@@ -336,7 +336,7 @@ export function renderHighlightsPanel() {
       noteBody.className = "highlight-note-body rendered";
       noteBlock.appendChild(noteBody);
       body.appendChild(noteBlock);
-      toRender.push([noteBody, mark.note, "plain"]);
+      toRender.push([noteBody, mark, "note"]);
     });
     // Usually one mark, one pair of buttons. A row that merged several
     // same-line highlights (see collectDeckHighlights) gets one "Go to" +
@@ -374,11 +374,9 @@ export function renderHighlightsPanel() {
     list.appendChild(row);
   });
   toRender.forEach(([container, payload, kind]) => {
-    if (kind !== "preview") {
-      renderMarkdown(container, payload);
-      return;
-    }
-    renderRowPreviewWithImageResize(container, payload);
+    if (kind === "preview") renderRowPreviewWithImageResize(container, payload);
+    else if (kind === "note") renderNoteBodyWithImageResize(container, payload);
+    else renderMarkdown(container, payload);
   });
 }
 
@@ -426,5 +424,36 @@ function renderRowPreviewWithImageResize(preview, item) {
   renderMarkdown(preview, item.markdown).then(() => {
     enhanceSurfaceImageControls(rowSurface);
     enhanceSurfaceDiagramControls(rowSurface);
+  });
+}
+
+// The note-over-highlight popup already gets this (src/notes/
+// highlight-note-editor.js) — this is the SAME resize/delete for the exact
+// same note text, just reached from its read-only-looking summary in the
+// panel instead of opening the popup first. `mark.note` is this note's own
+// self-contained markdown (not a slice of anything else), so — same
+// reasoning as renderRowPreviewWithImageResize — scoping the surface's view
+// to just this noteBody and its source to just this note text keeps
+// enhanceSurfaceImageControls' shell↔token matching valid.
+//
+// setSource commits through setHighlightNoteAt, which (like any highlight
+// edit) calls notifyHighlightsChanged() and rebuilds the WHOLE panel — so by
+// the time rebuildSurfaceFromTokens's own rerender() call would run, this
+// noteBody has already been discarded in favour of a freshly rendered one.
+// rerender is therefore a deliberate no-op here; the real refresh already
+// happened.
+function renderNoteBodyWithImageResize(noteBody, mark) {
+  const noteSurface = {
+    view: noteBody,
+    getSource: () => mark.note || "",
+    setSource: (newText) => {
+      setHighlightNoteAt(mark.markIndex, newText);
+      mark.note = newText;
+    },
+    rerender: () => {}
+  };
+  renderMarkdown(noteBody, mark.note).then(() => {
+    enhanceSurfaceImageControls(noteSurface);
+    enhanceSurfaceDiagramControls(noteSurface);
   });
 }

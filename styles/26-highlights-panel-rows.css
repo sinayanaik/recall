@@ -46,21 +46,24 @@
   max-width: 220px !important;
 }
 
-/* A highlight preview's image is a real image in state.notes (see
- * renderRowPreviewWithImageResize in highlights-panel.js) and gets the same
- * corner-drag resize grip the main notes editor gives one. A resized
- * (.has-custom-size) image must win over the flat 220px default above — same
- * "more specific !important beats !important" shape #notesView's own
- * img.has-custom-size rule uses (06-rendered.css), scoped here instead of a
- * fixed view id. .highlight-note-body is read-only (edit the note itself via
- * its popup instead), so it's deliberately not included here.
+/* Both a highlight's own line (item.markdown, a real slice of state.notes)
+ * AND an attached note's body (mark.note, the same text the note-over-
+ * highlight popup edits) are genuine editable surfaces here — see
+ * renderRowPreviewWithImageResize / renderNoteBodyWithImageResize in
+ * highlights-panel.js — and get the same corner-drag resize grip the main
+ * notes editor gives one. A resized (.has-custom-size) image must win over
+ * the flat 220px default above — same "more specific !important beats
+ * !important" shape #notesView's own img.has-custom-size rule uses
+ * (06-rendered.css), scoped here instead of a fixed view id.
  */
-.highlight-preview .diagram-shell img.has-custom-size {
+.highlight-preview .diagram-shell img.has-custom-size,
+.highlight-note-body .diagram-shell img.has-custom-size {
   width: var(--notes-img-w) !important;
   max-width: var(--notes-img-w) !important;
 }
 
-.highlight-preview .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
+.highlight-preview .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom,
+.highlight-note-body .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
   float: left;
   left: 0;
   right: auto;
