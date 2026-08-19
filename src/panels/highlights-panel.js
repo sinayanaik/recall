@@ -5,6 +5,8 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
 import { decodeHighlightNote } from "../format/highlight-notes.js?v=__BUILD__";
+import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
+import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { notesAnchorPlainText, scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
@@ -83,7 +85,12 @@ export function highlightUnitSpan(units, source, group) {
   // highlight already sitting in the same line/unit, which is exactly what
   // lets collectDeckHighlights merge same-line highlights into one row below
   // instead of rendering that line twice.
-  return { cur, first, last };
+  //
+  // rawStart/rawEnd (the exact [start,end) `cur` was sliced from) are what
+  // let an image inside a row be resized in place — see the image-resize
+  // surface built in renderHighlightsPanel, which splices a commit straight
+  // back into state.notes at this span.
+  return { cur, first, last, rawStart: units[first].start, rawEnd: units[last].end };
 }
 
 // Kept for the highlights EXPORT feature (src/export/pdf.js /
@@ -310,7 +317,7 @@ export function renderHighlightsPanel() {
     const preview = document.createElement("div");
     preview.className = "highlight-preview rendered";
     body.appendChild(preview);
-    toRender.push([preview, item.markdown]);
+    toRender.push([preview, item, "preview"]);
     // Any attached note (see format/highlight-notes.js) renders under the
     // highlight, distinguished as commentary rather than the highlighted
     // text itself — labelled with an ordinal only when the row holds more
@@ -329,7 +336,7 @@ export function renderHighlightsPanel() {
       noteBody.className = "highlight-note-body rendered";
       noteBlock.appendChild(noteBody);
       body.appendChild(noteBlock);
-      toRender.push([noteBody, mark.note]);
+      toRender.push([noteBody, mark.note, "plain"]);
     });
     // Usually one mark, one pair of buttons. A row that merged several
     // same-line highlights (see collectDeckHighlights) gets one "Go to" +
@@ -366,5 +373,58 @@ export function renderHighlightsPanel() {
     row.append(body, jumps);
     list.appendChild(row);
   });
-  toRender.forEach(([container, markdown]) => renderMarkdown(container, markdown));
+  toRender.forEach(([container, payload, kind]) => {
+    if (kind !== "preview") {
+      renderMarkdown(container, payload);
+      return;
+    }
+    renderRowPreviewWithImageResize(container, payload);
+  });
+}
+
+// A highlight preview's image is a real image in state.notes (item.markdown
+// is a literal slice of it — see highlightUnitSpan), so it gets the same
+// corner-drag resize/delete grip the main notes editor gives one, committing
+// straight back into state.notes at the slice's own [rawStart, rawEnd) — not
+// just a read-only summary. Only when the row resolved to a real line/unit
+// (item.span, which carries rawStart/rawEnd): the no-line-unit fallback
+// markdown (see collectDeckHighlights) isn't a literal source slice, so
+// there is nowhere well-defined to write a resize back to and the row is
+// left as a plain (Zoom-only) preview.
+//
+// enhanceSurfaceImageControls/enhanceSurfaceDiagramControls only need
+// something shaped like a render target — view + getSource/setSource/
+// rerender — not one of the app's three hardcoded surfaces (see the same
+// pattern in notes/highlight-note-editor.js). Scoping BOTH the surface's
+// view (this row's own preview container, holding only its own image(s))
+// AND its source (item.markdown, not the whole note) to the same slice is
+// what makes the shell↔image-token matching inside
+// enhanceSurfaceImageControls valid: that matching assumes its `view` and
+// its `getSource()` describe the same document walked in the same order,
+// which a lone row's container and the FULL state.notes would not.
+function renderRowPreviewWithImageResize(preview, item) {
+  if (!item.span) {
+    renderMarkdown(preview, item.markdown);
+    return;
+  }
+  const notesConfig = renderTargetConfig("notes");
+  const rowSurface = {
+    view: preview,
+    getSource: () => item.markdown,
+    setSource: (newSlice) => {
+      const notes = state.notes || "";
+      const updated = notes.slice(0, item.span.rawStart) + newSlice + notes.slice(item.span.rawEnd);
+      notesConfig.setSource(updated); // pushNotesUndo + state.notes write + raw-editor/history sync
+      item.span.rawEnd = item.span.rawStart + newSlice.length;
+      item.markdown = newSlice;
+    },
+    rerender: () => {
+      notesConfig.rerender(); // keeps the actual Notes tab in sync even while it's off-screen
+      renderRowPreviewWithImageResize(preview, item);
+    }
+  };
+  renderMarkdown(preview, item.markdown).then(() => {
+    enhanceSurfaceImageControls(rowSurface);
+    enhanceSurfaceDiagramControls(rowSurface);
+  });
 }
