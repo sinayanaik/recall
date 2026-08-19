@@ -39,6 +39,17 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // left to compare against.
 const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 
+// Scenario keys that are EXPECTED to differ from pre-modular — a deliberate,
+// reviewed behaviour change, not something the split broke. Mirrors
+// boot-check.mjs's ACCEPTED_DIFFS. Keep this list one entry per intentional
+// change, each with the "why" a diff alone can't say.
+const ACCEPTED_DIFFS = {
+  "stats/empty": "emptySyncStats() gained readingPositionSynced: a push/pull " +
+    "whose only real change was the reader's last-seen position (meta.readingPosition) " +
+    "used to report as a no-op ('already up to date') because nothing counted it. " +
+    "The pre-modular baseline predates this field entirely."
+};
+
 const CHROME = [
   "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
   "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
@@ -724,7 +735,9 @@ try {
     p.evaluate(async (src, api) => (0, eval)("(" + src + ")")(await (0, eval)(api)()), SCENARIOS, MODULE_API));
 
   const keys = [...new Set([...Object.keys(before.value), ...Object.keys(after.value)])].sort();
-  const diffs = keys.filter((k) => before.value[k] !== after.value[k]);
+  const changed = keys.filter((k) => before.value[k] !== after.value[k]);
+  const diffs = changed.filter((k) => !(k in ACCEPTED_DIFFS));
+  const accepted = changed.filter((k) => k in ACCEPTED_DIFFS);
   const threw = keys.filter((k) => String(after.value[k]).startsWith("THREW"));
 
   console.log("── parity against " + BASE_REF + " ──");
@@ -734,6 +747,15 @@ try {
     console.log(`    now: ${String(after.value[k]).slice(0, 260)}`);
   }
   if (diffs.length > 15) console.log(`  … and ${diffs.length - 15} more`);
+  if (accepted.length) {
+    console.log("── accepted differences ──");
+    for (const k of accepted) {
+      console.log(`  ${k}`);
+      console.log(`    was: ${String(before.value[k]).slice(0, 260)}`);
+      console.log(`    now: ${String(after.value[k]).slice(0, 260)}`);
+      console.log(`    why: ${ACCEPTED_DIFFS[k]}`);
+    }
+  }
   console.log(`  ${keys.length} sync scenarios · ${diffs.length} differ · ${threw.length} threw`);
   failures += diffs.length + threw.length;
 
