@@ -107,7 +107,14 @@ const ACCEPTED = {
     "settle after that again, so the old loop gave up — silently, being an " +
     "ambient landing — before the target block existed; and scrollHeight is " +
     "mostly estimates until the reader has been there, which on a 2.6MB note " +
-    "put the proportional landing half a million pixels out.",
+    "put the proportional landing half a million pixels out. " +
+    "Also (2026-08-20): each retry's revealNoteAnchor + re-aim forces layout " +
+    "on the note's still-streaming backlog — measured 49 forced layouts / " +
+    "5.5s of blocked main thread on a ~4M-char book with an anchor that never " +
+    "resolves, which is what \"open a note, the menu takes seconds\" turned " +
+    "out to be. Both are now skipped while isNotesStreamBusy(), with every " +
+    "exit path (give up, report, reschedule) still running unconditionally so " +
+    "a budget that expires mid-stream still reports itself.",
   loadWebDeck:
     "Resumes from the newer of the deck's meta.readingPosition and this " +
     "device's own stored position (betterReadingPosition) — see " +

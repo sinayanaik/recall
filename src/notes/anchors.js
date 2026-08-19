@@ -19,7 +19,7 @@ import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageFo
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
-import { notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { isNotesStreamBusy, notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -706,6 +706,22 @@ export const NOTE_RESUME_BUDGET_MS = 8000;
 
 export const NOTE_RESUME_RETRY_MS = 150;
 
+// The cadence once the note has FINISHED streaming (isNotesStreamBusy false)
+// and the anchor still hasn't resolved. NOTE_RESUME_RETRY_MS's tight 150ms
+// cadence exists to track a target that is still MOVING as the book's chunk
+// heights settle — legitimate while streaming, since the next attempt really
+// might land differently. Once settled, revealNoteAnchor is asking the exact
+// same question of a document that is no longer changing, and the answer
+// will not change either: measured on a ~4M-char book with an anchor that
+// never resolves, the attempts alone (a text search plus a block lookup,
+// both of which force layout on whatever content-visibility blocks they
+// touch) cost ~4.6s of blocked main thread over the full 8s budget at the
+// tight cadence — which is what "open a note, the menu takes seconds to
+// respond" turned out to be. This cadence keeps the same 8s "give up"
+// threshold — a book that finishes streaming late still gets a fair shot —
+// while cutting the number of expensive re-checks roughly 4x.
+export const NOTE_RESUME_SETTLED_RETRY_MS = 600;
+
 // A resume is the app moving the reader somewhere they did not ask to go. That
 // is welcome as an opening position and unwelcome the moment they start reading,
 // so anything that says "I am here now" ends it.
@@ -763,33 +779,57 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   const attempt = (retries) => {
     // The reader took over. Their position is the real one now.
     if (reader?.interrupted()) return;
-    if (revealNoteAnchor(anchor, options, locator)) { done(); return; }
-    // findRenderedNoteRange (inside revealNoteAnchor) does a text search over
-    // the rendered DOM. Nudge toward a proportional estimate so the windowed
-    // search is centred near the target before retrying.
+    // A big note mid-stream has a growing backlog of freshly appended,
+    // never-laid-out blocks. Both revealNoteAnchor's text search and the
+    // re-aim below it read block geometry, which — same reason notesStreamBusy
+    // exists for ui/chrome.js's callers — forces that whole backlog to lay
+    // out right here, synchronously, on every single retry. Measured on a
+    // ~4M-char book with an anchor that doesn't resolve: 49 forced layouts,
+    // 5.5s of blocked main thread, entirely inside this loop — which is what
+    // "open a note, the menu takes seconds to respond" turned out to be.
     //
-    // For a resume (and a patient jump) this is also the landing itself, and
-    // it is re-aimed on every pass rather than once: the note is still
-    // streaming, so its height — and therefore where a given fraction of it
-    // sits — changes under us. That is what "land straight away, then
-    // correct" means here. The reader is put roughly in the right chapter
-    // within a frame or two and converges on the exact paragraph as the note
-    // settles, instead of sitting at the top of a book waiting for a search
-    // that has nothing to search yet.
-    if (Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0]) && (patient || !estimatedOnce)) {
-      estimatedOnce = true;
-      // By BLOCK where the block cache can answer, by pixel fraction only as a
-      // fallback. See notesBlockForRawOffset: a fraction of scrollHeight is a
-      // fraction of a height that is mostly estimates on a note nobody has
-      // scrolled through yet, and on a 2.6MB book that put the landing half a
-      // million pixels from where the reader actually was.
-      const block = notesBlockForRawOffset(el.notesView, state.notes || "", anchor.offset);
-      if (block) scrollNotesBlockToReadingLine(block, false);
-      else estimateNotesScrollForOffset(anchor.offset);
+    // Skipped here, not skipped entirely: every exit path below (give up,
+    // report, reschedule) still runs exactly as it would otherwise, so a
+    // budget that expires mid-stream still reports itself instead of quietly
+    // vanishing into this branch. Only the forced-layout work is withheld —
+    // once the stream settles, a single unhurried pass lands correctly, and
+    // the backlog is gone by then anyway, so nothing already scheduled is
+    // wasted by having waited.
+    const streaming = isNotesStreamBusy();
+    if (!streaming) {
+      if (revealNoteAnchor(anchor, options, locator)) { done(); return; }
+      // findRenderedNoteRange (inside revealNoteAnchor) does a text search over
+      // the rendered DOM. Nudge toward a proportional estimate so the windowed
+      // search is centred near the target before retrying.
+      //
+      // For a resume (and a patient jump) this is also the landing itself, and
+      // it is re-aimed on every pass rather than once: the note is still
+      // streaming, so its height — and therefore where a given fraction of it
+      // sits — changes under us. That is what "land straight away, then
+      // correct" means here. The reader is put roughly in the right chapter
+      // within a frame or two and converges on the exact paragraph as the note
+      // settles, instead of sitting at the top of a book waiting for a search
+      // that has nothing to search yet.
+      if (Number.isFinite(anchor?.offset) && !isTargetEditing(SELECTION_TARGETS[0]) && (patient || !estimatedOnce)) {
+        estimatedOnce = true;
+        // By BLOCK where the block cache can answer, by pixel fraction only as a
+        // fallback. See notesBlockForRawOffset: a fraction of scrollHeight is a
+        // fraction of a height that is mostly estimates on a note nobody has
+        // scrolled through yet, and on a 2.6MB book that put the landing half a
+        // million pixels from where the reader actually was.
+        const block = notesBlockForRawOffset(el.notesView, state.notes || "", anchor.offset);
+        if (block) scrollNotesBlockToReadingLine(block, false);
+        else estimateNotesScrollForOffset(anchor.offset);
+      }
     }
     if (patient) {
-      if (performance.now() < until) setTimeout(() => attempt(0), NOTE_RESUME_RETRY_MS);
-      else {
+      if (performance.now() < until) {
+        // Tight cadence while streaming (cheap — the expensive work above is
+        // skipped); slower once settled, where a repeat is asking the exact
+        // same question of a document that has stopped changing. See
+        // NOTE_RESUME_SETTLED_RETRY_MS.
+        setTimeout(() => attempt(0), streaming ? NOTE_RESUME_RETRY_MS : NOTE_RESUME_SETTLED_RETRY_MS);
+      } else {
         done();
         if (resume) {
           // Never a toast — nobody asked for this jump — but not silent
