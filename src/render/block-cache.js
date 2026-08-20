@@ -406,6 +406,138 @@ export function splitPreparedBlocks(prepared) {
   return blocks.length ? { blocks, prelude: definitionPrelude(tokens.links) } : null;
 }
 
+// ── Chunked lexing, for a cold render too large to lex in one synchronous call ──
+//
+// marked.lexer(prepared) is itself the single biggest piece of the unyielded
+// pass renderMarkdown pays on a cold open (measured 125ms on a 2MB/18,061-block
+// note — see the streaming comment below). Everything AFTER the parse is
+// already yielded in batches; this and preprocessSpecialBlocks/
+// promoteNotesHeadings are not, and there is no cache that helps a genuinely
+// cold note (first open this session, or the 4th+ large note visited, or any
+// edit).
+//
+// Splitting the source into independent lexer() calls is only safe at a point
+// marked's own grammar treats as an unconditional block boundary regardless of
+// what came before or after — a blank line is NOT always that (a blank line
+// inside a loose list or between a blockquote's paragraphs continues the same
+// block). So a candidate boundary is accepted only when the content line
+// immediately before AND immediately after the blank run are both plain,
+// unindented, non-list, non-blockquote text — that combination can only occur
+// between two blocks that were never going to merge into one. This can miss
+// some splits that would in fact have been safe (adjacent lists, for one),
+// which only makes a chunk larger; it can never merge or split a block wrongly,
+// and a document with no safe points at all degrades to exactly one chunk —
+// today's unchunked behaviour.
+export function findSafeLexerBoundaries(prepared) {
+  const boundaries = [];
+  let pos = 0;
+  let inFence = false;
+  let fenceChar = "";
+  let fenceLen = 0;
+  let blankRunStart = -1;
+  let prevLineSafe = false;
+  const isFenceLine = (line) => line.match(/^ {0,3}(`{3,}|~{3,})/);
+  const isUnsafeStart = (line) =>
+    /^\s/.test(line) // indented: list continuation or indented code
+    || /^ {0,3}(?:[-*+]|\d{1,9}[.)])\s/.test(line) // list marker
+    || /^ {0,3}>/.test(line); // blockquote marker
+
+  const lines = prepared.split("\n");
+  lines.forEach((line, i) => {
+    const isLast = i === lines.length - 1;
+    const fenceMatch = isFenceLine(line);
+    if (inFence) {
+      if (fenceMatch && fenceMatch[1][0] === fenceChar && fenceMatch[1].length >= fenceLen) inFence = false;
+      prevLineSafe = false;
+      blankRunStart = -1;
+    } else if (fenceMatch) {
+      inFence = true;
+      fenceChar = fenceMatch[1][0];
+      fenceLen = fenceMatch[1].length;
+      prevLineSafe = false;
+      blankRunStart = -1;
+    } else if (line.trim() === "") {
+      if (blankRunStart === -1) blankRunStart = pos;
+    } else {
+      if (blankRunStart !== -1) {
+        // The cut lands at the START OF THIS LINE — after the full blank
+        // run, not at its start. Cutting mid-blank-run instead (right after
+        // the previous block's own line break) leaves the LEFT slice ending
+        // in a single trailing "\n" with nothing following it; lexed on its
+        // own, marked has no next block to delimit that newline against and
+        // folds it into the preceding block's `.raw`, which the same text
+        // would NOT carry in one unchunked call. Cutting after the blank run
+        // instead gives the left slice its own trailing blank line — the same
+        // shape marked already treats as an empty "space" token it discards —
+        // and starts the right slice clean, exactly like the confirmed
+        // scripted-diff check in verify-chunked-lexer.cjs requires.
+        if (prevLineSafe && !isUnsafeStart(line)) boundaries.push(pos);
+        blankRunStart = -1;
+      }
+      prevLineSafe = !isUnsafeStart(line);
+    }
+    pos += line.length + (isLast ? 0 : 1);
+  });
+  return boundaries;
+}
+
+// Below this, renderMarkdown's parse stays exactly as it is today — one
+// unyielded synchronous pass. Only a note at least this large routes through
+// splitPreparedBlocksChunked below, so an ordinary note's behaviour and
+// performance are untouched.
+export const NOTES_PARSE_CHUNK_MIN_CHARS = 200_000;
+
+// Roughly the char count the streaming comment above measures at ~16KB/ms —
+// one chunk costs about the same as one RENDER_BATCH_BUDGET_MS frame.
+export const LEXER_CHUNK_TARGET_CHARS = 200_000;
+
+// Same contract as splitPreparedBlocks, but lexes in chunks with a yield
+// between them so a huge note stops owning the main thread for one long burst.
+// `sequenceOk` is checked after every yield — a superseded render (a note
+// switch mid-parse) abandons rather than finishing work nobody will see, the
+// same discipline the streamed DOM build already uses further down this file.
+export async function splitPreparedBlocksChunked(prepared, sequenceOk = () => true) {
+  const safe = findSafeLexerBoundaries(prepared);
+  const cuts = [];
+  let start = 0;
+  for (const at of safe) {
+    if (at - start >= LEXER_CHUNK_TARGET_CHARS) {
+      cuts.push([start, at]);
+      start = at;
+    }
+  }
+  cuts.push([start, prepared.length]);
+
+  const blocks = [];
+  const combinedLinks = Object.create(null);
+  for (let i = 0; i < cuts.length; i += 1) {
+    const [from, to] = cuts[i];
+    let tokens;
+    try {
+      tokens = marked.lexer(prepared.slice(from, to));
+    } catch (error) {
+      return null;
+    }
+    for (const token of tokens) {
+      if (token.type === "space") continue;
+      if (typeof token.raw !== "string" || !token.raw.trim()) continue;
+      blocks.push(token.raw);
+    }
+    // First-occurrence-wins, matching marked's own within-a-call precedence
+    // for a duplicate link-reference label (confirmed by reading the vendored
+    // lexer), so a label split across chunks resolves exactly as it would in
+    // one unchunked call.
+    for (const [label, link] of Object.entries(tokens.links || {})) {
+      if (!(label in combinedLinks)) combinedLinks[label] = link;
+    }
+    if (i < cuts.length - 1) {
+      await yieldToEventLoop();
+      if (!sequenceOk()) return null;
+    }
+  }
+  return blocks.length ? { blocks, prelude: definitionPrelude(combinedLinks) } : null;
+}
+
 // A marker that survives sanitisation, so every changed block can be parsed and
 // sanitized in ONE pass and then split back into per-block HTML.
 export const BLOCK_BREAK_HTML = '\n<hr data-recall-block-break="1">\n';
@@ -1118,6 +1250,7 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
 
   const sequence = (renderSequence.get(container) || 0) + 1;
   renderSequence.set(container, sequence);
+  const sequenceOk = () => renderSequence.get(container) === sequence;
 
   // A switch back to a recently-open note: preprocessSpecialBlocks + the
   // marked.lexer split are a single unyielded synchronous pass (measured at
@@ -1134,10 +1267,31 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
     ? parseHistory
     : null;
 
-  const prepared = reuseParse ? reuseParse.prepared : preprocessSpecialBlocks(displayMarkdown);
-  const split = cacheable
-    ? (reuseParse ? reuseParse.split : splitPreparedBlocks(prepared))
-    : null;
+  // A genuinely cold open of a note this large has no cache to fall back on,
+  // and preprocessSpecialBlocks + marked.lexer over the whole source is the
+  // single longest unbroken synchronous span in the app (see the streaming
+  // comment above streamRenderedBlocks). Yielding around it here is the fix —
+  // everything below this point was already chunked. Below the threshold, or
+  // on a parse-history hit, this is byte-for-byte today's code path.
+  const hugeCold = !reuseParse && container === el.notesView && displayMarkdown.length >= NOTES_PARSE_CHUNK_MIN_CHARS;
+
+  let prepared;
+  let split;
+  if (reuseParse) {
+    prepared = reuseParse.prepared;
+    split = reuseParse.split;
+  } else if (hugeCold) {
+    await yieldToEventLoop();
+    if (!sequenceOk()) return;
+    prepared = preprocessSpecialBlocks(displayMarkdown);
+    await yieldToEventLoop();
+    if (!sequenceOk()) return;
+    split = await splitPreparedBlocksChunked(prepared, sequenceOk);
+    if (!sequenceOk()) return;
+  } else {
+    prepared = preprocessSpecialBlocks(displayMarkdown);
+    split = cacheable ? splitPreparedBlocks(prepared) : null;
+  }
   if (notesKey && split) {
     rememberNotesParseHistory(notesKey, { generation: renderGeneration, source: displayMarkdown, prepared, split });
   }
