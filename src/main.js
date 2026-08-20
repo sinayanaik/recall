@@ -50,6 +50,7 @@ import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { bookmarkCurrentSpot, goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
@@ -273,6 +274,9 @@ el.editNotesBtn?.addEventListener("click", () => {
   if (isNotesEditing()) commitNotesEditIfActive();
   else enterNotesEditing(rawOffsetForCurrentNotesScroll());
 });
+
+el.bookmarkSetBtn?.addEventListener("click", () => bookmarkCurrentSpot());
+el.bookmarkGoBtn?.addEventListener("click", () => goToBookmark());
 
 el.notesEdit?.addEventListener("input", () => {
   state.notes = el.notesEdit.value;

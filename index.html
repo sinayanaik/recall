@@ -179,6 +179,8 @@
     <link rel="modulepreload" href="src/library/my-decks-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/tombstones.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/anchors.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/bookmark.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/bookmark-prompt-store.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret-line.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
@@ -224,12 +226,12 @@
     <link rel="modulepreload" href="src/storage/quota.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/storage-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/auto-sync.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/bookmark-cloud.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/cards.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/diff.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/indicator.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/notes-conflict.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/push.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/sync/reading-position-cloud.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/reconcile.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/report.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/stats.js?v=__BUILD__">
@@ -654,6 +656,13 @@
               <button class="edit-card-btn notes-quick-note" data-render-action="quick-note" type="button" title="Pin the selection to Quick Notes" aria-label="Pin the selection to Quick Notes">&#128204;</button>
               <span class="notes-head-divider" aria-hidden="true"></span>
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
+              <span class="notes-head-divider" aria-hidden="true"></span>
+              <!-- Manual, cross-device bookmark — deliberately separate from the
+                   ambient, same-device-only reading position. #bookmarkGoBtn is
+                   the subtle persistent fallback for when the cross-device
+                   "jump to bookmark?" prompt is missed or dismissed. -->
+              <button class="edit-card-btn bookmark-set-icon" id="bookmarkSetBtn" type="button" title="Bookmark this spot" aria-label="Bookmark this spot in the notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h12v17l-6-4-6 4z"/></svg></button>
+              <button class="edit-card-btn bookmark-go-icon" id="bookmarkGoBtn" type="button" title="Go to bookmark" aria-label="Go to your bookmarked spot in these notes" hidden><svg class="cz-ico" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M6 3.5h12v17l-6-4-6 4z"/></svg></button>
               <!-- Folds the appbar + Cards/Notes toggle away and pins them
                    there, so a long note keeps the whole screen instead of the
                    chrome springing back the moment you nudge upward. On phones

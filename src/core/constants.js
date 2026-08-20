@@ -22,6 +22,11 @@ export const styleStorageKey = "swipe-notes-style-settings-v1";
 // is a multi-megabyte note. See src/notes/reading-position.js.
 export const deckReadingPositionsKey = "swipe-notes-reading-positions-v1";
 
+// Which bookmark version (its own `.at`) this device has already been shown
+// the "jump to bookmark?" prompt for, one entry per deck. See
+// src/notes/bookmark-prompt-store.js.
+export const deckBookmarkPromptsKey = "swipe-notes-bookmark-prompts-v1";
+
 export const themeStorageKey = "swipe-notes-theme";
 
 export const defaultDeckCategory = "Uncategorized";

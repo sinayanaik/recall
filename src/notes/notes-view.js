@@ -11,6 +11,7 @@ import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUIL
 import { migrateLegacyHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
+import { refreshBookmarkButtonUI } from "./bookmark.js?v=__BUILD__";
 import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
 // notes-history.js imports renderNotesViewPinned from here — a cycle whose only
 // crossing bindings are hoisted function declarations. See the note there.
@@ -138,7 +139,13 @@ export function renderNotesView({ sameNote = false } = {}) {
     // one place paged mode has to re-count its pages — the note may have grown
     // a paragraph, lost a block, or be a different note entirely. No-op when
     // the reader is on continuous mode.
-    .then(() => applyNotesPagedLayout());
+    .then(() => applyNotesPagedLayout())
+    // Also the one reliable place to keep the bookmark button in step with
+    // state.meta?.bookmark: renderMarkdown's own cache-hit fast path (same
+    // source, nothing to redo) returns before finalizeRenderedSurface ever
+    // runs, but every entry into notes view — cache hit or not — comes
+    // through here.
+    .then(() => refreshBookmarkButtonUI());
 }
 
 // Repaint the open note without the reader appearing to move at all.

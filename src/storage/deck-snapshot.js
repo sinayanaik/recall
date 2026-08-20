@@ -12,6 +12,7 @@ import { humanizeSourceTitle, sourceFileTitle } from "../import/parse-cards.js?v
 import { importTargetCategory } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -192,7 +193,11 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // which is exactly when the identity is complete.
     queueMicrotask(() => {
       const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
-      if (resumeAt) scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true });
+      if (resumeAt) {
+        scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled: () => maybePromptBookmarkJump() });
+      } else {
+        maybePromptBookmarkJump();
+      }
     });
   }
   syncResults();

@@ -346,6 +346,13 @@ export function deckContentMatches(a, b) {
   if (normalizeSyncText(a.deckTitle) !== normalizeSyncText(b.deckTitle)) return false;
   if (normalizeDeckCategory(a.deckCategory) !== normalizeDeckCategory(b.deckCategory)) return false;
   if (normalizeSyncText(a.notes) !== normalizeSyncText(b.notes)) return false;
+  // Unlike meta.readingPosition (deliberately ignored here — see
+  // reading-position.js), a bookmark is a deliberate user action and should
+  // count as real content: compared on its own `.at` (not deep-equality) so
+  // it changes exactly once per bookmark click, the same way readingPosition
+  // is compared by offset elsewhere to avoid a fresh timestamp alone reading
+  // as a change.
+  if ((a.meta?.bookmark?.at || null) !== (b.meta?.bookmark?.at || null)) return false;
   const aCards = a.cards || [];
   const bCards = b.cards || [];
   if (aCards.length !== bCards.length) return false;

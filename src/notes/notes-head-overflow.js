@@ -52,6 +52,8 @@ const OVERFLOW_SELECTORS = [
   ".notes-head > #clozeReviewBtn",
   ".notes-head > .notes-make-card",
   ".notes-head > .notes-quick-note",
+  ".notes-head > #bookmarkSetBtn",
+  ".notes-head > #bookmarkGoBtn",
   ".notes-head > #focusModeBtn",
 ];
 

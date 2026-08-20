@@ -16,6 +16,7 @@ import { setKnownWebDeckCategories, webDeckCategories } from "../library/categor
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { readLocalDeckIndex, saveDeckToLibrary, syncLocalLibraryMetaForDeck, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
 import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
@@ -376,7 +377,11 @@ export async function loadWebDeck(deckId) {
     // scroll. scheduleNoteJump no-ops quietly if the anchor can't be found
     // (notes changed since, or this deck has never had a position saved).
     const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
-    if (resumeAt) scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true });
+    if (resumeAt) {
+      scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled: () => maybePromptBookmarkJump() });
+    } else {
+      maybePromptBookmarkJump();
+    }
 
     syncResults();
     touchWebDeckAccess(deckData.id).catch((error) => console.error("Failed to touch deck access", error));
