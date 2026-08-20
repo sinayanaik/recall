@@ -211,17 +211,64 @@ export function resolveRawNoteIndex(anchor) {
 // most NOTES_PAGED_MAX_CHARS long by construction.
 export const PAGED_SEARCH_PAGES = 2;
 
+// How far either side of the aimed-at block the anchor text is searched for.
+// Wide enough to absorb notesBlockForRawOffset's own drift — measured at one to
+// two blocks on a 5.2M-char book, because block keys ARE source text, so the
+// mapping only drifts by whatever preprocessSpecialBlocks changed — with a
+// margin large enough that an edit since the anchor was captured still lands.
+// Not wider, because pickMatch resolves a repeated phrase by nearest block and
+// a needlessly wide window gives it more wrong copies to choose between.
+export const NOTES_ANCHOR_SEARCH_BLOCKS = 128;
+
+// ...and the same window bounded in characters, for a note whose blocks are
+// long. Collecting text costs no layout, but indexOf over it is still linear.
+export const NOTES_ANCHOR_SEARCH_CHARS = 200000;
+
 export function findRenderedNoteRange(anchor, offset = null) {
   const view = el.notesView;
   const needle = (anchor.text || "").trim();
   if (!view || !needle) return null;
 
   // When the caller knows the raw offset (the raw→rendered toggle, or a
-  // jump-to-anchor), scope the text walk to a window around the estimated
-  // scroll position instead of flattening the whole (potentially enormous)
-  // document. The window is wide enough to absorb the proportional estimate's
-  // error on a note whose block heights are far from uniform. Without an
-  // offset (rare), fall back to a full walk.
+  // jump-to-anchor), scope the text walk to a window around it instead of
+  // flattening the whole (potentially enormous) document. Without an offset
+  // (rare), fall back to a full walk.
+  //
+  // That window is measured in BLOCKS, not pixels, and this is the whole point.
+  // It used to be a band of scroll pixels around `fraction * view.scrollHeight`
+  // — and on a chunked note scrollHeight is mostly `content-visibility`
+  // ESTIMATES, one per block, which are not proportional to how much SOURCE
+  // each block holds. So "40% of the way down the pixels" and "40% of the way
+  // through the markdown" are two different places on any note whose blocks are
+  // not all the same size, which is every real book: short dialogue lines and
+  // long descriptive paragraphs estimate to the same height and hold twenty
+  // times the text.
+  //
+  // Measured on a 5.2M-char, 18,060-block fixture with realistic block-size
+  // variance, at six positions through the note: the pixel window (~80 blocks
+  // wide) missed the block the reader was actually on by between 623 and 2,564
+  // BLOCKS, every time. Five of six searches therefore found nothing and the
+  // resume warned "Reading position not found in the rendered note"; the sixth
+  // was worse — it matched a paragraph six chapters early and landed there
+  // silently. That is the bug reported as "the reading position never resumes",
+  // and no amount of retrying could have fixed it: every retry re-asked the
+  // same question of the same wrong region.
+  //
+  // notesBlockForRawOffset answers in source-character space (cumulative block
+  // KEY lengths), which is exactly the space `offset` is in — the same call
+  // scheduleNoteJump already uses to aim, so the search and the aim now agree
+  // by construction instead of disagreeing by thousands of blocks. Measured on
+  // the same fixture, its answer is within one or two blocks of the truth.
+  //
+  // It is also free of forced layout. `content-visibility` skips layout and
+  // paint, not DOM traversal, so collecting textContent over a run of blocks
+  // costs nothing — while choosing that run by pixel band required reading a
+  // rect per binary-search probe, which is what un-skipped a streaming book's
+  // backlog on every retry (measured at 49 forced layouts / 5.5s).
+  //
+  // The pixel band survives as the fallback below, for a surface the block
+  // cache cannot answer for — and paged mode never used it at all, for a
+  // related reason:
   // In paged mode every one of those numbers is a lie: scrollTop is always 0 and
   // scrollHeight === clientHeight, so `centerDoc` is a fraction of ONE viewport
   // and `half` (>= 4000) swallows it whole. The window degenerated to "the whole
@@ -234,16 +281,6 @@ export function findRenderedNoteRange(anchor, offset = null) {
   // The paged equivalent of "a band of pixels around the estimate" is "a band of
   // PAGES around it", which pageWindow below computes instead.
   const paged = offset != null && isNotesPaged();
-  let winTopView = -Infinity;
-  let winBottomView = Infinity;
-  if (offset != null && !paged && state.notes) {
-    const fraction = Math.max(0, Math.min(1, offset / state.notes.length));
-    const centerDoc = fraction * view.scrollHeight;
-    const half = Math.max(4000, view.clientHeight * 2);
-    const viewTop = view.getBoundingClientRect().top;
-    winTopView = viewTop + (centerDoc - half) - view.scrollTop;
-    winBottomView = viewTop + (centerDoc + half) - view.scrollTop;
-  }
 
   const segments = [];
   let full = "";
@@ -289,34 +326,65 @@ export function findRenderedNoteRange(anchor, offset = null) {
       collectBlock(blocks[i]);
     }
   } else if (offset != null) {
-    // Windowed: only descend into top-level blocks whose vertical span
-    // overlaps the window, so a huge note isn't flattened in full.
-    //
-    // Blocks are in document order, so the window is a contiguous run and its
-    // first member can be binary searched for instead of found by testing every
-    // block from the top. That matters because these are `content-visibility:
-    // auto` blocks: reading a rect forces the browser to lay one out, so the
-    // old linear sweep un-skipped the entire document just to decide which
-    // handful of blocks to read — on every toggle and every anchor jump.
+    // Windowed, in block space — see the note above findRenderedNoteRange's
+    // window for why this is not a band of pixels.
     const blocks = notesTopLevelBlocks(view);
-    const topOf = (i) => blocks[i].getBoundingClientRect().top;
-    let low = 0;
-    let high = blocks.length - 1;
-    let first = blocks.length;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      if (blocks[mid].getBoundingClientRect().bottom < winTopView) {
-        low = mid + 1;
-      } else {
-        first = mid;
-        high = mid - 1;
+    const aim = notesBlockForRawOffset(view, state.notes || "", offset);
+    const aimIndex = aim ? blocks.indexOf(aim) : -1;
+    if (aimIndex !== -1) {
+      // Grow outward from the aim, alternating sides so the window stays
+      // centred on it, and stop at whichever bound is reached first. Both
+      // bounds exist because blocks vary enormously: NOTES_ANCHOR_SEARCH_BLOCKS
+      // keeps a note of one-line blocks from making the window narrow in
+      // characters, NOTES_ANCHOR_SEARCH_CHARS keeps a note of very long ones
+      // from making it huge.
+      let lo = aimIndex;
+      let hi = aimIndex;
+      let chars = (blocks[aimIndex].textContent || "").length;
+      const room = () => hi - lo + 1 < NOTES_ANCHOR_SEARCH_BLOCKS && chars < NOTES_ANCHOR_SEARCH_CHARS;
+      while (room() && (lo > 0 || hi < blocks.length - 1)) {
+        if (lo > 0) {
+          lo -= 1;
+          chars += (blocks[lo].textContent || "").length;
+        }
+        if (room() && hi < blocks.length - 1) {
+          hi += 1;
+          chars += (blocks[hi].textContent || "").length;
+        }
       }
-    }
-    for (let i = first; i < blocks.length; i += 1) {
-      const block = blocks[i];
-      if (block.nodeType !== 1) continue;
-      if (topOf(i) > winBottomView) break;
-      collectBlock(block);
+      for (let i = lo; i <= hi; i += 1) {
+        if (blocks[i].nodeType === 1) collectBlock(blocks[i]);
+      }
+    } else {
+      // The block cache can't answer — an unchunked surface it has never
+      // rendered, or a note whose blocks have been replaced since. Fall back to
+      // the pixel band this used to always use. It is the wrong space (see
+      // above), but on a surface small enough for the cache to be missing it is
+      // also a surface small enough for the band to cover most of it.
+      const fraction = Math.max(0, Math.min(1, offset / Math.max(1, (state.notes || "").length)));
+      const centerDoc = fraction * view.scrollHeight;
+      const half = Math.max(4000, view.clientHeight * 2);
+      const viewTop = view.getBoundingClientRect().top;
+      const winTopView = viewTop + (centerDoc - half) - view.scrollTop;
+      const winBottomView = viewTop + (centerDoc + half) - view.scrollTop;
+      let low = 0;
+      let high = blocks.length - 1;
+      let first = blocks.length;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (blocks[mid].getBoundingClientRect().bottom < winTopView) {
+          low = mid + 1;
+        } else {
+          first = mid;
+          high = mid - 1;
+        }
+      }
+      for (let i = first; i < blocks.length; i += 1) {
+        const block = blocks[i];
+        if (block.nodeType !== 1) continue;
+        if (block.getBoundingClientRect().top > winBottomView) break;
+        collectBlock(block);
+      }
     }
   } else {
     collectAll(view);
@@ -517,6 +585,33 @@ export function noteRangeCenterResidual(range, block, view) {
   });
 }
 
+// The reading-line twin of noteRangeCenterResidual, for restoring a position
+// rather than jumping to one.
+//
+// Centring is right for a jump to somewhere you weren't — you want the thing you
+// asked for in the middle of the screen. It is wrong for putting a reader back
+// where they were, because "where they were" was SAMPLED from the reading line
+// (rawOffsetForCurrentNotesScroll, via notesReadingLineOffset) and restoring it
+// anywhere else is not the identity. Centring a paragraph that was captured
+// 64px from the top pushes it a third of a screen down, which puts the block
+// ABOVE it on the reading line — so a resume that found its anchor perfectly
+// still reopened the reader one block early, every time.
+//
+// Same measurement path as the centring version, and for the same reason: on a
+// chunked note the containment sits on the wrapper, so a target inside a skipped
+// chunk answers with its chunk's box unless the chunk is laid out first.
+export function noteRangeReadingLineResidual(range, block, view) {
+  const target = block || view;
+  if (!view || !target?.isConnected) return null;
+  return withChunkRendered(target, view, () => {
+    const rangeRect = range?.getBoundingClientRect?.();
+    const rect = rangeRect && (rangeRect.height || rangeRect.width) ? rangeRect : target.getBoundingClientRect();
+    if (!rect.height && !rect.width) return null;
+    const viewTop = view.getBoundingClientRect().top;
+    return rect.top - viewTop - notesReadingLineOffset(view.clientHeight);
+  });
+}
+
 export function blockForRange(range) {
   if (!range) return null;
   const startEl = range.startContainer.nodeType === Node.TEXT_NODE
@@ -578,11 +673,11 @@ export function scrollRenderedNotesToRawOffset(offset, { smooth = true } = {}) {
 // anchor-text jump below and the exact-<mark> jump above it, which differ only
 // in how they find the range.
 //
-// Centred, unlike the raw<->rendered restore: this is an explicit jump to
-// somewhere you weren't, so putting the target in the middle of the screen is
-// what you want. Restoring a reading position is the case that has to land on
-// the reading line instead.
-export function revealRenderedNoteRange(range, { flash = true, smooth = true } = {}) {
+// Centred by default: an explicit jump is to somewhere you weren't, so putting
+// the target in the middle of the screen is what you want. `align:
+// "reading-line"` is the other case — restoring a position rather than jumping
+// to one — and see noteRangeReadingLineResidual for why it is not cosmetic.
+export function revealRenderedNoteRange(range, { flash = true, smooth = true, align = "center" } = {}) {
   const block = blockForRange(range);
   markProgrammaticNotesScroll(smooth ? 800 : NOTES_PROGRAMMATIC_SCROLL_MS);
   // scrollIntoView WOULD move a paged view — it scrolls the nearest scrollable
@@ -603,7 +698,8 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true } =
     // near the highlight but not to it" report. Deliberately not awaited: every
     // caller reads the boolean to decide whether to keep retrying, and the aim
     // has already been issued synchronously by the time this returns.
-    convergeNotesScroll(() => noteRangeCenterResidual(range, block, el.notesView), NOTE_JUMP_BUDGET_MS);
+    const residual = align === "reading-line" ? noteRangeReadingLineResidual : noteRangeCenterResidual;
+    convergeNotesScroll(() => residual(range, block, el.notesView), NOTE_JUMP_BUDGET_MS);
   }
   if (!flash) return true;
   // The browser's own selection highlight makes the exact span obvious; the
@@ -670,7 +766,11 @@ export function revealNoteMark(locator, options) {
 // `locator` is the optional exact-<mark> shortcut described above; the anchor is
 // still required, because it's what the raw-editor branch and the fallback text
 // search work from.
-export function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}, locator = null) {
+export function revealNoteAnchor(anchor, { flash = true, smooth = true, resume = false, align } = {}, locator = null) {
+  // A resume asks for the reading line without having to say so — that is what
+  // makes it a resume. Anything else may still ask explicitly (the in-app back
+  // button restores a position too; see nav-history.js).
+  const alignment = align || (resume ? "reading-line" : "center");
   const notesTarget = SELECTION_TARGETS[0];
   if (isTargetEditing(notesTarget)) {
     const idx = resolveRawNoteIndex(anchor);
@@ -686,11 +786,11 @@ export function revealNoteAnchor(anchor, { flash = true, smooth = true } = {}, l
     return true;
   }
 
-  if (revealNoteMark(locator, { flash, smooth })) return true;
+  if (revealNoteMark(locator, { flash, smooth, align: alignment })) return true;
 
   const range = findRenderedNoteRange(anchor, anchor.offset);
   if (!range) return false;
-  return revealRenderedNoteRange(range, { flash, smooth });
+  return revealRenderedNoteRange(range, { flash, smooth, align: alignment });
 }
 
 // ── Resuming where you were reading ────────────────────────────────────────
@@ -748,6 +848,10 @@ export function watchForReaderInterruption() {
   return { interrupted: () => interrupted, cancel };
 }
 
+// Cancels the resume currently in flight, or null when there isn't one. See
+// the note inside scheduleNoteJump.
+let cancelResume = null;
+
 // Switch to the notes view (if needed) and reveal the anchor. setViewMode
 // re-renders the notes markdown asynchronously, so retry across a few frames
 // before giving up. Two rAFs cover the initial render; the timeout loop is a
@@ -775,8 +879,29 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   let estimatedOnce = false;
   const until = performance.now() + NOTE_RESUME_BUDGET_MS;
   const reader = resume ? watchForReaderInterruption() : null;
-  const done = () => { reader?.cancel(); };
+  // At most one ambient resume, ever. Nobody asks for a resume — two of them
+  // are two different opinions about where the reader is, both moving the same
+  // scroller for up to eight seconds. There are two schedulers (loadDeckSnapshot
+  // and loadWebDeck) and re-opening a deck arms another, so the loops stacked:
+  // that is why the reported console shows this warning dozens of times over
+  // rather than once, and why their work overlapped on the one note.
+  //
+  // Resumes only. A deliberate jump (`patient`, the Highlights panel's "Go to",
+  // the in-app back button) is something the reader asked for, and asking twice
+  // is allowed.
+  let cancelled = false;
+  if (resume) {
+    cancelResume?.();
+    cancelResume = () => { cancelled = true; reader?.cancel(); };
+  }
+  const self = resume ? cancelResume : null;
+  const done = () => {
+    reader?.cancel();
+    if (self && cancelResume === self) cancelResume = null;
+  };
   const attempt = (retries) => {
+    // A newer resume owns the scroller now.
+    if (cancelled) return;
     // The reader took over. Their position is the real one now.
     if (reader?.interrupted()) return;
     // A big note mid-stream has a growing backlog of freshly appended,
@@ -820,6 +945,37 @@ export function scheduleNoteJump(anchor, options, locator = null) {
         const block = notesBlockForRawOffset(el.notesView, state.notes || "", anchor.offset);
         if (block) scrollNotesBlockToReadingLine(block, false);
         else estimateNotesScrollForOffset(anchor.offset);
+        // Landed. The note has finished streaming and the block the offset
+        // falls in has been put on the reading line — which is the resume, and
+        // is measured as the resume by interaction-scale-check (the CONTENT at
+        // the reading line, never a scroll offset).
+        //
+        // What revealNoteAnchor adds on top is the exact paragraph within that
+        // block, and it has now been asked once against a document that has
+        // stopped changing. Asking again at 600ms intervals for the rest of the
+        // eight-second budget cannot answer differently — the note is not
+        // moving any more — so the old loop spent the remaining budget
+        // re-deriving the same "no" and then reported the resume as failed even
+        // though the reader was already in the right place. A resume that
+        // cannot find its exact words in a note that has since been edited
+        // elsewhere should land on the block and say nothing, which is what
+        // this does. The warning below is now only for a resume that could not
+        // place itself at all.
+        //
+        // Converged rather than aimed once, for the same reason the exact path
+        // converges (see convergeNotesScroll): a block put on the reading line
+        // does not STAY there while the chunks below it swap estimated heights
+        // for real ones. The old loop got this for free by re-aiming on every
+        // retry; stopping here has to ask for it. Not in paged mode, where
+        // scrollNotesBlockToReadingLine has already turned to the block's page
+        // and there is no vertical residual to chase.
+        if (resume && block) {
+          if (!isNotesPaged()) {
+            convergeNotesScroll(() => noteRangeReadingLineResidual(null, block, el.notesView), NOTE_JUMP_BUDGET_MS);
+          }
+          done();
+          return;
+        }
       }
     }
     if (patient) {

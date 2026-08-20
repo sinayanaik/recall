@@ -590,7 +590,22 @@ const ACCEPTED = {
     "occurrence of the phrase anywhere in the note — the wrong-copy failure the " +
     "window exists to prevent. The binary search was invalid there too: paged " +
     "document order runs along X, so block `bottom` values are not monotonic. " +
-    "Pages are, so the paged branch windows by page instead.",
+    "Pages are, so the paged branch windows by page instead. " +
+    "Also (2026-08-20): the non-paged window is now measured in BLOCKS, " +
+    "centred on notesBlockForRawOffset — the same call scheduleNoteJump uses " +
+    "to aim — rather than in a band of scroll pixels around a fraction of " +
+    "scrollHeight. On a chunked note scrollHeight is mostly content-visibility " +
+    "ESTIMATES, which are not proportional to how much SOURCE each block " +
+    "holds, so \"40% down the pixels\" and \"40% through the markdown\" are two " +
+    "different places on any note whose blocks are not all the same size. " +
+    "Measured on a 5.2M-char, 18,060-block fixture at six positions: the " +
+    "pixel window missed the block the reader was on by 623 to 2,564 BLOCKS " +
+    "every time, so five of six searches found nothing (the resume's " +
+    "\"Reading position not found in the rendered note\") and the sixth matched " +
+    "six chapters early and landed there silently. The block window also " +
+    "removes the rect binary search, so this branch now forces no layout at " +
+    "all. The pixel band is kept as the fallback for a surface the block cache " +
+    "cannot answer for.",
   notesBlockAtReadingLineGeometric:
     "Delegates to firstVisibleNotesBlock when paged (its binary search rests " +
     "on block `bottom` values being monotonic in document order, and paged " +
@@ -697,6 +712,35 @@ const ACCEPTED = {
     "across a column break reports the union of its fragments, so paging by " +
     "the block sent every jump whose target sat in the tail of such a " +
     "paragraph to the previous page, with the target off-screen.",
+  findRawOffsetForRenderedPoint:
+    "The precise-seam search now runs only when there is text on BOTH sides of " +
+    "the caret; with `before` empty it goes straight to the block resolver. A " +
+    "probe landing in the MARGIN above a block — which is where the reading " +
+    "line spends much of its time — snaps the caret to offset 0 of the block's " +
+    "first text node, so `before` is empty and the pattern is just the " +
+    "right-hand word runs. Runs are matched verbatim with no word boundary " +
+    "around them, so an `after` of \"Interaction paragraph 1\" matches inside " +
+    "\"Interaction paragraph 100\", and the hinted search takes the match " +
+    "NEAREST the hint — which, on a hint that drifts low, is the earlier wrong " +
+    "one. Measured on a 12.8M-char book: the captured reading position landed " +
+    "4 and 16 blocks before the paragraph the reader was actually on, and the " +
+    "resume then faithfully restored the wrong place. The block resolver " +
+    "answers the same question from the block's first 40 characters, which is " +
+    "both more distinctive and what a caret at offset 0 actually means.",
+  revealNoteAnchor:
+    "Takes `resume`/`align` and threads an alignment down to " +
+    "revealRenderedNoteRange. revealRenderedNoteRange centres its target, " +
+    "which is right for a jump to somewhere you weren't and wrong for putting " +
+    "a reader back where they were: the position was SAMPLED from the reading " +
+    "line (notesReadingLineOffset), so centring it pushes the paragraph a " +
+    "third of a screen down and leaves the block ABOVE it on the reading line. " +
+    "The file already said this was the case that had to land on the reading " +
+    "line; nothing implemented it. It went unnoticed because the text search " +
+    "that reaches this code never succeeded on a large note (see " +
+    "findRenderedNoteRange) — the landing was really being done by " +
+    "scheduleNoteJump's block re-aim, which is reading-line aligned. Fixing " +
+    "the search exposed it immediately: interaction-scale-check's resume case " +
+    "went red on the block above the one it was reading.",
   findRenderedNoteRange:
     "A paged search window. Its window was built from scrollHeight/scrollTop, " +
     "both meaningless when the note runs sideways (scrollTop is 0, " +

@@ -535,6 +535,108 @@ const PROBE = `async (budget, tapCases) => {
     }
   }
 
+  // ── ...on a note whose blocks are NOT all the same size ─────────────────
+  //
+  // The fixture above is a grid: every paragraph the same length, so its
+  // content-visibility height estimates are proportional to how much SOURCE
+  // each block holds, and "40% down the pixels" happens to be "40% through the
+  // markdown". A real book is not like that — short dialogue lines and long
+  // descriptive paragraphs estimate to the same height and hold twenty times
+  // the text — and the resume's search window used to be built in pixel space
+  // while its aim was built in source space. On the grid the two agreed and
+  // every case above passed; on a book they disagreed by up to 2,564 BLOCKS,
+  // the search found nothing, and the resume warned "Reading position not found
+  // in the rendered note" every single time.
+  //
+  // So the uniform fixture cannot see this entire class of bug, and this case
+  // exists because it did not: it went red on the commit before the fix and
+  // green after, with nothing else changed.
+  {
+    const varied = [];
+    let seed = 12345;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    const WORDS = ("time person year way day thing man world life hand part child eye woman place work week case " +
+      "government company number group problem fact hound moor lantern carriage window letter shadow silence " +
+      "morning evening question answer footstep candle drawer envelope railway platform whisper").split(" ");
+    const sentences = (n) => {
+      const parts = [];
+      for (let i = 0; i < n; i += 1) {
+        const words = [];
+        const len = 8 + Math.floor(rnd() * 12);
+        for (let w = 0; w < len; w += 1) words.push(WORDS[Math.floor(rnd() * WORDS.length)]);
+        // A unique token per sentence, the way real prose carries names and
+        // numbers. Without it the snippet matching is ambiguous by construction
+        // and this case would be measuring the fixture, not the app.
+        words.splice(2, 0, "tok" + (seed % 100000).toString(36) + i);
+        parts.push(words.join(" ") + ".");
+      }
+      return parts.join(" ");
+    };
+    for (let c = 0; c < 30; c += 1) {
+      varied.push("# Chapter " + (c + 1) + "\\n");
+      for (let sec = 0; sec < 60; sec += 1) {
+        varied.push("## Section " + (c + 1) + "." + (sec + 1) + "\\n");
+        // The whole point: block length varies by ~20x, and the long ones are
+        // clustered in the back half, so estimated height stops tracking source
+        // position the way the grid made it.
+        const long = ((c * 60 + sec) % 7) === 0 ? 20 : (c > 15 ? 5 : 1);
+        varied.push("Varied paragraph " + (sec + 1) + " of chapter " + (c + 1) + ". " + sentences(long * 3) + "\\n");
+        varied.push(long === 1 ? "\\"A short line.\\" said nobody.\\n" : "- " + sentences(1) + "\\n- " + sentences(1) + "\\n");
+      }
+    }
+    state.notes = varied.join("\\n");
+    api.setNotesScrolledSource(null);
+    api.invalidateRenderedBlockCache();
+    view.scrollTop = 0;
+    await api.renderNotesView();
+    await settle(1500);
+
+    const lineText = () => {
+      const b = api.notesBlockAtReadingLineGeometric();
+      return b ? (b.textContent || "").trim().slice(0, 60) : "";
+    };
+    const vBlocks = api.notesTopLevelBlocks(view);
+    const target = vBlocks[Math.floor(vBlocks.length * 0.4)];
+    api.withChunkRendered(target, view, () => {
+      const delta = target.getBoundingClientRect().top - view.getBoundingClientRect().top;
+      view.scrollTop = Math.max(0, view.scrollTop + delta - 8);
+    });
+    view.dispatchEvent(new Event("scroll"));
+    await settle(3000);
+    const wasReading = lineText();
+    const anchor = api.readingAnchorNow();
+
+    // Any "not found" the resume reports is a failure of this case, whatever
+    // the note ends up looking like — that warning IS the reported bug.
+    const warnings = [];
+    const realWarn = console.warn;
+    console.warn = (...a) => { warnings.push(a.map(String).join(" ")); realWarn(...a); };
+
+    api.setNotesScrolledSource(null);
+    api.invalidateRenderedBlockCache();
+    view.scrollTop = 0;
+    await api.renderNotesView();
+    api.scheduleNoteJump(anchor, { flash: false, smooth: false, resume: true });
+    let waited = 0;
+    while (waited < budget.resumeMs && lineText() !== wasReading) {
+      await settle(250);
+      waited += 250;
+    }
+    // The full resume budget, so a loop that gives up late still reports here.
+    await settle(Math.max(0, 9000 - waited));
+    console.warn = realWarn;
+
+    push("a book with uneven blocks reopens where it was left", !wasReading || !anchor
+      ? "could not tell what was being read"
+      : lineText() === wasReading
+        ? true
+        : "reopened on " + JSON.stringify(lineText()) + ", was reading " + JSON.stringify(wasReading),
+      "landed after " + waited + "ms");
+    push("the resume does not report a position it could not find", warnings.length === 0
+      ? true
+      : warnings.length + " warning(s): " + warnings[0]);
+  }
+
   R.observer?.disconnect();
   return results;
 }`;

@@ -340,8 +340,26 @@ export function findRawOffsetForRenderedPoint(root, source, clientX, clientY) {
   if (localOffset != null) {
     const before = blockText.slice(Math.max(0, localOffset - 24), localOffset).trim();
     const after = blockText.slice(localOffset, localOffset + 24).trim();
-    const hit = matchSnippetInSource(source, before, after, isCode, hint);
-    if (hit != null) return hit;
+    // Only when there is text on BOTH sides of the caret. With `before` empty
+    // the caret is at the very start of the block — which is what a probe
+    // landing in the MARGIN above a block gives you, because the caret snaps to
+    // offset 0 of the nearest text node, and margins are where the reading line
+    // spends much of its time. The seam is then simply "the start of this
+    // block", and the block resolver below answers exactly that question from
+    // the block's first 40 characters instead of guessing it from 24.
+    //
+    // Guessing it from 24 was actively wrong, not merely weaker. With no left
+    // context the pattern is just the right-hand word runs, and a run is
+    // matched verbatim with no word boundary around it — so an `after` of
+    // "Interaction paragraph 1" matches inside "Interaction paragraph 100",
+    // and the hint picks whichever match is NEAREST, which on a hint that
+    // drifts low is the earlier, wrong one. Measured on a 12.8M-char book: the
+    // captured reading position landed 4 and 16 blocks before the paragraph the
+    // reader was actually on, which the resume then faithfully restored.
+    if (before) {
+      const hit = matchSnippetInSource(source, before, after, isCode, hint);
+      if (hit != null) return hit;
+    }
   }
 
   // Fallback: we know which block was clicked but not the precise seam (widget,
