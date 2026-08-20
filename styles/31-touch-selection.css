@@ -94,15 +94,24 @@
   }
 
   /* A note below NOTES_CHUNK_MIN_BLOCKS (2,000) has no chunks at all — the
-     per-BLOCK containment at styles/12-notes.css:255 is what shifts there. It
-     is bounded by that same threshold, so the whole view can be suspended:
-     the case this cannot afford is precisely the case that has chunks.
+     per-BLOCK containment at styles/12-notes.css:255 is what shifts there.
 
-     (0,5,1), to clear
+     This used to be `.notes-rendered.is-selection-unchunked > *`, freeing every
+     block in the note at once on the argument that a note small enough to have
+     no chunks is small enough to afford the layout. The layout cost was indeed
+     affordable; the DISPLACEMENT was not. Every block that had never been
+     painted took its real height in the same frame, the ones above the reader
+     included, so the page moved under the finger at the very start of the
+     gesture. markSelectionStableRegion() now marks the blocks around the
+     selection individually, exactly as it marks chunks on a longer note, and
+     pins their heights first — so this rule matches a handful of blocks near
+     the reader rather than the whole document.
+
+     (0,6,1), to clear
      `.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block)`
      at (0,3,0). The three :not()s have to be repeated verbatim or this loses. */
-  body.is-selecting .notes-rendered.is-selection-unchunked
-    > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block) {
+  body.is-selecting .notes-rendered
+    > .is-selection-stable:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block) {
     content-visibility: visible;
     contain-intrinsic-size: auto;
   }

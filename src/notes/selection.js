@@ -967,10 +967,9 @@ export function isSelectionAdjusting() {
 // under the selection and its two neighbours are freed — about 14,000px of
 // estimated reach either side, which is more than one drag can cross.
 //
-// A note below NOTES_CHUNK_MIN_BLOCKS has no chunks; there the whole view is
-// freed, because "no chunks" is exactly the case that is small enough to afford
-// it. See styles/31-touch-selection.css for both selectors and why each has to
-// out-specify the rule it overrides.
+// A note below NOTES_CHUNK_MIN_BLOCKS has no chunks; there the same region is
+// marked one level down, on the BLOCKS themselves. See styles/31-touch-selection.css
+// for both selectors and why each has to out-specify the rule it overrides.
 export const SELECTION_STABLE_CLASS = "is-selection-stable";
 
 let stableChunks = [];
@@ -983,6 +982,10 @@ export function clearSelectionStableRegion() {
   if (!stableChunks.length && !document.body.classList.contains("is-selecting")) return;
   stableChunks.forEach((chunk) => chunk.classList.remove(SELECTION_STABLE_CLASS));
   stableChunks = [];
+  // (`stableChunks` holds blocks rather than chunks on a note too short to have
+  // any — see markSelectionStableRegion. The class and the clearing are the same
+  // either way, which is why there is one list and not two.)
+  //
   // Handing containment back does NOT shift the layout a second time: the
   // estimates are written `contain-intrinsic-size: auto <fallback>`, and the
   // `auto` keyword means a block that has been rendered once remembers its real
@@ -994,8 +997,18 @@ export function clearSelectionStableRegion() {
   // class went on, so containment off and containment on describe the same box.
   // Before that they did not, and this is the moment a highlight's own repaint
   // used to inherit a displacement the pin loop then spent 400ms chasing.
-  el.notesView?.classList.remove("is-selection-unchunked");
   document.body.classList.remove("is-selecting");
+}
+
+// The top-level BLOCK a selection boundary sits in, or null — the same question
+// chunkForSelectionNode asks one level down, for a note too short to have chunks.
+export function blockForSelectionNode(view, node) {
+  if (!node || !view.contains(node)) return null;
+  // `up`, not `el`: this module imports `el` (the DOM handle registry), and a
+  // local of that name shadows it — which the module scanner correctly refuses.
+  let up = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  while (up && up !== view && up.parentElement !== view) up = up.parentElement;
+  return up && up !== view && up.parentElement === view ? up : null;
 }
 
 // The chunk a selection boundary sits in, or null.
@@ -1113,6 +1126,29 @@ export function markSelectionStableRegion({ growOnly = false } = {}) {
       }
     });
   });
+  // ── No chunks: the same region, one level down ───────────────────────────
+  //
+  // A note under NOTES_CHUNK_MIN_BLOCKS has no chunk wrappers, and this used to
+  // answer that by freeing `content-visibility` across the WHOLE view
+  // (is-selection-unchunked). Every block in the note that had never been
+  // painted then jumped from --notes-block-estimate to its real height at once,
+  // at the start of the gesture — including the blocks above the reader, which
+  // is the half that moves the page. "Small enough to afford it" was true of the
+  // layout cost and not of the displacement.
+  //
+  // The region idea works here unchanged: the blocks under the two boundaries
+  // plus one either side. Bounded, near the reader, and pinned below.
+  if (!wanted.length) {
+    [selection.anchorNode, selection.focusNode].forEach((node) => {
+      const block = blockForSelectionNode(view, node);
+      if (!block) return;
+      [block.previousElementSibling, block, block.nextElementSibling].forEach((neighbour) => {
+        if (neighbour && neighbour.nodeType === Node.ELEMENT_NODE && !wanted.includes(neighbour)) {
+          wanted.push(neighbour);
+        }
+      });
+    });
+  }
   // Mid-drag: keep what is already free as well as what is wanted now, up to
   // the cap. Past the cap this falls back to replacing, which is the old
   // behaviour and the right one for a gesture that has travelled far enough to
@@ -1142,10 +1178,6 @@ export function markSelectionStableRegion({ growOnly = false } = {}) {
     wanted.forEach((chunkEl) => chunkEl.classList.add(SELECTION_STABLE_CLASS));
     stableChunks = wanted;
   }
-  // No chunks at all — an ordinary note. Free the per-block containment across
-  // the view; see the block comment above for why that is affordable here and
-  // nowhere else.
-  view.classList.toggle("is-selection-unchunked", !wanted.length);
   document.body.classList.add("is-selecting");
 }
 

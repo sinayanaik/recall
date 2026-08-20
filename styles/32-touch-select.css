@@ -276,3 +276,36 @@ body.has-touch-select .selection-float.is-pinned-bottom {
 .selection-float-btn.is-search {
   font-size: 0.95rem;
 }
+
+/* ── 7. Two places the platform still paints over our selection ────────────
+
+   `user-select` is INHERITED, so rule 1 above suppresses the native selection
+   only on elements that do not state their own value. Two do.
+
+   styles/06-rendered.css:122 gives `.cloze.is-revealed { user-select: text }`,
+   at (0,2,0) on the element itself — which beats an ancestor rule however
+   specific that ancestor rule is. So the browser kept painting its OWN
+   ::selection over a revealed cloze while ::highlight(recall-touch-selection)
+   tinted the same characters: a double-painted patch in a second colour that
+   appears and disappears as a selection is dragged across it. It has to be
+   restated here rather than fixed there, because a revealed cloze IS selectable
+   with a mouse and that rule is right on every other platform. */
+body.has-touch-select .notes-rendered .cloze.is-revealed,
+body.has-touch-select .card-face .rendered .cloze.is-revealed {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Nothing in this app set a tap-highlight colour, so Chrome on Android paints
+   its own grey rectangle over any focusable or clickable node a touch lands on
+   — and the reading surface is full of them: every `.cloze` (it takes focus,
+   see 06-rendered.css:133) and every `a.note-link`. A long press on one flashes
+   that rectangle for the whole 240ms the press is resolving in, which is the
+   worst possible moment for a flash: the reader is watching that exact spot to
+   see whether their press took. The selection we paint is the only highlight
+   this surface should ever show. */
+body.has-touch-select .notes-rendered,
+body.has-touch-select .card-face .rendered {
+  -webkit-tap-highlight-color: transparent;
+}

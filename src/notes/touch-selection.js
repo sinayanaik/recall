@@ -107,7 +107,10 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
-import { NOTES_CHUNK_CLASS } from "../render/block-cache.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
+// A hoisted `function` declaration, read only inside a call — the same discipline
+// every other crossing binding in this neighbourhood follows.
+import { isProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import {
   clearSelectionStableRegion,
   hideNotesSelectionButton,
@@ -397,7 +400,25 @@ function offsetNear(node, x, y) {
     if (caretIsBefore(boundaryRectIn(node, mid), x, y)) lo = mid + 1;
     else hi = mid;
   }
-  return Math.min(Math.max(lo, 0), length);
+  lo = Math.min(Math.max(lo, 0), length);
+  // ── Round to the NEAREST caret, not up to the next one ───────────────────
+  //
+  // The search answers "the first offset that is not before the point", which is
+  // up to one character past the nearest one. The platform's own hit-test rounds
+  // to the nearest, so the two disagreed by a character — and since a repaired
+  // frame goes through here while an ordinary frame goes through the platform,
+  // that disagreement showed up as the boundary stepping back and forth by one
+  // character between consecutive frames of a steady drag. Measured in
+  // tools/touch-selection-check.mjs: nine reversals over a 23-step sweep.
+  //
+  // Only when both carets are on the same line: "nearer horizontally" means
+  // nothing across a wrap, and the line was already chosen before the search ran.
+  if (lo > 0) {
+    const here = boundaryRectIn(node, lo);
+    const prev = boundaryRectIn(node, lo - 1);
+    if (Math.abs(here.top - prev.top) < 1 && Math.abs(prev.left - x) < Math.abs(here.left - x)) lo -= 1;
+  }
+  return lo;
 }
 
 // Every text node under `host`, in document order, skipping the furniture that
@@ -445,21 +466,191 @@ function closestCaretIn(host, x, y) {
   return { node: best, offset: offsetNear(best, x, y) };
 }
 
+// ── Line FRAGMENTS, which tile where caret rects do not ────────────────────
+//
+// getClientRects() on a text node gives one rect per line fragment, and those
+// are LINE-BOX height — so they tile vertically with no gap between them.
+// boundaryRectIn's caret rects are TEXT height and do not: at any line-height
+// above 1 there is a band between one line's carets and the next line's that
+// belongs to neither, and a point in that band cannot be placed by comparing
+// caret rects at all. Everything below resolves the line first, from fragments,
+// and only then the offset within it.
+function lineRectsIn(node, probe) {
+  probe.selectNodeContents(node);
+  // A whitespace run that collapsed at a line end has no box; a blank line
+  // inside a <pre> has height and no width and is a real caret position, so the
+  // test is "either", not "both".
+  return Array.from(probe.getClientRects()).filter((rect) => rect.width || rect.height);
+}
+
+// How far either side of the point a text node has to reach before its
+// fragments are worth measuring. Three lines is more than any gap this is
+// called for, and it keeps a long list or a code block from costing one
+// getClientRects() per node.
+export const LINE_SEARCH_REACH_PX = 120;
+
+// The caret in `block` nearest (x, y), by line rather than by caret.
+//
+// The point is placed on the nearest FRAGMENT, x is clamped into that fragment,
+// and the binary search then runs at the fragment's vertical centre — where
+// every caret rect on that line straddles the probe, so caretIsBefore reduces to
+// its horizontal test and is monotonic. That is what stops a point in a gap
+// resolving to column 0 of the line below it.
+function caretOnNearestLine(block, x, y, root) {
+  if (!block || block.nodeType !== Node.ELEMENT_NODE || !root.contains(block)) return null;
+  const probe = document.createRange();
+  let best = null;
+  for (const node of textNodesIn(block, 64)) {
+    probe.selectNodeContents(node);
+    const union = probe.getBoundingClientRect();
+    if (!union.height && !union.width) continue;
+    // Cheap reject on one rect before paying for the per-line ones.
+    if (y < union.top - LINE_SEARCH_REACH_PX || y > union.bottom + LINE_SEARCH_REACH_PX) continue;
+    for (const rect of lineRectsIn(node, probe)) {
+      const dy = y < rect.top ? rect.top - y : (y > rect.bottom ? y - rect.bottom : 0);
+      if (best && dy >= best.dy) continue;
+      best = { dy, node, rect };
+    }
+  }
+  if (!best) return null;
+  const px = Math.min(Math.max(x, best.rect.left), best.rect.right);
+  const py = best.rect.top + best.rect.height / 2;
+  return { node: best.node, offset: offsetNear(best.node, px, py), dy: best.dy };
+}
+
+// The top-level block a node belongs to — a direct child of the reading surface,
+// or of one of its chunk wrappers. For a list item that is the <ul>, which is
+// exactly what the gap between two items wants: both lines belong to the same
+// top-level block, so one search covers them.
+function topLevelBlockFor(node, root) {
+  // `up`, not `el`: this module imports `el` (the DOM handle registry).
+  let up = node?.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  while (up && up !== root && !isTopLevelBlockParent(up.parentNode, root)) up = up.parentElement;
+  return up && up !== root && isTopLevelBlockParent(up.parentNode, root) ? up : null;
+}
+
+// The block before `block` in reading order, stepping out of a chunk wrapper
+// when it is that wrapper's first child.
+function previousTopLevelBlock(block, root) {
+  const before = block.previousElementSibling;
+  if (before) return before;
+  const chunk = block.parentElement;
+  if (!chunk || chunk === root || !chunk.classList?.contains(NOTES_CHUNK_CLASS)) return null;
+  return chunk.previousElementSibling?.lastElementChild || null;
+}
+
+// How far outside its own caret rect the point may sit and still count as being
+// ON that caret. A caret rect is text height and a line box is taller, so the
+// point can legitimately be a little above or below; 0.6 covers an ordinary
+// line-height with room to spare.
+export const CARET_LINE_SLACK_RATIO = 0.6;
+
+// ...and how far the caret may sit from the finger's COLUMN while it is in that
+// band. A couple of characters: enough that an ordinary hit in the leading is
+// never second-guessed, far less than the width of a line.
+export const CARET_COLUMN_SLACK_PX = 24;
+
+// ── Is the browser's answer actually under the finger? ─────────────────────
+//
+// Measured in Chromium 141, against a `user-select: none` reading surface:
+// caretPositionFromPoint is line-correct everywhere INSIDE a block — mid-word,
+// past the end of a short line, in the leading between two wrapped lines, left
+// of the column, above the first line. In the MARGIN BETWEEN TWO BLOCKS it is
+// not: it answers with offset 0 of the FOLLOWING block, regardless of x.
+//
+//   margin between two paragraphs, x = 150   ->  TEXT of #p2 @0
+//   margin between two paragraphs, x = 280   ->  TEXT of #p2 @0
+//   the gap between two <li> items           ->  TEXT of #l2 @0
+//   a blockquote's left border strip         ->  TEXT of #bq @0
+//
+// That is a text node inside the view, so usableCaret accepts it and this
+// function used to return it on the first probe — the repair ladder below never
+// ran and nothing knew anything had gone wrong. A drag sweeps through those
+// margins constantly, so the endpoint flew to the start of the next block and
+// back as the finger crossed the gap: "selecting content inter line is not
+// reliable ... it jumps to the start of a line", and a tint that flickers.
+// Reproduced in tools/touch-selection-check.mjs: 14 of 20 samples across a 15px
+// paragraph margin landed on offset 0.
+//
+// So the answer is checked rather than trusted. It is cheap — one collapsed
+// rect — and it only ever rejects an answer that is a whole gap away from the
+// finger.
+function caretIsUnderPoint(caret, x, y) {
+  const rect = boundaryRectIn(caret.node, caret.offset);
+  if (!rect || !rect.height) return true; // nothing to judge it by
+  // Squarely on the line's own text: nothing to doubt.
+  if (y >= rect.top && y <= rect.bottom) return true;
+  const slack = rect.height * CARET_LINE_SLACK_RATIO;
+  // A whole gap away. Whatever this is, it is not under the finger.
+  if (y < rect.top - slack || y > rect.bottom + slack) return false;
+  // In between — the leading above or below a real line, where a genuine hit
+  // does land. Told apart from a margin snap by the OTHER axis: the snap comes
+  // back at offset 0, hard against the left edge of its block, while the finger
+  // is somewhere along the line. A genuine hit is under the finger in both axes.
+  return Math.abs(rect.left - x) <= CARET_COLUMN_SLACK_PX;
+}
+
+// The point is in the gap between two blocks. Resolve it against the LAST line
+// of the one above and the FIRST line of the one below, and take whichever line
+// the finger is actually nearer — which is what the reader means, and what the
+// browser's own answer ignores.
+function caretAcrossBlockGap(direct, x, y, root) {
+  const below = topLevelBlockFor(direct.node, root);
+  if (!below) return null;
+  const above = previousTopLevelBlock(below, root);
+  const under = caretOnNearestLine(below, x, y, root);
+  const over = caretOnNearestLine(above, x, y, root);
+  if (over && under) return over.dy <= under.dy ? over : under;
+  return over || under;
+}
+
 // The repaired hit-test. Tried in order of how much it costs.
 export function caretInRoot(x, y, root) {
   if (!root) return null;
   const box = contentBox(root);
   const cy = Math.min(Math.max(y, box.top), box.bottom);
 
-  const direct = caretFromPoint(x, cy);
-  if (usableCaret(direct, root)) return direct;
-
-  // 1. Clamp into the content box. This alone fixes the left-gutter case, which
-  //    is the one the report named.
   const cx = Math.min(Math.max(x, box.left), box.right);
-  for (const tryX of [cx, box.left, box.right]) {
+
+  const direct = caretFromPoint(x, cy);
+  if (usableCaret(direct, root)) {
+    // Trusted only when it is actually under the finger — see caretIsUnderPoint.
+    if (caretIsUnderPoint(direct, x, cy)) return direct;
+    const nearer = caretAcrossBlockGap(direct, cx, cy, root);
+    if (nearer) return nearer;
+    return direct; // nothing better to offer; the old answer beats no answer
+  }
+
+  // 1. Probes NEAR THE FINGER, nearest first, alternating sides. A hit-test that
+  //    missed at one pixel — an inline boundary, a sub-pixel position between two
+  //    glyphs, the edge of an element — almost always succeeds a few pixels
+  //    either side, and that answer is the caret the reader was aiming at.
+  //
+  //    Deliberately NOT the edges of the content box, which is what this used to
+  //    try. At this app's default reading width a block fills the content box, so
+  //    box.left lands inside the first character of the line and comes back as a
+  //    perfectly usable caret — a confidently wrong answer, which is worse than
+  //    no answer, because no answer falls through to the block-scoped search
+  //    below. The clamp into the box is kept: that is the half of the old step 1
+  //    that fixes the left-gutter case, and its own comment said so.
+  const seen = new Set();
+  for (const dx of [0, 4, -4, 10, -10, 20, -20]) {
+    const tryX = Math.min(Math.max(cx + dx, box.left), box.right);
+    if (seen.has(tryX)) continue;
+    seen.add(tryX);
     const repaired = caretFromPoint(tryX, cy);
-    if (usableCaret(repaired, root)) return repaired;
+    if (!usableCaret(repaired, root)) continue;
+    // The probe found the NODE; the offset it came back with is the one at the
+    // nudged x, not at the finger. Re-resolve on the line it landed on, so a
+    // repaired frame answers the same question as an unrepaired one — otherwise
+    // the boundary steps sideways by however far the nudge reached, which on a
+    // drag reads as the endpoint stuttering.
+    const refined = caretOnNearestLine(topLevelBlockFor(repaired.node, root), cx, cy, root);
+    if (refined) return refined;
+    if (repaired.node.nodeType === Node.TEXT_NODE) {
+      return { node: repaired.node, offset: offsetNear(repaired.node, cx, cy) };
+    }
+    return repaired;
   }
 
   // 2. Still an element — the point is in a margin, or on an atomic block. Find
@@ -587,6 +778,7 @@ function edgeRect(range, atStart) {
 // had gone. Grabbing a parked handle drags from wherever the finger is (see
 // grabOffsetY in bindHandle), which is what the reader means by grabbing it.
 function hideHandle(handle) {
+  handleMisses.delete(handle);
   handle.classList.add("is-hidden");
   // Parked is a claim about WHERE a visible grip is; leaving it set on a hidden
   // one leaves the claim standing for the next placement to trip over.
@@ -594,28 +786,73 @@ function hideHandle(handle) {
   handle.dataset.parked = "";
 }
 
+// ── Hysteresis, because both of these classes drive a 90ms fade ────────────
+//
+// styles/32-touch-select.css:136 gives .touch-select-handle
+// `transition: opacity 90ms linear`, and THREE rules write that one property:
+// is-touch-scrolling to 0, is-parked to 0.75, is-hidden to 0. So a class that
+// flips per frame is not a flipped class, it is a pulsing grip — and both of
+// these were computed from scratch on every animation frame, from a bare
+// threshold with nothing to stop a boundary resting on it from crossing back
+// and forth. `is-parked` also swaps the bulb's geometry
+// (styles/32-touch-select.css:226) with no transition at all, so a flip is a
+// shape change as well as a fade. That is the "the handles flicker" report.
+//
+// A boundary sits exactly on the edge of the surface for the whole of an edge
+// auto-scroll, and again whenever the reader holds a grip near the bottom of
+// the screen — which is to say, in the two situations where the grip matters
+// most.
+export const HANDLE_PARK_EXIT_PX = 8;
+
+// How many consecutive unplaceable frames before a grip is actually taken off
+// the glass. A single null edgeRect is a measurement artefact — a boundary in a
+// subtree that has just had containment reapplied, a rect read in the frame
+// between two layouts — not the boundary going away. A selection that has
+// genuinely ended goes through hideHandles()/clearTouchSelection() and never
+// waits for this.
+export const HANDLE_MISS_FRAMES = 3;
+
+const handleMisses = new WeakMap();
+
+function noteHandleMiss(handle) {
+  const misses = (handleMisses.get(handle) || 0) + 1;
+  handleMisses.set(handle, misses);
+  // Under the threshold the grip keeps its last placement: it is still drawn
+  // where it was, which is where the boundary almost certainly still is.
+  if (misses >= HANDLE_MISS_FRAMES) hideHandle(handle);
+}
+
 function placeHandle(handle, rect, box, horizontal) {
   if (!handle) return;
   if (!rect) {
-    hideHandle(handle);
+    noteHandleMiss(handle);
     return;
   }
   let left = rect.left;
   let top = rect.top;
+  const wasParked = handle.dataset.parked === "1";
+  // A dead band, and it is deliberately asymmetric: park the moment the
+  // boundary leaves the box, un-park only once it is well back inside. Entering
+  // late would leave a grip drawn over the toolbar; leaving early is what makes
+  // it flutter.
+  const exit = wasParked ? HANDLE_PARK_EXIT_PX : 0;
   let parked = false;
   if (top < box.top) { top = box.top; parked = true; }
   else if (top + rect.height > box.bottom) { top = box.bottom - rect.height; parked = true; }
+  else if (wasParked && (top < box.top + exit || top + rect.height > box.bottom - exit)) parked = true;
   // Paged mode scrolls sideways, so a boundary leaves by the left or right edge
   // rather than the top or bottom and the parking axis follows the mode.
   if (horizontal) {
     if (left < box.left) { left = box.left; parked = true; }
     else if (left > box.right) { left = box.right; parked = true; }
+    else if (wasParked && (left < box.left + exit || left > box.right - exit)) parked = true;
   } else if (left < box.left - 24 || left > box.right + 24) {
     // Off the side in a vertically scrolling view is not a scroll position, it
     // is a boundary in something laid out off to one side. Nothing to park to.
-    hideHandle(handle);
+    noteHandleMiss(handle);
     return;
   }
+  handleMisses.delete(handle);
   handle.classList.remove("is-hidden");
   handle.classList.toggle("is-parked", parked);
   handle.dataset.parked = parked ? "1" : "";
@@ -636,8 +873,43 @@ export function updateHandles() {
   // contentBox() is a rect read plus a computed-style read.
   const box = contentBox(liveRoot);
   const horizontal = edgeAxisIsHorizontal(liveRoot);
-  placeHandle(handleStart, edgeRect(liveRange, true), box, horizontal);
+  const startRect = edgeRect(liveRange, true);
+  // Where the selection is on the GLASS, captured off a rect this pass already
+  // had to read. onRootScroll compares against it to tell a scroll the reader
+  // made from one the app made — see selectionMovedOnGlass.
+  lastGlassTop = startRect ? startRect.top : NaN;
+  placeHandle(handleStart, startRect, box, horizontal);
   placeHandle(handleEnd, edgeRect(liveRange, false), box, horizontal);
+}
+
+// ── Telling the reader's scrolling from the app's ──────────────────────────
+//
+// onRootScroll fades both grips off the glass for the duration of a scroll,
+// because a fixed overlay moved by JavaScript can only ever trail a surface
+// scrolling on the compositor. That is right for a scroll the READER made and
+// wrong for one the app made: settleNotesPin corrects scrollTop after an edit,
+// measureNotesChunkEstimate changes heights above the viewport and the browser's
+// own scroll anchoring compensates by writing scrollTop — and in every one of
+// those the content does not move, so there is nothing for a grip to trail. The
+// reader just sees both grips blink.
+//
+// scrollDrift below was rewritten for exactly this class of false positive on
+// the press timer: measure the CONTENT, not scrollTop. This is the same idea for
+// the fade, using the boundary's own position, which updateHandles has already
+// read this frame.
+export const SCROLL_GLASS_TOLERANCE_PX = 2;
+
+let lastGlassTop = NaN;
+
+function selectionMovedOnGlass() {
+  if (!rangeStillLive()) return true;
+  const rect = edgeRect(liveRange, true);
+  // No readable boundary — no opinion. Fading is the older, safer answer.
+  if (!rect) return true;
+  const was = lastGlassTop;
+  lastGlassTop = rect.top;
+  if (!Number.isFinite(was)) return true;
+  return Math.abs(rect.top - was) > SCROLL_GLASS_TOLERANCE_PX;
 }
 
 function hideHandles() {
@@ -691,6 +963,21 @@ function onRootScroll(event) {
     return;
   }
   if (!liveRange) return;
+  // A scroll the APP made, announced by whoever made it. Cheapest test, and it
+  // covers settleNotesPin and every other markProgrammaticNotesScroll() caller
+  // without reading any geometry at all.
+  const announced = isProgrammaticNotesScroll();
+  // ...and one it did not announce, which scroll anchoring produces whenever
+  // something above the viewport changes height. The content is the authority.
+  if (announced || !selectionMovedOnGlass()) {
+    // No fade — a fade is for a surface moving under the reader, and neither of
+    // these is one. The grips still have to be PLACED, though: an announced
+    // scroll does move the content, it just does so on the app's behalf. Not
+    // scheduling that frame left them behind by however far the app scrolled,
+    // which is a worse bug than the blink this branch exists to prevent.
+    if (announced) scheduleFrame(false);
+    return;
+  }
   // The class alone, not is-hidden: the handles keep their boxes and fade,
   // which means the settle below can place them at their NEW positions and let
   // them fade back in there. Removing them from the layout and putting them
@@ -940,9 +1227,15 @@ function endDrag() {
   draggingHandle = "";
   pressDragging = false;
   grabOffsetY = 0;
+  // Re-contain BEFORE the dragging flag drops. clearSelectionStableRegion()
+  // changes heights, the browser's scroll anchoring answers that by writing
+  // scrollTop, and a scroll arriving with the guard already down is one
+  // onRootScroll would take the fade branch for — a blink at the end of every
+  // drag. selectionMovedOnGlass() would catch it anyway; the ordering means it
+  // never has to.
+  clearSelectionStableRegion();
   setTouchSelectionDragging(false);
   document.body.classList.remove("is-touch-dragging");
-  clearSelectionStableRegion();
   updateHandles();
   // Straight to the real thing: the 300ms quiet window in selection.js was only
   // ever a way of guessing that a native handle had been let go, and a handle we

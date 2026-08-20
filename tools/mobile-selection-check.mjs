@@ -395,17 +395,26 @@ async function run() {
       selectPara("P0030");
       await settle(200);
       const block = Array.from(view.children).find((n) => n.textContent.startsWith("P0030"));
+      // Containment is freed per BLOCK now, around the selection, rather than
+      // across the whole view — the view-wide version moved the page at the
+      // start of every gesture, because every never-painted block took its real
+      // height at once, the ones above the reader included.
+      const far = Array.from(view.children).find((n) => n.textContent.startsWith("P0002"));
       return {
-        marked: view.classList.contains("is-selection-unchunked"),
+        marked: Boolean(block && block.classList.contains("is-selection-stable")),
         chunks: view.querySelectorAll(":scope > .notes-chunk").length,
-        computed: block ? getComputedStyle(block).contentVisibility : "(no block)"
+        computed: block ? getComputedStyle(block).contentVisibility : "(no block)",
+        far: far ? getComputedStyle(far).contentVisibility : "(no block)"
       };
     }, SELECT_PARA_SRC).finally(() => page.evaluate(() => window.__recall.api.setTouchSelectionDragging(false)));
     check(unchunked.chunks === 0, "the probe note is not chunked", `${unchunked.chunks} chunks`);
-    check(unchunked.marked, "an unchunked note frees containment across the view");
+    check(unchunked.marked, "an unchunked note frees containment on the block under the selection");
     check(unchunked.computed === "visible",
-      "and its blocks really are laid out under the selection",
+      "and that block really is laid out under the selection",
       `content-visibility: ${unchunked.computed}`);
+    check(unchunked.far !== "visible",
+      "...and a block far from the selection is left contained",
+      `content-visibility: ${unchunked.far}`);
 
     // ── 3b. content-visibility, on a note big enough to have chunks ─────────
     const book = await page.evaluate(new Function(`return (${LOAD_SRC})`)(), "book");
