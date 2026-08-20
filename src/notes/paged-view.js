@@ -510,6 +510,23 @@ export function applyNotesPagedLayout() {
   }
 }
 
+// Is the reader in the middle of selecting text in the notes?
+//
+// Deliberately answered here, from the live Selection, rather than by importing
+// isSelectionAdjusting() from ./selection.js. notes-view.js already imports BOTH
+// this module and that one, and that one imports notes-view.js back — so an
+// import in this direction would close a three-module cycle for what is two
+// property reads. (The one cycle that does exist here is documented at the top
+// of selection.js, along with why it is safe; there is no reason to add a
+// second.)
+export function notesSelectionIsLive() {
+  const view = el.notesView;
+  if (!view || view.hidden) return false;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  return view.contains(selection.anchorNode) || view.contains(selection.focusNode);
+}
+
 // Snap to the nearest page after a free swipe, and keep the indicator honest
 // while one is in flight.
 export function scheduleNotesPageSettle() {
@@ -518,6 +535,18 @@ export function scheduleNotesPageSettle() {
     settleTimer = 0;
     const view = el.notesView;
     if (!view || !isNotesPaged()) return;
+    // The reader is selecting. Extending a selection past the edge of the page
+    // is done by dragging a handle there and letting the view auto-scroll —
+    // which arrives here as an ordinary scroll event, 140ms before this snaps
+    // the flow back to the nearest column. The reader's finger does not move
+    // with it, so the selection end lands a page away from where they aimed.
+    //
+    // Unlike the isProgrammaticNotesScroll() case below, this does NOT
+    // re-schedule: a selection can sit on screen for as long as the reader
+    // likes, and re-arming would leave a 140ms timer running for all of it. The
+    // selectionchange listener in initPagedNotes settles once, when the
+    // selection collapses.
+    if (notesSelectionIsLive()) return;
     // A smooth programmatic turn is still in flight. Snapping to "the nearest
     // page" now would snap to whatever page the ANIMATION has reached and
     // abandon the journey — measured as End landing on page 6 of 11. The
@@ -670,6 +699,19 @@ export function initPagedNotes() {
     updateNotesPageIndicator();
     scheduleNotesPageSettle();
   }, { passive: true });
+
+  // The other half of the selection guard in scheduleNotesPageSettle. That
+  // guard returns WITHOUT re-arming, so nothing would ever snap the columns
+  // back if the reader's last scroll happened during a selection — which is the
+  // normal case, since extending a selection to the page edge is what scrolled
+  // the view in the first place. Collapsing the selection (a tap, an Escape,
+  // acting on the pill) is the moment that becomes safe, and it fires exactly
+  // one selectionchange.
+  document.addEventListener("selectionchange", () => {
+    if (!isNotesPaged() || state.viewMode !== "notes") return;
+    if (notesSelectionIsLive()) return;
+    scheduleNotesPageSettle();
+  });
 
   if (typeof ResizeObserver === "function") {
     new ResizeObserver(() => repaginateNotesPreservingPlace()).observe(view);

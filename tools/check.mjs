@@ -54,6 +54,13 @@
 //   selection       can you still select text in a note without dragging the
 //                   app's own chrome in with it? Real mouse drags, because
 //                   selection is a browser behaviour, not a function
+//   mobile-select   the same question with a FINGER: does the app still let go
+//                   of the gesture a long press needs? touch-action on the
+//                   reading surfaces, the card swipe standing down for a dwell,
+//                   containment suspended under a live selection, the page snap
+//                   held off, and the bar waiting for the drag to finish. The
+//                   native handles themselves are browser UI and absent in
+//                   headless Chrome — that half is a real-device check
 //   offline         does it START with no network, a blocked CDN, or a CDN
 //                   that hangs? (the one question nothing used to ask — every
 //                   other check here runs with a working connection, and the
@@ -88,6 +95,7 @@ const checks = [
     ["reconcile     ", ["node", ["tools/reconcile-parity.mjs"], ROOT]],
     ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
+    ["mobile-select ", ["node", ["tools/mobile-selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],

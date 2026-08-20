@@ -61,7 +61,7 @@ import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { beginSelectionGesture, currentNotesSelectionMarkdown, endSelectionGesture, hideNotesSelectionButton, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
@@ -543,7 +543,14 @@ el.notesView?.addEventListener("keydown", (event) => {
   followNoteLink(noteLink);
 });
 
-document.addEventListener("selectionchange", scheduleNotesSelectionCheck);
+// noteSelectionChanged first, and NOT inside the debounce: it stamps the "still
+// moving" clock and frees the containment under the selection, both of which
+// have to be in place before the next drag frame. scheduleNotesSelectionCheck is
+// the thing being deferred; this is the thing that decides how long for.
+document.addEventListener("selectionchange", () => {
+  noteSelectionChanged();
+  scheduleNotesSelectionCheck();
+});
 
 // ── The selection GESTURE, so the pill can wait for it to finish ───────────
 //

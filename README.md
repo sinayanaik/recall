@@ -899,6 +899,7 @@ subsuming another:
 | `reconcile` | Does the whole two-way sync behave identically end to end against a stand-in backend? |
 | `ui-smoke` | Does the app still *work*? 35 real actions driven through the DOM on both builds and compared step by step |
 | `selection` | Can you select text in a note without dragging the app's own chrome in with it? 7 real mouse drags |
+| `mobile-select` | The same question with a finger. `touch-action` on every reading surface, the card swipe standing down for a dwelling finger (real touch events), containment suspended under a live selection, the paged snap held off, and the selection bar waiting for the drag to finish. The native long press and its two handles are browser UI and do not exist in headless Chrome, so that half is checked by hand on a real Android device |
 | `render-scale` | Does a note still render when it is BIG? Four sizes straddling the 2,000-block chunking threshold, plus how long the thread is blocked while a 2.6MB note opens |
 | `interaction` | Once a book-sized note is open, does the app still answer? A press, a selection, the TOC's active row, and a reading position saved and resumed — each measured on a 2.6MB / 24,000-block note at phone size |
 | `style` | Do the style-panel settings still reach the CSS variables they name? |

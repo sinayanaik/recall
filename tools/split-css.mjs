@@ -175,6 +175,15 @@ const POST_SPLIT = {
     "the local library open and says so with this chip instead; #syncIndicator " +
     "could not, because it blanks itself whenever no deck is open. See " +
     "tools/session-persistence-check.mjs.",
+  "31-touch-selection.css":
+    "Text selection on a touch screen. Long press had to be fought and the " +
+    "native handles landed in the wrong place: the reading surfaces carried a " +
+    "pan-only touch-action, which is the compositor fast path that suppresses " +
+    "long-press-to-select and pins a handle to one axis, and the " +
+    "content-visibility estimates on notes blocks/chunks re-laid the document " +
+    "under the finger the moment a drag reached unread text. Coarse-pointer " +
+    "only — selection-check.mjs asserts the mouse path is unchanged. See " +
+    "tools/mobile-selection-check.mjs.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

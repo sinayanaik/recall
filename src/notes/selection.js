@@ -802,6 +802,178 @@ export function endSelectionGesture() {
   }, SELECTION_GESTURE_SETTLE_MS);
 }
 
+// ── The half of the gesture the pointer events cannot see ──────────────────
+//
+// The tracker above suppresses everything expensive while a pointer is DOWN,
+// and on a desktop that is the whole of a selection drag. On a phone it is not
+// even half of one.
+//
+// Once a long press has produced a selection, the reader adjusts it by dragging
+// the two handles — and on Android Chrome (and iOS Safari) those handles are
+// BROWSER UI, drawn outside the page. Dragging one delivers no pointerdown, no
+// pointermove and no pointerup to the document, so selectionGestureActive stays
+// false for the entire adjustment and every guard keyed to it is simply absent.
+//
+// What that cost, stated precisely, because the obvious version of it is wrong:
+// scheduleNotesSelectionCheck is a TRAILING debounce, so a smooth handle drag
+// does not run the check once per event. It runs it whenever the events leave a
+// 160ms gap — and the pass itself is what opens the gap. One pass is three
+// clones of the selected fragment, two Turndown conversions, and an occurrence
+// count that walks the rendered text of the whole note ABOVE the selection: the
+// comment at the top of stringSink measures that at 218ms on a 2.6MB note,
+// which is longer than the timer that scheduled it. So it self-oscillates at
+// roughly 380ms for the whole drag, each pass re-describing a selection the
+// reader is still moving, and each pass blocking the main thread for longer
+// than a frame. The handle lags the finger, overshoots, and lands somewhere
+// nobody aimed at.
+//
+// So the SELECTION ITSELF is the gesture signal, since the pointer isn't one: a
+// burst of selectionchange events means someone is still moving something.
+// Quiet for SELECTION_ADJUST_QUIET_MS means they have let go.
+//
+// Zero on a mouse, deliberately. The pointer tracker above already covers the
+// desktop drag exactly, and adding a settle delay there would put a lag on a bar
+// that has never felt laggy — tools/selection-check.mjs asserts the current
+// timing.
+export const SELECTION_ADJUST_QUIET_MS = 300;
+
+export const coarsePointerMedia = typeof window !== "undefined" && window.matchMedia
+  ? window.matchMedia("(pointer: coarse)")
+  : null;
+
+export function selectionAdjustQuietMs() {
+  return coarsePointerMedia?.matches ? SELECTION_ADJUST_QUIET_MS : 0;
+}
+
+let selectionChangedAt = 0;
+
+// A selection being ADJUSTED, as opposed to one that is finished and sitting
+// still. Non-collapsed on purpose: collapsing to a caret is an ending, not a
+// step, and treating it as "still moving" would hold the pill's dismissal for
+// another 300ms every time a reader tapped to clear.
+export function isSelectionAdjusting() {
+  const quiet = selectionAdjustQuietMs();
+  if (!quiet) return false;
+  if (performance.now() - selectionChangedAt >= quiet) return false;
+  const selection = window.getSelection();
+  return Boolean(selection && !selection.isCollapsed && selection.rangeCount);
+}
+
+// ── Keeping the text still while a handle is on it ─────────────────────────
+//
+// styles/12-notes.css:256 gives every top-level notes block
+// `content-visibility: auto`, and styles/19-notes-chunks.css:31 does the same
+// per chunk with a 4800px placeholder. Off-screen content is not laid out, so
+// until it is first rendered its height is that ESTIMATE — and the moment a
+// handle drag reaches it, the estimate is replaced by the real height and
+// everything below moves. The handle is then over different words than the
+// finger was aiming at, which is the "indicators are almost always wrong" half
+// of the report.
+//
+// Suspending containment fixes it, and suspending it EVERYWHERE would be worse
+// than the bug: a full layout of a 24,600-block note is the exact cost
+// 19-notes-chunks.css was written to avoid (122ms per frame, measured there),
+// and it would land on the frame the reader is dragging in. So only the chunk
+// under the selection and its two neighbours are freed — about 14,000px of
+// estimated reach either side, which is more than one drag can cross.
+//
+// A note below NOTES_CHUNK_MIN_BLOCKS has no chunks; there the whole view is
+// freed, because "no chunks" is exactly the case that is small enough to afford
+// it. See styles/31-touch-selection.css for both selectors and why each has to
+// out-specify the rule it overrides.
+export const SELECTION_STABLE_CLASS = "is-selection-stable";
+
+let stableChunks = [];
+
+export function clearSelectionStableRegion() {
+  // Cheap "already clear" test first. positionNotesSelectionButton calls this on
+  // every pass, including every desktop one, where nothing was ever marked —
+  // that must not cost four DOM writes. (Same shape as the fast path at the top
+  // of hideNotesSelectionButton, and for the same reason.)
+  if (!stableChunks.length && !document.body.classList.contains("is-selecting")) return;
+  stableChunks.forEach((chunk) => chunk.classList.remove(SELECTION_STABLE_CLASS));
+  stableChunks = [];
+  // Handing containment back does NOT shift the layout a second time: the
+  // estimates are written `contain-intrinsic-size: auto <fallback>`, and the
+  // `auto` keyword means a block that has been rendered once remembers its real
+  // size. The fallback only ever applies to content that has never been on
+  // screen — which, by the time this runs, this content has.
+  el.notesView?.classList.remove("is-selection-unchunked");
+  document.body.classList.remove("is-selecting");
+}
+
+// The chunk a selection boundary sits in, or null.
+export function chunkForSelectionNode(view, node) {
+  if (!node || !view.contains(node)) return null;
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  const chunk = element?.closest?.(".notes-chunk");
+  return chunk && chunk.parentElement === view ? chunk : null;
+}
+
+export function markSelectionStableRegion() {
+  const view = el.notesView;
+  if (!view) return;
+  const selection = window.getSelection();
+  // Nothing selected, or selected somewhere that is not the notes — a card
+  // face, a textarea, a panel. There is no containment to suspend for any of
+  // those, and marking the view would be wrong for all of them.
+  if (!selection || !selection.rangeCount
+      || (!view.contains(selection.anchorNode) && !view.contains(selection.focusNode))) {
+    clearSelectionStableRegion();
+    return;
+  }
+  // BOTH boundaries, not just the anchor. Adjusting a selection by its end
+  // handle leaves the anchor exactly where it was — so an anchor-only version
+  // freed the chunk the reader had already finished with and never the one they
+  // were dragging into, which is the only one that matters. The two are the same
+  // chunk for a short selection and the set below de-duplicates.
+  const anchorChunk = chunkForSelectionNode(view, selection.anchorNode);
+  const focusChunk = chunkForSelectionNode(view, selection.focusNode);
+  const wanted = [];
+  // Each boundary's own chunk plus one either side. previousElementSibling
+  // rather than an index walk because a chunked note's children are all chunks —
+  // the block-cache builds them that way — and this stays correct if that ever
+  // stops being true.
+  [anchorChunk, focusChunk].forEach((chunk) => {
+    if (!chunk) return;
+    [chunk.previousElementSibling, chunk, chunk.nextElementSibling].forEach((neighbour) => {
+      if (neighbour && neighbour.classList?.contains("notes-chunk") && !wanted.includes(neighbour)) {
+        wanted.push(neighbour);
+      }
+    });
+  });
+  // Same-set check before touching the DOM: this runs on every selectionchange
+  // during a drag, and a class write on a chunk is a style invalidation over
+  // everything inside it. Order-insensitive, because which boundary is the
+  // anchor and which the focus flips the moment a drag crosses its own starting
+  // point — and that must not read as a different region.
+  const unchanged = wanted.length === stableChunks.length
+    && wanted.every((chunkEl) => stableChunks.includes(chunkEl));
+  if (!unchanged) {
+    stableChunks.forEach((old) => {
+      if (!wanted.includes(old)) old.classList.remove(SELECTION_STABLE_CLASS);
+    });
+    wanted.forEach((chunkEl) => chunkEl.classList.add(SELECTION_STABLE_CLASS));
+    stableChunks = wanted;
+  }
+  // No chunks at all — an ordinary note. Free the per-block containment across
+  // the view; see the block comment above for why that is affordable here and
+  // nowhere else.
+  view.classList.toggle("is-selection-unchunked", !wanted.length);
+  document.body.classList.add("is-selecting");
+}
+
+// Called from the document's `selectionchange` listener, ahead of the debounce.
+// Stamping the clock and freeing the containment both have to happen on the
+// EVENT, not on the debounced check — the whole point is to be ready before the
+// next drag frame, and the debounced check is the thing being deferred.
+export function noteSelectionChanged() {
+  if (!selectionAdjustQuietMs()) return;
+  selectionChangedAt = performance.now();
+  if (isSelectionAdjusting()) markSelectionStableRegion();
+  else clearSelectionStableRegion();
+}
+
 // Does the range contain an image? Only asked when the range has no text, so
 // the clone is paid for by a selection that is a picture and nothing else.
 export function rangeHasImage(range) {
@@ -853,9 +1025,17 @@ export function schedulePillSelectionCapture() {
   }, 0);
 }
 
+export const NOTES_SELECTION_DEBOUNCE_MS = 160;
+
 export function scheduleNotesSelectionCheck() {
   if (notesSelectionTimer) clearTimeout(notesSelectionTimer);
-  notesSelectionTimer = setTimeout(positionNotesSelectionButton, 160);
+  // On touch the debounce is the quiet window, not a flat 160ms: every
+  // selectionchange re-arms it, so the expensive pass runs ONCE, after the
+  // reader lets go of the handle, instead of once per 160ms for the whole
+  // adjustment. See SELECTION_ADJUST_QUIET_MS. A mouse keeps the 160ms it has
+  // always had — selectionAdjustQuietMs() is 0 there.
+  const delay = Math.max(NOTES_SELECTION_DEBOUNCE_MS, selectionAdjustQuietMs());
+  notesSelectionTimer = setTimeout(positionNotesSelectionButton, delay);
 }
 
 // Textareas have no native API for "where on screen is this selection" (the
@@ -975,6 +1155,21 @@ export function positionNotesSelectionButton() {
     if (!button.hidden) hideNotesSelectionButton();
     return;
   }
+  // Still dragging a native selection HANDLE, which sends no pointer events at
+  // all — so the guard above cannot see it and this one has to. Same treatment
+  // for the same reason: no DOM writes the reader would notice, and none of the
+  // expensive capture, until the selection stops moving. See
+  // isSelectionAdjusting(). The re-armed debounce in scheduleNotesSelectionCheck
+  // is what calls back in once it does; this is the belt to that braces, for a
+  // check that was already in flight when the drag started.
+  if (isSelectionAdjusting()) {
+    if (!button.hidden) hideNotesSelectionButton();
+    return;
+  }
+  // The adjustment is over: hand the containment back before anything below
+  // measures a rect, so the pill is placed against the layout the reader will
+  // actually see.
+  clearSelectionStableRegion();
   // A selection the APP made, to show the reader where a jump landed. It is a
   // real Selection and fires a real selectionchange, but nobody asked for a
   // formatting bar over it — see markProgrammaticNotesSelection. The window is

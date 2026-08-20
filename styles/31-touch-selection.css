@@ -1,0 +1,127 @@
+/* Text selection on a touch screen: give the gesture back to the browser
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ * Loaded last, so it settles ties against the slices without having to inflate
+ * its own specificity to win them — except where it is overriding a selector
+ * that is genuinely more specific, which is called out at each rule.
+ *
+ * Reported as: "I have to almost fight long press for the text selection to
+ * start, and even if text selection comes the start and end selector indicators
+ * are almost always wrong."
+ *
+ * Everything here is inside @media (pointer: coarse). A mouse never had either
+ * problem — selection-check.mjs has been asserting the desktop drag since
+ * commit 868b49f — and the trade-offs below (no compositor fast path on the
+ * reading surface, no containment on the chunk being read) are worth making for
+ * a finger and not worth making for a cursor.
+ */
+
+@media (pointer: coarse) {
+  /* ── 1. touch-action was eating the gesture ────────────────────────────────
+     A touch-action that names only pan axes lets Chromium resolve the touch on
+     the compositor without consulting the main thread. That is the same code
+     path that decides whether a press becomes a long-press text selection, and
+     it also fixes the axis a native selection HANDLE is allowed to travel
+     along — so a handle dragged sideways in `pan-y` content, or downward in
+     `pan-x` content, stops tracking the finger.
+
+     Each value below was defending against a real scroll bug. None of them is
+     the only thing defending it:
+
+       • .notes-rendered (styles/12-notes.css:189, pan-y) also carries
+         `overflow-x: hidden` and `overscroll-behavior-x: contain`, so there is
+         no horizontal scroll for pan-y to have been suppressing.
+       • .notes-rendered.is-paged (styles/18-paged-notes.css:51, pan-x) has
+         `overscroll-behavior-x: contain` and no vertical overflow at all. Its
+         own comment says pan-x was chosen "rather than none so press-and-hold
+         text selection … still reaches the text" — that is the belief this
+         file is correcting: anything short of `auto` is enough to break it.
+       • .card / .card-face (styles/05-study.css:82, :285, pan-y) are backed by
+         the swipe recogniser in src/cards/swipe.js, which decides horizontal
+         intent itself and now stands down for a dwelling finger.
+       • .rendered pre and .markdown-table-wrap (styles/06-rendered.css:341,
+         :497, pan-x pan-y) both hold ordinary selectable text and both scroll
+         horizontally on their own; `auto` additionally restores pinch-zoom and
+         double-tap-to-select-word inside them.
+
+     Deliberately NOT changed: .diagram-shell, .rendered .mermaid,
+     .rendered .d2-diagram and .math-display. Those hold an SVG, not prose, and
+     their pan-x pan-y is what reserves the pinch for the app's own diagram zoom
+     (src/render/diagram-zoom.js). There is no text in them to select. */
+  .notes-rendered,
+  .card,
+  .card-face,
+  .rendered pre,
+  .markdown-table-wrap {
+    touch-action: auto;
+  }
+
+  /* (0,2,0) to clear styles/18-paged-notes.css:51, which is also (0,2,0) — this
+     file loads later, so equal specificity is enough, but `.notes-rendered`
+     alone at (0,1,0) would have lost outright. The same trap is recorded at
+     styles/12-notes.css:249 and styles/19-notes-chunks.css:22. */
+  .notes-rendered.is-paged {
+    touch-action: auto;
+  }
+
+  /* ── 2. Don't move the text while a finger is on it ────────────────────────
+     styles/12-notes.css:256 gives every top-level notes block
+     `content-visibility: auto` with `contain-intrinsic-size: auto
+     var(--notes-block-estimate, 120px)`, and styles/19-notes-chunks.css:31
+     does the same per CHUNK with a 4800px estimate. Off-screen content is not
+     laid out, so its height is that ESTIMATE.
+
+     Dragging a selection handle toward unread text renders it for the first
+     time and the estimate is replaced by the real height — the document shifts
+     under the finger, by up to a whole chunk's worth of error, and the handle
+     ends up holding text the reader never aimed at. That is the "start and end
+     indicators are almost always wrong" half of the report.
+
+     So containment is suspended for the duration of a touch selection — but
+     only over the region one gesture can reach. Flipping it off document-wide
+     on a book would force a full layout of 24,600 blocks at the exact moment
+     this whole file is trying to keep the main thread free, which is the cost
+     19-notes-chunks.css exists to avoid. markSelectionStableRegion() in
+     src/notes/selection.js marks the chunk holding the selection plus its two
+     neighbours; that is ~14,000px of estimated reach either side. */
+
+  /* (1,3,0), to clear `#notesView > .notes-chunk` at (1,1,0)
+     (styles/19-notes-chunks.css:31). An id in the overridden selector means no
+     amount of classes alone would have done it. */
+  body.is-selecting #notesView > .notes-chunk.is-selection-stable {
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
+  }
+
+  /* A note below NOTES_CHUNK_MIN_BLOCKS (2,000) has no chunks at all — the
+     per-BLOCK containment at styles/12-notes.css:255 is what shifts there. It
+     is bounded by that same threshold, so the whole view can be suspended:
+     the case this cannot afford is precisely the case that has chunks.
+
+     (0,5,1), to clear
+     `.notes-rendered > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block)`
+     at (0,3,0). The three :not()s have to be repeated verbatim or this loses. */
+  body.is-selecting .notes-rendered.is-selection-unchunked
+    > *:not(.diagram-shell):not(.markdown-table-wrap):not(.has-eqn-num-block) {
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
+  }
+
+  /* ── 3. Keep the bar out of the drag zone ──────────────────────────────────
+     The pill is pinned to the bottom of the screen on a phone
+     (pinSelectionButtonToBottom, src/notes/selection.js:955) at
+     `bottom: calc(16px + var(--safe-bottom))` — styles/12-notes.css:664 — and
+     src/main.js:606 makes the whole container swallow its own pointerdown.
+     16px above the home indicator is exactly where a downward handle drag
+     finishes, so the bar was intercepting the end of the gesture that created
+     it.
+
+     The main fix is in JS: the bar no longer appears until the selection has
+     been quiet for SELECTION_ADJUST_QUIET_MS, so it is not on screen during the
+     drag at all. This is the rest of it — once it IS on screen, a reader
+     reaching back for the lower handle to adjust needs somewhere to grab that
+     is not the bar. (0,2,0) against the same, so file order settles it. */
+  .selection-float.is-pinned-bottom {
+    bottom: calc(56px + var(--safe-bottom));
+  }
+}

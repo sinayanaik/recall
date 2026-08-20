@@ -70,6 +70,46 @@ export function dragVelocity(current, previous, time) {
   return (current - previous) / elapsed;
 }
 
+// ── Standing the swipe down for a press ────────────────────────────────────
+//
+// A finger resting on a card is about to become a text selection, and the
+// preventDefault() in updateSwipe cancels a pending one. The escape at the top
+// of updateSwipe has existed for a while and did not work, for two reasons:
+//
+//   • It tested `!state.dragMoved`, which is STICKY and latches at 6px. Nobody
+//     holds a finger inside 6px for a third of a second, so any real press
+//     disqualified itself from the escape before it could fire.
+//   • It only ran from a move event. By the time a move arrives the gesture may
+//     already have latched horizontal intent (12px) and preventDefaulted — the
+//     escape was being asked to undo something that had already happened.
+//
+// So: a real touch slop instead of 6px, measured from the origin rather than
+// latched, and a TIMER so the stand-down happens on the clock rather than on
+// whatever move event happens to arrive next. `dragMoved` is deliberately left
+// alone — finishSwipe reads it to tell a tap from a drag.
+let dwellTimer = null;
+let dragLeftDwell = false;
+
+export function clearDwellTimer() {
+  if (dwellTimer) {
+    clearTimeout(dwellTimer);
+    dwellTimer = null;
+  }
+}
+
+// The stand-down itself. resetCardDrag() nulls state.dragPointerId, and BOTH
+// move handlers early-return on a pointer id that doesn't match — so once this
+// runs, no later move in this gesture can reach updateSwipe and preventDefault
+// the selection the reader is in the middle of making. That is the whole point;
+// a version that only set a flag would still have to be consulted by the very
+// code path that was eating the gesture.
+export function dwellRelease() {
+  dwellTimer = null;
+  if (state.dragging || dragLeftDwell) return;
+  if (state.dragPointerId === null) return;
+  resetCardDrag();
+}
+
 export function beginSwipe(clientX, clientY, pointerId = null, pointerType = "") {
   const time = performance.now();
   state.dragging = false;
@@ -85,9 +125,16 @@ export function beginSwipe(clientX, clientY, pointerId = null, pointerType = "")
   state.dragPointerId = pointerId;
   state.dragPointerType = pointerType;
   state.dragCaptured = false;
+  dragLeftDwell = false;
+  clearDwellTimer();
+  // Mouse only ever wanted the swipe; there is no long press to protect and no
+  // native selection a preventDefault could cancel that the mid-drag guard in
+  // updateSwipe doesn't already cover.
+  if (pointerType !== "mouse") dwellTimer = setTimeout(dwellRelease, swipeConfig.longPressGraceMs);
 }
 
 export function resetCardDrag() {
+  clearDwellTimer();
   state.dragging = false;
   state.dragPointerId = null;
   state.dragPointerType = "";
@@ -119,17 +166,23 @@ export function updateSwipe(clientX, clientY, event) {
   const absX = Math.abs(dx);
   const absY = Math.abs(dy);
   state.dragMoved = state.dragMoved || absX > 6 || absY > 6;
+  // Has this gesture travelled far enough to stop being a press? Kept separate
+  // from dragMoved — which latches at 6px and is read by finishSwipe to tell a
+  // tap from a drag — because 6px is finger tremor, not intent. See the block
+  // comment above beginSwipe.
+  dragLeftDwell = dragLeftDwell || Math.hypot(dx, dy) > swipeConfig.dwellSlopPx;
 
   // A touch that has dwelled this long without going anywhere is a long-press:
   // the browser is about to hand back a text selection, and the preventDefault()
   // further down cancels a pending one. The hasCardTextSelection() guard at the
   // top of this function can't help, because it only becomes true once the
   // selection already EXISTS — by which point the swipe has been running for a
-  // frame or two and eaten the gesture. This is the fix for text selection on a
-  // phone being unreliable: press, pause, then drag now always selects, and only
-  // a touch that moves promptly is treated as a swipe.
+  // frame or two and eaten the gesture.
+  //
+  // The dwell timer armed in beginSwipe is what makes this reliable; this is
+  // the same test on the move path, for a gesture whose timer has not fired yet.
   if (!state.dragging
-      && !state.dragMoved
+      && !dragLeftDwell
       && state.dragPointerType !== "mouse"
       && time - state.dragStartTime > swipeConfig.longPressGraceMs) {
     resetCardDrag();
@@ -137,6 +190,18 @@ export function updateSwipe(clientX, clientY, event) {
   }
 
   if (!state.dragging) {
+    // A slow drift must not latch swipe intent before the dwell can rescue it.
+    // intentDistance is 12px and dwellSlopPx is 16, so a finger creeping along
+    // at 60px/s crosses 12px at 200ms — well inside the 340ms grace — and the
+    // gesture became a swipe that then preventDefaulted the press. On touch the
+    // slop is therefore the floor: nothing is intent until the gesture has left
+    // the dwell radius. Mouse keeps intentDistance exactly as it was.
+    if (state.dragPointerType !== "mouse" && !dragLeftDwell) {
+      state.dragLastX = clientX;
+      state.dragLastY = clientY;
+      state.dragLastTime = time;
+      return;
+    }
     const hasHorizontalIntent = absX >= swipeConfig.intentDistance && absX >= absY * swipeConfig.intentRatio;
     const hasVerticalIntent = absY >= swipeConfig.intentDistance && absY >= absX * swipeConfig.intentRatio;
 
@@ -184,6 +249,10 @@ export function updateSwipe(clientX, clientY, event) {
 }
 
 export function finishSwipe() {
+  // Ahead of everything, because the committed branch below returns without
+  // going through resetCardDrag() — it inlines the reset — so that path would
+  // otherwise leave a timer armed to fire into the NEXT card.
+  clearDwellTimer();
   const dx = state.dragCurrentX - state.dragStartX;
   const dy = state.dragCurrentY - state.dragStartY;
   const absX = Math.abs(dx);
@@ -417,5 +486,10 @@ export const swipeConfig = {
   maxPreviewOffset: 128,
   // A finger that has rested this long without travelling is pressing, not
   // swiping — Android's long-press selection is about to fire. See updateSwipe.
-  longPressGraceMs: 340
+  longPressGraceMs: 340,
+  // How far "without travelling" is. A real touch slop, not the 6px dragMoved
+  // latches at: a thumb resting on glass wanders several pixels, and every one
+  // of those presses used to disqualify itself from the long-press escape. See
+  // the block comment above beginSwipe.
+  dwellSlopPx: 16
 };
