@@ -160,8 +160,18 @@ export function initMarkMenu() {
     }
     // A real text selection means the reader is selecting, not tapping a
     // highlight — the floating pill is the right surface for that.
+    //
+    // Read through the RANGE, not Selection.toString(). Once the touch
+    // controller is armed the reading surfaces carry `user-select: none`
+    // (styles/32-touch-select.css), and Chrome answers Selection.toString()
+    // with "" over unselectable content — measured — while every Range
+    // operation on the very same selection stays correct. This was the one
+    // place in the app that asked the selection instead of its range, so on a
+    // phone every tap inside a live selection also opened the mark menu behind
+    // the pill.
     const selection = window.getSelection();
-    if (selection && !selection.isCollapsed && selection.toString().trim()) return;
+    if (selection && !selection.isCollapsed && selection.rangeCount
+        && selection.getRangeAt(0).toString().trim()) return;
     event.preventDefault();
     openMarkMenuFor(mark);
   });

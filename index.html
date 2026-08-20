@@ -89,6 +89,7 @@
     <link rel="stylesheet" href="styles/29-print-safe-rendered.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/30-signed-out-chip.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/31-touch-selection.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/32-touch-select.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -197,6 +198,7 @@
     <link rel="modulepreload" href="src/notes/reading-position.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/scroll-anchor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/touch-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/toc.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/cloze-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
@@ -744,6 +746,26 @@
                  this one keeps it, somewhere better. -->
             <button class="selection-float-btn is-extract" id="extractNoteFromSelectionBtn" type="button" title="Move the selection into its own note" aria-label="Move the selection into its own note">&#8618;</button>
             <button class="selection-float-btn is-erase" id="eraseNotesSelectionBtn" type="button" title="Delete the selection" aria-label="Delete the selection">&#9003;</button>
+            <!-- Copy / Share / Web search — the three things Android's own
+                 selection bar offered, which the app now has to offer itself.
+                 src/notes/touch-selection.js suppresses the native long press
+                 outright (user-select: none on the reading surfaces), so that
+                 bar never appears on a phone any more; without these three,
+                 taking the gesture over would mean there was no way to copy a
+                 sentence out of a note at all.
+
+                 Not phone-only. They are just as useful with a mouse, and a
+                 second appearance rule is a second thing to keep in step —
+                 "Select all" and the search engine picker are the parts left
+                 behind, because Ctrl/Cmd+A already exists and a hardcoded
+                 engine is a preference nobody asked for.
+
+                 Share is REMOVED from the DOM by initTouchSelection's wiring
+                 where navigator.share is absent (every desktop browser but
+                 Safari), rather than left sitting there doing nothing. -->
+            <button class="selection-float-btn is-copy" id="copySelectionBtn" type="button" title="Copy the selection" aria-label="Copy the selection">&#128203;</button>
+            <button class="selection-float-btn is-share" id="shareSelectionBtn" type="button" title="Share the selection" aria-label="Share the selection">&#8599;</button>
+            <button class="selection-float-btn is-search" id="searchSelectionBtn" type="button" title="Search the web for the selection" aria-label="Search the web for the selection">&#128269;</button>
             <!-- Inline formatting — B I U S </> and the text-colour picker —
                  filled by initRenderToolbars. It used to be a permanent strip in
                  the notes header, where it could do nothing: every one of these

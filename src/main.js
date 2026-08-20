@@ -61,7 +61,8 @@ import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { beginSelectionGesture, currentNotesSelectionMarkdown, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
+import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
@@ -725,6 +726,100 @@ el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.stopPropagation();
   extractSelectionToNote();
 });
+
+// ── The three that replace the platform's own selection bar ────────────────
+//
+// src/notes/touch-selection.js suppresses Android's long-press-to-select
+// outright, and with it the Copy / Share / Select all / Web search bar that
+// used to come with it. Taking the gesture over without offering these back
+// would mean a phone reader could no longer copy a sentence out of a note —
+// a straight regression, and the reason they live here rather than being left
+// for later.
+//
+// All three read PLAIN TEXT (currentSelectionPlainText), not the markdown every
+// other button in this strip works from: a web search for `**bold**` finds
+// nothing, and nobody shares a sentence wanting the asterisks. Each takes the
+// same pointerdown + preventDefault as its neighbours, for the same reason —
+// letting the press through would dissolve the selection being acted on.
+el.copySelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const text = currentSelectionPlainText();
+  if (!text) {
+    showToast("Select some text first, then tap copy.", "error");
+    return;
+  }
+  // The async clipboard API needs a secure context and a user gesture; this IS
+  // the gesture, but a file:// open or an insecure LAN host is not a secure
+  // context, and that is a normal way to run this app. execCommand("copy") is
+  // deprecated and still the only thing that works there.
+  const fallback = () => {
+    const scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "");
+    scratch.style.cssText = "position:fixed;top:-1000px;opacity:0";
+    document.body.appendChild(scratch);
+    scratch.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+    scratch.remove();
+    showToast(ok ? "Copied" : "Couldn't copy — your browser refused clipboard access.", ok ? "success" : "error");
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => showToast("Copied"), fallback);
+  } else {
+    fallback();
+  }
+  hideNotesSelectionButton();
+});
+
+el.shareSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const text = currentSelectionPlainText();
+  if (!text) {
+    showToast("Select some text first, then tap share.", "error");
+    return;
+  }
+  // AbortError is the reader dismissing the share sheet, which is not a failure
+  // and must not raise a toast saying it was.
+  navigator.share?.({ text }).catch((error) => {
+    if (error?.name !== "AbortError") showToast("Couldn't open the share sheet.", "error");
+  });
+  hideNotesSelectionButton();
+});
+
+el.searchSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const text = currentSelectionPlainText();
+  if (!text) {
+    showToast("Select some text first, then tap search.", "error");
+    return;
+  }
+  // Capped: a search URL carrying a whole selected page is rejected by every
+  // engine and by most proxies before it gets there.
+  const query = encodeURIComponent(text.slice(0, 512));
+  window.open(`https://www.google.com/search?q=${query}`, "_blank", "noopener");
+  hideNotesSelectionButton();
+});
+
+// A button that cannot do anything is worse than an absent one, and there is no
+// polyfill for a share sheet. Removed rather than hidden so nothing — the
+// formatting row's overflow arithmetic, a screen reader, the phone bar's
+// wrap — has to know about a permanently invisible child.
+if (!navigator.share) el.shareSelectionBtn?.remove();
+
+// ── The touch selection controller ─────────────────────────────────────────
+//
+// Armed only on a real touchscreen whose PRIMARY pointer is a finger, and only
+// where the CSS Custom Highlight API exists to paint what it takes over — see
+// canTouchSelect(). On every other machine this call binds nothing, adds no
+// class, and leaves the native path and styles/31-touch-selection.css exactly as
+// they were. Called unconditionally all the same: the gate is re-evaluated on
+// the media query's own `change` event, so a tablet that gains or loses a mouse
+// switches paths without a reload.
+initTouchSelection();
 
 [el.notesView, el.questionView, el.answerView].forEach((view) => {
   view?.addEventListener("scroll", hideNotesSelectionButtonUnlessPinned, { passive: true });

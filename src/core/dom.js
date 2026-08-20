@@ -218,6 +218,11 @@ export const el = {
   highlightSelectionMenu: document.querySelector("#highlightSelectionMenu"),
   eraseNotesSelectionBtn: document.querySelector("#eraseNotesSelectionBtn"),
   extractNoteFromSelectionBtn: document.querySelector("#extractNoteFromSelectionBtn"),
+  // The three that replace Android's own selection bar, which the touch
+  // selection controller suppresses along with the native long press.
+  copySelectionBtn: document.querySelector("#copySelectionBtn"),
+  shareSelectionBtn: document.querySelector("#shareSelectionBtn"),
+  searchSelectionBtn: document.querySelector("#searchSelectionBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
   selectionFloatFormat: document.querySelector("#selectionFloatFormat"),
   selectionFormatToggleBtn: document.querySelector("#selectionFormatToggleBtn"),
