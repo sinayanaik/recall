@@ -31,6 +31,11 @@
 //   render-scale    does a BIG note still render? (2,000+ blocks takes a
 //                   different branch that nothing else here ever reaches — a
 //                   total failure of large notes once passed every other check)
+//   mobile-menu     does the ☰ drawer still open on a PHONE with a book on
+//                   screen? The only check that throttles the CPU and uses a
+//                   fixture with figures in it, and it times the shared
+//                   overlay/chrome plumbing directly — all three are why the
+//                   drawer freeze survived five rounds of profiling
 //   style           does a Style panel setting reach the element it names?
 //   highlight       does highlighting mark the thing that was SELECTED?
 //   paged           can you reach the end of a note in paged reading mode?
@@ -85,6 +90,7 @@ const checks = [
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
+    ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],

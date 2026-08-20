@@ -2340,12 +2340,28 @@ document.addEventListener("click", (e) => {
   const closeBtn = document.getElementById("toolbarCloseBtn");
 
   if (menuBtn && toolbar && backdrop) {
+    // lockPageScroll(), not `document.body.style.overflow = "hidden"`.
+    //
+    // The hand-rolled write is what every other overlay in the app already had
+    // a shared helper for, and it was the most expensive thing the ☰ button
+    // did. body's overflow PROPAGATES to the viewport (styles/01-tokens.css:373
+    // sets only overflow-x, so overflow-y is visible and <html> is still the
+    // scrolling box), so writing it changes what the viewport scrolls and the
+    // browser re-lays out the document to find out. Measured on a 2.5MB book at
+    // a 6x CPU throttle: ~75ms on open and ~75ms again on close, against 0-3ms
+    // for the class flip that actually moves the drawer.
+    //
+    // The shared helper now asks whether the page can scroll at all before
+    // touching anything (see pageCanScroll), and on this app shell it cannot —
+    // so the common case costs nothing, and the rare case where the reader has
+    // made the shell taller than the screen gets the same lock every other
+    // overlay uses instead of a weaker one that only this button knew about.
     const openMenu = () => {
       toolbar.classList.add("mobile-open");
       backdrop.classList.add("is-open");
       backdrop.hidden = false;
       menuBtn.setAttribute("aria-expanded", "true");
-      document.body.style.overflow = "hidden";
+      lockPageScroll();
     };
 
     const closeMenu = () => {
@@ -2353,7 +2369,7 @@ document.addEventListener("click", (e) => {
       backdrop.classList.remove("is-open");
       backdrop.hidden = true;
       menuBtn.setAttribute("aria-expanded", "false");
-      document.body.style.overflow = "";
+      unlockPageScroll();
     };
 
     setIsMainMenuOpen(() => toolbar.classList.contains("mobile-open"));

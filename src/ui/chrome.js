@@ -99,11 +99,32 @@ function naturalHeight(node) {
   return Math.ceil(node.scrollHeight + borders);
 }
 
+// Published ON THE ELEMENT THAT USES IT, not on :root — and that is a
+// performance fix, not tidiness.
+//
+// A custom property set on the root element is inherited by every element in
+// the document, so writing one makes the browser re-resolve variables for the
+// whole tree. That is cheap on an ordinary page and is not cheap here: measured
+// on a 2.5MB / 19,380-block book at a 6x CPU throttle (a mid-range phone), one
+// `--appbar-h` write on :root costs ~600ms, and this function writes two.
+//
+// It runs far more often than it looks. On a phone the chrome auto-hides as you
+// scroll (see trackChromeScroll — phone-only), every fold and unfold animates
+// the appbar's height, and main.js watches that box with a ResizeObserver that
+// calls straight back in here. So a reader scrolling a book was paying hundreds
+// of milliseconds of whole-document work per direction change, for two numbers
+// that only three elements read.
+//
+// Grepped before moving them: `--appbar-h` is read by `.appbar` alone
+// (styles/12-notes.css:1209), and `--view-toggle-h` by `.quiz-panel
+// .view-mode-toggle` (styles/12-notes.css:1213) and `.view-mode-row`
+// (styles/16-mobile-reading.css:335) — the toggle being a child of the row, so
+// the row is the one place that covers both. None of them is an ancestor of
+// #notesView, so the note no longer has any reason to hear about this at all.
 export function readChromeHeights() {
-  const root = document.documentElement;
   const appbar = document.querySelector(".appbar");
   const appbarHeight = naturalHeight(appbar);
-  if (appbarHeight) root.style.setProperty("--appbar-h", `${appbarHeight}px`);
+  if (appbarHeight) appbar.style.setProperty("--appbar-h", `${appbarHeight}px`);
   // The ROW, not the toggle inside it. The Cards/Notes/Highlights tabs now share
   // a row with the table of contents, the edit pill and the ⋯ menu, and it is
   // that row which folds away in focus mode — measuring only the tabs left the
@@ -111,7 +132,10 @@ export function readChromeHeights() {
   // what "the focus toggle does nothing" looked like.
   const toggle = document.getElementById("viewModeRow") || el.viewModeToggle;
   const toggleHeight = toggle && !toggle.hidden ? naturalHeight(toggle) : 0;
-  if (toggleHeight) root.style.setProperty("--view-toggle-h", `${toggleHeight}px`);
+  // Written on whichever element was MEASURED. When the row exists the toggle
+  // inherits it; when it doesn't, the toggle is both the measured box and the
+  // only consumer left.
+  if (toggleHeight) toggle.style.setProperty("--view-toggle-h", `${toggleHeight}px`);
 }
 
 // Two guards, both load-bearing:
