@@ -66,6 +66,41 @@ const ACCEPTED = {
   // everything else is slow. Each entry below is measured in
   // tools/interaction-scale-check.mjs, which drives a 2.6MB / 24,000-block note
   // on a phone-sized viewport and was red on all of them.
+  // ── ...and SELECTING and HIGHLIGHTING in one ───────────────────────────
+  // A later report, same theme, one gesture: "everything works for small notes
+  // but for large notes the text selection is buggy and laggy, and after
+  // selecting, highlighting shakes the page violently." The four entries below
+  // are the parse and the search that a highlight pays for; the rest of that
+  // work is in functions the baseline never had. Measured in
+  // tools/interaction-scale-check.mjs (2.4MB fixture) and asserted for
+  // correctness in tools/incremental-split-check.mjs.
+  splitPreparedBlocks:
+    "Filters through isBlockToken() instead of testing token.type/raw inline. " +
+    "One definition, shared with splitPreparedBlocksChunked and with the window " +
+    "lexer the incremental splitter uses — and that sharing is load-bearing " +
+    "rather than tidy: the incremental splitter proves itself by comparing one " +
+    "window lex against another, so a filter that drifted between the copies " +
+    "would produce block arrays that disagree in a way its own guard is blind to.",
+  notesSelectionMarkdown:
+    "Takes the renderedSelectionStrings description of the same range when the " +
+    "caller already has one, and derives the markdown from it. The pill's " +
+    "capture asked for both, so one finished selection paid for two clones of " +
+    "the selected fragment and two Turndown passes over identical HTML.",
+  fuzzyWhitespaceMatch:
+    "Takes `near`: when given, every match is considered and the one starting " +
+    "closest to that offset wins, instead of the ordinal one. See " +
+    "locateSelectionInSource — the windowed search identifies the right copy by " +
+    "POSITION, which is both cheaper than an occurrence count (that count is a " +
+    "walk of the rendered DOM from the top of the note) and stronger, because a " +
+    "miscounted ordinal degrades to 'the first match in the note' and a position " +
+    "cannot pick something a screen away.",
+  looseMarkupMatch:
+    "Takes `base` and `near`. `base` is where the normalized projection begins " +
+    "in the source, so the projection can be built from a WINDOW rather than " +
+    "from the whole note — it allocates a character array plus a parallel index " +
+    "array and joins them, which on a 2.4MB chapter is millions of slots per " +
+    "highlight, on a phone. `near` picks the match nearest the selection's own " +
+    "block, resolved through the map's monotonic ordering.",
   renderedSelectionStrings:
     "`occurrence` — which copy of the selected text this is — was counted by " +
     "cloneContents() over a range from the top of the view to the selection: a " +

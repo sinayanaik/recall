@@ -20,7 +20,7 @@ import { textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
 import { applyNotesPagedLayout, firstVisibleNotesBlock, isNotesPaged, notesPageCount, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
-import { hideNotesSelectionButton } from "./selection.js?v=__BUILD__";
+import { hideNotesSelectionButton, touchSelectionDragActive } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
 import { releaseNotesChunkEstimateObserver, renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
@@ -197,6 +197,18 @@ export const NOTES_PIN_LARGE_NOTE_BUDGET_MS = 1200;
 // every transient.
 export const NOTES_PIN_CONFIRM_PASSES = 2;
 
+// How many times the loop may actually MOVE the reader before it gives up.
+//
+// Every correction is a visible jump, so a loop that keeps finding drift is a
+// loop the reader experiences as the page shaking — which is the report this
+// whole file's settle machinery keeps orbiting. The stalemate test below ends a
+// loop that has stopped improving; this ends one that improves a little every
+// time and never arrives, which on a note with a lot of late-settling content
+// below the fold is the shape that actually occurred. Three corrections is more
+// than any real repaint needs now that the note is patched rather than rebuilt;
+// past that, being 20px out is better than being moved for the fourth time.
+export const NOTES_PIN_MAX_CORRECTIONS = 3;
+
 // A block's top edge, measured with its CHUNK forced to lay out. On a chunked
 // note the containment sits on the wrapper, so a block inside a skipped chunk
 // answers with its chunk's box — the same answer all 40 of its neighbours give.
@@ -307,6 +319,7 @@ export async function settleNotesPin(view, anchors) {
   // not the reader being in the wrong place, and resets the count.
   let confirmed = 0;
   let confirmedSign = 0;
+  let corrections = 0;
   for (;;) {
     // The first pass is a bare frame — exactly what this did before — so the
     // common case (nothing below the fold to settle) still corrects immediately
@@ -316,6 +329,18 @@ export async function settleNotesPin(view, anchors) {
     settleMs = NOTES_PIN_SETTLE_MS;
     const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
     if (!anchor) return;
+    // Never move the page out from under a finger. A touch selection is live
+    // while this runs whenever the reader highlights and then reaches straight
+    // back to the text, and a scrollTop write during a drag moves the words
+    // under the handle they are holding — the exact thing markSelectionStableRegion
+    // exists to prevent, arriving from the other direction. Their gesture is
+    // worth more than six pixels of drift.
+    //
+    // Asked of selection.js rather than of touch-selection.js directly: it
+    // already holds the flag (setTouchSelectionDragging reports into it) and
+    // this module already imports from it, so there is no new module edge to
+    // reason about.
+    if (touchSelectionDragActive()) return;
     // Paged mode never gets here: renderNotesViewPinned handles it by restoring
     // scrollLeft directly, because re-deriving a page from a block anchor is
     // what made a highlight in the first column turn the page backwards. If the
@@ -348,6 +373,8 @@ export async function settleNotesPin(view, anchors) {
     best = Math.min(best, residual);
     markProgrammaticNotesScroll();
     view.scrollTop += drift;
+    corrections += 1;
+    if (corrections >= NOTES_PIN_MAX_CORRECTIONS) return;
     if (performance.now() >= until) return;
   }
 }

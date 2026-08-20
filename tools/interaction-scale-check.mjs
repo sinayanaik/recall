@@ -26,9 +26,10 @@
 //                                              effect of some other save
 //   resuming it                 492,621px   <- i.e. not at all
 //
-// The highlight case was 314ms and is 249ms; it is here because it is the
-// reading gesture that pays for everything at once, and because what is left of
-// it is one known thing — see the note on `highlightMs`.
+// The highlight case was 314ms, then 249ms, then 189ms, and is now 75-80ms; it
+// is here because it is the reading gesture that pays for everything at once,
+// and because what is left of it is two known things — see the note on
+// `highlightMs`.
 //
 // Long-press selection itself cannot be tested here — it is browser UI and
 // headless Chrome does not implement it (see the note in render-scale-check).
@@ -80,13 +81,35 @@ const BUDGET = {
   busyTapMs: 200,    // how long a press may wait for the main thread, mid-render
   selectionMs: 40,   // describing a live selection two thirds down the note
   occurrenceMs: 250, // ...and then asking which copy of the text it is
-  // The worst frame gap while a highlight is applied and saved. Set above
-  // today's measured 249ms rather than at some ideal: an edit re-runs
-  // preprocessSpecialBlocks and marked.lexer over the WHOLE note (11ms + 113ms
-  // on this fixture) before it can diff a single block, and splitting the lexer
-  // incrementally is a real piece of work that has not been done. The budget is
-  // where the cost actually is, so a regression still shows up here.
-  highlightMs: 350,
+  // The worst frame gap while a highlight is applied and saved. It was 189ms
+  // when an edit re-ran marked.lexer over the whole note before it could diff a
+  // single block; the lexer is now run over a window of a few hundred characters
+  // (incrementalSplitPreparedBlocks) and it measures 75-80ms.
+  //
+  // What is LEFT is two things, both measured by CPU profile on this fixture and
+  // both still proportional to the note rather than to the edit:
+  //
+  //   ~37ms  preprocessSpecialBlocks — protectInline / protectMath /
+  //          normalizeCitations over the whole document. Making it incremental
+  //          needs the same certificate machinery the split has, because its
+  //          inline scan is stateful across a segment.
+  //   ~46ms  patchRenderedBlocks' bookkeeping — liveBlockNodes over every cached
+  //          entry, and rechunkRenderedBlocks rebuilding an 18,000-entry plan to
+  //          relocate one paragraph. The incremental split now knows exactly
+  //          which blocks moved, so this could take a positional fast path.
+  //
+  // The budget sits above today's number with room for a slower machine, and
+  // below the 189ms a regression to the full re-lex would put back.
+  highlightMs: 160,
+  // The same window, up to the 400ms autosave debounce: the repaint and the pin
+  // settle, which is what the reader is waiting through when they tap the
+  // highlight button. Serialising the whole deck afterwards is a real cost and a
+  // separate one — and, measured, not currently the worse of the two.
+  highlightImmediateMs: 130,
+  // The repaint alone. This is the sharp one: a regression to the full re-lex
+  // costs ~170ms here against the 4-6ms it measures now, so this catches one
+  // outright rather than hoping it shows through the frame-gap noise.
+  repaintMs: 60,
   tailMs: 200,       // longest blocking task in the second after the render
   resumeMs: 6000     // how long a resumed reading position may take to land
 };
@@ -262,6 +285,44 @@ const PROBE = `async (budget, tapCases) => {
         }
         return true;
       })());
+
+      // ── ...and locating it in the source searches a WINDOW ───────────────
+      //
+      // Every stage of locateSelectionInSource used to run over the whole note:
+      // a whitespace-fuzzed regex per occurrence, and normalizeMarkupForMatch,
+      // which builds a character array plus a parallel index array over the
+      // entire document. On a book that is millions of array slots per
+      // highlight. selectionSourceWindow bounds it to the neighbourhood of the
+      // block the selection is actually in — so this asserts both halves: that
+      // the window is being FOUND (a silent null would leave every note on the
+      // old path and nothing else here would notice), and that searching it
+      // gives the same answer as searching the whole note.
+      if (described) {
+        const searchWindow = api.selectionSourceWindow(md, described);
+        push("locating a selection searches a window, not the whole note", (() => {
+          if (!searchWindow) return "selectionSourceWindow returned null on a " + md.length + "-char note";
+          const span = searchWindow.to - searchWindow.from;
+          if (span >= md.length / 4) return "the window is " + span + " chars of a " + md.length + "-char note";
+          if (!(searchWindow.hint >= searchWindow.from && searchWindow.hint <= searchWindow.to)) {
+            return "the hint is outside its own window";
+          }
+          return true;
+        })(), searchWindow ? Math.round((searchWindow.to - searchWindow.from) / 1000) + "KB of " + Math.round(md.length / 1000) + "KB" : "");
+
+        const needles = [];
+        if (described.asText) needles.push(described.asText);
+        if (described.asMarkdown && described.asMarkdown !== described.asText) needles.push(described.asMarkdown);
+        const windowed = api.locateSelectionInSource(md, described, { fuzzy: true });
+        const whole = api.locateAttemptsIn(md, md, 0, needles, described, { fuzzy: true, boundedFuzzy: false, near: null });
+        push("the windowed search finds what the whole-note search finds", (() => {
+          if (!windowed) return "the windowed cascade found nothing";
+          if (!whole) return "the whole-note cascade found nothing (so there is nothing to compare)";
+          if (windowed.idx !== whole.idx || windowed.end !== whole.end) {
+            return "windowed [" + windowed.idx + "," + windowed.end + ") vs whole [" + whole.idx + "," + whole.end + ")";
+          }
+          return true;
+        })(), windowed ? "at " + windowed.idx : "");
+      }
       selection.removeAllRanges();
       await settle(60);
     }
@@ -348,11 +409,21 @@ const PROBE = `async (budget, tapCases) => {
       await settle(80);
       const before = state.notes.length;
       let worst = 0;
+      // The same measurement, but only for the window BEFORE the autosave
+      // debounce fires. A highlight sets three things going — the repaint, the
+      // pin settle, and a 400ms-debounced autosave that serialises the whole
+      // deck — and lumping them together means the two the reader feels
+      // immediately are hidden behind the one they do not. Splitting the
+      // measurement at the debounce attributes the cost instead of guessing at
+      // it.
+      let worstBeforeSave = 0;
+      let firedAt = 0;
       let last = performance.now();
       let beating = true;
       const beat = () => {
         const now = performance.now();
         worst = Math.max(worst, now - last);
+        if (firedAt && now - firedAt < 400) worstBeforeSave = Math.max(worstBeforeSave, now - last);
         last = now;
         if (beating) requestAnimationFrame(beat);
       };
@@ -360,6 +431,8 @@ const PROBE = `async (budget, tapCases) => {
       await settle(120);
       last = performance.now();
       worst = 0;
+      firedAt = performance.now();
+      const countsBefore = api.notesSplitCounts();
       api.makeHighlightFromSelection(api.renderTargetConfig("notes"), "yellow");
       // Past the autosave debounce (400ms) and the repaint it triggers.
       await settle(2500);
@@ -367,9 +440,63 @@ const PROBE = `async (budget, tapCases) => {
       push("highlighting a sentence marks it", state.notes.length > before
         ? true
         : "the note did not gain a <mark>");
+
+      // ── ...by patching the block array, not re-lexing the book ───────────
+      //
+      // Two assertions, and the second is the one that keeps the first honest.
+      // The splitter refuses whenever it cannot prove the edit was local, and a
+      // version of it that ALWAYS refuses would be perfectly correct and
+      // perfectly useless — the same failure the streaming path had (see
+      // patchRenderedBlocks). So: the patched path must have been taken, and
+      // what it produced must be what a full re-lex of the same note produces.
+      const countsAfter = api.notesSplitCounts();
+      const patchedSplits = countsAfter.incremental - countsBefore.incremental;
+      const fullSplits = countsAfter.full - countsBefore.full;
+      push("an edit patches the block array instead of re-lexing the note", (() => {
+        if (!patchedSplits && !fullSplits) return "no split was attempted — the edit did not reach renderMarkdown with a base to patch";
+        if (!patchedSplits) return "the edit fell through to a full re-lex " + fullSplits + " time(s)";
+        return true;
+      })(), patchedSplits + " patched, " + fullSplits + " full");
+
+      push("the patched block array is what a full re-lex would have given", (() => {
+        const entry = api.renderedBlockCache.get(view);
+        if (!entry || !entry.split) return "the block cache holds no parse for the open note";
+        const full = api.splitPreparedBlocks(api.preprocessSpecialBlocks(api.promotedNotesHeadings(state.notes)));
+        if (!full) return "a full re-lex of the edited note returned nothing";
+        const got = entry.split.blocks;
+        if (got.length !== full.blocks.length) return got.length + " blocks vs " + full.blocks.length;
+        const bad = got.findIndex((b, k) => b !== full.blocks[k]);
+        if (bad !== -1) return "block " + bad + " differs: " + JSON.stringify(got[bad].slice(0, 60));
+        if (entry.split.prelude !== full.prelude) return "the prelude differs";
+        return true;
+      })());
       push("highlighting a sentence does not block the app", worst > budget.highlightMs
         ? "the page could not answer for " + Math.round(worst) + "ms while the highlight landed"
         : true, "worst frame gap " + Math.round(worst) + "ms");
+
+      // What the reader actually waits through: the repaint and the pin, before
+      // the autosave lands. This is the number the reported lag was made of.
+      push("...and answers straight away, before the autosave lands", worstBeforeSave > budget.highlightImmediateMs
+        ? "the page could not answer for " + Math.round(worstBeforeSave) + "ms in the first 400ms"
+        : true, "worst frame gap " + Math.round(worstBeforeSave) + "ms in the first 400ms");
+
+      // ── The repaint on its own ───────────────────────────────────────────
+      //
+      // The frame gap above is everything a highlight sets going: the repaint,
+      // the pin settle, and the autosave that serialises the whole deck 400ms
+      // later. This is the repaint alone, which is the part the incremental
+      // split owns — measured directly, so a regression to the full path shows
+      // up as a number here rather than being lost inside the other two.
+      {
+        const edited = state.notes.replace("<mark data-color=\\"yellow\\">", "<mark data-color=\\"green\\">");
+        const started = performance.now();
+        await api.renderMarkdown(view, edited, true);
+        const repaintMs = performance.now() - started;
+        push("an edit repaints without re-lexing the note", repaintMs > budget.repaintMs
+          ? "renderMarkdown took " + Math.round(repaintMs) + "ms for a one-block change"
+          : true, Math.round(repaintMs) + "ms");
+      }
+
       state.notes = md;
       await api.renderNotesView();
       await settle(300);
