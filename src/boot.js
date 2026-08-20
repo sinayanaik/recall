@@ -7,7 +7,7 @@
 // an empty cache, repaired nothing, and marked itself done forever.
 
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
-import { explicitLogout, getCachedSession, setExplicitLogout } from "./cloud/auth.js?v=__BUILD__";
+import { explicitLogout, getCachedSession, getSessionOutcome, setExplicitLogout } from "./cloud/auth.js?v=__BUILD__";
 import { PENDING_STYLE_KEY } from "./cloud/style-sync.js?v=__BUILD__";
 import { initSupabaseClient, isSignedIn, loadSupabaseConfig, setSignedIn, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
 import { deckStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
@@ -22,7 +22,7 @@ import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker }
 import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
 import { clearAllDeckSnapshots, initDeckStorage, requestPersistentStorage } from "./storage/deck-store.js?v=__BUILD__";
 import { LAST_BG_SYNC_PROBLEM_KEY, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_TOMBSTONES_KEY, MISSING_DECK_WATCH_KEY, reportBackgroundSyncProblem } from "./storage/keys.js?v=__BUILD__";
-import { refreshSyncIndicatorBaseline, setSyncIndicator } from "./sync/indicator.js?v=__BUILD__";
+import { refreshSyncIndicatorBaseline, setSignedOutChip, setSyncIndicator } from "./sync/indicator.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { setStatus, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -217,12 +217,14 @@ export async function recoverSessionIfPossible() {
         setAppInitialized(true);
         initAppForUser();
       }
+      setSignedOutChip(false);
       refreshSyncIndicatorBaseline();
       return;
     }
     // Genuinely signed out, and now demonstrably online — so say so instead of
     // leaving the app in a state that looks signed in and syncs nothing.
     if (!document.getElementById("loginOverlay")?.hidden) return; // already there
+    setSignedOutChip(true);
     setSyncIndicator("signedout");
     reportBackgroundSyncProblem(
       "signed-out",
@@ -251,6 +253,7 @@ export function setupAuthListener() {
         setAppInitialized(true);
         initAppForUser();
       }
+      setSignedOutChip(false);
     } else if (event === "SIGNED_OUT") {
       setSignedIn(false);
       const wasExplicit = explicitLogout;
@@ -259,11 +262,25 @@ export function setupAuthListener() {
       // the life of the page — and the next failed refresh, which should have
       // been forgiven, then threw the user out of their offline decks.
       setExplicitLogout(false);
-      // Only drop to the login screen for a real sign-out. A failed token
-      // refresh while offline also emits SIGNED_OUT — ignore it so the user
-      // isn't locked out of their offline decks. recoverSessionIfPossible()
-      // picks this back up when the connection returns; without it the session
-      // stayed dead and every subsequent sync no-opped in silence.
+      // Only drop to the login screen for a real sign-out.
+      //
+      // supabase-js emits SIGNED_OUT for a failed token refresh too, and not
+      // only when offline: a refresh token that was rotated out from under this
+      // tab ("Already Used" — two tabs, or a resumed PWA racing itself), a
+      // project that was briefly unreachable, a captive portal. Every one of
+      // those used to land the user on the login wall while online, holding a
+      // device full of their own decks. That is a network hiccup, not a
+      // sign-out, and it is the whole of "why does it keep asking me to log in".
+      //
+      // So the wall is now reserved for the two cases that mean it: the user
+      // pressed Sign out, or there is nothing on this device to show them
+      // anyway. recoverSessionIfPossible() retries the rest on the next
+      // `online` event, and the sync pill says the sync is paused meanwhile.
+      if (!wasExplicit && hasUsableLocalLibrary()) {
+        setSignedOutChip(true);
+        setSyncIndicator(navigator.onLine ? "signedout" : "offline");
+        return;
+      }
       if (!wasExplicit && !navigator.onLine) return;
       setAppInitialized(false);
       showLoginScreen();
@@ -362,7 +379,7 @@ export async function bootApp() {
   // No local library to show: the session answer is the only thing that can
   // decide this screen, so it is worth waiting for. Bounded now (see
   // getCachedSession), so the wait cannot be unbounded even here.
-  const session = await getCachedSession();
+  const { status: sessionStatus, session } = await getSessionOutcome();
   if (session?.user) {
     setSignedIn(true);
     await ensureLocalLibraryOwner(session.user.id);
@@ -374,9 +391,19 @@ export async function bootApp() {
     // Only on the signed-in path: the setup, library-failed and login screens
     // have no diagrams to draw, no archives to write and nothing to paste into.
     warmDeferredLibraries();
-  } else {
-    showLoginScreen();
+    return;
   }
+  // No decks on this device yet, so there is not much to open — but a
+  // remembered sign-in that merely could not be refreshed is still not a reason
+  // to demand the password. Open the app, mark sync as paused, and let the
+  // recovery path bring the session back when the network does.
+  if (sessionStatus !== "signed-out") {
+    openLocalLibraryOffline();
+    setSignedOutChip(true);
+    setSyncIndicator(navigator.onLine ? "signedout" : "offline");
+    return;
+  }
+  showLoginScreen();
 }
 
 // Open this device's library immediately, without having confirmed anything
@@ -403,24 +430,30 @@ export function openLocalLibraryOffline() {
 // this is not just `await`ed inline:
 //
 //   • a session          -> mark signed in, verify the library's owner, sync
-//   • no session, online -> genuinely signed out; the login screen is correct
-//   • no session, offline / the check timed out -> say nothing, change nothing
+//   • no session, offline -> say nothing, change nothing
+//   • no session, online  -> mark sync paused and say so on the pill
 //
-// That third case is the one that used to throw people out of their own offline
-// decks. It is indistinguishable from the second by return value alone, which
-// is why navigator.onLine is consulted here as well; recoverSessionIfPossible()
-// retries on the next `online` event either way.
+// The last one used to show the login screen, and that is the bug behind "it
+// makes me sign in every time I open it". By the time this runs the user's
+// whole library is already open in front of them, out of IndexedDB, needing
+// nothing from the cloud — so the only thing an empty session answer can
+// truthfully report is that SYNCING stopped. It never means the reader has to
+// re-authenticate to keep reading. recoverSessionIfPossible() retries on the
+// next `online` event and on every resume, and the pill is a sign-in button
+// for whenever the user does want the cloud back.
 export async function confirmSessionInBackground() {
-  let session = null;
+  let outcome = { status: "unknown", session: null };
   try {
-    session = await getCachedSession();
+    outcome = await getSessionOutcome();
   } catch (error) {
     console.warn("Background session check failed", error);
     return;
   }
+  const session = outcome.session;
 
   if (session?.user) {
     setSignedIn(true);
+    setSignedOutChip(false);
     // A different account: the library on screen was just wiped out from under
     // the view, so repaint before anything can be clicked on a deck that no
     // longer exists.
@@ -438,9 +471,22 @@ export async function confirmSessionInBackground() {
     return;
   }
 
-  // Demonstrably online and demonstrably without a session. The decks stay on
-  // the device; this only closes the door on syncing them.
+  // Online, without a usable session — either the refresh could not be
+  // completed (a captive portal, a project that was asleep, a refresh token
+  // rotated out from under this tab) or the stored session is genuinely gone.
+  //
+  // Neither one is grounds for a password prompt HERE. This function only runs
+  // on the path where the device already has a full local library open on
+  // screen, and every deck on it can be read, studied and edited with no cloud
+  // at all. Walling that off asks the user to authenticate for something they
+  // are not doing. What actually stopped is syncing, so that is what gets said:
+  // the pill reads "Signed out · tap to sign in" and is itself the way back in
+  // (see the syncIndicator click handler), for whenever they want it.
   setSignedIn(false);
-  setAppInitialized(false);
-  showLoginScreen();
+  setSignedOutChip(true);
+  setSyncIndicator("signedout");
+  reportBackgroundSyncProblem(
+    "signed-out",
+    "Signed out — sign in again to resume syncing. Your decks are safe on this device."
+  );
 }

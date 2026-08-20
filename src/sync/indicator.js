@@ -152,6 +152,25 @@ export function setSyncIndicator(stateName) {
   renderSyncCountdown();
 }
 
+// The standing "you are signed out" chip, for the screens the deck pill cannot
+// reach.
+//
+// setSyncIndicator() blanks itself whenever no deck is open — reasonably, it is
+// a deck-meta pill — which left the app with no way at all to say that syncing
+// had stopped while sitting on the home screen. That mattered the moment boot
+// stopped answering an unconfirmed session with the login form: the wall was
+// rude, but it was at least visible. This is the replacement signal, and it is
+// a button, so it is also the way back in.
+//
+// Never shown while offline: the Offline pill already owns that corner and is
+// the truer statement, and a sign-in is not something a disconnected device can
+// complete anyway.
+export function setSignedOutChip(visible) {
+  const node = document.getElementById("signedOutIndicator");
+  if (!node) return;
+  node.hidden = !(visible && navigator.onLine);
+}
+
 // Sets the resting state of the pill (used after a deck loads, when there are no
 // pending edits) based on where the deck currently lives.
 export function refreshSyncIndicatorBaseline() {

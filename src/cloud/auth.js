@@ -9,7 +9,7 @@
 import { LAST_USER_STORAGE_KEY } from "../boot.js?v=__BUILD__";
 import { withTimeout } from "./net.js?v=__BUILD__";
 import { PENDING_STYLE_KEY } from "./style-sync.js?v=__BUILD__";
-import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
+import { hasRememberedSession, supabaseClient } from "./supabase-client.js?v=__BUILD__";
 
 // How long boot will wait for a session before carrying on without one.
 // Much shorter than AUTH_TIMEOUT_MS because of what is on the other side of it:
@@ -18,37 +18,60 @@ import { supabaseClient } from "./supabase-client.js?v=__BUILD__";
 // offline", which this app is built to do.
 export const SESSION_RESTORE_TIMEOUT_MS = 8000;
 
+// Kept for the callers that only ever ask "is there a session to use right
+// now" — where a null genuinely does mean "carry on without one". Anything
+// that decides whether to SHOW THE LOGIN SCREEN must use getSessionOutcome()
+// instead, so it can tell a sign-out apart from a failed refresh.
+export async function getCachedSession() {
+  return (await getSessionOutcome()).session;
+}
+
 // The session, for a caller that must not hang waiting for one.
 //
-// This is NOT a pure local read, despite what its name and its old comment
-// both claimed. getSession() returns the stored session as-is while the access
-// token is live, but the moment that token has expired it goes to the network
-// to refresh it — see the identical call in verifiedCloudUserId below, which
-// has been wrapped in a timeout for exactly that reason since long before this
-// one was.
+// This is NOT a pure local read, despite what the older name suggested.
+// getSession() returns the stored session as-is while the access token is
+// live, but the moment that token has expired it goes to the network to
+// refresh it — see the identical call in verifiedCloudUserId below, which has
+// been wrapped in a timeout for exactly that reason since long before this one
+// was. Unwrapped, on a connection that accepts and then answers nothing (a
+// captive portal, a dead cell), it never settled — and it is awaited by
+// bootApp() before ANY screen has been shown, so the app sat on a blank page
+// indefinitely. Hence the timeout; hence, too, "unknown" below, because a
+// timeout has to mean something other than "signed out".
 //
-// Unwrapped, on a connection that accepts and then answers nothing (a captive
-// portal, a dead cell), it never settled. And it is awaited by bootApp() before
-// ANY screen has been shown, so the app did not fall back, did not show the
-// login wall, did not show the offline library: it sat on a blank page
-// indefinitely. That is the "blank screen when the network is slow" report, and
-// it needed nothing more than an expired token and a bad connection.
+// The session, as one of THREE answers — because the caller's response to the
+// third is the opposite of its response to the second.
 //
-// Timing out is a safe answer here. It means "no session right now", the same
-// as being signed out — and the caller's response to that is to open the local
-// library, which is where the user's decks already are.
-export async function getCachedSession() {
-  if (!supabaseClient) return null;
+//   • "session"    -> a live session; the token is good
+//   • "signed-out" -> no session AND nothing remembered on this device. This
+//                     is the only answer that may show the login wall.
+//   • "unknown"    -> the check timed out, threw, or came back empty while a
+//                     session record is still sitting in storage. The refresh
+//                     could not be completed right now; that is a network fact,
+//                     not a statement about who the user is.
+//
+// getCachedSession() below cannot express the difference: every one of those
+// failures leaves it returning `null`, so a launch on a slow or captive
+// connection, or one where the refresh token had lapsed, looked exactly like a
+// deliberate sign-out — and the app dutifully asked for the password again.
+// That is the "it makes me log in every time I open it" report.
+export async function getSessionOutcome() {
+  if (!supabaseClient) return { status: "unknown", session: null };
   try {
-    const { data } = await withTimeout(
+    const { data, error } = await withTimeout(
       supabaseClient.auth.getSession(),
       SESSION_RESTORE_TIMEOUT_MS,
       "restore session"
     );
-    return data?.session ?? null;
+    const session = data?.session ?? null;
+    if (session?.user) return { status: "session", session };
+    // An error from getSession is never a sign-out — it is the refresh having
+    // failed. Only an unambiguously empty store is.
+    if (error) return { status: "unknown", session: null };
+    return { status: hasRememberedSession() ? "unknown" : "signed-out", session: null };
   } catch (error) {
     console.warn("Could not read cached session", error);
-    return null;
+    return { status: "unknown", session: null };
   }
 }
 

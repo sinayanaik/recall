@@ -42,6 +42,25 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // Declarations that are ALLOWED to differ, and why. Keep this short — every
 // entry is a place where the "pure movement" guarantee was deliberately spent.
 const ACCEPTED = {
+  // ── Staying signed in ───────────────────────────────────────────────────
+  // The app asked for the password on almost every launch. Not because the
+  // session had gone: because every way of FAILING to confirm one — a refresh
+  // stalled behind a captive portal, a project that was asleep, a refresh token
+  // rotated out from under a resumed PWA — arrived as the same empty answer as
+  // a deliberate sign-out, and boot answered that answer with the login wall.
+  // Both entries below are covered by tools/session-persistence-check.mjs.
+  setupAuthListener:
+    "A non-explicit SIGNED_OUT no longer drops a device that has decks on it " +
+    "to the login screen. supabase-js emits that event for a failed token " +
+    "refresh as well as a real sign-out, and the old code only forgave it " +
+    "while OFFLINE — so every online hiccup logged the user out of a library " +
+    "that needs no cloud to be read. It now shows the standing signed-out chip " +
+    "and leaves the app open; recoverSessionIfPossible() retries.",
+  recoverSessionIfPossible:
+    "Takes the signed-out chip down when the session comes back, and puts it " +
+    "up when the retry confirms a real sign-out. Same reason as " +
+    "setupAuthListener: the chip is now the only thing saying syncing stopped, " +
+    "because #syncIndicator blanks itself whenever no deck is open.",
   // ── Using the app while a book-sized note is open ───────────────────────
   // Four separate reports, one theme: the note renders quickly now, and then
   // everything else is slow. Each entry below is measured in

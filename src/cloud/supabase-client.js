@@ -145,3 +145,47 @@ export function reloadSupabaseLibrary() {
     document.head.appendChild(script);
   });
 }
+
+// Is there a sign-in remembered on THIS device, answered without a network?
+//
+// supabase-js persists the session in localStorage under `sb-<ref>-auth-token`
+// (the ref is the project's subdomain — see storageKey above, which is
+// deliberately left at that default). Reading it directly is the only way to
+// tell apart the two states getSession() collapses into `null`:
+//
+//   • nobody has ever signed in here / they signed out  -> the key is absent
+//   • somebody IS signed in, but the token could not be refreshed just now
+//     (offline, captive portal, a slow project, a rotated refresh token)
+//
+// The second is not a sign-out, and treating it as one is what threw people
+// back to the login wall on launch after launch. Nothing is validated here —
+// an expired token still counts. The question this answers is "is this a
+// remembered install?", not "may this request read the database"; only
+// verifiedCloudUserId() may decide the latter.
+export function readStoredSessionRecord() {
+  const config = loadSupabaseConfig();
+  if (!config?.url) return null;
+  let ref = "";
+  try {
+    ref = new URL(config.url).hostname.split(".")[0];
+  } catch {
+    return null;
+  }
+  if (!ref) return null;
+  try {
+    const raw = localStorage.getItem(`sb-${ref}-auth-token`);
+    if (!raw) return null;
+    return { raw };
+  } catch (error) {
+    // Storage can throw outright in a partitioned/blocked context. "Can't tell"
+    // is not "signed out", so the safe answer is the one that keeps the app
+    // open — but there is genuinely nothing to report here.
+    console.warn("Could not read the stored session record", error);
+    return null;
+  }
+}
+
+// Has this device ever completed a sign-in that was never explicitly undone?
+export function hasRememberedSession() {
+  return Boolean(readStoredSessionRecord());
+}

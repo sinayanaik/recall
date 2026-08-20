@@ -167,6 +167,14 @@ const POST_SPLIT = {
     "those instead of a Cornell row, so it fell through to the live-theme " +
     "screen rules and could render invisible (same colour as the fixed " +
     "print background) when exported from a dark theme.",
+  "30-signed-out-chip.css":
+    "The standing \"Sign in to sync\" chip. Boot used to answer any session it " +
+    "could not confirm — a stalled refresh, a captive portal, a refresh token " +
+    "rotated out from under a resumed PWA — by showing the login form, which " +
+    "is why the app asked for a password on launch after launch. It now keeps " +
+    "the local library open and says so with this chip instead; #syncIndicator " +
+    "could not, because it blanks itself whenever no deck is open. See " +
+    "tools/session-persistence-check.mjs.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

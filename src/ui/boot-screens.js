@@ -30,6 +30,15 @@ export function showBootScreen(which) {
   if (shell) shell.hidden = which !== "app";
   const logout = document.getElementById("logoutBtn");
   if (logout) logout.hidden = which !== "app";
+  // The signed-out chip is a fixed overlay at z-index 200, so it floats over
+  // the setup/login/library screens unless it is taken down with the shell it
+  // belongs to. It is only ever meaningful on the app screen anyway — it exists
+  // to offer a sign-in to someone who is reading their decks without one, and
+  // on the login screen that offer is already the whole page.
+  if (which !== "app") {
+    const signedOut = document.getElementById("signedOutIndicator");
+    if (signedOut) signedOut.hidden = true;
+  }
 }
 
 export function showSetupScreen() { showBootScreen("setup"); }

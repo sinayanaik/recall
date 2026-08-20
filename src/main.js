@@ -876,6 +876,14 @@ el.syncIndicator?.addEventListener("click", () => {
   else if (action === "notes-conflict") showNotesConflictModal(el.syncIndicator.dataset.conflictDeck);
 });
 
+// The standing signed-out chip (see setSignedOutChip). Boot no longer answers
+// an unconfirmed session by showing the login form, so this is the deliberate
+// way to it — the user asks for the sign-in when they want syncing back,
+// instead of being asked for a password to read decks already on the device.
+document.getElementById("signedOutIndicator")?.addEventListener("click", () => {
+  showLoginScreen();
+});
+
 
 // ---------------------------------------------------------------------------
 // Two-way cloud mirror (last-write-wins per deck, by `updated_at` timestamp).

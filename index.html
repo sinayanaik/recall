@@ -87,6 +87,7 @@
     <link rel="stylesheet" href="styles/27-highlight-notes.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/28-export-highlights.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/29-print-safe-rendered.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/30-signed-out-chip.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -385,6 +386,15 @@
       })();
     </script>
     <span class="offline-indicator" id="offlineIndicator" hidden>Offline</span>
+    <!-- The signed-out counterpart of the Offline pill, and the reason the app
+         no longer throws anyone at the login form on launch.
+         #syncIndicator can't carry this: it lives in the deck meta row and is
+         deliberately blanked whenever no deck is open, which is exactly the
+         screen someone lands on. A button, not a span, because it is the way
+         back in — see the click handler in main.js. -->
+    <button class="offline-indicator signedout-indicator" id="signedOutIndicator" type="button" hidden>
+      Sign in to sync
+    </button>
     <!-- hidden until bootApp() decides which of setup / login / app to show.
          Without it the whole logged-out UI painted and accepted clicks for the
          duration of initDeckStorage() + runEscapedMathRepair(), which on a phone

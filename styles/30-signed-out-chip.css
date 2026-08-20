@@ -1,0 +1,30 @@
+/* ── The signed-out chip ────────────────────────────────────────────────────
+   The counterpart of the Offline pill, and the reason the app no longer answers
+   an unconfirmed session by showing the login form.
+
+   #syncIndicator cannot carry this state: it is a deck-meta pill and blanks
+   itself whenever no deck is open (see setSyncIndicator), which is exactly the
+   screen a launch lands on — so "syncing has stopped" had nowhere to be said.
+   This says it, and being a <button>, it is also the way back in.
+
+   Same pill as .offline-indicator, different claim: the connection is fine, the
+   sign-in isn't — so it takes the accent rather than the review red, and unlike
+   its sibling it is meant to be pressed. The two never share the corner: there
+   is no point offering a sign-in to a device that cannot reach the project, so
+   setSignedOutChip() keeps this hidden while offline. Position, safe-area
+   insets and z-index all come from .offline-indicator, which it also carries. */
+
+.signedout-indicator {
+  background: color-mix(in srgb, var(--accent, #4c9aff) 22%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent, #4c9aff) 55%, var(--line));
+  /* .offline-indicator sets pointer-events: none — it is a label. This one is
+     a control, so it has to take the tap that opens the login screen. */
+  pointer-events: auto;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: inherit;
+}
+
+.signedout-indicator::before {
+  background: var(--accent, #4c9aff);
+}

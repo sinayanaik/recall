@@ -321,11 +321,21 @@ async function main() {
     }
     // ── 5. The inverse: ONLINE, a library, and no session ─────────────────
     // Opening the library before the cloud has been consulted is only safe if
-    // the deferred answer can still act on it. A device that is demonstrably
-    // online and demonstrably signed out must end up at the login screen —
-    // otherwise the optimistic open would strand people inside an app that
-    // silently syncs nothing, which is the failure the old blocking order at
-    // least could not have.
+    // the deferred answer can still act on it — otherwise the optimistic open
+    // strands people inside an app that silently syncs nothing.
+    //
+    // It used to act on it by showing the login screen, and this check used to
+    // require that. It no longer does, because the requirement was wrong: the
+    // same empty answer comes back from a stalled refresh, a captive portal and
+    // a refresh token rotated out from under a resumed PWA, so what people
+    // actually got was a password prompt on launch after launch while their
+    // decks sat on the device, readable, needing nothing from the cloud.
+    //
+    // The contract now: never wall someone off from their own library, but
+    // never leave the stall silent either. So the two halves are checked
+    // separately — no login overlay, AND the sync pill says so and is itself
+    // the way back in. See confirmSessionInBackground, and
+    // tools/session-persistence-check.mjs for the failure modes in full.
     {
       const page = await browser.newPage();
       await page.goto(origin, { waitUntil: "networkidle2", timeout: 30000 });
@@ -344,8 +354,32 @@ async function main() {
         const node = document.getElementById("loginOverlay");
         return Boolean(node && !node.hidden);
       }, { timeout: 20000, polling: 100 }).then(() => true).catch(() => false);
-      check("online with no session: falls through to the login screen", reachedLogin,
-        reachedLogin ? "" : await page.evaluate(() => (document.body.innerText || "").replace(/\s+/g, " ").slice(0, 120)));
+      check("online with no session: the library is NOT walled off", !reachedLogin,
+        reachedLogin ? "the login overlay took over a device that has decks on it" : "");
+      // The other half: it has to SAY the sync stopped, and offer the way in.
+      //
+      // Checked on #signedOutIndicator, NOT on the #syncIndicator pill: that
+      // pill blanks itself whenever no deck is open (see setSyncIndicator),
+      // which is precisely the screen this lands on, so it reported nothing at
+      // all here. That is the gap this check caught.
+      const chip = await page.waitForFunction(() => {
+        const node = document.getElementById("signedOutIndicator");
+        if (!node || node.hidden) return null;
+        return { text: (node.textContent || "").trim(), tag: node.tagName };
+      }, { timeout: 20000, polling: 100 }).then((h) => h.jsonValue()).catch(() => null);
+      check("online with no session: a sign-in is offered on screen", Boolean(chip),
+        chip ? `"${chip.text}" <${chip.tag.toLowerCase()}>` : await page.evaluate(() => {
+          const node = document.getElementById("signedOutIndicator");
+          return node ? `chip hidden=${node.hidden}` : "no chip in the document";
+        }));
+      // And it has to be the way back in, not just a label.
+      const opensLogin = await page.evaluate(() => {
+        document.getElementById("signedOutIndicator")?.click();
+        const login = document.getElementById("loginOverlay");
+        return Boolean(login && !login.hidden);
+      });
+      check("online with no session: the sign-in offer opens the login screen", opensLogin,
+        opensLogin ? "" : "clicking it did not show #loginOverlay");
       await page.close();
     }
   } finally {
