@@ -613,6 +613,63 @@ async function run() {
     check(!flick.sel && !flick.selecting,
       "...and selects nothing", flick.sel ? `selected "${flick.sel.text}"` : "nothing selected");
 
+    // ── 6b. A press that fired too early is given back as a scroll ─────────
+    //
+    // The safety net under LONG_PRESS_MS being 240ms rather than 320ms. A
+    // reader who rests a moment before scrolling now trips the press timer, and
+    // the escape (PRESS_ESCAPE_MS / PRESS_ESCAPE_PX) is what stops that costing
+    // them the scroll: leave fast, straight after the buzz, and the word is
+    // unselected and the surface follows the finger instead.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(150);
+    await page.evaluate(() => window.__reveal("P0034"));
+    await wait(250);
+    const beforeEscape = await page.evaluate(() => document.getElementById("notesView").scrollTop);
+    const escapeFrom = await page.evaluate(() => window.__wordRect("P0034", 2));
+    await touchStart(escapeFrom.x, escapeFrom.y);
+    // Long enough for the press to fire (240ms) and no longer: this is the
+    // hesitation that used to be too short to select and now is not.
+    await wait(300);
+    await dragTo(escapeFrom.x, escapeFrom.y, escapeFrom.x, escapeFrom.y - 220, 6);
+    await touchEnd();
+    await wait(400);
+    const escaped = await page.evaluate(() => ({
+      scrollTop: document.getElementById("notesView").scrollTop,
+      sel: window.__selection(),
+      selecting: document.body.classList.contains("is-touch-selecting"),
+      dragging: document.body.classList.contains("is-touch-dragging"),
+    }));
+    check(!escaped.sel && !escaped.selecting && !escaped.dragging,
+      "a scroll that began with a hesitation keeps no selection",
+      escaped.sel ? `selected "${escaped.sel.text}"` : "nothing selected");
+    check(escaped.scrollTop > beforeEscape,
+      "...and the note scrolls anyway, driven by us once the escape fires",
+      `${beforeEscape} -> ${escaped.scrollTop}`);
+
+    // ── 6c. ...but a deliberate press-and-slide still selects ──────────────
+    //
+    // The escape only looks at the moments right after the press. A reader who
+    // holds, feels the word take, and then slides is past the window, and their
+    // slide has to extend the selection rather than throw it away.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(150);
+    const slideFrom = await page.evaluate(() => window.__wordRect("P0038", 1));
+    const beforeSlide = await page.evaluate(() => document.getElementById("notesView").scrollTop);
+    await touchStart(slideFrom.x, slideFrom.y);
+    await wait(600);
+    await dragTo(slideFrom.x, slideFrom.y, slideFrom.x + 180, slideFrom.y, 6);
+    await touchEnd();
+    await wait(300);
+    const slid = await page.evaluate(() => ({
+      scrollTop: document.getElementById("notesView").scrollTop,
+      sel: window.__selection(),
+    }));
+    check(slid.sel && slid.sel.text.length > 6,
+      "a press held past the escape window still slides into a selection",
+      slid.sel ? `"${slid.sel.text}"` : "nothing selected");
+    check(slid.scrollTop === beforeSlide,
+      "...and the surface stayed put under it", `${beforeSlide} -> ${slid.scrollTop}`);
+
     // ── 7. Auto-scroll at the edge ─────────────────────────────────────────
     //
     // Without it a selection can never be longer than one screenful, because
