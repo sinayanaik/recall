@@ -975,7 +975,17 @@ export function chunkForSelectionNode(view, node) {
   return chunk && chunk.parentElement === view ? chunk : null;
 }
 
-export function markSelectionStableRegion() {
+// `growOnly` is for a live drag. Without it the wanted set REPLACES the marked
+// one on every step, so a boundary leaving a chunk hands that chunk its
+// containment back mid-gesture — a class write, and therefore a style
+// invalidation over every block inside it, on the frame the reader is dragging
+// in. Nothing is gained by it: the region is dropped wholesale by
+// clearSelectionStableRegion() when the finger lifts, a few hundred
+// milliseconds later. The cap is what stops a drag the length of a book from
+// freeing the whole document one chunk at a time.
+export const SELECTION_STABLE_MAX_CHUNKS = 8;
+
+export function markSelectionStableRegion({ growOnly = false } = {}) {
   const view = el.notesView;
   if (!view) return;
   const selection = window.getSelection();
@@ -1007,6 +1017,15 @@ export function markSelectionStableRegion() {
       }
     });
   });
+  // Mid-drag: keep what is already free as well as what is wanted now, up to
+  // the cap. Past the cap this falls back to replacing, which is the old
+  // behaviour and the right one for a gesture that has travelled far enough to
+  // reach it.
+  if (growOnly && wanted.length && stableChunks.length + wanted.length <= SELECTION_STABLE_MAX_CHUNKS) {
+    stableChunks.forEach((chunkEl) => {
+      if (chunkEl.isConnected && !wanted.includes(chunkEl)) wanted.push(chunkEl);
+    });
+  }
   // Same-set check before touching the DOM: this runs on every selectionchange
   // during a drag, and a class write on a chunk is a style invalidation over
   // everything inside it. Order-insensitive, because which boundary is the
@@ -1043,7 +1062,13 @@ export function noteSelectionChanged() {
     if (!selectionAdjustQuietMs()) return;
     selectionChangedAt = performance.now();
   }
-  if (isSelectionAdjusting()) markSelectionStableRegion();
+  // growOnly while the app owns the drag. Every selectionchange during one is
+  // an echo of the controller's own mirror, arriving a frame or so after the
+  // controller has already marked the region for that step — and the REPLACING
+  // version of this pass undid that marking, handing a chunk its containment
+  // back and taking it away again as the boundary moved over it. Two class
+  // writes over everything in a chunk, per frame, for nothing.
+  if (isSelectionAdjusting()) markSelectionStableRegion({ growOnly: touchSelectionDragging });
   else clearSelectionStableRegion();
 }
 
@@ -1058,6 +1083,24 @@ export function rangeHasImage(range) {
   } catch (_) {
     return false;
   }
+}
+
+// The four parts of a Range, kept on the capture so a second pass over the SAME
+// selection can be recognised and skipped. See the guard in
+// positionNotesSelectionButton for why there is a second pass at all.
+export function rangeBoundaries(range) {
+  return {
+    startContainer: range.startContainer,
+    startOffset: range.startOffset,
+    endContainer: range.endContainer,
+    endOffset: range.endOffset,
+  };
+}
+
+export function sameRangeBoundaries(at, range) {
+  if (!at || !range) return false;
+  return at.startContainer === range.startContainer && at.startOffset === range.startOffset
+    && at.endContainer === range.endContainer && at.endOffset === range.endOffset;
 }
 
 let pillCaptureTimer = null;
@@ -1344,12 +1387,36 @@ export function positionNotesSelectionButton() {
   // afterwards instead, and any button pressed before it lands resolves it on
   // the spot (see ensurePillSelectionCapture) — so the snapshot is still taken
   // while the selection is alive, which is the reason it exists.
+  // ── ...but only once per selection ───────────────────────────────────────
+  //
+  // One finished touch selection reaches here three times: endDrag() calls in
+  // the moment the finger lifts, endSelectionGesture()'s settle timer calls in
+  // 45ms later on the pointerup, and the trailing selectionchange — the last
+  // mirror of the drag, delivered asynchronously — calls in again on the 300ms
+  // debounce. Each pass threw the capture away and scheduled it afresh, so the
+  // expensive half (three clones of the fragment, two Turndown runs, an
+  // occurrence count over the note above the selection) ran three times over
+  // an identical range, in the first third of a second after the reader let go.
+  // On a long note that is three long tasks back to back, which is felt as the
+  // app hitching just as the bar arrives.
+  //
+  // Nothing about an unchanged selection needs re-describing, and leaving the
+  // pill exactly as it is also removes the hide-then-show blink when the first
+  // of those three passes lands while the gesture still reads as live.
+  if (!button.hidden
+      && button.dataset.renderTarget === renderedTarget.name
+      && pillSelectionCapture
+      && !pillSelectionCapture.editing
+      && sameRangeBoundaries(pillSelectionCapture.at, range)) {
+    return;
+  }
   pillSelectionCapture = {
     targetName: renderedTarget.name,
     editing: false,
     sel: null,
     markdown: null,
     pending: true,
+    at: rangeBoundaries(range),
   };
   cardBtn.title = "Make a card";
   schedulePillSelectionCapture();
