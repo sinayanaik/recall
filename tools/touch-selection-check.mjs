@@ -117,6 +117,11 @@ const SETUP_SRC = `async (apiSrc) => {
 
   const words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split(" ");
   const lines = ["# Probe note", ""];
+  // L0000 first, and long on purpose. Every other paragraph here wraps to two
+  // lines, which has a FIRST line and a LAST line and no line in between — so
+  // nothing in this file could ever aim at an interior line boundary, which is
+  // where the caret sweeps below have to aim. Six lines gives them four.
+  lines.push("L0000 " + [words, words, words, words, words].map((w) => w.join(" ")).join(" ") + ".", "");
   for (let i = 0; i < 80; i += 1) lines.push("P" + String(i).padStart(4, "0") + " " + words.join(" ") + ".", "");
   api.state.notes = lines.join("\\n");
   api.renderNotesView();
@@ -150,16 +155,99 @@ const SETUP_SRC = `async (apiSrc) => {
   // ordinary case (the direct hit is usable), so it is a count of extend passes
   // — and the whole point of the frame coalescing is that a burst of touchmoves
   // inside one frame produces ONE of them.
-  window.__hits = { count: 0 };
+  //
+  // It doubles as a FAULT INJECTOR. caretPositionFromPoint does not fail on
+  // demand — it fails at an inline boundary, at a sub-pixel position, beside a
+  // <br>, at an element edge — so the repair ladder underneath it was never
+  // driven by anything here, and a confidently wrong answer from that ladder
+  // shipped. A failEvery counter makes it deterministic: every Nth call answers with the
+  // CONTAINING ELEMENT, which is exactly the shape the platform fails with, and
+  // which usableCaret() correctly rejects.
+  window.__hits = { count: 0, failEvery: 0 };
   const nativeCaret = document.caretPositionFromPoint
     ? document.caretPositionFromPoint.bind(document)
     : null;
   if (nativeCaret) {
     document.caretPositionFromPoint = (x, y) => {
       window.__hits.count += 1;
-      return nativeCaret(x, y);
+      const pos = nativeCaret(x, y);
+      if (!window.__hits.failEvery || window.__hits.count % window.__hits.failEvery) return pos;
+      const node = pos && pos.offsetNode;
+      const host = (node && (node.nodeType === 3 ? node.parentElement : node))?.closest("p")
+        || document.getElementById("notesView");
+      return { offsetNode: host, offset: 0 };
     };
   }
+
+  // ── Ground truth about where the lines actually are ──────────────────────
+  //
+  // Read the expensive way the controller cannot afford per frame:
+  // getClientRects() on a text node gives one rect per LINE FRAGMENT, and those
+  // tile vertically (they are line-box height) where caret rects do not (they
+  // are text height). That difference is the whole reason a point can fall
+  // between two caret rects and belong to neither.
+  const paraNode = (marker) => {
+    const p = Array.from(view.querySelectorAll("p")).find((n) => n.textContent.startsWith(marker));
+    return p && p.firstChild && p.firstChild.nodeType === Node.TEXT_NODE ? p.firstChild : null;
+  };
+
+  window.__lineRect = (marker, index) => {
+    const node = paraNode(marker);
+    if (!node) return null;
+    const r = document.createRange();
+    r.selectNodeContents(node);
+    const rects = Array.from(r.getClientRects()).filter((x) => x.width || x.height);
+    const rect = rects[index];
+    if (!rect) return null;
+    return { count: rects.length, left: rect.left, right: rect.right, top: rect.top,
+             bottom: rect.bottom, mid: rect.top + rect.height / 2 };
+  };
+
+  // The offsets at which each line begins — what "collapsed to the start of a
+  // line" has to be compared against. One character at a time, on a fixture,
+  // never on a hot path.
+  window.__lineStarts = (marker) => {
+    const node = paraNode(marker);
+    if (!node) return [];
+    const text = node.nodeValue || "";
+    const starts = [0];
+    const probe = document.createRange();
+    let top = null;
+    for (let i = 0; i < text.length; i += 1) {
+      probe.setStart(node, i);
+      probe.setEnd(node, i + 1);
+      const rect = probe.getBoundingClientRect();
+      if (!rect.height) continue;
+      if (top !== null && rect.top > top + 1) starts.push(i);
+      top = rect.top;
+    }
+    return starts;
+  };
+
+  // Where an offset actually sits, so an assertion can say "the resolved caret
+  // is N pixels from the column the finger was in".
+  window.__offsetX = (marker, offset) => {
+    const node = paraNode(marker);
+    if (!node) return null;
+    const probe = document.createRange();
+    probe.setStart(node, offset);
+    probe.setEnd(node, offset);
+    return probe.getBoundingClientRect().left;
+  };
+
+  // The controller's own hit-test, called directly. caretInRoot is exported and
+  // touch-selection.js is already in API_SRC, so this needs no new plumbing —
+  // and calling it directly bypasses extendTo's 1px guard, which makes it a
+  // pure test of RESOLUTION rather than of the drag machinery around it.
+  window.__caretAt = (x, y) => {
+    const caret = api.caretInRoot(x, y, view);
+    if (!caret) return null;
+    const isText = caret.node.nodeType === Node.TEXT_NODE;
+    const host = isText ? caret.node.parentElement : caret.node;
+    const block = host && host.closest("p, li, h1, h2, h3, blockquote");
+    return { offset: caret.offset, isText,
+             marker: block ? block.textContent.slice(0, 5) : null };
+  };
 
   // __captures counts times the pill threw its description of the selection
   // away and started again. positionNotesSelectionButton() resets the title to
@@ -486,6 +574,129 @@ async function run() {
       "...and on that block's first character, not a few words in",
       cornerSel ? `offset ${cornerSel.startOffset}` : "nothing selected");
 
+    // ── 3b. Sweeping a caret DOWN THROUGH A LINE BOUNDARY ──────────────────
+    //
+    // The reported bug, as a measurement: "selecting content inter line is not
+    // reliable — it jumps to the start of a line."
+    //
+    // Nothing here drove the hit-test directly before, so nothing could see what
+    // it answers between two lines. It answers badly, for two independent
+    // reasons. caret rects are TEXT height and do not tile, so there is a band
+    // of y between one line's caret rects and the next line's where the
+    // comparator in offsetNear degenerates to "line N: before, line N+1: after"
+    // with x ignored entirely — and converges on the first offset of line N+1.
+    // And when the platform hit-test fails (case 3c), the repair ladder used to
+    // probe the edge of the content box, which at this app's default reading
+    // width lands inside the first character of the line and is accepted as a
+    // perfectly usable caret.
+    //
+    // Both produce the same wrong answer: column 0. The assertions below are
+    // about the COLUMN, because that is what the reader sees — the offset stays
+    // roughly in order either way, which is why a test that only watched the
+    // offset would have passed.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => window.__reveal("L0000"));
+    await wait(250);
+
+    const sweepLines = await page.evaluate(() => ({
+      a: window.__lineRect("L0000", 1),
+      b: window.__lineRect("L0000", 2),
+      starts: window.__lineStarts("L0000"),
+    }));
+    if (!sweepLines.a || !sweepLines.b) {
+      fail("the fixture paragraph wraps to enough lines to sweep across",
+        `line count ${sweepLines.a ? sweepLines.a.count : "?"}`);
+    } else {
+      ok("the fixture paragraph has an interior line boundary", `${sweepLines.a.count} lines`);
+      // A fixed column, well inside both lines, so "the answer tracks x" has
+      // something to mean. 0.62 rather than 0.5 so a half-width coincidence
+      // cannot pass by accident.
+      const sweepX = sweepLines.a.left + (sweepLines.a.right - sweepLines.a.left) * 0.62;
+
+      const sweepFrom = async (label, failEvery, slackPx) => {
+        const samples = await page.evaluate(async (x, y0, y1, every) => {
+          window.__hits.failEvery = every;
+          const out = [];
+          for (let y = y0; y <= y1; y += 1) {
+            const caret = window.__caretAt(x, y);
+            out.push(caret ? { ...caret, screenX: window.__offsetX("L0000", caret.offset) } : null);
+          }
+          window.__hits.failEvery = 0;
+          return out;
+        }, sweepX, Math.round(sweepLines.a.mid), Math.round(sweepLines.b.mid), failEvery);
+
+        const missing = samples.filter((v) => !v || !v.isText || v.marker !== "L0000").length;
+        check(missing === 0, `${label}: every point between two lines resolves inside the paragraph`,
+          `${samples.length - missing}/${samples.length} resolved`);
+
+        const collapsed = samples.filter((v) => v && sweepLines.starts.includes(v.offset));
+        check(collapsed.length === 0, `${label}: ...and never to the first offset of a line`,
+          `${collapsed.length}/${samples.length} collapsed to a line start`);
+
+        // The strongest of the three, and the one a reader would describe: the
+        // caret has to stay in the COLUMN the finger is in.
+        const strays = samples.filter((v) => v && Number.isFinite(v.screenX)
+          && Math.abs(v.screenX - sweepX) > slackPx);
+        const worst = strays.reduce((m, v) => Math.max(m, Math.abs(v.screenX - sweepX)), 0);
+        check(strays.length === 0, `${label}: ...and tracks the finger's column`,
+          `${strays.length}/${samples.length} strayed, worst ${Math.round(worst)}px (slack ${slackPx}px)`);
+
+        const back = samples.filter((v, i) => i > 0 && v && samples[i - 1] && v.offset < samples[i - 1].offset);
+        check(back.length === 0, `${label}: ...and never runs backwards down the sweep`,
+          `${back.length} regressions`);
+      };
+
+      // One character plus slop at the fixture's size. A gap sample that has
+      // collapsed to column 0 is out by ~0.62 of the line width — ~200px.
+      await sweepFrom("across a line boundary", 0, 14);
+      // ...and again with the platform hit-test failing every third call, which
+      // is the only way to drive the repair ladder deterministically. The slack
+      // is the largest nudge the repair is allowed to wander.
+      await sweepFrom("across a line boundary, hit-test failing", 3, 26);
+    }
+
+    // ── 3c. ...and down through a BLOCK MARGIN ─────────────────────────────
+    //
+    // The other half, and the one that needs no injected fault at all: measured
+    // in Chromium 141, caretPositionFromPoint in the margin BETWEEN two blocks
+    // answers with offset 0 of the FOLLOWING block, regardless of x. That is a
+    // text node inside the view, so usableCaret accepts it and caretInRoot
+    // returns it on the very first probe — the repair ladder never runs and the
+    // code has no idea anything went wrong. A drag sweeps through those margins
+    // constantly.
+    {
+      // Scrolled into view FIRST. A rect read for a block the reader is nowhere
+      // near is a coordinate outside the viewport, and probing there hit
+      // whatever paragraph happened to be on screen instead — the case passed
+      // for the wrong reason until this line existed.
+      await page.evaluate(() => window.__reveal("P0030"));
+      await wait(300);
+      const gap = await page.evaluate(() => {
+        const ps = Array.from(document.getElementById("notesView").querySelectorAll("p"));
+        const a = ps.find((n) => n.textContent.startsWith("P0030"));
+        const b = ps.find((n) => n.textContent.startsWith("P0031"));
+        if (!a || !b) return null;
+        const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+        return { bottom: ar.bottom, top: br.top, left: ar.left, right: ar.right,
+                 onScreen: ar.bottom > 0 && br.top < window.innerHeight };
+      });
+      if (gap && !gap.onScreen) fail("the probe paragraphs are on screen", JSON.stringify(gap));
+      if (!gap || gap.top - gap.bottom < 2) {
+        ok("the two probe paragraphs have a margin between them", gap ? `${(gap.top - gap.bottom).toFixed(1)}px` : "not found");
+      } else {
+        const marginX = gap.left + (gap.right - gap.left) * 0.62;
+        const samples = await page.evaluate((x, y0, y1) => {
+          const out = [];
+          for (let y = y0; y <= y1; y += 1) out.push(window.__caretAt(x, y));
+          return out;
+        }, marginX, Math.round(gap.bottom - 2), Math.round(gap.top + 2));
+        const zeros = samples.filter((v) => v && v.offset === 0);
+        check(zeros.length === 0,
+          "a point in the margin between two paragraphs does not resolve to the start of one",
+          `${zeros.length}/${samples.length} landed on offset 0 (gap ${(gap.top - gap.bottom).toFixed(1)}px)`);
+      }
+    }
+
     // ── 4. Dragging a handle extends the selection ─────────────────────────
     await page.evaluate(() => window.getSelection().removeAllRanges());
     await page.evaluate(() => window.__reveal("P0020"));
@@ -565,7 +776,17 @@ async function run() {
       const during = await page.evaluate(() => ({
         selecting: document.body.classList.contains("is-selecting"),
         touchSelecting: document.body.classList.contains("is-touch-selecting"),
-        unchunked: document.getElementById("notesView").classList.contains("is-selection-unchunked"),
+        // The block under the drag is freed individually now, not the whole
+        // view — see markSelectionStableRegion. Asserting the computed value on
+        // that block is strictly stronger than asserting the class was set.
+        freed: (() => {
+          const view = document.getElementById("notesView");
+          const sel = window.getSelection();
+          const node = sel && sel.focusNode;
+          let el = node && (node.nodeType === 1 ? node : node.parentElement);
+          while (el && el.parentElement !== view) el = el.parentElement;
+          return el ? getComputedStyle(el).contentVisibility : "(no block)";
+        })(),
         touchAction: getComputedStyle(document.getElementById("notesView")).touchAction,
       }));
       await touchEnd();
@@ -576,9 +797,9 @@ async function run() {
       }));
       return { during, after };
     })();
-    check(midDrag.during.selecting && midDrag.during.unchunked,
+    check(midDrag.during.selecting && midDrag.during.freed === "visible",
       "containment is suspended while a handle is actually being dragged",
-      `is-selecting: ${midDrag.during.selecting}, view freed: ${midDrag.during.unchunked}`);
+      `is-selecting: ${midDrag.during.selecting}, block under the drag: ${midDrag.during.freed}`);
     check(midDrag.during.touchAction === "none",
       "...and the surface cannot scroll out from under the drag",
       `touch-action: ${midDrag.during.touchAction}`);
@@ -873,6 +1094,74 @@ async function run() {
     check(!afterScroll.scrolling && afterScroll.selecting,
       "...and are handed back once the view settles",
       `is-touch-scrolling: ${afterScroll.scrolling}`);
+
+    // ── 11b. The grips do not blink for a scroll the reader did not make ───
+    //
+    // onRootScroll takes the handles off the glass for the duration of a scroll,
+    // which is right for a fling and wrong for the app's own scrollTop writes:
+    // settleNotesPin corrects the reading position after every edit, and
+    // measureNotesChunkEstimate changes heights above the viewport so the
+    // browser's own scroll anchoring writes scrollTop to compensate. In both the
+    // content does not move — there is nothing for a grip to trail — and both
+    // used to fade the grips out for 120ms and back. That is the "the two round
+    // handles flicker" report.
+    {
+      const blink = await page.evaluate(async () => {
+        const view = document.getElementById("notesView");
+        let sawFade = 0;
+        const watch = new MutationObserver(() => {
+          if (document.body.classList.contains("is-touch-scrolling")) sawFade += 1;
+        });
+        watch.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+        // Announced, the way every deliberate app scroll announces itself.
+        window.__recall.api.markProgrammaticNotesScroll(400);
+        // Eight pixels a step, not one: a smaller move would be inside
+        // selectionMovedOnGlass()'s tolerance and the case would pass without
+        // ever exercising the guard it is about.
+        for (let i = 0; i < 6; i += 1) {
+          view.scrollTop += 8;
+          await new Promise((r) => setTimeout(r, 30));
+        }
+        await new Promise((r) => setTimeout(r, 250));
+        watch.disconnect();
+        return { sawFade, selecting: document.body.classList.contains("is-touch-selecting") };
+      });
+      check(blink.selecting && blink.sawFade === 0,
+        "a scroll the app made does not fade the grips",
+        `is-touch-scrolling set ${blink.sawFade} time(s)`);
+    }
+
+    // ── 11c. Nor does the platform paint its own selection over ours ───────
+    //
+    // user-select is inherited, so the surface-wide suppression only reaches
+    // elements that do not state their own value — and `.cloze.is-revealed`
+    // does (styles/06-rendered.css:122, because a revealed cloze IS selectable
+    // with a mouse). The browser kept painting ::selection over one while our
+    // own ::highlight tinted it, in a different colour, appearing and
+    // disappearing as a drag crossed it.
+    {
+      const paint = await page.evaluate(() => {
+        const view = document.getElementById("notesView");
+        const p = view.querySelector("p");
+        if (!p) return null;
+        const span = document.createElement("span");
+        span.className = "cloze is-revealed";
+        span.textContent = "revealed";
+        p.appendChild(span);
+        const probe = {
+          cloze: getComputedStyle(span).webkitUserSelect,
+          tapHighlight: getComputedStyle(view).webkitTapHighlightColor,
+        };
+        span.remove();
+        return probe;
+      });
+      check(paint && paint.cloze === "none",
+        "a revealed cloze is not selectable by the browser either",
+        paint ? `user-select: ${paint.cloze}` : "no paragraph to test on");
+      check(paint && /rgba\(0, 0, 0, 0\)|transparent/.test(paint.tapHighlight),
+        "...and a press does not flash the platform's tap highlight",
+        paint ? paint.tapHighlight : "");
+    }
 
     // ── 12. Handles land back on the boundaries, and the paint follows ──────
     //
