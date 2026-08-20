@@ -53,6 +53,41 @@
 // as before, with one single exception — src/notes/mark-menu.js, which called
 // Selection.toString() and now reads its range instead.
 //
+// ── Owning the gesture is not the same as it feeling steady ────────────────
+//
+// The report after the takeover landed: "it somehow worked but ... a unstable
+// visual behaviour, all functionality works but it only feels a little
+// unstable — also it is not persistent, like when I am selecting and scroll to
+// select more it forgets the previous selections, also it feels a little
+// flickering."
+//
+// Four separate causes, all of them ours and all of them in this file:
+//
+//   • The dismissal was decided on the TOUCHSTART — a touch outside the
+//     selection cleared it. A scroll begins with exactly that touch, so
+//     scrolling to reach the rest of the passage threw the selection away
+//     before the finger had moved a pixel, and a near-miss on a handle did the
+//     same. It is decided on the touchEND now, where a tap and a scroll can be
+//     told apart. See onRootTouchStart / onRootTouchEnd.
+//
+//   • A handle whose boundary had scrolled off the surface was hidden, so past
+//     one screenful there was nothing left to grab. It parks at the edge
+//     instead, and dragging a parked grip brings that boundary to the finger.
+//     See placeHandle.
+//
+//   • The handles are on a fixed overlay moved by JavaScript, while the
+//     reading surface scrolls on the compositor — they cannot be in step, so
+//     they swam behind the text on every fling. They fade out while the surface
+//     is moving and are placed again once it settles. The painted selection is
+//     not affected by any of this and never was: ::highlight() is laid out by
+//     the same pass as the text. See onRootScroll.
+//
+//   • extendTo() ran straight off every touchmove — up to twice a frame on a
+//     120Hz phone — with layout-forcing rect reads interleaved with the class
+//     writes of the containment pass. That is layout thrash. The event records
+//     the point; one rAF does the work and places the handles in the same pass.
+//     See runFrame / scheduleFrame.
+//
 // ── Desktop never reaches any of this ──────────────────────────────────────
 //
 // Three independent fences, any one of which is enough on its own:
@@ -110,6 +145,15 @@ export const HANDLE_GRAB_OFFSET_PX = 34;
 export const EDGE_PX = 64;
 export const EDGE_MAX_SPEED_PX = 16;
 
+// How long after the last scroll event the handles are placed again and faded
+// back in. They are drawn on a fixed overlay and moved by JavaScript, while the
+// reading surface scrolls on the compositor — so during a fling they can only
+// ever trail the words they mark. Hiding them for the duration and restoring
+// them once the view is still is the difference between a grip that swims and
+// one that is simply not there yet. The painted selection is unaffected: the
+// Custom Highlight API lays it out in the same pass as the text.
+export const SCROLL_SETTLE_MS = 120;
+
 // ── The gate ───────────────────────────────────────────────────────────────
 
 export const touchSelectMedia = typeof window !== "undefined" && window.matchMedia
@@ -150,6 +194,20 @@ let pressX = 0;
 let pressY = 0;
 let pressActive = false;   // a finger is down and might still become a press
 let pressDragging = false; // the press fired and that same finger is extending
+// Where the finger first landed, and where the surface was scrolled to at that
+// moment. The slop test is measured against the ORIGIN while pressX/pressY
+// follow the finger, so a press that fires after a few pixels of thumb drift
+// hit-tests where the finger actually is rather than where it started.
+let pressOriginX = 0;
+let pressOriginY = 0;
+let pressRoot = null;
+let pressScrollTop = 0;
+let pressScrollLeft = 0;
+// A touch that landed outside the current selection MIGHT be a dismissal — but
+// only if it turns out to be a tap. Deciding at touchstart is what threw a
+// selection away the instant a reader put a finger down to scroll, which is the
+// "it forgets the previous selection" half of the report.
+let dismissPending = false;
 
 let draggingHandle = "";   // "" | "start" | "end"
 // How far the finger is below the caret it is choosing, measured at the grab.
@@ -158,7 +216,31 @@ let grabOffsetY = 0;
 let edgeFrame = 0;
 let edgeVector = 0;
 let edgePoint = null;
-let handleFrame = 0;
+
+// ── One pass per frame ─────────────────────────────────────────────────────
+//
+// A touchmove arrives up to twice a frame on a 120Hz phone, and extendTo() is
+// not cheap: a hit-test, a binary search whose every step forces layout to read
+// a caret rect, and a containment pass that writes classes. Running it straight
+// off the event interleaved those reads with those writes — read, write, read —
+// which is layout thrash, and it is what made a drag feel like it was
+// stuttering rather than tracking.
+//
+// So the event only records WHERE the finger is. One rAF does the work, at most
+// once per frame, and places the handles in the same pass — the handle update
+// used to schedule a second frame of its own.
+let framePoint = null;      // the finger, viewport coords, latest value wins
+let frameHandle = 0;
+let frameWantsExtend = false;
+let lastExtendX = NaN;
+let lastExtendY = NaN;
+
+// The Range currently registered with the Highlight. The registration survives
+// every mutation of that Range — it is live, and the highlight is repainted from
+// it — so clear()+add() belongs to a NEW range and not to every drag frame.
+let paintedRange = null;
+
+let scrollSettleTimer = 0;
 
 export function touchSelectionRoots() {
   return [el.notesView, el.questionView, el.answerView].filter(Boolean);
@@ -408,10 +490,10 @@ function buildOverlay() {
   overlay.className = "touch-select-layer";
   overlay.setAttribute("aria-hidden", "true");
   handleStart = document.createElement("span");
-  handleStart.className = "touch-select-handle is-start";
+  handleStart.className = "touch-select-handle is-start is-hidden";
   handleStart.innerHTML = '<i class="touch-select-bulb"></i>';
   handleEnd = document.createElement("span");
-  handleEnd.className = "touch-select-handle is-end";
+  handleEnd.className = "touch-select-handle is-end is-hidden";
   handleEnd.innerHTML = '<i class="touch-select-bulb"></i>';
   overlay.append(handleStart, handleEnd);
   document.body.appendChild(overlay);
@@ -441,24 +523,54 @@ function edgeRect(range, atStart) {
   return atStart ? rects[0] : rects[rects.length - 1];
 }
 
-function placeHandle(handle, rect, root) {
+// A boundary that has scrolled out of the reading surface does NOT lose its
+// handle. It keeps one, PARKED against the edge it went off — flattened, so it
+// reads as "the rest of this is up there" rather than as a grip sitting on the
+// word beside it.
+//
+// Hiding it outright was the obvious thing and it is what made "scroll down and
+// keep selecting" impossible: past one screenful there was no grip left on
+// screen to grab, and the only way to extend was to scroll back to the one that
+// had gone. Grabbing a parked handle drags from wherever the finger is (see
+// grabOffsetY in bindHandle), which is what the reader means by grabbing it.
+function hideHandle(handle) {
+  handle.classList.add("is-hidden");
+  // Parked is a claim about WHERE a visible grip is; leaving it set on a hidden
+  // one leaves the claim standing for the next placement to trip over.
+  handle.classList.remove("is-parked");
+  handle.dataset.parked = "";
+}
+
+function placeHandle(handle, rect, box, horizontal) {
   if (!handle) return;
   if (!rect) {
-    handle.style.display = "none";
+    hideHandle(handle);
     return;
   }
-  // A handle for a boundary that has scrolled out of the reading surface is not
-  // drawn — a grip floating over the toolbar belongs to nothing.
-  const bounds = root.getBoundingClientRect();
-  if (rect.bottom < bounds.top || rect.top > bounds.bottom
-      || rect.right < bounds.left || rect.left > bounds.right) {
-    handle.style.display = "none";
+  let left = rect.left;
+  let top = rect.top;
+  let parked = false;
+  if (top < box.top) { top = box.top; parked = true; }
+  else if (top + rect.height > box.bottom) { top = box.bottom - rect.height; parked = true; }
+  // Paged mode scrolls sideways, so a boundary leaves by the left or right edge
+  // rather than the top or bottom and the parking axis follows the mode.
+  if (horizontal) {
+    if (left < box.left) { left = box.left; parked = true; }
+    else if (left > box.right) { left = box.right; parked = true; }
+  } else if (left < box.left - 24 || left > box.right + 24) {
+    // Off the side in a vertically scrolling view is not a scroll position, it
+    // is a boundary in something laid out off to one side. Nothing to park to.
+    hideHandle(handle);
     return;
   }
-  handle.style.display = "";
-  handle.style.left = `${rect.left}px`;
-  handle.style.top = `${rect.top}px`;
-  handle.style.height = `${Math.max(rect.height, 12)}px`;
+  handle.classList.remove("is-hidden");
+  handle.classList.toggle("is-parked", parked);
+  handle.dataset.parked = parked ? "1" : "";
+  // transform rather than left/top: the handle is written on every frame of a
+  // drag and on every scroll settle, and a transform is the one way to move a
+  // box that costs no layout.
+  handle.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+  handle.style.height = `${Math.max(Math.round(rect.height), 12)}px`;
 }
 
 export function updateHandles() {
@@ -467,16 +579,84 @@ export function updateHandles() {
     if (liveRange) clearTouchSelection({ keepDocumentSelection: true });
     return;
   }
-  placeHandle(handleStart, edgeRect(liveRange, true), liveRoot);
-  placeHandle(handleEnd, edgeRect(liveRange, false), liveRoot);
+  // Read once for both handles: this runs on every frame of a drag, and
+  // contentBox() is a rect read plus a computed-style read.
+  const box = contentBox(liveRoot);
+  const horizontal = edgeAxisIsHorizontal(liveRoot);
+  placeHandle(handleStart, edgeRect(liveRange, true), box, horizontal);
+  placeHandle(handleEnd, edgeRect(liveRange, false), box, horizontal);
+}
+
+function hideHandles() {
+  if (handleStart) hideHandle(handleStart);
+  if (handleEnd) hideHandle(handleEnd);
+}
+
+// The single frame callback. `extendTo` is only run when a drag asked for it;
+// the handles are placed either way, because a scroll settling is a reason to
+// move them and not a reason to move the selection.
+function runFrame() {
+  const wantsExtend = frameWantsExtend;
+  frameWantsExtend = false;
+  if (wantsExtend && framePoint && touchSelectionIsDragging()) extendTo(framePoint.x, framePoint.y);
+  updateHandles();
+}
+
+function scheduleFrame(wantsExtend = false) {
+  if (wantsExtend) frameWantsExtend = true;
+  // The edge-scroll loop already runs exactly one pass per frame, and it runs
+  // the same body — a second rAF alongside it would double the work and land a
+  // frame late.
+  if (frameHandle || edgeFrame) return;
+  frameHandle = requestAnimationFrame(() => {
+    frameHandle = 0;
+    runFrame();
+  });
 }
 
 function scheduleHandleUpdate() {
-  if (handleFrame) return;
-  handleFrame = requestAnimationFrame(() => {
-    handleFrame = 0;
+  scheduleFrame(false);
+}
+
+// A scroll with a selection on screen: take the handles off the glass for the
+// duration rather than letting them chase the text a frame behind it, and place
+// them again once the view has been still for SCROLL_SETTLE_MS.
+//
+// Not during a drag. There the surface is being scrolled BY the gesture (the
+// edge auto-scroll), the reader is holding the handle they are watching, and it
+// has to stay under their thumb.
+function onRootScroll(event) {
+  // Only the surface the finger is actually on. Another view scrolling — a card
+  // face behind the note, say — has a scroll offset this baseline knows nothing
+  // about, and comparing against it would cancel a press for no reason.
+  if (pressActive && event.currentTarget === pressRoot
+      && scrollDrift(pressRoot) > PRESS_SCROLL_TOLERANCE_PX) {
+    cancelPress();
+  }
+  if (touchSelectionIsDragging()) {
+    scheduleFrame(false);
+    return;
+  }
+  if (!liveRange) return;
+  // The class alone, not is-hidden: the handles keep their boxes and fade,
+  // which means the settle below can place them at their NEW positions and let
+  // them fade back in there. Removing them from the layout and putting them
+  // back is what a blink is.
+  document.body.classList.add("is-touch-scrolling");
+  if (scrollSettleTimer) clearTimeout(scrollSettleTimer);
+  scrollSettleTimer = setTimeout(() => {
+    scrollSettleTimer = 0;
+    document.body.classList.remove("is-touch-scrolling");
     updateHandles();
-  });
+  }, SCROLL_SETTLE_MS);
+}
+
+function endScrollFade() {
+  if (scrollSettleTimer) {
+    clearTimeout(scrollSettleTimer);
+    scrollSettleTimer = 0;
+  }
+  document.body.classList.remove("is-touch-scrolling");
 }
 
 // ── Committing a range ─────────────────────────────────────────────────────
@@ -522,14 +702,21 @@ function mirrorToSelection() {
   }
 }
 
+// Registration, not painting: what is painted comes out of the Range, and the
+// Range is LIVE. Re-registering it on every drag frame — clear() then add() of
+// the same object — invalidated the whole highlight sixty times a second to
+// arrive at the registration it already had. The new-range case is the only one
+// that has to touch the set.
 function paintTouchHighlight() {
   if (!liveRange) return;
   if (!touchHighlight) {
     touchHighlight = new window.Highlight();
     window.CSS.highlights.set(HIGHLIGHT_NAME, touchHighlight);
   }
+  if (paintedRange === liveRange) return;
   touchHighlight.clear();
   touchHighlight.add(liveRange);
+  paintedRange = liveRange;
 }
 
 function setSelectionPoints(anchor, focus, root) {
@@ -549,10 +736,16 @@ function setSelectionPoints(anchor, focus, root) {
 
 export function clearTouchSelection({ keepDocumentSelection = false } = {}) {
   stopEdgeScroll();
-  if (handleFrame) {
-    cancelAnimationFrame(handleFrame);
-    handleFrame = 0;
+  if (frameHandle) {
+    cancelAnimationFrame(frameHandle);
+    frameHandle = 0;
   }
+  frameWantsExtend = false;
+  framePoint = null;
+  lastExtendX = NaN;
+  lastExtendY = NaN;
+  dismissPending = false;
+  endScrollFade();
   liveRange = null;
   liveRoot = null;
   anchorPoint = null;
@@ -562,10 +755,10 @@ export function clearTouchSelection({ keepDocumentSelection = false } = {}) {
   grabOffsetY = 0;
   setTouchSelectionDragging(false);
   if (touchHighlight) touchHighlight.clear();
+  paintedRange = null;
   document.body.classList.remove("is-touch-selecting");
   document.body.classList.remove("is-touch-dragging");
-  if (handleStart) handleStart.style.display = "none";
-  if (handleEnd) handleEnd.style.display = "none";
+  hideHandles();
   clearSelectionStableRegion();
   if (!keepDocumentSelection) {
     try { window.getSelection()?.removeAllRanges(); } catch (_) { /* nothing selected */ }
@@ -592,7 +785,15 @@ function startEdgeScroll() {
     if (!edgeVector || !liveRoot || !edgePoint) return;
     if (edgeAxisIsHorizontal(liveRoot)) liveRoot.scrollLeft += edgeVector;
     else liveRoot.scrollTop += edgeVector;
-    extendTo(edgePoint.x, edgePoint.y);
+    // The finger has not moved — the CONTENT has — so the same point resolves
+    // to a new caret every frame and the "did the point change" guard in
+    // extendTo must not apply. runFrame() extends and places the handles in one
+    // pass, which is the same body scheduleFrame() runs.
+    framePoint = edgePoint;
+    frameWantsExtend = true;
+    lastExtendX = NaN;
+    lastExtendY = NaN;
+    runFrame();
     edgeFrame = requestAnimationFrame(step);
   };
   edgeFrame = requestAnimationFrame(step);
@@ -625,6 +826,12 @@ function updateEdgeScroll(x, y) {
 
 function extendTo(x, y) {
   if (!anchorPoint || !rangeStillLive()) return;
+  // A finger that has not moved a whole pixel since the last frame resolves to
+  // the same caret, and the work of proving that is the expensive part: a
+  // hit-test plus a binary search that forces layout at every step.
+  if (Math.abs(x - lastExtendX) < 1 && Math.abs(y - lastExtendY) < 1) return;
+  lastExtendX = x;
+  lastExtendY = y;
   const caret = caretInRoot(x, y, liveRoot);
   if (!caret) return;
   const next = pointsToRange(anchorPoint, caret);
@@ -632,6 +839,8 @@ function extendTo(x, y) {
   focusPoint = caret;
   liveRange.setStart(next.startContainer, next.startOffset);
   liveRange.setEnd(next.endContainer, next.endOffset);
+  // The Range is live and already registered with the Highlight, so this is an
+  // identity check on a drag frame — the repaint follows the mutation above.
   paintTouchHighlight();
   mirrorToSelection();
   // Re-marked on every step, not once at the start of the drag: the chunk that
@@ -639,12 +848,19 @@ function extendTo(x, y) {
   // boundary reaches it. Cheap to repeat — markSelectionStableRegion() compares
   // the wanted set against the marked one and touches no DOM when they match,
   // which is the overwhelmingly common case within a single paragraph.
-  markSelectionStableRegion();
-  scheduleHandleUpdate();
+  //
+  // growOnly, because this is a drag: a chunk the selection has moved OFF is
+  // handed its containment back at the end of the gesture and not in the middle
+  // of one, where re-containing it is a style invalidation over everything
+  // inside it on the frame the reader is dragging in.
+  markSelectionStableRegion({ growOnly: true });
 }
 
 function beginDrag() {
   setTouchSelectionDragging(true);
+  // A drag that starts mid-fling inherits the faded handles; the reader is
+  // holding one, so it comes back now rather than on the settle timer.
+  endScrollFade();
   // The class that locks the surface. Distinct from `is-touch-selecting`, which
   // means only that a selection EXISTS: a reader who has selected something and
   // wants to scroll down to see the rest of it must be able to, and keying the
@@ -655,11 +871,19 @@ function beginDrag() {
   // The same containment suspension 960ec1e added, driven from the gesture
   // instead of guessed at from a burst of selectionchange events: we know
   // exactly when a drag starts now.
-  markSelectionStableRegion();
+  markSelectionStableRegion({ growOnly: true });
 }
 
 function endDrag() {
   stopEdgeScroll();
+  if (frameHandle) {
+    cancelAnimationFrame(frameHandle);
+    frameHandle = 0;
+  }
+  frameWantsExtend = false;
+  framePoint = null;
+  lastExtendX = NaN;
+  lastExtendY = NaN;
   draggingHandle = "";
   pressDragging = false;
   grabOffsetY = 0;
@@ -696,11 +920,15 @@ function bindHandle(handle, which) {
     // to the caret this handle marks depends on the line's height and on where
     // in the bulb the thumb landed. A constant that is out by half a line is
     // exactly the "indicators are wrong" complaint, reintroduced by us.
+    //
+    // Except for a PARKED handle, whose caret is off screen: there the offset
+    // would be the distance to a boundary somewhere above the fold, and the
+    // reader means "bring the boundary here". The finger is the caret.
     const touch = event.touches[0];
     const rect = edgeRect(liveRange, which === "start");
-    grabOffsetY = (touch && rect)
-      ? touch.clientY - (rect.top + rect.height / 2)
-      : HANDLE_GRAB_OFFSET_PX;
+    grabOffsetY = handle.dataset.parked
+      ? 0
+      : ((touch && rect) ? touch.clientY - (rect.top + rect.height / 2) : HANDLE_GRAB_OFFSET_PX);
     beginDrag();
   }, { passive: false });
 
@@ -710,7 +938,8 @@ function bindHandle(handle, which) {
     const touch = event.touches[0];
     if (!touch) return;
     const y = touch.clientY - grabOffsetY;
-    extendTo(touch.clientX, y);
+    framePoint = { x: touch.clientX, y };
+    scheduleFrame(true);
     updateEdgeScroll(touch.clientX, y);
   }, { passive: false });
 
@@ -731,20 +960,48 @@ function cancelPress() {
   pressActive = false;
 }
 
+// The slop around the selection that still counts as "on it". Generous on
+// purpose: the reader aiming here is reaching for a handle, and a miss used to
+// throw the whole selection away.
+export const SELECTION_HIT_SLOP_PX = 12;
+
 function pointInSelection(x, y) {
   if (!rangeStillLive()) return false;
   const rects = liveRange.getClientRects();
   for (let i = 0; i < rects.length; i += 1) {
     const r = rects[i];
-    if (x >= r.left - 8 && x <= r.right + 8 && y >= r.top - 8 && y <= r.bottom + 8) return true;
+    if (x >= r.left - SELECTION_HIT_SLOP_PX && x <= r.right + SELECTION_HIT_SLOP_PX
+        && y >= r.top - SELECTION_HIT_SLOP_PX && y <= r.bottom + SELECTION_HIT_SLOP_PX) return true;
   }
   return false;
+}
+
+// How far the reading surface may move under a resting finger and still leave
+// the press standing. Not zero, deliberately: a note's own layout settles while
+// it is being read — a chunk's estimated height resolving, a deferred table
+// laying itself out, the browser's scroll anchoring compensating for either —
+// and cancelling on those would put back the "I have to fight the long press"
+// bug that two commits have now been spent on. Past this the page is visibly
+// moving, and a reader watching it move is not making a selection.
+export const PRESS_SCROLL_TOLERANCE_PX = 10;
+
+function scrollDrift(root) {
+  if (!root) return 0;
+  return Math.abs(root.scrollTop - pressScrollTop) + Math.abs(root.scrollLeft - pressScrollLeft);
 }
 
 function firePress(root, x, y) {
   pressTimer = null;
   pressActive = false;
   if (!canTouchSelect()) return;
+  // The surface moved under the finger during the press window, so the reader
+  // is watching the page move rather than choosing a word on a still one. The
+  // scroll listener normally cancels the press before this runs; this is for
+  // the frame where the two race.
+  if (scrollDrift(root) > PRESS_SCROLL_TOLERANCE_PX) return;
+  // Whatever was selected is about to be replaced, so there is nothing left to
+  // dismiss on the way up.
+  dismissPending = false;
 
   // The card swipe recogniser stands down EXPLICITLY now. Its own dwell timer
   // (swipe.js, longPressGraceMs) still exists for the native fallback path, but
@@ -788,17 +1045,36 @@ function firePress(root, x, y) {
 
 function onRootTouchStart(event) {
   if (!canTouchSelect()) return;
-  if (event.touches.length !== 1) { cancelPress(); return; }
+  // A second finger. Not a press, and not a tap either — a pinch must not
+  // dismiss the selection it is being zoomed over.
+  if (event.touches.length !== 1) { cancelPress(); dismissPending = false; return; }
   const root = event.currentTarget;
   const touch = event.touches[0];
 
-  // A press that lands inside the current selection is a grab, not a new
-  // selection — leave it alone so the reader can reach for a handle. Anything
-  // else outside it dismisses.
-  if (liveRange && !pointInSelection(touch.clientX, touch.clientY)) clearTouchSelection();
+  // A touch that lands inside the current selection is a grab, not a new
+  // selection — leave it alone so the reader can reach for a handle.
+  //
+  // A touch outside it MIGHT be a dismissal, and this is where that used to be
+  // decided: `clearTouchSelection()`, on the touchstart, before anything was
+  // known about the gesture. But a scroll begins with exactly this touch, and
+  // scrolling to reach the rest of the passage you are selecting is the most
+  // ordinary thing a reader does — so the selection was gone before their
+  // finger had moved a pixel, which is "when I scroll to select more it forgets
+  // the previous selections". A near-miss on a handle went the same way.
+  //
+  // So the decision is deferred to the touchEND, where the gesture is known: a
+  // tap dismisses, a scroll does not. Chrome's own behaviour, and the reason
+  // this was not simply a missing feature — a native selection survives a
+  // scroll too.
+  dismissPending = Boolean(liveRange) && !pointInSelection(touch.clientX, touch.clientY);
 
+  pressOriginX = touch.clientX;
+  pressOriginY = touch.clientY;
   pressX = touch.clientX;
   pressY = touch.clientY;
+  pressRoot = root;
+  pressScrollTop = root.scrollTop;
+  pressScrollLeft = root.scrollLeft;
   pressActive = true;
   if (pressTimer) clearTimeout(pressTimer);
   pressTimer = setTimeout(() => firePress(root, pressX, pressY), LONG_PRESS_MS);
@@ -820,14 +1096,26 @@ function onRootTouchMove(event) {
     // ON the word it selected, and moving the caret away from it would make
     // press-and-slide feel like it had missed. Offsetting is for a handle, which
     // is grabbed by a bulb that hangs below the line.
-    extendTo(touch.clientX, touch.clientY);
+    framePoint = { x: touch.clientX, y: touch.clientY };
+    scheduleFrame(true);
     updateEdgeScroll(touch.clientX, touch.clientY);
     return;
   }
-  if (!pressActive) return;
+  if (!pressActive && !dismissPending) return;
   const touch = event.touches[0];
   if (!touch) { cancelPress(); return; }
-  if (Math.hypot(touch.clientX - pressX, touch.clientY - pressY) > PRESS_SLOP_PX) cancelPress();
+  const travelled = Math.hypot(touch.clientX - pressOriginX, touch.clientY - pressOriginY);
+  if (travelled > PRESS_SLOP_PX) {
+    // Moving is scrolling, and scrolling is not a dismissal.
+    dismissPending = false;
+    cancelPress();
+    return;
+  }
+  // Inside the slop the press stands, but the finger has still drifted — aim
+  // where it is now rather than where it landed, or a thumb that rolls a few
+  // pixels selects the word next door.
+  pressX = touch.clientX;
+  pressY = touch.clientY;
 }
 
 // preventDefault here is not optional, and it is not about scrolling.
@@ -846,9 +1134,17 @@ function onRootTouchMove(event) {
 // reached by one.
 function onRootTouchEnd(event) {
   const wasSelecting = pressDragging || Boolean(draggingHandle);
+  const dismiss = dismissPending && !wasSelecting;
+  dismissPending = false;
   cancelPress();
   if (pressDragging) endDrag();
   if (wasSelecting) event.preventDefault();
+  // The gesture that landed outside the selection turned out to be a tap. THIS
+  // is the dismissal — see onRootTouchStart for why it is not the touchstart.
+  // A cancelled touch (the scroller taking the gesture over) is a scroll by
+  // definition and never gets here with the flag still set, because the move
+  // past the slop cleared it.
+  if (dismiss && event.type !== "touchcancel") clearTouchSelection();
 }
 
 // ── Arming and disarming ───────────────────────────────────────────────────
@@ -864,7 +1160,11 @@ function bindRoot(root) {
   // preventDefault — see the comment above it.
   root.addEventListener("touchend", onRootTouchEnd, { passive: false });
   root.addEventListener("touchcancel", onRootTouchEnd, { passive: false });
-  root.addEventListener("scroll", scheduleHandleUpdate, { passive: true });
+  // A scroll is three things at once here: the press timer's cancellation
+  // (Android's own signal, and exact where the 10px slop test is a guess), the
+  // reason to take the handles off the glass while the text is moving, and the
+  // reason to put them back when it stops.
+  root.addEventListener("scroll", onRootScroll, { passive: true });
   // Long press over a link or an image would otherwise open Chrome's own
   // context menu on top of the selection we just made. A link is still followed
   // by an ordinary tap; this only refuses the menu.
@@ -892,6 +1192,7 @@ function disarm() {
   setTouchSelectionArmed(false);
   clearTouchSelection();
   document.body.classList.remove("has-touch-select");
+  document.body.classList.remove("is-touch-scrolling");
   destroyOverlay();
   // Leaving a registered highlight behind would paint nothing (its range is
   // gone) but would still be visible to anything enumerating CSS.highlights, and
@@ -934,4 +1235,10 @@ export function initTouchSelection() {
   });
 
   window.addEventListener("resize", scheduleHandleUpdate, { passive: true });
+  // The layout viewport is not the visual one on a phone. Android's URL bar
+  // collapsing on a scroll, and the software keyboard opening, both move the
+  // origin of a `position: fixed` layer without firing a window resize — so the
+  // handles quietly drifted off their boundaries and stayed there.
+  window.visualViewport?.addEventListener?.("resize", scheduleHandleUpdate, { passive: true });
+  window.visualViewport?.addEventListener?.("scroll", scheduleHandleUpdate, { passive: true });
 }

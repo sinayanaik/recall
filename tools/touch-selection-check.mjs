@@ -139,6 +139,41 @@ const SETUP_SRC = `async (apiSrc) => {
     }
   }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
+  // ── Counting the work, not just the outcome ──────────────────────────────
+  //
+  // Two of the three complaints in the report are about how the app FEELS
+  // rather than about what it ends up with, and a case that only asserts the
+  // final range cannot tell a smooth drag from a stuttering one. These two
+  // instruments count the work instead.
+  //
+  // __hits counts caret hit-tests. caretInRoot() runs one per extendTo() in the
+  // ordinary case (the direct hit is usable), so it is a count of extend passes
+  // — and the whole point of the frame coalescing is that a burst of touchmoves
+  // inside one frame produces ONE of them.
+  window.__hits = { count: 0 };
+  const nativeCaret = document.caretPositionFromPoint
+    ? document.caretPositionFromPoint.bind(document)
+    : null;
+  if (nativeCaret) {
+    document.caretPositionFromPoint = (x, y) => {
+      window.__hits.count += 1;
+      return nativeCaret(x, y);
+    };
+  }
+
+  // __captures counts times the pill threw its description of the selection
+  // away and started again. positionNotesSelectionButton() resets the title to
+  // the bare "Make a card" for each fresh capture, and ensurePillSelectionCapture
+  // writes the word count onto it when that capture resolves — so a bare title
+  // arriving while the pill is up is exactly one capture cycle.
+  window.__captures = { count: 0 };
+  const cardBtn = document.getElementById("makeCardFromSelectionBtn");
+  new MutationObserver(() => {
+    if (cardBtn.title === "Make a card" && !document.getElementById("selectionFloat").hidden) {
+      window.__captures.count += 1;
+    }
+  }).observe(cardBtn, { attributes: true, attributeFilter: ["title"] });
+
   // The screen rect of the Nth word of the paragraph starting with \`marker\`.
   // Everything below aims at a point rather than at an element, because a finger
   // aims at a point.
@@ -217,7 +252,10 @@ const SETUP_SRC = `async (apiSrc) => {
   // distance between the two.
   window.__handle = (which) => {
     const node = document.querySelector(".touch-select-handle.is-" + which);
-    if (!node || node.style.display === "none") return null;
+    // A handle is taken off the glass by a CLASS, not by \`display\`: it keeps its
+    // box so the controller can move it underneath the fade and let it come
+    // back on its new boundary rather than blinking out and in.
+    if (!node || node.classList.contains("is-hidden")) return null;
     const bulb = node.querySelector(".touch-select-bulb");
     const b = bulb.getBoundingClientRect();
     const sel = window.getSelection();
@@ -334,6 +372,34 @@ async function run() {
       clip: { x: rect.left - 2, y: rect.top - 2, width: rect.right - rect.left + 4, height: rect.bottom - rect.top + 4, scale: 1 },
     })).data;
 
+    // What share of a box changed colour between two screenshots. Decoded and
+    // compared IN THE PAGE, because that is where there is a canvas to do it
+    // with. Used twice: once to prove the press paints, and once to prove a
+    // DRAG repaints — see case 12.
+    const diffShots = (before, after) => page.evaluate(async (a64, b64) => {
+      const load = (data) => new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = "data:image/png;base64," + data;
+      });
+      const [a, b] = await Promise.all([load(a64), load(b64)]);
+      const canvas = document.createElement("canvas");
+      canvas.width = a.naturalWidth;
+      canvas.height = a.naturalHeight;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(a, 0, 0);
+      const pa = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(b, 0, 0);
+      const pb = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let changed = 0;
+      for (let i = 0; i < pa.length; i += 4) {
+        if (Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]) > 24) changed += 1;
+      }
+      return { changed, total: pa.length / 4, width: canvas.width, height: canvas.height };
+    }, before, after);
+
     // ── 1. A press becomes a selection, in a measured time ──────────────────
     //
     // The headline. "There is at least a 3-4s gap after I hard press and then
@@ -370,29 +436,7 @@ async function run() {
     // the same word, before and after, decoded in the page and compared pixel by
     // pixel.
     const paintedShot = await shot(word);
-    const painted = await page.evaluate(async (before, after) => {
-      const load = (data) => new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = "data:image/png;base64," + data;
-      });
-      const [a, b] = await Promise.all([load(before), load(after)]);
-      const canvas = document.createElement("canvas");
-      canvas.width = a.naturalWidth;
-      canvas.height = a.naturalHeight;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      ctx.drawImage(a, 0, 0);
-      const pa = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(b, 0, 0);
-      const pb = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let changed = 0;
-      for (let i = 0; i < pa.length; i += 4) {
-        if (Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]) > 24) changed += 1;
-      }
-      return { changed, total: pa.length / 4, width: canvas.width, height: canvas.height };
-    }, cleanShot, paintedShot);
+    const painted = await diffShots(cleanShot, paintedShot);
     const share = painted.total ? painted.changed / painted.total : 0;
     check(share > 0.3,
       "the selection is painted on the glass, not just held in a Range",
@@ -689,13 +733,283 @@ async function run() {
       sel: window.__selection(),
       selecting: document.body.classList.contains("is-touch-selecting"),
       handles: Array.from(document.querySelectorAll(".touch-select-handle"))
-        .filter((h) => h.style.display !== "none").length,
+        .filter((h) => !h.classList.contains("is-hidden")).length,
+      // The CLASS is what the controller writes; this is what the reader sees.
+      // Worth both, because a handle is hidden by opacity rather than by
+      // `display` now, and `.is-parked` sets an opacity of its own at the same
+      // specificity — a stale parked class on a hidden grip would leave it on
+      // screen at 75%, attached to a selection that no longer exists.
+      opacity: Array.from(document.querySelectorAll(".touch-select-handle"))
+        .map((h) => Number(getComputedStyle(h).opacity)),
     }));
     check(!dismissed.sel && !dismissed.selecting && dismissed.handles === 0,
       "a tap outside the selection clears it, handles included",
       `handles still shown: ${dismissed.handles}`);
+    check(dismissed.opacity.every((o) => o === 0),
+      "...and the dismissed handles are actually invisible, not merely marked",
+      `opacity: ${dismissed.opacity.join(", ")}`);
 
-    // ── 11. None of this exists on a desktop ───────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
+    // The second report: "it somehow worked ... but a unstable visual
+    // behaviour ... it is not persistent, like when I am selecting and scroll
+    // to select more it forgets the previous selections ... it feels a little
+    // flickering."
+    //
+    // Everything above says the gesture WORKS. Cases 11-15 are about whether it
+    // is steady, which is a different question and needs different assertions:
+    // what survives, what moves, and how much work one drag costs.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ── 11. A selection survives a scroll ──────────────────────────────────
+    //
+    // The headline of the second report. The dismissal used to be decided on
+    // the TOUCHSTART, and a scroll begins with a touch outside the selection —
+    // so scrolling to reach the rest of the passage you were selecting threw it
+    // away before your finger had moved. A tap must still dismiss (case 10
+    // above, unchanged); a scroll must not.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => window.__reveal("P0050"));
+    await wait(250);
+    const keepWord = await page.evaluate(() => window.__wordRect("P0050", 3));
+    await touchStart(keepWord.x, keepWord.y);
+    await wait(700);
+    await touchEnd();
+    await wait(250);
+    const beforeScroll = await page.evaluate(() => ({
+      sel: window.__selection(),
+      scrollTop: document.getElementById("notesView").scrollTop,
+    }));
+    check(Boolean(beforeScroll.sel), "a selection to scroll away from",
+      beforeScroll.sel ? `"${beforeScroll.sel.text}"` : "none");
+
+    // A scroll gesture: a touch well outside the selection, dragged far enough
+    // to be unmistakable, and released.
+    const scrollFrom = await page.evaluate(() => window.__wordRect("P0053", 2));
+    await touchStart(scrollFrom.x, scrollFrom.y);
+    await dragTo(scrollFrom.x, scrollFrom.y, scrollFrom.x, scrollFrom.y - 200, 8);
+    // Read mid-gesture: the handles come off the glass while the words are
+    // moving, because a fixed overlay moved by JavaScript cannot keep up with a
+    // surface that scrolls on the compositor. That swim is the flicker.
+    const midScroll = await page.evaluate(() => ({
+      scrolling: document.body.classList.contains("is-touch-scrolling"),
+      opacity: getComputedStyle(document.querySelector(".touch-select-handle.is-end")).opacity,
+      sel: window.__selection(),
+    }));
+    await touchEnd();
+    await wait(400);
+    const afterScroll = await page.evaluate(() => ({
+      sel: window.__selection(),
+      scrollTop: document.getElementById("notesView").scrollTop,
+      scrolling: document.body.classList.contains("is-touch-scrolling"),
+      selecting: document.body.classList.contains("is-touch-selecting"),
+    }));
+    check(afterScroll.scrollTop !== beforeScroll.scrollTop,
+      "the note scrolled", `${beforeScroll.scrollTop} -> ${afterScroll.scrollTop}`);
+    check(Boolean(afterScroll.sel) && beforeScroll.sel
+      && afterScroll.sel.text === beforeScroll.sel.text
+      && afterScroll.sel.startMarker === beforeScroll.sel.startMarker,
+      "...and the selection is still exactly the one that was there before it",
+      afterScroll.sel ? `"${afterScroll.sel.text}"` : "the selection was thrown away");
+    check(midScroll.scrolling && Number(midScroll.opacity) === 0,
+      "the handles come off the glass while the text is moving",
+      `is-touch-scrolling: ${midScroll.scrolling}, handle opacity: ${midScroll.opacity}`);
+    check(!afterScroll.scrolling && afterScroll.selecting,
+      "...and are handed back once the view settles",
+      `is-touch-scrolling: ${afterScroll.scrolling}`);
+
+    // ── 12. Handles land back on the boundaries, and the paint follows ──────
+    //
+    // Two things a scroll could have broken. The grips are placed from the live
+    // Range after the settle, so they must be on the boundaries again — and the
+    // highlight is registered ONCE now rather than re-registered on every drag
+    // frame, so this is also the assertion that a live Range in a Highlight
+    // really does repaint when its boundaries move.
+    const settled = await page.evaluate(() => ({
+      start: window.__handle("start"), end: window.__handle("end"),
+    }));
+    const settledError = (h) => (h ? Math.hypot(h.stemLeft - h.caretX, h.stemTop + 8 - h.caretY) : Infinity);
+    check(settledError(settled.end) < 12 || settled.end === null,
+      "a handle still on screen is back on its boundary after the scroll",
+      settled.end ? `${settledError(settled.end).toFixed(1)}px off` : "parked or off screen");
+
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => window.__reveal("P0060"));
+    await wait(250);
+    const paintAnchor = await page.evaluate(() => window.__wordRect("P0060", 1));
+    const paintTarget = await page.evaluate(() => window.__wordRect("P0060", 5));
+    const cleanFar = await shot(paintTarget);
+    await touchStart(paintAnchor.x, paintAnchor.y);
+    await wait(700);
+    await touchEnd();
+    await wait(250);
+    const paintGrip = await page.evaluate(() => window.__handle("end"));
+    await touchStart(paintGrip.grabX, paintGrip.grabY);
+    await dragTo(paintGrip.grabX, paintGrip.grabY,
+      paintTarget.right, paintTarget.y + (paintGrip.grabY - paintGrip.caretY), 6);
+    await touchEnd();
+    await wait(300);
+    const draggedShot = await shot(paintTarget);
+    const dragPaint = await diffShots(cleanFar, draggedShot);
+    const dragShare = dragPaint.total ? dragPaint.changed / dragPaint.total : 0;
+    check(dragShare > 0.3,
+      "a word dragged INTO the selection is repainted, so the live Range still drives the highlight",
+      `${(dragShare * 100).toFixed(0)}% of the word's box changed colour (${dragPaint.width}x${dragPaint.height})`);
+
+    // ── 13. A boundary scrolled off keeps a parked grip ─────────────────────
+    //
+    // "Scroll to select more" needs something to grab after the scroll. A
+    // handle whose boundary has left the surface used to be hidden outright,
+    // which meant that past one screenful the only way to extend was to scroll
+    // back to the grip that had gone.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => window.__reveal("P0064"));
+    await wait(250);
+    const parkWord = await page.evaluate(() => window.__wordRect("P0064", 3));
+    await touchStart(parkWord.x, parkWord.y);
+    await wait(700);
+    await touchEnd();
+    await wait(250);
+    const parkBefore = await page.evaluate(() => window.__selection());
+    // Scroll the selection off the TOP, programmatically: this case is about
+    // where the handle ends up, not about the gesture that got it there.
+    await page.evaluate(() => { document.getElementById("notesView").scrollTop += 700; });
+    await wait(400);
+    const parked = await page.evaluate(() => {
+      const node = document.querySelector(".touch-select-handle.is-start");
+      const view = document.getElementById("notesView");
+      const r = node.getBoundingClientRect();
+      const bounds = view.getBoundingClientRect();
+      return {
+        hidden: node.classList.contains("is-hidden"),
+        parked: node.classList.contains("is-parked"),
+        // The stem's own top, past the 16px transparent grab border.
+        stemTop: r.top + 16,
+        viewTop: bounds.top,
+        viewBottom: bounds.bottom,
+        sel: window.__selection(),
+      };
+    });
+    check(Boolean(parked.sel) && parkBefore && parked.sel.text === parkBefore.text,
+      "the selection survives being scrolled off the top",
+      parked.sel ? `"${parked.sel.text}"` : "lost");
+    check(!parked.hidden && parked.parked,
+      "...and its start handle is parked rather than hidden",
+      `hidden: ${parked.hidden}, parked: ${parked.parked}`);
+    check(parked.stemTop >= parked.viewTop - 2 && parked.stemTop <= parked.viewBottom,
+      "...clamped inside the reading surface, not floating over the toolbar",
+      `stem at ${parked.stemTop.toFixed(0)}, surface ${parked.viewTop.toFixed(0)}..${parked.viewBottom.toFixed(0)}`);
+
+    // Grabbing a parked grip drags from where the FINGER is — its own caret is
+    // off screen, so the measured finger-to-caret offset a normal grab uses
+    // would aim at nothing.
+    const parkGrip = await page.evaluate(() => {
+      const bulb = document.querySelector(".touch-select-handle.is-start .touch-select-bulb");
+      const b = bulb.getBoundingClientRect();
+      return { grabX: b.left + b.width / 2, grabY: b.top + b.height / 2 };
+    });
+    //
+    // The anchor it drags against is the OTHER boundary, which is off the top
+    // of the screen — so every reachable point is past it and the two ends
+    // swap, exactly as case 5 asserts for a handle dragged past its anchor in
+    // view. What is being asserted is that the boundary the reader grabbed
+    // arrives where their finger went.
+    const parkTarget = await page.evaluate(() => window.__wordRect("P0071", 2));
+    await touchStart(parkGrip.grabX, parkGrip.grabY);
+    await dragTo(parkGrip.grabX, parkGrip.grabY, parkTarget.x, parkTarget.y, 8);
+    await touchEnd();
+    await wait(300);
+    const parkAfter = await page.evaluate(() => window.__selection());
+    check(Boolean(parkAfter) && parkAfter.endMarker === "P0071" && parkAfter.length > parkBefore.length,
+      "dragging a parked handle brings that boundary to the finger",
+      parkAfter ? `${parkBefore.length} -> ${parkAfter.length} chars, reaching ${parkAfter.endMarker}` : "selection lost");
+
+    // ── 14. One extend per frame ───────────────────────────────────────────
+    //
+    // The drag used to run its whole pass — a hit-test, a binary search that
+    // forces layout at every step, and a containment pass that writes classes —
+    // synchronously off every touchmove, which on a 120Hz phone is up to twice
+    // a frame, with the reads and the writes interleaved. That is layout
+    // thrash, and it is what a stuttering drag is.
+    //
+    // The burst has to be dispatched FROM THE PAGE, in one task. A move sent
+    // over the DevTools protocol costs tens of milliseconds of round trip, so
+    // every one of them lands in a frame of its own and the coalesced version
+    // and the eager one do identical work — the difference this is about only
+    // exists when the events arrive faster than the display refreshes, which on
+    // a 120Hz phone is what a real drag does. The touch itself is real: the
+    // press below comes from Input.dispatchTouchEvent and the finger is still
+    // down while the burst runs.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => window.__reveal("P0074"));
+    await wait(250);
+    const burstWord = await page.evaluate(() => window.__wordRect("P0074", 2));
+    await touchStart(burstWord.x, burstWord.y);
+    await wait(700);
+    const burst = await page.evaluate((x, y) => {
+      const view = document.getElementById("notesView");
+      window.__hits.count = 0;
+      for (let i = 1; i <= 30; i += 1) {
+        const touch = new Touch({ identifier: 1, target: view, clientX: x, clientY: y + i * 4 });
+        view.dispatchEvent(new TouchEvent("touchmove", {
+          touches: [touch], targetTouches: [touch], changedTouches: [touch],
+          bubbles: true, cancelable: true,
+        }));
+      }
+      return { duringBurst: window.__hits.count };
+    }, burstWord.x, burstWord.y);
+    // Two frames, because the work is scheduled from inside the first one.
+    const afterFrames = await page.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.__hits.count)));
+    }));
+    await touchEnd();
+    await wait(300);
+    check(burst.duringBurst === 0,
+      "thirty touchmoves in one frame do no hit-testing between them",
+      `${burst.duringBurst} hit-tests during the burst`);
+    // caretInRoot() tries up to four points when the direct hit-test lands in a
+    // block's padding, so one extend is not always one call — but it is never
+    // thirty.
+    check(afterFrames >= 1 && afterFrames <= 4,
+      "...and exactly one extend runs on the frame after them",
+      `${afterFrames} hit-tests once the frame came round`);
+    const burstResult = await page.evaluate(() => window.__selection());
+    check(Boolean(burstResult) && burstResult.length > 5,
+      "...and the drag still arrives where it was aimed",
+      burstResult ? `${burstResult.length} chars, ending in ${burstResult.endMarker}` : "selection lost");
+
+    // ── 15. One description per selection ──────────────────────────────────
+    //
+    // One finished selection reached positionNotesSelectionButton three times —
+    // endDrag(), the pointerup settle 45ms later, and the trailing
+    // selectionchange on the 300ms debounce — and each pass threw the pill's
+    // capture away and ran it again: three clones of the fragment, two Turndown
+    // conversions and an occurrence count over the note above the selection,
+    // three times, in the first third of a second after the finger lifted. That
+    // is the hitch as the bar arrives.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(200);
+    await page.evaluate(() => window.__reveal("P0078"));
+    await wait(250);
+    const captureWord = await page.evaluate(() => window.__wordRect("P0078", 2));
+    await page.evaluate(() => { window.__captures.count = 0; });
+    await touchStart(captureWord.x, captureWord.y);
+    await wait(700);
+    await touchEnd();
+    // Well past all three call-ins: 45ms settle, 300ms debounce.
+    await wait(900);
+    const captures = await page.evaluate(() => ({
+      count: window.__captures.count,
+      hidden: document.getElementById("selectionFloat").hidden,
+      title: document.getElementById("makeCardFromSelectionBtn").title,
+    }));
+    check(captures.count === 1,
+      "one finished selection is described once, not once per call-in",
+      `${captures.count} capture${captures.count === 1 ? "" : "s"}`);
+    check(!captures.hidden && /word/.test(captures.title),
+      "...and the pill is up, describing it",
+      `hidden: ${captures.hidden}, title: "${captures.title}"`);
+
+    // ── 16. None of this exists on a desktop ───────────────────────────────
     //
     // The fence, asserted rather than asserted-about. Emulation off, reload, and
     // every trace of the controller must be gone: no class, no overlay, no

@@ -113,16 +113,27 @@ body.is-touch-dragging .card-face .rendered {
   pointer-events: none;
 }
 
-/* Each handle is positioned AT its caret — left/top/height are written from the
-   collapsed boundary rect — and draws a stem down that caret's line with a bulb
-   hanging below it. The bulb is offset outward (left handle to the left, right
-   handle to the right) so neither one sits on the first or last character of the
-   selection, which is the character hardest to see and most often mis-aimed at.
+/* Each handle is positioned AT its caret — a `transform: translate()` and a
+   height, written from the collapsed boundary rect — and draws a stem down that
+   caret's line with a bulb hanging below it. The bulb is offset outward (left
+   handle to the left, right handle to the right) so neither one sits on the
+   first or last character of the selection, which is the character hardest to
+   see and most often mis-aimed at.
+
+   left and top are 0 and stay 0, and the transform is what moves the box: it is
+   rewritten on every frame of a drag and again every time a scroll settles, and
+   a transform is the one way to move a box that costs no layout.
 
    pointer-events: auto only on the handle itself; the layer stays transparent to
-   everything else, so a tap anywhere but a grip reaches the note. */
+   everything else, so a tap anywhere but a grip reaches the note.
+
+   The opacity transition is the fade a scrolling surface takes the grips off
+   the glass with — see the is-touch-scrolling rule below. */
 .touch-select-handle {
   position: absolute;
+  left: 0;
+  top: 0;
+  transition: opacity 90ms linear;
   width: 2px;
   pointer-events: auto;
   touch-action: none;
@@ -137,8 +148,8 @@ body.is-touch-dragging .card-face .rendered {
   border-block-end-width: 34px;
   background-clip: content-box;
   /* Cancels the top and left borders, so the 2px stem lands exactly on the
-     `left` / `top` the controller wrote from the boundary rect. Without this
-     the whole grip would sit 16px low and 21px right of the caret it marks. */
+     point the controller translated the box to. Without this the whole grip
+     would sit 16px low and 21px right of the caret it marks. */
   margin: -16px 0 0 -21px;
 }
 
@@ -171,6 +182,79 @@ body.is-touch-dragging .card-face .rendered {
 .touch-select-handle.is-end .touch-select-bulb {
   left: -8px;
   border-top-left-radius: 2px;
+}
+
+/* ── The handles while the surface is scrolling ────────────────────────────
+   They are drawn on a fixed overlay and moved by JavaScript; the reading
+   surface scrolls on the compositor. Those two cannot be in step, so during a
+   fling a grip trails the word it marks by a frame or more and swims — which
+   is a large part of "it feels a little flickering".
+
+   So they fade out for the duration and are placed again SCROLL_SETTLE_MS
+   after the last scroll event (onRootScroll in the controller), fading back in
+   already on their new boundaries. The selection itself does not move: the
+   ::highlight() above is laid out by the same pass as the text, so the tint
+   stays glued to the words while the grips are away.
+
+   Not during a drag — beginDrag() clears the class. There the scrolling IS the
+   gesture (the edge auto-scroll), and the handle has to stay under the thumb
+   holding it. */
+body.is-touch-scrolling .touch-select-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .touch-select-handle {
+    transition: none;
+  }
+}
+
+/* A boundary that has scrolled off the reading surface keeps a grip, clamped to
+   the edge it went off — so "scroll down and keep selecting" is one gesture
+   rather than a scroll back to find the handle again. Grabbing a parked grip
+   drags from where the finger is (grabOffsetY is 0 for one).
+
+   Flattened, and the bulb centred on the stem rather than hanging below it:
+   below the stem at the BOTTOM edge is off the surface entirely, and the
+   teardrop's point is a claim about which character it marks, which a parked
+   handle is not making. */
+.touch-select-handle.is-parked {
+  opacity: 0.75;
+}
+
+.touch-select-handle.is-parked .touch-select-bulb {
+  top: 50%;
+  bottom: auto;
+  right: auto;
+  left: -8px;
+  width: 18px;
+  height: 10px;
+  border-radius: 5px;
+  transform: translateY(-50%);
+}
+
+.touch-select-handle.is-parked.is-start .touch-select-bulb {
+  left: auto;
+  right: -8px;
+}
+
+/* No selection, or a boundary with no rect and no edge to park against.
+   `display` is deliberately NOT used: a handle that leaves the layout and comes
+   back is a blink, where one that fades keeps its box and can be moved
+   underneath the fade. pointer-events goes with it, so an invisible grip can
+   never be grabbed.
+
+   LAST among the opacity rules, and that is load-bearing rather than tidy:
+   `.touch-select-handle.is-parked` above is (0,2,0), exactly the same as this,
+   so whichever comes later wins. Written the other way round a handle that was
+   parked and is now hidden would take the parked 0.75 and sit there visible
+   over the text with nothing behind it. placeHandle() also clears is-parked
+   when it hides a grip, and either one of the two is enough — which is the
+   point of having both. */
+.touch-select-handle.is-hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* ── 5. Keep the bar off the lower handle ──────────────────────────────────
