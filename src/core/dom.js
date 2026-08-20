@@ -207,6 +207,8 @@ export const el = {
   notesEdit: document.querySelector("#notesEdit"),
   notesEditToolbar: document.querySelector("#notesEditToolbar"),
   editNotesBtn: document.querySelector("#editNotesBtn"),
+  bookmarkSetBtn: document.querySelector("#bookmarkSetBtn"),
+  bookmarkGoBtn: document.querySelector("#bookmarkGoBtn"),
   focusModeBtn: document.querySelector("#focusModeBtn"),
   makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
   makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),

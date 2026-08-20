@@ -898,6 +898,7 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   const done = () => {
     reader?.cancel();
     if (self && cancelResume === self) cancelResume = null;
+    options?.onSettled?.();
   };
   const attempt = (retries) => {
     // A newer resume owns the scroller now.

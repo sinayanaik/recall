@@ -1,5 +1,7 @@
-// Where you were reading, so the note reopens there — on this device and,
-// through the deck's meta bag, on the others.
+// Where you were reading, so the note silently reopens there on THIS device.
+// It no longer pushes itself to the cloud on its own — see src/notes/bookmark.js
+// for the manual, cross-device equivalent (a deliberate bookmark, not an
+// ambient scroll position).
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -8,7 +10,6 @@ import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetF
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scheduleReadingPositionSave } from "./reading-position.js?v=__BUILD__";
 import { notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
-import { scheduleReadingPositionCloudPush } from "../sync/reading-position-cloud.js?v=__BUILD__";
 
 // A representative raw-markdown offset for whatever's currently at the top of
 // the visible #notesView. Unlike the triple-click path, the "Edit notes"
@@ -198,10 +199,6 @@ export function captureCurrentReadingAnchor() {
   // folds into meta, but a reader who only reads never triggers a deck save, and
   // that is exactly the reader this feature is for.
   scheduleReadingPositionSave(key, anchor);
-  // Cross-device resume for a reading session shorter than a full sync cycle —
-  // see scheduleReadingPositionCloudPush's own comment. No-ops for a deck that
-  // has never been synced (nothing to merge into yet) or while signed out.
-  scheduleReadingPositionCloudPush(state.deckId, state.localDeckId, anchor);
 }
 
 // Deliberately a TRAILING debounce rather than the rAF coalescing this used to
