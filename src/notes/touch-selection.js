@@ -121,16 +121,32 @@ import {
 export const HIGHLIGHT_NAME = "recall-touch-selection";
 
 // How long a finger has to rest before it is a press rather than a scroll.
-// 320ms, against Android's own ~500ms, deliberately: the whole complaint is
+// 240ms, against Android's own ~500ms, deliberately: the whole complaint is
 // that selection takes too long to arrive, and we are not paying a main-thread
-// round trip on top of it. Below ~250ms a slow scroll start begins to register
-// as a press.
-export const LONG_PRESS_MS = 320;
+// round trip on top of it. This is under the ~250ms where a slow scroll start
+// begins to register as a press, which used to be the floor — what buys the
+// extra 80ms is the escape below, which takes the gesture back when a press
+// that fired this early turns out to have been the start of a scroll.
+export const LONG_PRESS_MS = 240;
 
 // How far the finger may wander in that time and still be pressing. A real
 // touch slop — a thumb resting on glass moves several pixels — and the same
 // value swipe.js settled on for its own dwell test (dwellSlopPx).
 export const PRESS_SLOP_PX = 10;
+
+// The escape. For this long after a press fires, a finger that leaves in a
+// hurry is a scroll that we called too early, not a reader extending their
+// selection: the word is unselected again and the gesture is let go. Past the
+// window a fast slide is just a fast slide and the selection stands.
+//
+// The two numbers are a pair. The window has to outlast the gap between the
+// press firing and the reader's finger reacting to it (~a frame or two), and
+// stay well inside the time a deliberate press-and-slide spends on its first
+// word. The distance has to sit above PRESS_SLOP_PX — everything under that
+// never became a press at all — and above the drift of a thumb rolling on
+// glass, which is most of that 10px already.
+export const PRESS_ESCAPE_MS = 120;
+export const PRESS_ESCAPE_PX = 18;
 
 // A handle is grabbed by its bulb, which hangs BELOW the line it marks, so the
 // caret being chosen sits above the finger. The real offset is MEASURED at the
@@ -194,6 +210,12 @@ let pressX = 0;
 let pressY = 0;
 let pressActive = false;   // a finger is down and might still become a press
 let pressDragging = false; // the press fired and that same finger is extending
+// When the press fired, so the escape window can be measured from it. Only read
+// while pressDragging — a handle drag never sets it.
+let pressFiredAt = 0;
+// { root, x, y } while an escaped gesture is being scrolled by us instead of by
+// the browser, null the rest of the time. See beginEscapeScroll.
+let escapeScroll = null;
 // Where the finger first landed, and where the surface was scrolled to at that
 // moment. The slop test is measured against the ORIGIN while pressX/pressY
 // follow the finger, so a press that fires after a few pixels of thumb drift
@@ -960,6 +982,26 @@ function cancelPress() {
   pressActive = false;
 }
 
+// Hand a mistaken press back to the reader as the scroll they meant.
+//
+// Dropping the selection is only half of it. By the time the escape fires we
+// have already called preventDefault on a move or two of this gesture, and
+// Chrome does not give a gesture back once that has happened — the browser's
+// own scroller is out for the rest of the touch, however passive we go now. So
+// the finger would sit on a surface that had stopped responding, which reads as
+// a freeze rather than as a correction.
+//
+// We scroll it ourselves instead, one delta per move, until the finger lifts.
+// No fling at the end of it — a rescued scroll is a short deliberate drag, and
+// the next flick gets the browser's own scroller back with all of its momentum.
+// Both axes, because the paged reading mode scrolls sideways; the axis a
+// surface cannot scroll ignores the assignment.
+function beginEscapeScroll(root, touch) {
+  clearTouchSelection();
+  hideNotesSelectionButton();
+  escapeScroll = { root, x: touch.clientX, y: touch.clientY };
+}
+
 // The slop around the selection that still counts as "on it". Generous on
 // purpose: the reader aiming here is reaching for a handle, and a miss used to
 // throw the whole selection away.
@@ -1002,6 +1044,11 @@ function firePress(root, x, y) {
   // Whatever was selected is about to be replaced, so there is nothing left to
   // dismiss on the way up.
   dismissPending = false;
+  // Stamped before the selection is made rather than after, so the escape
+  // window covers the word snap and the first paint too — the reader's finger
+  // starts leaving from the moment they feel the buzz, not from the moment we
+  // finish drawing.
+  pressFiredAt = performance.now();
 
   // The card swipe recogniser stands down EXPLICITLY now. Its own dwell timer
   // (swipe.js, longPressGraceMs) still exists for the native fallback path, but
@@ -1044,6 +1091,9 @@ function firePress(root, x, y) {
 }
 
 function onRootTouchStart(event) {
+  // Any new finger ends a rescued scroll: the one that was doing it has lifted,
+  // or a second has joined it to pinch.
+  escapeScroll = null;
   if (!canTouchSelect()) return;
   // A second finger. Not a press, and not a tap either — a pinch must not
   // dismiss the selection it is being zoomed over.
@@ -1088,9 +1138,34 @@ function onRootTouchStart(event) {
 // scrolls out from under a selection the reader is still making, which is the
 // single most common way a native selection gets lost.
 function onRootTouchMove(event) {
+  // The rescued scroll, before anything else: this finger has already been
+  // taken off a selection it never meant to make, and the surface is ours to
+  // move until it lifts.
+  if (escapeScroll) {
+    const touch = event.touches[0];
+    if (!touch) return;
+    event.preventDefault();
+    escapeScroll.root.scrollTop -= touch.clientY - escapeScroll.y;
+    escapeScroll.root.scrollLeft -= touch.clientX - escapeScroll.x;
+    escapeScroll.x = touch.clientX;
+    escapeScroll.y = touch.clientY;
+    return;
+  }
   if (pressDragging) {
     const touch = event.touches[0];
     if (!touch) return;
+    // The escape. A press that fires at 240ms sometimes catches a reader who
+    // was only ever starting a scroll, and the way that reader tells us so is
+    // by leaving immediately and fast. Take the selection back off them and
+    // scroll instead of dragging a selection across the passage they wanted to
+    // scroll past. A press-and-slide is slower off the mark than this and keeps
+    // its selection; so does any slide that starts after the window.
+    if (performance.now() - pressFiredAt < PRESS_ESCAPE_MS
+        && Math.hypot(touch.clientX - pressOriginX, touch.clientY - pressOriginY) > PRESS_ESCAPE_PX) {
+      beginEscapeScroll(event.currentTarget, touch);
+      event.preventDefault();
+      return;
+    }
     event.preventDefault();
     // No offset on this one, deliberately. The finger that pressed is already
     // ON the word it selected, and moving the caret away from it would make
@@ -1133,6 +1208,16 @@ function onRootTouchMove(event) {
 // mouse events — every link, cloze, image control and highlight in a note is
 // reached by one.
 function onRootTouchEnd(event) {
+  // A rescued scroll ends here, and it keeps the preventDefault a drag gets:
+  // the finger travelled across the text, so the compatibility click that a
+  // plain touchend would synthesise would land on whatever it finished over.
+  if (escapeScroll) {
+    escapeScroll = null;
+    cancelPress();
+    event.preventDefault();
+    dismissPending = false;
+    return;
+  }
   const wasSelecting = pressDragging || Boolean(draggingHandle);
   const dismiss = dismissPending && !wasSelecting;
   dismissPending = false;
