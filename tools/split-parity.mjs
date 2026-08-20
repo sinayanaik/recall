@@ -111,6 +111,36 @@ const ACCEPTED = {
     "awaited there, so the drawer visually opens, and the scan then owns the main " +
     "thread for whatever's tapped next. Reused until a different note opens; the " +
     "staleness that trades against is documented at the cache itself.",
+  // ── The phone drawer, and the whole-document writes behind it ───────────
+  // "When a large note is opened the mobile menu button almost freezes and
+  // takes a very long time to unfold." Bisected one property write at a time in
+  // tools/mobile-menu-check.mjs, which is the first check to run under a CPU
+  // throttle — every number below is from a 2.5MB / 19,380-block book at 6x,
+  // and every one of them is BROWSER work rather than ours, which is why five
+  // earlier rounds of profiling our own JavaScript went past them.
+  lockPageScroll:
+    "Asks whether the page can scroll at all before locking it. The lock puts " +
+    "overflow:hidden on <html> and position:fixed on <body>, each of which " +
+    "makes the root a different kind of scrolling box and re-lays out the " +
+    "whole document behind the overlay: measured at 550-690ms to take and the " +
+    "same again to release, against 0ms to ask. Every overlay in the app calls " +
+    "it — My Decks, Import, All Cards, Style, Help, App Info, the cloze panel, " +
+    "every confirm and prompt, the diagram zoom — so ~1.2s of layout was the " +
+    "price of opening and closing ANY of them on a phone with a book open. " +
+    "And .app-shell is a fixed-height grid, so there is nothing to lock: " +
+    "measured behind an open drawer, scrollHeight and clientHeight are both " +
+    "exactly the viewport height. It still locks when the reader has set App " +
+    "height above 100%, which is why it asks rather than assumes.",
+  readChromeHeights:
+    "Publishes --appbar-h on the .appbar element and --view-toggle-h on " +
+    "#viewModeRow, instead of both on :root. A custom property on the root is " +
+    "inherited by every element in the document, so writing one makes the " +
+    "whole tree re-resolve its variables — measured at ~600ms per write on a " +
+    "book, and this writes two. It runs on every chrome fold and on every tick " +
+    "of the ResizeObserver watching the appbar while a phone reader scrolls, " +
+    "so a reader was paying that per scroll direction change. Neither of the " +
+    "three elements that read these is an ancestor of #notesView, so the note " +
+    "now has no reason to hear about them at all. Measured after: 0-2ms.",
   captureCurrentReadingAnchor:
     "Stamps the anchor with `at` and writes it to a store of its own " +
     "(src/notes/reading-position.js). The anchor used to reach disk ONLY as a " +
