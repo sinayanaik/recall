@@ -184,6 +184,22 @@ const POST_SPLIT = {
     "under the finger the moment a drag reached unread text. Coarse-pointer " +
     "only — selection-check.mjs asserts the mouse path is unchanged. See " +
     "tools/mobile-selection-check.mjs.",
+  "32-touch-select.css":
+    "The app's OWN touch selection, replacing the native gesture rather than " +
+    "accommodating it — 31-touch-selection.css above did the accommodating and " +
+    "the report after it shipped was its ceiling: a 3-4 second wait for a " +
+    "press to become a selection (Android's long press is main-thread gated, " +
+    "so no amount of the app doing less makes it deterministic) and handles " +
+    "that still landed off the text (they are drawn from a layout snapshot, " +
+    "which every content-visibility estimate resolving mid-drag invalidates). " +
+    "So: user-select: none on the reading surfaces to take the gesture off the " +
+    "browser, ::highlight(recall-touch-selection) to paint the selection in " +
+    "the same layout pass as the text it covers, and two handles positioned " +
+    "from the same live Range the highlight is painted from. Every rule is " +
+    "under body.has-touch-select, added ONLY by arm() in " +
+    "src/notes/touch-selection.js when canTouchSelect() passes — a desktop " +
+    "never gets the class and so never reaches a declaration in this file. " +
+    "See tools/touch-selection-check.mjs.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

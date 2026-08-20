@@ -61,6 +61,16 @@
 //                   held off, and the bar waiting for the drag to finish. The
 //                   native handles themselves are browser UI and absent in
 //                   headless Chrome — that half is a real-device check
+//   touch-select    ...and the same question again, now that the APP owns the
+//                   gesture rather than deferring to it. A press timed from
+//                   inside the page, the handles it draws asserted against the
+//                   boundaries they mark, a press in a block's gutter, drags
+//                   both ways past the anchor, edge auto-scroll, and the
+//                   highlight compared PIXEL BY PIXEL against the unselected
+//                   page. None of that was drivable while the handles belonged
+//                   to the browser, which is the second-best argument for the
+//                   takeover after the behaviour itself. Ends by proving a
+//                   desktop never arms any of it
 //   offline         does it START with no network, a blocked CDN, or a CDN
 //                   that hangs? (the one question nothing used to ask — every
 //                   other check here runs with a working connection, and the
@@ -96,6 +106,7 @@ const checks = [
     ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
     ["mobile-select ", ["node", ["tools/mobile-selection-check.mjs"], ROOT]],
+    ["touch-select  ", ["node", ["tools/touch-selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],

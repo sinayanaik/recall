@@ -742,6 +742,32 @@ export function currentNotesSelectionMarkdown() {
   return range ? notesSelectionMarkdown(range, renderedTarget) : "";
 }
 
+// The same thing as PLAIN TEXT, for the pill's Copy / Share / Web search
+// buttons. Those three replace Android's own selection bar, which the touch
+// controller suppresses (see src/notes/touch-selection.js), and all three want
+// the words rather than the markdown serialisation every other pill button
+// works from — a search query with `**bold**` in it finds nothing, and nobody
+// pastes a sentence into a message wanting the asterisks.
+//
+// Read through the RANGE and never through Selection.toString(): once the touch
+// controller is armed the reading surfaces carry `user-select: none`, and Chrome
+// answers Selection.toString() with "" over unselectable content while every
+// Range operation on the same selection stays correct.
+export function currentSelectionPlainText() {
+  const editingTarget = activeEditingTarget();
+  if (editingTarget) return notesEditSelectionText(editingTarget).trim();
+  const renderedTarget = activeRenderedTarget();
+  const range = renderedTarget ? notesSelectionRange(renderedTarget) : null;
+  if (range) return range.toString().trim();
+  // No live selection left — the pill's position-time snapshot, resolved on
+  // demand exactly as every other pill action resolves it.
+  ensurePillSelectionCapture();
+  if (pillSelectionCapture && !pillSelectionCapture.editing) {
+    return (pillSelectionCapture.sel?.asText || pillSelectionCapture.markdown || "").trim();
+  }
+  return "";
+}
+
 // ── When the pill is allowed to appear ─────────────────────────────────────
 //
 // Not while you are still choosing the words. A flat 160ms debounce on
@@ -847,11 +873,50 @@ export function selectionAdjustQuietMs() {
 
 let selectionChangedAt = 0;
 
+// ── When the app itself owns the drag ──────────────────────────────────────
+//
+// Everything above infers "a handle is still moving" from a burst of
+// selectionchange events, because a NATIVE handle is browser UI and sends no
+// pointer events. src/notes/touch-selection.js draws its own handles, so on
+// that path the inference is replaced by the fact: it says when a drag starts
+// and when it ends.
+//
+// Clearing the flag also expires the quiet window, so the pill appears the
+// instant a finger lifts rather than 300ms later. That delay was never a
+// feature — it was the cost of not knowing.
+let touchSelectionDragging = false;
+
+// ...and whether that module is in charge at all. When it is, a selectionchange
+// is OUR OWN MIRROR of a gesture we are already tracking — never the only trace
+// of a native handle, which is the single thing the quiet window was invented to
+// notice. Leaving the inference running alongside the fact was not merely
+// redundant, it was a race: selectionchange is delivered asynchronously, so the
+// last mirror of a drag lands AFTER the touchend that ended it, re-stamping the
+// clock and holding the pill back for another 300ms — intermittently, depending
+// on where the event queue fell. Measured: the bar failed to appear on roughly
+// two runs in three.
+let touchSelectionArmed = false;
+
+export function setTouchSelectionArmed(active) {
+  touchSelectionArmed = Boolean(active);
+  selectionChangedAt = 0;
+}
+
+export function setTouchSelectionDragging(active) {
+  touchSelectionDragging = Boolean(active);
+  if (!touchSelectionDragging) selectionChangedAt = 0;
+}
+
 // A selection being ADJUSTED, as opposed to one that is finished and sitting
 // still. Non-collapsed on purpose: collapsing to a caret is an ending, not a
 // step, and treating it as "still moving" would hold the pill's dismissal for
 // another 300ms every time a reader tapped to clear.
 export function isSelectionAdjusting() {
+  if (touchSelectionDragging) return true;
+  // Armed and not dragging means the gesture is OVER, on the authority of the
+  // module that ran it. Falling through to the quiet window here is what let a
+  // trailing mirror event re-open a drag that had already finished.
+  if (touchSelectionArmed) return false;
   const quiet = selectionAdjustQuietMs();
   if (!quiet) return false;
   if (performance.now() - selectionChangedAt >= quiet) return false;
@@ -968,8 +1033,16 @@ export function markSelectionStableRegion() {
 // EVENT, not on the debounced check — the whole point is to be ready before the
 // next drag frame, and the debounced check is the thing being deferred.
 export function noteSelectionChanged() {
-  if (!selectionAdjustQuietMs()) return;
-  selectionChangedAt = performance.now();
+  // The CLOCK is the only thing the touch controller takes over here. Stamping
+  // it from an event that is merely an echo of its own mirror is the race
+  // described above setTouchSelectionArmed — but the containment region still
+  // has to follow the selection, because a drag carries a boundary into a chunk
+  // that has never been laid out at any point during the gesture, not only at
+  // the moment it starts.
+  if (!touchSelectionArmed) {
+    if (!selectionAdjustQuietMs()) return;
+    selectionChangedAt = performance.now();
+  }
   if (isSelectionAdjusting()) markSelectionStableRegion();
   else clearSelectionStableRegion();
 }

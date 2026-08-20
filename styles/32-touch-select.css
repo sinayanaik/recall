@@ -1,0 +1,194 @@
+/* Text selection on a touch screen, owned by the app
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ * Loaded last, so it settles ties against the slices without having to inflate
+ * its own specificity to win them.
+ *
+ * The companion to src/notes/touch-selection.js. Read that file's header for
+ * why the native gesture is being replaced rather than accommodated; this file
+ * is the half of it the browser has to be told.
+ *
+ * ── Nothing here is keyed to a media query ────────────────────────────────
+ *
+ * styles/31-touch-selection.css is `@media (pointer: coarse)` throughout,
+ * because everything in it is a REPAIR that is safe whether or not any
+ * JavaScript ran. This file is the opposite: it switches native selection OFF,
+ * and doing that on a machine where the controller never armed would leave a
+ * reader unable to select anything at all.
+ *
+ * So every rule below sits under `body.has-touch-select`, and that class is
+ * added by exactly one line — arm() in src/notes/touch-selection.js — which runs
+ * only when canTouchSelect() is true: `(pointer: coarse) and (hover: none)`, a
+ * real touchscreen, and the CSS Custom Highlight API present to paint the
+ * selection we are taking over. A desktop never gets the class, so a desktop
+ * never reaches a single declaration in this file. The class is removed again
+ * on the media query's `change` event, so attaching a mouse to a tablet hands
+ * native selection straight back.
+ */
+
+/* ── 1. Take the gesture off the browser ───────────────────────────────────
+   `user-select: none` is what stops Android's long-press-to-select, its two
+   handles, and its Copy / Share / Select all / Web search bar. All four are
+   replaced: the press by LONG_PRESS_MS in the controller, the handles by
+   .touch-select-handle below, and the bar by the Copy / Share / Web search
+   buttons on the selection pill.
+
+   `-webkit-touch-callout: none` is the same statement for iOS, where the long
+   press otherwise raises a callout menu over the top of ours.
+
+   Measured, and load-bearing for the whole design: over content with this
+   declaration Chrome answers Selection.toString() with "" — but Range.toString(),
+   cloneContents(), intersectsNode(), getClientRects() and the selection's own
+   anchorNode / focusNode / isCollapsed / rangeCount are all still correct. The
+   app reads all of those and none of the first, which is why the controller can
+   mirror its range into the real Selection and leave the rest of the app alone.
+   The one place that did ask Selection.toString() is fixed in
+   src/notes/mark-menu.js, with the same note.
+
+   (0,2,0) for the notes view — enough to clear `.notes-rendered` at (0,1,0) and
+   to tie with `.notes-rendered.is-paged` at (0,2,0), which this file wins on
+   order. Card faces need the extra class because styles/05-study.css:322 sets
+   `user-select: text` on `.card-face .rendered` at (0,2,0). */
+body.has-touch-select .notes-rendered,
+body.has-touch-select .card-face .rendered {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* The raw editors are deliberately untouched. A <textarea> has its own native
+   selection with its own handles, the pill's editing branch reads
+   selectionStart/selectionEnd rather than a Range, and none of the bugs in the
+   report happen there. */
+
+/* ── 2. Paint the selection ourselves ──────────────────────────────────────
+   The CSS Custom Highlight API, registered as `recall-touch-selection` by the
+   controller against the SAME live Range the handles are positioned from.
+
+   That shared source is the fix for "the start and end indicators for the text
+   selection is entirely incorrect". A native highlight and its handles are drawn
+   from a layout snapshot taken when the gesture began, so every
+   contain-intrinsic-size estimate that resolves to a real height mid-drag slides
+   the text out from under them. A ::highlight() range is laid out by the same
+   pass as the text it covers — it cannot be a frame behind, and neither can a
+   handle read off the same range.
+
+   No `color` is set. A selection tint that also repaints the glyphs has to pick
+   a foreground that works over 20-odd themes AND over the six highlight-mark
+   colours a selection can cross; leaving the text alone and tinting behind it
+   is legible everywhere, which is the same choice the <mark> colours made
+   (styles/12-notes.css). */
+::highlight(recall-touch-selection) {
+  background-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+/* ── 3. Hold the surface still under a live gesture ────────────────────────
+   Set for as long as a press-drag or a handle drag is in flight. The controller
+   preventDefault()s the touchmove itself — that is what actually stops the
+   scroll — and this is the compositor's copy of the same statement, so a fling
+   already in flight when a handle is grabbed does not carry on underneath it.
+
+   `is-touch-DRAGGING`, not `is-touch-selecting`. The two are deliberately
+   different classes and the distinction is load-bearing: `is-touch-selecting`
+   means a selection EXISTS, which is true for as long as the reader leaves it
+   on screen, and locking the surface for all of that stopped the note scrolling
+   at all until the selection was dismissed. Selecting a paragraph and then
+   scrolling down to read on is the ordinary thing to do. Only the drag itself
+   locks anything — beginDrag() adds this, endDrag() takes it away. */
+body.is-touch-dragging .notes-rendered,
+body.is-touch-dragging .card-face .rendered {
+  touch-action: none;
+}
+
+/* ── 4. The handles ────────────────────────────────────────────────────────
+   A fixed overlay on <body>, NOT a child of the reading surface:
+   `.notes-rendered > *` is the incremental renderer's block-cache key
+   (src/render/block-cache.js, and the header of styles/18-paged-notes.css), and
+   a child of the notes view would invalidate every cached block on every
+   render. */
+.touch-select-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+/* Each handle is positioned AT its caret — left/top/height are written from the
+   collapsed boundary rect — and draws a stem down that caret's line with a bulb
+   hanging below it. The bulb is offset outward (left handle to the left, right
+   handle to the right) so neither one sits on the first or last character of the
+   selection, which is the character hardest to see and most often mis-aimed at.
+
+   pointer-events: auto only on the handle itself; the layer stays transparent to
+   everything else, so a tap anywhere but a grip reaches the note. */
+.touch-select-handle {
+  position: absolute;
+  width: 2px;
+  pointer-events: auto;
+  touch-action: none;
+  background: var(--accent);
+  /* The grab area, well beyond the 2px stem. 44px wide and reaching 16px above
+     and 30px below the line: HANDLE_GRAB_OFFSET_PX in the controller assumes the
+     finger is about 22px below the caret it is choosing, and a target smaller
+     than the finger makes that assumption unusable. */
+  box-sizing: content-box;
+  border-inline: 21px solid transparent;
+  border-block: 16px solid transparent;
+  border-block-end-width: 34px;
+  background-clip: content-box;
+  /* Cancels the top and left borders, so the 2px stem lands exactly on the
+     `left` / `top` the controller wrote from the boundary rect. Without this
+     the whole grip would sit 16px low and 21px right of the caret it marks. */
+  margin: -16px 0 0 -21px;
+}
+
+.touch-select-bulb {
+  position: absolute;
+  /* Just clear of the line's descenders. The controller does NOT assume this
+     number: it measures the finger-to-caret distance at the moment of the grab
+     (grabOffsetY), so changing the geometry here cannot put the caret on the
+     wrong row. HANDLE_GRAB_OFFSET_PX is only the fallback for a grab whose
+     boundary rect could not be read, and is kept roughly in step with it. */
+  bottom: -22px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  /* A ring in the page's own background colour, so the bulb reads as a control
+     rather than as a blot when it lands on top of dark prose. */
+  box-shadow: 0 0 0 2px var(--bg, #000), 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+/* Teardrops, pointing back at the caret each one marks — the start handle's
+   point at its top-right, the end handle's at its top-left, which is the
+   convention every touch platform uses and the only thing that says WHICH end a
+   grip belongs to when the two are close together. */
+.touch-select-handle.is-start .touch-select-bulb {
+  right: -8px;
+  border-top-right-radius: 2px;
+}
+
+.touch-select-handle.is-end .touch-select-bulb {
+  left: -8px;
+  border-top-left-radius: 2px;
+}
+
+/* ── 5. Keep the bar off the lower handle ──────────────────────────────────
+   styles/31-touch-selection.css already lifts the pinned pill to
+   `calc(56px + var(--safe-bottom))` so a downward drag has somewhere to finish.
+   Our end handle's bulb hangs 30px below its line and has a 30px grab skirt
+   under that, so it needs a little more room than a native one did. */
+body.has-touch-select .selection-float.is-pinned-bottom {
+  bottom: calc(76px + var(--safe-bottom));
+}
+
+/* ── 6. The three buttons that replace the platform's own bar ──────────────
+   Copy, Share and Web search. They exist on every viewport — a desktop reader
+   loses nothing by being able to copy from the pill — but Share is removed from
+   the DOM entirely by the controller's wiring when navigator.share is absent,
+   rather than being left as a button that does nothing. */
+.selection-float-btn.is-copy,
+.selection-float-btn.is-share,
+.selection-float-btn.is-search {
+  font-size: 0.95rem;
+}

@@ -194,7 +194,14 @@ const SELECT_PARA_SRC = `(marker) => {
   sel.addRange(range);
   // The app listens on document selectionchange, which a programmatic
   // addRange() does fire — but asynchronously, so the caller settles after this.
-  return { len: sel.toString().length, marker };
+  //
+  // Measured through the RANGE, not sel.toString(). This file emulates a phone,
+  // which is precisely where src/notes/touch-selection.js arms and puts
+  // \`user-select: none\` on the reading surfaces — and Chrome answers
+  // Selection.toString() with "" over unselectable content while every Range
+  // operation on the same selection stays correct. Reading the selection the
+  // way the app itself reads it is also the more honest measurement.
+  return { len: sel.getRangeAt(0).toString().length, marker };
 }`;
 
 async function run() {
@@ -370,10 +377,21 @@ async function run() {
     // per-block (styles/12-notes.css:255) and there are no chunks to mark. The
     // whole view is freed instead, which is affordable for exactly the reason
     // it has no chunks. Checked on the probe note, which is still loaded.
+    //
+    // setTouchSelectionDragging(true) around both containment cases, because
+    // "is a selection being adjusted right now" stopped being an INFERENCE the
+    // moment src/notes/touch-selection.js started drawing the handles: on a
+    // touchscreen it is reported, and a bare programmatic selection is not a
+    // gesture and correctly reads as finished. Setting the same flag a real
+    // drag sets is how these two cases keep asking what they were written to
+    // ask — how the region is marked and how tightly it is scoped — rather than
+    // quietly becoming a test of the flag. The real gesture end to end is
+    // tools/touch-selection-check.mjs.
     const unchunked = await page.evaluate(async (selectSrc) => {
-      const { settle } = window.__recall;
+      const { api, settle } = window.__recall;
       const selectPara = (0, eval)(`(${selectSrc})`);
       const view = document.getElementById("notesView");
+      api.setTouchSelectionDragging(true);
       selectPara("P0030");
       await settle(200);
       const block = Array.from(view.children).find((n) => n.textContent.startsWith("P0030"));
@@ -382,7 +400,7 @@ async function run() {
         chunks: view.querySelectorAll(":scope > .notes-chunk").length,
         computed: block ? getComputedStyle(block).contentVisibility : "(no block)"
       };
-    }, SELECT_PARA_SRC);
+    }, SELECT_PARA_SRC).finally(() => page.evaluate(() => window.__recall.api.setTouchSelectionDragging(false)));
     check(unchunked.chunks === 0, "the probe note is not chunked", `${unchunked.chunks} chunks`);
     check(unchunked.marked, "an unchunked note frees containment across the view");
     check(unchunked.computed === "visible",
@@ -395,10 +413,12 @@ async function run() {
 
     if (book.chunks > 1) {
       const containment = await page.evaluate(async (selectSrc) => {
-        const { settle } = window.__recall;
+        const { api, settle } = window.__recall;
         const selectPara = (0, eval)(`(${selectSrc})`);
         const view = document.getElementById("notesView");
         const before = view.scrollHeight;
+        // See the note on case 3a for why the drag flag is set here.
+        api.setTouchSelectionDragging(true);
         selectPara("P0400");
         await settle(200);
         const chunks = Array.from(view.querySelectorAll(":scope > .notes-chunk"));
@@ -438,6 +458,7 @@ async function run() {
       // region under the selection is marked, is scoped to it, and really is
       // laid out. That the reader stops feeling the text move is the
       // real-device observation in README.
+      await page.evaluate(() => window.__recall.api.setTouchSelectionDragging(false));
     }
 
     // ── 2. The card swipe stands down for a dwelling finger ─────────────────
@@ -449,6 +470,27 @@ async function run() {
     // wobbled while dwelling could never reach the long-press escape — and the
     // slow drag that followed was treated as a swipe and preventDefault()ed,
     // which cancels a pending native selection.
+    //
+    // ── What src/notes/touch-selection.js changed about this case ───────────
+    //
+    // "The drag after a dwell is never cancelled" was the right assertion while
+    // the SELECTION belonged to the browser: a cancelled touchmove was the app
+    // stepping on a gesture it did not own. It is the wrong assertion now. On a
+    // touchscreen the app owns the press, and a drag after one is the reader
+    // extending a selection the app has already made — cancelling it is how the
+    // page is stopped from scrolling out from under them.
+    //
+    // So the question is no longer "was anything cancelled" but WHO cancelled
+    // it, and both answers are asserted below:
+    //
+    //   • the SWIPE still stands down — state.dragPointerId is null, so nothing
+    //     in swipe.js can preventDefault another move in this gesture. That is
+    //     the original bug, and it is still the thing that must not come back.
+    //   • a cancelled move is therefore the touch controller's, and it is only
+    //     acceptable if it bought a selection. Where the controller is not armed
+    //     (no Custom Highlight API, or a machine whose primary pointer is a
+    //     cursor) nothing may cancel anything at all — the native gesture is
+    //     back in charge and this file's original assertion applies unchanged.
     await page.evaluate(async () => {
       const { api, settle } = window.__recall;
       // A card to press on. The fixture deck is notes-only, and the swipe
@@ -508,17 +550,32 @@ async function run() {
       }
       await touch("touchEnd", cardBox.x, cardBox.y);
       await new Promise((r) => setTimeout(r, 200));
-      const swipe = await page.evaluate(() => ({
-        prevented: window.__prevented,
-        transform: document.getElementById("card").style.transform
-      }));
+      const swipe = await page.evaluate(() => {
+        const sel = window.getSelection();
+        const range = sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0) : null;
+        return {
+          prevented: window.__prevented,
+          transform: document.getElementById("card").style.transform,
+          armed: document.body.classList.contains("has-touch-select"),
+          // Through the range: over the `user-select: none` the controller puts
+          // on a card face, Selection.toString() is "" while every Range
+          // operation on the same selection stays correct.
+          selected: range ? range.toString().trim().length : 0
+        };
+      });
 
       check(afterDwell.pointerId === null && !afterDwell.dragging,
         "a dwelling finger stands the card swipe down",
         `dragPointerId: ${String(afterDwell.pointerId)}, dragging: ${afterDwell.dragging}`);
-      check(swipe.prevented === 0,
-        "the drag after a dwell is never cancelled out from under the browser",
-        `${swipe.prevented} cancelled touchmove(s)`);
+      if (swipe.armed) {
+        check(swipe.selected > 0,
+          "a dwell on a card face produces a selection, and the drag extends it",
+          `${swipe.selected} chars, ${swipe.prevented} touchmove(s) cancelled by the controller`);
+      } else {
+        check(swipe.prevented === 0,
+          "the drag after a dwell is never cancelled out from under the browser",
+          `${swipe.prevented} cancelled touchmove(s)`);
+      }
       check(!swipe.transform,
         "and the card did not swipe", `transform: ${swipe.transform || "(none)"}`);
     }
@@ -530,10 +587,16 @@ async function run() {
   }
 
   console.log("");
-  console.log("Not covered here, and it cannot be: the native long press itself and the");
+  console.log("Not covered here, and it cannot be: the NATIVE long press itself and the");
   console.log("two handles it produces are browser UI, absent in headless Chromium — a");
-  console.log("synthesized long press selects nothing even on a bare <p>. That the handles");
-  console.log("now land where they are aimed is a real-device check; see README.");
+  console.log("synthesized long press selects nothing even on a bare <p>.");
+  console.log("");
+  console.log("That hole is why this file exists in the shape it does, and it is no longer");
+  console.log("the whole story: tools/touch-selection-check.mjs drives the app's OWN press");
+  console.log("and its own handles end to end, because handles the app draws are ordinary");
+  console.log("DOM elements. What is left un-driven here is the fallback path — a browser");
+  console.log("without the Custom Highlight API, where the native gesture is still in");
+  console.log("charge and everything above is what keeps the app out of its way.");
   return failures ? 1 : 0;
 }
 

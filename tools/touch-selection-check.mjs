@@ -1,0 +1,775 @@
+// Can you select text with a finger, when the APP owns the gesture?
+//
+//   node tools/touch-selection-check.mjs
+//   node tools/touch-selection-check.mjs --throttle=4
+//
+// tools/mobile-selection-check.mjs answers a narrower question — is the app
+// still getting in the way of the NATIVE gesture — and has to open by admitting
+// what it cannot do: headless Chromium has no touch-selection controller, so a
+// synthesised long press produces no selection at all and the native handles do
+// not exist to be dragged. Half of that file's subject was a by-hand check on a
+// real phone.
+//
+// That limitation is gone here, and it is the strongest argument for the
+// takeover after the behaviour itself: a selection the app implements is one a
+// harness can drive. Every case below is real touch input through
+// Input.dispatchTouchEvent, against real handles that are real DOM elements,
+// asserting the real range.
+//
+// The five cases that answer the report directly:
+//
+//   1. A press becomes a selection in a bounded, measured time — the "3-4s gap
+//      after I hard press" complaint, as a number, including at a 4x CPU
+//      throttle where the native path is at its worst.
+//   2. The handles sit ON the boundaries they mark — the screenshot, as a pixel
+//      distance, before and after a drag.
+//   3. A press at the very start of a block anchors in that block — "more error
+//      when I am starting selection from the very start of a corner".
+//   4. Dragging a handle extends the selection, including back across its own
+//      anchor.
+//   5. None of it exists on a desktop.
+
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const THROTTLE = Number((process.argv.find((a) => a.startsWith("--throttle=")) || "--throttle=1").slice(11)) || 1;
+
+let failures = 0;
+function ok(name, detail = "") {
+  console.log(`ok   ${name}${detail ? `  [${detail}]` : ""}`);
+}
+function fail(name, detail) {
+  failures += 1;
+  console.log(`FAIL ${name}${detail ? `  [${detail}]` : ""}`);
+}
+function check(condition, name, detail) {
+  if (condition) ok(name, detail);
+  else fail(name, detail);
+}
+
+function serveOn(dir) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [path.join(ROOT, "tools/static-server.mjs"), dir, "0"], { stdio: ["ignore", "pipe", "ignore"] });
+    let buf = "";
+    proc.stdout.on("data", (chunk) => {
+      buf += chunk;
+      const nl = buf.indexOf("\n");
+      if (nl !== -1) resolve({ proc, base: `http://127.0.0.1:${buf.slice(0, nl).trim()}` });
+    });
+    proc.on("error", reject);
+    setTimeout(() => reject(new Error("static server did not start")), 10000);
+  });
+}
+
+const API_SRC = `async () => {
+  const paths = [
+    "/src/cloud/supabase-client.js?v=__BUILD__",
+    "/src/boot.js?v=__BUILD__",
+    "/src/ui/boot-screens.js?v=__BUILD__",
+    "/src/ui/view-mode.js?v=__BUILD__",
+    "/src/notes/notes-view.js?v=__BUILD__",
+    "/src/notes/selection.js?v=__BUILD__",
+    "/src/notes/touch-selection.js?v=__BUILD__",
+    "/src/format/locate-selection.js?v=__BUILD__",
+    "/src/format/highlight.js?v=__BUILD__",
+    "/src/core/state.js?v=__BUILD__",
+    "/src/cards/new-deck.js?v=__BUILD__"
+  ];
+  const mods = await Promise.all(paths.map((p) => import(p)));
+  const api = {};
+  for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
+  return api;
+}`;
+
+// A note of uniquely marked paragraphs, so every assertion can say WHICH
+// paragraph and WHICH word it landed on — the shape tools/selection-check.mjs
+// established. Deliberately small: nothing here is about render scale, and a
+// book-sized fixture would make the timing case measure the renderer instead of
+// the press.
+const SETUP_SRC = `async (apiSrc) => {
+  const api = await (0, eval)(apiSrc)();
+  const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+  window.__recall = { api, settle };
+
+  api.setSupabaseClient({
+    auth: {
+      getSession: async () => ({ data: { session: { user: { id: "u1", email: "you@example.com" }, access_token: "t" } }, error: null }),
+      getUser: async () => ({ data: { user: { id: "u1", email: "you@example.com" } }, error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+      signOut: async () => ({ error: null })
+    },
+    from: () => { throw new Error("touch-selection-check does not touch the network"); },
+    storage: { from: () => ({ list: async () => ({ data: [], error: null }) }) }
+  });
+  api.setSignedIn(true);
+  api.showAuthenticatedUI();
+  api.initAppForUser();
+  await settle(600);
+  api.createNewDeck({ title: "Touch selection fixture", notesMode: true });
+  await settle(400);
+  api.setViewMode("notes");
+  await settle(300);
+  api.commitNotesEditIfActive();
+  await settle(400);
+
+  const words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split(" ");
+  const lines = ["# Probe note", ""];
+  for (let i = 0; i < 80; i += 1) lines.push("P" + String(i).padStart(4, "0") + " " + words.join(" ") + ".", "");
+  api.state.notes = lines.join("\\n");
+  api.renderNotesView();
+  await settle(600);
+
+  // ── The page-side instruments ────────────────────────────────────────────
+  //
+  // Timing is stamped IN THE PAGE, both ends. A harness that timed the round
+  // trip from its own dispatch to its own poll would be measuring the DevTools
+  // protocol, on a check whose entire subject is a number of milliseconds.
+  const view = document.getElementById("notesView");
+  window.__press = { startedAt: 0, selectedAt: 0 };
+  view.addEventListener("touchstart", () => {
+    window.__press.startedAt = performance.now();
+    window.__press.selectedAt = 0;
+  }, { capture: true, passive: true });
+  new MutationObserver(() => {
+    if (!window.__press.selectedAt && document.body.classList.contains("is-touch-selecting")) {
+      window.__press.selectedAt = performance.now();
+    }
+  }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+  // The screen rect of the Nth word of the paragraph starting with \`marker\`.
+  // Everything below aims at a point rather than at an element, because a finger
+  // aims at a point.
+  window.__wordRect = (marker, index) => {
+    const target = Array.from(view.querySelectorAll("p")).find((p) => p.textContent.startsWith(marker));
+    if (!target) return null;
+    const node = target.firstChild;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+    const text = node.nodeValue;
+    const parts = [];
+    const re = /[^\\s]+/g;
+    let m = re.exec(text);
+    while (m) { parts.push({ start: m.index, end: m.index + m[0].length, word: m[0] }); m = re.exec(text); }
+    const part = parts[index];
+    if (!part) return null;
+    const range = document.createRange();
+    range.setStart(node, part.start);
+    range.setEnd(node, part.end);
+    const rect = range.getBoundingClientRect();
+    return { word: part.word, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
+             left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  };
+
+  window.__paraRect = (marker) => {
+    const target = Array.from(view.querySelectorAll("p")).find((p) => p.textContent.startsWith(marker));
+    if (!target) return null;
+    const r = target.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+  };
+
+  // Bring a paragraph on screen, and say where the view ended up. A touch
+  // dispatched at a point below the fold is delivered to nothing at all, and a
+  // case that aims at one passes or fails for reasons that have nothing to do
+  // with selection — so every case that names a paragraph calls this first.
+  window.__reveal = (marker) => {
+    const target = Array.from(view.querySelectorAll("p")).find((p) => p.textContent.startsWith(marker));
+    if (!target) return null;
+    const bounds = view.getBoundingClientRect();
+    const r = target.getBoundingClientRect();
+    view.scrollTop += (r.top - bounds.top) - bounds.height / 2;
+    return { scrollTop: view.scrollTop };
+  };
+
+  // Is a point actually inside the reading surface, and therefore reachable by
+  // a dispatched touch? Asserted rather than assumed, because "the touch went
+  // nowhere" and "the controller ignored it" look identical from the outside.
+  // A dispatched touch carries a radius and Chrome hit-tests with it, so a
+  // point a few pixels outside the surface still lands on it — which is the
+  // whole point of the gutter case. The margin here is that radius.
+  window.__reachable = (x, y, slop) => {
+    const r = view.getBoundingClientRect();
+    const pad = slop || 14;
+    return x > r.left - pad && x < r.right + pad && y > r.top - pad && y < r.bottom + pad
+      && x > 0 && y > 0 && x < window.innerWidth && y < window.innerHeight;
+  };
+
+  // Everything a case wants to know about the current selection, read the way
+  // the APP reads it — through the range, never through Selection.toString(),
+  // which is "" over the user-select: none the controller puts on this surface.
+  window.__selection = () => {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+    const range = sel.getRangeAt(0);
+    const startPara = (range.startContainer.parentElement || range.startContainer).closest("p");
+    const endPara = (range.endContainer.parentElement || range.endContainer).closest("p");
+    return {
+      text: range.toString(),
+      length: range.toString().length,
+      startMarker: startPara ? startPara.textContent.slice(0, 5) : "",
+      endMarker: endPara ? endPara.textContent.slice(0, 5) : "",
+      startOffset: range.startOffset,
+    };
+  };
+
+  // A handle's grip centre, and the caret rect it claims to mark. Case 2 is the
+  // distance between the two.
+  window.__handle = (which) => {
+    const node = document.querySelector(".touch-select-handle.is-" + which);
+    if (!node || node.style.display === "none") return null;
+    const bulb = node.querySelector(".touch-select-bulb");
+    const b = bulb.getBoundingClientRect();
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const probe = sel.getRangeAt(0).cloneRange();
+    probe.collapse(which === "start");
+    const caret = probe.getBoundingClientRect();
+    const stem = node.getBoundingClientRect();
+    return {
+      grabX: b.left + b.width / 2,
+      grabY: b.top + b.height / 2,
+      caretX: caret.left,
+      caretY: caret.top + caret.height / 2,
+      // The STEM is what has to sit on the caret; the bulb is the thumb rest,
+      // deliberately below the line so a finger does not cover the text.
+      stemLeft: stem.left + 21,
+      stemTop: stem.top + 16,
+    };
+  };
+
+  return { width: view.clientWidth, height: view.clientHeight, paragraphs: view.querySelectorAll("p").length };
+}`;
+
+async function run() {
+  const chrome = findChrome();
+  if (!chrome) {
+    console.log("touch-selection-check: no Chrome on this machine — skipping.");
+    return 0;
+  }
+
+  const server = await serveOn(ROOT);
+  let browser = null;
+  const errors = [];
+  try {
+    browser = await launchChrome(chrome);
+    const client = await connect(browser.wsUrl);
+    const page = await openPage(client);
+    await emulatePhone(page, { width: 390, height: 844, cpuThrottle: THROTTLE });
+    await page.call("Network.setBlockedURLs", { urls: ["*cdn.jsdelivr.net*"] });
+    client.on((message) => {
+      if (message.sessionId !== page.sessionId) return;
+      if (message.method === "Runtime.exceptionThrown") {
+        errors.push(message.params?.exceptionDetails?.exception?.description
+          || message.params?.exceptionDetails?.text || "unknown");
+      }
+    });
+
+    // ── Touch primitives ────────────────────────────────────────────────────
+    const touchStart = (x, y) => page.call("Input.dispatchTouchEvent", {
+      type: "touchStart", touchPoints: [{ x, y, radiusX: 12, radiusY: 12, force: 1, id: 1 }]
+    });
+    const touchMove = (x, y) => page.call("Input.dispatchTouchEvent", {
+      type: "touchMove", touchPoints: [{ x, y, radiusX: 12, radiusY: 12, force: 1, id: 1 }]
+    });
+    const touchEnd = () => page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    // A drag, in steps, because a single jump is not a gesture — the controller
+    // re-derives the caret on every move and a one-frame drag would never
+    // exercise that.
+    const dragTo = async (fromX, fromY, toX, toY, steps = 8) => {
+      for (let i = 1; i <= steps; i += 1) {
+        await touchMove(fromX + ((toX - fromX) * i) / steps, fromY + ((toY - fromY) * i) / steps);
+        await wait(24);
+      }
+    };
+
+    await page.goto(`${server.base}/index.html`);
+    await page.waitFor(() => !document.documentElement.classList.contains("app-booting"),
+      { timeout: 60000, label: "boot" });
+    if (!(await page.evaluate(() => Boolean(window.marked && window.DOMPurify)))) {
+      console.log("touch-selection-check: markdown libraries never loaded — skipping.");
+      return 0;
+    }
+    await wait(2000);
+
+    // Everything below is gated on the controller having ARMED. A harness that
+    // did not match the gate would pass every case for the wrong reason.
+    const gate = await page.evaluate(() => ({
+      media: window.matchMedia("(pointer: coarse) and (hover: none)").matches,
+      touchPoints: navigator.maxTouchPoints,
+      highlights: Boolean(window.CSS && window.CSS.highlights),
+      armed: document.body.classList.contains("has-touch-select"),
+    }));
+    if (!gate.media || !gate.highlights) {
+      console.log(`touch-selection-check: the gate cannot be satisfied under emulation (${JSON.stringify(gate)}) — nothing below would mean anything.`);
+      return 1;
+    }
+    check(gate.armed, "the controller armed on an emulated phone", JSON.stringify(gate));
+
+    const setup = await page.evaluate(new Function(`return (${SETUP_SRC})`)(), API_SRC);
+    if (!setup || setup.paragraphs < 40) {
+      console.log(`touch-selection-check: the fixture is ${setup ? `${setup.paragraphs} paragraphs` : "missing"} — nothing below would mean anything`);
+      return 1;
+    }
+    ok("the fixture rendered", `${setup.paragraphs} paragraphs in ${setup.width}x${setup.height}`);
+
+    // ── 0. The native gesture really is off ─────────────────────────────────
+    const suppressed = await page.evaluate(() => ({
+      userSelect: getComputedStyle(document.getElementById("notesView")).webkitUserSelect,
+      overlay: Boolean(document.querySelector(".touch-select-layer")),
+      handles: document.querySelectorAll(".touch-select-handle").length,
+    }));
+    check(suppressed.userSelect === "none",
+      "the reading surface no longer offers the browser's own selection", `user-select: ${suppressed.userSelect}`);
+    check(suppressed.overlay && suppressed.handles === 2,
+      "the overlay and both handles exist", `${suppressed.handles} handles`);
+
+    // The clip a pixel comparison is made over: the target word's own box,
+    // captured before any selection exists so there is a baseline to differ
+    // from. deviceScaleFactor is 2 under emulation, so scale: 1 asks for CSS
+    // pixels and keeps the two images the same size.
+    const shot = async (rect) => (await page.call("Page.captureScreenshot", {
+      format: "png",
+      clip: { x: rect.left - 2, y: rect.top - 2, width: rect.right - rect.left + 4, height: rect.bottom - rect.top + 4, scale: 1 },
+    })).data;
+
+    // ── 1. A press becomes a selection, in a measured time ──────────────────
+    //
+    // The headline. "There is at least a 3-4s gap after I hard press and then
+    // only selection starts" — with the timer ours, this is LONG_PRESS_MS plus
+    // whatever the word snap and the first paint cost, and it does not depend on
+    // the main thread being free the way the platform's own does.
+    const word = await page.evaluate(() => window.__wordRect("P0004", 3));
+    check(Boolean(word), "the target word was located", word ? `"${word.word}"` : "missing");
+    const cleanShot = await shot(word);
+    await touchStart(word.x, word.y);
+    await wait(900);
+    await touchEnd();
+    // Read AFTER the lift, always. Reading while the finger was still down hid a
+    // real bug for one iteration of this file: a touchend allowed its default
+    // action synthesises mousedown, and Chrome answers that by collapsing the
+    // selection — so the press worked and then undid itself ~50ms later. Every
+    // case below therefore measures the state a reader is actually left holding.
+    await wait(250);
+    const pressTiming = await page.evaluate(() => ({ ...window.__press, sel: window.__selection() }));
+
+    const latency = pressTiming.selectedAt - pressTiming.startedAt;
+    check(pressTiming.selectedAt > 0 && latency < 600,
+      "a press produces a selection promptly", `${latency.toFixed(0)}ms at ${THROTTLE}x CPU throttle`);
+    check(pressTiming.sel && pressTiming.sel.text === word.word,
+      "the press selected exactly the word under the finger",
+      pressTiming.sel ? `"${pressTiming.sel.text}" vs "${word.word}"` : "nothing selected");
+
+    // ── 1b. The selection is actually PAINTED ──────────────────────────────
+    //
+    // The one thing no API probe can answer. `user-select: none` stops the
+    // browser painting its own selection highlight, and the whole design assumes
+    // ::highlight() is unaffected by that — which is what the spec says and what
+    // nothing short of looking at the screen can confirm. So: the same clip of
+    // the same word, before and after, decoded in the page and compared pixel by
+    // pixel.
+    const paintedShot = await shot(word);
+    const painted = await page.evaluate(async (before, after) => {
+      const load = (data) => new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = "data:image/png;base64," + data;
+      });
+      const [a, b] = await Promise.all([load(before), load(after)]);
+      const canvas = document.createElement("canvas");
+      canvas.width = a.naturalWidth;
+      canvas.height = a.naturalHeight;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(a, 0, 0);
+      const pa = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(b, 0, 0);
+      const pb = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let changed = 0;
+      for (let i = 0; i < pa.length; i += 4) {
+        if (Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]) > 24) changed += 1;
+      }
+      return { changed, total: pa.length / 4, width: canvas.width, height: canvas.height };
+    }, cleanShot, paintedShot);
+    const share = painted.total ? painted.changed / painted.total : 0;
+    check(share > 0.3,
+      "the selection is painted on the glass, not just held in a Range",
+      `${(share * 100).toFixed(0)}% of the word's box changed colour (${painted.width}x${painted.height})`);
+
+    // ── 2. The handles sit on the boundaries they mark ─────────────────────
+    //
+    // "The start and end indicators for the text selection is entirely
+    // incorrect." Both handles are positioned from the same live Range the
+    // highlight is painted from, so this is the assertion that the two cannot
+    // drift apart.
+    const handles = await page.evaluate(() => ({
+      start: window.__handle("start"), end: window.__handle("end"),
+    }));
+    const handleError = (h) => (h ? Math.hypot(h.stemLeft - h.caretX, h.stemTop + 8 - h.caretY) : Infinity);
+    check(handleError(handles.start) < 12,
+      "the start handle sits on the start of the selection", `${handleError(handles.start).toFixed(1)}px off`);
+    check(handleError(handles.end) < 12,
+      "the end handle sits on the end of the selection", `${handleError(handles.end).toFixed(1)}px off`);
+    check(handles.end && handles.end.grabY > handles.end.caretY,
+      "the grip hangs below its line, so a thumb does not cover the text",
+      handles.end ? `${(handles.end.grabY - handles.end.caretY).toFixed(0)}px below` : "no handle");
+
+    // ── 3. The very start of a block ───────────────────────────────────────
+    //
+    // A press in the left gutter of a first line. caretPositionFromPoint
+    // hit-tests into the block's padding there and answers with the CONTAINING
+    // ELEMENT, which as a selection anchor lands in a neighbouring block — this
+    // is "especially when I am starting selection from the very start of a
+    // corner", and caretInRoot()'s repair is what this asserts.
+    await page.evaluate(() => window.__reveal("P0012"));
+    await wait(200);
+    const para = await page.evaluate(() => window.__paraRect("P0012"));
+    const first = await page.evaluate(() => window.__wordRect("P0012", 0));
+    const gutterX = Math.max(2, para.left - 14);
+    check(await page.evaluate((x, y) => window.__reachable(x, y), gutterX, first.y),
+      "the gutter point is on screen", `${gutterX.toFixed(0)},${first.y.toFixed(0)}`);
+    await touchStart(gutterX, first.y);
+    await wait(700);
+    await touchEnd();
+    await wait(250);
+    const cornerSel = await page.evaluate(() => window.__selection());
+    check(cornerSel && cornerSel.startMarker === "P0012",
+      "a press in the gutter anchors in the block it is beside",
+      cornerSel ? `landed in ${cornerSel.startMarker}, selected "${cornerSel.text}"` : "nothing selected");
+    check(cornerSel && cornerSel.startOffset === 0,
+      "...and on that block's first character, not a few words in",
+      cornerSel ? `offset ${cornerSel.startOffset}` : "nothing selected");
+
+    // ── 4. Dragging a handle extends the selection ─────────────────────────
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => window.__reveal("P0020"));
+    await wait(250);
+    const anchorWord = await page.evaluate(() => window.__wordRect("P0020", 2));
+    await touchStart(anchorWord.x, anchorWord.y);
+    await wait(700);
+    await touchEnd();
+    await wait(200);
+    const beforeDrag = await page.evaluate(() => window.__selection());
+    const endGrip = await page.evaluate(() => window.__handle("end"));
+    const targetWord = await page.evaluate(() => window.__wordRect("P0022", 5));
+    check(Boolean(beforeDrag && endGrip && targetWord), "a selection to drag from",
+      beforeDrag ? `"${beforeDrag.text}"` : "none");
+
+    await touchStart(endGrip.grabX, endGrip.grabY);
+    await dragTo(endGrip.grabX, endGrip.grabY,
+      targetWord.right, targetWord.y + (endGrip.grabY - endGrip.caretY));
+    await touchEnd();
+    await wait(300);
+    const afterDrag = await page.evaluate(() => window.__selection());
+    check(afterDrag && afterDrag.length > beforeDrag.length,
+      "dragging the end handle extends the selection",
+      afterDrag ? `${beforeDrag.length} -> ${afterDrag.length} chars` : "selection lost");
+    check(afterDrag && afterDrag.endMarker === "P0022",
+      "...as far as the paragraph the handle was dragged to",
+      afterDrag ? `ends in ${afterDrag.endMarker}` : "selection lost");
+    check(afterDrag && afterDrag.startMarker === "P0020",
+      "...without moving the end that was not being dragged",
+      afterDrag ? `starts in ${afterDrag.startMarker}` : "selection lost");
+
+    // The handles are still on the boundaries after all that movement, which is
+    // the half of case 2 that a static selection cannot prove.
+    const dragged = await page.evaluate(() => ({ start: window.__handle("start"), end: window.__handle("end") }));
+    check(handleError(dragged.start) < 12 && handleError(dragged.end) < 12,
+      "both handles still sit on the boundaries after a drag",
+      `start ${handleError(dragged.start).toFixed(1)}px, end ${handleError(dragged.end).toFixed(1)}px`);
+
+    // ── 5. Dragging back across the anchor swaps the ends ──────────────────
+    const crossGrip = await page.evaluate(() => window.__handle("end"));
+    const above = await page.evaluate(() => window.__wordRect("P0018", 1));
+    await touchStart(crossGrip.grabX, crossGrip.grabY);
+    await dragTo(crossGrip.grabX, crossGrip.grabY,
+      above.x, above.y + (crossGrip.grabY - crossGrip.caretY));
+    await touchEnd();
+    await wait(300);
+    const crossed = await page.evaluate(() => window.__selection());
+    check(crossed && crossed.startMarker === "P0018" && crossed.endMarker === "P0020",
+      "dragging back past the anchor swaps the two ends",
+      crossed ? `${crossed.startMarker} -> ${crossed.endMarker}` : "selection lost");
+
+    // ── 5b. Containment really is suspended DURING the drag ────────────────
+    //
+    // tools/mobile-selection-check.mjs asserts this by hand-marking the drag
+    // flag, because on that path there was no gesture it could drive. Here
+    // there is: the state below is read from inside a real handle drag, between
+    // two touchMoves, with a finger still down.
+    //
+    // What it is guarding is the other half of "the indicators are wrong". Every
+    // notes block stands in at an ESTIMATED height until it is first laid out
+    // (styles/12-notes.css), so a drag reaching unread text replaces the
+    // estimate with the real height and the document moves under the finger.
+    const midDrag = await (async () => {
+      await page.evaluate(() => window.getSelection().removeAllRanges());
+      await page.evaluate(() => window.__reveal("P0050"));
+      await wait(250);
+      const seed = await page.evaluate(() => window.__wordRect("P0050", 2));
+      await touchStart(seed.x, seed.y);
+      await wait(700);
+      await touchEnd();
+      await wait(250);
+      const grip = await page.evaluate(() => window.__handle("end"));
+      const down = await page.evaluate(() => window.__wordRect("P0052", 4));
+      await touchStart(grip.grabX, grip.grabY);
+      await touchMove(down.x, down.y + (grip.grabY - grip.caretY));
+      await wait(120);
+      const during = await page.evaluate(() => ({
+        selecting: document.body.classList.contains("is-selecting"),
+        touchSelecting: document.body.classList.contains("is-touch-selecting"),
+        unchunked: document.getElementById("notesView").classList.contains("is-selection-unchunked"),
+        touchAction: getComputedStyle(document.getElementById("notesView")).touchAction,
+      }));
+      await touchEnd();
+      await wait(300);
+      const after = await page.evaluate(() => ({
+        selecting: document.body.classList.contains("is-selecting"),
+        touchAction: getComputedStyle(document.getElementById("notesView")).touchAction,
+      }));
+      return { during, after };
+    })();
+    check(midDrag.during.selecting && midDrag.during.unchunked,
+      "containment is suspended while a handle is actually being dragged",
+      `is-selecting: ${midDrag.during.selecting}, view freed: ${midDrag.during.unchunked}`);
+    check(midDrag.during.touchAction === "none",
+      "...and the surface cannot scroll out from under the drag",
+      `touch-action: ${midDrag.during.touchAction}`);
+    check(!midDrag.after.selecting && midDrag.after.touchAction !== "none",
+      "both are handed straight back when the finger lifts",
+      `is-selecting: ${midDrag.after.selecting}, touch-action: ${midDrag.after.touchAction}`);
+
+    // ── 6. A quick flick still scrolls, and selects nothing ────────────────
+    //
+    // The other side of case 1. A press timer that fires too eagerly turns every
+    // scroll into a selection, which would be a worse bug than the one being
+    // fixed.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(150);
+    await page.evaluate(() => window.__reveal("P0030"));
+    await wait(250);
+    // Read AFTER the reveal: the reveal is itself a scroll, and a baseline taken
+    // before it compares two different places in the note.
+    const beforeFlick = await page.evaluate(() => document.getElementById("notesView").scrollTop);
+    const flickFrom = await page.evaluate(() => window.__wordRect("P0030", 2));
+    await touchStart(flickFrom.x, flickFrom.y);
+    await dragTo(flickFrom.x, flickFrom.y, flickFrom.x, flickFrom.y - 220, 6);
+    await touchEnd();
+    await wait(500);
+    const flick = await page.evaluate(() => ({
+      scrollTop: document.getElementById("notesView").scrollTop,
+      sel: window.__selection(),
+      selecting: document.body.classList.contains("is-touch-selecting"),
+    }));
+    check(flick.scrollTop > beforeFlick,
+      "a quick flick still scrolls the note", `${beforeFlick} -> ${flick.scrollTop}`);
+    check(!flick.sel && !flick.selecting,
+      "...and selects nothing", flick.sel ? `selected "${flick.sel.text}"` : "nothing selected");
+
+    // ── 7. Auto-scroll at the edge ─────────────────────────────────────────
+    //
+    // Without it a selection can never be longer than one screenful, because
+    // there is no way to reach past the bottom of the glass.
+    await page.evaluate(() => { document.getElementById("notesView").scrollTop = 0; });
+    await wait(200);
+    const edgeWord = await page.evaluate(() => window.__wordRect("P0002", 2));
+    await touchStart(edgeWord.x, edgeWord.y);
+    await wait(700);
+    await touchEnd();
+    await wait(200);
+    const edgeGrip = await page.evaluate(() => window.__handle("end"));
+    const beforeEdge = await page.evaluate(() => ({
+      scrollTop: document.getElementById("notesView").scrollTop,
+      length: window.__selection() ? window.__selection().length : 0,
+    }));
+    const viewBottom = await page.evaluate(() => {
+      const r = document.getElementById("notesView").getBoundingClientRect();
+      return r.bottom;
+    });
+    await touchStart(edgeGrip.grabX, edgeGrip.grabY);
+    await dragTo(edgeGrip.grabX, edgeGrip.grabY, edgeGrip.grabX, viewBottom - 12, 6);
+    // Hold at the edge: the rAF loop keeps scrolling from the last point, which
+    // is exactly how a reader reaches the next page without lifting a finger.
+    await wait(900);
+    const duringEdge = await page.evaluate(() => ({
+      scrollTop: document.getElementById("notesView").scrollTop,
+      length: window.__selection() ? window.__selection().length : 0,
+    }));
+    await touchEnd();
+    await wait(300);
+    check(duringEdge.scrollTop > beforeEdge.scrollTop,
+      "a drag into the bottom edge scrolls the note",
+      `${beforeEdge.scrollTop} -> ${duringEdge.scrollTop}`);
+    check(duringEdge.length > beforeEdge.length,
+      "...and the selection keeps growing as it goes",
+      `${beforeEdge.length} -> ${duringEdge.length} chars`);
+
+    // ── 8. The app still recognises the selection as its own ───────────────
+    //
+    // The whole design rests on this: our range is MIRRORED into the real
+    // Selection, and every reader in the app goes through getRangeAt(0) plus
+    // Range operations, all of which stay correct over user-select: none. If any
+    // of these came back empty the pill, the highlighter, the cloze driver and
+    // make-card would all be dead on a phone.
+    const mirror = await page.evaluate(() => {
+      const api = window.__recall.api;
+      const target = api.activeRenderedTarget();
+      const range = target ? api.notesSelectionRange(target) : null;
+      const strings = api.renderedSelectionStrings(document.getElementById("notesView"));
+      return {
+        targetName: target ? target.name : null,
+        rangeText: range ? range.toString().slice(0, 40) : null,
+        asText: strings ? strings.asText.slice(0, 40) : null,
+        pillHidden: document.getElementById("selectionFloat").hidden,
+      };
+    });
+    check(mirror.targetName === "notes", "activeRenderedTarget() finds the selection", `${mirror.targetName}`);
+    check(Boolean(mirror.rangeText), "notesSelectionRange() returns the range", `"${mirror.rangeText}"`);
+    check(Boolean(mirror.asText), "renderedSelectionStrings() describes it", `"${mirror.asText}"`);
+    check(mirror.pillHidden === false, "the selection pill is up once the finger lifts",
+      `hidden: ${mirror.pillHidden}`);
+
+    // ── 9. The three buttons that replace the platform's bar ───────────────
+    const bar = await page.evaluate(() => {
+      const api = window.__recall.api;
+      const btn = (id) => document.getElementById(id);
+      return {
+        copy: Boolean(btn("copySelectionBtn")),
+        search: Boolean(btn("searchSelectionBtn")),
+        // Removed rather than hidden where navigator.share is absent, which is
+        // the case in headless Chrome — so its ABSENCE is the assertion here.
+        shareInDom: Boolean(btn("shareSelectionBtn")),
+        shareSupported: Boolean(navigator.share),
+        text: api.currentSelectionPlainText().slice(0, 40),
+      };
+    });
+    check(bar.copy && bar.search, "Copy and Web search are on the bar",
+      `copy: ${bar.copy}, search: ${bar.search}`);
+    check(bar.shareInDom === bar.shareSupported,
+      "Share is present exactly when the platform can share",
+      `in DOM: ${bar.shareInDom}, navigator.share: ${bar.shareSupported}`);
+    check(Boolean(bar.text), "the buttons can read the selection as plain text", `"${bar.text}"`);
+
+    // ── 10. A tap outside dismisses, a tap inside does not ─────────────────
+    //
+    // Both halves, because they are the same branch. A tap inside the selection
+    // has to leave it alone — that is a reader reaching for a handle, and
+    // dismissing there would make the handles unreachable by the only gesture
+    // that can grab them.
+    //
+    // Starting from a fresh ONE-WORD selection on purpose. The selection left by
+    // the auto-scroll case covers most of the screen, so "somewhere outside it"
+    // is not a point that exists.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.evaluate(() => window.__reveal("P0040"));
+    await wait(250);
+    const lone = await page.evaluate(() => window.__wordRect("P0040", 2));
+    await touchStart(lone.x, lone.y);
+    await wait(700);
+    await touchEnd();
+    await wait(250);
+
+    const inside = await page.evaluate(() => window.__selection());
+    await touchStart(lone.x, lone.y);
+    await touchEnd();
+    await wait(300);
+    const stillThere = await page.evaluate(() => window.__selection());
+    check(Boolean(inside) && Boolean(stillThere) && stillThere.text === inside.text,
+      "a tap inside the selection leaves it alone, so a handle stays reachable",
+      stillThere ? `"${stillThere.text}"` : "cleared");
+
+    const away = await page.evaluate(() => window.__wordRect("P0043", 2));
+    await touchStart(away.x, away.y);
+    await touchEnd();
+    await wait(300);
+    const dismissed = await page.evaluate(() => ({
+      sel: window.__selection(),
+      selecting: document.body.classList.contains("is-touch-selecting"),
+      handles: Array.from(document.querySelectorAll(".touch-select-handle"))
+        .filter((h) => h.style.display !== "none").length,
+    }));
+    check(!dismissed.sel && !dismissed.selecting && dismissed.handles === 0,
+      "a tap outside the selection clears it, handles included",
+      `handles still shown: ${dismissed.handles}`);
+
+    // ── 11. None of this exists on a desktop ───────────────────────────────
+    //
+    // The fence, asserted rather than asserted-about. Emulation off, reload, and
+    // every trace of the controller must be gone: no class, no overlay, no
+    // registered highlight, and the reading surface selectable again by the
+    // browser's own machinery.
+    await page.call("Emulation.clearDeviceMetricsOverride");
+    await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+    if (THROTTLE > 1) await page.call("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await page.goto(`${server.base}/index.html`);
+    await page.waitFor(() => !document.documentElement.classList.contains("app-booting"),
+      { timeout: 60000, label: "desktop boot" });
+    await wait(1500);
+    const desktop = await page.evaluate(() => ({
+      media: window.matchMedia("(pointer: coarse) and (hover: none)").matches,
+      touchPoints: navigator.maxTouchPoints,
+      armed: document.body.classList.contains("has-touch-select"),
+      overlay: Boolean(document.querySelector(".touch-select-layer")),
+      registered: Boolean(window.CSS && window.CSS.highlights && window.CSS.highlights.has("recall-touch-selection")),
+      userSelect: getComputedStyle(document.getElementById("notesView")).webkitUserSelect,
+    }));
+    check(!desktop.media || desktop.touchPoints === 0,
+      "a desktop does not satisfy the gate",
+      `media: ${desktop.media}, maxTouchPoints: ${desktop.touchPoints}`);
+    check(!desktop.armed, "...so the controller never armed", `has-touch-select: ${desktop.armed}`);
+    check(!desktop.overlay, "...no handle overlay was built", `overlay: ${desktop.overlay}`);
+    check(!desktop.registered, "...no highlight was registered", `registered: ${desktop.registered}`);
+    check(desktop.userSelect === "text",
+      "...and the notes are still selectable by the browser itself", `user-select: ${desktop.userSelect}`);
+
+    // A real mouse drag on that same desktop still selects. Proving the
+    // controller is ABSENT is not the same as proving the path it replaced still
+    // works, and the second one is what a desktop reader actually cares about.
+    const desktopSetup = await page.evaluate(new Function(`return (${SETUP_SRC})`)(), API_SRC);
+    if (desktopSetup && desktopSetup.paragraphs >= 40) {
+      const from = await page.evaluate(() => window.__wordRect("P0003", 1));
+      const to = await page.evaluate(() => window.__wordRect("P0003", 6));
+      const mouse = (type, x, y) => page.call("Input.dispatchMouseEvent", {
+        type, x, y, button: "left", buttons: type === "mouseMoved" ? 1 : (type === "mouseReleased" ? 0 : 1),
+        clickCount: 1,
+      });
+      await mouse("mousePressed", from.left + 1, from.y);
+      for (let i = 1; i <= 6; i += 1) {
+        await mouse("mouseMoved", from.left + ((to.right - from.left) * i) / 6, from.y);
+        await wait(20);
+      }
+      await mouse("mouseReleased", to.right, to.y);
+      await wait(400);
+      const mouseSel = await page.evaluate(() => ({
+        // Selection.toString() is the RIGHT reader here, and using it is part of
+        // the assertion: it is only empty over user-select: none, and this page
+        // has none.
+        text: (window.getSelection() || "").toString(),
+        pillHidden: document.getElementById("selectionFloat").hidden,
+      }));
+      check(mouseSel.text.includes(from.word) && mouseSel.text.includes(to.word),
+        "a mouse drag on a desktop still selects the words it crossed",
+        `"${mouseSel.text.slice(0, 48)}"`);
+      check(mouseSel.pillHidden === false,
+        "...and the pill still appears for it", `hidden: ${mouseSel.pillHidden}`);
+    } else {
+      fail("the desktop fixture rendered", desktopSetup ? `${desktopSetup.paragraphs} paragraphs` : "missing");
+    }
+
+    check(errors.length === 0, "no uncaught exceptions", errors.length ? errors[0] : "clean");
+  } finally {
+    if (browser) browser.close();
+    server.proc.kill();
+  }
+
+  console.log(failures ? `\n${failures} problem(s)` : "\nall good");
+  return failures ? 1 : 0;
+}
+
+run().then((code) => process.exit(code)).catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
