@@ -1087,6 +1087,46 @@ const ACCEPTED = {
     "Shows missingRefs as a Missing tile beside Unused, with a note saying " +
     "that deleting unused images will not help — these are the opposite " +
     "problem, and that was the first thing people tried.",
+
+  // ── Selecting text with a finger ────────────────────────────────────────
+  // Reported as "I have to almost fight long press for the text selection to
+  // start, and even if text selection comes the start and end selector
+  // indicators are almost always wrong". Every entry below is measured in
+  // tools/mobile-selection-check.mjs; the desktop path they share is held
+  // still by tools/selection-check.mjs, which is unchanged.
+  scheduleNotesSelectionCheck:
+    "The debounce is the quiet window on touch, not a flat 160ms. Native " +
+    "selection handles are browser UI and send no pointer events, so the " +
+    "pointer-gesture guard cannot see a handle drag at all — and one pass of " +
+    "the check costs ~218ms on a 2.6MB note, which is longer than the 160ms " +
+    "timer that scheduled it, so it self-oscillated for the whole drag and " +
+    "the handle lagged the finger. Re-arming on every selectionchange runs it " +
+    "once, after the reader lets go. Mouse keeps 160ms exactly.",
+  swipeConfig:
+    "Adds dwellSlopPx. The long-press escape below tested dragMoved, which " +
+    "latches at 6px — less than a resting thumb wanders — so a press on a " +
+    "card face disqualified itself from the escape and was preventDefaulted " +
+    "as a swipe, cancelling the selection it was trying to make.",
+  beginSwipe:
+    "Arms the dwell timer for a non-mouse gesture. The escape used to run " +
+    "only from a move event, by which point the gesture could already have " +
+    "latched horizontal intent and preventDefaulted the press it was meant " +
+    "to protect.",
+  updateSwipe:
+    "Tracks dragLeftDwell (distance from the origin, not the 6px latch) and " +
+    "uses it for both the long-press escape and, on touch only, as the floor " +
+    "for swipe intent — a finger creeping at 60px/s crossed intentDistance " +
+    "at 200ms, well inside the 340ms grace. dragMoved is left exactly as it " +
+    "was; finishSwipe reads it to tell a tap from a drag.",
+  resetCardDrag:
+    "Clears the dwell timer. It is also the stand-down itself: nulling " +
+    "dragPointerId is what stops every later move in the gesture reaching " +
+    "updateSwipe, so the slow drag after a press can never be " +
+    "preventDefaulted.",
+  finishSwipe:
+    "Clears the dwell timer up front, because the committed branch returns " +
+    "without going through resetCardDrag — it inlines the reset — and would " +
+    "otherwise leave a timer armed to fire into the next card.",
 };
 
 // Functions whose ONLY change is that a write to a module-level binding now goes
