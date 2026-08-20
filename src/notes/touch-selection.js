@@ -106,7 +106,8 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
-import { caretFromPoint } from "./raw-offset.js?v=__BUILD__";
+import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS } from "../render/block-cache.js?v=__BUILD__";
 import {
   clearSelectionStableRegion,
   hideNotesSelectionButton,
@@ -225,6 +226,12 @@ let pressOriginY = 0;
 let pressRoot = null;
 let pressScrollTop = 0;
 let pressScrollLeft = 0;
+// The block that was under the finger when it landed, and where it was on the
+// GLASS at that moment. This is what "has the page moved" is measured against —
+// see scrollDrift.
+let pressAnchor = null;
+let pressAnchorTop = 0;
+let pressAnchorLeft = 0;
 // A touch that landed outside the current selection MIGHT be a dismissal — but
 // only if it turns out to be a tap. Deciding at touchstart is what threw a
 // selection away the instant a reader put a finger down to scroll, which is the
@@ -328,11 +335,35 @@ function contentBox(root) {
 // are what cover the vertical GAPS — a point in the margin between two
 // paragraphs belongs to neither, and elementFromPoint answers with the scroller
 // itself, which is useless as an anchor.
+// A CHUNK is not an answer. On a note past NOTES_CHUNK_MIN_BLOCKS the reading
+// surface's children are wrappers of forty blocks (src/render/block-cache.js),
+// and a probe that lands in the margin between two of them resolves to the
+// wrapper. Handing that to closestCaretIn means walking up to 400 text nodes and
+// taking a rect off each — per drag frame, on a note where forty blocks is a lot
+// of text. The nearest block INSIDE it is both the cheaper answer and the one the
+// reader meant; picking it by vertical distance is the same rule closestCaretIn
+// uses one level down.
+function narrowToBlock(hit, y) {
+  if (!hit?.classList?.contains(NOTES_CHUNK_CLASS)) return hit;
+  let best = null;
+  let bestDistance = Infinity;
+  for (const child of hit.children) {
+    const rect = child.getBoundingClientRect();
+    if (!rect.height && !rect.width) continue;
+    const distance = y < rect.top ? rect.top - y : (y > rect.bottom ? y - rect.bottom : 0);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = child;
+    }
+  }
+  return best || hit;
+}
+
 function elementNear(x, y, root) {
   for (const dy of [0, -6, 6, -16, 16, -28, 28]) {
     const hit = document.elementFromPoint(x, y + dy);
     if (!hit || !root.contains(hit) || hit === root) continue;
-    return hit;
+    return narrowToBlock(hit, y);
   }
   return null;
 }
@@ -434,7 +465,7 @@ export function caretInRoot(x, y, root) {
   // 2. Still an element — the point is in a margin, or on an atomic block. Find
   //    the block it belongs to and take the closest caret inside it.
   const elementHost = (direct && direct.node && direct.node.nodeType === Node.ELEMENT_NODE && root.contains(direct.node))
-    ? direct.node
+    ? narrowToBlock(direct.node, cy)
     : elementNear(cx, cy, root);
   if (elementHost) {
     const inside = closestCaretIn(elementHost, x, cy);
@@ -980,6 +1011,9 @@ function cancelPress() {
   if (pressTimer) clearTimeout(pressTimer);
   pressTimer = null;
   pressActive = false;
+  // Dropped rather than left behind: a note re-renders by replacing its blocks,
+  // and holding the old one would keep a detached subtree alive for no reason.
+  pressAnchor = null;
 }
 
 // Hand a mistaken press back to the reader as the scroll they meant.
@@ -1009,6 +1043,15 @@ export const SELECTION_HIT_SLOP_PX = 12;
 
 function pointInSelection(x, y) {
   if (!rangeStillLive()) return false;
+  // The union first. getClientRects() on a selection spanning a screenful of
+  // prose is one rect per line FRAGMENT, and this runs on every touchstart —
+  // including the one that starts an ordinary scroll. The union is a single rect
+  // and rejects the overwhelming majority of points outright.
+  const union = liveRange.getBoundingClientRect();
+  if (x < union.left - SELECTION_HIT_SLOP_PX || x > union.right + SELECTION_HIT_SLOP_PX
+      || y < union.top - SELECTION_HIT_SLOP_PX || y > union.bottom + SELECTION_HIT_SLOP_PX) {
+    return false;
+  }
   const rects = liveRange.getClientRects();
   for (let i = 0; i < rects.length; i += 1) {
     const r = rects[i];
@@ -1027,8 +1070,44 @@ function pointInSelection(x, y) {
 // moving, and a reader watching it move is not making a selection.
 export const PRESS_SCROLL_TOLERANCE_PX = 10;
 
+// The block under a point, for use as a drift reference. Deliberately a BLOCK
+// rather than whatever `elementFromPoint` answered: an inline <em> or a <mark>
+// can be replaced by a repaint while the paragraph around it survives, and a
+// reference that vanishes costs us the measurement.
+export function driftAnchorAt(x, y, root) {
+  const hit = document.elementFromPoint(x, y);
+  if (!hit || hit === root || !root.contains(hit)) return null;
+  return hit.closest?.(NOTES_BLOCK_SELECTOR) || hit;
+}
+
+// ── "Has the page moved under this finger?" ────────────────────────────────
+//
+// This used to be `|scrollTop − scrollTop at touchstart|`, and scrollTop is the
+// wrong quantity. The question the tolerance is asking is whether the reader is
+// watching the page move, and on a note big enough to be chunked scrollTop moves
+// precisely when the content does NOT: the browser's scroll anchoring adjusts it
+// to hold the visible content still whenever something above the viewport
+// changes height. Which is what measureNotesChunkEstimate does to every chunk
+// that enters its runway, what a chunk laying out for the first time does
+// anyway, and what pinChunkHeights (src/notes/selection.js) now does more of.
+//
+// So a finger resting on a perfectly still page had its press cancelled, over
+// and over, on exactly the notes where the press is hardest to land. That is the
+// "I have to press again and again" half of the report, and it cannot happen on
+// a note too small to have chunks — which is why no small-fixture check ever saw
+// it.
+//
+// Measuring the reference block's position on the glass answers the real
+// question directly: scroll anchoring reads as zero movement, because zero
+// movement is what it achieves. The scrollTop delta stays as the fallback for a
+// gesture that never captured a reference (a press on the padding below the last
+// block) or whose reference has been detached by a repaint.
 function scrollDrift(root) {
   if (!root) return 0;
+  if (pressAnchor && pressAnchor.isConnected && root.contains(pressAnchor)) {
+    const rect = pressAnchor.getBoundingClientRect();
+    return Math.abs(rect.top - pressAnchorTop) + Math.abs(rect.left - pressAnchorLeft);
+  }
   return Math.abs(root.scrollTop - pressScrollTop) + Math.abs(root.scrollLeft - pressScrollLeft);
 }
 
@@ -1040,7 +1119,8 @@ function firePress(root, x, y) {
   // is watching the page move rather than choosing a word on a still one. The
   // scroll listener normally cancels the press before this runs; this is for
   // the frame where the two race.
-  if (scrollDrift(root) > PRESS_SCROLL_TOLERANCE_PX) return;
+  if (scrollDrift(root) > PRESS_SCROLL_TOLERANCE_PX) { pressAnchor = null; return; }
+  pressAnchor = null;
   // Whatever was selected is about to be replaced, so there is nothing left to
   // dismiss on the way up.
   dismissPending = false;
@@ -1125,6 +1205,15 @@ function onRootTouchStart(event) {
   pressRoot = root;
   pressScrollTop = root.scrollTop;
   pressScrollLeft = root.scrollLeft;
+  // ...and the same baseline in content space, which is the one scrollDrift
+  // actually prefers. Read once here rather than per scroll event: the rect is
+  // only ever compared against itself.
+  pressAnchor = driftAnchorAt(touch.clientX, touch.clientY, root);
+  if (pressAnchor) {
+    const rect = pressAnchor.getBoundingClientRect();
+    pressAnchorTop = rect.top;
+    pressAnchorLeft = rect.left;
+  }
   pressActive = true;
   if (pressTimer) clearTimeout(pressTimer);
   pressTimer = setTimeout(() => firePress(root, pressX, pressY), LONG_PRESS_MS);

@@ -23,6 +23,13 @@
 //   vendor          are the vendored libraries on disk, unmodified, and
 //                   precached? (a hole here is a blank page offline, not a
 //                   missing feature — they are blocking tags before main.js)
+//   incremental     when an edit re-splits the note by PATCHING the previous
+//                   block array instead of re-lexing it, does that give the
+//                   same blocks a full re-lex would? Pure Node, no browser — it
+//                   loads the vendored marked and lifts the splitters out of
+//                   block-cache.js as text. Also asserts the boundary property
+//                   the chunked lexer rests on, which until now was argued for
+//                   by citing a scratch file that is not in the tree
 //   precache        does sw.js precache every module the app imports, and
 //                   nothing that no longer exists? (a missing entry breaks the
 //                   app OFFLINE only; a stale one stops any worker activating)
@@ -71,6 +78,11 @@
 //                   to the browser, which is the second-best argument for the
 //                   takeover after the behaviour itself. Ends by proving a
 //                   desktop never arms any of it
+//   large-select    ...and the same gesture once the note is big enough to be
+//                   CHUNKED, which touch-select deliberately is not: a press
+//                   taken while the note is still settling, a drag across a
+//                   chunk boundary, and how many pixels the note travels after
+//                   a highlight — the reported "violent shaking", as a number
 //   offline         does it START with no network, a blocked CDN, or a CDN
 //                   that hangs? (the one question nothing used to ask — every
 //                   other check here runs with a working connection, and the
@@ -98,6 +110,12 @@ const checks = [
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
   ["vendor        ", ["node", ["tools/vendor-sync.mjs", "--check"], ROOT]],
   ["precache      ", ["node", ["tools/precache-check.mjs"], ROOT]],
+  // Needs no browser and no network — it loads the vendored marked directly and
+  // lifts the splitters out of block-cache.js as text — so it belongs with the
+  // static checks rather than behind --quick. That is the point of it running
+  // here: a check that skips is a check that never catches anything, and this one
+  // guards the change most able to render a WRONG note.
+  ["incremental   ", ["node", ["tools/incremental-split-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
@@ -107,6 +125,7 @@ const checks = [
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
     ["mobile-select ", ["node", ["tools/mobile-selection-check.mjs"], ROOT]],
     ["touch-select  ", ["node", ["tools/touch-selection-check.mjs"], ROOT]],
+    ["large-select  ", ["node", ["tools/large-note-selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],

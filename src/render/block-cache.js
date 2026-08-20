@@ -389,6 +389,19 @@ export function definitionPrelude(links) {
     .join("\n");
 }
 
+// Is this lexer token one of the BLOCKS the cache is keyed by?
+//
+// One definition, shared by all three splitters (this one, the chunked one, and
+// the window lexer incrementalSplitPreparedBlocks uses). That is not tidiness:
+// the incremental splitter proves itself by comparing one window lex against
+// another, so a filter that drifted between the copies would produce block
+// arrays that disagree in a way its own guard is blind to. Same reasoning as
+// FENCE_PATTERN_SOURCE in render/preprocess.js.
+export function isBlockToken(token) {
+  if (!token || token.type === "space") return false;
+  return typeof token.raw === "string" && Boolean(token.raw.trim());
+}
+
 // Returns null when there's nothing to render block-wise.
 export function splitPreparedBlocks(prepared) {
   let tokens;
@@ -399,8 +412,7 @@ export function splitPreparedBlocks(prepared) {
   }
   const blocks = [];
   for (const token of tokens) {
-    if (token.type === "space") continue;
-    if (typeof token.raw !== "string" || !token.raw.trim()) continue;
+    if (!isBlockToken(token)) continue;
     blocks.push(token.raw);
   }
   return blocks.length ? { blocks, prelude: definitionPrelude(tokens.links) } : null;
@@ -469,8 +481,15 @@ export function findSafeLexerBoundaries(prepared) {
         // would NOT carry in one unchunked call. Cutting after the blank run
         // instead gives the left slice its own trailing blank line — the same
         // shape marked already treats as an empty "space" token it discards —
-        // and starts the right slice clean, exactly like the confirmed
-        // scripted-diff check in verify-chunked-lexer.cjs requires.
+        // and starts the right slice clean.
+        //
+        // This used to cite a scripted diff named verify-chunked-lexer.cjs, which
+        // is not in the tree and is in no commit — a correctness argument resting
+        // on a file nobody could run. The property is asserted for real now, in
+        // tools/incremental-split-check.mjs: lexing a slice that runs from one
+        // block's start to another block's start gives back exactly the blocks in
+        // between. That is what this rule claims, and the incremental splitter
+        // further down leans on the same fact.
         if (prevLineSafe && !isUnsafeStart(line)) boundaries.push(pos);
         blankRunStart = -1;
       }
@@ -519,8 +538,7 @@ export async function splitPreparedBlocksChunked(prepared, sequenceOk = () => tr
       return null;
     }
     for (const token of tokens) {
-      if (token.type === "space") continue;
-      if (typeof token.raw !== "string" || !token.raw.trim()) continue;
+      if (!isBlockToken(token)) continue;
       blocks.push(token.raw);
     }
     // First-occurrence-wins, matching marked's own within-a-call precedence
@@ -536,6 +554,342 @@ export async function splitPreparedBlocksChunked(prepared, sequenceOk = () => tr
     }
   }
   return blocks.length ? { blocks, prelude: definitionPrelude(combinedLinks) } : null;
+}
+
+// ── Re-splitting only what an edit actually changed ────────────────────────
+//
+// Every in-place edit to the open note — highlight, cloze, erase, recolour, the
+// rendered formatting toolbar — comes back through renderMarkdown, and until
+// this existed the whole document was re-lexed before a single block could be
+// diffed. Measured on a 2.4MB / 18,000-block note: marked.lexer is 159ms, and
+// past NOTES_PARSE_CHUNK_MIN_CHARS it is not even one long task but twelve
+// chunks with eleven yields between them, so an edit cost ~11 frames of wall
+// clock before anything could repaint. That is the largest single cost on the
+// path between tapping "highlight" and seeing the mark, and it is the reason
+// the repaint had so much settling left to do afterwards.
+//
+// The block array of the previous version of this note is already kept
+// (notesParseHistory), and an edit changes a paragraph. So: diff the two
+// PREPARED strings, re-lex a window of a few KB around the change, and splice.
+//
+// ── Why the diff is taken on `prepared` and not on the markdown ────────────
+//
+// Three things in front of the lexer are document-wide, and reasoning about
+// each of them separately is how this gets subtly wrong:
+//
+//   • promoteNotesHeadings (render/enhance.js) computes the shallowest heading
+//     level in the whole note and restripes EVERY heading by that amount, so
+//     typing one "# " can rewrite headings a thousand blocks away.
+//   • fencePattern() in render/preprocess.js pairs ``` delimiters greedily left
+//     to right, so one unmatched fence re-pairs every fence after it.
+//   • protectInline / protectMath (render/inline.js, render/math.js) scan an
+//     entire inter-fence segment left to right, so an unbalanced backtick or
+//     "{{" shifts every decision after it in that segment.
+//
+// Diffing their OUTPUT collapses all three into one measurable fact: a change
+// that was not local produces a diff that is not local, and the window bound
+// below rejects it without anyone having to enumerate the cases. What preprocess
+// notably does NOT have is any global counter or placeholder table — cloze spans,
+// math nodes and diagram divs all carry only their own content, and equation
+// numbers are a CSS counter applied to the rendered DOM afterwards — so there is
+// no renumbering to chase.
+//
+// Verified against the vendored marked 14.1.2. The junction argument below is a
+// claim about that lexer's merge rules; tools/incremental-split-check.mjs is
+// what pins it to the copy on disk.
+
+// How many unchanged blocks either side of the change are re-lexed as well.
+// Zero is unusable — the margin blocks would BE the changed blocks, so the
+// certificate can never be clean. One works; two is the first value where a
+// margin block can be disturbed and there is still a clean one behind it, and it
+// costs a couple of KB of lexing.
+export const INCREMENTAL_SPLIT_MARGIN_BLOCKS = 2;
+
+// The work is bounded BEFORE it starts rather than discovered half way through.
+// At the ~16KB/ms the chunked lexer above measures, two lexes of 64KB is ~8ms —
+// inside one RENDER_BATCH_BUDGET_MS frame. A bigger change than this (a paste,
+// a document-wide restripe) falls to the full path, which is what you want at
+// that size anyway.
+export const INCREMENTAL_SPLIT_MAX_WINDOW_CHARS = 64_000;
+
+export const INCREMENTAL_SPLIT_MAX_WINDOW_BLOCKS = 200;
+
+// Under this the full lex is already under a frame (~6ms at 100KB), so there is
+// nothing to win and the simpler path is the better one. Lowering it is a
+// one-constant change that tools/incremental-split-check.mjs already covers.
+export const NOTES_INCREMENTAL_SPLIT_MIN_CHARS = 100_000;
+
+// How many edits took the patched path and how many fell through to a full
+// re-lex. Counters rather than a boolean because the failure this exists to
+// catch is not "it broke" but "it silently stopped happening": a splitter that
+// always refuses satisfies every correctness property perfectly and delivers
+// nothing, which is exactly what the note above patchRenderedBlocks records for
+// the streaming path ("measured: the streaming path was never once taken by a
+// reader opening a note"). tools/interaction-scale-check.mjs asserts these move.
+export let notesIncrementalSplits = 0;
+
+export let notesFullSplits = 0;
+
+export function countNotesSplit(incremental) {
+  if (incremental) notesIncrementalSplits += 1;
+  else notesFullSplits += 1;
+}
+
+// Read them through a call, not through the bindings. A checker that copies
+// module exports into a plain object once at setup — which is exactly what
+// tools/interaction-scale-check.mjs does — snapshots a `let` by VALUE, so the
+// counters would read 0 forever and the assertion would quietly measure nothing.
+export function notesSplitCounts() {
+  return { incremental: notesIncrementalSplits, full: notesFullSplits };
+}
+
+// Compare in slices before comparing character by character. The naive loop is
+// 16ms on a 2.4MB note — an eighth of what this whole mechanism saves — because
+// it is a property read per character. A slice comparison is a memcmp after one
+// allocation; 4KB steps take the same diff to 1ms.
+export const AFFIX_SCAN_STEP_CHARS = 4096;
+
+// Where two strings stop agreeing, from both ends:
+//   before[head, tailBefore) was replaced by after[head, tailAfter)
+// The suffix scan is bounded so the two halves can never cross.
+//
+// A `head` that lands between the halves of a surrogate pair is harmless:
+// nothing is ever sliced at `head`, only at block starts, which are token
+// boundaries and therefore never mid-character.
+export function preparedEditRange(before, after) {
+  if (before === after) return null;
+  const limit = Math.min(before.length, after.length);
+  let head = 0;
+  while (head + AFFIX_SCAN_STEP_CHARS <= limit
+      && before.slice(head, head + AFFIX_SCAN_STEP_CHARS) === after.slice(head, head + AFFIX_SCAN_STEP_CHARS)) {
+    head += AFFIX_SCAN_STEP_CHARS;
+  }
+  while (head < limit && before[head] === after[head]) head += 1;
+  let tail = 0;
+  const tailLimit = limit - head;
+  while (tail + AFFIX_SCAN_STEP_CHARS <= tailLimit
+      && before.slice(before.length - tail - AFFIX_SCAN_STEP_CHARS, before.length - tail)
+        === after.slice(after.length - tail - AFFIX_SCAN_STEP_CHARS, after.length - tail)) {
+    tail += AFFIX_SCAN_STEP_CHARS;
+  }
+  while (tail < tailLimit && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail += 1;
+  return { head, tailBefore: before.length - tail, tailAfter: after.length - tail };
+}
+
+// Each block's start offset in `prepared`, in document order.
+//
+// Every token.raw is an exact contiguous slice of `prepared` and they appear in
+// order, so each indexOf from the running cursor scans a handful of characters —
+// 2ms for 18,000 blocks on 2.4MB. What sits BETWEEN two blocks is a blank run or
+// a link-reference definition (which marked consumes into tokens.links and emits
+// no block for), so the starts do not tile the document and the mapping below
+// must not assume they do.
+//
+// Int32Array rather than a plain array: 72KB per history entry instead of ~580KB,
+// three entries at a time. Returns null if a raw is not where it must be, which
+// is the caller's signal to take the full path.
+export function blockStartOffsets(prepared, blocks) {
+  const starts = new Int32Array(blocks.length);
+  let cursor = 0;
+  for (let n = 0; n < blocks.length; n += 1) {
+    const at = prepared.indexOf(blocks[n], cursor);
+    if (at < 0) return null;
+    starts[n] = at;
+    cursor = at + blocks[n].length;
+  }
+  return starts;
+}
+
+// The last index whose start is at or before `at`, or -1. `starts` is sorted by
+// construction.
+export function lastBlockAtOrBefore(starts, at) {
+  let lo = 0;
+  let hi = starts.length - 1;
+  let best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (starts[mid] <= at) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best;
+}
+
+// One lex of a bounded slice, carrying everything the guards need: the block
+// raws, their token TYPES, their offsets within the slice, and the link
+// definitions the slice registered.
+export function lexWindowBlocks(text) {
+  let tokens;
+  try {
+    tokens = marked.lexer(text);
+  } catch (error) {
+    return null;
+  }
+  const blocks = [];
+  const types = [];
+  const offsets = [];
+  let cursor = 0;
+  for (const token of tokens) {
+    if (!isBlockToken(token)) continue;
+    const at = text.indexOf(token.raw, cursor);
+    if (at < 0) return null;
+    blocks.push(token.raw);
+    types.push(token.type);
+    offsets.push(at);
+    cursor = at + token.raw.length;
+  }
+  return { blocks, types, offsets, links: tokens.links || {} };
+}
+
+// Do two lexes agree about every link-reference definition they saw?
+//
+// This is the prelude's guard, and comparing the two window lexes is exact where
+// a regex over the source text is not. marked absorbs a definition that
+// immediately follows a paragraph into that paragraph's raw and never registers
+// it — so deleting the paragraph above an UNTOUCHED definition promotes it into
+// tokens.links and changes the prelude for the whole document without changing
+// the definition's own text. A source-level scan passes that; this does not.
+export function sameLinkDefinitions(a, b) {
+  const keysA = Object.keys(a || {});
+  const keysB = Object.keys(b || {});
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    const left = a[key];
+    const right = b[key];
+    if (!right) return false;
+    if (left?.href !== right?.href || left?.title !== right?.title) return false;
+  }
+  return true;
+}
+
+// Re-split `prepared` by patching `base`'s block array, or null to say "take the
+// full path". `base` is a notesParseHistory entry.
+//
+// ── Why the window is safe ─────────────────────────────────────────────────
+//
+// The claim is that lex(A + W' + B) equals lex(A) ++ lex(W') ++ lex(B) at block
+// level, where A and B are the unchanged head and tail of the document and are
+// already known (they are blocks[0..i-1] and blocks[j+1..]). Three certificates
+// establish it, and any one of them failing means we refuse rather than guess:
+//
+//   1. The OLD window reproduces itself. Lexing before.slice(ws, we) must give
+//      back exactly blocks[i..j]. That proves, empirically and for this specific
+//      window, that ws and we are independent lex points in the old document —
+//      that the trailing-newline folding described above findSafeLexerBoundaries
+//      did not bite here, that `starts` is aligned, and that no space/code/def/
+//      text merge straddles either boundary.
+//   2. The head margin is untouched. The first MARGIN blocks of the new window
+//      must match the old window's by raw, by TYPE and by OFFSET. Offsets, not
+//      just raws, because that is what proves the change did not creep into the
+//      margin. Every cross-token merge in marked is a merge into the PREVIOUS
+//      token and its tokenizer regexes are anchored at the cursor looking
+//      forward — so the decision at the A/window junction has exactly these
+//      inputs, and they are unchanged.
+//   3. The tail margin is untouched, at the same positions relative to the end
+//      of the window (offsets shifted by delta). This is what catches a fence
+//      the edit opened and never closed: an unclosed fence runs to the end of
+//      the window and swallows the tail margin, so the certificate fails.
+//
+// Plus the link-definition certificate above, because the prelude is document-
+// wide. A and B are byte-identical, the window contributes at the same position
+// in document order, and marked's merge is first-occurrence-wins — so identical
+// window links means an identical merged prelude, which is why base's prelude is
+// reused byte for byte rather than recomputed. (It has to be byte-identical, or
+// the `cached.prelude === split.prelude` test below would discard every reusable
+// block and undo the whole point.)
+export function incrementalSplitPreparedBlocks(base, prepared) {
+  try {
+    const previous = base?.prepared;
+    const blocks = base?.split?.blocks;
+    if (typeof previous !== "string" || !Array.isArray(blocks) || !blocks.length) return null;
+    if (typeof base.split.prelude !== "string") return null;
+    const range = preparedEditRange(previous, prepared);
+    if (!range) return null; // identical — reuseParse already handled it
+
+    // Memoized on the history entry, so the O(n) walk is paid once per full
+    // parse rather than once per edit. Safe to write onto: it is our own object,
+    // and a wrong `starts` cannot slip through — certificate 1 re-derives the
+    // window's blocks from `previous` and compares them against the array it is
+    // supposed to index.
+    const starts = base.starts || (base.starts = blockStartOffsets(previous, blocks));
+    if (!starts || starts.length !== blocks.length) return null;
+
+    // The LAST block at or before the change, not the first at or after it, so a
+    // change landing in the gap between two blocks — a blank run, or a link
+    // definition, which produces no block at all — stays inside the window.
+    let i0 = lastBlockAtOrBefore(starts, range.head);
+    if (i0 < 0) i0 = 0;
+    let j0 = lastBlockAtOrBefore(starts, Math.max(range.head, range.tailBefore - 1));
+    if (j0 < i0) j0 = i0;
+
+    const i = Math.max(0, i0 - INCREMENTAL_SPLIT_MARGIN_BLOCKS);
+    const j = Math.min(blocks.length - 1, j0 + INCREMENTAL_SPLIT_MARGIN_BLOCKS);
+    // Clamping to the document's ends rather than bailing there matters: an edit
+    // near the top or bottom of a note is ordinary, and refusing those would send
+    // a tenth of all edits back to the full lex for nothing. It is not a
+    // weakening — when i is 0 the window starts at offset 0, so there is no left
+    // junction to certify at all, and symmetrically at the right.
+    const atHead = i === 0;
+    const atTail = j === blocks.length - 1;
+    const windowStart = atHead ? 0 : starts[i];
+    const windowEnd = atTail ? previous.length : starts[j + 1];
+    const delta = prepared.length - previous.length;
+    const windowEndNew = windowEnd + delta;
+
+    // The change escaped the window, or the arithmetic went backwards. Neither
+    // should be reachable; both are cheaper to test than to reason about.
+    if (windowStart > range.head || windowEnd < range.tailBefore) return null;
+    if (windowEndNew < windowStart) return null;
+    if (windowEnd - windowStart > INCREMENTAL_SPLIT_MAX_WINDOW_CHARS) return null;
+    if (windowEndNew - windowStart > INCREMENTAL_SPLIT_MAX_WINDOW_CHARS) return null;
+    if (j - i + 1 > INCREMENTAL_SPLIT_MAX_WINDOW_BLOCKS) return null;
+
+    const was = lexWindowBlocks(previous.slice(windowStart, windowEnd));
+    if (!was || was.blocks.length !== j - i + 1) return null;
+    for (let k = 0; k < was.blocks.length; k += 1) {
+      if (was.blocks[k] !== blocks[i + k]) return null; // certificate 1
+    }
+
+    const now = lexWindowBlocks(prepared.slice(windowStart, windowEndNew));
+    if (!now) return null;
+    const needHead = atHead ? 0 : INCREMENTAL_SPLIT_MARGIN_BLOCKS;
+    const needTail = atTail ? 0 : INCREMENTAL_SPLIT_MARGIN_BLOCKS;
+    // Enough blocks for the two margins to be disjoint, or a certificate would
+    // be inspecting the same block twice and proving nothing.
+    if (now.blocks.length < needHead + needTail) return null;
+    for (let k = 0; k < needHead; k += 1) { // certificate 2
+      if (now.blocks[k] !== was.blocks[k]) return null;
+      if (now.types[k] !== was.types[k]) return null;
+      if (now.offsets[k] !== was.offsets[k]) return null;
+    }
+    for (let k = 0; k < needTail; k += 1) { // certificate 3
+      const at = now.blocks.length - 1 - k;
+      const from = was.blocks.length - 1 - k;
+      if (now.blocks[at] !== was.blocks[from]) return null;
+      if (now.types[at] !== was.types[from]) return null;
+      if (now.offsets[at] !== was.offsets[from] + delta) return null;
+    }
+    if (!sameLinkDefinitions(was.links, now.links)) return null;
+
+    const next = blocks.slice(0, i).concat(now.blocks, blocks.slice(j + 1));
+    if (!next.length) return null;
+    // The new offsets fall out of the work already done — prefix unchanged,
+    // window measured against the slice, suffix shifted — so steady-state
+    // editing never re-walks the document.
+    const nextStarts = new Int32Array(next.length);
+    for (let k = 0; k < i; k += 1) nextStarts[k] = starts[k];
+    for (let k = 0; k < now.blocks.length; k += 1) nextStarts[i + k] = windowStart + now.offsets[k];
+    for (let k = j + 1; k < blocks.length; k += 1) nextStarts[i + now.blocks.length + (k - j - 1)] = starts[k] + delta;
+    return { split: { blocks: next, prelude: base.split.prelude }, starts: nextStarts };
+  } catch (error) {
+    // A throw from the lexer on some edge shape must degrade to a full re-lex,
+    // never to a blank note — the same discipline splitPreparedBlocks already
+    // applies to its own lex.
+    return null;
+  }
 }
 
 // A marker that survives sanitisation, so every changed block can be parsed and
@@ -648,6 +1002,20 @@ export function chunkAncestor(node, container) {
 export function withChunkRendered(node, container, read) {
   const chunk = chunkAncestor(node, container);
   if (!chunk) return read();
+  // A chunk that is ON SCREEN is not being skipped, so its contents already have
+  // real geometry and there is nothing to force. Testing that first is not a
+  // micro-optimisation: writing `content-visibility` invalidates layout for
+  // everything after the chunk, so toggling it on and off again makes the NEXT
+  // read a layout of the whole document — the 122ms-per-frame cost that
+  // styles/19-notes-chunks.css exists to avoid, paid twice per call.
+  //
+  // Every caller that matters is asking about a block near the reader: the pin's
+  // anchors after an edit (settleNotesPin re-reads them on each settle pass), the
+  // reading line, the TOC's active row. So the common case was paying a full
+  // document layout to learn something the layout already knew.
+  const bounds = container.getBoundingClientRect();
+  const box = chunk.getBoundingClientRect();
+  if (box.bottom > bounds.top && box.top < bounds.bottom) return read();
   const had = chunk.style.contentVisibility;
   chunk.style.contentVisibility = "visible";
   try {
@@ -719,6 +1087,19 @@ export function measureNotesChunkEstimate(chunk) {
   if (had) chunk.style.contentVisibility = had;
   else chunk.style.removeProperty("content-visibility");
   if (height > 0) chunk.style.setProperty("contain-intrinsic-size", `auto ${height}px`);
+  // ── Why there is no scrollTop correction here ────────────────────────────
+  //
+  // Replacing a guessed placeholder with the real height changes the document
+  // above the reader whenever the chunk sits above the fold, so the obvious move
+  // is to add the difference back onto scrollTop. Measured, that is wrong: the
+  // browser's own scroll anchoring already absorbs it, and correcting on top of
+  // it double-counts — a 63px drift became a 337px one, in the opposite
+  // direction. The numbers came from tools/large-note-selection-check.mjs, which
+  // measures where a paragraph sits ON THE GLASS rather than what scrollTop says.
+  //
+  // What the caller can control is WHICH chunks get measured, and that is where
+  // the decision belongs: see pinChunkHeights in src/notes/selection.js, which
+  // stays below the fold for exactly this reason.
 }
 
 // One observer per scroll root, same memoization shape as deferredWorkObserver
@@ -1224,6 +1605,24 @@ export async function patchRenderedBlocks(container, blocks, prelude, cached, se
 // the flip-all button is reset to match after each render. Reused blocks keep
 // whatever the reader flipped open, so hide them explicitly to keep that
 // contract — otherwise the button and the text disagree.
+// promoteNotesHeadings (render/enhance.js) splits every line of the note and
+// allocates a parallel array of heading levels. Cheap per character and O(the
+// whole document) all the same — and it runs on every render of the notes view,
+// including the ones that go on to hit the block cache and do nothing else at
+// all: the raw<->rendered toggle, a paged-layout re-render, a re-entry into
+// notes view. One entry is all it needs, because the question is always "this
+// same note again"; an edit misses it and pays for the walk exactly as before.
+export let promotedNotesSource = null;
+
+export let promotedNotesResult = null;
+
+export function promotedNotesHeadings(markdown) {
+  if (markdown === promotedNotesSource) return promotedNotesResult;
+  promotedNotesResult = promoteNotesHeadings(markdown);
+  promotedNotesSource = markdown;
+  return promotedNotesResult;
+}
+
 export function resetRenderedClozes(container) {
   container.querySelectorAll(".cloze.is-revealed").forEach((node) => node.classList.remove("is-revealed"));
 }
@@ -1237,7 +1636,7 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
       displayMarkdown = "<div class='empty-placeholder'>Answer</div>";
     }
   }
-  if (container === el.notesView) displayMarkdown = promoteNotesHeadings(displayMarkdown);
+  if (container === el.notesView) displayMarkdown = promotedNotesHeadings(displayMarkdown);
 
   const cacheable = isCachedRenderSurface(container);
   const cached = cacheable ? renderedBlockCache.get(container) : null;
@@ -1267,6 +1666,41 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
     ? parseHistory
     : null;
 
+  // ── What to patch, when the source has MOVED rather than matched ──────────
+  //
+  // An edit to the note the reader is looking at — every highlight, cloze, erase
+  // and formatting action — and it is the case the whole-document re-lex was
+  // costing the most. See incrementalSplitPreparedBlocks.
+  //
+  // The base is the BLOCK CACHE's own entry, not notesParseHistory, and that
+  // distinction is load-bearing rather than incidental. notesParseHistory is
+  // keyed by deck identity, and a deck's identity is not stable across its first
+  // save: currentNotesParseKey() answers [null,null,null] for a note that has
+  // never been written and [null,"ld_…",null] the moment the autosave assigns a
+  // local id. So the entry stored while reading was filed under a name the first
+  // edit could no longer look up, and every edit fell through to a full re-lex —
+  // silently, because falling through is also the correct answer for a hundred
+  // other reasons. (tools/interaction-scale-check.mjs asserts the counters for
+  // exactly this reason; it caught this.)
+  //
+  // renderedBlockCache has no such question to answer. It is keyed by the
+  // container and it means "what is on this surface right now", which is
+  // precisely what an edit is an edit TO. A note SWITCH lands here too and is
+  // harmless: two different notes diff as a document-wide change, which the
+  // window bound rejects before any lexing happens.
+  //
+  // The generation test is stricter than it needs to be — the split is a pure
+  // function of `prepared` and owes nothing to the mermaid theme — but it keeps
+  // this in step with reuseParse above, and the cost is one full parse after a
+  // theme flip.
+  const editBase = !reuseParse && cached
+    && cached.generation === renderGeneration
+    && cached.prepared
+    && cached.split
+    && displayMarkdown.length >= NOTES_INCREMENTAL_SPLIT_MIN_CHARS
+    ? cached
+    : null;
+
   // A genuinely cold open of a note this large has no cache to fall back on,
   // and preprocessSpecialBlocks + marked.lexer over the whole source is the
   // single longest unbroken synchronous span in the app (see the streaming
@@ -1277,23 +1711,43 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
 
   let prepared;
   let split;
+  // Each block's offset in `prepared`, when we already know it. Carried through
+  // rather than recomputed, so a raw<->rendered toggle between two edits does not
+  // throw the memo away and make the next edit re-walk the document.
+  let starts = null;
   if (reuseParse) {
     prepared = reuseParse.prepared;
     split = reuseParse.split;
-  } else if (hugeCold) {
-    await yieldToEventLoop();
-    if (!sequenceOk()) return;
-    prepared = preprocessSpecialBlocks(displayMarkdown);
-    await yieldToEventLoop();
-    if (!sequenceOk()) return;
-    split = await splitPreparedBlocksChunked(prepared, sequenceOk);
-    if (!sequenceOk()) return;
+    starts = reuseParse.starts || null;
   } else {
+    if (hugeCold) {
+      await yieldToEventLoop();
+      if (!sequenceOk()) return;
+    }
     prepared = preprocessSpecialBlocks(displayMarkdown);
-    split = cacheable ? splitPreparedBlocks(prepared) : null;
+    if (hugeCold) {
+      await yieldToEventLoop();
+      if (!sequenceOk()) return;
+    }
+    // Patch the previous block array where the edit was local enough to prove it
+    // — one lex of a few KB instead of the whole note, and no yields, so an edit
+    // repaints in the same frame rather than eleven frames later. Null means
+    // "could not prove it", and everything below is then byte for byte the path
+    // this has always taken.
+    const patched = editBase ? incrementalSplitPreparedBlocks(editBase, prepared) : null;
+    if (editBase) countNotesSplit(Boolean(patched));
+    if (patched) {
+      split = patched.split;
+      starts = patched.starts;
+    } else if (hugeCold) {
+      split = await splitPreparedBlocksChunked(prepared, sequenceOk);
+      if (!sequenceOk()) return;
+    } else {
+      split = cacheable ? splitPreparedBlocks(prepared) : null;
+    }
   }
   if (notesKey && split) {
-    rememberNotesParseHistory(notesKey, { generation: renderGeneration, source: displayMarkdown, prepared, split });
+    rememberNotesParseHistory(notesKey, { generation: renderGeneration, source: displayMarkdown, prepared, split, starts });
   }
   let roots = null;
   if (split) {
@@ -1333,7 +1787,14 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
       generation: renderGeneration,
       source: displayMarkdown,
       prelude: split.prelude,
-      blocks: patched.blocks
+      blocks: patched.blocks,
+      // The parse this DOM was built from, so the next edit to the same surface
+      // can patch it rather than re-lex the note — see editBase above. `starts`
+      // may be null; incrementalSplitPreparedBlocks derives and memoizes it on
+      // first use, which is what keeps the O(n) walk to once per full parse.
+      prepared,
+      split,
+      starts
     });
   } else {
     container.innerHTML = safeHtmlFromPrepared(prepared);

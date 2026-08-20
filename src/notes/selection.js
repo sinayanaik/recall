@@ -9,6 +9,12 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { HIGHLIGHT_MIRROR_MAX_CHARS } from "../editor/highlight-mirror.js?v=__BUILD__";
+// block-cache.js reaches back here through notes/toc.js -> notes/anchors.js, so
+// this closes a cycle that already existed. Safe for the same reason the
+// notes-view.js one below is: measureNotesChunkEstimate is a hoisted `function`
+// declaration called at runtime, never a `const` read while a module body is
+// still evaluating.
+import { measureNotesChunkEstimate } from "../render/block-cache.js?v=__BUILD__";
 import { renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { lineIndexAtOffset } from "./caret.js?v=__BUILD__";
@@ -634,9 +640,20 @@ export function leadingCodeIndent(pre, range) {
 // etc. survive into the card. selection.toString() would only give plain
 // text — for a selected image it literally yields the "Zoom" button label of
 // its .diagram-shell wrapper.
-export function notesSelectionMarkdown(range, target) {
+// `described` is renderedSelectionStrings' answer for the SAME range, when the
+// caller already has one. It carries exactly the two strings this needs —
+// `asMarkdown` is the same Turndown run over the same cleaned fragment, and
+// `asText` is the same textWithLineBreaks walk — so passing it through turns two
+// clones of the selection plus two Turndown passes into one of each. That
+// duplication was paid on every finished selection, by the pill's capture, which
+// asked for both.
+export function notesSelectionMarkdown(range, target, described = null) {
   const codeFence = notesSelectionCodeFence(range, target);
   if (codeFence) return codeFence;
+  if (described) {
+    if (!described.asMarkdown) return described.asText;
+    return withInferredFenceLanguages(described.asMarkdown);
+  }
   const fragment = cleanedSelectionFragment(range);
   const markdown = htmlToMarkdown(fragment.innerHTML, { preserveInlineStyles: true }).trim();
   if (!markdown) return textWithLineBreaks(fragment).trim();
@@ -907,6 +924,14 @@ export function setTouchSelectionDragging(active) {
   if (!touchSelectionDragging) selectionChangedAt = 0;
 }
 
+// Is a finger on a selection handle RIGHT NOW? Read by settleNotesPin, which
+// must not write scrollTop under a live gesture. Exposed from here rather than
+// from touch-selection.js so notes-view.js gains no new module edge — this is
+// where the flag already lives.
+export function touchSelectionDragActive() {
+  return touchSelectionDragging;
+}
+
 // A selection being ADJUSTED, as opposed to one that is finished and sitting
 // still. Non-collapsed on purpose: collapsing to a caret is an ending, not a
 // step, and treating it as "still moving" would hold the pill's dismissal for
@@ -963,6 +988,12 @@ export function clearSelectionStableRegion() {
   // `auto` keyword means a block that has been rendered once remembers its real
   // size. The fallback only ever applies to content that has never been on
   // screen — which, by the time this runs, this content has.
+  //
+  // For a CHUNK that is now true by construction rather than by argument:
+  // pinChunkHeights measured each one and pinned its real height before the
+  // class went on, so containment off and containment on describe the same box.
+  // Before that they did not, and this is the moment a highlight's own repaint
+  // used to inherit a displacement the pin loop then spent 400ms chasing.
   el.notesView?.classList.remove("is-selection-unchunked");
   document.body.classList.remove("is-selecting");
 }
@@ -984,6 +1015,71 @@ export function chunkForSelectionNode(view, node) {
 // milliseconds later. The cap is what stops a drag the length of a book from
 // freeing the whole document one chunk at a time.
 export const SELECTION_STABLE_MAX_CHUNKS = 8;
+
+// ── Freeing containment must not itself move the page ──────────────────────
+//
+// Suspending `content-visibility` on a chunk is the fix above. It is also, on
+// its own, the very bug it is fixing: a chunk that has never been laid out is
+// standing at its `contain-intrinsic-size` ESTIMATE, and the moment containment
+// comes off it takes its real height instead. A chunk above the viewport doing
+// that moves everything below it — including the words under the reader's
+// finger, and including the ones the pin loop is about to measure after a
+// highlight. So the region was steadied by an operation that lurched the page.
+//
+// measureNotesChunkEstimate (src/render/block-cache.js) already solves exactly
+// this: it forces one chunk to lay out, reads its real height and pins that as
+// its own contain-intrinsic-size, after which containment on and off are the
+// same height. It was only ever driven by an IntersectionObserver with a 1200px
+// runway, so a drag that outruns the runway — or a NEIGHBOUR chunk the observer
+// never had a reason to look at — still met an unmeasured one.
+//
+// Measuring here closes that. It has to happen BEFORE the class is written, in
+// the same task: the measurement and the class write then land in one paint, so
+// there is no frame in which the chunk is uncontained at a height nobody has
+// pinned. Idempotent (a WeakSet guards it), so repeating it per drag frame costs
+// a lookup.
+// ── ...but only for chunks at or below the fold ────────────────────────────
+//
+// Pinning is not free for a chunk sitting ABOVE the viewport: swapping its
+// guessed placeholder for its real height changes the document above the reader,
+// and everything below it — the reader included — moves by the difference. The
+// browser's scroll anchoring absorbs that, and adding a correction on top of it
+// double-counts (measured: a 63px drift became 337px the other way). So the
+// answer is not to correct the jump but not to cause it: measure the chunks the
+// gesture is travelling INTO, and leave the ones behind it alone.
+//
+// Nothing is lost by that. A drag extends downward far more often than upward,
+// the containment suspension still covers both directions, and a chunk above the
+// reader gets measured the ordinary way — by the estimate observer, as they
+// scroll back through it.
+export function pinChunkHeights(chunks) {
+  const view = el.notesView;
+  if (!view) return;
+  const bounds = view.getBoundingClientRect();
+  chunks.forEach((chunk) => {
+    if (!chunk?.isConnected) return;
+    if (chunk.getBoundingClientRect().bottom <= bounds.top) return;
+    measureNotesChunkEstimate(chunk);
+  });
+}
+
+// One chunk further out than the region actually being freed, measured but not
+// uncontained. That is the runway: by the time a drag crosses INTO one of these
+// its height is already pinned, so the crossing costs a class write rather than
+// a re-layout plus a lurch. Only computed when the region changed, which on a
+// drag is exactly the frames that cross a chunk boundary.
+export function chunkRunwayFor(chunks) {
+  const runway = [];
+  chunks.forEach((chunk) => {
+    [chunk.previousElementSibling, chunk.nextElementSibling].forEach((neighbour) => {
+      if (neighbour && neighbour.classList?.contains("notes-chunk")
+          && !chunks.includes(neighbour) && !runway.includes(neighbour)) {
+        runway.push(neighbour);
+      }
+    });
+  });
+  return runway;
+}
 
 export function markSelectionStableRegion({ growOnly = false } = {}) {
   const view = el.notesView;
@@ -1034,6 +1130,12 @@ export function markSelectionStableRegion({ growOnly = false } = {}) {
   const unchanged = wanted.length === stableChunks.length
     && wanted.every((chunkEl) => stableChunks.includes(chunkEl));
   if (!unchanged) {
+    // Heights first, classes second, one task — see pinChunkHeights. The runway
+    // is measured in the same pass because a drag that has just changed region
+    // is a drag that is travelling, and the next chunk it reaches should already
+    // be pinned when it gets there.
+    pinChunkHeights(wanted);
+    pinChunkHeights(chunkRunwayFor(wanted));
     stableChunks.forEach((old) => {
       if (!wanted.includes(old)) old.classList.remove(SELECTION_STABLE_CLASS);
     });
@@ -1118,8 +1220,10 @@ export function ensurePillSelectionCapture() {
     // rather than writing nulls in as though they were an answer.
     return pillSelectionCapture;
   }
-  const markdown = notesSelectionMarkdown(range, target);
-  pillSelectionCapture.sel = renderedSelectionStrings(target.view);
+  // Described once, used twice — see notesSelectionMarkdown's third argument.
+  const described = renderedSelectionStrings(target.view);
+  const markdown = notesSelectionMarkdown(range, target, described);
+  pillSelectionCapture.sel = described;
   pillSelectionCapture.markdown = markdown;
   pillSelectionCapture.pending = false;
   if (el.makeCardFromSelectionBtn) {

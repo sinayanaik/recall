@@ -57,7 +57,17 @@ export function renderTargetConfig(target) {
         // what keeps one definition of "an undoable notes edit".
         pushNotesUndo("edit");
         state.notes = v;
-        if (el.notesEdit) el.notesEdit.value = v;
+        // Only when the raw editor is actually OPEN. This used to write the
+        // whole note into it unconditionally, and by definition every edit that
+        // arrives here was made in the RENDERED view — so the textarea was
+        // hidden, and handing a hidden <textarea> a fresh multi-megabyte value
+        // is 21ms of the main thread, per highlight, measured on a 2.4MB note.
+        // Nothing could read it either: enterNotesEditing assigns
+        // el.notesEdit.value = state.notes every time the editor opens, so a
+        // stale hidden value can never be seen, and every other reader of .value
+        // (notesEditSelectionText, applyFormatToTextarea, activeEditingTarget,
+        // commitNotesEditIfActive) tests `hidden` or isNotesEditing() first.
+        if (el.notesEdit && !el.notesEdit.hidden) el.notesEdit.value = v;
         syncNotesHistoryBaseline(v);
       },
       // Everything routed through here (highlight, erase, cloze, the rendered

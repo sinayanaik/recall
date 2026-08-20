@@ -7,6 +7,12 @@
 
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { cleanedSelectionFragment, countRenderedTextBefore, textWithLineBreaks } from "../notes/selection.js?v=__BUILD__";
+// raw-offset.js reaches back here through render/block-cache.js -> notes/toc.js
+// -> notes/anchors.js, so this closes a cycle that already existed. Both
+// functions are hoisted `function` declarations called at runtime, and
+// NOTES_BLOCK_SELECTOR is only ever read inside a call — never while either
+// module body is still evaluating.
+import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, rawOffsetForRenderedBlock } from "../notes/raw-offset.js?v=__BUILD__";
 
 // The current selection inside `view`, captured both as markdown (so inline
 // bold/math/etc. survive) and as plain text — either may be the string that
@@ -48,7 +54,18 @@ export function renderedSelectionStrings(view) {
   // every consumer reads it while the DOM still matches and the answer must not
   // change underneath one of them.
   const countFrom = range.cloneRange();
-  const result = { asText, asMarkdown };
+  // Where this selection STARTS, as a DOM node, so locateSelectionInSource can
+  // search a window of the source instead of the whole note — see
+  // selectionSourceWindow. Two property reads; no measurement, no walk. Held as
+  // the element rather than the text node because a text node is replaced by any
+  // repaint of its block while the block itself survives.
+  const startNode = range.startContainer;
+  const result = {
+    asText,
+    asMarkdown,
+    view,
+    anchorNode: startNode?.nodeType === Node.ELEMENT_NODE ? startNode : startNode?.parentElement || null,
+  };
   Object.defineProperty(result, "occurrence", {
     enumerable: true,
     configurable: true,
@@ -86,6 +103,27 @@ export function nthIndexOf(haystack, needle, n) {
   return idx;
 }
 
+// Index of the occurrence of `needle` STARTING NEAREST `at`, or -1.
+//
+// The windowed search below identifies the right copy by position rather than by
+// ordinal — see selectionSourceWindow for why that is both cheaper and stronger.
+// Left-to-right with an early exit: once a hit is further from `at` than the best
+// so far, every later hit is further still.
+export function nearestIndexOf(haystack, needle, at) {
+  if (!needle) return -1;
+  let best = -1;
+  let bestDistance = Infinity;
+  let idx = haystack.indexOf(needle);
+  while (idx !== -1) {
+    const distance = Math.abs(idx - at);
+    if (distance > bestDistance) break;
+    bestDistance = distance;
+    best = idx;
+    idx = haystack.indexOf(needle, idx + 1);
+  }
+  return best;
+}
+
 // Turndown's list-item rule pads every marker to a fixed width ("-   text",
 // not the single-space "- text" this app's own bullet toggle writes) so
 // continuation lines line up — a real Turndown behavior, not a bug, but it
@@ -104,7 +142,9 @@ export function nthIndexOf(haystack, needle, n) {
 // repeats earlier, the highlight landed on that earlier copy instead of the
 // one actually selected: a mark appearing somewhere else on screen while the
 // real selection stayed unmarked, which reads as an unwanted jump.
-export function fuzzyWhitespaceMatch(source, needle, occurrence = 0) {
+// `near`, when given, replaces the ordinal: every match is considered and the
+// one starting closest to that offset wins. See selectionSourceWindow.
+export function fuzzyWhitespaceMatch(source, needle, occurrence = 0, near = null) {
   if (!needle) return null;
   // A line-initial list marker in the needle (Turndown always serializes
   // "-   " / "1.  ") stands for whatever marker the source line actually
@@ -134,17 +174,34 @@ export function fuzzyWhitespaceMatch(source, needle, occurrence = 0) {
     return null;
   }
   let m = null;
-  for (let i = 0; i <= occurrence; i += 1) {
-    m = re.exec(source);
-    if (!m) break;
-    // A pattern that can match empty would never advance lastIndex.
-    if (m.index === re.lastIndex) re.lastIndex += 1;
-  }
-  if (!m) {
-    // occurrence miscounted (or this copy simply isn't the Nth) → first match,
-    // same fallback nthIndexOf's caller uses for the exact-match stage.
-    re.lastIndex = 0;
-    m = re.exec(source);
+  if (near != null) {
+    let best = null;
+    let bestDistance = Infinity;
+    let hit;
+    while ((hit = re.exec(source))) {
+      const distance = Math.abs(hit.index - near);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = hit;
+      } else if (best) {
+        break; // matches run left to right, so this can only get worse from here
+      }
+      if (hit.index === re.lastIndex) re.lastIndex += 1;
+    }
+    m = best;
+  } else {
+    for (let i = 0; i <= occurrence; i += 1) {
+      m = re.exec(source);
+      if (!m) break;
+      // A pattern that can match empty would never advance lastIndex.
+      if (m.index === re.lastIndex) re.lastIndex += 1;
+    }
+    if (!m) {
+      // occurrence miscounted (or this copy simply isn't the Nth) → first match,
+      // same fallback nthIndexOf's caller uses for the exact-match stage.
+      re.lastIndex = 0;
+      m = re.exec(source);
+    }
   }
   return m ? { idx: m.index, end: m.index + m[0].length, needle: m[0] } : null;
 }
@@ -409,15 +466,36 @@ export function expandToBalancedBounds(source, start, end) {
 // `normalizedSource` is passed in so both needles reuse one pass over what can
 // be a very long note. Returns the same { idx, end, needle } shape as the other
 // matchers, with `needle` read back out of the SOURCE (never the projection).
-export function looseMarkupMatch(source, normalizedSource, needle, occurrence, bounded) {
+// `base` is where the normalized projection's text begins in `source` — 0 when
+// the whole note was projected, the window's start offset when only a slice was
+// (see selectionSourceWindow). `near` is an offset in SOURCE coordinates; when
+// given, the match nearest it wins instead of the ordinal one.
+export function looseMarkupMatch(source, normalizedSource, needle, occurrence, bounded, base = 0, near = null) {
   const target = normalizeMarkupForMatch(needle).text;
   if (target.length < 3) return null; // too short to be sure it's the right copy
   const { text, map } = normalizedSource;
-  let pos = nthIndexOf(text, target, occurrence || 0);
-  if (pos === -1) pos = text.indexOf(target);
+  let pos;
+  if (near != null) {
+    // The projection drops characters, so "nearest in source" has to be asked in
+    // projection coordinates: walk the map to the normalized index whose raw
+    // offset is closest to `near`, and pick the match closest to THAT. The map is
+    // monotonic, so this is a binary search.
+    let lo = 0;
+    let hi = map.length - 1;
+    const want = near - base;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (map[mid] < want) lo = mid + 1;
+      else hi = mid;
+    }
+    pos = nearestIndexOf(text, target, lo);
+  } else {
+    pos = nthIndexOf(text, target, occurrence || 0);
+    if (pos === -1) pos = text.indexOf(target);
+  }
   if (pos === -1) return null;
-  const rawStart = map[pos];
-  const rawEnd = map[pos + target.length - 1] + 1;
+  const rawStart = map[pos] + base;
+  const rawEnd = map[pos + target.length - 1] + 1 + base;
   const bounds = expandToBalancedBounds(source, rawStart, rawEnd);
   // The eraser DELETES the match, so it doesn't get to lose much more than was
   // selected to keeping the markup balanced (see boundedFuzzy).
@@ -472,39 +550,133 @@ export function balancedHit(source, hit, bounded) {
   return { idx: bounds.start, end: bounds.end, needle: source.slice(bounds.start, bounds.end) };
 }
 
-export function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = false } = {}) {
-  const attempts = [];
-  if (sel.asText) attempts.push({ needle: sel.asText, occurrence: sel.occurrence || 0 });
-  // asMarkdown has no occurrence count of its own, but repeats of the same
-  // markdown are highly correlated with repeats of the same plain text, so
-  // sel.occurrence (computed against asText) is a far better guess than
-  // always assuming the first copy in the note — which is what a flat 0 did.
-  if (sel.asMarkdown && sel.asMarkdown !== sel.asText) attempts.push({ needle: sel.asMarkdown, occurrence: sel.occurrence || 0 });
+// ── Searching a window instead of the whole note ───────────────────────────
+//
+// Every stage below is proportional to the SOURCE, and two of them badly so.
+// fuzzyWhitespaceMatch runs a `\s+`-fuzzed regex across the whole note once per
+// occurrence; normalizeMarkupForMatch builds a character array AND a parallel
+// index array over the entire document and then joins them, which on a chapter
+// of an imported book is millions of array slots and a multi-megabyte string —
+// per highlight, on a phone. On top of that, `sel.occurrence` is a walk of the
+// rendered DOM from the top of the note down to the selection: the lazy getter
+// keeps that off the path for merely SELECTING text, but a highlight pays it in
+// full.
+//
+// None of it is needed, because the app already knows roughly where in the
+// source the selected block lives. raw-offset.js resolves a rendered block to a
+// raw offset for the reading position and for triple-click-to-edit, bounded both
+// times: approximateRawOffsetForBlock is a proportion over the block cache's own
+// keys, and rawOffsetForRenderedBlock turns that into a real offset with an
+// 8ms-budgeted, indexOf-prefiltered snippet match.
+//
+// So the cascade runs over a window around that offset first, and identifies the
+// right copy by POSITION rather than by ordinal — which is not merely cheaper but
+// stronger: `occurrence` is a count that can be wrong (it degrades to "the first
+// match", which is how a highlight used to land on an earlier copy of a repeated
+// phrase), while "the match nearest where the reader's block actually is" cannot
+// pick something a screen away. A window miss falls straight through to the
+// whole-document cascade, occurrence and all, exactly as before.
+export const SELECTION_WINDOW_CHARS = 20000;
 
+// A proportional hint has real error on a note whose prepared and raw lengths
+// differ unevenly (lots of math or code), so when the snippet match could not
+// pin the block exactly the window is widened rather than the hint trusted.
+// Still three orders of magnitude short of the whole note.
+export const SELECTION_HINT_WINDOW_CHARS = 60000;
+
+export function selectionSourceWindow(source, sel) {
+  const view = sel?.view;
+  const anchor = sel?.anchorNode;
+  if (!view || !anchor || !anchor.isConnected || !view.contains(anchor)) return null;
+  if (!source || source.length <= SELECTION_WINDOW_CHARS * 2) return null; // the window IS the note
+  const block = anchor.closest?.(NOTES_BLOCK_SELECTOR) || anchor;
+  let hint = null;
+  let pad = SELECTION_HINT_WINDOW_CHARS;
+  try {
+    const approximate = approximateRawOffsetForBlock(view, source, block);
+    if (Number.isFinite(approximate)) {
+      hint = approximate;
+      const exact = rawOffsetForRenderedBlock(view, source, block, { hint: approximate });
+      if (Number.isFinite(exact)) {
+        hint = exact;
+        pad = SELECTION_WINDOW_CHARS;
+      }
+    }
+  } catch (_) {
+    return null;
+  }
+  if (!Number.isFinite(hint)) return null;
+  const span = (sel.asMarkdown || sel.asText || "").length;
+  return {
+    from: Math.max(0, Math.floor(hint) - pad),
+    to: Math.min(source.length, Math.ceil(hint) + span + pad),
+    hint: Math.floor(hint),
+  };
+}
+
+// One pass of the three-stage cascade over `text`, which is either the whole
+// source (`base` 0, `near` null — today's behaviour, ordinal-driven) or a window
+// of it (`base` its offset, `near` the block's own offset). Hits are converted to
+// SOURCE coordinates before balancedHit / expandToBalancedBounds run, because an
+// inline construct can straddle the window's edge and those have to see the real
+// document either way.
+//
+// `occurrence` is resolved HERE and only when the ordinal is what will be used.
+// It is a lazy getter over a walk of the rendered DOM from the top of the note
+// down to the selection — 81ms two thirds into a 2.4MB note — and building the
+// attempt list out of `{ needle, occurrence }` pairs read it eagerly, so the
+// windowed path paid the whole walk to produce a number it then ignored. That
+// was 80% of what a highlight still cost after the re-lex was gone.
+export function locateAttemptsIn(source, text, base, needles, sel, { fuzzy, boundedFuzzy, near }) {
+  const ordinal = near == null ? (sel.occurrence || 0) : 0;
+  const attempts = needles.map((needle) => ({ needle, occurrence: ordinal }));
   for (const { needle, occurrence } of attempts) {
-    let idx = nthIndexOf(source, needle, occurrence);
-    if (idx === -1) idx = source.indexOf(needle); // occurrence miscounted → first match
+    let idx = near != null ? nearestIndexOf(text, needle, near - base) : nthIndexOf(text, needle, occurrence);
+    if (idx === -1 && near == null) idx = text.indexOf(needle); // occurrence miscounted → first match
     if (idx === -1) continue;
-    const hit = balancedHit(source, { idx, end: idx + needle.length, needle }, boundedFuzzy);
+    const at = idx + base;
+    const hit = balancedHit(source, { idx: at, end: at + needle.length, needle }, boundedFuzzy);
     if (hit) return hit;
   }
-  if (fuzzy) {
-    for (const { needle, occurrence } of attempts) {
-      const match = fuzzyWhitespaceMatch(source, needle, occurrence);
-      if (!match) continue;
-      if (boundedFuzzy) {
-        const budget = Math.max(needle.length * FUZZY_OVERMATCH_SLACK_RATIO, needle.length + FUZZY_OVERMATCH_SLACK_CHARS);
-        if (match.needle.length > budget) continue;
-      }
-      const hit = balancedHit(source, match, boundedFuzzy);
-      if (hit) return hit;
+  if (!fuzzy) return null;
+  for (const { needle, occurrence } of attempts) {
+    const match = fuzzyWhitespaceMatch(text, needle, occurrence, near == null ? null : near - base);
+    if (!match) continue;
+    if (boundedFuzzy) {
+      const budget = Math.max(needle.length * FUZZY_OVERMATCH_SLACK_RATIO, needle.length + FUZZY_OVERMATCH_SLACK_CHARS);
+      if (match.needle.length > budget) continue;
     }
-    // Still nothing: needle and source disagree about markup, not whitespace.
-    const normalizedSource = normalizeMarkupForMatch(source);
-    for (const { needle, occurrence } of attempts) {
-      const match = looseMarkupMatch(source, normalizedSource, needle, occurrence, boundedFuzzy);
-      if (match) return match;
-    }
+    const hit = balancedHit(source, { idx: match.idx + base, end: match.end + base, needle: match.needle }, boundedFuzzy);
+    if (hit) return hit;
+  }
+  // Still nothing: needle and source disagree about markup, not whitespace.
+  const normalized = normalizeMarkupForMatch(text);
+  for (const { needle, occurrence } of attempts) {
+    const match = looseMarkupMatch(source, normalized, needle, occurrence, boundedFuzzy, base, near);
+    if (match) return match;
   }
   return null;
+}
+
+export function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = false } = {}) {
+  // The needles only. Which ordinal each one is searched at is decided inside
+  // locateAttemptsIn, and deliberately not here — see the note there. The
+  // asMarkdown needle has no occurrence count of its own, but repeats of the same
+  // markdown are highly correlated with repeats of the same plain text, so
+  // sel.occurrence (computed against asText) is a far better guess than always
+  // assuming the first copy in the note — which is what a flat 0 did.
+  const needles = [];
+  if (sel.asText) needles.push(sel.asText);
+  if (sel.asMarkdown && sel.asMarkdown !== sel.asText) needles.push(sel.asMarkdown);
+  if (!needles.length) return null;
+
+  const searchWindow = selectionSourceWindow(source, sel);
+  if (searchWindow) {
+    const hit = locateAttemptsIn(
+      source, source.slice(searchWindow.from, searchWindow.to), searchWindow.from, needles, sel,
+      { fuzzy, boundedFuzzy, near: searchWindow.hint }
+    );
+    if (hit) return hit;
+  }
+  return locateAttemptsIn(source, source, 0, needles, sel, { fuzzy, boundedFuzzy, near: null });
 }
