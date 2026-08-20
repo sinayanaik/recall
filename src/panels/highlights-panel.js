@@ -4,7 +4,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
-import { decodeHighlightNote, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
+import { highlightNoteResolver, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { notesAnchorPlainText, scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
@@ -140,11 +140,13 @@ export function highlightContextUnit(units, index, step) {
 // surrounding context).
 export function scanHighlightGroups(source) {
   const raw = [];
+  // Parsed at most once for the whole scan — see highlightNoteResolver.
+  const noteTextFor = highlightNoteResolver(source);
   HIGHLIGHT_SCAN_RE.lastIndex = 0;
   let m;
   while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
     const color = m[1] || MARK_HIGHLIGHT_DEFAULT;
-    const noteB64 = m[2] || null;
+    const noteRef = m[2] || null;
     const inner = m[3];
     const openTagLength = m[0].length - inner.length - MARK_CLOSE_TAG.length;
     const start = m.index;
@@ -157,9 +159,11 @@ export function scanHighlightGroups(source) {
       offset: start + openTagLength,
       color,
       inner,
-      // Only ever set on a group's FIRST piece (see format/highlight-notes.js),
-      // decoded lazily below rather than for every piece.
-      note: noteB64 ? decodeHighlightNote(noteB64) : null,
+      // Only ever set on a group's FIRST piece (see format/highlight-notes.js).
+      // The attribute is a reference — an "hn-…" id resolved against the note's
+      // own "Highlight Notes" section (or, for an old annotation, inline
+      // base64) — so it is looked up here rather than read as text.
+      note: noteRef ? noteTextFor(noteRef) || null : null,
       marker: precedingListMarker(source, start)
     });
   }

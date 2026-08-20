@@ -14,7 +14,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "../format/highlight-colors.js?v=__BUILD__";
 import { recolourHighlightAt, removeHighlightAt } from "../format/highlight-edit.js?v=__BUILD__";
-import { decodeHighlightNote } from "../format/highlight-notes.js?v=__BUILD__";
+import { highlightNoteTextAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./highlight-note-editor.js?v=__BUILD__";
 
 let menuEl = null;
@@ -92,7 +92,10 @@ function ensureMarkMenu() {
       const rect = mark?.getBoundingClientRect();
       closeMarkMenu();
       if (index < 0 || !rect) return;
-      openHighlightNoteEditor(index, rect, decodeHighlightNote(mark.dataset.note));
+      // The attribute only points at the note now (its text lives in the
+      // "Highlight Notes" section at the end of the note) — resolved from
+      // state.notes by ordinal rather than from the DOM attribute.
+      openHighlightNoteEditor(index, rect, highlightNoteTextAt(index));
       return;
     }
     closeMarkMenu();
@@ -124,7 +127,9 @@ export function openMarkMenuFor(mark) {
   const current = mark.dataset.color || "yellow";
   menu.querySelectorAll("[data-mark-color]").forEach((button) => {
     button.classList.toggle("is-current", button.dataset.markColor === current);
-    if (button.dataset.markColor === "note") button.classList.toggle("has-note", Boolean(mark.dataset.note));
+    // Resolved through the section rather than trusting the attribute: an id
+    // whose entry was deleted by hand is not a note, and must not light up.
+    if (button.dataset.markColor === "note") button.classList.toggle("has-note", Boolean(highlightNoteTextAt(index)));
   });
 
   const rect = mark.getBoundingClientRect();

@@ -24,20 +24,24 @@ export function markHighlightSwatchButtonsHtml() {
 // A <mark>, optionally coloured via data-color (see MARK_HIGHLIGHT_COLORS —
 // omitted entirely for the default token, so plain old <mark> highlights from
 // before colour existed keep matching this and still toggle/recolour fine)
-// and optionally carrying a note (data-note, base64 — see
-// format/highlight-notes.js) in that fixed order. A raw <mark> hand-typed
+// and optionally carrying a note (data-note — a short "hn-…" id pointing at
+// an entry in the note's own "Highlight Notes" section, or, for annotations
+// made before that format existed, the old inline base64; see
+// format/highlight-notes.js) in that fixed order. The attribute's character
+// class allows "-" for the id form as well as base64's own alphabet, so both
+// keep matching. A raw <mark> hand-typed
 // with the attributes the other way round won't match — same accepted
 // limitation as every other canonical-form assumption already made about a
 // hand-typed mark (see e.g. Turndown's own canonicalisation, noted in the
 // highlight-mark-system history).
-export const MARK_OPEN_RE = /<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=]*)")?>$/;
+export const MARK_OPEN_RE = /<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=-]*)")?>$/;
 
 export const MARK_CLOSE_TAG = "</mark>";
 
 export function markOpenTag(color, note) {
   const attrs = [];
   if (color && color !== MARK_HIGHLIGHT_DEFAULT) attrs.push(` data-color="${color}"`);
-  if (note) attrs.push(` data-note="${note}"`); // pre-encoded — see encodeHighlightNote
+  if (note) attrs.push(` data-note="${note}"`); // an id, or a legacy blob being copied through
   return attrs.length ? `<mark${attrs.join("")}>` : "<mark>";
 }
 
@@ -191,8 +195,9 @@ export function wrapAcrossBlocks(source, color) {
 // data-color/data-note make the open tag's length variable, which is why
 // callers that need an offset measure it off the actual match rather than a
 // fixed "<mark>".length constant. Capture groups: 1 = colour token, 2 = note
-// (base64, see format/highlight-notes.js), 3 = inner text.
-export const HIGHLIGHT_SCAN_RE = /<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=]*)")?>([\s\S]+?)<\/mark>/g;
+// (an "hn-…" id, or legacy base64 — see format/highlight-notes.js), 3 = inner
+// text.
+export const HIGHLIGHT_SCAN_RE = /<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=-]*)")?>([\s\S]+?)<\/mark>/g;
 
 // What can legally sit between two adjacent <mark>s that wrapAcrossBlocks
 // produced from ONE highlight action: nothing but the block boundary itself —
@@ -203,8 +208,8 @@ export const HIGHLIGHT_GROUP_GAP_RE = /^\n+(?:[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?$/;
 // source) — the same ordinal collectDeckHighlights reports and the DOM
 // `querySelectorAll("mark")` index (marked/DOMPurify preserve document
 // order), so a caller with a DOM node's index can find its exact source span
-// without a text search. `note` is the raw base64 attribute value (or null) —
-// see format/highlight-notes.js for encode/decode.
+// without a text search. `note` is the raw data-note attribute value (or
+// null) — resolve it to text with highlightNoteText (format/highlight-notes.js).
 export function markSpanAt(source, markIndex) {
   HIGHLIGHT_SCAN_RE.lastIndex = 0;
   let m;
@@ -308,7 +313,7 @@ export function highlightInfoMessage(action) {
 // notes/card editor's Highlight dropdown (handleToolbarClick's data-highlight
 // branch), the edit-mode equivalent of the rendered-view highlight button.
 export function toggleMarkColorInText(text, color) {
-  const whole = /^<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=]*)")?>([\s\S]*)<\/mark>$/.exec(text);
+  const whole = /^<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=-]*)")?>([\s\S]*)<\/mark>$/.exec(text);
   if (whole) {
     const existingColor = whole[1] || MARK_HIGHLIGHT_DEFAULT;
     if (color === "clear" || color === existingColor) return whole[3];

@@ -1,6 +1,8 @@
 // The popup editor for a note attached to a highlight (Kindle-style
 // "note over a highlight" — see format/highlight-notes.js for the storage
-// side). One singleton element, lazily built and repositioned/repopulated
+// side: the text is saved as plain markdown in a "Highlight Notes" section at
+// the end of the note, so anything written here can equally be edited by hand
+// in the raw editor). One singleton element, lazily built and repositioned/repopulated
 // per open, the same idiom mark-menu.js uses for its own floating popup.
 //
 // Responsive without two code paths: the DOM is identical on phone and

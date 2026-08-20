@@ -16,6 +16,7 @@ import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { pruneOrphanHighlightNotes } from "./highlight-notes.js?v=__BUILD__";
 
 // Set by main.js so the Highlights tab can refresh itself after an edit made
 // in the note, without this module importing the panel that owns it.
@@ -39,7 +40,7 @@ export function notifyHighlightsChanged() {
 // cannot disagree. Deliberately NOT locateSelectionInSource: that searches
 // for text, and the text of a highlight is frequently repeated elsewhere in
 // a note.
-function rewriteHighlightGroup(markIndex, rewrite) {
+function rewriteHighlightGroup(markIndex, rewrite, { pruneNotes = false } = {}) {
   const source = state.notes || "";
   const span = markGroupSpanAt(source, markIndex);
   if (!span) {
@@ -47,22 +48,30 @@ function rewriteHighlightGroup(markIndex, rewrite) {
     return;
   }
   pushNotesUndo("highlight");
-  state.notes = source.slice(0, span.start) + rewrite(source.slice(span.start, span.end)) + source.slice(span.end);
+  const rewritten = source.slice(0, span.start) + rewrite(source.slice(span.start, span.end)) + source.slice(span.end);
+  // Removing a highlight leaves its entry in the note's "Highlight Notes"
+  // section with nothing pointing at it — pruned here rather than left to
+  // accumulate at the end of the note forever.
+  state.notes = pruneNotes ? pruneOrphanHighlightNotes(rewritten) : rewritten;
   renderNotesViewPinned();
   scheduleDeckAutosave();
   onHighlightsChanged();
 }
 
-// A recolour preserves whatever note (data-note) each piece already carried —
-// the replace callback only ever touches colour, and the note capture (see
-// HIGHLIGHT_SCAN_RE in format/highlight.js) rides straight through to
-// markOpenTag unchanged.
+// A recolour preserves whatever note reference (data-note) each piece already
+// carried — the replace callback only ever touches colour, and the note
+// capture (see HIGHLIGHT_SCAN_RE in format/highlight.js) rides straight
+// through to markOpenTag unchanged.
 export function recolourHighlightAt(markIndex, color) {
   rewriteHighlightGroup(markIndex, (slice) =>
     slice.replace(HIGHLIGHT_SCAN_RE, (_all, _c, note, inner) => markOpenTag(color, note) + inner + MARK_CLOSE_TAG));
 }
 
 export function removeHighlightAt(markIndex) {
-  rewriteHighlightGroup(markIndex, (slice) => slice.replace(HIGHLIGHT_SCAN_RE, (_all, _c, _note, inner) => inner));
+  rewriteHighlightGroup(
+    markIndex,
+    (slice) => slice.replace(HIGHLIGHT_SCAN_RE, (_all, _c, _note, inner) => inner),
+    { pruneNotes: true }
+  );
 }
 

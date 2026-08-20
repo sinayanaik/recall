@@ -8,6 +8,7 @@ import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
+import { migrateLegacyHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
@@ -426,6 +427,18 @@ export function enterNotesEditing(cursorOffset = null) {
   // from state.notes — which misses the render cache, rebuilds every block, and
   // marks the deck dirty for an "edit" the reader never made.
   if (state.notes && state.notes.includes("\r")) state.notes = state.notes.replace(/\r\n?/g, "\n");
+  // Notes attached to highlights used to live inside the <mark> tag as base64,
+  // which is exactly the unreadable thing the raw editor is about to show. They
+  // now live as plain markdown in a "Highlight Notes" section at the end of the
+  // note (src/format/highlight-notes.js); an old note is converted here, at the
+  // one moment the difference is visible, rather than on load — this returns
+  // the same string untouched when there is nothing legacy to convert, which is
+  // every note written since.
+  const migrated = migrateLegacyHighlightNotes(state.notes);
+  if (migrated !== state.notes) {
+    state.notes = migrated;
+    scheduleDeckAutosave();
+  }
   el.notesEdit.value = state.notes;
   // Adopted, not recorded: opening the editor is not an edit, but the history
   // needs to know what the text is now so the first real keystroke has a

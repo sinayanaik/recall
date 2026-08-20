@@ -1,8 +1,9 @@
 /* Note-over-highlight (Kindle-style): the mark-menu's "Note" button, the
  * Highlights panel's per-mark note button + rendered note block, and the
  * popup editor itself (src/notes/highlight-note-editor.js). Data lives in
- * the <mark data-note> attribute (src/format/highlight-notes.js) — no new
- * storage, so nothing here concerns persistence, only presentation.
+ * a plain-markdown "Highlight Notes" section at the end of the note itself,
+ * referenced by id from <mark data-note> (src/format/highlight-notes.js) — no
+ * new storage, so nothing here concerns persistence, only presentation.
  */
 
 /* ── mark-menu.js: the "Note" (pencil) button ─────────────────────────── */

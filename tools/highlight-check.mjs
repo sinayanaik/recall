@@ -403,6 +403,99 @@ const PROBE = `(api) => {
     return true;
   });
 
+  // ── A note on a highlight is readable markdown at the end of the note ────
+  //
+  // Reported as "the notes on my highlights are written inline as cryptic
+  // messages". They used to be base64 inside the <mark> itself; they are now
+  // plain markdown in a "Highlight Notes" section at the end of the same note,
+  // referenced by a short id. Each case here is something a reader can do to
+  // that section by hand, because being hand-editable is the whole point.
+  check("a note is written as readable markdown at the end of the note", () => {
+    const src = "Body with a <mark data-note=\\"hn-aaaa\\">highlight</mark> in it.";
+    const out = api.setHighlightNoteInSource(src, "hn-aaaa", "Remember **this**.", "“highlight”");
+    if (out.indexOf("## Highlight Notes") === -1) return "no section written: " + JSON.stringify(out);
+    if (out.indexOf("### [hn-aaaa] “highlight”") === -1) return "no readable entry heading: " + JSON.stringify(out);
+    if (out.indexOf("Remember **this**.") === -1) return "the note text is not in the section";
+    if (/data-note="[A-Za-z0-9+/]{16,}"/.test(out)) return "a base64 blob is still inline";
+    return true;
+  });
+
+  check("the note reads back out of the section by id", () => {
+    const src = api.setHighlightNoteInSource("x <mark data-note=\\"hn-bbbb\\">y</mark>", "hn-bbbb", "a note", "“y”");
+    const text = api.highlightNoteText(src, "hn-bbbb");
+    if (text !== "a note") return "read back " + JSON.stringify(text);
+    return true;
+  });
+
+  check("hand-editing an entry's body is what the app then reads", () => {
+    let src = api.setHighlightNoteInSource("x <mark data-note=\\"hn-cccc\\">y</mark>", "hn-cccc", "written by the popup", "“y”");
+    src = src.replace("written by the popup", "rewritten by hand\\n\\nwith a second paragraph");
+    const text = api.highlightNoteText(src, "hn-cccc");
+    if (text !== "rewritten by hand\\n\\nwith a second paragraph") return "read back " + JSON.stringify(text);
+    return true;
+  });
+
+  check("editing one note leaves every other entry untouched", () => {
+    let src = "a <mark data-note=\\"hn-dddd\\">one</mark> b <mark data-note=\\"hn-eeee\\">two</mark>";
+    src = api.setHighlightNoteInSource(src, "hn-dddd", "first note", "“one”");
+    src = api.setHighlightNoteInSource(src, "hn-eeee", "second note", "“two”");
+    src = src.replace("first note", "first note, edited by hand");
+    src = api.setHighlightNoteInSource(src, "hn-eeee", "second note, changed", "“two”");
+    if (api.highlightNoteText(src, "hn-dddd") !== "first note, edited by hand") return "the untouched note changed";
+    if (api.highlightNoteText(src, "hn-eeee") !== "second note, changed") return "the edited note did not change";
+    return true;
+  });
+
+  check("removing the last note removes the section, not just its text", () => {
+    let src = api.setHighlightNoteInSource("body text", "hn-ffff", "only note", "“x”");
+    src = api.setHighlightNoteInSource(src, "hn-ffff", "", null);
+    if (src.indexOf("Highlight Notes") !== -1) return "an empty section was left behind: " + JSON.stringify(src);
+    if (/-{3,}\s*$/.test(src)) return "the separator rule was left behind: " + JSON.stringify(src);
+    return true;
+  });
+
+  check("a note whose highlight is gone is pruned", () => {
+    let src = api.setHighlightNoteInSource("kept <mark data-note=\\"hn-gggg\\">here</mark>", "hn-gggg", "live", "“here”");
+    src = api.setHighlightNoteInSource(src, "hn-hhhh", "orphan", "“gone”");
+    const pruned = api.pruneOrphanHighlightNotes(src);
+    if (api.highlightNoteText(pruned, "hn-gggg") !== "live") return "the live note was pruned";
+    if (api.highlightNoteText(pruned, "hn-hhhh") !== "") return "the orphan survived";
+    return true;
+  });
+
+  check("an old base64 note still reads, and migrates to the section", () => {
+    const blob = api.encodeHighlightNote("an old note with é");
+    const legacy = "text <mark data-color=\\"green\\" data-note=\\"" + blob + "\\">old</mark> end";
+    if (api.highlightNoteText(legacy, blob) !== "an old note with é") return "the legacy note no longer reads";
+    const migrated = api.migrateLegacyHighlightNotes(legacy);
+    const id = (/data-note="(hn-[a-z0-9]+)"/.exec(migrated) || [])[1];
+    if (!id) return "no id written: " + JSON.stringify(migrated);
+    if (migrated.indexOf(blob) !== -1) return "the base64 blob is still in the note";
+    if (api.highlightNoteText(migrated, id) !== "an old note with é") return "the text did not survive migration";
+    if (migrated.indexOf("data-color=\\"green\\"") === -1) return "the highlight lost its colour";
+    return true;
+  });
+
+  check("a note with nothing legacy in it is returned untouched", () => {
+    const src = api.setHighlightNoteInSource("a <mark data-note=\\"hn-iiii\\">b</mark>", "hn-iiii", "note", "“b”");
+    if (api.migrateLegacyHighlightNotes(src) !== src) return "an already-migrated note was rewritten";
+    if (api.migrateLegacyHighlightNotes("no marks here") !== "no marks here") return "a plain note was rewritten";
+    return true;
+  });
+
+  check("a note reference survives a recolour", () => {
+    const out = api.toggleMarkColorInText("<mark data-color=\\"green\\" data-note=\\"hn-jjjj\\">t</mark>", "blue");
+    if (out.indexOf("data-note=\\"hn-jjjj\\"") === -1) return "the note reference was dropped: " + out;
+    if (out.indexOf("data-color=\\"blue\\"") === -1) return "the recolour did not happen: " + out;
+    return true;
+  });
+
+  check("markSpanAt reports the id of an annotated mark", () => {
+    const span = api.markSpanAt("a <mark data-note=\\"hn-kkkk\\">b</mark> c", 0);
+    if (!span || span.note !== "hn-kkkk") return "note read as " + JSON.stringify(span && span.note);
+    return true;
+  });
+
   return results;
 }`;
 
@@ -414,6 +507,7 @@ const API_SRC = `async () => {
     import("/src/editor/text-transforms.js?v=__BUILD__"),
     import("/src/panels/highlights-panel.js?v=__BUILD__"),
     import("/src/format/highlight-edit.js?v=__BUILD__"),
+    import("/src/format/highlight-notes.js?v=__BUILD__"),
     import("/src/notes/chapters.js?v=__BUILD__"),
     import("/src/render/preprocess.js?v=__BUILD__"),
     import("/src/render/block-cache.js?v=__BUILD__"),

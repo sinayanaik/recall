@@ -129,7 +129,12 @@ export function buildTurndownService(options = {}) {
   });
 
   // <mark> carries its colour as data-color (see MARK_HIGHLIGHT_COLORS) and,
-  // optionally, a note as data-note (see format/highlight-notes.js) — the
+  // optionally, a reference to a note as data-note — an id whose text lives in
+  // the "Highlight Notes" section of the note it came from (see
+  // format/highlight-notes.js). The reference rides along so a highlight copied
+  // and pasted back into the SAME note keeps its note; pasted into a different
+  // one it resolves to nothing, which reads as an un-annotated highlight
+  // rather than an error. The
   // generic keep-tag loop below would drop both, so a copied highlight would
   // always turn yellow (or lose the highlight/note entirely) on the far side
   // regardless of what it actually was. Unlike the preserveInlineStyles-gated
