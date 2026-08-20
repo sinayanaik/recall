@@ -22,7 +22,7 @@ import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton, touchSelectionDragActive } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
-import { releaseNotesChunkEstimateObserver, renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -129,6 +129,12 @@ export function renderNotesView({ sameNote = false } = {}) {
     if (notesScrolledSource !== state.notes) {
       releaseDeferredWork(el.notesView);
       releaseNotesChunkEstimateObserver(el.notesView);
+      // Same reasoning, one stage earlier: the span observer holds every chunk
+      // of the previous note as a target, and an IntersectionObserver's hold on
+      // its targets is strong. The plan itself is keyed on the container in a
+      // WeakMap and is replaced by the next render, so only the observer needs
+      // saying out loud.
+      releaseNotesLazyBuildObserver(el.notesView);
     }
     setNotesScrolledSource(state.notes);
     syncNotesBlockEstimateSource();

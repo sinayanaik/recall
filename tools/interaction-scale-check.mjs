@@ -216,11 +216,29 @@ const PROBE = `async (budget, tapCases) => {
   const longest = R.longest;
   const longestAfter = R.longestAfter;
   const blocks = api.notesTopLevelBlocks(view);
+  const lazyStats = api.notesLazyStats(view);
   push("the fixture is big enough to be chunked", (() => {
-    if (blocks.length < 2000) return "only " + blocks.length + " blocks — the chunked branch is not exercised";
     if (!view.querySelector(":scope > .notes-chunk")) return "no .notes-chunk wrappers";
+    // A note this size is built as it is READ now, so counting the blocks in
+    // the DOM counts the screenful the reader can see, not the book. The
+    // fixture's size is asserted where it is knowable — in spans — and the
+    // deferral itself is asserted right below, because a fixture that is
+    // secretly built in full would leave every measurement here meaningless.
+    if (lazyStats) {
+      if (lazyStats.spans < 50) return "only " + lazyStats.spans + " spans — the chunked branch is not exercised";
+      return true;
+    }
+    if (blocks.length < 2000) return "only " + blocks.length + " blocks — the chunked branch is not exercised";
     return true;
   })());
+
+  push("opening the book did not build the whole book", lazyStats
+    ? (lazyStats.built >= lazyStats.spans
+        ? "all " + lazyStats.spans + " spans were built on open"
+        : true)
+    : true,
+    lazyStats ? lazyStats.built + " of " + lazyStats.spans + " spans, "
+      + Math.round((lazyStats.builtChars / Math.max(1, lazyStats.chars)) * 100) + "% of the source" : "not viewport-built");
 
   push("nothing blocks the main thread after the note has rendered", (() => {
     if (longest <= 0) return true; // no longtask support in this build
@@ -433,6 +451,7 @@ const PROBE = `async (budget, tapCases) => {
       worst = 0;
       firedAt = performance.now();
       const countsBefore = api.notesSplitCounts();
+      const lazyBefore = api.notesLazyPatchCounts();
       api.makeHighlightFromSelection(api.renderTargetConfig("notes"), "yellow");
       // Past the autosave debounce (400ms) and the repaint it triggers.
       await settle(2500);
@@ -452,17 +471,54 @@ const PROBE = `async (budget, tapCases) => {
       const countsAfter = api.notesSplitCounts();
       const patchedSplits = countsAfter.incremental - countsBefore.incremental;
       const fullSplits = countsAfter.full - countsBefore.full;
+      const lazyAfter = api.notesLazyPatchCounts();
+      const lazyLocal = lazyAfter.local - lazyBefore.local;
+      const lazyReplanned = lazyAfter.replanned - lazyBefore.replanned;
+      // ── An edit re-lexes a span, not the note ─────────────────────────────
+      //
+      // Two shapes of the same claim, and which one applies depends on how the
+      // note was rendered. An eagerly rendered note patches its block ARRAY
+      // (incrementalSplitPreparedBlocks); a note built as it is read patches one
+      // SPAN and leaves every other chunk, built or pending, untouched. Both are
+      // "one lex of a few KB instead of the whole book"; neither may quietly
+      // stop happening, which is what these counters exist to notice.
       push("an edit patches the block array instead of re-lexing the note", (() => {
+        if (lazyStats) {
+          if (!lazyLocal && !lazyReplanned) return "no patch was attempted — the edit did not reach the viewport path";
+          if (!lazyLocal) return "the edit re-planned the whole note " + lazyReplanned + " time(s)";
+          return true;
+        }
         if (!patchedSplits && !fullSplits) return "no split was attempted — the edit did not reach renderMarkdown with a base to patch";
         if (!patchedSplits) return "the edit fell through to a full re-lex " + fullSplits + " time(s)";
         return true;
-      })(), patchedSplits + " patched, " + fullSplits + " full");
+      })(), lazyStats
+        ? lazyLocal + " span(s) patched, " + lazyReplanned + " re-planned"
+        : patchedSplits + " patched, " + fullSplits + " full");
 
       push("the patched block array is what a full re-lex would have given", (() => {
         const entry = api.renderedBlockCache.get(view);
-        if (!entry || !entry.split) return "the block cache holds no parse for the open note";
         const full = api.splitPreparedBlocks(api.preprocessSpecialBlocks(api.promotedNotesHeadings(state.notes)));
         if (!full) return "a full re-lex of the edited note returned nothing";
+        // The viewport path holds the note as spans rather than as one block
+        // array, so the comparison is over the spans' own lexes, concatenated.
+        // Byte for byte, in order, against the same whole-document lex — the
+        // browser-side twin of tools/viewport-split-check.mjs property A, asked
+        // of a note that has really been edited in a really open app.
+        if (entry?.lazy) {
+          const plan = entry.lazy;
+          const got = [];
+          for (const span of plan.spans) {
+            const lexed = api.lexNotesLazySpan(plan.prepared, span);
+            if (!lexed) return "a span failed to lex after the edit";
+            lexed.blocks.forEach((raw) => got.push(raw));
+          }
+          if (got.length !== full.blocks.length) return got.length + " blocks vs " + full.blocks.length;
+          const bad = got.findIndex((b, k) => b !== full.blocks[k]);
+          if (bad !== -1) return "block " + bad + " differs: " + JSON.stringify(got[bad].slice(0, 60));
+          if (plan.prelude !== full.prelude) return "the prelude differs";
+          return true;
+        }
+        if (!entry || !entry.split) return "the block cache holds no parse for the open note";
         const got = entry.split.blocks;
         if (got.length !== full.blocks.length) return got.length + " blocks vs " + full.blocks.length;
         const bad = got.findIndex((b, k) => b !== full.blocks[k]);
@@ -517,8 +573,15 @@ const PROBE = `async (budget, tapCases) => {
     })());
     // Put the wanted heading on the reading line by hand rather than through
     // the TOC jump, so this measures the SCROLL-SPY and not the jump.
-    api.withChunkRendered(wanted, view, () => {
-      const delta = wanted.getBoundingClientRect().top - view.getBoundingClientRect().top;
+    //
+    // A heading is a DESCRIPTOR now, not an element — the contents is read off
+    // the source so that a note built as it is read still has a full one (see
+    // ensureNotesHeadingIds). resolveNotesHeadingElement is what turns one into
+    // something with geometry, building the span it lives in if that is what it
+    // takes, which is precisely what a jump to an unread part of a book needs.
+    const wantedEl = api.resolveNotesHeadingElement(wanted);
+    api.withChunkRendered(wantedEl, view, () => {
+      const delta = wantedEl.getBoundingClientRect().top - view.getBoundingClientRect().top;
       view.scrollTop = Math.max(0, view.scrollTop + delta - 8);
     });
     await settle(500);
@@ -527,7 +590,7 @@ const PROBE = `async (budget, tapCases) => {
     push("the TOC's active row is the section being read", (() => {
       const active = document.querySelector("#notesTocList .notes-toc-link.is-active");
       if (!active) return "no row is active";
-      const want = (wanted.textContent || "").trim();
+      const want = wanted.text;
       const got = (active.querySelector(".notes-toc-text")?.textContent || "").trim();
       if (got !== want) return "active row is " + JSON.stringify(got) + ", reading " + JSON.stringify(want);
       return true;
@@ -546,7 +609,7 @@ const PROBE = `async (budget, tapCases) => {
       if (links.length !== headings.length) return links.length + " rows for " + headings.length + " headings after a repaint";
       const active = document.querySelector("#notesTocList .notes-toc-link.is-active");
       if (!active) return "no row is active after a repaint";
-      const want = (wanted.textContent || "").trim();
+      const want = wanted.text;
       const got = (active.querySelector(".notes-toc-text")?.textContent || "").trim();
       if (got !== want) return "active row is " + JSON.stringify(got) + " after a repaint, reading " + JSON.stringify(want);
       return true;
@@ -586,7 +649,7 @@ const PROBE = `async (budget, tapCases) => {
       push("the TOC's active row follows the reader in paged mode", (() => {
         const active = document.querySelector("#notesTocList .notes-toc-link.is-active");
         if (!active) return "no row is active";
-        const want = (wanted.textContent || "").trim();
+        const want = wanted.text;
         const got = (active.querySelector(".notes-toc-text")?.textContent || "").trim();
         if (got !== want) return "active row is " + JSON.stringify(got) + ", reading " + JSON.stringify(want);
         return true;
@@ -609,17 +672,53 @@ const PROBE = `async (budget, tapCases) => {
   // note's height is mostly estimates until the reader has been there, so the
   // same paragraph legitimately sits at a different scrollTop before and after
   // a fresh render — comparing pixels tests the layout, not the feature.
-  {
-    const readingLineText = () => {
-      const block = api.notesBlockAtReadingLineGeometric();
-      return block ? (block.textContent || "").trim().slice(0, 60) : "";
-    };
-    const target = blocks[Math.floor(blocks.length * 0.4)];
+  // ── Aiming at a fraction of the NOTE, not of the DOM ─────────────────────
+  //
+  // These cases mean "scroll about 40% into the book". They used to say that as
+  // blocks[blocks.length * 0.4], which was the same thing only while every
+  // block of the note was in the DOM. On a note built as it is read it is not:
+  // 40% of what has been built is a few screens from the top, and the case
+  // would quietly stop testing a resume from deep inside a book — the one thing
+  // it exists for. notesBlockForRawOffset answers in SOURCE space and builds the
+  // span it lands in, which is both the right question and a second exercise of
+  // the on-demand build.
+  const scrollToFraction = async (fraction) => {
+    const at = Math.floor((state.notes || "").length * fraction);
+    const target = api.notesBlockForRawOffset(view, state.notes || "", at)
+      || api.notesTopLevelBlocks(view)[Math.floor(api.notesTopLevelBlocks(view).length * fraction)];
+    if (!target) return null;
+    await settle(200);
     api.withChunkRendered(target, view, () => {
       const delta = target.getBoundingClientRect().top - view.getBoundingClientRect().top;
       view.scrollTop = Math.max(0, view.scrollTop + delta - 8);
     });
     view.dispatchEvent(new Event("scroll"));
+    // ── Settled means "the spans stopped landing", not "N milliseconds" ─────
+    //
+    // A note built as it is read keeps arriving for a moment after a scroll:
+    // each span the reader has come near is lexed and inserted, and until that
+    // stops the document under the reading line is still moving. Capturing a
+    // reading position mid-arrival captures a position that is about to be
+    // somewhere else, which is a race the fixture would otherwise lose about
+    // half the time — and a race the READER can lose too, which is why the
+    // wait is written as a condition rather than as a longer sleep. Same shape
+    // as the block-count poll in tools/mobile-selection-check.mjs.
+    let last = -1;
+    for (let i = 0; i < 40; i += 1) {
+      await settle(150);
+      const now = api.notesLazyStats(view)?.built ?? api.notesTopLevelBlocks(view).length;
+      if (now === last) break;
+      last = now;
+    }
+    return target;
+  };
+
+  {
+    const readingLineText = () => {
+      const block = api.notesBlockAtReadingLineGeometric();
+      return block ? (block.textContent || "").trim().slice(0, 60) : "";
+    };
+    await scrollToFraction(0.4);
     // Long enough for the capture debounce, its idle callback and the
     // persistence debounce on top of it.
     await settle(3000);
@@ -722,17 +821,10 @@ const PROBE = `async (budget, tapCases) => {
       const b = api.notesBlockAtReadingLineGeometric();
       return b ? (b.textContent || "").trim().slice(0, 60) : "";
     };
-    const vBlocks = api.notesTopLevelBlocks(view);
-    const target = vBlocks[Math.floor(vBlocks.length * 0.4)];
-    api.withChunkRendered(target, view, () => {
-      const delta = target.getBoundingClientRect().top - view.getBoundingClientRect().top;
-      view.scrollTop = Math.max(0, view.scrollTop + delta - 8);
-    });
-    view.dispatchEvent(new Event("scroll"));
+    await scrollToFraction(0.4);
     await settle(3000);
     const wasReading = lineText();
     const anchor = api.readingAnchorNow();
-
     // Any "not found" the resume reports is a failure of this case, whatever
     // the note ends up looking like — that warning IS the reported bug.
     const warnings = [];
@@ -777,6 +869,7 @@ const API_SRC = `async () => {
     "/src/notes/paged-view.js?v=__BUILD__",
     "/src/notes/anchors.js?v=__BUILD__",
     "/src/notes/scroll-anchor.js?v=__BUILD__",
+    "/src/notes/raw-offset.js?v=__BUILD__",
     "/src/format/locate-selection.js?v=__BUILD__",
     "/src/format/highlight.js?v=__BUILD__",
     "/src/format/render-toolbar.js?v=__BUILD__",

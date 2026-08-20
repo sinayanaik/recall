@@ -19,7 +19,7 @@ import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageFo
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
-import { isNotesStreamBusy, notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { ensureNotesLazyFractionBuilt, ensureNotesLazyOffsetBuilt, isNotesStreamBusy, notesLazyPlan, notesLazySpanAt, notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -328,8 +328,12 @@ export function findRenderedNoteRange(anchor, offset = null) {
   } else if (offset != null) {
     // Windowed, in block space — see the note above findRenderedNoteRange's
     // window for why this is not a band of pixels.
-    const blocks = notesTopLevelBlocks(view);
+    // The aim FIRST, then the block list. On a note whose spans are built as
+    // they are approached, notesBlockForRawOffset builds the span it lands in —
+    // so a list taken before it would be the list from before that span existed,
+    // and indexOf would answer -1 for the very block just built for us.
     const aim = notesBlockForRawOffset(view, state.notes || "", offset);
+    const blocks = notesTopLevelBlocks(view);
     const aimIndex = aim ? blocks.indexOf(aim) : -1;
     if (aimIndex !== -1) {
       // Grow outward from the aim, alternating sides so the window stays
@@ -737,14 +741,57 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true, al
 // The source scan counts it and the DOM doesn't, so every ordinal after it would
 // be off by one. When the two counts disagree we know nothing about the mapping
 // and hand back false so the caller falls back to the text search.
+// Every `<mark …>` open tag in `text`, by character offset. The highlights
+// panel addresses a highlight by its ORDINAL in state.notes, and preprocess
+// leaves a mark tag exactly as it found it, so the same ordinals index the
+// prepared text — which is what lets a jump find its highlight in a note most
+// of which is not in the DOM.
+export const MARK_OPEN_TAG_RE = /<mark\b[^>]*>/g;
+
+export function markOpenOffsets(text) {
+  const offsets = [];
+  const scan = new RegExp(MARK_OPEN_TAG_RE.source, "g");
+  let match;
+  while ((match = scan.exec(text)) !== null) offsets.push(match.index);
+  return offsets;
+}
+
+// Resolve `markIndex` against a note that is built as it is read: work out
+// where that mark sits in the prepared text, build the span holding it, and
+// count from that span's own first mark. Returns null when the counts disagree
+// at all — the caller then falls back to the text search, exactly as it does
+// today when the DOM's mark count does not match the source's.
+export function lazyNoteMarkNode(view, markIndex, markCount) {
+  const plan = notesLazyPlan(view);
+  if (!plan) return null;
+  const offsets = markOpenOffsets(plan.prepared);
+  if (offsets.length !== markCount || markIndex >= offsets.length) return null;
+  const at = offsets[markIndex];
+  ensureNotesLazyOffsetBuilt(view, at);
+  const index = notesLazySpanAt(plan, at);
+  const chunk = plan.chunks[index];
+  if (!chunk) return null;
+  // How many marks the document holds before this span begins — the offset
+  // list is sorted, so this is a walk, not a second scan.
+  let base = 0;
+  while (base < offsets.length && offsets[base] < plan.spans[index].start) base += 1;
+  return chunk.querySelectorAll("mark")[markIndex - base] || null;
+}
+
 export function revealNoteMark(locator, options) {
   const view = el.notesView;
   if (!view || view.hidden || !locator) return false;
   const { markIndex, markCount } = locator;
   if (!Number.isFinite(markIndex) || markIndex < 0) return false;
+  if (!Number.isFinite(markCount)) return false;
   const marks = view.querySelectorAll("mark");
-  if (!Number.isFinite(markCount) || marks.length !== markCount) return false;
-  const node = marks[markIndex];
+  // The whole-note count is the proof that the DOM and the source agree about
+  // what the Nth mark IS. It cannot hold on a note that is built as it is read
+  // — most of its marks are not in the document — so there the ordinal is
+  // resolved against the SOURCE instead and the span holding it is built.
+  const node = marks.length === markCount
+    ? marks[markIndex]
+    : lazyNoteMarkNode(view, markIndex, markCount);
   if (!node) return false;
   let range;
   try {
@@ -923,6 +970,18 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     // wasted by having waited.
     const streaming = isNotesStreamBusy();
     if (!streaming) {
+      // ── Build the part of the note this jump is aimed at ─────────────────
+      //
+      // On a note whose spans are built as the reader approaches them, the
+      // target of a deliberate jump is by definition somewhere the reader has
+      // not been — so its blocks are not in the document and every search below
+      // would be searching for text that is not there. This is the explicit
+      // "materialise the span I am about to land in" that the retry loop used
+      // to get by accident, from a stream that happened still to be running.
+      // A no-op on an ordinary note and on a span that is already built.
+      if (Number.isFinite(anchor?.offset)) {
+        ensureNotesLazyFractionBuilt(el.notesView, anchor.offset / Math.max(1, (state.notes || "").length));
+      }
       if (revealNoteAnchor(anchor, options, locator)) { done(); return; }
       // findRenderedNoteRange (inside revealNoteAnchor) does a text search over
       // the rendered DOM. Nudge toward a proportional estimate so the windowed

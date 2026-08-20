@@ -30,6 +30,19 @@
 //                   block-cache.js as text. Also asserts the boundary property
 //                   the chunked lexer rests on, which until now was argued for
 //                   by citing a scratch file that is not in the tree
+//   viewport        ...and when a note is not lexed at all until the reader
+//                   comes near each part of it, do those parts add up to the
+//                   same note? Same corpus as `incremental` (tools/note-shapes.mjs),
+//                   six properties: spans tile and lex to the whole-document
+//                   blocks; a boundary scan resumed at a safe cut reproduces the
+//                   full scan's tail; the prelude derived from candidate spans
+//                   alone equals the real one; the heading index agrees with
+//                   marked's own headings; an edit taken locally leaves cuts
+//                   that are still real; and it takes ordinary edits often
+//                   enough to be worth having. Project memory warns that an
+//                   earlier attempt in this area was reverted over corruption
+//                   found by a fuzzer, with nothing left in git to read — this
+//                   is the standing answer to that warning
 //   precache        does sw.js precache every module the app imports, and
 //                   nothing that no longer exists? (a missing entry breaks the
 //                   app OFFLINE only; a stale one stops any worker activating)
@@ -116,6 +129,10 @@ const checks = [
   // here: a check that skips is a check that never catches anything, and this one
   // guards the change most able to render a WRONG note.
   ["incremental   ", ["node", ["tools/incremental-split-check.mjs"], ROOT]],
+  // Beside it, for the same reasons and against the same corpus: the viewport
+  // path decides what a note IS, one span at a time, and gets no browser and no
+  // network to do it.
+  ["viewport      ", ["node", ["tools/viewport-split-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],

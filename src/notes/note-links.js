@@ -16,7 +16,7 @@ import { generateLocalDeckId, listLocalDecks, loadDeckFromLibrary, readLocalDeck
 import { notesAnchorPlainText } from "./anchors.js?v=__BUILD__";
 import { renderNotesView, setNotesScrolledSource } from "./notes-view.js?v=__BUILD__";
 import { currentDeckKey } from "./scroll-anchor.js?v=__BUILD__";
-import { ensureNotesHeadingIds, scrollNotesHeadingIntoView } from "./toc.js?v=__BUILD__";
+import { ensureNotesHeadingIds, flashNotesHeading, scrollNotesHeadingIntoView } from "./toc.js?v=__BUILD__";
 import { openQuickNotesBoard, setQnReturnState } from "../quick-notes/board.js?v=__BUILD__";
 import { getQuickNotesDeckId } from "../quick-notes/categories.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkAliasesFor, noteLinkEntryMatchesId, noteLinkMarkupFor } from "../render/note-links.js?v=__BUILD__";
@@ -224,7 +224,7 @@ export async function resolveNoteLink({ target, title }) {
 export function matchesHeadingFragment(heading, fragment) {
   if (heading.id === fragment) return true;
   if (heading.id === `toc-${fragment}`) return true;
-  return heading.textContent.trim().toLowerCase() === fragment.trim().toLowerCase();
+  return String(heading.text || "").toLowerCase() === fragment.trim().toLowerCase();
 }
 
 // Scroll to a heading in the note that is now open. Retried across a few frames
@@ -236,8 +236,7 @@ export async function revealNoteHeading(slug) {
     const heading = ensureNotesHeadingIds().find((h) => matchesHeadingFragment(h, slug));
     if (heading) {
       await scrollNotesHeadingIntoView(heading);
-      heading.classList.add("notes-heading-flash");
-      setTimeout(() => heading.classList.remove("notes-heading-flash"), 1200);
+      flashNotesHeading(heading);
       return true;
     }
     await new Promise((resolve) => setTimeout(resolve, 120));

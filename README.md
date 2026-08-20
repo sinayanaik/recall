@@ -873,7 +873,7 @@ Two deliberate omissions, both explained in comments in the file: there is **no 
 | `sw.js` | Service worker — app-shell precache (per release), vendor + CDN + image caches (across releases) |
 | `manifest.webmanifest`, `icons/` | PWA install metadata and icons |
 | **`supabase_setup.sql`** | **The only SQL file. Run it once; re-run it to upgrade** |
-| `tools/` | Development checks — not served, not needed to run the app |
+| `tools/` | Development checks — not served, not needed to run the app. `tools/note-shapes.mjs` is the shared corpus of note and edit shapes the two splitter checks are both driven against |
 
 ### Checking a change
 
@@ -883,7 +883,7 @@ node tools/check.mjs --quick   # static checks only, no browser (~5s)
 node tools/check.mjs --full    # ...and drive a real install / offline / update
 ```
 
-Twenty-one checks, each answering a different question, and none of them
+Twenty-five checks, each answering a different question, and none of them
 subsuming another:
 
 | Check | Question |
@@ -901,8 +901,11 @@ subsuming another:
 | `selection` | Can you select text in a note without dragging the app's own chrome in with it? 7 real mouse drags |
 | `mobile-select` | The same question with a finger. `touch-action` on every reading surface, the card swipe standing down for a dwelling finger (real touch events), containment suspended under a live selection, the paged snap held off, and the selection bar waiting for the drag to finish. The native long press and its two handles are browser UI and do not exist in headless Chrome, so that half is checked by hand on a real Android device |
 | `touch-select` | The same question once more, now that the app OWNS the gesture instead of deferring to it. 65 cases of real touch input: a press timed from inside the page (measured at 4x CPU throttle too, because the native path's 3-4 second wait was a main-thread queue), a hesitation before a scroll giving the press back as a scroll while a press held past that window still slides into a selection, the app's own handles asserted against the boundaries they mark before and after a drag, a press in a block's left gutter, drags in both directions past the anchor, edge auto-scroll, and the painted highlight compared pixel by pixel against the same words unselected. Then whether it is STEADY, which is a different question: a selection surviving a scroll while a tap still dismisses it, the handles coming off the glass while the text moves and landing back on their boundaries after it, a boundary scrolled off the top keeping a grip parked at the edge that can still be dragged, thirty touchmoves inside one frame costing one extend rather than thirty, and one finished selection being described once instead of three times. The half `mobile-select` had to check by hand is drivable here, because handles the app draws are DOM elements. Closes by proving a desktop arms none of it and that a mouse drag there still selects |
+| `incremental` | When an edit re-splits the note by PATCHING the previous block array instead of re-lexing it, does that give the blocks a full re-lex would? 862 cases over 16 note shapes x 19 edit shapes x 3 positions, plus a coverage floor so a splitter that always refuses cannot pass. Pure Node — it loads the vendored `marked` and lifts the splitters out of `block-cache.js` as text |
+| `viewport` | ...and when a note is not lexed at all until the reader comes near each part of it, do those parts add up to the same note? Same corpus, six properties: the spans tile the document and lex to exactly the whole-document blocks; a boundary scan resumed at a safe cut reproduces the full scan's tail; the link-reference prelude derived from the candidate spans alone equals the real one; the heading index agrees with `marked`'s own headings; an edit taken locally leaves cuts that are still real cuts of the edited document; and it takes ordinary edits often enough to be worth having |
 | `render-scale` | Does a note still render when it is BIG? Four sizes straddling the 2,000-block chunking threshold, plus how long the thread is blocked while a 2.6MB note opens |
-| `interaction` | Once a book-sized note is open, does the app still answer? A press, a selection, the TOC's active row, and a reading position saved and resumed — each measured on a 2.6MB / 24,000-block note at phone size |
+| `interaction` | Once a book-sized note is open, does the app still answer? A press, a selection, the TOC's active row, and a reading position saved and resumed — each measured on a 2.6MB / 24,000-block note at phone size. Also that opening that note did **not** build all of it, and that editing it re-lexes one span rather than the book |
+| `large-select` | The touch-selection gesture again, on a note long enough to be CHUNKED — a press taken while the note is still settling, a drag across a chunk boundary, and how many pixels the note travels after a highlight |
 | `style` | Do the style-panel settings still reach the CSS variables they name? |
 | `highlight` | Does a highlight land on the copy of the text you actually selected, in both views? |
 | `paged` | Can you reach the end of a note in paged reading mode, at every note length? |
@@ -932,7 +935,7 @@ area of the app —
 | `sync/` | Two-way sync — the per-card merge, tombstones, push/pull, and the deletion guards |
 | `storage/` | The device's own copy: IndexedDB deck store, autosave, quota, the storage panel |
 | `library/` | My Decks: the local index, folders, rows, tiles, drag and drop, and reading a whole folder as one document |
-| `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache (and block chunking) that keeps huge notes fast |
+| `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache that keeps huge notes fast. Past ~2,000 blocks a note is cut into spans at provably safe lexer boundaries and each span is lexed and built only as the reader comes near it, so opening a note costs a screenful rather than a book (`viewport` above is the proof) |
 | `notes/` | The notes view: editing, the caret, scroll anchoring, the foldable TOC, paged reading, selection, links |
 | `cards/` | Studying: the card view, swipe, the All Cards panel, deck actions |
 | `editor/` | The raw editor: its highlight mirror, text transforms, toolbars |

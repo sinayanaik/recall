@@ -13,7 +13,7 @@ import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { activeChapterIndex, firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
-import { NOTES_CHUNK_CLASS, NOTES_TOP_LEVEL_SELECTOR, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS, NOTES_TOP_LEVEL_SELECTOR, ensureNotesLazyOffsetBuilt, notesHeadingScan, notesLazyTopAtOffset, renderedBlockCache, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
 import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -77,7 +77,15 @@ export function ensureNotesTocBuilt() {
 // heading in the book.
 export function refreshNotesTocAvailability() {
   if (!el.notesView || !el.notesTocBtn) return;
-  const has = Boolean(el.notesView.querySelector("h1, h2, h3, h4, h5, h6"));
+  // Off the SOURCE, not off the DOM. A note whose spans are built as the reader
+  // reaches them has almost none of its headings on screen at first paint, and
+  // the ☰ button would have offered nothing on exactly the notes that most need
+  // a contents. The scan is memoized per prepared string (notesHeadingScan), so
+  // this is a string compare on every render after the first.
+  const prepared = preparedNotesSource();
+  const has = prepared == null
+    ? Boolean(el.notesView.querySelector("h1, h2, h3, h4, h5, h6"))
+    : notesHeadingScan(prepared).length > 0;
   el.notesTocBtn.classList.toggle("has-toc", has);
 }
 
@@ -164,17 +172,153 @@ export function tocGuideContinues(depths, i, depth) {
 // — and buildNotesToc, which used to be the only thing that assigned these ids,
 // returns early when there is no #notesTocList to draw into. Same slugs from
 // both callers, because it is the same code.
+// ── The list comes from the SOURCE, not from the rendered DOM ──────────────
+//
+// This used to be `el.notesView.querySelectorAll("h1, h2, h3, h4, h5, h6")`,
+// which makes the contents of a note a function of how far its render has got.
+// That was already the wrong shape — the drawer of a big note was short or empty
+// until the last block landed — and it is flatly incompatible with a note whose
+// spans are built as the reader approaches them (see the viewport-driven
+// rendering note in render/block-cache.js), where most of the book is
+// deliberately not in the DOM at all.
+//
+// So the headings are scanned out of the same PREPARED string the view was
+// rendered from (scanPreparedHeadings), and each one is a small descriptor
+// rather than an element:
+//
+//   { level, text, offset, id, el }
+//
+// `offset` is a character position in that prepared string, which is what lets
+// a heading say which chunk it belongs to before that chunk exists; `el` is
+// filled in when the chunk holding it is built, and is null until then. Every
+// consumer below reads `.level`/`.text`/`.id` where it used to read
+// `.tagName`/`.textContent`/`.id`, and anything wanting geometry goes through
+// notesHeadingBox / resolveNotesHeadingElement, which know how to answer for a
+// heading whose block is not built yet.
+export let notesHeadingSource = null;
+
+export let notesHeadingList = [];
+
+// The prepared markdown the notes view is currently showing. The block cache
+// records it as part of the render, so this costs nothing and — unlike
+// re-deriving it from state.notes — is guaranteed to be the exact string the
+// headings on screen came from.
+export function preparedNotesSource() {
+  const cached = el.notesView ? renderedBlockCache.get(el.notesView) : null;
+  return typeof cached?.prepared === "string" ? cached.prepared : null;
+}
+
+export function notesHeadingsForPrepared(prepared) {
+  if (prepared === notesHeadingSource) return notesHeadingList;
+  const used = new Set();
+  notesHeadingList = notesHeadingScan(prepared).map((entry) => ({
+    level: entry.level,
+    text: entry.text,
+    offset: entry.offset,
+    id: slugifyHeading(entry.text, used),
+    el: null
+  }));
+  notesHeadingSource = prepared;
+  return notesHeadingList;
+}
+
+// First index whose offset is at or after `from`. The list is in document
+// order, so a binary search keeps per-span binding off the O(headings x spans)
+// path a filter would put it on.
+export function firstNotesHeadingAtOrAfter(headings, from) {
+  let lo = 0;
+  let hi = headings.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (headings[mid].offset < from) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Pair the descriptors covering [from, to) with the rendered headings inside
+// `root`, in document order, and give each element its descriptor's id.
+//
+// Called once per span as that span is built, and once over the whole surface
+// for an ordinary (eagerly rendered) note. Pairing positionally within a span
+// is what keeps it O(what was just built); a count mismatch binds the common
+// prefix and leaves the rest unbound, where a jump still lands on the right
+// chunk — a degraded answer rather than a wrong one.
+export function bindNotesHeadingElements(container, from = null, to = null, root = null) {
+  if (!container || container !== el.notesView) return;
+  const prepared = preparedNotesSource();
+  if (prepared == null) return;
+  const headings = notesHeadingsForPrepared(prepared);
+  if (!headings.length) return;
+  const scope = root || container;
+  const nodes = Array.from(scope.querySelectorAll("h1, h2, h3, h4, h5, h6"))
+    .filter((h) => h.textContent.trim() !== "");
+  const start = from == null ? 0 : firstNotesHeadingAtOrAfter(headings, from);
+  for (let i = 0; i < nodes.length; i += 1) {
+    const heading = headings[start + i];
+    if (!heading) break;
+    if (to != null && heading.offset >= to) break;
+    heading.el = nodes[i];
+    nodes[i].id = heading.id;
+  }
+}
+
+// Every heading in the note, whether or not its block has been built. Kept
+// under its old name because it is still what the callers want — "the headings,
+// with stable ids" — and it still assigns those ids to whatever is on screen.
 export function ensureNotesHeadingIds() {
   if (!el.notesView) return [];
-  const used = new Set();
-  const headings = Array.from(
-    el.notesView.querySelectorAll("h1, h2, h3, h4, h5, h6")
-  ).filter((h) => h.textContent.trim() !== "");
-  headings.forEach((heading) => {
-    if (!heading.id) heading.id = slugifyHeading(heading.textContent, used);
-    else used.add(heading.id);
-  });
+  const prepared = preparedNotesSource();
+  // No render has happened on this surface yet (or it fell back to the
+  // unsplittable whole-document path, which writes no cache entry). Then the
+  // DOM is all there is, and it is complete by definition.
+  if (prepared == null) {
+    const used = new Set();
+    return Array.from(el.notesView.querySelectorAll("h1, h2, h3, h4, h5, h6"))
+      .filter((h) => h.textContent.trim() !== "")
+      .map((node) => {
+        if (!node.id) node.id = slugifyHeading(node.textContent, used);
+        else used.add(node.id);
+        return { level: Number(node.tagName[1]), text: node.textContent.trim(), offset: null, id: node.id, el: node };
+      });
+  }
+  const headings = notesHeadingsForPrepared(prepared);
+  bindNotesHeadingElements(el.notesView);
   return headings;
+}
+
+// The element for a heading, building the chunk it lives in if that is what it
+// takes. THE way to turn a contents row into something with geometry.
+export function resolveNotesHeadingElement(heading) {
+  if (!heading) return null;
+  if (heading.el?.isConnected) return heading.el;
+  if (Number.isFinite(heading.offset) && el.notesView) {
+    ensureNotesLazyOffsetBuilt(el.notesView, heading.offset);
+    if (heading.el?.isConnected) return heading.el;
+    bindNotesHeadingElements(el.notesView);
+  }
+  return heading.el?.isConnected ? heading.el : null;
+}
+
+// Roughly where a heading sits on the glass, WITHOUT forcing anything to be
+// built: its own box once its block exists, and an interpolated position inside
+// its standing-in chunk until then (see notesLazyTopAtOffset). Both are
+// monotonic in document order, which is all the scroll-spy's binary search
+// needs, and neither costs a layout of anything that was not already laid out.
+export function notesHeadingTop(heading) {
+  if (heading?.el?.isConnected) return heading.el.getBoundingClientRect().top;
+  if (!Number.isFinite(heading?.offset)) return null;
+  return notesLazyTopAtOffset(el.notesView, heading.offset);
+}
+
+// The brief highlight a jump leaves on its target. Here rather than at each
+// call site because a heading is a descriptor now, and two callers used to
+// reach straight for its classList.
+export function flashNotesHeading(heading) {
+  const node = heading?.el?.isConnected ? heading.el : null;
+  if (!node) return;
+  node.classList.add("notes-heading-flash");
+  setTimeout(() => node.classList.remove("notes-heading-flash"), 1200);
 }
 
 // When a whole folder is open as one document, each member deck is introduced
@@ -198,8 +342,8 @@ export function applyFolderSectionDepths(depths) {
   let expect = 0;
   notesTocHeadings.forEach((heading, index) => {
     if (expect >= members.length) return;
-    if (heading.tagName !== "H1") return;
-    if (heading.textContent.trim() !== String(members[expect].title || "").trim()) return;
+    if (heading.level !== 1) return;
+    if (heading.text !== String(members[expect].title || "").trim()) return;
     starts.push(index);
     expect += 1;
   });
@@ -209,9 +353,9 @@ export function applyFolderSectionDepths(depths) {
     const end = n + 1 < starts.length ? starts[n + 1] : depths.length;
     depths[start] = 0;
     let inner = 6;
-    for (let i = start + 1; i < end; i += 1) inner = Math.min(inner, Number(notesTocHeadings[i].tagName[1]));
+    for (let i = start + 1; i < end; i += 1) inner = Math.min(inner, notesTocHeadings[i].level);
     for (let i = start + 1; i < end; i += 1) {
-      depths[i] = 1 + Math.min(Number(notesTocHeadings[i].tagName[1]) - inner, 3);
+      depths[i] = 1 + Math.min(notesTocHeadings[i].level - inner, 3);
     }
   });
 }
@@ -236,7 +380,7 @@ export function applyNotesTocFolding() {
     const twisty = li.querySelector(".notes-toc-twisty");
     if (twisty) {
       twisty.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      twisty.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${notesTocHeadings[index]?.textContent.trim() || "section"}`);
+      twisty.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${notesTocHeadings[index]?.text || "section"}`);
     }
   });
   // The row that was lit may have just been folded away, or revealed, so the
@@ -337,11 +481,8 @@ export function buildNotesToc() {
 
   // Normalise the shallowest heading level to depth 0 so notes that start at
   // ## still indent from the left edge rather than looking pushed-in.
-  const minLevel = notesTocHeadings.reduce(
-    (min, h) => Math.min(min, Number(h.tagName[1])),
-    6
-  );
-  const depths = notesTocHeadings.map((h) => Math.min(Number(h.tagName[1]) - minLevel, 4));
+  const minLevel = notesTocHeadings.reduce((min, h) => Math.min(min, h.level), 6);
+  const depths = notesTocHeadings.map((h) => Math.min(h.level - minLevel, 4));
   applyFolderSectionDepths(depths);
 
   // The relation the flat list does not carry. A heading's parent is the
@@ -379,7 +520,7 @@ export function buildNotesToc() {
 
   notesTocHeadings.forEach((heading, index) => {
     // Ids are already assigned by ensureNotesHeadingIds above.
-    const level = Number(heading.tagName[1]);
+    const level = heading.level;
     const depth = depths[index];
 
     const li = document.createElement("li");
@@ -415,7 +556,7 @@ export function buildNotesToc() {
       (rail ? `<span class="notes-toc-rail" aria-hidden="true">${rail}</span>` : "") +
       `<span class="notes-toc-dot" data-level="${level}"></span>` +
       `<span class="notes-toc-text"></span>`;
-    link.querySelector(".notes-toc-text").textContent = heading.textContent.trim();
+    link.querySelector(".notes-toc-text").textContent = heading.text;
     li.appendChild(link);
 
     // A <button> cannot live inside the <a> — nesting interactive content is
@@ -451,8 +592,10 @@ export const NOTES_HEADING_SCROLL_GAP = 8;
 // with its chunk's box — the same answer all 40 of its neighbours give, which is
 // a jump landing up to 40 blocks early.
 export function notesHeadingOffset(heading) {
-  return withChunkRendered(heading, el.notesView, () =>
-    heading.getBoundingClientRect().top - el.notesView.getBoundingClientRect().top);
+  const node = heading?.el?.isConnected ? heading.el : null;
+  if (!node) return 0;
+  return withChunkRendered(node, el.notesView, () =>
+    node.getBoundingClientRect().top - el.notesView.getBoundingClientRect().top);
 }
 
 // How long we are willing to keep correcting. Longer than the anchor jump's
@@ -468,11 +611,16 @@ const HEADING_AIM_BUDGET_MS = 1500;
 // reasons; all that differs is what counts as "arrived", which is the callback.
 export async function scrollNotesHeadingIntoView(heading) {
   if (!heading || !el.notesView) return;
+  // The reader asked to go here, so this is exactly the case that may not wait
+  // for a scroll to bring the span into view: build it now. A no-op on an
+  // eagerly rendered note, and on a heading whose span is already built.
+  const node = resolveNotesHeadingElement(heading);
+  if (!node) return;
   // Paged mode: turn to the heading's page. Handled by revealInPagedNotes, which
   // has its own convergence loop over PAGES rather than heights.
-  if (revealInPagedNotes(heading)) return;
+  if (revealInPagedNotes(node)) return;
   await convergeNotesScroll(
-    () => (heading.isConnected ? notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP : null),
+    () => (node.isConnected ? notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP : null),
     HEADING_AIM_BUDGET_MS
   );
 }
@@ -573,7 +721,7 @@ export function updateNotesTocActive() {
       .forEach((chunk, index) => chapterOf.set(chunk, index));
   }
   const chapterIndexOf = (heading) => {
-    const chunk = heading.parentElement?.closest(`.${NOTES_CHUNK_CLASS}`);
+    const chunk = heading.el?.parentElement?.closest(`.${NOTES_CHUNK_CLASS}`);
     const found = chunk ? chapterOf.get(chunk) : undefined;
     return found === undefined ? activeChapterIndex : found;
   };
@@ -586,11 +734,19 @@ export function updateNotesTocActive() {
       // (monotonic) boxes — which is all a binary search needs. Forcing chunks
       // to lay out here would cost 40 blocks of layout per probe, on a handler
       // that runs on every scroll frame.
-      return heading.getBoundingClientRect().top <= mark;
+      //
+      // notesHeadingBox rather than the element's own rect, because on a
+      // viewport-built note a heading whose span has not been built has no
+      // element yet — it answers with its CHUNK's box, which is monotonic in
+      // document order for exactly the same reason a skipped chunk's is, and is
+      // therefore still a sound predicate for the search. Building the span here
+      // instead would make every scroll frame render whatever it probed.
+      const top = notesHeadingTop(heading);
+      return top == null ? false : top <= mark;
     }
     const chapter = chapterIndexOf(heading);
     if (chapter !== activeChapterIndex) return chapter < activeChapterIndex;
-    return notesPageForElement(heading) <= page;
+    return heading.el ? notesPageForElement(heading.el) <= page : chapter <= activeChapterIndex;
   };
   let low = 0;
   let high = notesTocHeadings.length - 1;

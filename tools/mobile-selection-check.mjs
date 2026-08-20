@@ -84,7 +84,12 @@ const API_SRC = `async () => {
     "/src/cards/swipe.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__",
-    "/src/cards/card-view.js?v=__BUILD__"
+    "/src/cards/card-view.js?v=__BUILD__",
+    // Last, so nothing it exports can shadow a name one of the modules above
+    // owns. Case 3b needs materializeNotesLazySpans: a book is built span by
+    // span as it is read, and that case is about containment, not about how the
+    // blocks got into the document.
+    "/src/render/block-cache.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -425,6 +430,16 @@ async function run() {
         const { api, settle } = window.__recall;
         const selectPara = (0, eval)(`(${selectSrc})`);
         const view = document.getElementById("notesView");
+        // ── The whole book, on purpose ──────────────────────────────────────
+        //
+        // A note this size is built span by span as the reader reaches each one,
+        // so paragraph 400 is not in the document until somebody goes there.
+        // What this case is about is what happens to CONTAINMENT under a live
+        // selection, which has nothing to do with how the blocks got there — so
+        // it puts them all there and asks its own question. (render-scale and
+        // interaction are where the deferral itself is asserted.)
+        if (api.materializeNotesLazySpans) await api.materializeNotesLazySpans(view);
+        await settle(200);
         const before = view.scrollHeight;
         // See the note on case 3a for why the drag flag is set here.
         api.setTouchSelectionDragging(true);

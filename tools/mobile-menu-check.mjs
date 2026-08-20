@@ -193,9 +193,16 @@ const OPEN_BOOK_SRC = `async () => {
   // a different report, already covered by interaction-scale-check.
   await R.settle(3000);
   const view = document.getElementById("notesView");
+  const lazy = api.notesLazyStats ? api.notesLazyStats(view) : null;
   return {
     renderMs: Math.round(renderMs),
     blocks: api.notesTopLevelBlocks(view).length,
+    // A book is built span by span as it is read now, so counting the blocks in
+    // the DOM counts the screenful the reader has, not the fixture. Its real
+    // size is in the spans. Both are reported, because the whole point of this
+    // check is that the ☰ press is timed against a note that really is enormous.
+    spans: lazy ? lazy.spans : 0,
+    builtSpans: lazy ? lazy.built : 0,
     chunked: Boolean(view.querySelector(":scope > .notes-chunk")),
     elements: document.querySelectorAll("*").length,
     collapsed: document.body.classList.contains("chrome-collapsed")
@@ -433,8 +440,9 @@ async function run() {
     const spent = loaded.spent || { script: 0, style: 0, layout: 0, task: 0 };
 
     push("the fixture is a book, with figures in it",
-      book.blocks >= 2000 && book.chunked,
-      `${book.blocks} blocks, ${(setup.chars / 1e6).toFixed(1)}MB, chunked ${book.chunked}, ${book.elements} elements`,
+      (book.blocks >= 2000 || book.spans >= 50) && book.chunked,
+      `${book.blocks} blocks in the DOM${book.spans ? ` of ${book.spans} spans (${book.builtSpans} built)` : ""}, ` +
+      `${(setup.chars / 1e6).toFixed(1)}MB, chunked ${book.chunked}, ${book.elements} elements`,
       `rendered in ${book.renderMs}ms at ${THROTTLE}x throttle`);
 
     push("the ☰ button is reachable with the book open",
