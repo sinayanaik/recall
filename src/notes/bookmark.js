@@ -36,9 +36,26 @@ function buildBookmarkAnchor(offset) {
 }
 
 // Shows/hides the persistent "go to bookmark" button for whatever note is
-// open right now. Safe to call unconditionally on every notes render.
+// open right now, and says which of the two things the SET button will do.
+// Safe to call unconditionally on every notes render.
+//
+// Pressing set a second time does not add a bookmark, it replaces the one you
+// had — the note carries exactly one (meta.bookmark). Saying "Bookmark this
+// spot" either way made that a thing you could only learn by losing a
+// bookmark, so once there is one the button says "Move bookmark here" instead.
 export function refreshBookmarkButtonUI() {
-  if (el.bookmarkGoBtn) el.bookmarkGoBtn.hidden = !state.meta?.bookmark;
+  const saved = Boolean(state.meta?.bookmark);
+  if (el.bookmarkGoBtn) el.bookmarkGoBtn.hidden = !saved;
+  const set = el.bookmarkSetBtn;
+  if (!set) return;
+  const label = set.querySelector(".nhm-label");
+  if (label) label.textContent = saved ? "Move bookmark here" : "Bookmark this spot";
+  set.title = saved
+    ? "Move your bookmark to where you are now — a note keeps one"
+    : "Bookmark this spot so you can come back to it on any device";
+  set.setAttribute("aria-label", saved
+    ? "Move your bookmark to this spot in the notes"
+    : "Bookmark this spot in the notes");
 }
 
 export function bookmarkCurrentSpot() {

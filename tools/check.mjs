@@ -56,6 +56,14 @@
 //                   fixture with figures in it, and it times the shared
 //                   overlay/chrome plumbing directly — all three are why the
 //                   drawer freeze survived five rounds of profiling
+//   notes-menu      can you tell what the notes ⋯ menu's controls DO, and which
+//                   way the modes in it are set, without pressing one to find
+//                   out? Every row read the way a reader reads it — the label
+//                   the CSS actually shows, the switch's own word, the two
+//                   bookmark drawings compared — at desktop width and at 390px,
+//                   plus whether a note printed into a paragraph is drawn any
+//                   differently from the paragraph. Speaks CDP directly, so it
+//                   runs wherever there is a Chrome rather than skipping
 //   style           does a Style panel setting reach the element it names?
 //   highlight       does highlighting mark the thing that was SELECTED?
 //   paged           can you reach the end of a note in paged reading mode?
@@ -146,6 +154,7 @@ const checks = [
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],
+    ["notes-menu    ", ["node", ["tools/notes-menu-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],

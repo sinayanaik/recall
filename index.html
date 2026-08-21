@@ -92,6 +92,7 @@
     <link rel="stylesheet" href="styles/32-touch-select.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/33-reading-chrome.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/34-inline-highlight-notes.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/35-notes-menu.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -651,32 +652,46 @@
                    render toolbar) is swapped out for the edit toolbar, which is
                    why the selection tools live down there and these don't.
 
-                   Group 2 — the cloze family. [A] reveals the blanks, [?] quizzes
-                   them, and [ … ] in the strip below makes one, so the three read
-                   as a set wherever they sit. -->
+                   The hairlines are for THIS row, which only raw-edit mode still
+                   shows. In the ⋯ menu the same buttons are grouped by
+                   data-nhm-group instead, under headings — and by what they act
+                   ON rather than by which family they came from, which is why
+                   making a cloze sits with the other two things that need a
+                   selection and not with the two that list or reveal them. -->
               <span class="notes-head-divider is-lead" aria-hidden="true"></span>
-              <button class="edit-card-btn cloze-make-icon" data-render-action="cloze" type="button" title="Make a cloze — hide the selected text as a fill-in-the-blank" aria-label="Make a cloze from the selection"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg></button>
-              <button class="edit-card-btn cloze-toggle-icon" id="clozeToggleNotesBtn" type="button" aria-pressed="false" title="Show or hide every answer in these notes" aria-label="Reveal or hide all clozes in these notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg></button>
-              <button class="edit-card-btn cloze-review-icon" id="clozeReviewBtn" type="button" title="List every fill-in-the-blank in this deck" aria-label="List all clozes in this deck"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 5.5h4"/><rect x="9" y="3.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 12h4"/><rect x="9" y="10" width="9" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 18.5h4"/><rect x="9" y="16.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/></svg></button>
+              <button class="edit-card-btn cloze-make-icon" data-nhm-group="From the selection" data-render-action="cloze" type="button" title="Make a cloze — hide the selected text as a fill-in-the-blank" aria-label="Make a cloze from the selection"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg><span class="nhm-label">Hide the selection as a blank</span></button>
+              <button class="edit-card-btn cloze-toggle-icon" id="clozeToggleNotesBtn" data-nhm-group="Clozes" type="button" aria-pressed="false" title="Show or hide every answer in these notes" aria-label="Reveal or hide all clozes in these notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg><span class="nhm-label cloze-toggle-label">Reveal clozes</span></button>
+              <button class="edit-card-btn cloze-review-icon" id="clozeReviewBtn" data-nhm-group="Clozes" type="button" title="List every fill-in-the-blank in this deck" aria-label="List all clozes in this deck"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 5.5h4"/><rect x="9" y="3.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 12h4"/><rect x="9" y="10" width="9" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 18.5h4"/><rect x="9" y="16.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/></svg><span class="nhm-label">List every cloze in this deck</span></button>
               <span class="notes-head-divider" aria-hidden="true"></span>
-              <button class="edit-card-btn notes-make-card" data-render-action="make-card" type="button" title="Make a flashcard from the selection" aria-label="Make a flashcard from the selection">+</button>
-              <button class="edit-card-btn notes-quick-note" data-render-action="quick-note" type="button" title="Pin the selection to Quick Notes" aria-label="Pin the selection to Quick Notes">&#128204;</button>
+              <button class="edit-card-btn notes-make-card" data-nhm-group="From the selection" data-render-action="make-card" type="button" title="Make a flashcard from the selection" aria-label="Make a flashcard from the selection"><span class="nhm-ico" aria-hidden="true">+</span><span class="nhm-label">Make a flashcard</span></button>
+              <button class="edit-card-btn notes-quick-note" data-nhm-group="From the selection" data-render-action="quick-note" type="button" title="Pin the selection to Quick Notes" aria-label="Pin the selection to Quick Notes"><span class="nhm-ico" aria-hidden="true">&#128204;</span><span class="nhm-label">Pin it to Quick Notes</span></button>
               <span class="notes-head-divider" aria-hidden="true"></span>
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
               <span class="notes-head-divider" aria-hidden="true"></span>
               <!-- Manual, cross-device bookmark — deliberately separate from the
                    ambient, same-device-only reading position. #bookmarkGoBtn is
                    the subtle persistent fallback for when the cross-device
-                   "jump to bookmark?" prompt is missed or dismissed. -->
-              <button class="edit-card-btn bookmark-set-icon" id="bookmarkSetBtn" type="button" title="Bookmark this spot" aria-label="Bookmark this spot in the notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h12v17l-6-4-6 4z"/></svg></button>
-              <button class="edit-card-btn bookmark-go-icon" id="bookmarkGoBtn" type="button" title="Go to bookmark" aria-label="Go to your bookmarked spot in these notes" hidden><svg class="cz-ico" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M6 3.5h12v17l-6-4-6 4z"/></svg></button>
+                   "jump to bookmark?" prompt is missed or dismissed.
+
+                   The two used to be the SAME drawing — one bookmark outlined,
+                   one bookmark filled — which is a difference you can only read
+                   if you already know which is which, and they sat next to each
+                   other with nothing but a tooltip to tell them apart. They are
+                   two different verbs now: a bookmark with a + in it SAVES one
+                   here, and an arrow flying INTO a bookmark GOES to the one you
+                   saved. Both carry their sentence in the menu beside them, and
+                   the set button says "Move bookmark here" once there is one to
+                   move (refreshBookmarkButtonUI) — because pressing it a second
+                   time replaces the first, which the old wording never said. -->
+              <button class="edit-card-btn bookmark-set-icon" id="bookmarkSetBtn" data-nhm-group="Bookmark" type="button" title="Bookmark this spot so you can come back to it on any device" aria-label="Bookmark this spot in the notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3.5h13v17l-6.5-4.6-6.5 4.6z"/><path d="M12 8.2v5.2M9.4 10.8h5.2"/></svg><span class="nhm-label">Bookmark this spot</span></button>
+              <button class="edit-card-btn bookmark-go-icon" id="bookmarkGoBtn" data-nhm-group="Bookmark" type="button" title="Jump to the spot you bookmarked, on whichever device you set it" aria-label="Go to your bookmarked spot in these notes" hidden><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3.5h6.5v17l-3.25-2.5-3.25 2.5z" fill="currentColor" stroke="none"/><path d="M2.5 12h8.6M7.4 8.3 11.1 12l-3.7 3.7"/></svg><span class="nhm-label">Go to bookmark</span></button>
               <!-- Folds the appbar + Cards/Notes toggle away and pins them
                    there, so a long note keeps the whole screen instead of the
                    chrome springing back the moment you nudge upward. On phones
                    scrolling already folds them on its own; this makes it stick.
                    Escape and the shortcut also exit — necessary on desktop,
                    where the collapsed appbar takes ☰ and Back with it. -->
-              <button class="edit-card-btn focus-mode-btn" id="focusModeBtn" type="button" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Toggle focus mode">&#10530;</button>
+              <button class="edit-card-btn focus-mode-btn" id="focusModeBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Toggle focus mode"><span class="nhm-ico" aria-hidden="true">&#10530;</span><span class="nhm-label">Focus mode<span class="nhm-hint">Hide the header · Ctrl+.</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
               <!-- Focus mode's louder sibling: it folds the app's own chrome
                    AND takes the browser's, through the Fullscreen API. Two
                    buttons rather than three states on one, because they are
@@ -685,7 +700,7 @@
                    makes you press twice to find out which one you are in.
                    Where the Fullscreen API is missing (iOS Safari) this
                    degrades to focus mode and says so in its title. -->
-              <button class="edit-card-btn immersive-mode-btn" id="immersiveModeBtn" type="button" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Toggle full screen">&#9974;</button>
+              <button class="edit-card-btn immersive-mode-btn" id="immersiveModeBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Toggle full screen"><span class="nhm-ico" aria-hidden="true">&#9974;</span><span class="nhm-label">Full screen<span class="nhm-hint">Hide the browser too · Ctrl+Q</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
               <!-- Every highlight's note, printed where it belongs, numbered in
                    reading order. Off by default and remembered: a note read
                    with its annotations in it is a different document from the
@@ -696,11 +711,20 @@
                    that button EDITS one note and this one PRINTS all of them,
                    and the dagger is already the mark that means "there is a
                    note about this, set out below". It is also monochrome,
-                   which ✎ at this size in a colour font is not. -->
-              <button class="edit-card-btn inline-notes-btn" id="inlineNotesBtn" type="button" aria-pressed="false" title="Show every highlight's note in the text, numbered where it belongs" aria-label="Toggle highlight notes in the text">&#8224;</button>
+                   which ✎ at this size in a colour font is not.
+
+                   It shipped as that dagger and nothing else — no word, no
+                   state, in a row of nine other glyphs — so it read as neither
+                   "what does this do" nor "is it on". The switch says which of
+                   the two states it is in without being pressed, the sentence
+                   under it says what the mode does, and paintInlineNotesButton
+                   fills in how many notes this note actually HAS: pressing a
+                   toggle and watching nothing happen is the same puzzle again,
+                   and with no annotated highlights there is nothing to show. -->
+              <button class="edit-card-btn inline-notes-btn" id="inlineNotesBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Show every highlight's note in the text, numbered where it belongs" aria-label="Toggle highlight notes in the text"><span class="nhm-ico" aria-hidden="true">&#8224;</span><span class="nhm-label">Notes in the text<span class="nhm-hint">Print each highlight's note where it belongs</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
               <!-- Every low-frequency button above moves INTO the menu below —
                    the cloze trio, make-card, pin, the two bookmark controls,
-                   focus, full screen and the highlight-notes toggle: eight at
+                   focus, full screen and the highlight-notes toggle: ten at
                    the last count, and at EVERY width rather than only on a
                    phone (see applyNotesHeadOverflow, and the reasoning in
                    src/notes/notes-head-overflow.js — having room for a control
@@ -709,7 +733,17 @@
                    They are moved, not duplicated, so every handler already
                    wired to them keeps working, and the menu sits inside
                    .notes-head so the [data-render-target] delegation still
-                   resolves for the ones that format a selection. -->
+                   resolves for the ones that format a selection.
+
+                   Inside the menu each one is a ROW: its icon, the sentence in
+                   .nhm-label saying what pressing it does, and — for the three
+                   that are modes rather than actions — a switch reading On or
+                   Off. data-nhm-group is what the rows are divided by; the
+                   headings are drawn from those values by moveButtonsIntoMenu,
+                   so a button added here joins a group by naming it and needs
+                   nothing else. The labels are hidden by CSS anywhere but the
+                   menu, so a button that has not been moved yet still shows as
+                   the icon it was. -->
               <button class="edit-card-btn notes-head-more-btn" id="notesHeadMoreBtn" type="button" aria-expanded="false" aria-haspopup="true" aria-controls="notesHeadMoreMenu" title="More notes tools" aria-label="More notes tools" hidden>&#8943;</button>
               <div class="notes-head-more-menu" id="notesHeadMoreMenu" hidden></div>
             </div>

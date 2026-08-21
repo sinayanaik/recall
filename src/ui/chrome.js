@@ -218,7 +218,13 @@ export function applyChromeCollapse() {
   if (chromeFocusPinned !== focusBtnShowsPinned && el.focusModeBtn) {
     focusBtnShowsPinned = chromeFocusPinned;
     el.focusModeBtn.setAttribute("aria-pressed", chromeFocusPinned ? "true" : "false");
-    el.focusModeBtn.textContent = chromeFocusPinned ? "⤡" : "⤢";
+    // Into the glyph SPAN, never onto the button. The button also carries its
+    // name and its On/Off switch now (it is a row in the ⋯ menu, see
+    // notes-head-overflow.js), and `button.textContent = …` would delete both
+    // the first time the pin was turned on. The fallback is for a layout that
+    // has not got a glyph span — the old behaviour, unchanged.
+    const glyph = el.focusModeBtn.querySelector(".nhm-ico") || el.focusModeBtn;
+    glyph.textContent = chromeFocusPinned ? "⤡" : "⤢";
     el.focusModeBtn.title = chromeFocusPinned
       ? "Focus mode on (Ctrl + . or Esc) — bring the header back"
       : "Focus mode (Ctrl + .) — keep the header hidden while you read";

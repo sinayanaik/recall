@@ -8,7 +8,7 @@
 // ones that overflowed did not scroll out of reach, they vanished
 // (.quiz-panel is overflow:hidden on mobile).
 //
-// This takes the other half of that trade. Six low-frequency buttons move into
+// This takes the other half of that trade. Ten low-frequency buttons move into
 // a popover, at EVERY width — a desktop header carried thirteen controls in one
 // row, and having room for them is not a reason to show them. (The formatting
 // strip itself is gone from the header entirely now; it rides in the floating
@@ -42,21 +42,29 @@ const ROW_TRAIL_SELECTORS = [
   ".notes-head > #notesHeadMoreMenu",
 ];
 
-// In the order they should appear in the menu, which is the order they used to
-// appear in the header. Scoped to .notes-head for the same reason, and because
-// `[data-render-action]` values like "cloze" and "quick-note" also exist inside
-// the floating selection pill.
+// In the order they appear in the menu. This USED to be the order they sat in
+// the header, which put the three cloze icons at the top because that is where
+// the cloze icons happened to be — and left the two things you reach for while
+// actually reading (what the surface looks like, and where you got to) at the
+// bottom, below the fold of a phone-height popover.
+//
+// The order is by what you were doing when you opened it instead: the modes the
+// note is in, then the place you are keeping, then the two verbs that need a
+// selection, then the cloze list. Scoped to .notes-head because they must match
+// only while the button is still in its original home (see overflowHomes), and
+// because `[data-render-action]` values like "cloze" and "quick-note" also
+// exist inside the floating selection pill.
 const OVERFLOW_SELECTORS = [
-  ".notes-head > .cloze-make-icon",
-  ".notes-head > #clozeToggleNotesBtn",
-  ".notes-head > #clozeReviewBtn",
-  ".notes-head > .notes-make-card",
-  ".notes-head > .notes-quick-note",
-  ".notes-head > #bookmarkSetBtn",
-  ".notes-head > #bookmarkGoBtn",
   ".notes-head > #focusModeBtn",
   ".notes-head > #immersiveModeBtn",
   ".notes-head > #inlineNotesBtn",
+  ".notes-head > #bookmarkSetBtn",
+  ".notes-head > #bookmarkGoBtn",
+  ".notes-head > .notes-make-card",
+  ".notes-head > .notes-quick-note",
+  ".notes-head > .cloze-make-icon",
+  ".notes-head > #clozeToggleNotesBtn",
+  ".notes-head > #clozeReviewBtn",
 ];
 
 let notesHeadMoreBtn = null;
@@ -88,9 +96,47 @@ export function toggleNotesHeadMore() {
   else openNotesHeadMore();
 }
 
+// ── Why the menu is a list of sentences and not a tray of glyphs ──────────
+//
+// It shipped as ten icon buttons wrapped into a 280px box: a dagger, two
+// bookmarks that were the same drawing filled and unfilled, ⤢, ⛶, a pin, a +,
+// and three cloze icons. Every one of them says what it does in its `title`,
+// which is a tooltip — it does not exist on the phone this menu was built for,
+// and on a desktop it costs a hover and a second of waiting per button. So the
+// menu asked you to already know.
+//
+// Each button is a ROW here: icon, then the sentence it carries in .nhm-label,
+// then (for the modes) a switch. Two things follow from doing it this way
+// rather than by building a menu of fresh items:
+//
+//   • The rows ARE the buttons. Every handler, every aria-pressed, every title
+//     is the one that was already there — the same reason these are moved and
+//     never cloned. A toggle painted by some other module (focus mode by
+//     applyChromeCollapse, the cloze reveal by setClozeButtonState) keeps
+//     painting the same node, and its switch follows aria-pressed in CSS.
+//   • A button that has NOT been moved still looks like a plain icon button,
+//     because .nhm-label is only displayed inside the menu. Nothing here has to
+//     undo itself if a layout ever puts one of them back in the header.
+//
+// The headings come from data-nhm-group, so a new button joins a group by
+// naming it in the markup and needs no list here to be edited in step.
+function groupHeading(name) {
+  const heading = document.createElement("div");
+  heading.className = "nhm-group";
+  heading.setAttribute("role", "presentation");
+  heading.textContent = name;
+  return heading;
+}
+
 function moveButtonsIntoMenu() {
   if (overflowMoved || !notesHeadMoreMenu) return;
-  overflowHomes.forEach(({ node }) => notesHeadMoreMenu.appendChild(node));
+  let group = null;
+  overflowHomes.forEach(({ node }) => {
+    const name = node.dataset.nhmGroup || "";
+    if (name && name !== group) notesHeadMoreMenu.appendChild(groupHeading(name));
+    group = name;
+    notesHeadMoreMenu.appendChild(node);
+  });
   overflowMoved = true;
   if (notesHeadMoreBtn) notesHeadMoreBtn.hidden = false;
 }
@@ -101,7 +147,7 @@ export function applyNotesHeadOverflow() {
   // thirteen controls in one row — ☰, the caption, five format buttons, two
   // split controls, three cloze icons, make-card, pin, the edit pill and focus
   // — and "there is room for it" is not the same as "it belongs on screen".
-  // The same six low-frequency buttons move behind ⋯ at every width, so the two
+  // The same ten low-frequency buttons move behind ⋯ at every width, so the two
   // layouts are one design rather than two.
   moveButtonsIntoMenu();
 }
