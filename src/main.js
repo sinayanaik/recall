@@ -85,7 +85,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isMobileChrome, measureChromeHeights, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -101,7 +101,10 @@ import { FOCUS_MODE_KEY, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 import { initDocumentMarkMenu } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { fitDocumentToWidth, initDocumentPinchZoom, reattachDocument, saveDocumentCopy, scheduleDocumentPositionSave, scrollToDocumentPage, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { fitDocumentToWidth, initDocumentPinchZoom, reattachDocument, saveDocumentCopy, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
+import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
+import { initReadingRail, refreshReadingRail } from "./ui/reading-rail.js?v=__BUILD__";
 import { importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
        // grid | folder | tree
@@ -351,6 +354,12 @@ try {
 } catch (_) {
   setInlineHighlightNotesFlag(false);
 }
+
+// ...and the Document surface's counterpart. Its own key, deliberately: whether
+// a reader wants a paper's annotations printed under its pages is a different
+// question from whether they want a note's printed in its paragraphs, and one
+// preference answering both would get one of them wrong.
+setPdfPageNotesFlag(readPdfPageNotesPreference());
 
 // ── Measuring what the collapse actually has to travel ─────────────────────
 // The CSS animates `max-height` (not `height`) because the appbar's natural
@@ -891,9 +900,30 @@ onDomReady(initNotesCaretLine);
 onDomReady(initMarkMenu);
 onDomReady(initDocumentMarkMenu);
 onDomReady(initDocumentPinchZoom);
+onDomReady(initDocumentRegionSelect);
+onDomReady(() => {
+  initReadingRail();
+  setChromeCollapseHandler(refreshReadingRail);
+});
+// The badges are painted with each page as it renders, and the printed notes are
+// rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
+// why these are registered rather than imported.
+onDomReady(() => {
+  setDocumentPagePaintedHook(paintPageNoteBadges);
+  setDocumentOpenedHook(refreshPdfPageNotes);
+});
 // So an edit made on a mark in the note refreshes the Highlights tab, without
 // highlight-edit.js having to import the panel that owns it.
-onDomReady(() => setHighlightsChangedHandler(renderHighlightsPanel));
+// Two surfaces answer to a highlight changing now, not one. The panel is the
+// obvious consumer; the PDF's note badges and printed notes are the other,
+// because adding or deleting a note renumbers every note after it. Registered
+// here rather than imported into src/documents/pdf-highlights.js, which
+// pdf-page-notes.js already imports — this file is the one that knows both ends
+// (the same reason setDocumentPagePaintedHook exists below).
+onDomReady(() => setHighlightsChangedHandler(() => {
+  renderHighlightsPanel();
+  repaintPdfPageNotes();
+}));
 
 
 // pointerdown (not click) so preventDefault preserves the live selection.
@@ -2606,6 +2636,15 @@ document.addEventListener("click", (e) => {
 // bound to its behaviour, and a module that also owned its listeners would have
 // to be loaded before the elements it binds to could respond.
 
+// Dark page and region select, as buttons rather than rows in the ⋯ menu. Both
+// are MODES, and a mode you cannot see the state of is a mode people report as
+// missing — which is exactly what happened to dark page while it was buried in
+// the menu ("I am not seeing any option where I can select dark mode"). Their
+// aria-pressed is painted by the functions that own the state, so the button is
+// right however the mode was flipped.
+el.documentDarkBtn?.addEventListener("click", () => { togglePdfInvert(); });
+el.documentRegionBtn?.addEventListener("click", () => { toggleRegionSelect(); });
+
 el.documentZoomInBtn?.addEventListener("click", () => zoomDocument(1.25));
 el.documentZoomOutBtn?.addEventListener("click", () => zoomDocument(1 / 1.25));
 el.documentFitBtn?.addEventListener("click", () => fitDocumentToWidth());
@@ -2622,7 +2661,25 @@ el.documentPageInput?.addEventListener("change", () => {
 el.documentView?.addEventListener("scroll", () => {
   updatePageIndicator();
   scheduleDocumentPositionSave();
+  // The pager sits over the page at 45% opacity so it does not compete with it,
+  // and comes up to full while the page number it shows is actually changing —
+  // which is the one moment a reader is looking at it without having reached for
+  // it. Re-armed rather than stacked, so a fling costs one timer.
+  wakeDocumentPager();
 }, { passive: true });
+
+let documentPagerTimer = 0;
+
+function wakeDocumentPager() {
+  if (!el.documentPager) return;
+  el.documentPager.classList.add("is-active");
+  clearTimeout(documentPagerTimer);
+  documentPagerTimer = setTimeout(() => el.documentPager?.classList.remove("is-active"), DOCUMENT_PAGER_WAKE_MS);
+}
+
+// Long enough to read the page number after a flick has settled, short enough
+// that the cluster is not simply always on for anyone reading downward.
+const DOCUMENT_PAGER_WAKE_MS = 1200;
 
 // Fit-width has to be re-measured when the window changes: the whole point of
 // the mode is that the page is as wide as the room there is for it.
@@ -2656,16 +2713,19 @@ el.documentMoreBtn?.addEventListener("click", () => {
   const open = el.documentMoreMenu.hidden;
   el.documentMoreMenu.hidden = !open;
   el.documentMoreBtn.setAttribute("aria-expanded", String(open));
-  // The dark-page row is a MODE, so its switch has to say which way it is set
-  // without being pressed — the same rule the notes ⋯ menu's three toggles
-  // follow.
-  const invert = el.documentMoreMenu.querySelector('[data-document-action="invert"]');
-  invert?.setAttribute("aria-pressed", String(el.documentStage?.classList.contains("is-pdf-inverted")));
+  // "Notes on the page" is a MODE, so its switch has to say which way it is set
+  // — and its hint has to say how many notes there are to print, because
+  // pressing a toggle on an unannotated paper and seeing nothing change is the
+  // same puzzle the notes ⋯ menu's own rows were rewritten to remove.
+  if (open) paintPdfPageNotesButton();
 });
 
+// The button and the menu are direct children of #viewModeRow now (they were
+// lifted out of the deleted .document-toolbar at boot), so the wrapper this used
+// to test for no longer exists — the two ids are the test.
 document.addEventListener("pointerdown", (event) => {
   if (!el.documentMoreMenu || el.documentMoreMenu.hidden) return;
-  if (event.target.closest(".document-more")) return;
+  if (event.target.closest("#documentMoreMenu, #documentMoreBtn")) return;
   el.documentMoreMenu.hidden = true;
   el.documentMoreBtn?.setAttribute("aria-expanded", "false");
 }, { capture: true, passive: true });
@@ -2677,12 +2737,14 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   // The re-attach row is a <label> wrapping a file input — closing the menu on
   // its own click would remove the input before the picker opened.
   if (action === "reattach") return;
-  if (action !== "invert") {
+  // A mode row stays put: flipping it and watching the switch move is the
+  // feedback, and a menu that closed underneath the press would take that away.
+  if (action !== "page-notes") {
     el.documentMoreMenu.hidden = true;
     el.documentMoreBtn?.setAttribute("aria-expanded", "false");
   }
-  if (action === "invert") {
-    button.setAttribute("aria-pressed", String(togglePdfInvert()));
+  if (action === "page-notes") {
+    togglePdfPageNotes();
     return;
   }
   if (action === "save") {

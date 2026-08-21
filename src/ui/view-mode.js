@@ -48,8 +48,16 @@ export function setViewMode(mode, options = {}) {
   el.notesStage.hidden = !notesActive;
   if (el.highlightsStage) el.highlightsStage.hidden = !highlightsActive;
   if (el.documentStage) el.documentStage.hidden = !documentActive;
-  el.viewModeToggle.querySelectorAll("[data-view-mode]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.viewMode === next);
+  // Both containers, explicitly. The reading rail carries a second set of
+  // [data-view-mode] buttons for focus mode (src/ui/reading-rail.js) and it must
+  // never be a second opinion about where the reader is — but this is emphatically
+  // NOT a document.querySelectorAll: an attribute selector cannot be answered
+  // from an index, so on a book-sized note that would be a full tree walk on
+  // every tab press.
+  [el.viewModeToggle, el.readingRailTray].forEach((container) => {
+    container?.querySelectorAll("[data-view-mode]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.viewMode === next);
+    });
   });
   hideNotesSelectionButton();
   // Leaving the notes is the moment the reading position is final — write out

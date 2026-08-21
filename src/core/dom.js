@@ -235,11 +235,19 @@ export const el = {
   // .pdf-page per page.
   documentStage: document.querySelector("#documentStage"),
   documentView: document.querySelector("#documentView"),
+  // The page number and the zoom controls, in the cluster that floats over the
+  // bottom-right of the page rather than in a bar above it.
+  documentPager: document.querySelector("#documentPager"),
   documentPageInput: document.querySelector("#documentPageInput"),
   documentPageIndicator: document.querySelector("#documentPageIndicator"),
   documentZoomInBtn: document.querySelector("#documentZoomInBtn"),
   documentZoomOutBtn: document.querySelector("#documentZoomOutBtn"),
   documentFitBtn: document.querySelector("#documentFitBtn"),
+  // Two modes, as buttons in the view-mode row rather than rows in the ⋯ menu:
+  // dark page read as missing while it was buried there, and region select is
+  // the only way to highlight a figure at all.
+  documentDarkBtn: document.querySelector("#documentDarkBtn"),
+  documentRegionBtn: document.querySelector("#documentRegionBtn"),
   documentMoreBtn: document.querySelector("#documentMoreBtn"),
   documentMoreMenu: document.querySelector("#documentMoreMenu"),
   documentReattachInput: document.querySelector("#documentReattachInput"),
@@ -248,6 +256,10 @@ export const el = {
   documentOutlineDrawer: document.querySelector("#documentOutlineDrawer"),
   documentOutlineList: document.querySelector("#documentOutlineList"),
   documentOutlineEmpty: document.querySelector("#documentOutlineEmpty"),
+  // The rail focus mode brings back — see src/ui/reading-rail.js.
+  readingRail: document.querySelector("#readingRail"),
+  readingRailGrip: document.querySelector("#readingRailGrip"),
+  readingRailTray: document.querySelector("#readingRailTray"),
   myDecksImportPdfInput: document.querySelector("#myDecksImportPdfInput"),
   frameCardModal: document.querySelector("#frameCardModal"),
   frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),

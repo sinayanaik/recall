@@ -94,6 +94,8 @@
     <link rel="stylesheet" href="styles/34-inline-highlight-notes.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/35-notes-menu.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/36-document.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/37-document-chrome.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/38-reading-rail.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -141,6 +143,8 @@
     <link rel="modulepreload" href="src/core/text.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-highlights.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-region.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-store.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-view.js?v=__BUILD__">
@@ -261,6 +265,7 @@
     <link rel="modulepreload" href="src/ui/nav-history.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/overlays.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/pickers.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/reading-rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-schema.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-settings.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-tokens.js?v=__BUILD__">
@@ -539,13 +544,18 @@
                nearest such ancestor. -->
           <div class="view-mode-row" id="viewModeRow" data-render-target="notes">
             <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="Deck view">
-              <button class="is-active" type="button" data-view-mode="cards">&#9634; Cards</button>
-              <button type="button" data-view-mode="notes">&#128221; Notes</button>
+              <!-- The glyph and the word are separate spans so the glyph can be
+                   DROPPED on a narrow screen. A PDF deck has four tabs, not
+                   three, and at 360px four labels plus four emoji plus the
+                   controls beside them do not fit — the labels are the half
+                   that has to survive (see styles/37-document-chrome.css). -->
+              <button class="is-active" type="button" data-view-mode="cards"><span class="vm-ico" aria-hidden="true">&#9634;</span><span class="vm-label">Cards</span></button>
+              <button type="button" data-view-mode="notes"><span class="vm-ico" aria-hidden="true">&#128221;</span><span class="vm-label">Notes</span></button>
               <!-- Only a deck with meta.pdf ever shows this (see
                    refreshDocumentTab) — it is not a third empty tab on every
                    deck in the library, it is the surface a PDF deck opens on. -->
-              <button type="button" data-view-mode="document" hidden>&#128196; Document</button>
-              <button type="button" data-view-mode="highlights">&#128308; Highlights</button>
+              <button type="button" data-view-mode="document" hidden><span class="vm-ico" aria-hidden="true">&#128196;</span><span class="vm-label">Document</span></button>
+              <button type="button" data-view-mode="highlights"><span class="vm-ico" aria-hidden="true">&#128308;</span><span class="vm-label">Highlights</span></button>
             </div>
           </div>
 
@@ -804,36 +814,58 @@
                per page, and each rendered page carries a canvas, a mark layer and
                a transparent text layer that makes native selection work.
 
-               Its own toolbar rather than .notes-head, for the same reason the
-               highlights stage has one: that row is display:none whenever the
-               panel is in notes mode and only works because JS lifts its
-               controls into #viewModeRow first. -->
+               The controls are NOT a row of their own any more. A full-width
+               .document-toolbar under the tabs made three stacked bars before
+               the first line of a paper, and its "Document" caption said what
+               the lit tab directly above it already said. They now go two
+               places, and #documentHead below is only where they START:
+
+                 • contents, dark page, region select and ⋯ are lifted into
+                   #viewModeRow at boot (liftNotesControlsIntoRow), beside the
+                   tabs, exactly as the notes controls are — so a PDF deck and a
+                   notes deck have the same one row in the same shape;
+                 • the page number and the zoom controls become #documentPager,
+                   a quiet cluster floating over the bottom-right of the page,
+                   which is the idiom every PDF reader uses and the only form
+                   that survives focus mode.
+
+               MOVED, never cloned: every one of them is wired by id in
+               src/main.js, and a clone would have none of those handlers while
+               looking identical. -->
           <div class="document-stage" id="documentStage" hidden>
-            <div class="document-toolbar">
+            <div class="document-head" id="documentHead">
               <button class="notes-toc-toggle" id="documentTocBtn" type="button" title="Contents" aria-label="Contents" aria-expanded="false" aria-controls="documentOutlineDrawer"><span class="notes-toc-bars" aria-hidden="true"></span></button>
-              <span class="face-label">Document</span>
-              <div class="document-page-jump">
-                <input class="document-page-input" id="documentPageInput" type="number" min="1" step="1" inputmode="numeric" aria-label="Go to page">
-                <span class="document-page-indicator" id="documentPageIndicator" aria-live="polite"></span>
-              </div>
-              <button class="tool-button document-zoom" id="documentZoomOutBtn" type="button" title="Zoom out" aria-label="Zoom out">&#8722;</button>
-              <button class="tool-button document-zoom" id="documentZoomInBtn" type="button" title="Zoom in" aria-label="Zoom in">&#43;</button>
-              <button class="tool-button document-zoom" id="documentFitBtn" type="button" title="Fit the page to the window width" aria-label="Fit to width">&#8596;</button>
-              <div class="document-more">
-                <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Document options" title="Document options">&#8943;</button>
-                <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
-                  <div class="md-menu-head"><span>Document</span></div>
-                  <button class="md-menu-item" type="button" data-document-action="invert" title="Invert the page for dark themes — off by default, because a paper with photographs in it looks wrong inverted"><span>Dark page<span class="nhm-hint">Invert the page for dark themes</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
-                  <button class="md-menu-item" type="button" data-document-action="save" title="Download the original PDF, byte for byte"><span>Save a copy</span></button>
-                  <button class="md-menu-item" type="button" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
-                  <label class="md-menu-item file-pick" data-document-action="reattach" title="Point this deck back at the PDF on this device">
-                    <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
-                    <span>Re-attach the PDF…</span>
-                  </label>
-                </div>
+              <!-- Dark page was a row in the ⋯ menu below and read as missing:
+                   "there is no option to see the PDF in dark mode" is what a
+                   feature buried two presses deep looks like. It is a button
+                   now, and the menu row is gone — one control, one home. -->
+              <button class="tool-button document-toggle" id="documentDarkBtn" type="button" aria-pressed="false" title="Dark page — invert the paper for a dark theme. Off by default: a paper with photographs in it looks wrong inverted." aria-label="Dark page">&#9681;</button>
+              <!-- Region select. A figure, a plotted result or a display
+                   equation has no text layer to drag across, so without this
+                   half the content of a paper cannot be highlighted at all. -->
+              <button class="tool-button document-toggle" id="documentRegionBtn" type="button" aria-pressed="false" title="Select a region — drag a box around a figure, a table or an equation to highlight it" aria-label="Select a region">&#9635;</button>
+              <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Document options" title="Document options">&#8943;</button>
+              <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
+                <div class="md-menu-head"><span>Document</span></div>
+                <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on, numbered — the Document surface's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                <button class="md-menu-item" type="button" data-document-action="save" title="Download the original PDF, byte for byte"><span>Save a copy</span></button>
+                <button class="md-menu-item" type="button" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
+                <label class="md-menu-item file-pick" data-document-action="reattach" title="Point this deck back at the PDF on this device">
+                  <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
+                  <span>Re-attach the PDF…</span>
+                </label>
               </div>
             </div>
             <div class="document-scroll" id="documentView"></div>
+            <!-- Over the page, not above it. Quiet until reached for, so a
+                 reader gets the whole height of the stage for the paper. -->
+            <div class="document-pager" id="documentPager">
+              <input class="document-page-input" id="documentPageInput" type="number" min="1" step="1" inputmode="numeric" aria-label="Go to page" title="Type a page number and press Enter" placeholder="#">
+              <span class="document-page-indicator" id="documentPageIndicator" aria-live="polite"></span>
+              <button class="tool-button document-zoom" id="documentZoomOutBtn" type="button" title="Zoom out" aria-label="Zoom out">&#8722;</button>
+              <button class="tool-button document-zoom" id="documentZoomInBtn" type="button" title="Zoom in" aria-label="Zoom in">&#43;</button>
+              <button class="tool-button document-zoom" id="documentFitBtn" type="button" title="Fit the page to the window width" aria-label="Fit to width">&#8596;</button>
+            </div>
             <nav class="notes-toc-drawer document-toc-drawer" id="documentOutlineDrawer" hidden aria-label="Document contents">
               <div class="notes-toc-head">
                 <span class="notes-toc-title">Contents</span>
@@ -972,6 +1004,38 @@
           </div>
         </section>
       </section>
+
+      <!-- ── The reading rail ─────────────────────────────────────────────
+           Focus mode folds the appbar AND the whole view-mode row away (see
+           styles/12-notes.css:1255 and styles/16-mobile-reading.css:338), which
+           is the point of it — and which also takes the table of contents, the
+           four views and the way back to My Decks with them. Leaving focus mode
+           to change tab and re-entering it is not a mode, it is a chore.
+
+           So this is what stays: a grip on the edge of the screen, ~8px wide,
+           that expands into the seven things focus mode took away. It exists
+           ONLY while body.chrome-collapsed — outside focus mode every one of
+           these is already on screen in the row above, and a second copy of a
+           visible control is a second thing to keep in step.
+
+           Its buttons are new nodes rather than moved ones, unlike the notes
+           and document controls: those are moved because they carry handlers,
+           and these carry none — every one of them calls a function that
+           already exists (see src/ui/reading-rail.js). -->
+      <div class="reading-rail" id="readingRail" data-expanded="false">
+        <button class="reading-rail-grip" id="readingRailGrip" type="button" aria-expanded="false" aria-controls="readingRailTray" aria-label="Reading controls" title="Reading controls"><span aria-hidden="true"></span></button>
+        <div class="reading-rail-tray" id="readingRailTray" role="toolbar" aria-label="Reading controls">
+          <button class="reading-rail-btn" type="button" data-rail-action="decks" title="My Decks" aria-label="My Decks">&#128218;</button>
+          <button class="reading-rail-btn" type="button" data-rail-action="contents" title="Contents" aria-label="Contents">&#9776;</button>
+          <span class="reading-rail-sep" aria-hidden="true"></span>
+          <button class="reading-rail-btn" type="button" data-view-mode="cards" title="Cards" aria-label="Cards">&#9634;</button>
+          <button class="reading-rail-btn" type="button" data-view-mode="notes" title="Notes" aria-label="Notes">&#128221;</button>
+          <button class="reading-rail-btn" type="button" data-view-mode="document" hidden title="Document" aria-label="Document">&#128196;</button>
+          <button class="reading-rail-btn" type="button" data-view-mode="highlights" title="Highlights" aria-label="Highlights">&#128308;</button>
+          <span class="reading-rail-sep" aria-hidden="true"></span>
+          <button class="reading-rail-btn" type="button" data-rail-action="leave-focus" title="Leave focus mode (Esc)" aria-label="Leave focus mode">&#10593;</button>
+        </div>
+      </div>
     </main>
 
     <!-- Import is one linear flow: pick a source, then review what Recall found
@@ -1442,9 +1506,11 @@
               <li><strong>Highlights already in the file are imported</strong> — a paper you have been annotating in Zotero, Preview or Okular arrives with those highlights in place, and any comment on one becomes a note on it</li>
               <li><strong>They show up everywhere your other highlights do</strong> — the <strong>Highlights</strong> tab lists them with their page numbers, and the highlights export carries the page too</li>
               <li><strong>The Notes tab is still yours</strong> — an ordinary Markdown note beside the paper, with clozes, math and note links all working as they always have. The two are one deck</li>
-              <li><strong>Contents, zoom, dark page</strong> — <strong>☰</strong> opens the PDF's own table of contents; <strong>+ − ↔</strong> zoom and fit to width; <strong>⋯ → Dark page</strong> inverts the page for a dark theme, off by default because a paper full of photographs looks wrong inverted</li>
+              <li><strong>Select a figure, a table or an equation</strong> — press <strong>▣</strong> and drag a box round it. A region is a highlight like any other: it takes a colour, it takes a note, it turns into a card, and it is listed in the <strong>Highlights</strong> tab with a picture of what you drew round. Any words the box covers come with it, so a boxed equation is still searchable text; a photograph is listed by its page. The mode turns itself off after one box, so you are never left unable to select text</li>
+              <li><strong>Read every note on the page it belongs to</strong> — a highlight with a note on it wears a small numbered badge; press it to open the note. <strong>⋯ → Notes on the page</strong> prints all of them, numbered, in the gap under each page, so a paper you have read closely reads back as a paper plus its margins rather than a paper plus another tab</li>
+              <li><strong>Contents, zoom, dark page</strong> — <strong>☰</strong> opens the PDF's own table of contents; the page number and <strong>+ − ↔</strong> float over the bottom corner of the page, out of the way until you reach for them; <strong>◐</strong> inverts the page for a dark theme, off by default because a paper full of photographs looks wrong inverted (your highlights keep their own colours either way)</li>
               <li><strong>Finish a paper, then let go of it</strong> — <strong>⋯ → Save a copy</strong> downloads the original file, and <strong>⋯ → Remove from cloud</strong> frees the storage it was using. Your highlights, notes and cards all stay, and so does the copy on this device; another device asks you to re-attach the file, and checks it really is the same one before painting a single highlight on it</li>
-              <li><strong>A scanned PDF with no text layer</strong> reads perfectly well, but there is no text to select in it — so no text highlights and no make-card-from-text. There is no OCR</li>
+              <li><strong>A scanned PDF with no text layer</strong> reads perfectly well, and there is no text in it to select — so no text highlights and no make-card-from-text, and there is no OCR. <strong>▣</strong> still works on every page of it, which is the one way to mark up a scan</li>
             </ul>
           </section>
 
@@ -1480,7 +1546,7 @@
               <tr><td><kbd>R</kbd></td><td>Mark for Review</td></tr>
               <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Navigate cards</td></tr>
               <tr><td><kbd>Ctrl</kbd> + <kbd>E</kbd></td><td>Toggle edit / rendered view</td></tr>
-              <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read)</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read — a small grip on the right edge of the screen still opens the contents, the four views and My Decks)</td></tr>
               <tr><td><kbd>Esc</kbd></td><td>Close the topmost panel, or leave focus mode</td></tr>
             </table>
           </section>

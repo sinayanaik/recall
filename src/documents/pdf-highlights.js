@@ -97,6 +97,21 @@ function commitDocumentHighlights(next) {
   notifyHighlightsChanged();
 }
 
+// What to CALL a highlight in a list — the Highlights panel, an export, the
+// heading of its note.
+//
+// A text highlight is its own words and always has been. A region drawn around a
+// photograph has no words at all, and a blank row in a list of highlights is
+// indistinguishable from a bug, so it is named by where it is instead. (A region
+// around a boxed equation or a table usually DOES pick up text, and then it is
+// called by that text like anything else.)
+export function documentHighlightLabel(record) {
+  const text = String(record?.text || "").trim();
+  if (text) return text;
+  const page = Number(record?.page || record?.quads?.[0]?.page || 0);
+  return page ? `Region · page ${page}` : "Region";
+}
+
 // A short label for the note section's heading, so a hand-edited note file
 // still says which highlight each entry belongs to.
 export function documentExcerptLabel(text) {
@@ -118,6 +133,14 @@ export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
     focus: capture.focus,
     text: capture.text || "",
     quads: capture.quads,
+    // "text" (a run of glyphs dragged across the text layer) or "area" (a box
+    // dragged around a figure — see pdf-region.js). Stored rather than derived,
+    // because the two are told apart by INTENT and not by shape: a region drawn
+    // around a boxed equation picks up that equation's text, and would be
+    // indistinguishable from a text selection afterwards. Everything downstream
+    // reads it as an optional field, so a record written before this existed is
+    // a text highlight, which it was.
+    kind: capture.kind === "area" ? "area" : "text",
     // Per-record, and per-EDIT: the sync merge is a union by id with newest
     // winning, so a recolour made on a phone has to be able to out-rank the
     // original made on a laptop. A whole-deck last-write-wins would simply drop
@@ -163,7 +186,7 @@ export function documentHighlightNote(id) {
 export function setDocumentHighlightNote(id, text) {
   const record = documentHighlightById(id);
   if (!record) return false;
-  state.notes = setHighlightNoteInSource(state.notes || "", id, text, documentExcerptLabel(record.text));
+  state.notes = setHighlightNoteInSource(state.notes || "", id, text, documentExcerptLabel(documentHighlightLabel(record)));
   // `at` moves too: a note is an edit to the highlight, and the sync merge
   // decides by timestamp.
   commitDocumentHighlights(documentHighlights().map((entry) =>
@@ -199,6 +222,10 @@ export function paintDocumentHighlights(pageNumber) {
       const mark = document.createElement("div");
       mark.className = PDF_MARK_CLASS;
       mark.dataset.color = record.color || MARK_HIGHLIGHT_DEFAULT;
+      // A region is drawn as an outline rather than tinted: `mix-blend-mode:
+      // multiply` over a photograph washes out the figure being highlighted.
+      // See styles/37-document-chrome.css.
+      if (record.kind === "area") mark.dataset.kind = "area";
       mark.dataset.highlightId = record.id;
       mark.style.left = `${box.left}px`;
       mark.style.top = `${box.top}px`;

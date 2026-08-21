@@ -1,0 +1,309 @@
+// A note attached to a PDF highlight, said on the page.
+//
+// The notes view already answers this question — src/notes/inline-highlight-notes
+// .js prints every highlight's note where it belongs, numbered, behind an opt-in
+// toggle — and it opens with the reason: the annotation for a sentence on page 3
+// sits four hundred paragraphs below the sentence, and until you tap the
+// highlight there is nothing on screen to say the note exists at all.
+//
+// That is worse on a paper, not better. A PDF highlight's note lives in the same
+// "## Highlight Notes" section of the deck's markdown (see pdf-highlights.js),
+// which is a different TAB from the one the reader is looking at.
+//
+// So the same two layers, in the same two kinds:
+//
+//   1. ALWAYS ON — an annotated highlight is marked as annotated: a small
+//      numbered badge pinned to its first quad. It says "there is something
+//      here"; pressing it opens the note, exactly as tapping the highlight does.
+//   2. OPT-IN — every note is numbered in reading order and PRINTED under the
+//      page it belongs to. Toggled from the document ⋯ menu and remembered
+//      across sessions.
+//
+// ── Why a sibling of the page, and not a margin or an overlay ──────────────
+//
+// A .pdf-page is a fixed-size box, and every highlight quad on it is a
+// coordinate INTO that box (pdf-selection.js converts through the live
+// viewport). Anything that changed a page's height would move every anchor on
+// it. And a margin rail — the obvious answer on a laptop — has nowhere to go on
+// a phone, where fit-width means the page IS the width of the screen.
+//
+// A block inserted after the page in #documentView costs the page nothing (that
+// scroller is already `display: flex; flex-direction: column`), reads the same
+// at 360px as at 1440px, and leaves the position tracking correct because
+// currentDocumentPage() and isPageNearViewport() both read live offsetTop.
+//
+// ── Why the numbers come from the records ─────────────────────────────────
+//
+// Same rule inline-highlight-notes.js states for the same reason: numbering has
+// to come from the source, never from DOM order. The document view is
+// virtualized — only pages near the viewport carry a canvas at all — so a
+// counter that walked what happens to be rendered would hand out 1, 2, 3 for
+// whichever pages were on screen and renumber the lot on every scroll.
+// documentHighlightsInReadingOrder() is already page-then-down-the-page order,
+// which is exactly the order a reader would number them in.
+
+import { el } from "../core/dom.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
+import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
+import {
+  DOCUMENT_NOTE_HANDLERS,
+  documentHighlightLabel,
+  documentHighlightNote,
+  documentHighlightsInReadingOrder
+} from "./pdf-highlights.js?v=__BUILD__";
+import { quadToPageBox } from "./pdf-selection.js?v=__BUILD__";
+import {
+  currentDocumentPage,
+  currentDocumentRatio,
+  pdfPageElement,
+  scrollToDocumentPage
+} from "./pdf-view.js?v=__BUILD__";
+
+export const PDF_PAGE_NOTES_KEY = "recall:pdfPageNotes";
+
+export const BADGE_LAYER_CLASS = "pdf-badge-layer";
+
+export const NOTE_BADGE_CLASS = "pdf-note-badge";
+
+export const PAGE_NOTES_CLASS = "pdf-page-notes";
+
+// How much of a note goes in the badge's tooltip. Enough to recognise which note
+// it is without opening it; not so much that the tooltip is the note.
+export const BADGE_TITLE_CHARS = 90;
+
+let pageNotesOn = false;
+
+export function isPdfPageNotesOn() {
+  return pageNotesOn;
+}
+
+// Seeded by main.js at startup, the same shape as FOCUS_MODE_KEY and
+// INLINE_HIGHLIGHT_NOTES_KEY: an imported binding is read-only, so the flag
+// needs a setter of its own.
+export function setPdfPageNotesFlag(value) {
+  pageNotesOn = Boolean(value);
+}
+
+export function readPdfPageNotesPreference() {
+  try {
+    return localStorage.getItem(PDF_PAGE_NOTES_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+// ── The index ───────────────────────────────────────────────────────────────
+
+// Every annotated highlight, in reading order, with the number it is shown as.
+// Rebuilt on demand rather than memoized: it is one pass over an array that is
+// tens of entries long even for a heavily marked-up paper, and the note text it
+// reads comes from state.notes, which any edit anywhere can replace.
+export function annotatedDocumentHighlights() {
+  const out = [];
+  documentHighlightsInReadingOrder().forEach((record) => {
+    const note = documentHighlightNote(record.id);
+    if (!note) return;
+    out.push({ record, note, n: out.length + 1 });
+  });
+  return out;
+}
+
+function openNoteFor(record, anchorEl) {
+  const rect = anchorEl?.getBoundingClientRect?.() || null;
+  openHighlightNoteEditor(record.id, rect, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
+}
+
+// ── Layer 1: the badges ─────────────────────────────────────────────────────
+//
+// Its own layer, above the text layer rather than in the mark layer. The mark
+// layer carries `pointer-events: none` and must keep it — the text layer sits
+// over it and every pointer event has to reach that, or selection stops working
+// over a highlight (see pdf-highlights.js). A badge has to be pressable, so it
+// goes in a layer of its own, which is also `pointer-events: none` except for
+// the badges themselves: ~16px per annotated highlight is the entire cost to
+// selection on the page.
+export function paintPageNoteBadges(pageNumber) {
+  const pageEl = pdfPageElement(pageNumber);
+  if (!pageEl) return;
+  let layer = pageEl.querySelector(`.${BADGE_LAYER_CLASS}`);
+  const annotated = annotatedDocumentHighlights()
+    .filter(({ record }) => (record.quads || []).some((quad) => quad.page === pageNumber));
+  if (!annotated.length) {
+    layer?.remove();
+    return;
+  }
+  // Only once the page has actually rendered: a placeholder has no viewport, so
+  // quadToPageBox has nothing to convert against and every badge would land at
+  // the origin. renderPage calls back in here once it does.
+  if (!pageEl.querySelector(".pdf-text-layer")) {
+    layer?.remove();
+    return;
+  }
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.className = BADGE_LAYER_CLASS;
+    pageEl.appendChild(layer);
+  }
+  layer.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  annotated.forEach(({ record, note, n }) => {
+    const quad = (record.quads || []).find((entry) => entry.page === pageNumber);
+    const box = quad ? quadToPageBox(quad) : null;
+    if (!box) return;
+    const badge = document.createElement("button");
+    badge.type = "button";
+    badge.className = NOTE_BADGE_CLASS;
+    badge.dataset.highlightId = record.id;
+    badge.textContent = String(n);
+    const flat = note.replace(/\s+/g, " ").trim();
+    badge.title = flat.length > BADGE_TITLE_CHARS ? `${flat.slice(0, BADGE_TITLE_CHARS)}…` : flat;
+    badge.setAttribute("aria-label", `Note ${n} on this highlight`);
+    // Pinned just outside the highlight's top-right corner, so it never covers
+    // the words it is about. Clamped to 0 on the left because a highlight that
+    // starts in the page's left margin would otherwise put its badge outside the
+    // page.
+    badge.style.left = `${Math.max(0, box.left + box.width - 8)}px`;
+    badge.style.top = `${Math.max(0, box.top - 8)}px`;
+    badge.addEventListener("click", (event) => {
+      // The document view's own click handler opens the MARK menu for whatever
+      // highlight is under the pointer; the badge is a shortcut past that menu
+      // straight to the note, so it must not do both.
+      event.stopPropagation();
+      openNoteFor(record, badge);
+    });
+    frag.appendChild(badge);
+  });
+  layer.appendChild(frag);
+}
+
+// ── Layer 2: the printed notes ──────────────────────────────────────────────
+
+function noteBlockFor(pageNumber, entries) {
+  const block = document.createElement("div");
+  block.className = PAGE_NOTES_CLASS;
+  block.dataset.pageNumber = String(pageNumber);
+  const head = document.createElement("div");
+  head.className = "pdf-page-notes-head";
+  head.textContent = `Notes · page ${pageNumber}`;
+  block.appendChild(head);
+  entries.forEach(({ record, note, n }) => {
+    // A button, because the note is EDITABLE from here — the same round trip the
+    // badge and the mark menu make. Read-only text would be a third place a note
+    // appears and the only one you cannot fix a typo in.
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pdf-page-note";
+    row.dataset.highlightId = record.id;
+    const number = document.createElement("span");
+    number.className = "pdf-page-note-num";
+    number.textContent = String(n);
+    const body = document.createElement("span");
+    body.className = "pdf-page-note-body";
+    const excerpt = document.createElement("span");
+    excerpt.className = "pdf-page-note-excerpt";
+    excerpt.textContent = shortLabel(documentHighlightLabel(record));
+    const text = document.createElement("span");
+    text.innerHTML = markdownToSafeHtml(note);
+    body.append(excerpt, text);
+    row.append(number, body);
+    row.addEventListener("click", () => openNoteFor(record, row));
+    block.appendChild(row);
+  });
+  return block;
+}
+
+function shortLabel(label) {
+  const flat = String(label || "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  return flat.length > 80 ? `“${flat.slice(0, 80).trimEnd()}…”` : `“${flat}”`;
+}
+
+// Rebuild every printed block. Cheap by construction: one small block per page
+// that has an annotated highlight, which is a handful even for a paper that has
+// been read closely — so unlike the pages themselves these are not virtualized,
+// and a note is on screen the moment its page is scrolled to rather than a frame
+// later.
+export function refreshPdfPageNotes() {
+  const view = el.documentView;
+  if (!view) return;
+  view.querySelectorAll(`.${PAGE_NOTES_CLASS}`).forEach((node) => node.remove());
+  if (!pageNotesOn || !state.meta?.pdf) return;
+  const byPage = new Map();
+  annotatedDocumentHighlights().forEach((entry) => {
+    const page = Number(entry.record.page || entry.record.quads?.[0]?.page || 0);
+    if (!page) return;
+    if (!byPage.has(page)) byPage.set(page, []);
+    byPage.get(page).push(entry);
+  });
+  byPage.forEach((entries, pageNumber) => {
+    const pageEl = pdfPageElement(pageNumber);
+    if (!pageEl) return;
+    pageEl.after(noteBlockFor(pageNumber, entries));
+  });
+}
+
+// Every page currently on screen, plus the printed blocks. The counterpart of
+// repaintDocumentHighlights, and called from the same places — any CRUD on a
+// highlight or its note can change a NUMBER, and a number changing means every
+// badge after it changes too.
+export function repaintPdfPageNotes() {
+  const view = el.documentView;
+  if (!view) return;
+  view.querySelectorAll(".pdf-page[data-page-number]").forEach((page) => {
+    const pageNumber = Number(page.dataset.pageNumber);
+    if (pageNumber) paintPageNoteBadges(pageNumber);
+  });
+  refreshPdfPageNotes();
+}
+
+// ── The toggle ──────────────────────────────────────────────────────────────
+
+// What the ⋯ menu's row says about this mode — three facts, exactly as
+// paintInlineNotesButton publishes them for the notes view's own toggle:
+// aria-pressed drives the On/Off switch in CSS, the title is the sentence, and
+// the hint is how many notes there are to print (pressing a toggle and seeing
+// nothing change is a puzzle; ".is-empty" dims the row rather than disabling it,
+// so pressing it still works and still says why nothing happened).
+export function paintPdfPageNotesButton() {
+  const button = el.documentMoreMenu?.querySelector('[data-document-action="page-notes"]');
+  if (!button) return;
+  button.setAttribute("aria-pressed", pageNotesOn ? "true" : "false");
+  button.title = pageNotesOn
+    ? "Hide the notes under the pages — read them from the highlight instead"
+    : "Print every highlight's note under the page it is on, numbered";
+  const total = state.meta?.pdf ? annotatedDocumentHighlights().length : 0;
+  button.classList.toggle("is-empty", total === 0);
+  const hint = button.querySelector(".nhm-hint");
+  if (!hint) return;
+  hint.textContent = total === 0
+    ? "No highlight in this document has a note on it yet"
+    : `${total} highlight note${total === 1 ? "" : "s"} in this document`;
+}
+
+// One path for both ways in, so the button, the stored preference and the DOM
+// can never disagree about what "on" means.
+//
+// The reading position is captured and put back around the rebuild for the same
+// reason applyInlineHighlightNotes wraps its refresh in
+// preserveNotesReadingPosition: printing a block under every annotated page
+// moves everything below it, and a reader who pressed a toggle should still be
+// looking at the page they were looking at.
+export function applyPdfPageNotes() {
+  paintPdfPageNotesButton();
+  const page = currentDocumentPage();
+  const ratio = currentDocumentRatio();
+  refreshPdfPageNotes();
+  if (page) scrollToDocumentPage(page, ratio, { smooth: false });
+}
+
+export function togglePdfPageNotes() {
+  pageNotesOn = !pageNotesOn;
+  try {
+    localStorage.setItem(PDF_PAGE_NOTES_KEY, pageNotesOn ? "1" : "0");
+  } catch (_) {
+    /* private mode — the toggle still works for this session */
+  }
+  applyPdfPageNotes();
+  return pageNotesOn;
+}

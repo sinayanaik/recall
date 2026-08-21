@@ -13,7 +13,8 @@ import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__B
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
 // A highlight is a literal <mark>…</mark> pair sitting in state.notes — same
@@ -199,10 +200,46 @@ export function scanHighlightGroups(source) {
 // no source unit to slice (a PDF has no markdown, so `span` is null and
 // `markdown` is the highlight's own captured text), and the mark is addressed
 // by id rather than by ordinal.
+// The picture for one region row, appended synchronously as a placeholder and
+// filled in when the render resolves. Asynchronous by necessity — rasterising a
+// page is a promise — and deliberately not awaited by the panel: forty rows
+// would otherwise appear one page-render at a time.
+//
+// The label is not a loading state; it is the ANSWER whenever there is no open
+// document to render from, and it is replaced only if a picture actually
+// arrives. So an offloaded deck's highlights list reads correctly and never
+// flickers through an empty box.
+export function addRegionPreview(body, record) {
+  const label = document.createElement("span");
+  label.className = "highlight-region-label";
+  // Always "Region · page N", never the record's text: whatever words the box
+  // happened to cover are already the row's own preview directly below this, and
+  // saying them twice makes the row read as two highlights.
+  // The same glyph the region-select button in the control row wears, and from
+  // the same Unicode block as the Cards tab's ▢ — a dotted-square character
+  // would have read better and is not reliably drawn.
+  label.textContent = `▣ Region · page ${record.page}`;
+  body.appendChild(label);
+  if (!currentPdfDocument()) return;
+  renderRegionThumbnail(record).then((url) => {
+    if (!url || !label.isConnected) return;
+    const img = document.createElement("img");
+    img.className = "highlight-region-thumb";
+    img.src = url;
+    img.alt = `Region highlighted on page ${record.page}`;
+    label.replaceWith(img);
+  }).catch(() => { /* the label stays, which is a correct answer on its own */ });
+}
+
 export function collectDocumentHighlightRows() {
   return documentHighlightsInReadingOrder().map((record) => {
-    const text = String(record.text || "").trim();
+    // A region drawn round a photograph has no words in it at all, and a blank
+    // row in a list of highlights is indistinguishable from a bug — so it is
+    // named by where it is. (A region round a boxed equation or a table usually
+    // DOES pick up text, and is then listed by that text like anything else.)
+    const text = String(record.text || "").trim() || documentHighlightLabel(record);
     return {
+      region: record.kind === "area" ? record : null,
       // Rendered as plain text: it came out of a PDF, so there is no markdown
       // in it to interpret, and a paper containing "*" or "_" must not turn
       // half a sentence italic in the panel.
@@ -338,7 +375,9 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
   if (isPdfDeck()) {
     documentHighlightsInReadingOrder().forEach((record) => {
       items.push({
-        markdown: String(record.text || "").trim(),
+        // documentHighlightLabel, so a region round a figure exports as
+        // "Region · page 12" rather than as a blank bullet with a colour on it.
+        markdown: documentHighlightLabel(record),
         color: record.color,
         note: includeNotes ? (documentHighlightNote(record.id) || null) : null,
         before: [],
@@ -417,6 +456,12 @@ export function renderHighlightsPanel() {
       page.textContent = `p. ${item.page}`;
       body.appendChild(page);
     }
+    // A region highlight is a picture, so it is listed as one. Rendered from the
+    // open document and never stored (see renderRegionThumbnail) — which is also
+    // why there is a label to fall back on: a deck whose PDF has been offloaded,
+    // or simply not opened this session, still has the record and has nothing to
+    // draw it from.
+    if (item.region) addRegionPreview(body, item.region);
     body.appendChild(preview);
     toRender.push([preview, item, "preview"]);
     // Any attached note (see format/highlight-notes.js) renders under the

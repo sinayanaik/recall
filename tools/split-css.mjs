@@ -248,6 +248,30 @@ const POST_SPLIT = {
     "palette covers both surfaces. Dark themes invert the CANVAS only \u2014 " +
     "inverting the page would turn a yellow highlight blue. " +
     "See src/documents/pdf-view.js.",
+  "37-document-chrome.css":
+    "Everything AROUND the PDF page, and it exists because a PDF deck is the " +
+    "first deck with four tabs. `.view-mode-toggle` hardcoded three grid " +
+    "columns, so Highlights wrapped onto a second line and grew the row that " +
+    "focus mode animates; and the rule that stands the notes controls down " +
+    "where they mean nothing covered Cards and Highlights but not Document, " +
+    "so a table-of-contents button for a note nobody was reading and a " +
+    "raw/rendered toggle for markdown that does not exist both sat there " +
+    "doing nothing. The toggle counts its own tabs here, the document controls " +
+    "take the notes controls' place in the same row, the page number and zoom " +
+    "float over the page instead of above it, and region highlights are drawn " +
+    "as an outline rather than tinted \u2014 a 35% multiply over a photograph " +
+    "washes out the figure being highlighted. " +
+    "See src/documents/pdf-region.js and src/documents/pdf-page-notes.js.",
+  "38-reading-rail.css":
+    "The rail focus mode gives back. body.chrome-collapsed folds the appbar " +
+    "and the view-mode row away, which is the point of it and also takes the " +
+    "contents, the four views and the way back to My Decks with them \u2014 so " +
+    "changing tab meant leaving focus mode and re-entering it. A nine-pixel " +
+    "grip on the right edge (the left is the back gesture's, and the text is " +
+    "the selection handles') expands into seven icon buttons and puts itself " +
+    "away again. display:none outside focus mode, because every one of those " +
+    "controls is already on screen in the row above when the chrome is not " +
+    "folded. See src/ui/reading-rail.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline
