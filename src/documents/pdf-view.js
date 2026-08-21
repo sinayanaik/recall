@@ -64,6 +64,28 @@ export const PDF_DARK_CLASS = "is-pdf-inverted";
 
 export const PDF_DARK_KEY = "recall:pdfInvert";
 
+// ── Two hooks, so this module keeps its one direction of import ────────────
+//
+// The badges and the printed notes (src/documents/pdf-page-notes.js) have to be
+// repainted whenever a page is rendered and rebuilt whenever a document is
+// opened — but that module already imports THIS one, for the page elements and
+// the position helpers. Importing it back would make the pair a cycle, and the
+// notes on src/notes/selection.js are the standing warning about what those cost
+// here. So it is registered instead, exactly as setHighlightsChangedHandler is
+// registered for the Highlights panel: main.js is the one file that knows about
+// both ends.
+let onPagePainted = () => {};
+
+let onDocumentOpened = () => {};
+
+export function setDocumentPagePaintedHook(fn) {
+  onPagePainted = typeof fn === "function" ? fn : () => {};
+}
+
+export function setDocumentOpenedHook(fn) {
+  onDocumentOpened = typeof fn === "function" ? fn : () => {};
+}
+
 // ── The open document ───────────────────────────────────────────────────────
 
 // Everything about the PDF currently on screen. Replaced wholesale on a deck
@@ -107,6 +129,9 @@ export function isDocumentViewActive() {
 
 export function tearDownDocumentView() {
   pdfOpenToken += 1;
+  // The crops are of THIS document's pages; a deck swap or a re-attach makes
+  // every one of them a picture of something else.
+  regionThumbnails.clear();
   if (openPdf?.observer) openPdf.observer.disconnect();
   if (openPdf?.doc) {
     // Releases the worker's copy of the file. Without this, opening five papers
@@ -274,6 +299,9 @@ export async function openDocumentView({ force = false } = {}) {
   observePages();
   applyPdfInvert(readPdfInvertPreference());
   updatePageIndicator();
+  // The pages exist now, so the printed notes have something to be inserted
+  // after. Before the outline, which is deliberately off the critical path.
+  onDocumentOpened();
   // Off the critical path: the pages are already on screen and readable, and
   // an outline can need a fetch per entry on a long book.
   buildDocumentOutline(doc).catch((error) => console.warn("Could not read the PDF outline", error));
@@ -435,6 +463,9 @@ async function renderPage(pageNumber) {
     // Painted as part of the render rather than on a later pass, so a highlight
     // is never briefly missing from a page the reader is already looking at.
     paintDocumentHighlights(pageNumber);
+    // ...and the note badges with them, for the same reason: a highlight that
+    // has a note has to say so from the first frame it is on screen.
+    onPagePainted(pageNumber);
   })()
     .catch((error) => {
       if (error?.name !== "RenderingCancelledException") console.warn(`Could not render page ${pageNumber}`, error);
@@ -641,6 +672,11 @@ export function readPdfInvertPreference() {
 
 export function applyPdfInvert(on) {
   el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
+  // The button says which way the mode is set without being pressed — the same
+  // rule every other toggle in this app's chrome follows, and the reason this
+  // moved out of the ⋯ menu in the first place: a mode nobody can see the state
+  // of reads as a mode that is not there.
+  el.documentDarkBtn?.setAttribute("aria-pressed", on ? "true" : "false");
   try {
     localStorage.setItem(PDF_DARK_KEY, on ? "1" : "0");
   } catch (_) { /* private mode — the preference just doesn't persist */ }
@@ -650,6 +686,72 @@ export function togglePdfInvert() {
   const next = !el.documentStage?.classList.contains(PDF_DARK_CLASS);
   applyPdfInvert(next);
   return next;
+}
+
+// ── A picture of a region ───────────────────────────────────────────────────
+//
+// A region highlight round a photograph has no text in it, so in the Highlights
+// panel it would be a row saying "Region · page 12" — which is not something
+// anyone recognises a figure by. This renders the crop instead.
+//
+// Rendered on demand and NEVER stored. The obvious alternative — keeping a data
+// URL on the record — would put a few kilobytes per region into meta, which is a
+// JSONB column that syncs to every device on every save; a closely-read paper
+// would carry a gallery around with it forever. The bytes are already on the
+// device (that is the whole premise of this feature), so the picture can always
+// be made again.
+//
+// Memoized per record id for the session, because the panel re-renders on every
+// highlight change and a page render is not free.
+const regionThumbnails = new Map();
+
+// Wide enough to read a small plot's axis labels on a laptop, small enough that
+// twenty of them in a list are not a scroll.
+export const REGION_THUMB_WIDTH = 260;
+
+export async function renderRegionThumbnail(record) {
+  const id = record?.id;
+  const quad = (record?.quads || [])[0];
+  if (!id || !quad || !openPdf?.doc) return null;
+  if (regionThumbnails.has(id)) return regionThumbnails.get(id);
+  const token = pdfOpenToken;
+  try {
+    const page = await openPdf.doc.getPage(quad.page);
+    if (token !== pdfOpenToken) return null;
+    // Scale chosen so the CROP comes out at the target width, not the page — a
+    // fixed page scale would give a thumbnail of a figure in a corner of an A4
+    // sheet a few pixels across.
+    const [x0, y0, x1, y1] = quad.rect;
+    const quadWidth = Math.max(1, Math.abs(x1 - x0));
+    const scale = clampScale(REGION_THUMB_WIDTH / quadWidth);
+    const viewport = page.getViewport({ scale });
+    const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(quad.rect);
+    const left = Math.min(vx0, vx1);
+    const top = Math.min(vy0, vy1);
+    const width = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
+    const height = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
+
+    // The whole page is rasterised and then cropped, rather than rendered
+    // through an offset transform: pdf.js renders a page, and a transform that
+    // moved the origin would also move anything the page draws outside its own
+    // media box. One page at a modest scale is a few milliseconds.
+    const full = document.createElement("canvas");
+    full.width = Math.ceil(viewport.width);
+    full.height = Math.ceil(viewport.height);
+    await page.render({ canvasContext: full.getContext("2d", { alpha: false }), viewport }).promise;
+    if (token !== pdfOpenToken) return null;
+
+    const crop = document.createElement("canvas");
+    crop.width = width;
+    crop.height = height;
+    crop.getContext("2d").drawImage(full, Math.round(left), Math.round(top), width, height, 0, 0, width, height);
+    const url = crop.toDataURL("image/jpeg", 0.72);
+    regionThumbnails.set(id, url);
+    return url;
+  } catch (error) {
+    console.warn("Could not render a region thumbnail", error);
+    return null;
+  }
 }
 
 // ── Save a copy ─────────────────────────────────────────────────────────────

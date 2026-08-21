@@ -1,0 +1,456 @@
+/* The Document surface's chrome, and the row it now shares with every other
+ * view.
+ *
+ * styles/36-document.css is about the PAGE — three stacked layers, a highlight
+ * that is the same yellow as a <mark>, an invert filter for a dark theme. This
+ * file is about everything around it, and it exists because a PDF deck turned
+ * out to be the first deck with FOUR tabs.
+ *
+ * Three things were wrong at once, and they compounded:
+ *
+ *   1. `.view-mode-toggle` is `grid-template-columns: repeat(3, minmax(0,1fr))`
+ *      (styles/11-chrome.css:1307). A fourth tab has no column, so Highlights
+ *      wrapped onto a second line and the row grew — and --view-toggle-h, which
+ *      focus mode animates, grew with it.
+ *   2. styles/16-mobile-reading.css:408-420 hides the three lifted notes
+ *      controls (☰ contents, the ✎|👁 pill, ⋯) in Cards view and in Highlights
+ *      view. There was no rule for the Document view, so all three sat on screen
+ *      there and all three were inert: a table of contents for a note nobody is
+ *      reading, and a raw/rendered toggle for markdown that does not exist.
+ *   3. Under that, a full-width `.document-toolbar` — a third stacked bar,
+ *      captioned "Document" directly beneath a lit tab reading DOCUMENT.
+ *
+ * So: the toggle counts its own tabs, the notes controls stand down where they
+ * mean nothing, the document controls take their place in the same row, and the
+ * toolbar's remaining half floats over the page instead of above it.
+ *
+ * styles/11-chrome.css and styles/16-mobile-reading.css are not edited: the
+ * first is one of the thirteen frozen slices tools/split-css.mjs compares
+ * byte-for-byte against styles.css, and this file loads after both.
+ */
+
+/* ── One row, however many tabs ─────────────────────────────────────────────
+   `grid-auto-flow: column` with a single auto-column track gives exactly N
+   equal columns for N children, and a [hidden] tab is display:none so it makes
+   no track at all. Three tabs or four, the row is one line and the tabs are
+   equal — with no JS counting anything. */
+.quiz-panel .view-mode-toggle:not([hidden]) {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+/* The row carried three tabs plus ☰, the pill and ⋯ in 440px. A PDF deck in
+   NOTES view carries four tabs plus all three of those, which is where the 80px
+   goes. */
+.view-mode-row {
+  width: min(520px, 100%);
+}
+
+/* ── The glyphs go before the words do ─────────────────────────────────────
+   Four labels, four emoji and three controls do not fit a 360px row, and
+   "HIGHLIGHT…" reads as a rendering fault in a way that a missing emoji does
+   not (the same argument styles/16-mobile-reading.css:369 already makes for the
+   tabs' side padding). The emoji is decoration; the word is the control. */
+.view-mode-toggle .vm-ico {
+  margin-right: 5px;
+}
+
+@media (max-width: 560px) {
+  .view-mode-toggle .vm-ico {
+    display: none;
+  }
+}
+
+/* ── The document controls take the notes controls' place ──────────────────
+   The missing sibling of the Highlights rule at
+   styles/16-mobile-reading.css:417. Same reasoning, one view along: there is no
+   note to list the headings of and nothing to edit, so a control that would
+   pretend otherwise stands down. */
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .notes-toc-toggle,
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .edit-toggle-pill,
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .notes-head-more-btn,
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .notes-head-more-menu {
+  display: none;
+}
+
+/* ...and its mirror: the document controls appear ONLY on the Document view.
+   They are lifted into the row at boot and live there for the whole session, so
+   the default has to be hidden rather than shown. */
+.view-mode-row > .document-toggle,
+.view-mode-row > .document-more-btn,
+.view-mode-row > .document-more-menu,
+.view-mode-row > #documentTocBtn {
+  display: none;
+}
+
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-toggle,
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #documentTocBtn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+}
+
+/* The menu is absolute against .view-mode-row now (which is already
+   position:relative — styles/16-mobile-reading.css:59), not against the
+   .document-more wrapper it used to sit in. Same box, same shadow, new parent:
+   opening downward over the page from a row inside .quiz-panel means that
+   panel's overflow:hidden cannot clip it, which is the whole reason the notes
+   menu is positioned this way too. */
+.view-mode-row > .document-more-menu {
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 45;
+}
+
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-menu:not([hidden]) {
+  display: block;
+}
+
+/* Sized to the tabs, like the lifted notes controls (16-mobile-reading.css:394)
+   — a taller button here grows the row, and --view-toggle-h with it. */
+.view-mode-row > .document-toggle,
+.view-mode-row > .document-more-btn {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  font-size: 0.8rem;
+}
+
+/* A mode that is ON has to say so without being pressed — the same rule the
+   notes ⋯ menu's switches follow, drawn off aria-pressed so it is right
+   whoever flipped it. */
+.view-mode-row > .document-toggle[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+
+/* #documentHead is only where the controls START. liftNotesControlsIntoRow
+   empties it at boot; this keeps an empty box from holding a row's worth of
+   padding open, and keeps the controls invisible in the frame before the lift. */
+.document-head {
+  display: none;
+}
+
+/* ── The pager, over the page ──────────────────────────────────────────────
+   The page number and the zoom controls were half of a full-width bar above the
+   scroller. They are the only half a reader touches, so they float over the
+   bottom-right corner of the page instead — which also means they survive focus
+   mode, where the bar would have been folded away with everything else.
+
+   Quiet by default: a control cluster parked over a paper competes with it. It
+   comes up to full strength for a pointer, for keyboard focus, and while the
+   reader is actually scrolling (.is-active, set by the scroll handler). */
+.document-pager {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+  opacity: 0.45;
+  transition: opacity 0.18s linear;
+}
+
+.document-pager:hover,
+.document-pager:focus-within,
+.document-pager.is-active {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .document-pager {
+    transition: none;
+  }
+}
+
+/* Narrow enough to read as "type a page here" rather than as a form field, and
+   only as wide as four digits — a 2,000-page reference is still four. */
+.document-pager .document-page-input {
+  width: 4.5ch;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: center;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.document-pager .document-page-input:hover,
+.document-pager .document-page-input:focus {
+  border-color: var(--line);
+  background: var(--surface-2, transparent);
+}
+
+/* The spinners are 20px of arrows on a control that already has a keyboard and
+   two zoom buttons beside it. */
+.document-pager .document-page-input::-webkit-outer-spin-button,
+.document-pager .document-page-input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.document-pager .document-page-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.document-pager .document-page-indicator {
+  min-width: 5.5ch;
+  padding-right: 2px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.document-pager .document-zoom {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+/* A phone has no room for a cluster in the corner of a fit-width page, so it
+   loses the two things pinch-zoom already does. */
+@media (max-width: 560px) {
+  .document-pager {
+    right: 8px;
+    bottom: 8px;
+  }
+
+  .document-pager .document-zoom {
+    display: none;
+  }
+}
+
+/* ── Region select ─────────────────────────────────────────────────────────
+   While the mode is armed the text layer stops taking pointer events, so a drag
+   is a marquee rather than a text selection, and the scroller gives up
+   touch-action so a finger drags the box instead of the page. Both are undone
+   the moment the mode turns itself off after one capture (see
+   src/documents/pdf-region.js) — a surface you cannot scroll is not a mode
+   anyone should be able to get stuck in. */
+.document-stage.is-region-select .pdf-text-layer {
+  pointer-events: none;
+}
+
+.document-stage.is-region-select .document-scroll {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.pdf-region-marquee {
+  position: absolute;
+  z-index: 5;
+  border: 1.5px dashed var(--accent-strong);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
+}
+
+/* A hint that says what the armed mode wants, because a crosshair alone does
+   not. Rides on the stage rather than on a page, so it is there before the
+   first drag and gone with the mode. */
+.document-stage.is-region-select .document-scroll::before {
+  content: "▣ Drag a box around a figure, a table or an equation";
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  align-self: center;
+  margin-bottom: -28px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* ── An area highlight is drawn, not tinted ────────────────────────────────
+   styles/36-document.css paints a highlight with `mix-blend-mode: multiply`,
+   which is exactly right over words and exactly wrong over a photograph: a
+   35% yellow multiplied over a figure washes the figure out, and the figure is
+   the thing being highlighted. So a region is an OUTLINE with a faint wash
+   inside it — the colour still says which highlight this is, and what is under
+   it stays readable. */
+.pdf-mark[data-kind="area"] {
+  mix-blend-mode: normal;
+  border-radius: 4px;
+  border: 2px solid;
+}
+
+.pdf-mark[data-kind="area"][data-color="yellow"] { border-color: #e0b400; background: color-mix(in srgb, #e0b400 12%, transparent); }
+.pdf-mark[data-kind="area"][data-color="green"]  { border-color: #22c55e; background: color-mix(in srgb, #22c55e 12%, transparent); }
+.pdf-mark[data-kind="area"][data-color="blue"]   { border-color: #3b82f6; background: color-mix(in srgb, #3b82f6 12%, transparent); }
+.pdf-mark[data-kind="area"][data-color="pink"]   { border-color: #ec4899; background: color-mix(in srgb, #ec4899 12%, transparent); }
+
+/* The invert filter is on the canvas only, so an outline drawn over an inverted
+   page keeps its own colour and needs no counterpart to the `screen` blend that
+   36-document.css gives the tinted kind. */
+
+/* A region row in the Highlights panel: the picture, because "Region · page 12"
+   is not something anyone recognises a figure by. Capped rather than sized to
+   the quad — a full-width table and a small inset plot have to sit in the same
+   list without one of them being a wall. */
+.highlight-region-thumb {
+  display: block;
+  max-width: min(260px, 100%);
+  max-height: 180px;
+  margin: 0 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+/* ...and its stand-in, for a deck whose PDF is offloaded or simply not open:
+   the record is still real, there is just nothing to render it from. */
+.highlight-region-label {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* ── Highlight notes, on the page ──────────────────────────────────────────
+   The always-on half: a numbered badge on any highlight that HAS a note, so the
+   note announces itself without being opened. Its layer sits above the text
+   layer and takes no pointer events; only the badges do, so a selection still
+   works everywhere except the ~16px badge itself. */
+.pdf-badge-layer {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.pdf-note-badge {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: #fff;
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pdf-note-badge:hover,
+.pdf-note-badge:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/* The opt-in half: the notes for one page, printed in the gap after it.
+   A SIBLING of .pdf-page and never a child — the page's box is what every
+   highlight quad is measured against, and a note that changed its height would
+   move every anchor on it. As a sibling it costs the page nothing, and it reads
+   the same at 360px as at 1440px, which a margin rail cannot claim (fit-width
+   leaves a phone no margin at all). */
+.pdf-page-notes {
+  flex: 0 0 auto;
+  width: min(760px, 100%);
+  margin: -6px 0 2px;
+  padding: 10px 14px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.pdf-page-notes-head {
+  margin-bottom: 6px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pdf-page-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pdf-page-note:hover,
+.pdf-page-note:focus-visible {
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.pdf-page-note-num {
+  flex: 0 0 auto;
+  min-width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+}
+
+.pdf-page-note-body {
+  min-width: 0;
+}
+
+.pdf-page-note-body > :first-child { margin-top: 0; }
+.pdf-page-note-body > :last-child { margin-bottom: 0; }
+
+/* The excerpt the note is ABOUT, so a note read under the page still says which
+   highlight it belongs to without scrolling back up to find the badge. */
+.pdf-page-note-excerpt {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-style: italic;
+}

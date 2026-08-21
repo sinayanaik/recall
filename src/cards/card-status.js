@@ -104,6 +104,11 @@ export function refreshDocumentTab() {
   if (!button) return;
   const hasDocument = Boolean(state.meta?.pdf);
   button.hidden = !hasDocument;
+  // The reading rail's own Document icon, in the same pass. Two controls saying
+  // the same thing have to be hidden by the same line, or the one nobody
+  // remembered opens an empty surface on a deck that has no document.
+  const railButton = el.readingRailTray?.querySelector('[data-view-mode="document"]');
+  if (railButton) railButton.hidden = !hasDocument;
   // A deck whose document has gone away underneath the open view (offloaded on
   // another device and pulled down) must not leave the reader parked on a
   // surface with no tab to leave by.

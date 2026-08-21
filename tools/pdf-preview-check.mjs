@@ -110,7 +110,12 @@ const API_SRC = `async () => {
     "/src/panels/highlights-panel.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
     "/src/storage/deck-store.js?v=__BUILD__",
+    "/src/documents/pdf-region.js?v=__BUILD__",
+    "/src/documents/pdf-page-notes.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
+    "/src/ui/deck-header.js?v=__BUILD__",
+    "/src/ui/chrome.js?v=__BUILD__",
+    "/src/ui/reading-rail.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
@@ -428,7 +433,281 @@ try {
   check("the Highlights panel lists it",
     reloaded.rows >= (fixture.annotation ? 2 : 1), `${reloaded.rows} row(s)`);
 
-  // ── 6. A PDF with no annotations in it ───────────────────────────────────
+  // ── 6. The control row, at two widths ────────────────────────────────────
+  //
+  // A PDF deck is the first deck with FOUR tabs, and `.view-mode-toggle` had
+  // three hardcoded grid columns — so Highlights wrapped onto a second line and
+  // the row grew, taking --view-toggle-h (which focus mode animates) with it.
+  // The row's own height against ONE tab's is the honest test of that: a wrapped
+  // row is about twice a tab tall however the tabs are styled, and no fixed
+  // pixel expectation here could survive a font change.
+  //
+  // Beside it, the other half of the same report: the three lifted NOTES
+  // controls sat on screen in Document view and all three were inert — a table
+  // of contents for a note nobody is reading, a raw/rendered toggle for markdown
+  // that does not exist, and the notes ⋯ menu. Asserted through
+  // getComputedStyle, because they are hidden by a CSS rule and an element that
+  // is merely `hidden` in the markup would pass a naive check.
+  for (const [label, width] of [["desktop", 1280], ["phone", 390]]) {
+    await page.call("Emulation.setDeviceMetricsOverride", {
+      width, height: 900, deviceScaleFactor: 1, mobile: width < 700
+    });
+    const row = await page.evaluate(`async () => {
+      const { settle } = window.__recall;
+      await settle(150);
+      const rowEl = document.getElementById("viewModeRow");
+      const tab = document.querySelector('[data-view-mode="highlights"]');
+      const hidden = (sel) => {
+        const node = document.querySelector(sel);
+        return !node || getComputedStyle(node).display === "none";
+      };
+      return {
+        rowHeight: rowEl ? rowEl.offsetHeight : 0,
+        tabHeight: tab ? tab.offsetHeight : 0,
+        tabTops: Array.from(document.querySelectorAll("#viewModeToggle [data-view-mode]"))
+          .filter((b) => !b.hidden)
+          .map((b) => Math.round(b.getBoundingClientRect().top)),
+        notesTocHidden: hidden("#viewModeRow > #notesTocBtn"),
+        editPillHidden: hidden("#viewModeRow > .edit-toggle-pill"),
+        notesMoreHidden: hidden("#viewModeRow > .notes-head-more-btn"),
+        docTocShown: !hidden("#viewModeRow > #documentTocBtn"),
+        docDarkShown: !hidden("#viewModeRow > #documentDarkBtn"),
+        docRegionShown: !hidden("#viewModeRow > #documentRegionBtn"),
+        pagerShown: !hidden("#documentPager"),
+        toolbarGone: !document.querySelector(".document-toolbar")
+      };
+    }`);
+    const oneLine = new Set(row.tabTops).size === 1;
+    check(`the four tabs sit on one line (${label})`, oneLine && row.tabTops.length === 4,
+      `${row.tabTops.length} tab(s) at y = ${[...new Set(row.tabTops)].join(", ")}`);
+    check(`...and the row is one tab tall (${label})`,
+      row.tabHeight > 0 && row.rowHeight < row.tabHeight * 1.8,
+      `row ${row.rowHeight}px vs tab ${row.tabHeight}px`);
+    check(`the inert notes controls stand down (${label})`,
+      row.notesTocHidden && row.editPillHidden && row.notesMoreHidden,
+      `toc=${row.notesTocHidden} pill=${row.editPillHidden} more=${row.notesMoreHidden}`);
+    check(`...and the document's own controls take their place (${label})`,
+      row.docTocShown && row.docDarkShown && row.docRegionShown && row.pagerShown && row.toolbarGone,
+      `toc=${row.docTocShown} dark=${row.docDarkShown} region=${row.docRegionShown} pager=${row.pagerShown}`);
+  }
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+  });
+
+  // ── 7. A region highlight, and the same reload round-trip ────────────────
+  //
+  // The one thing a text selection cannot do: a figure has no text layer to drag
+  // across, so captureDocumentSelection returns null over one and half the
+  // content of a paper could not be highlighted at all. A region is committed
+  // through the same rectToPdfQuad → addDocumentHighlight path, which is what
+  // makes this worth asserting — a record whose quad is in PDF user space is one
+  // that survives a zoom and a reload, and a record whose quad is in client
+  // pixels would pass every check made in the session that created it.
+  const region = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // The reload above went through loadDeckFromLibrary, which leaves the My
+    // Decks panel on screen — and a full-screen panel over the page is exactly
+    // what stops elementFromPoint finding the .pdf-page under the drag. In the
+    // app that never arises (the press would land on the panel, not on
+    // #documentView, so the region listener never runs at all); here the events
+    // are dispatched straight at the view, so the panel has to be closed
+    // explicitly or the geometry under test is somebody else's.
+    api.closeMyDecksPanel();
+    await settle(100);
+    api.setViewMode("document");
+    await api.openDocumentView();
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await api.whenDocumentPageReady(2);
+    await settle(150);
+    const pageEl = document.querySelector('.pdf-page[data-page-number="2"]');
+    if (!pageEl) return { error: "page 2 did not render" };
+    const box = pageEl.getBoundingClientRect();
+    // A box over the middle of the page, well clear of its edges — the geometry
+    // is what is under test, not which glyphs happen to fall inside it.
+    const from = { x: box.left + box.width * 0.2, y: box.top + box.height * 0.3 };
+    const to = { x: box.left + box.width * 0.7, y: box.top + box.height * 0.5 };
+    api.setRegionSelect(true);
+    const armedClass = document.getElementById("documentStage").classList.contains("is-region-select");
+    const textLayerInert = getComputedStyle(document.querySelector(".pdf-text-layer")).pointerEvents === "none";
+    const view = document.getElementById("documentView");
+    const send = (type, point) => view.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0,
+      clientX: point.x, clientY: point.y
+    }));
+    send("pointerdown", from);
+    send("pointermove", { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
+    const marqueeDrawn = Boolean(pageEl.querySelector(".pdf-region-marquee"));
+    send("pointermove", to);
+    send("pointerup", to);
+    await settle(120);
+    const records = api.state.meta?.pdfHighlights || [];
+    const record = records.filter((r) => r.kind === "area").pop() || null;
+    return {
+      armedClass,
+      textLayerInert,
+      marqueeDrawn,
+      marqueeCleared: !pageEl.querySelector(".pdf-region-marquee"),
+      disarmed: !api.isRegionSelectArmed(),
+      record: record ? { id: record.id, page: record.page, kind: record.kind, quads: record.quads } : null,
+      painted: document.querySelectorAll('.pdf-mark[data-kind="area"]').length
+    };
+  }`);
+
+  check("region select arms the surface", region.armedClass && region.textLayerInert,
+    `class=${region.armedClass} textLayerInert=${region.textLayerInert}`);
+  check("...and a drag draws a marquee", Boolean(region.marqueeDrawn));
+  check("...which becomes an area highlight",
+    region.record?.kind === "area" && region.record?.quads?.length === 1,
+    region.record ? `page ${region.record.page} · ${JSON.stringify(region.record.quads[0].rect.map((n) => Math.round(n)))}` : "no record");
+  check("...painted as an outline, not a tint", region.painted > 0, `${region.painted} mark div(s)`);
+  check("...and the mode disarms itself after one capture",
+    region.disarmed && region.marqueeCleared,
+    `disarmed=${region.disarmed} marqueeCleared=${region.marqueeCleared}`);
+
+  const regionReloaded = region.record
+    ? await page.evaluate(`async (id) => {
+        const { api, settle } = window.__recall;
+        for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+        await settle(300);
+        api.tearDownDocumentView();
+        const deckId = api.readLocalDeckIndex()[0].id;
+        api.state.meta = {};
+        api.state.notes = "";
+        await settle(100);
+        await api.loadDeckFromLibrary(deckId);
+        await settle(300);
+        api.setViewMode("document");
+        await api.openDocumentView({ force: true });
+        api.scrollToDocumentPage(2, 0, { smooth: false });
+        await api.whenDocumentPageReady(2);
+        await settle(150);
+        const record = (api.state.meta?.pdfHighlights || []).find((r) => r.id === id) || null;
+        return {
+          quads: record?.quads || null,
+          kind: record?.kind || null,
+          painted: document.querySelectorAll('.pdf-mark[data-highlight-id="' + id + '"]').length
+        };
+      }`, region.record.id)
+    : { quads: null, kind: null, painted: 0 };
+
+  check("the region survives a reload from IndexedDB",
+    JSON.stringify(regionReloaded.quads) === JSON.stringify(region.record?.quads)
+      && regionReloaded.kind === "area",
+    `kind=${regionReloaded.kind}`);
+  check("...and repaints on the page", regionReloaded.painted > 0,
+    `${regionReloaded.painted} mark div(s)`);
+
+  // ── 8. A note printed under the page it belongs to ───────────────────────
+  //
+  // The Document surface's answer to the notes view's inline highlight notes.
+  // The load-bearing assertion is the LAST one: the block is a sibling of the
+  // page and never a child, because a .pdf-page's box is what every highlight
+  // quad on it is measured against — a note that changed the page's height would
+  // move every anchor on it, silently.
+  const pageNotes = region.record ? await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    api.setDocumentHighlightNote(id, "A note on the figure, for the check.");
+    await settle(120);
+    const pageEl = document.querySelector('.pdf-page[data-page-number="2"]');
+    const heightBefore = pageEl.offsetHeight;
+    const badgesBefore = pageEl.querySelectorAll(".pdf-note-badge").length;
+    api.setPdfPageNotesFlag(false);
+    api.togglePdfPageNotes();
+    await settle(200);
+    const block = document.querySelector('.pdf-page-notes[data-page-number="2"]');
+    const result = {
+      badgesBefore,
+      on: api.isPdfPageNotesOn(),
+      blockExists: Boolean(block),
+      blockIsSibling: block ? block.previousElementSibling === pageEl : false,
+      blockText: block ? block.textContent : "",
+      heightBefore,
+      heightAfter: pageEl.offsetHeight
+    };
+    // ...and off again, so the mode does not leak into anything after this.
+    api.togglePdfPageNotes();
+    await settle(150);
+    result.removedWhenOff = !document.querySelector(".pdf-page-notes");
+    return result;
+  }`, region.record.id) : null;
+
+  if (pageNotes) {
+    check("an annotated highlight gets a numbered badge", pageNotes.badgesBefore > 0,
+      `${pageNotes.badgesBefore} badge(s)`);
+    check("the note prints under its page", pageNotes.blockExists && pageNotes.on,
+      pageNotes.blockText.slice(0, 60));
+    check("...as a SIBLING of the page, leaving its height alone",
+      pageNotes.blockIsSibling && pageNotes.heightBefore === pageNotes.heightAfter,
+      `sibling=${pageNotes.blockIsSibling} · page ${pageNotes.heightBefore}px → ${pageNotes.heightAfter}px`);
+    check("...and goes away when the mode is turned off", pageNotes.removedWhenOff);
+  }
+
+  // ── 9. The reading rail ──────────────────────────────────────────────────
+  //
+  // Focus mode folds the appbar and the view-mode row away, which is the point
+  // of it and also takes the contents, the four views and the way back to My
+  // Decks with them. The rail is what stays behind — so the assertions are the
+  // two halves of that bargain: it is NOT on screen when the chrome is expanded
+  // (a second copy of a visible control), and it IS when the chrome is folded.
+  //
+  // Read through getComputedStyle rather than the hidden attribute, because both
+  // facts are decided by a :has() rule from <body> and an element that is merely
+  // present in the markup would pass a naive check.
+  const rail = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const shown = () => {
+      const node = document.getElementById("readingRail");
+      return Boolean(node) && getComputedStyle(node).display !== "none";
+    };
+    api.setFocusMode(false);
+    await settle(150);
+    const beforeFocus = shown();
+    api.setFocusMode(true);
+    // The fold is a 220ms CSS transition (styles/16-mobile-reading.css:331), so
+    // the row's height is only honest once it has finished — 150ms here caught
+    // it mid-collapse and read as a rail that had not appeared.
+    await settle(450);
+    const inFocus = shown();
+    const rowFolded = document.getElementById("viewModeRow").getBoundingClientRect().height < 2;
+    // Expand it the way a reader does, and count what it offers.
+    document.getElementById("readingRailGrip").click();
+    await settle(120);
+    const tray = document.getElementById("readingRailTray");
+    const expanded = getComputedStyle(tray).display !== "none";
+    const buttons = Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden).length;
+    const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;
+    const activeMatches = tray.querySelector('[data-view-mode="document"]').classList.contains("is-active");
+    // The tray's own view buttons have to actually switch view.
+    tray.querySelector('[data-view-mode="highlights"]').click();
+    await settle(250);
+    const switched = api.state.viewMode;
+    const collapsedAfterUse = getComputedStyle(tray).display === "none";
+    // ...and leaving focus mode has to take the rail with it.
+    api.setFocusMode(false);
+    await settle(450);
+    const afterFocus = shown();
+    api.setViewMode("document");
+    await settle(200);
+    return { beforeFocus, inFocus, rowFolded, expanded, buttons, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus };
+  }`);
+
+  check("the rail stays off screen while the chrome is expanded",
+    rail.beforeFocus === false && rail.afterFocus === false,
+    `before=${rail.beforeFocus} after=${rail.afterFocus}`);
+  check("...and appears when focus mode folds the row away",
+    rail.inFocus === true && rail.rowFolded,
+    `rail=${rail.inFocus} rowFolded=${rail.rowFolded}`);
+  check("the grip expands it into the controls focus mode took",
+    rail.expanded && rail.buttons === 7,
+    `${rail.buttons} button(s)`);
+  check("...including the Document view, lit for the view you are in",
+    rail.documentIconShown && rail.activeMatches,
+    `shown=${rail.documentIconShown} active=${rail.activeMatches}`);
+  check("...and its view buttons switch view, then put the tray away",
+    rail.switched === "highlights" && rail.collapsedAfterUse,
+    `viewMode=${rail.switched} collapsed=${rail.collapsedAfterUse}`);
+
+  // ── 10. A PDF with no annotations in it ──────────────────────────────────
   //
   // The ordinary case, and the one every assertion above manages to miss. A
   // file that arrives WITH highlights gives its deck a non-empty note (the
@@ -483,6 +762,25 @@ try {
   }
 
   if (SHOT) {
+    // The Document surface itself, not whatever the last assertion happened to
+    // leave on screen — the run ends inside the un-annotated-import case, which
+    // finishes with My Decks open over the whole window.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.closeMyDecksPanel();
+      await settle(100);
+      await api.loadDeckFromLibrary(api.readLocalDeckIndex()[0].id);
+      await settle(300);
+      api.closeMyDecksPanel();
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await api.whenDocumentPageReady(1);
+      await settle(400);
+      // The import's own toast sits over the control row this shot exists to
+      // show — it is the check's doing, not the app's.
+      document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      await settle(60);
+    }`);
     const shot = await page.call("Page.captureScreenshot", { format: "png" });
     writeFileSync(path.resolve(ROOT, SHOT), Buffer.from(shot.data, "base64"));
     console.log(`      screenshot → ${SHOT}`);

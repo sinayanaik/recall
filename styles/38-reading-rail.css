@@ -1,0 +1,179 @@
+/* The reading rail — what focus mode gives back.
+ *
+ * body.chrome-collapsed folds the appbar and the whole view-mode row away
+ * (styles/12-notes.css:1255, styles/16-mobile-reading.css:338). That is the
+ * point of focus mode and it is also its one real cost: the table of contents,
+ * the four views and the way back to My Decks all live in those two bars, so
+ * reading a paper and then wanting its contents meant leaving focus mode,
+ * pressing the thing, and entering focus mode again.
+ *
+ * The answer had to be small enough not to undo the fold. So: a grip on the
+ * right edge, eight pixels wide and mostly transparent, which expands into
+ * seven icon buttons when it is reached for and puts itself away afterwards.
+ *
+ * ── Why the right edge ──────────────────────────────────────────────────
+ *
+ * The left edge is where the app's own back gesture lives (src/ui/back-gesture
+ * .js), and the touch-selection controller draws its handles into the text. The
+ * right edge is where a scrollbar already trains the eye to reach, and where
+ * neither of those two is listening.
+ *
+ * ── Why it is display:none outside focus mode ───────────────────────────
+ *
+ * Every one of these controls is already on screen in the row above when the
+ * chrome is expanded. A second, permanently visible copy of a visible control is
+ * a second thing to keep in step and a second thing to explain.
+ */
+
+.reading-rail {
+  display: none;
+}
+
+/* Two facts, both already published by the app, both reached with :has() from
+   <body> — the chrome is folded, and a deck is actually open (#viewModeToggle
+   is what says so; updateCardControls hides it when there is none). The
+   #mainToolbar guard is the same one body.chrome-collapsed's own rules carry:
+   the ☰ drawer un-collapses the appbar while it is open, and a rail floating
+   over an open drawer is furniture on top of furniture. */
+body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:not([hidden])) .reading-rail:not([hidden]) {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 62;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* No pointer events on the box itself — only on the grip and the tray. The
+     box is as tall as the tray it may be about to show, and an invisible strip
+     down the side of a paper that swallows presses is worse than no rail. */
+  pointer-events: none;
+}
+
+/* ── The grip ──────────────────────────────────────────────────────────────
+   Deliberately not an icon. An icon at this size is a guess ("what is that?");
+   a grip is the shape every drawer handle and every resizable pane in this app
+   already uses, and it says "there is something here" without naming it. */
+.reading-rail-grip {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 74px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px 0 0 6px;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.16s linear, width 0.16s linear;
+}
+
+.reading-rail-grip > span {
+  display: block;
+  width: 3px;
+  height: 34px;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-strong) 70%, transparent);
+}
+
+.reading-rail-grip:hover,
+.reading-rail-grip:focus-visible {
+  width: 12px;
+  background: color-mix(in srgb, var(--accent) 46%, transparent);
+}
+
+/* Expanded: the grip has done its job and would only be a stripe beside the
+   tray. */
+.reading-rail[data-expanded="true"] .reading-rail-grip {
+  display: none;
+}
+
+/* ── The tray ──────────────────────────────────────────────────────────────
+   A column, because the rail is on a vertical edge and a horizontal strip there
+   would have to overhang the page. Scrollable at its own max-height so a short
+   landscape phone still reaches the last button rather than losing it off the
+   bottom (the failure styles/35-notes-menu.css:39 documents for the notes
+   menu's own column). */
+.reading-rail-tray {
+  display: none;
+}
+
+.reading-rail[data-expanded="true"] .reading-rail-tray {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  max-height: min(80vh, 420px);
+  overflow-y: auto;
+  padding: 6px 5px;
+  border: 1px solid var(--line);
+  border-right: 0;
+  border-radius: 10px 0 0 10px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.34);
+  pointer-events: auto;
+}
+
+.reading-rail-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.reading-rail-btn[hidden] {
+  display: none;
+}
+
+.reading-rail-btn:hover,
+.reading-rail-btn:focus-visible {
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* Which view you are in, painted by setViewMode onto the rail's buttons exactly
+   as it paints the tabs — so the rail is never a second opinion about where the
+   reader is. */
+.reading-rail-btn.is-active {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--line));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+.reading-rail-sep {
+  width: 18px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reading-rail-grip {
+    transition: none;
+  }
+}
+
+/* A finger needs a bigger target than a pointer does, and there is no hover to
+   reveal the tray with — the grip is pressed, so it may as well be pressable. */
+@media (pointer: coarse) {
+  .reading-rail-grip {
+    width: 14px;
+    height: 92px;
+  }
+
+  .reading-rail-btn {
+    width: 34px;
+    height: 34px;
+  }
+}

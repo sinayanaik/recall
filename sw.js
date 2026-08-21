@@ -277,6 +277,8 @@ const APP_SHELL = [
   `./styles/34-inline-highlight-notes.css?v=${STAMP}`,
   `./styles/35-notes-menu.css?v=${STAMP}`,
   `./styles/36-document.css?v=${STAMP}`,
+  `./styles/37-document-chrome.css?v=${STAMP}`,
+  `./styles/38-reading-rail.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -316,6 +318,8 @@ const APP_SHELL = [
   `./src/core/text.js?v=${STAMP}`,
   `./src/documents/pdf-highlights.js?v=${STAMP}`,
   `./src/documents/pdf-outline.js?v=${STAMP}`,
+  `./src/documents/pdf-page-notes.js?v=${STAMP}`,
+  `./src/documents/pdf-region.js?v=${STAMP}`,
   `./src/documents/pdf-selection.js?v=${STAMP}`,
   `./src/documents/pdf-store.js?v=${STAMP}`,
   `./src/documents/pdf-view.js?v=${STAMP}`,
@@ -436,6 +440,7 @@ const APP_SHELL = [
   `./src/ui/nav-history.js?v=${STAMP}`,
   `./src/ui/overlays.js?v=${STAMP}`,
   `./src/ui/pickers.js?v=${STAMP}`,
+  `./src/ui/reading-rail.js?v=${STAMP}`,
   `./src/ui/style-schema.js?v=${STAMP}`,
   `./src/ui/style-settings.js?v=${STAMP}`,
   `./src/ui/style-tokens.js?v=${STAMP}`,

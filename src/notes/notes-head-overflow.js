@@ -34,12 +34,30 @@ import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 // two. The TOC button goes before the tabs; the rest after them. Selectors are
 // scoped to `.notes-head >` because they must match only while the button is
 // still in its original home — see overflowHomes below.
-const ROW_LEAD_SELECTORS = [".notes-head > #notesTocBtn"];
+// ...and the Document surface's controls, which start life in #documentHead and
+// land in the same two slots. A PDF deck used to carry a full-width
+// `.document-toolbar` of its own UNDER this row — a third stacked bar, captioned
+// "Document" directly beneath a lit tab reading DOCUMENT — while the three notes
+// controls above it sat there inert, because a paper has no markdown headings to
+// list and no source to edit. Both halves of that are fixed by putting the
+// document's controls in the row and letting CSS show whichever set belongs to
+// the view (styles/37-document-chrome.css).
+//
+// Same rule as everything else here: MOVED, never cloned. Every one is wired by
+// id in src/main.js.
+const ROW_LEAD_SELECTORS = [
+  ".notes-head > #notesTocBtn",
+  ".document-head > #documentTocBtn"
+];
 
 const ROW_TRAIL_SELECTORS = [
   ".notes-head > #editNotesBtn",
   ".notes-head > #notesHeadMoreBtn",
   ".notes-head > #notesHeadMoreMenu",
+  ".document-head > #documentDarkBtn",
+  ".document-head > #documentRegionBtn",
+  ".document-head > #documentMoreBtn",
+  ".document-head > #documentMoreMenu",
 ];
 
 // In the order they appear in the menu. This USED to be the order they sat in

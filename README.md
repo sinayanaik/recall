@@ -1015,6 +1015,7 @@ area of the app —
 | `library/` | My Decks: the local index, folders, rows, tiles, drag and drop, and reading a whole folder as one document |
 | `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache that keeps huge notes fast. Past ~2,000 blocks a note is cut into spans at provably safe lexer boundaries and each span is lexed and built only as the reader comes near it, so opening a note costs a screenful rather than a book (`viewport` above is the proof) |
 | `notes/` | The notes view: editing, the caret, scroll anchoring, the foldable TOC, paged reading, selection, links, and the notes attached to highlights — the popup that writes one and the opt-in mode that prints them all in the text |
+| `documents/` | The Document surface: a PDF rendered page by page by pdf.js, its highlights (text runs *and* dragged regions, both stored as quads in PDF user space so they survive a zoom and a reload), its outline drawer, the notes printed under each page, and the device/cloud store the file itself lives in |
 | `cards/` | Studying: the card view, swipe, the All Cards panel, deck actions |
 | `editor/` | The raw editor: its highlight mirror, text transforms, toolbars |
 | `format/` | Selection-driven formatting: cloze, highlight, locating a rendered selection in the source |

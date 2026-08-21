@@ -25,6 +25,19 @@ export const CHROME_TOP_ZONE = 24;
 
 export const CHROME_SETTLE_MS = 260;
 
+// The reading rail is shown from the same one fact this file publishes — is the
+// chrome collapsed — and it is REGISTERED rather than imported, for the reason
+// src/notes/selection.js sets out at length: this module sits low in the graph
+// (view-mode.js imports it) and src/ui/reading-rail.js sits high (it reaches
+// setViewMode, the table of contents and My Decks), so importing it here would
+// close a cycle and pull that whole subtree in ahead of things that are
+// currently evaluated before it. Same shape as setHighlightsChangedHandler.
+let onChromeCollapse = () => {};
+
+export function setChromeCollapseHandler(fn) {
+  onChromeCollapse = typeof fn === "function" ? fn : () => {};
+}
+
 export let chromeFocusPinned = false;
 
 // Setter: an imported binding is read-only, and main.js seeds it from localStorage at startup.
@@ -201,6 +214,9 @@ export function applyChromeCollapse() {
   // measureChromeHeights (correctly) refuses to read anything.
   if (changed && collapsed) measureChromeHeights();
   document.body.classList.toggle("chrome-collapsed", collapsed);
+  // In the same breath as the class, never from a second listener that could
+  // fall out of step with it — the rail IS the collapsed chrome's stand-in.
+  onChromeCollapse(collapsed);
   // Collapsing makes the notes viewport taller, which can clamp scrollTop when
   // you're near the bottom — that clamp fires a scroll event that looks like a
   // big upward flick and would immediately un-collapse (then re-collapse, then
