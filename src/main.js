@@ -67,7 +67,7 @@ import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.j
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
-import { closeNotesToc, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
+import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
@@ -417,9 +417,10 @@ el.notesTocList?.addEventListener("click", (event) => {
     scrollNotesEditToHeadingIndex(index);
   } else {
     const heading = notesTocHeadings[index];
-    scrollNotesHeadingIntoView(heading);
-    heading?.classList.add("notes-heading-flash");
-    setTimeout(() => heading?.classList.remove("notes-heading-flash"), 1200);
+    // The flash waits for the jump: on a viewport-built note the heading's
+    // element does not exist until scrollNotesHeadingIntoView has built its
+    // span, so flashing first would flash nothing.
+    Promise.resolve(scrollNotesHeadingIntoView(heading)).then(() => flashNotesHeading(heading));
   }
   // Only when the drawer overlays the notes: it has to step out of the way to
   // show you what you just jumped to. When it pushes instead, the destination

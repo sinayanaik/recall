@@ -10,7 +10,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
-import { markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
+import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
 import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
@@ -124,7 +124,19 @@ export const SURFACE_FINALIZE_IDLE_TIMEOUT_MS = 300;
 
 export function finalizeRenderedSurface(container) {
   const surface = imageSurfaceForView(container);
-  if (surface) {
+  // ── Not while part of the note is unbuilt ────────────────────────────────
+  //
+  // Both of these bind by POSITION: they walk the note's image/diagram tokens
+  // in source order and the view's shells in document order, pairing them off.
+  // On a viewport-built note the shells present are a subset of the tokens, so
+  // the walk desynchronises — and what it writes is `shell.dataset.tokenIndex`,
+  // which is the index a resize drag later rewrites in the markdown. A wrong
+  // index there would resize the wrong image, so the pass simply does not run
+  // until the whole note is real. Reading is unaffected: the width of a resized
+  // image travels in its own <img style> through the markdown (see
+  // commitImageWidth), and diagram zoom is bound per element by enhance.js.
+  // Anything that needs the grips (an export, a print) materializes first.
+  if (surface && !notesLazyPending(container)) {
     enhanceSurfaceImageControls(surface);
     enhanceSurfaceDiagramControls(surface);
   }
@@ -1213,6 +1225,14 @@ export function shouldChunkRenderedBlocks(container, blockCount) {
 // top-level ancestor either way, and the next render re-homes them properly.
 export function reshapeRenderedChunks(container) {
   if (container !== el.notesView) return;
+  // Regrouping MOVES the nodes that are there, so a note holding most of its
+  // spans back would lose them outright. This is the flip into (or out of)
+  // paged mode, which cannot be lazy in the first place — see
+  // canRenderNotesLazily — so it is exactly the moment to make the whole note
+  // real. Synchronously, and at whatever that costs: it is the cost the paged
+  // flip has always paid, and the reader asked for it.
+  materializeNotesLazySpansSync(container);
+  forgetNotesLazyPlan(container);
   const blocks = notesTopLevelBlocks(container).filter((node) => node.nodeType === 1);
   const want = shouldChunkRenderedBlocks(container, blocks.length);
   // Regrouped even when the answer to "should this be chunked" is unchanged:
@@ -1601,6 +1621,1138 @@ export async function patchRenderedBlocks(container, blocks, prelude, cached, se
   };
 }
 
+// ── Heading index, read off the source ────────────────────────────────────
+//
+// The table of contents used to be discovered by querying the rendered DOM for
+// h1..h6, which is only possible while every block of the note is in it. That
+// is incompatible with most of a book staying unbuilt, and it was never a good
+// arrangement anyway: it made the contents of a note depend on how far its
+// render had got, so a big note's drawer was empty or short for as long as the
+// render took.
+//
+// So headings are found in the PREPARED source instead, in one line scan with
+// the same fence tracking findSafeLexerBoundaries uses. Prepared rather than
+// raw markdown for two reasons: promoteNotesHeadings has already restriped the
+// levels there (so `##` really is the level the reader will see), and the
+// offsets are directly comparable to the span index above, which is what lets a
+// heading know which chunk it lives in before that chunk exists.
+//
+// tools/viewport-split-check.mjs asserts this scan against marked's own heading
+// tokens across every note shape in the corpus.
+export const HEADING_ATX_RE = /^ {0,3}(#{1,6})(?:[ \t]+([^\n]*?))?[ \t]*$/;
+
+export const HEADING_SETEXT_RE = /^ {0,3}(=+|-+)[ \t]*$/;
+
+export const HEADING_QUOTE_RE = /^(?: {0,3}>[ \t]?)+/;
+
+export const HEADING_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", apos: "'", nbsp: " " };
+
+// What the rendered heading's textContent will say, derived from its markdown.
+// The inline syntax the renderer strips is stripped here too, so a slug
+// computed from this matches the one the DOM used to produce — which matters,
+// because those slugs are the anchors [[Note#heading]] links were written
+// against.
+export function plainHeadingText(raw) {
+  return String(raw || "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1")
+    .replace(/`+/g, "")
+    .replace(/(\*\*\*|___|\*\*|__|\*|~~)/g, "")
+    .replace(/\\([\\`*_{}[\]()#+\-.!>~])/g, "$1")
+    .replace(/&(#39|amp|lt|gt|quot|apos|nbsp);/g, (whole, name) => HEADING_ENTITIES[name] ?? whole)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// ATX headings may close with their own run of hashes, which is punctuation
+// rather than text: `## Title ##` renders as "Title".
+export function stripAtxClosing(text) {
+  return String(text || "").replace(/(?:^|[ \t])#+[ \t]*$/, "").trim();
+}
+
+export function scanPreparedHeadings(prepared) {
+  const headings = [];
+  const lines = String(prepared || "").split("\n");
+  let pos = 0;
+  let inFence = false;
+  let fenceChar = "";
+  let fenceLen = 0;
+  // The paragraph currently open, which is what a setext underline turns into a
+  // heading. Null whenever the previous line cannot start one.
+  let paragraph = null;
+  const isFenceLine = (line) => line.match(/^ {0,3}(`{3,}|~{3,})/);
+
+  lines.forEach((line, i) => {
+    const isLast = i === lines.length - 1;
+    const start = pos;
+    pos += line.length + (isLast ? 0 : 1);
+
+    const fenceMatch = isFenceLine(line);
+    if (inFence) {
+      if (fenceMatch && fenceMatch[1][0] === fenceChar && fenceMatch[1].length >= fenceLen) inFence = false;
+      paragraph = null;
+      return;
+    }
+    if (fenceMatch) {
+      inFence = true;
+      fenceChar = fenceMatch[1][0];
+      fenceLen = fenceMatch[1].length;
+      paragraph = null;
+      return;
+    }
+
+    // A heading inside a blockquote still renders as a heading and still
+    // belongs in the contents, so the quote markers come off first.
+    const quoted = HEADING_QUOTE_RE.exec(line);
+    const body = quoted ? line.slice(quoted[0].length) : line;
+
+    if (body.trim() === "") {
+      paragraph = null;
+      return;
+    }
+
+    const atx = HEADING_ATX_RE.exec(body);
+    if (atx) {
+      const text = plainHeadingText(stripAtxClosing(atx[2] || ""));
+      if (text) headings.push({ level: atx[1].length, text, offset: start });
+      paragraph = null;
+      return;
+    }
+
+    const setext = paragraph && HEADING_SETEXT_RE.exec(body);
+    if (setext) {
+      const text = plainHeadingText(paragraph.lines.join(" "));
+      if (text) headings.push({ level: setext[1][0] === "=" ? 1 : 2, text, offset: paragraph.offset });
+      paragraph = null;
+      return;
+    }
+
+    // Four spaces of indent with no paragraph open is indented code, which
+    // holds no headings. With one open it is a lazy continuation of it.
+    if (!paragraph && /^ {4,}/.test(body)) return;
+    if (paragraph) paragraph.lines.push(body);
+    else paragraph = { offset: start, lines: [body] };
+  });
+  return headings;
+}
+
+// One scan per note, remembered. buildNotesToc, the availability test on the ☰
+// button, a [[Note#heading]] lookup and the render itself all want the same
+// answer about the same string.
+export let notesHeadingScanSource = null;
+
+export let notesHeadingScanResult = [];
+
+export function notesHeadingScan(prepared) {
+  const text = String(prepared || "");
+  if (text === notesHeadingScanSource) return notesHeadingScanResult;
+  notesHeadingScanResult = scanPreparedHeadings(text);
+  notesHeadingScanSource = text;
+  return notesHeadingScanResult;
+}
+
+// ── The lazy render itself ────────────────────────────────────────────────
+
+export function canRenderNotesLazily(container, prepared) {
+  if (container !== el.notesView || !container) return false;
+  // Paged mode groups by CHAPTER, and a chapter boundary is a block index that
+  // only a full lex can produce. See the header note above.
+  if (container.classList.contains("is-paged")) return false;
+  if (typeof IntersectionObserver !== "function") return false;
+  if (typeof marked === "undefined" || !markdownLibrariesReady()) return false;
+  return prepared.length >= NOTES_LAZY_MIN_CHARS;
+}
+
+// Returns "rendered" when the note is now on screen lazily, "superseded" when a
+// newer render took the container mid-flight, or null to say "not this note —
+// take the eager path", which is always safe.
+export async function renderNotesLazily(container, prepared, sequenceOk) {
+  const existing = notesLazyPlans.get(container);
+  // ── The cheap case: an edit to the note already on screen ────────────────
+  if (existing && existing.prepared !== prepared && isNotesLazyDom(container, existing)) {
+    const patched = patchNotesLazyPlanLocally(container, existing, prepared);
+    countNotesLazyPatch(Boolean(patched));
+    if (patched) {
+      refreshNotesLazyCacheBlocks(container, existing);
+      return "rendered";
+    }
+  }
+
+  const boundaries = findSafeLexerBoundaries(prepared);
+  if (!sequenceOk()) return "superseded";
+  const spans = planNotesLazySpans(prepared, boundaries);
+  // Nothing to defer, or not enough to be worth it: a document with no safe cut
+  // in it is one span, which is today's whole-note lex with extra steps, and a
+  // note under the chunking threshold is one this was never aimed at.
+  if (spans.length < NOTES_LAZY_MIN_SPANS) return null;
+
+  const links = new Array(spans.length).fill(null);
+  const candidates = notesLazyDefinitionSpans(prepared, spans);
+  const prelude = notesLazyPrelude(prepared, spans, candidates, links);
+  if (prelude == null) return null; // too much of the document could hold a definition
+  if (!sequenceOk()) return "superseded";
+  for (let i = 0; i < links.length; i += 1) if (!links[i]) links[i] = {};
+
+  if (existing && isNotesLazyDom(container, existing)) {
+    replanNotesLazySpans(container, existing, prepared, spans, candidates, links, prelude);
+  } else {
+    const plan = {
+      prepared, prelude, spans, candidates, links,
+      chunks: [],
+      blocks: new Array(spans.length).fill(null),
+      groups: new Array(spans.length).fill(null),
+      starts: new Array(spans.length).fill(null),
+      built: new Uint8Array(spans.length)
+    };
+    notesLazyPlans.set(container, plan);
+    buildNotesLazyChunks(container, plan);
+  }
+  return "rendered";
+}
+
+// Is the DOM still the one this plan describes? A plan is only reusable while
+// its own chunks are the container's children — anything else (a paged-mode
+// flip, an eager re-render, a different note having taken the surface) means
+// starting over.
+export function isNotesLazyDom(container, plan) {
+  return plan.chunks.length > 0
+    && plan.chunks.length === container.children.length
+    && plan.chunks[0] === container.firstElementChild;
+}
+
+// Build whatever the reader can already see, then hand the rest to the
+// observer. Deliberately after the placeholders are in the document, so the
+// rects being read are the ones the reader is actually looking at.
+export function startNotesLazySpans(container) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return;
+  const near = nearNotesLazySpans(container, plan);
+  const finished = [];
+  near.forEach((index) => { if (buildNotesLazySpan(container, index)) finished.push(index); });
+  finished.forEach((index) => finishNotesLazySpan(container, index));
+  observeNotesLazySpans(container);
+  scheduleNotesLazyDensity(container);
+}
+
+// ── Viewport-driven rendering: build a chunk when the reader nears it ──────
+//
+// Everything above makes a big note render FAST. None of it makes it render
+// CHEAPLY: the cost still scales with the note, because a cold open lexes 100%
+// of the source (chunked and yielded, but all of it) and builds a DOM node for
+// every block in the book before the reader has scrolled a pixel. Painting is
+// deferred (content-visibility), diagrams and tables are deferred
+// (runNearViewportAndDefer), heights are measured ahead of the reader
+// (measureNotesChunkEstimate) — parsing and DOM construction are not. On a
+// 20MB note that is the whole complaint: opening it costs twenty megabytes of
+// work no matter what the reader intends to read.
+//
+// So the parse itself becomes viewport-driven. findSafeLexerBoundaries already
+// answers, in one cheap O(n) line scan and with no lexing at all, "where can
+// this source be cut so that lexing each side independently gives the same
+// blocks?". Run it once on open, cut the note into spans at those points, give
+// each span an empty chunk wrapper sized by the same height estimate the
+// painting path already uses — and then lex and build a span only when it
+// approaches the viewport. Opening a note now costs one line scan plus a
+// screenful of blocks: proportional to the SCREEN, not to the note.
+//
+// ── What this is not ──────────────────────────────────────────────────────
+//
+// It is not virtualization. A span that has been built stays built for as long
+// as the note is open — nothing is ever torn back down. That is a deliberate
+// v1 boundary: eviction would have to answer to the TOC, backlinks, reading
+// anchors, live Selection ranges, highlight DOM ranges and paged mode's column
+// layout, every one of which currently relies on "a rendered block stays
+// rendered", and several of which have hard-won fixes behind them. Deferring
+// the build is the whole of the win for a reading session; capping memory for a
+// session that scrolls an entire 20MB book in one sitting is separate work.
+//
+// It is also not on in paged mode. There a chunk is a CHAPTER, and chapter
+// boundaries come from chapterIndexFor(), which full-lexes the document to
+// count blocks — so paged mode is O(note) before this could even be consulted.
+// Making chapters offset-addressed rather than block-index-addressed is its own
+// change; until then paged mode takes exactly the path it takes today.
+//
+// Correctness is asserted, not argued: tools/viewport-split-check.mjs pins
+// every property this rests on — that a span lexed on its own gives the blocks
+// a whole-document lex would, that a boundary scan resumed at a safe boundary
+// reproduces the tail of the full scan, that the link-reference prelude derived
+// from the candidate spans alone equals the whole-document one, and that the
+// heading index below agrees with the lexer's own headings.
+
+// Under this the eager path already opens in well under a frame's worth of
+// parse per screenful, and the boundary index would be pure overhead.
+export const NOTES_LAZY_MIN_CHARS = 200_000;
+
+// How many safe cut points make up one span. Each cut point is a block
+// boundary, so this is "about 40 blocks" — deliberately the same unit as
+// NOTES_CHUNK_SIZE, so a span IS a chunk and no second granularity is invented.
+export const NOTES_LAZY_SPAN_SEGMENTS = 40;
+
+// ...and a ceiling in characters, because 40 blocks of long-form prose is a
+// very different amount of lexing from 40 one-line list items. One span must
+// stay inside a frame's budget or the promotion that happens as the reader
+// approaches it is itself a stutter.
+export const NOTES_LAZY_SPAN_MAX_CHARS = 24_000;
+
+// How many spans a note has to be worth deferring at all — and, just as
+// importantly, the SAME threshold chunking already uses, counted in spans
+// rather than blocks (NOTES_CHUNK_MIN_BLOCKS / NOTES_LAZY_SPAN_SEGMENTS).
+//
+// That alignment is not tidiness. A lazily built note is always a chunked note,
+// because its placeholders ARE chunks; if this were lower, a 200KB note of
+// 1,200 blocks would suddenly grow chunk wrappers that the block-count rule
+// says it should not have, and "an ordinary note keeps precisely the DOM it has
+// always had" would stop being true somewhere nobody had decided it should.
+// Two rules that agree by construction cannot drift apart.
+export const NOTES_LAZY_MIN_SPANS = NOTES_CHUNK_MIN_BLOCKS / NOTES_LAZY_SPAN_SEGMENTS;
+
+// A source line that could be a link reference definition. Deliberately loose:
+// a false positive only costs one extra span lex (the lexer is the authority
+// on what is really a definition), a false negative would silently drop a
+// definition from the document-wide prelude and turn `[text][id]` into text.
+export const NOTES_LAZY_DEFINITION_RE = /^ {0,3}\[[^\]\n]*\]:/gm;
+
+// The prelude is exact — it is taken from real lexes of the spans that could
+// contain a definition — but "could contain" is a regex, so a pathological note
+// could nominate every span and put the whole document back on the critical
+// path. Past this much candidate text the note simply renders eagerly.
+export const NOTES_LAZY_PRELUDE_MAX_CHARS = 400_000;
+
+export const NOTES_CHUNK_PENDING_CLASS = "is-pending";
+
+// container -> the span plan its DOM is currently showing.
+export const notesLazyPlans = new WeakMap();
+
+export function notesLazyPlan(container) {
+  return notesLazyPlans.get(container) || null;
+}
+
+// Is this surface holding back part of its note right now? False both for an
+// ordinary (eagerly rendered) surface and for a lazily rendered one that has
+// since been built all the way through — in both cases every block is in the
+// DOM, which is the only thing a caller asking this cares about.
+export function notesLazyPending(container) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return false;
+  for (let i = 0; i < plan.spans.length; i += 1) if (!plan.built[i]) return true;
+  return false;
+}
+
+// How much of the note has actually been built, for the checks and for anything
+// that wants to report on it.
+// How many edits were patched one span at a time, and how many made the note
+// re-plan from a fresh boundary scan. Counters for the same reason
+// notesIncrementalSplits and notesFullSplits are counters: a local patch that
+// silently stopped happening would satisfy every correctness property and
+// deliver nothing, and "it still works" cannot see the difference.
+// tools/interaction-scale-check.mjs asserts these move.
+export let notesLazyLocalPatches = 0;
+
+export let notesLazyReplans = 0;
+
+export function countNotesLazyPatch(local) {
+  if (local) notesLazyLocalPatches += 1;
+  else notesLazyReplans += 1;
+}
+
+// Read through a call, not through the bindings — a checker that snapshots
+// module exports into a plain object copies a `let` by VALUE and would measure
+// nothing forever. Same trap as notesSplitCounts().
+export function notesLazyPatchCounts() {
+  return { local: notesLazyLocalPatches, replanned: notesLazyReplans };
+}
+
+export function notesLazyStats(container) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return null;
+  let built = 0;
+  let builtChars = 0;
+  for (let i = 0; i < plan.spans.length; i += 1) {
+    if (!plan.built[i]) continue;
+    built += 1;
+    builtChars += plan.spans[i].end - plan.spans[i].start;
+  }
+  return { spans: plan.spans.length, built, chars: plan.prepared.length, builtChars };
+}
+
+// ── The span index ────────────────────────────────────────────────────────
+//
+// Spans TILE the document: span[0] starts at 0, span[n-1] ends at
+// prepared.length, and each span's end is the next one's start. Every internal
+// boundary is one findSafeLexerBoundaries produced, which is what makes lexing
+// a span on its own equivalent to lexing it in place.
+export function planNotesLazySpans(prepared, boundaries) {
+  const spans = [];
+  let start = 0;
+  let segments = 0;
+  for (const at of boundaries) {
+    segments += 1;
+    if (segments < NOTES_LAZY_SPAN_SEGMENTS && at - start < NOTES_LAZY_SPAN_MAX_CHARS) continue;
+    spans.push({ start, end: at });
+    start = at;
+    segments = 0;
+  }
+  // The tail, however short. Merging it into the span before would be tidier to
+  // look at and would cost that span its size bound, which is the one thing a
+  // span is not allowed to lose.
+  spans.push({ start, end: prepared.length });
+  return spans;
+}
+
+// The span holding a character offset in `prepared`. Binary search; spans tile,
+// so there is always exactly one answer.
+export function notesLazySpanAt(plan, offset) {
+  const spans = plan.spans;
+  let lo = 0;
+  let hi = spans.length - 1;
+  const at = Math.max(0, Math.min(plan.prepared.length, Number(offset) || 0));
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (spans[mid].start <= at) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// Which spans hold a line that could be a link reference definition — the only
+// ones that have to be lexed before the document-wide prelude is known.
+export function notesLazyDefinitionSpans(prepared, spans) {
+  const flagged = new Set();
+  const re = new RegExp(NOTES_LAZY_DEFINITION_RE.source, "gm");
+  let match;
+  let cursor = 0;
+  while ((match = re.exec(prepared)) !== null) {
+    // The matches come out in document order, so the span search only ever
+    // walks forward — a note with thousands of definitions still costs one pass.
+    while (cursor < spans.length - 1 && spans[cursor].end <= match.index) cursor += 1;
+    flagged.add(cursor);
+    if (re.lastIndex === match.index) re.lastIndex += 1;
+  }
+  return flagged;
+}
+
+// One lex of one span, filtered to blocks. Returns null if the lexer threw,
+// which is the caller's signal to give up on the lazy path rather than to
+// render a wrong or empty note.
+export function lexNotesLazySpan(prepared, span) {
+  let tokens;
+  try {
+    tokens = marked.lexer(prepared.slice(span.start, span.end));
+  } catch (error) {
+    return null;
+  }
+  const blocks = [];
+  for (const token of tokens) {
+    if (!isBlockToken(token)) continue;
+    blocks.push(token.raw);
+  }
+  return { blocks, links: tokens.links || {} };
+}
+
+// The document-wide link-reference prelude, without lexing the document.
+//
+// A definition is not local to its block — any block anywhere can point at one —
+// so the prelude every block is parsed behind has to be known before the FIRST
+// span is built. Reading it off the source with a regex would be wrong (marked
+// absorbs a definition that immediately follows a paragraph into that
+// paragraph and never registers it — see sameLinkDefinitions), so the spans
+// that could hold one are really lexed, in document order, and merged
+// first-occurrence-wins exactly as splitPreparedBlocksChunked does. Everything
+// else in the document provably registers nothing, because a definition line is
+// the only thing that can.
+//
+// Returns null when the candidates add up to more text than the whole point of
+// this allows us to spend.
+export function notesLazyPrelude(prepared, spans, candidates, links) {
+  const combined = Object.create(null);
+  let chars = 0;
+  for (const index of Array.from(candidates).sort((a, b) => a - b)) {
+    const span = spans[index];
+    chars += span.end - span.start;
+    if (chars > NOTES_LAZY_PRELUDE_MAX_CHARS) return null;
+    const lexed = lexNotesLazySpan(prepared, span);
+    if (!lexed) return null;
+    links[index] = lexed.links;
+    for (const [label, link] of Object.entries(lexed.links)) {
+      if (!(label in combined)) combined[label] = link;
+    }
+  }
+  return definitionPrelude(combined);
+}
+
+// ── Building one span ─────────────────────────────────────────────────────
+
+// Where each block of a built span begins, relative to the span's own start.
+//
+// Memoized per span and derived with blockStartOffsets — the same indexOf walk
+// the incremental splitter uses — so it costs one pass over ~40 blocks, once.
+// Everything that maps between a rendered block and a position in the source
+// goes through this: a proportion of the span would put the answer up to forty
+// blocks out, which on a resume is the difference between the paragraph the
+// reader left and the one before the section heading above it.
+export function notesLazySpanStarts(plan, index) {
+  if (plan.starts[index]) return plan.starts[index];
+  const blocks = plan.blocks[index];
+  if (!blocks) return null;
+  const span = plan.spans[index];
+  const starts = blockStartOffsets(plan.prepared.slice(span.start, span.end), blocks);
+  plan.starts[index] = starts;
+  return starts;
+}
+
+// The block index inside `index`'s span that `node` belongs to, or -1. `node`
+// may be anything under the chunk (a <li>, a <td>) — what is looked for is the
+// top-level block that owns it.
+export function notesLazyBlockIndexFor(plan, index, node) {
+  const chunk = plan.chunks[index];
+  const groups = plan.groups[index];
+  if (!chunk || !groups) return -1;
+  let top = node;
+  while (top && top.parentNode && top.parentNode !== chunk) top = top.parentNode;
+  if (!top || top.parentNode !== chunk) return -1;
+  for (let n = 0; n < groups.length; n += 1) {
+    if (groups[n] && groups[n].includes(top)) return n;
+  }
+  // ── The node the span remembers is not always the node in the DOM ────────
+  //
+  // A block gets WRAPPED after it is built — every image and diagram picks up a
+  // .diagram-shell, every table a .markdown-table-wrap, a numbered equation a
+  // .has-eqn-num-block — and the wrapper, not the original node, is what the
+  // chunk holds from then on. liveBlockNodes has the same problem on the eager
+  // path and solves it by resolving to the top-level ancestor; here the groups
+  // still name the node that USED to be top level, so the identity test above
+  // misses.
+  //
+  // Falling through to -1 was not a small error. The caller then has nothing
+  // better than the span's own start, which on a 24,000-character span puts its
+  // answer up to a whole span out — and its answer is the hint a snippet search
+  // is centred on, so a search that should have found the paragraph under the
+  // reader instead finds a different copy of the same words twenty thousand
+  // characters away. That is a reading position quietly saved in the wrong
+  // chapter. The child index is exact whenever a block owns one element (which
+  // is nearly always) and never worse than a block or two otherwise.
+  const at = Array.prototype.indexOf.call(chunk.children, top);
+  if (at >= 0 && groups.length) return Math.min(at, groups.length - 1);
+  return -1;
+}
+
+// The chunk standing in for a character offset in the prepared text, built or
+// not. This is what lets anything geometric answer for a part of the note that
+// has not been rendered — the placeholder is a real box in the document with
+// the note's own measured height estimate on it.
+// Roughly where a character offset sits ON THE GLASS, without building
+// anything: the chunk standing in for it, interpolated by how far into that
+// span the offset is.
+//
+// The interpolation is not a nicety. Answering with the chunk's TOP for every
+// offset inside it makes forty blocks share one position, and anything doing a
+// binary search over those positions (the contents' active row) then picks the
+// last of them rather than the right one — the row lit while reading chapter 31
+// was chapter 32. Interpolating keeps the answer monotonic in document order,
+// which is what the search needs, and puts it inside a block or two.
+export function notesLazyTopAtOffset(container, offset) {
+  const plan = container ? notesLazyPlans.get(container) : null;
+  if (!plan) return null;
+  const index = notesLazySpanAt(plan, offset);
+  const chunk = plan.chunks[index];
+  if (!chunk || !chunk.isConnected) return null;
+  const box = chunk.getBoundingClientRect();
+  const span = plan.spans[index];
+  const width = span.end - span.start;
+  const through = width > 0 ? Math.max(0, Math.min(1, (offset - span.start) / width)) : 0;
+  return box.top + through * box.height;
+}
+
+// A chunk that has been built and holds a diagram or a table has to opt out of
+// containment as a whole, the way blockWantsOwnChunk's solo chunks do on the
+// eager path: those elements run their own IntersectionObservers and need real
+// geometry. On the eager path such a block gets a chunk to ITSELF; here it
+// takes its whole span with it, which costs some layout on the handful of spans
+// that contain one and nothing at all on a book of prose.
+export function markNotesLazyChunkContainment(chunk) {
+  const uncontained = Boolean(chunk.querySelector(".diagram-shell, .markdown-table-wrap, .mermaid, .nomnoml-diagram, table"));
+  chunk.classList.toggle("is-uncontained", uncontained);
+}
+
+// Build one span: lex it, parse its blocks, put them in its chunk. Synchronous
+// on purpose — every caller either has the reader waiting on it (a jump landing
+// here) or is running off an intersection callback with a 1200px runway, and a
+// span is size-bounded precisely so this fits in a frame.
+//
+// Returns the freshly built nodes, or null when there was nothing to do.
+export function buildNotesLazySpan(container, index) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan || index < 0 || index >= plan.spans.length) return null;
+  if (plan.built[index]) return null;
+  const chunk = plan.chunks[index];
+  if (!chunk || !chunk.isConnected) return null;
+
+  const lexed = lexNotesLazySpan(plan.prepared, plan.spans[index]);
+  if (!lexed) {
+    // The lexer threw on this span. Marking it built with nothing in it would
+    // silently delete a chunk of the book; marking it built with its SOURCE in
+    // it keeps the text readable, which is the same trade safeHtmlFromPrepared
+    // makes when the libraries are missing.
+    plan.built[index] = 1;
+    plan.blocks[index] = [];
+    plan.groups[index] = [];
+    plan.starts[index] = null;
+    chunk.classList.remove(NOTES_CHUNK_PENDING_CLASS);
+    return null;
+  }
+
+  const parts = renderPreparedBlocks(lexed.blocks, plan.prelude);
+  const groups = lexed.blocks.map((_, n) => nodesFromHtml(parts[n] ?? ""));
+  const flat = [];
+  groups.forEach((nodes) => nodes.forEach((node) => flat.push(node)));
+
+  plan.blocks[index] = lexed.blocks;
+  plan.groups[index] = groups;
+  plan.starts[index] = null;
+  plan.links[index] = lexed.links;
+  plan.built[index] = 1;
+  chunk.replaceChildren(...flat);
+  chunk.classList.remove(NOTES_CHUNK_PENDING_CLASS);
+  // A span that has just become real must stop claiming a placeholder height:
+  // its own content is what keeps the scrollbar still from here on, and
+  // notesChunkEstimateObserver is already watching it to pin the measurement.
+  chunk.style.removeProperty("--span-estimate");
+  refreshNotesLazyCacheBlocks(container, plan);
+  bindNotesHeadingElements(container, plan.spans[index].start, plan.spans[index].end, chunk);
+  return flat;
+}
+
+// The block cache entry for a lazily-rendered note lists the blocks that are
+// really in the DOM — no more. patchRenderedBlocks pools by block SOURCE rather
+// than by index, so this is exactly what an eager render falling back onto a
+// half-built note needs in order to reuse what is already there; and
+// notes/raw-offset.js reads the plan instead, because a proportion taken over
+// "whatever happens to be built" would move as the reader scrolled.
+export function refreshNotesLazyCacheBlocks(container, plan) {
+  const cached = renderedBlockCache.get(container);
+  if (!cached || cached.lazy !== plan) return;
+  const blocks = [];
+  for (let i = 0; i < plan.spans.length; i += 1) {
+    const raws = plan.blocks[i];
+    const groups = plan.groups[i];
+    if (!raws || !groups) continue;
+    for (let n = 0; n < raws.length; n += 1) blocks.push({ key: raws[n], nodes: groups[n] });
+  }
+  cached.blocks = blocks;
+  // blockKeyLengthTotal memoizes onto the entry, and the entry's block list has
+  // just changed underneath it.
+  cached.totalKeyLength = null;
+}
+
+// Build the span holding a character offset in the PREPARED text, if it is not
+// built already. THE entry point for "something needs this part of the note to
+// exist right now" — a reading-position restore, a heading jump, a highlight
+// the Highlights panel is pointing at.
+export function ensureNotesLazyOffsetBuilt(container, offset) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return false;
+  const index = notesLazySpanAt(plan, offset);
+  if (plan.built[index]) return false;
+  // Just this span. Building its neighbours as well was tried, on the theory
+  // that a landing settles better when the geometry above and below it is
+  // already final — measured, it moved which block sits on the reading line and
+  // bought nothing the intersection observer does not do a frame later anyway,
+  // so the jump builds exactly what it needs and no more.
+  buildNotesLazySpan(container, index);
+  finishNotesLazySpan(container, index);
+  return true;
+}
+
+// Same, addressed by a fraction of the document rather than by an offset —
+// which is how every caller that only has a RAW-markdown offset can ask,
+// preprocessSpecialBlocks having moved every absolute position.
+export function ensureNotesLazyFractionBuilt(container, fraction) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return false;
+  const at = Math.max(0, Math.min(1, Number(fraction) || 0)) * plan.prepared.length;
+  return ensureNotesLazyOffsetBuilt(container, at);
+}
+
+// Enhancement, image hydration and the containment mark for a span that was
+// just built. Split from buildNotesLazySpan because the build has to be
+// synchronous (a jump is waiting on it) and this half is asynchronous.
+export function finishNotesLazySpan(container, index) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return;
+  const chunk = plan.chunks[index];
+  const groups = plan.groups[index];
+  if (!chunk || !groups) return;
+  const flat = [];
+  groups.forEach((nodes) => nodes.forEach((node) => flat.push(node)));
+  if (!flat.length) return;
+  Promise.resolve()
+    .then(() => enhanceRenderedMarkdown(container, flat))
+    .then(() => hydrateLocalImages(flat))
+    .then(() => { markNotesLazyChunkContainment(chunk); })
+    .catch((error) => console.warn("Deferred note span failed", error));
+}
+
+// ── Promotion as the reader approaches ────────────────────────────────────
+//
+// The same shape as notesChunkEstimateObserver above and deferredWorkObserver
+// in render/deferred-work.js: one observer per scroll root, memoized, with
+// DEFERRED_WORK_MARGIN of runway. One-shot per chunk — a built span is
+// unobserved, so a note that has been read all the way through stops costing
+// anything at all.
+export const notesLazyBuildObservers = new Map();
+
+export function notesLazyBuildObserver(root) {
+  const existing = notesLazyBuildObservers.get(root);
+  if (existing) return existing;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      const plan = notesLazyPlans.get(root);
+      if (!plan) return;
+      // Built synchronously, straight off the entry, for the same reason
+      // measureNotesChunkEstimate is: routing this through the shared idle
+      // queue stacks up to 250ms of drain latency on top of the runway, and a
+      // fling covers 1200px well inside that. The span size bound is what makes
+      // that affordable — see NOTES_LAZY_SPAN_MAX_CHARS.
+      const finished = [];
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        observer.unobserve(entry.target);
+        const index = plan.chunks.indexOf(entry.target);
+        if (index === -1) return;
+        if (buildNotesLazySpan(root, index)) finished.push(index);
+      });
+      finished.forEach((index) => finishNotesLazySpan(root, index));
+      if (finished.length) {
+        scheduleNotesChunkEstimates(root);
+        // Both estimates get another chance every time a span lands. The
+        // note-wide block estimate needs NOTES_ESTIMATE_MIN_BLOCKS to be in the
+        // DOM before it can measure anything, and on a note built as it is read
+        // the first paint may not have that many — scheduling it only from the
+        // render tail would leave it never measured at all, and every
+        // placeholder in the book stuck on the stylesheet's flat fallback.
+        scheduleNotesBlockEstimate(root);
+        scheduleNotesLazyDensity(root);
+      }
+    },
+    { root, rootMargin: `${DEFERRED_WORK_MARGIN}px 0px` }
+  );
+  notesLazyBuildObservers.set(root, observer);
+  return observer;
+}
+
+export function releaseNotesLazyBuildObserver(root) {
+  const observer = notesLazyBuildObservers.get(root);
+  if (observer) {
+    observer.disconnect();
+    notesLazyBuildObservers.delete(root);
+  }
+}
+
+// Stop describing this surface as viewport-built — and say so in the BLOCK
+// CACHE as well as in the plan map.
+//
+// Both, or neither. The cache entry carries a reference to the plan, and
+// notes/raw-offset.js reads it to map between a rendered block and a position in
+// the source: it finds the block's chunk, looks that chunk up in the plan's
+// list, and takes the span's offset. Drop the plan from the map alone and that
+// entry still points at it — at a span list describing a grouping of chunks the
+// DOM no longer has, because the note has since been re-homed into 40-block
+// chunks by rechunkRenderedBlocks. Every offset it answers is then plausible and
+// wrong, which is exactly how a reading position comes back forty per cent of a
+// book away from where it was taken.
+export function forgetNotesLazyPlan(container) {
+  if (!notesLazyPlans.has(container)) return;
+  notesLazyPlans.delete(container);
+  releaseNotesLazyBuildObserver(container);
+  const cached = renderedBlockCache.get(container);
+  if (!cached || !cached.lazy) return;
+  cached.lazy = null;
+  // cached.blocks is already the whole note (the plan was materialized before
+  // it was dropped), so the ordinary key-length mapping takes over from here —
+  // it just has to be told to re-add up what it memoized.
+  cached.totalKeyLength = null;
+}
+
+export function observeNotesLazySpans(container) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan || typeof IntersectionObserver !== "function") return;
+  const observer = notesLazyBuildObserver(container);
+  plan.chunks.forEach((chunk, index) => {
+    if (!plan.built[index]) observer.observe(chunk);
+  });
+}
+
+// Build everything that is still pending, yielding between spans.
+//
+// For anything that needs the WHOLE note to be real: an export, a print, a
+// find-across-the-note. Additive rather than a second code path — it is the
+// same per-span build, run until there is nothing left.
+export async function materializeNotesLazySpans(container, sequenceOk = () => true) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return true;
+  let at = 0;
+  while (at < plan.spans.length) {
+    const started = performance.now();
+    const finished = [];
+    while (at < plan.spans.length && performance.now() - started < RENDER_BATCH_BUDGET_MS) {
+      if (!plan.built[at] && buildNotesLazySpan(container, at)) finished.push(at);
+      at += 1;
+    }
+    finished.forEach((index) => finishNotesLazySpan(container, index));
+    if (at < plan.spans.length) {
+      await yieldToEventLoop();
+      if (!sequenceOk()) return false;
+      if (notesLazyPlans.get(container) !== plan) return false;
+    }
+  }
+  scheduleNotesChunkEstimates(container);
+  return true;
+}
+
+// Synchronous variant, for callers that cannot await (an export path already
+// inside a synchronous DOM capture). Costs the whole remaining note in one
+// task, which is exactly what it is asking for.
+export function materializeNotesLazySpansSync(container) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan) return;
+  for (let i = 0; i < plan.spans.length; i += 1) {
+    if (!plan.built[i]) buildNotesLazySpan(container, i);
+  }
+}
+
+// ── Putting the placeholders on screen ────────────────────────────────────
+
+export function buildNotesLazyChunks(container, plan) {
+  const fragment = document.createDocumentFragment();
+  plan.chunks = plan.spans.map((span) => {
+    const chunk = document.createElement("div");
+    chunk.className = `${NOTES_CHUNK_CLASS} ${NOTES_CHUNK_PENDING_CLASS}`;
+    // How much SOURCE this placeholder stands for, so the density measured
+    // below can turn it into a height. Written now rather than later because it
+    // never changes for the life of the span and this is the one pass that
+    // touches every chunk.
+    chunk.style.setProperty("--span-chars", String(span.end - span.start));
+    fragment.appendChild(chunk);
+    return chunk;
+  });
+  container.replaceChildren(fragment);
+}
+
+// ── Sizing a placeholder by how much SOURCE it stands for ─────────────────
+//
+// --notes-chunk-estimate is the note's average block height times
+// NOTES_CHUNK_SIZE, and it is the right answer for a chunk of exactly forty
+// average blocks. A SPAN is not that: it is forty safe cut points or 24,000
+// characters, whichever comes first, so a span of dense prose and a span of
+// one-line dialogue hold wildly different amounts of text and the block-count
+// estimate is wrong for both — in opposite directions.
+//
+// What every span does share is a rate: how many pixels a character of this
+// note's source turns into. That is measurable the moment two spans have been
+// built, and it is measured off chunks that are on screen and therefore already
+// laid out, so it costs no layout of its own. A pending chunk is then sized by
+// its own character count.
+//
+// Once per note, like every other estimate here (measureNotesBlockEstimate says
+// why: a revision resizes everything not yet visited at once, which is a single
+// enormous jump rather than the settling it was meant to cure).
+export function measureNotesLazyDensity(container) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan || plan.density) return;
+  // ── Only chunks that are ON SCREEN ───────────────────────────────────────
+  //
+  // The trap measureNotesBlockEstimate documents, one level up: a box whose
+  // layout `content-visibility` skipped answers offsetHeight with its
+  // contain-intrinsic-size — the ESTIMATE — not with its content's height. A
+  // built chunk sitting below the fold therefore reports the flat 4,800px
+  // fallback, and a density averaged over those is a measurement of the guess
+  // it was supposed to replace. (Measured with that mistake in place: the same
+  // 3.1MB note claimed 2.25 million pixels on one run and 1.23 million on the
+  // next, purely on how many of its built chunks happened to be off screen when
+  // the sample was taken. A document whose height moves like that moves the
+  // reader's position with it.)
+  //
+  // A chunk intersecting the viewport is by definition relevant to the user and
+  // therefore really laid out, so the sample is taken from those alone — and one
+  // is enough, because this is a rate over CHARACTERS, which barely varies
+  // across a book, rather than a per-block height, which varies enormously.
+  const bounds = container.getBoundingClientRect();
+  let height = 0;
+  let chars = 0;
+  for (let i = 0; i < plan.spans.length; i += 1) {
+    if (!plan.built[i]) continue;
+    const chunk = plan.chunks[i];
+    if (!chunk?.isConnected) continue;
+    const box = chunk.getBoundingClientRect();
+    if (box.bottom <= bounds.top || box.top >= bounds.bottom || box.height <= 0) continue;
+    height += box.height;
+    chars += plan.spans[i].end - plan.spans[i].start;
+  }
+  if (chars <= 0 || height <= 0) return;
+  plan.density = height / chars;
+  plan.chunks.forEach((chunk, i) => {
+    if (plan.built[i]) return;
+    const span = plan.spans[i];
+    chunk.style.setProperty("--span-estimate", `${Math.round(plan.density * (span.end - span.start))}px`);
+  });
+}
+
+export let notesLazyDensityFrame = 0;
+
+export function scheduleNotesLazyDensity(container) {
+  if (!notesLazyPlans.has(container) || notesLazyDensityFrame) return;
+  // Deferred a frame for the same reason scheduleNotesBlockEstimate is: reading
+  // offsetHeight forces layout, and the tail of a render is the one moment the
+  // browser most wants back so it can paint.
+  notesLazyDensityFrame = requestAnimationFrame(() => {
+    notesLazyDensityFrame = 0;
+    measureNotesLazyDensity(el.notesView);
+  });
+}
+
+// The spans the reader can already see, plus the runway. Read as rects in one
+// pass before anything is built, the same discipline
+// partitionByViewportProximity keeps: interleaving reads with builds is what
+// turns one layout into one layout per span.
+export function nearNotesLazySpans(container, plan) {
+  const bounds = container.getBoundingClientRect();
+  const top = bounds.top - DEFERRED_WORK_MARGIN;
+  const bottom = bounds.bottom + DEFERRED_WORK_MARGIN;
+  const near = [];
+  plan.chunks.forEach((chunk, index) => {
+    if (plan.built[index]) return;
+    const rect = chunk.getBoundingClientRect();
+    if (rect.bottom >= top && rect.top <= bottom) near.push(index);
+  });
+  // A note whose placeholders have no height yet (the estimate has never been
+  // measured and the stylesheet fallback did not apply) would answer with
+  // nothing, and a note that renders nothing is worse than one that renders too
+  // much. The first span is always built.
+  if (!near.length && !plan.built[0]) near.push(0);
+  return near;
+}
+
+// ── An edit, without giving up the laziness ───────────────────────────────
+//
+// The reader highlights a paragraph in chapter 30 of a book that is 4% built.
+// Re-planning from scratch would be correct (the boundary scan is derived from
+// the new document, so no certificate is needed at all) but it costs a line
+// scan of the whole note on every edit — the exact O(document) pass
+// incrementalSplitPreparedBlocks exists to avoid. So the local case is taken
+// locally, and re-planning is the fallback rather than the rule.
+//
+// The claim: when the change lies strictly inside one span, and past that
+// span's first line, then that span's START is still a safe boundary of the new
+// document (everything before it is byte-identical, and the boundary rule reads
+// only backwards and the line at the cut), and its END is still one exactly
+// when a rescan says so. Rescanning is not an approximation of the rule — it IS
+// the rule, run again: findSafeLexerBoundaries resumed AT a safe boundary
+// begins in the same state the full scan was in there (outside any fence, no
+// blank run open, previous line not safe), so the boundaries it reports for the
+// window are the document's own. tools/viewport-split-check.mjs asserts that
+// resumption property directly.
+//
+// Everything after the confirmed end boundary is byte-identical text lexed from
+// a canonical state, so no span past the edited one can have changed — which is
+// why only the one span is rebuilt and every other chunk, built or pending, is
+// left exactly as it is.
+export function patchNotesLazyPlanLocally(container, plan, prepared) {
+  const range = preparedEditRange(plan.prepared, prepared);
+  if (!range) return "unchanged";
+  const index = notesLazySpanAt(plan, range.head);
+  const span = plan.spans[index];
+  const first = index === 0;
+  const last = index === plan.spans.length - 1;
+  // ── The left cut ────────────────────────────────────────────────────────
+  //
+  // Unchanged when everything before it is unchanged AND the line it lands on
+  // is — that line's shape (indented? a list marker? a quote?) is half of why
+  // the cut was safe. The first span has no left cut at all, so there is
+  // nothing there to preserve and an edit at the very top of a note is
+  // ordinary rather than exotic.
+  if (!first) {
+    if (!(span.start < range.head)) return null;
+    const firstBreak = plan.prepared.indexOf("\n", span.start);
+    if (firstBreak === -1 || range.head <= firstBreak) return null;
+  }
+  // ── The right cut ───────────────────────────────────────────────────────
+  //
+  // The change has to stop short of it, or it is not one span's edit. The last
+  // span's right edge is the end of the document, which is not a cut and which
+  // an append is allowed to move.
+  if (!last && !(range.tailBefore < span.end)) return null;
+
+  const delta = prepared.length - plan.prepared.length;
+  const newEnd = span.end + delta;
+  if (newEnd <= span.start) return null;
+  if (newEnd - span.start > NOTES_LAZY_SPAN_MAX_CHARS * 4) return null;
+
+  if (!last) {
+    // Two spans of window, so the rescan has a line of context past the cut it
+    // is being asked about rather than deciding on a truncated last line.
+    const stop = Math.min(prepared.length, (plan.spans[index + 2]?.end ?? plan.prepared.length) + delta);
+    const rescan = findSafeLexerBoundaries(prepared.slice(span.start, stop));
+    if (!rescan.includes(newEnd - span.start)) return null;
+  }
+
+  const lexed = lexNotesLazySpan(prepared, { start: span.start, end: newEnd });
+  if (!lexed) return null;
+  // The prelude is document-wide, so a definition appearing, vanishing or
+  // changing inside this span changes how every block in the book renders. The
+  // comparison is between two real lexes of the span, which is exact where a
+  // scan of the source is not — same reasoning as sameLinkDefinitions' own.
+  if (!sameLinkDefinitions(plan.links[index] || {}, lexed.links)) return null;
+
+  const spans = plan.spans.slice();
+  spans[index] = { start: span.start, end: newEnd };
+  for (let i = index + 1; i < spans.length; i += 1) {
+    spans[i] = { start: spans[i].start + delta, end: spans[i].end + delta };
+  }
+  plan.spans = spans;
+  plan.prepared = prepared;
+  plan.links[index] = lexed.links;
+  plan.starts[index] = null;
+  if (plan.built[index]) rebuildNotesLazySpan(container, plan, index, lexed.blocks);
+  else plan.blocks[index] = null;
+  return "patched";
+}
+
+// Re-home a built span's chunk onto a new block list, reusing the DOM of every
+// block whose source did not change. The same pool-and-walk patchRenderedBlocks
+// does, scoped to one chunk — which is all an edit can reach.
+export function rebuildNotesLazySpan(container, plan, index, blocks) {
+  const chunk = plan.chunks[index];
+  const pool = new Map();
+  (plan.blocks[index] || []).forEach((key, n) => {
+    const nodes = (plan.groups[index] || [])[n];
+    if (!nodes || !nodes.length) return;
+    const live = nodes.filter((node) => node.parentNode === chunk);
+    if (!live.length) return;
+    const bucket = pool.get(key);
+    if (bucket) bucket.push(live);
+    else pool.set(key, [live]);
+  });
+
+  const groups = new Array(blocks.length);
+  const missing = [];
+  blocks.forEach((key, n) => {
+    const bucket = pool.get(key);
+    const reused = bucket && bucket.length ? bucket.shift() : null;
+    if (reused) groups[n] = reused;
+    else missing.push(n);
+  });
+  const fresh = [];
+  if (missing.length) {
+    const parts = renderPreparedBlocks(missing.map((n) => blocks[n]), plan.prelude);
+    missing.forEach((n, part) => {
+      const nodes = nodesFromHtml(parts[part] ?? "");
+      groups[n] = nodes;
+      nodes.forEach((node) => fresh.push(node));
+    });
+  }
+
+  let cursor = chunk.firstChild;
+  groups.forEach((nodes) => {
+    nodes.forEach((node) => {
+      if (node === cursor) {
+        cursor = cursor.nextSibling;
+        return;
+      }
+      chunk.insertBefore(node, cursor);
+    });
+  });
+  while (cursor) {
+    const next = cursor.nextSibling;
+    chunk.removeChild(cursor);
+    cursor = next;
+  }
+
+  plan.blocks[index] = blocks;
+  plan.groups[index] = groups;
+  plan.starts[index] = null;
+  refreshNotesLazyCacheBlocks(container, plan);
+  bindNotesHeadingElements(container, plan.spans[index].start, plan.spans[index].end, chunk);
+  if (fresh.length) {
+    Promise.resolve()
+      .then(() => enhanceRenderedMarkdown(container, fresh))
+      .then(() => hydrateLocalImages(fresh))
+      .then(() => { markNotesLazyChunkContainment(chunk); })
+      .catch((error) => console.warn("Note span re-render failed", error));
+  }
+}
+
+// Re-plan from a fresh boundary scan, keeping every chunk whose span text is
+// byte-identical to one the previous plan had. No certificate is involved
+// because nothing is being carried over about the CUTS — they are derived from
+// the new document — only about the CONTENT behind cuts that came out the same.
+export function replanNotesLazySpans(container, plan, prepared, spans, candidates, links, prelude) {
+  const range = preparedEditRange(plan.prepared, prepared);
+  const delta = prepared.length - plan.prepared.length;
+  // Where an old span's text survives unchanged, and at what offset. Before the
+  // edit the span is where it was; after it, it has slid by delta. A span
+  // straddling the edit is in neither set, which is exactly right.
+  const survivors = new Map();
+  if (range) {
+    plan.spans.forEach((span, index) => {
+      if (span.end <= range.head) survivors.set(`${span.start}:${span.end}`, index);
+      else if (span.start >= range.tailBefore) survivors.set(`${span.start + delta}:${span.end + delta}`, index);
+    });
+  }
+
+  const chunks = [];
+  const blocks = [];
+  const groups = [];
+  const starts = [];
+  const built = new Uint8Array(spans.length);
+  const kept = new Set();
+  spans.forEach((span, index) => {
+    const from = survivors.get(`${span.start}:${span.end}`);
+    if (from === undefined || !plan.built[from] || kept.has(from) || !plan.chunks[from]?.isConnected) {
+      const chunk = document.createElement("div");
+      chunk.className = `${NOTES_CHUNK_CLASS} ${NOTES_CHUNK_PENDING_CLASS}`;
+      chunk.style.setProperty("--span-chars", String(span.end - span.start));
+      if (plan.density) chunk.style.setProperty("--span-estimate", `${Math.round(plan.density * (span.end - span.start))}px`);
+      chunks.push(chunk);
+      blocks.push(null);
+      groups.push(null);
+      starts.push(null);
+      return;
+    }
+    kept.add(from);
+    chunks.push(plan.chunks[from]);
+    blocks.push(plan.blocks[from]);
+    groups.push(plan.groups[from]);
+    // The offsets are relative to the span's own start, and a surviving span is
+    // one whose TEXT is unchanged — so they survive the slide by delta too.
+    starts.push(plan.starts[from]);
+    built[index] = 1;
+  });
+
+  // One pass over the container: every kept chunk is moved into its new place
+  // and every replaced one is dropped, rather than replaceChildren throwing
+  // away the layout memory of chunks that did not change (see the note above
+  // rechunkRenderedBlocks — that memory is what stops a long note jumping).
+  const wanted = new Set(chunks);
+  Array.from(container.children).forEach((node) => { if (!wanted.has(node)) node.remove(); });
+  chunks.forEach((chunk, index) => {
+    if (container.children[index] !== chunk) container.insertBefore(chunk, container.children[index] || null);
+  });
+
+  plan.prepared = prepared;
+  plan.prelude = prelude;
+  plan.spans = spans;
+  plan.chunks = chunks;
+  plan.blocks = blocks;
+  plan.groups = groups;
+  plan.starts = starts;
+  plan.built = built;
+  plan.links = links;
+  plan.candidates = candidates;
+  return plan;
+}
+
 // Rebuilding a view used to put every {{cloze}} back in its hidden state, and
 // the flip-all button is reset to match after each render. Reused blocks keep
 // whatever the reader flipped open, so hide them explicitly to keep that
@@ -1644,6 +2796,13 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
   // the answer. This is the raw → rendered toggle when nothing was edited.
   if (cached && cached.generation === renderGeneration && cached.source === displayMarkdown) {
     resetRenderedClozes(container);
+    // Same content, same DOM — but on a note that is built as it is read, "the
+    // DOM on screen is already the answer" is only true for the part of it that
+    // has been built. Re-entering the view (the raw<->rendered toggle, coming
+    // back from Cards) can leave the reader looking at a span that went pending
+    // while the surface was hidden and no intersection was reported. Cheap: a
+    // rect read per pending chunk, and nothing at all once the note is whole.
+    if (notesLazyPending(container)) startNotesLazySpans(container);
     return;
   }
 
@@ -1729,6 +2888,26 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
       await yieldToEventLoop();
       if (!sequenceOk()) return;
     }
+  }
+
+  // ── Build only what the viewport needs ──────────────────────────────────
+  //
+  // Ahead of every splitter below, because the whole point of it is that no
+  // splitter runs: a note this size is cut into spans by one line scan and only
+  // the spans near the reader are lexed at all. Declining (paged mode, a
+  // document with no safe cut in it, a prelude too expensive to derive without
+  // the full lex) returns null and everything below is byte for byte the path
+  // this has always taken.
+  //
+  // `!split` guards a parse-history hit: if the whole document has already been
+  // lexed for this exact source, spending it is free and reusing it is better
+  // than throwing it away to be lazy about work that is already done.
+  const lazily = !split && canRenderNotesLazily(container, prepared)
+    ? await renderNotesLazily(container, prepared, sequenceOk)
+    : null;
+  if (lazily === "superseded") return;
+
+  if (!lazily && !split) {
     // Patch the previous block array where the edit was local enough to prove it
     // — one lex of a few KB instead of the whole note, and no yields, so an edit
     // repaints in the same frame rather than eleven frames later. Null means
@@ -1746,9 +2925,36 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
       split = cacheable ? splitPreparedBlocks(prepared) : null;
     }
   }
+
+  if (lazily) {
+    const plan = notesLazyPlan(container);
+    // Committed BEFORE the spans are built, because buildNotesLazySpan writes
+    // this entry's block list as it goes (refreshNotesLazyCacheBlocks) — the
+    // list is "what is really in the DOM", which is exactly what an eager
+    // re-render falling back onto a half-built note can reuse.
+    renderedBlockCache.set(container, {
+      generation: renderGeneration,
+      source: displayMarkdown,
+      prelude: plan.prelude,
+      blocks: [],
+      prepared,
+      split: null,
+      starts: null,
+      lazy: plan
+    });
+    startNotesLazySpans(container);
+    resetRenderedClozes(container);
+    if (renderSequence.get(container) !== sequence) return;
+    scheduleSurfaceFinalize(container);
+    return;
+  }
   if (notesKey && split) {
     rememberNotesParseHistory(notesKey, { generation: renderGeneration, source: displayMarkdown, prepared, split, starts });
   }
+  // Whatever happens below rebuilds the container from a whole-document block
+  // list, so a plan describing spans is no longer describing this DOM.
+  forgetNotesLazyPlan(container);
+
   let roots = null;
   if (split) {
     // Every block is parsed behind the document's link reference definitions, so

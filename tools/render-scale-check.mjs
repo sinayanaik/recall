@@ -123,7 +123,30 @@ const PROBE = `async (api) => {
     push(label + " — renders without throwing", threw ? threw : true);
     if (threw) continue;
 
-    // Every block reaches the DOM, whether it was wrapped in a chunk or not.
+    // ── Every block reaches the DOM ───────────────────────────────────────
+    //
+    // On a note big enough to be built as it is READ (see the viewport-driven
+    // rendering note in src/render/block-cache.js) that is deliberately not
+    // true on open — not building the far end of a book is the entire point.
+    // So the question is asked in two halves, and the second half is what stops
+    // "cheap" from quietly meaning "wrong":
+    //
+    //   1. what is on screen now is a real, non-empty part of the note, and
+    //      strictly less than all of it;
+    //   2. asking for the rest produces EXACTLY the block list a whole-document
+    //      lex gives — same count, same order.
+    const lazy = api.notesLazyStats(view);
+    if (lazy) {
+      push(label + " — opens without building the whole note", (() => {
+        const blocks = api.notesTopLevelBlocks(view);
+        if (!blocks.length) return "nothing rendered at all";
+        if (blocks.length >= expected) return "built all " + blocks.length + " blocks — nothing was deferred";
+        if (lazy.built >= lazy.spans) return "built all " + lazy.spans + " spans";
+        return true;
+      })());
+      await api.materializeNotesLazySpans(view);
+      await settle(120);
+    }
     push(label + " — every block reaches the DOM", (() => {
       const blocks = api.notesTopLevelBlocks(view);
       if (blocks.length !== expected) return "expected " + expected + " top-level blocks, found " + blocks.length;

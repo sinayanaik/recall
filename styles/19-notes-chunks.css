@@ -14,9 +14,26 @@
  *     per frame   122ms -> 17ms      layout   853ms -> 41ms
  *
  * Only above NOTES_CHUNK_MIN_BLOCKS (see src/render/block-cache.js) — an
- * ordinary note keeps exactly the DOM it always had. Every block stays IN the
- * document, which is what separates this from windowing: Ctrl+F, select-all,
- * printing and the anchor text search all keep working.
+ * ordinary note keeps exactly the DOM it always had.
+ *
+ * ── What changed when the note stopped being lexed on open ────────────────
+ *
+ * This used to say "every block stays IN the document, which is what separates
+ * this from windowing: Ctrl+F, select-all, printing and the anchor text search
+ * all keep working". Half of that is still true and half of it is not, and the
+ * difference is worth stating rather than quietly deleting.
+ *
+ * A note past NOTES_LAZY_MIN_SPANS is now built span by span as the reader
+ * comes near each one (see the viewport-driven rendering note in
+ * src/render/block-cache.js), so the blocks of a chapter nobody has scrolled to
+ * are not in the document yet. The app's own machinery is unaffected — the
+ * highlights panel, backlinks, deck search, every export and the anchor text
+ * search all read the markdown SOURCE, never the rendered DOM, and a jump into
+ * an unbuilt part of the note builds it first. What is affected is the
+ * browser's own whole-page features: Ctrl+F and select-all see the built part
+ * of a book, not all of it. That is the price of the cost not scaling with the
+ * note, and it is paid only by notes large enough for the old behaviour to have
+ * been the bigger problem.
  */
 
 /* #notesView, not .notes-rendered, and that is load-bearing rather than tidy.
@@ -75,4 +92,27 @@
 #notesView > .notes-chunk > * {
   max-width: var(--notes-max-width);
   margin-inline: auto;
+}
+
+/* ── A chunk whose blocks have not been built yet ──────────────────────────
+ *
+ * Viewport-driven rendering (see the header note in src/render/block-cache.js)
+ * puts an EMPTY .notes-chunk in the document for every span of the note and
+ * fills it in as the reader approaches. An empty box is 0px tall the moment
+ * `content-visibility` stops skipping it, which is precisely when it is coming
+ * on screen — so the document would shrink under the reader in the frame
+ * between "this chunk is visible" and "this chunk has been built".
+ *
+ * contain-intrinsic-size cannot cover that: it applies only while the contents
+ * ARE skipped. A min-height does. Removed with the class the moment the span is
+ * built, so a real chunk is sized by its real content.
+ *
+ * --span-estimate is this span's OWN height, from the pixels-per-character rate
+ * measured off the spans that have been built (measureNotesLazyDensity). It is
+ * far better than the note-wide fallback behind it, because a span is forty cut
+ * points or 24,000 characters — whichever comes first — and those two rules give
+ * spans holding very different amounts of text. The fallback applies only until
+ * two spans have been built, which is one frame on any note this applies to. */
+#notesView > .notes-chunk.is-pending {
+  min-height: var(--span-estimate, var(--notes-chunk-estimate, 4800px));
 }

@@ -9,7 +9,7 @@ import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageCount,
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scheduleReadingPositionSave } from "./reading-position.js?v=__BUILD__";
-import { notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS, notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
 
 // A representative raw-markdown offset for whatever's currently at the top of
 // the visible #notesView. Unlike the triple-click path, the "Edit notes"
@@ -61,21 +61,66 @@ export function notesBlockAtReadingLineGeometric() {
   // on the current page.
   if (isNotesPaged()) return firstVisibleNotesBlock();
   const y = view.getBoundingClientRect().top + notesReadingLineOffset(view.clientHeight);
-  let low = 0;
-  let high = blocks.length - 1;
-  let found = null;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (blocks[mid].getBoundingClientRect().bottom < y) {
-      low = mid + 1;
-    } else {
-      found = blocks[mid];
-      high = mid - 1;
+  // ── Chunked: find the CHUNK first, then the block inside it ──────────────
+  //
+  // The search below rests on the block rects being sorted, and on a chunked
+  // note they are not. A block whose chunk's contents `content-visibility` has
+  // skipped answers getBoundingClientRect() with a box belonging to the chunk
+  // rather than to itself, and those boxes can be stale — so two blocks in two
+  // different chunks can both claim to contain the reading line, in either
+  // order, and a binary search over an unsorted sequence lands wherever it
+  // happens to land. Measured on a 3.1MB book built as it is read: the block
+  // named here was seven blocks away from the one the caret hit test found at
+  // the same point, and since this is what the reading position falls back to,
+  // that is a resume landing in the wrong part of the chapter.
+  //
+  // A CHUNK's own box is always real — it is in the flow whether or not its
+  // contents were skipped — so the coarse search runs over the chunks, and the
+  // fine one over the children of the one chunk that contains the reading line.
+  // That chunk intersects the viewport by definition, so it is laid out and its
+  // children answer honestly.
+  const chunks = Array.from(view.querySelectorAll(`:scope > .${NOTES_CHUNK_CLASS}`));
+  if (chunks.length) {
+    const found = firstAtOrBelow(chunks, y) ?? chunks[chunks.length - 1];
+    const inside = Array.from(found.children).filter((node) => node.nodeType === 1);
+    if (inside.length) return firstAtOrBelow(inside, y) ?? inside[inside.length - 1];
+    // A chunk whose span has not been built yet holds nothing to point at. The
+    // nearest real block is the last one before it — the reader is between two
+    // built regions, and the one they came from is the honest answer.
+    const at = chunks.indexOf(found);
+    for (let i = at - 1; i >= 0; i -= 1) {
+      const kids = Array.from(chunks[i].children).filter((node) => node.nodeType === 1);
+      if (kids.length) return kids[kids.length - 1];
     }
+    for (let i = at + 1; i < chunks.length; i += 1) {
+      const kids = Array.from(chunks[i].children).filter((node) => node.nodeType === 1);
+      if (kids.length) return kids[0];
+    }
+    return null;
   }
+  const found = firstAtOrBelow(blocks, y);
   // Scrolled past the last block (the scroll-past-end padding) — that block is
   // still where the reader is.
   return found || blocks[blocks.length - 1];
+}
+
+// The first element of `nodes` whose bottom has reached `y`, by binary search.
+// `nodes` must be in document order and must really be sorted by their boxes —
+// which is why the caller above searches chunks rather than blocks.
+export function firstAtOrBelow(nodes, y) {
+  let low = 0;
+  let high = nodes.length - 1;
+  let found = null;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (nodes[mid].getBoundingClientRect().bottom < y) {
+      low = mid + 1;
+    } else {
+      found = nodes[mid];
+      high = mid - 1;
+    }
+  }
+  return found;
 }
 
 // Nudge an approximate offset onto the start of a line, so the caret lands at a

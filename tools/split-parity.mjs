@@ -74,6 +74,41 @@ const ACCEPTED = {
   // work is in functions the baseline never had. Measured in
   // tools/interaction-scale-check.mjs (2.4MB fixture) and asserted for
   // correctness in tools/incremental-split-check.mjs.
+  // ── Opening a book-sized note without paying for the book ───────────────
+  // A large note is no longer lexed on open: findSafeLexerBoundaries cuts the
+  // prepared source into spans and only the spans near the reader are lexed and
+  // built, as the reader reaches them. Cost now scales with the SCREEN rather
+  // than with the note. The four entries below are the consumers that assumed
+  // "if it is in the note it is in the DOM", which is exactly what stops being
+  // true. Asserted in tools/viewport-split-check.mjs.
+  ensureNotesHeadingIds:
+    "The contents comes off the SOURCE now, not off a querySelectorAll over the " +
+    "rendered view. Two reasons, and the second one is fatal to the old shape: " +
+    "the DOM query made a note's contents a function of how far its render had " +
+    "got (a big note's drawer was short or empty until the last block landed), " +
+    "and on a note whose spans are built as the reader approaches them, most of " +
+    "the headings are deliberately not in the document at all. It returns " +
+    "descriptors — { level, text, offset, id, el } — with `el` filled in as each " +
+    "span is built, and every caller reads .level/.text where it read " +
+    ".tagName/.textContent. The DOM path is kept for a surface that has no " +
+    "render behind it, where the DOM is complete by definition.",
+  revealNoteMark:
+    "The Highlights panel addresses a highlight by its ORDINAL in state.notes, " +
+    "and the guard that the ordinal means what it says was `the view holds " +
+    "exactly markCount <mark> elements`. That cannot hold on a note most of " +
+    "which is unbuilt, so the exact path would have declined forever and every " +
+    "'Go to →' would have settled for a text search. The ordinal is now resolved " +
+    "against the prepared source instead — preprocess leaves a mark tag exactly " +
+    "as it found it — and the span holding it is built before the count is taken " +
+    "inside that one chunk. The whole-note count is still the first answer when " +
+    "it holds, so nothing changes for an ordinary note.",
+  matchesHeadingFragment:
+    "Reads a heading descriptor's `.text` rather than an element's textContent — " +
+    "see ensureNotesHeadingIds. The three accepted fragment forms are unchanged.",
+  revealNoteHeading:
+    "The flash goes through flashNotesHeading(), because a heading is a " +
+    "descriptor now and its element may not exist until scrollNotesHeadingIntoView " +
+    "has built the span holding it. Flashing before the jump would flash nothing.",
   splitPreparedBlocks:
     "Filters through isBlockToken() instead of testing token.type/raw inline. " +
     "One definition, shared with splitPreparedBlocksChunked and with the window " +

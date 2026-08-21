@@ -4,7 +4,7 @@
 // its text. Matching is bounded on purpose: an unbounded scan over a large note
 // is quadratic and froze the tab for tens of seconds.
 
-import { isTopLevelBlockParent, renderedBlockCache } from "../render/block-cache.js?v=__BUILD__";
+import { ensureNotesLazyOffsetBuilt, isTopLevelBlockParent, notesLazyBlockIndexFor, notesLazySpanAt, notesLazySpanStarts, renderedBlockCache } from "../render/block-cache.js?v=__BUILD__";
 
 // ── Triple-click a rendered block → raw edit mode, cursor at that spot ──────
 // marked/the DOM give no source-position map back to the raw markdown, so this
@@ -254,10 +254,59 @@ export function blockKeyLengthTotal(cached) {
 // of the TEXT — measured on a 2.6MB book: the reader's real position was at
 // scrollTop 179,543 and the proportional guess was 690,550. Block keys are the
 // source itself, so this answer does not move as the layout settles.
+// ── The same question, asked of a note that is built as it is read ─────────
+//
+// A lazily-rendered note knows something better than a proportion of block-key
+// lengths: it knows, exactly, which slice of the PREPARED text every span
+// covers. So the mapping goes through the span index instead — offset -> its
+// share of the prepared text -> the span holding it -> that span's blocks.
+//
+// And because the answer has to be a real element, the span is BUILT if it is
+// not built already. That is the whole point of the call: a reading-position
+// restore or a highlight jump landing in chapter 30 has to have chapter 30 in
+// the document to land on. The build is one span — size-bounded, a frame's
+// work — not the note.
+export function notesLazyBlockForRawOffset(root, cached, source, offset) {
+  const plan = cached.lazy;
+  const want = Math.max(0, Math.min(1, offset / source.length)) * plan.prepared.length;
+  const index = notesLazySpanAt(plan, want);
+  ensureNotesLazyOffsetBuilt(root, want);
+  const chunk = plan.chunks[index];
+  if (!chunk) return null;
+  const span = plan.spans[index];
+  const groups = plan.groups[index];
+  const starts = notesLazySpanStarts(plan, index);
+  // Exactly which block, from the span's own measured block offsets. A
+  // proportion of the span would be up to forty blocks out, and on a resume
+  // that is the difference between the paragraph the reader left and the
+  // section heading a screen above it.
+  if (groups && starts && starts.length) {
+    const local = Math.max(0, Math.min(span.end - span.start, want - span.start));
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= local) lo = mid;
+      else hi = mid - 1;
+    }
+    for (let n = lo; n >= 0; n -= 1) {
+      const node = (groups[n] || []).find((child) => child && child.nodeType === 1 && child.isConnected);
+      if (node) return node;
+    }
+  }
+  const blocks = Array.from(chunk.children).filter((node) => node.nodeType === 1);
+  if (!blocks.length) return chunk.isConnected ? chunk : null;
+  const through = span.end > span.start ? (want - span.start) / (span.end - span.start) : 0;
+  const at = Math.max(0, Math.min(blocks.length - 1, Math.floor(through * blocks.length)));
+  return blocks[at];
+}
+
 export function notesBlockForRawOffset(root, source, offset) {
   const cached = renderedBlockCache.get(root);
-  if (!cached || !Array.isArray(cached.blocks) || !cached.blocks.length || !source) return null;
+  if (!cached || !source) return null;
   if (!Number.isFinite(offset)) return null;
+  if (cached.lazy) return notesLazyBlockForRawOffset(root, cached, source, offset);
+  if (!Array.isArray(cached.blocks) || !cached.blocks.length) return null;
   const total = blockKeyLengthTotal(cached);
   if (!total) return null;
   const want = Math.max(0, Math.min(1, offset / source.length)) * total;
@@ -274,7 +323,13 @@ export function notesBlockForRawOffset(root, source, offset) {
 
 export function approximateRawOffsetForBlock(root, source, node) {
   const cached = renderedBlockCache.get(root);
-  if (!cached || !Array.isArray(cached.blocks) || !cached.blocks.length || !source) return null;
+  if (!cached || !source) return null;
+  // Lazily built: the span index already knows where this block's chunk starts
+  // in the prepared text, which is a far better hint than a proportion over
+  // "whatever has been built so far" — that denominator grows as the reader
+  // scrolls, so the same block would answer differently at different times.
+  if (cached.lazy) return lazyRawOffsetForBlock(cached, source, node, root);
+  if (!Array.isArray(cached.blocks) || !cached.blocks.length) return null;
 
   // Walk up to the top-level block. "Top level" is a direct child of root OR of
   // one of its chunks — stopping only at root would climb past the block to the
@@ -385,4 +440,30 @@ export function rawOffsetForRenderedBlock(root, source, block, { isCode = null, 
   if (!blockStart) return null;
   const at = hint === undefined ? approximateRawOffsetForBlock(root, source, block) : hint;
   return matchSnippetInSource(source, blockStart, "", code, at);
+}
+
+// Where a rendered block begins in the raw source, for a note whose spans are
+// built on demand. The exact inverse of notesLazyBlockForRawOffset: find the
+// chunk the node sits in, take its span's start (plus the node's share of the
+// span), and express that as a ratio of the prepared text — which
+// preprocessSpecialBlocks makes a different length from the raw markdown, so
+// the ratio rather than the offset is what carries across.
+export function lazyRawOffsetForBlock(cached, source, node, root) {
+  const plan = cached.lazy;
+  if (!plan.prepared.length) return null;
+  let chunk = node;
+  while (chunk && chunk.parentNode && chunk.parentNode !== root) chunk = chunk.parentNode;
+  if (!chunk || chunk.parentNode !== root) return null;
+  const index = plan.chunks.indexOf(chunk);
+  if (index === -1) return null;
+  const span = plan.spans[index];
+  const at = notesLazyBlockIndexFor(plan, index, node);
+  const starts = at >= 0 ? notesLazySpanStarts(plan, index) : null;
+  // The block's real offset in the prepared text where the span knows it, and
+  // the span's own start where it does not (a node the groups no longer own —
+  // an enhancement wrapper added after the build). Never a proportion of the
+  // span: this is a search HINT, and a hint that is forty blocks out sends
+  // matchSnippetInSource to the wrong copy of a repeated phrase.
+  const offset = starts && at < starts.length ? span.start + starts[at] : span.start;
+  return (offset / plan.prepared.length) * source.length;
 }
