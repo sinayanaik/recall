@@ -14,7 +14,12 @@ import { HIGHLIGHT_MIRROR_MAX_CHARS } from "../editor/highlight-mirror.js?v=__BU
 // notes-view.js one below is: measureNotesChunkEstimate is a hoisted `function`
 // declaration called at runtime, never a `const` read while a module body is
 // still evaluating.
-import { measureNotesChunkEstimate } from "../render/block-cache.js?v=__BUILD__";
+//
+// NOTES_CHUNK_PENDING_CLASS is a `const` and therefore the shape that rule is
+// about — but it is read only inside pinChunkHeights, which runs on a gesture,
+// long after both module bodies have finished. What the rule forbids is a
+// top-level `const X = somethingImported` in this file, and there is none.
+import { NOTES_CHUNK_PENDING_CLASS, measureNotesChunkEstimate } from "../render/block-cache.js?v=__BUILD__";
 import { renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { lineIndexAtOffset } from "./caret.js?v=__BUILD__";
@@ -1065,12 +1070,27 @@ export const SELECTION_STABLE_MAX_CHUNKS = 8;
 // the containment suspension still covers both directions, and a chunk above the
 // reader gets measured the ordinary way — by the estimate observer, as they
 // scroll back through it.
+// ── ...and never a chunk that is still a placeholder ──────────────────────
+//
+// On a note past NOTES_LAZY_MIN_CHARS the chunks are SPANS, and a span the
+// reader has not reached yet is an EMPTY div holding a min-height
+// (styles/19-notes-chunks.css). measureNotesChunkEstimate refuses those at the
+// source now, because both observers can reach one and the reason is the same
+// wherever the call comes from — see the guard there for what pinning a guess
+// permanently costs.
+//
+// Repeated here as an early-out rather than left to it: this runs per drag
+// frame over up to SELECTION_STABLE_MAX_CHUNKS chunks plus their runway, and a
+// getBoundingClientRect on each of them is a forced layout to answer a question
+// a class check already answers.
 export function pinChunkHeights(chunks) {
   const view = el.notesView;
   if (!view) return;
   const bounds = view.getBoundingClientRect();
   chunks.forEach((chunk) => {
     if (!chunk?.isConnected) return;
+    if (chunk.classList?.contains(NOTES_CHUNK_PENDING_CLASS)) return;
+    // Below the fold only — see the note above.
     if (chunk.getBoundingClientRect().bottom <= bounds.top) return;
     measureNotesChunkEstimate(chunk);
   });

@@ -274,6 +274,7 @@ const APP_SHELL = [
   `./src/core/build.js?v=${STAMP}`,
   `./src/core/constants.js?v=${STAMP}`,
   `./src/core/dom.js?v=${STAMP}`,
+  `./src/core/gesture.js?v=${STAMP}`,
   `./src/core/lib-guard.js?v=${STAMP}`,
   `./src/core/lib-loader.js?v=${STAMP}`,
   `./src/core/state.js?v=${STAMP}`,

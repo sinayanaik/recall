@@ -144,6 +144,137 @@ const SETUP_SRC = `async (apiSrc) => {
     }
   }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
+  // ── Every move of the gesture, on the page's own clock ───────────────────
+  //
+  // The escape cases below assert that a slide was or was not given back — but
+  // "was not given back" is only worth asserting if the slide actually reached
+  // the escape's window and distance in the first place. A slide that ambled
+  // out past PRESS_ESCAPE_MS would keep its selection on any build, including
+  // the broken one, and the case would pass for the wrong reason.
+  //
+  // So the moves are recorded here, capture-phase, and the assertions read them
+  // back: how far past the press point the finger had got, how long after the
+  // buzz, and how fast it was travelling. Recorded rather than derived from the
+  // harness's own dispatch times for the reason stated above __press — the
+  // DevTools round trip is not the thing under test.
+  window.__moves = [];
+  // The same calibration the controller does, for the same reason: __press
+  // stamps performance.now() and a move carries event.timeStamp, and the two
+  // clocks are close but not identical. Measured once per gesture off the
+  // touchstart, exactly as moveTime does it.
+  window.__clockSkew = 0;
+  view.addEventListener("touchstart", (event) => {
+    window.__moves = [];
+    const skew = event.timeStamp - performance.now();
+    window.__clockSkew = Math.abs(skew) > 1000 ? 0 : skew;
+  }, { capture: true, passive: true });
+
+  // ── The browser taking the gesture, on demand ────────────────────────────
+  //
+  // Chrome stops letting the page cancel a touch sequence once it has committed
+  // to scrolling it, and every touchmove after that arrives with
+  // "cancelable === false". That is not something CDP can synthesise — the
+  // compositor decides it, not the dispatcher — and it is the single condition
+  // under which the controller's preventDefault stops holding the surface
+  // still, so it has to be drivable from here or the branch that answers it
+  // ships untested.
+  //
+  // Shadowing the property on the event object is exactly equivalent from the
+  // controller's point of view: it reads event.cancelable and nothing else.
+  // Capture phase on the VIEW, which is an ancestor of whatever <p> the touch
+  // landed on, so this runs before the controller's own listener on the way
+  // down.
+  //
+  // Registered BEFORE the recorder below, not after: two capture listeners on
+  // the same element run in registration order, so a recorder that went first
+  // would faithfully report the cancelability the fault had not yet changed —
+  // and every assertion about the fault landing would read zero.
+  window.__steal = 0;
+  view.addEventListener("touchmove", (event) => {
+    if (!window.__steal) return;
+    window.__steal -= 1;
+    Object.defineProperty(event, "cancelable", { value: false, configurable: true });
+  }, { capture: true });
+
+  view.addEventListener("touchmove", (event) => {
+    const t = event.touches[0];
+    if (!t) return;
+    window.__moves.push({ x: t.clientX, y: t.clientY, at: event.timeStamp, cancelable: event.cancelable });
+  }, { capture: true, passive: true });
+
+  // ── A move Chrome will not deliver ───────────────────────────────────────
+  //
+  // Chrome suppresses touchmoves entirely until the finger has left its own
+  // slop region around the touchstart — measured here, an 8px step produced no
+  // event at all and a 16px one did. That slop sits on top of PRESS_SLOP_PX, so
+  // under CDP there is no way to dispatch a real move that is inside the
+  // controller's slop: every move the page ever sees has already travelled far
+  // enough to cancel the press by distance.
+  //
+  // Which is exactly why the branch this drives needs driving. On a real phone
+  // the two slops are close but not equal, and a move that lands between them
+  // leaves the press standing while the browser has already begun to scroll —
+  // that is the gap gestureStolen exists to close, and it is unreachable from
+  // here with real input.
+  //
+  // A synthetic TouchEvent is not a lesser substitute for this one assertion:
+  // the controller reads event.touches[0], event.cancelable and
+  // event.currentTarget, and a constructed event carries all three exactly as a
+  // trusted one does. What it cannot do is scroll the page, which is not what
+  // is being measured.
+  window.__fakeMove = (x, y, cancelable) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target || !view.contains(target)) return false;
+    const touch = new Touch({
+      identifier: 1, target, clientX: x, clientY: y, pageX: x, pageY: y,
+      radiusX: 12, radiusY: 12, force: 1,
+    });
+    target.dispatchEvent(new TouchEvent("touchmove", {
+      bubbles: true, cancelable, composed: true,
+      touches: [touch], targetTouches: [touch], changedTouches: [touch],
+    }));
+    return true;
+  };
+
+  // The controller's own thresholds, so an assertion can be written against the
+  // number the code uses rather than against a copy of it that stops agreeing
+  // the moment somebody tunes one.
+  window.__constants = {
+    LONG_PRESS_MS: api.LONG_PRESS_MS,
+    PRESS_SLOP_PX: api.PRESS_SLOP_PX,
+    EDGE_PX: api.EDGE_PX,
+    EDGE_ARM_MS: api.EDGE_ARM_MS,
+  };
+
+  // What the escape saw: for each move after the press fired, its distance from
+  // the point the press resolved at, the time since the buzz, and the speed
+  // between it and the move before it. "decisive" is the first move that was
+  // both inside the window and past the distance — the one an escape would have
+  // had to fire on.
+  window.__escapeView = (fromX, fromY, firedAt) => {
+    const moves = window.__moves
+      .map((m) => Object.assign({}, m, { at: m.at - window.__clockSkew }))
+      .filter((m) => m.at >= firedAt);
+    let prev = { x: fromX, y: fromY, at: firedAt };
+    const rows = moves.map((m) => {
+      const gap = m.at - prev.at;
+      const row = {
+        away: Math.hypot(m.x - fromX, m.y - fromY),
+        since: m.at - firedAt,
+        speed: gap > 0 ? Math.hypot(m.x - prev.x, m.y - prev.y) / gap : 0,
+      };
+      prev = m;
+      return row;
+    });
+    // The module's own thresholds, not copies of them — a check that restated
+    // the numbers would keep passing after somebody changed them.
+    return {
+      rows,
+      decisive: rows.find((r) => r.since < api.PRESS_ESCAPE_MS && r.away > api.PRESS_ESCAPE_PX) || null,
+      speedFloor: api.PRESS_ESCAPE_SPEED_PX_PER_MS,
+    };
+  };
+
   // ── Counting the work, not just the outcome ──────────────────────────────
   //
   // Two of the three complaints in the report are about how the app FEELS
@@ -403,12 +534,18 @@ async function run() {
     // A drag, in steps, because a single jump is not a gesture — the controller
     // re-derives the caret on every move and a one-frame drag would never
     // exercise that.
-    const dragTo = async (fromX, fromY, toX, toY, steps = 8) => {
+    const dragTo = async (fromX, fromY, toX, toY, steps = 8, stepMs = 24) => {
       for (let i = 1; i <= steps; i += 1) {
         await touchMove(fromX + ((toX - fromX) * i) / steps, fromY + ((toY - fromY) * i) / steps);
-        await wait(24);
+        await wait(stepMs);
       }
     };
+    // A touchmove the browser has already stopped letting the page cancel.
+    // CDP will not synthesise one — cancelability is decided by the compositor,
+    // not by the dispatcher — so the page is told to treat the next N moves as
+    // uncancellable instead. The controller reads `event.cancelable` and
+    // nothing else, so overriding that property is the whole of the fault.
+    const stealGesture = (count) => page.evaluate((n) => { window.__steal = n; }, count);
 
     await page.goto(`${server.base}/index.html`);
     await page.waitFor(() => !document.documentElement.classList.contains("app-booting"),
@@ -1004,6 +1141,18 @@ async function run() {
       stillThere ? `"${stillThere.text}"` : "cleared");
 
     const away = await page.evaluate(() => window.__wordRect("P0043", 2));
+    const awayReach = await page.evaluate((x, y) => ({
+      reachable: window.__reachable(x, y),
+      inSelection: (() => {
+        const s = window.getSelection();
+        if (!s || !s.rangeCount) return null;
+        const u = s.getRangeAt(0).getBoundingClientRect();
+        return { top: u.top, bottom: u.bottom, left: u.left, right: u.right };
+      })(),
+    }), away.x, away.y);
+    check(awayReach.reachable,
+      "the point outside the selection is actually on the reading surface",
+      `(${Math.round(away.x)}, ${Math.round(away.y)}) vs selection ${JSON.stringify(awayReach.inSelection)}`);
     await touchStart(away.x, away.y);
     await touchEnd();
     await wait(300);
@@ -1022,7 +1171,10 @@ async function run() {
     }));
     check(!dismissed.sel && !dismissed.selecting && dismissed.handles === 0,
       "a tap outside the selection clears it, handles included",
-      `handles still shown: ${dismissed.handles}`);
+      // Both halves in the message. "Handles still shown" alone cannot tell a
+      // selection that refused to go from one that went while its grips stayed,
+      // and those are different bugs in different files.
+      `${dismissed.sel ? `still selected "${dismissed.sel.text}"` : "cleared"}, handles still shown: ${dismissed.handles}`);
     check(dismissed.opacity.every((o) => o === 0),
       "...and the dismissed handles are actually invisible, not merely marked",
       `opacity: ${dismissed.opacity.join(", ")}`);
@@ -1354,6 +1506,195 @@ async function run() {
     check(!captures.hidden && /word/.test(captures.title),
       "...and the pill is up, describing it",
       `hidden: ${captures.hidden}, title: "${captures.title}"`);
+
+    // ── 6d. A SLOW slide inside the escape window keeps its selection ──────
+    //
+    // 6b and 6c between them only prove that the escape fires early and not
+    // late. Neither says what it is supposed to be firing ON, and the answer it
+    // shipped with — any departure past 18px — is the reported bug:
+    //
+    //   "I long press somewhere and it initially selects something but as soon
+    //    as I try to select more content it starts to scroll."
+    //
+    // 18px inside 120ms is 150px/s. That is not a flick, it is the ordinary way
+    // to extend a selection onto the next word or two, and the escape was
+    // taking the selection away and scrolling instead — which is what the
+    // reader is describing, exactly.
+    //
+    // So: hold for the press, then leave inside the window, past the distance,
+    // SLOWLY. The selection has to survive. The recorded moves are asserted
+    // first, because a slide that ambled out past the window would keep its
+    // selection on any build including the broken one, and that case would be
+    // passing for the wrong reason.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(150);
+    await page.evaluate(() => window.__reveal("P0042"));
+    await wait(250);
+    const crawlFrom = await page.evaluate(() => window.__wordRect("P0042", 1));
+    const beforeCrawl = await page.evaluate(() => document.getElementById("notesView").scrollTop);
+    await touchStart(crawlFrom.x, crawlFrom.y);
+    // Just past LONG_PRESS_MS, not the 300ms case 6b uses. Every millisecond
+    // spent here is a millisecond of PRESS_ESCAPE_MS gone before the first move
+    // can be dispatched, and the CDP round trip already costs ~30 of them.
+    await wait(260);
+    // 50px in five 10px steps with no wait of our own. The round trip alone
+    // paces them at roughly 30-40ms, so the second or third move is past
+    // PRESS_ESCAPE_PX while still inside PRESS_ESCAPE_MS — and 10px per 32ms is
+    // about 0.3px/ms, well under PRESS_ESCAPE_SPEED_PX_PER_MS. Both of those
+    // are asserted below rather than assumed.
+    await dragTo(crawlFrom.x, crawlFrom.y, crawlFrom.x + 50, crawlFrom.y, 5, 0);
+    const crawlView = await page.evaluate(
+      (x, y) => window.__escapeView(x, y, window.__press.selectedAt),
+      crawlFrom.x, crawlFrom.y
+    );
+    await touchEnd();
+    await wait(300);
+    const crawled = await page.evaluate(() => ({
+      scrollTop: document.getElementById("notesView").scrollTop,
+      sel: window.__selection(),
+    }));
+    check(Boolean(crawlView.decisive),
+      "the slow slide really did reach the escape's window and distance",
+      crawlView.decisive
+        ? `${crawlView.decisive.away.toFixed(1)}px away, ${crawlView.decisive.since.toFixed(0)}ms after the press`
+        : `never both at once: ${JSON.stringify(crawlView.rows.map((r) => [Math.round(r.away), Math.round(r.since)]))}`);
+    check(Boolean(crawlView.decisive) && crawlView.decisive.speed < crawlView.speedFloor,
+      "...and was travelling too slowly to be a flick",
+      crawlView.decisive
+        ? `${crawlView.decisive.speed.toFixed(2)}px/ms against a floor of ${crawlView.speedFloor}`
+        : "no decisive move");
+    check(Boolean(crawled.sel) && crawled.sel.text.length > 6,
+      "...so the selection it was extending is still there",
+      crawled.sel ? `"${crawled.sel.text}"` : "nothing selected");
+    check(crawled.scrollTop === beforeCrawl,
+      "...and the note did not scroll instead",
+      `${beforeCrawl} -> ${crawled.scrollTop}`);
+
+    // ── 6e. A press cannot fire onto a page the browser is already scrolling ─
+    //
+    // The other half of the report — "it vibrates but doesn't start selecting
+    // any content". The buzz only sounds once setSelectionPoints has succeeded,
+    // so a buzz with nothing selected means the selection was made and taken
+    // away again a few tens of milliseconds later.
+    //
+    // This is how. .notes-rendered is `touch-action: auto` on a coarse pointer
+    // and nothing preventDefaults during the press window, so Chrome is free to
+    // start scrolling as soon as its own touch slop is crossed — which sits
+    // right on top of PRESS_SLOP_PX. From that moment the sequence is no longer
+    // cancellable: the preventDefault that would hold the surface is a no-op,
+    // and so is the one on the touchend that stops the compatibility mousedown
+    // collapsing whatever was selected.
+    //
+    // The controller reads event.cancelable now rather than assuming it still
+    // owns the gesture. Here the moves say they are uncancellable while the
+    // finger is still inside PRESS_SLOP_PX — the exact window in which the two
+    // slops overlap and the old code would have gone on to fire a press.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(150);
+    await page.evaluate(() => window.__reveal("P0046"));
+    await wait(250);
+    const stolenFrom = await page.evaluate(() => window.__wordRect("P0046", 1));
+    await touchStart(stolenFrom.x, stolenFrom.y);
+    // 4px from the origin — inside PRESS_SLOP_PX, so the distance test leaves
+    // the press standing and the cancelable flag is the ONLY thing that can
+    // cancel it. See __fakeMove for why this move has to be constructed rather
+    // than dispatched: Chrome will not deliver a real one this small.
+    const delivered = await page.evaluate(
+      (x, y) => [window.__fakeMove(x, y, false), window.__fakeMove(x, y, false)].every(Boolean),
+      stolenFrom.x + 4, stolenFrom.y
+    );
+    // Well past LONG_PRESS_MS, so the timer has had every chance to fire.
+    await wait(500);
+    const stolen = await page.evaluate(() => ({
+      sel: window.__selection(),
+      selecting: document.body.classList.contains("is-touch-selecting"),
+      dragging: document.body.classList.contains("is-touch-dragging"),
+      uncancellable: window.__moves.filter((m) => !m.cancelable).length,
+      moves: window.__moves.length,
+    }));
+    await touchEnd();
+    await wait(200);
+    check(delivered && stolen.uncancellable > 0,
+      "the fault landed: a move inside the press slop says the browser has taken the gesture",
+      `${stolen.uncancellable} of ${stolen.moves} move(s) uncancellable`);
+    check(!stolen.sel && !stolen.selecting && !stolen.dragging,
+      "...so the press never fired, and there is no selection to lose",
+      stolen.sel ? `selected "${stolen.sel.text}"` : "nothing selected");
+
+    // ── 6f. ...and a drag the browser takes mid-way keeps what it had ──────
+    //
+    // The same fault, one step later: the press fired, a selection exists, and
+    // THEN the compositor takes the gesture. We cannot hold the surface any
+    // more, so extending would smear the boundary across whatever the scroll
+    // happened to bring past the finger. The drag ends and the selection stays
+    // on the words it already had — the reader keeps what they pressed for.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(150);
+    await page.evaluate(() => window.__reveal("P0050"));
+    await wait(250);
+    const midFrom = await page.evaluate(() => window.__wordRect("P0050", 1));
+    await touchStart(midFrom.x, midFrom.y);
+    await wait(500);
+    const held = await page.evaluate(() => window.__selection());
+    await stealGesture(30);
+    await dragTo(midFrom.x, midFrom.y, midFrom.x + 200, midFrom.y, 6);
+    await touchEnd();
+    await page.evaluate(() => { window.__steal = 0; });
+    await wait(300);
+    const kept = await page.evaluate(() => ({
+      sel: window.__selection(),
+      dragging: document.body.classList.contains("is-touch-dragging"),
+    }));
+    check(Boolean(held) && held.text.length > 0,
+      "a press-drag with a selection to lose", held ? `"${held.text}"` : "nothing selected");
+    check(Boolean(kept.sel) && kept.sel.text === (held && held.text),
+      "...keeps exactly that selection when the browser takes the gesture",
+      kept.sel ? `"${kept.sel.text}"` : "nothing selected");
+    check(!kept.dragging,
+      "...and stops dragging rather than extending across a page it cannot hold",
+      `is-touch-dragging: ${kept.dragging}`);
+
+    // ── 7b. ...but only for a finger that MEANT to be at the edge ──────────
+    //
+    // Case 7 holds at the edge for 900ms, which is what the auto-scroll is for
+    // and is not how it was going wrong. The band is 64px deep at both ends of
+    // a surface that is nearly the whole screen on a phone, and it used to arm
+    // on the first touchmove that entered it — so a thumb passing through the
+    // lower band on its way to a word, or a press that fired inside it, started
+    // a 960px/s scroll before the reader had asked for anything. Which is the
+    // other reading of "as soon as I try to select more content it starts to
+    // scroll": here the selection survives, and the page runs away underneath
+    // it.
+    //
+    // EDGE_ARM_MS separates the two. A brush through the band is over in a
+    // frame or two; a reader reaching past the bottom of the glass holds still
+    // there, which is exactly what case 7 does.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(200);
+    await page.evaluate(() => window.__reveal("P0054"));
+    await wait(250);
+    const brushFrom = await page.evaluate(() => window.__wordRect("P0054", 1));
+    const brushGeometry = await page.evaluate(() => {
+      const r = document.getElementById("notesView").getBoundingClientRect();
+      return { bottom: r.bottom, edge: window.__constants.EDGE_PX, arm: window.__constants.EDGE_ARM_MS };
+    });
+    const brushY = Math.round(brushGeometry.bottom - 20);
+    const beforeBrush = await page.evaluate(() => document.getElementById("notesView").scrollTop);
+    await touchStart(brushFrom.x, brushFrom.y);
+    await wait(500);
+    // In and straight back out, with no wait of our own — the CDP round trip
+    // paces this at a few tens of milliseconds, well inside EDGE_ARM_MS.
+    await touchMove(brushFrom.x + 40, brushY);
+    await touchMove(brushFrom.x + 60, brushFrom.y);
+    const duringBrush = await page.evaluate(() => document.getElementById("notesView").scrollTop);
+    await touchEnd();
+    await wait(400);
+    check(brushGeometry.bottom - brushY < brushGeometry.edge,
+      "the brush really did reach into the edge band",
+      `${(brushGeometry.bottom - brushY).toFixed(0)}px from the edge, band is ${brushGeometry.edge}px`);
+    check(duringBrush === beforeBrush,
+      "...and a finger passing through it does not take the page away",
+      `${beforeBrush} -> ${duringBrush}`);
 
     // ── 16. None of this exists on a desktop ───────────────────────────────
     //
