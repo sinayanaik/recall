@@ -1,0 +1,371 @@
+/* The Document surface — a PDF rendered by pdf.js, page by page.
+ *
+ * Three stacked layers per page, and the order of them is the whole design:
+ *
+ *   .pdf-canvas       the page as pixels, at the bottom
+ *   .pdf-mark-layer   the highlights, over the pixels
+ *   .pdf-text-layer   transparent glyph boxes, on top
+ *
+ * The text layer has to be topmost or native selection stops working; the marks
+ * have to be under it or a highlight would swallow the selection it was made
+ * from. Both are absolutely positioned inside a .pdf-page that is sized to the
+ * viewport pdf.js reports, so a coordinate means the same thing in all three.
+ */
+
+.document-stage {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+/* Its own row rather than .notes-head, which is unconditionally display:none in
+   notes mode and only ever works because JS lifts its controls into
+   #viewModeRow first. The highlights stage made the same choice for the same
+   reason. */
+.document-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.document-toolbar .face-label {
+  margin-right: auto;
+}
+
+.document-page-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.document-page-input {
+  width: 4.5ch;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: center;
+  color: var(--text);
+  background: var(--surface-2, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* Fixed-width and tabular, so the indicator does not jog the buttons beside it
+   every time the page number gains a digit. */
+.document-page-indicator {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 6ch;
+  text-align: right;
+}
+
+.document-more {
+  position: relative;
+}
+
+.document-more-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 15rem;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
+}
+
+.document-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 16px 0 48px;
+  background: var(--surface-2, var(--bg));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+/* A page is a page whatever the theme: white paper with a shadow, so the
+   boundary between one page and the next is legible without a rule. The dark
+   answer is the invert filter below, not a grey page. */
+.pdf-page {
+  position: relative;
+  flex: 0 0 auto;
+  background: #fff;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.28);
+  /* `contain: layout` and not `paint`: the mark and text layers are clipped to
+     the page anyway, and paint containment would create a stacking context that
+     the selection highlight renders behind on some engines. */
+  contain: layout;
+}
+
+/* The placeholder's own page number, shown until the canvas lands. Scrubbing a
+   300-page document must never look like a blank screen. */
+.pdf-page-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: 600;
+  color: rgb(0 0 0 / 0.12);
+  user-select: none;
+  pointer-events: none;
+}
+
+.pdf-canvas {
+  display: block;
+}
+
+.pdf-mark-layer,
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.pdf-mark-layer {
+  pointer-events: none;
+}
+
+/* ── The text layer ────────────────────────────────────────────────────────
+ *
+ * Every span is one text item from pdf.js, placed and scaled to sit exactly
+ * over the glyphs painted underneath it. It is transparent — the pixels below
+ * are what you read — and its only job is to be selectable.
+ *
+ * `transform-origin: 0 0` matters: the scaleX that matches a span's width to the
+ * glyph run's real width has to stretch from the left edge, or the text drifts
+ * further from its selection the further along the line it goes.
+ */
+.pdf-text-layer {
+  line-height: 1;
+  /* Selection over a canvas has no visible text of its own to tint, so the
+     browser's selection colour IS the feedback. Kept obviously blue rather than
+     themed: it is the OS's affordance, and a reader has to be able to tell a
+     live selection apart from a highlight they have already made. */
+  --pdf-selection: rgb(56 132 255 / 0.35);
+}
+
+.pdf-text-layer span {
+  position: absolute;
+  white-space: pre;
+  color: transparent;
+  transform-origin: 0 0;
+  cursor: text;
+}
+
+.pdf-text-layer span::selection {
+  background: var(--pdf-selection);
+}
+
+/* ── Highlights ────────────────────────────────────────────────────────────
+ *
+ * The same four tokens as a <mark>, at the same mix ratios (see
+ * styles/12-notes.css) — a highlight has to be the same yellow whether it is on
+ * a note or on a paper, or the Highlights panel would list two different
+ * palettes as if they were one.
+ *
+ * Over white paper rather than over a themed surface, so the alpha is mixed
+ * against #fff explicitly instead of `transparent`: a colour-mix to transparent
+ * over a canvas composites differently from one over a themed background, and
+ * the four would not have matched their note counterparts.
+ */
+.pdf-mark {
+  position: absolute;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+}
+
+.pdf-mark[data-color="yellow"] { background: color-mix(in srgb, #e0b400 35%, transparent); }
+.pdf-mark[data-color="green"]  { background: color-mix(in srgb, #22c55e 33%, transparent); }
+.pdf-mark[data-color="blue"]   { background: color-mix(in srgb, #3b82f6 32%, transparent); }
+.pdf-mark[data-color="pink"]   { background: color-mix(in srgb, #ec4899 30%, transparent); }
+
+/* The arrival pulse for a jump from a card or the Highlights panel — the
+   document surface's answer to revealNoteMark's flash, and timed to match it. */
+.pdf-mark.is-flashing {
+  animation: pdf-mark-flash 1.4s ease-out;
+}
+
+@keyframes pdf-mark-flash {
+  0%, 100% { box-shadow: none; }
+  20% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-strong) 55%, transparent); }
+  60% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-strong) 25%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-mark.is-flashing { animation: none; outline: 3px solid var(--accent-strong); }
+}
+
+/* ── Dark page ─────────────────────────────────────────────────────────────
+ *
+ * The CANVAS only, never the mark or text layers. Inverting the whole page
+ * would invert the highlights too and turn yellow into blue; the hue-rotate is
+ * what keeps a figure's colours recognisable rather than merely negated.
+ *
+ * Off by default and remembered per device — a paper full of photographs looks
+ * wrong inverted, and only the reader knows which kind of document this is.
+ */
+.document-stage.is-pdf-inverted .pdf-canvas {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+.document-stage.is-pdf-inverted .pdf-page {
+  background: #111;
+}
+
+.document-stage.is-pdf-inverted .pdf-page-label {
+  color: rgb(255 255 255 / 0.16);
+}
+
+/* Multiply over an inverted (dark) page would make a highlight invisible —
+   screen is its complement, and keeps the tint reading as a highlight. */
+.document-stage.is-pdf-inverted .pdf-mark {
+  mix-blend-mode: screen;
+}
+
+/* ── The states that are not a page ────────────────────────────────────────*/
+
+.pdf-loading,
+.pdf-missing {
+  max-width: 34rem;
+  margin: 3rem auto;
+  padding: 0 1.5rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.pdf-loading.is-error {
+  color: var(--danger, #ef4444);
+}
+
+.pdf-missing h2 {
+  font-size: 1.1rem;
+  color: var(--text);
+  margin: 0 0 0.6rem;
+}
+
+.pdf-missing p {
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.pdf-missing-pick {
+  display: inline-block;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pdf-missing-note {
+  margin-top: 1rem;
+  font-size: 0.85rem;
+}
+
+/* ── The outline drawer ────────────────────────────────────────────────────
+ *
+ * Rides on .notes-toc-drawer's own chrome — the same panel, the same head, the
+ * same close button — because a reader who has used one has used the other.
+ * Only what is genuinely different is added here: an indent per outline depth,
+ * and a page number per row.
+ */
+.document-toc-item.is-depth-1 { padding-left: 1rem; }
+.document-toc-item.is-depth-2 { padding-left: 2rem; }
+.document-toc-item.is-depth-3 { padding-left: 3rem; }
+
+.document-toc-link {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.document-toc-link:hover {
+  background: color-mix(in srgb, var(--accent-strong) 12%, transparent);
+}
+
+.document-toc-page {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The page a Highlights-panel row came off. A note's highlights are found by
+   their words; a paper's are found by their page. */
+.highlight-page {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The same label in an export, where it has to survive being printed on white
+   paper by a browser that ignores this file's theme variables. */
+.highlight-export-page {
+  margin: 0 0 0.35rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+/* On a phone the toolbar has to give up its non-essentials before it wraps: the
+   label goes first (the tab it sits under already says "Document"), then the
+   fit-width button, whose job pinch-zoom does anyway. */
+@media (max-width: 560px) {
+  .document-toolbar .face-label { display: none; }
+  .document-scroll { padding: 8px 0 32px; gap: 8px; }
+}
+
+/* One row's own offload button in the Storage panel's Documents list. Sized to
+   sit inside a row that already has a name and a size in it, and deliberately
+   quiet: this is a per-file action, not a warning. */
+.storage-offload {
+  margin-left: 12px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--text);
+  background: var(--surface-2, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.storage-offload:hover {
+  background: color-mix(in srgb, var(--accent-strong) 14%, transparent);
+}
+
+/* Two fingers on the page are a zoom, not a browser page-zoom (see
+   initDocumentPinchZoom). `touch-action: pan-x pan-y` is what tells the browser
+   to keep handling one-finger scrolling itself while leaving the two-finger
+   gesture to the page — `none` would have made this surface the one place in
+   the app you cannot flick through. */
+.document-scroll {
+  touch-action: pan-x pan-y;
+}

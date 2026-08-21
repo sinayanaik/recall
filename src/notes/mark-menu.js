@@ -18,8 +18,29 @@ import { highlightNoteTextAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./highlight-note-editor.js?v=__BUILD__";
 
 let menuEl = null;
-let openForIndex = -1;
+// A <mark>'s ordinal for a note, a highlight id for a document — see the
+// handler sets below. null, never -1, means "nothing open": a key of 0 is a
+// real mark.
+let openForIndex = null;
 let openForMark = null;
+
+// ── Whose highlight is this? ────────────────────────────────────────────────
+//
+// The menu itself is the same three controls wherever it opens: four colours, a
+// note and a remove. What differs is what "recolour" MEANS — splicing a
+// <mark>'s open tag in the markdown, or rewriting a record in
+// meta.pdfHighlights — so the menu is handed a set of verbs rather than
+// reaching for state.notes itself.
+//
+// The default set is the notes one, so every existing caller is unchanged.
+const NOTES_MARK_HANDLERS = {
+  recolour: (index, color) => recolourHighlightAt(index, color),
+  remove: (index) => removeHighlightAt(index),
+  noteText: (index) => highlightNoteTextAt(index),
+  openNote: (index, rect) => openHighlightNoteEditor(index, rect, highlightNoteTextAt(index))
+};
+
+let markHandlers = NOTES_MARK_HANDLERS;
 
 export function isMarkMenuOpen() {
   return Boolean(menuEl && !menuEl.hidden);
@@ -28,8 +49,9 @@ export function isMarkMenuOpen() {
 export function closeMarkMenu() {
   if (!menuEl || menuEl.hidden) return;
   menuEl.hidden = true;
-  openForIndex = -1;
+  openForIndex = null;
   openForMark = null;
+  markHandlers = NOTES_MARK_HANDLERS;
 }
 
 function ensureMarkMenu() {
@@ -86,22 +108,23 @@ function ensureMarkMenu() {
     event.stopPropagation();
     const index = openForIndex;
     const mark = openForMark;
+    const set = markHandlers;
     if (button.dataset.markColor === "note") {
       // Keep the menu's own popup replaced by the note editor's, not both —
       // close before opening so they don't stack.
       const rect = mark?.getBoundingClientRect();
       closeMarkMenu();
-      if (index < 0 || !rect) return;
+      if (index == null || !rect) return;
       // The attribute only points at the note now (its text lives in the
       // "Highlight Notes" section at the end of the note) — resolved from
       // state.notes by ordinal rather than from the DOM attribute.
-      openHighlightNoteEditor(index, rect, highlightNoteTextAt(index));
+      set.openNote(index, rect);
       return;
     }
     closeMarkMenu();
-    if (index < 0) return;
-    if (button.dataset.markColor === "remove") removeHighlightAt(index);
-    else recolourHighlightAt(index, button.dataset.markColor);
+    if (index == null) return;
+    if (button.dataset.markColor === "remove") set.remove(index);
+    else set.recolour(index, button.dataset.markColor);
   });
 
   document.body.appendChild(menuEl);
@@ -117,19 +140,28 @@ export function openMarkMenuFor(mark) {
   const marks = [...view.querySelectorAll("mark")];
   const index = marks.indexOf(mark);
   if (index === -1) return;
+  openMarkMenuWith(mark, index, NOTES_MARK_HANDLERS);
+}
 
+// The general form: any element to anchor against, any key the handler set
+// understands (a <mark>'s ordinal in the note, or a document highlight's id),
+// and the verbs that key means. Used by src/documents/pdf-highlights.js's tap
+// handler as well as by the notes path above.
+export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
   const menu = ensureMarkMenu();
+  markHandlers = handlerSet || NOTES_MARK_HANDLERS;
+  const index = key;
   openForIndex = index;
   openForMark = mark;
   menu.hidden = false;
   // Mark the colour it already is, so six identical circles say which one is
   // current rather than making you press one to find out.
-  const current = mark.dataset.color || "yellow";
+  const current = currentColor || mark.dataset.color || "yellow";
   menu.querySelectorAll("[data-mark-color]").forEach((button) => {
     button.classList.toggle("is-current", button.dataset.markColor === current);
     // Resolved through the section rather than trusting the attribute: an id
     // whose entry was deleted by hand is not a note, and must not light up.
-    if (button.dataset.markColor === "note") button.classList.toggle("has-note", Boolean(highlightNoteTextAt(index)));
+    if (button.dataset.markColor === "note") button.classList.toggle("has-note", Boolean(markHandlers.noteText(index)));
   });
 
   const rect = mark.getBoundingClientRect();

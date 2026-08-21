@@ -45,7 +45,23 @@ export const LIB_URLS = {
   graphre: `${CDN_BASE}graphre/dist/graphre.js`,
   nomnoml: `${CDN_BASE}nomnoml/dist/nomnoml.js`,
   turndown: `${CDN_BASE}turndown@7.1.2/dist/turndown.js`,
-  turndownGfm: `${CDN_BASE}turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js`
+  turndownGfm: `${CDN_BASE}turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js`,
+  // ── pdf.js ────────────────────────────────────────────────────────────────
+  //
+  // Pinned to the LEGACY UMD build, and to a 3.x version, for one reason each:
+  // loadScriptOnce injects a classic <script> (an ES module cannot be loaded
+  // that way, and the whole deferred-library mechanism is built on classic
+  // tags), and 3.11.174 is the last line that still ships one — 4.x is
+  // ESM-only. The legacy build also targets older syntax, which is what keeps
+  // it working in the same browsers everything else here does.
+  //
+  // NOT vendored, unlike dompurify/marked/prism/katex. vendor/ is 1.2MB today
+  // and sits on the boot precache path; pdf.js plus its worker would roughly
+  // double it, for a library only import and PDF reading ever touch. It is
+  // precached in sw.js like the other five deferred libraries instead, which is
+  // what keeps offline reading of an already-imported paper working.
+  pdfjs: `${CDN_BASE}pdfjs-dist@3.11.174/legacy/build/pdf.min.js`,
+  pdfjsWorker: `${CDN_BASE}pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js`
 };
 
 // ── Webfonts (Style → Basics/Notes → Font) ──────────────────────────────────
@@ -193,6 +209,41 @@ export async function ensureJsZip() {
   return loadScriptOnce(LIB_URLS.jszip);
 }
 
+// pdf.js, plus the one piece of setup it cannot do for itself here.
+//
+// The worker is the whole complication. pdf.js parses and rasterises off the
+// main thread, and it needs a workerSrc to do it — but a CROSS-ORIGIN worker
+// script cannot be constructed from its URL at all (the Worker constructor
+// rejects it), which is exactly what a jsdelivr URL is. The standard answer is
+// to fetch the worker source and wrap it in a Blob, and it has a second benefit
+// here: the fetch goes through the page's own service-worker-controlled path,
+// so it is answered from the precache with no connection — whereas a fetch
+// pdf.js made internally would not necessarily be.
+//
+// If any of that fails, workerSrc is deliberately left UNSET rather than
+// pointed at something broken: pdf.js then falls back to a main-thread "fake
+// worker", which is slower on a big document but completely correct. A paper
+// that opens slowly beats a paper that does not open.
+export let pdfWorkerBlobUrl = "";
+
+export async function ensurePdfJs() {
+  if (!window.pdfjsLib) {
+    if (!(await loadScriptOnce(LIB_URLS.pdfjs))) return false;
+  }
+  if (!window.pdfjsLib) return false;
+  if (pdfWorkerBlobUrl || window.pdfjsLib.GlobalWorkerOptions?.workerSrc) return true;
+  try {
+    const response = await fetch(LIB_URLS.pdfjsWorker);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const source = await response.blob();
+    pdfWorkerBlobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerBlobUrl;
+  } catch (error) {
+    console.warn("pdf.js worker unavailable — falling back to the main thread", error);
+  }
+  return true;
+}
+
 export async function ensureNomnoml() {
   if (typeof nomnoml !== "undefined") return true;
   // Sequential, not Promise.all: nomnoml reads graphre off the global at
@@ -230,6 +281,12 @@ export function warmDeferredLibraries() {
     ensureJsZip();
     ensureNomnoml();
     ensureTurndown();
+    // Deliberately NOT pdf.js. It is far heavier than any of the four above
+    // (the library and its worker together are over a megabyte), and unlike a
+    // diagram or a paste, nothing reaches it by accident: only importing a PDF
+    // or opening a PDF deck does, and both of those already await
+    // ensurePdfJs(). Warming it would cost every user that download for a
+    // feature most of them never open.
   };
   // Held back a couple of seconds and THEN made to wait for an idle moment.
   // Both halves matter: the app is still rendering its first deck when this is

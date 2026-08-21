@@ -90,7 +90,7 @@ Nothing else in the dashboard needs configuring yet — Auth is enabled by defau
 
 In your project, open **SQL Editor → New query**. Copy **everything** in the block below, paste it in, and click **Run**.
 
-This is the only SQL you need — one run creates all four tables, every column, the indexes the sync depends on, all Row Level Security policies, and the `images` storage bucket with its policies. The same thing also ships in this repo as **`supabase_setup.sql`** if you'd rather copy from the file; the two are identical.
+This is the only SQL you need — one run creates all four tables, every column, the indexes the sync depends on, all Row Level Security policies, and the two private storage buckets (`images` and `documents`) with their policies. The same thing also ships in this repo as **`supabase_setup.sql`** if you'd rather copy from the file; the two are identical.
 
 > [!TIP]
 > **It's safe to re-run, and safe on a project that already holds decks.** Every statement is guarded or additive, so this is also the upgrade path — run it again after pulling a new version of Recall.
@@ -430,7 +430,7 @@ CREATE POLICY "Users manage own app style settings" ON app_style_settings
 
 
 -- ============================================================================
--- 7. Image storage — the `images` bucket
+-- 7. File storage — the `images` and `documents` buckets
 -- ============================================================================
 -- Pasted, dropped, picked and EPUB-imported images live in your own project
 -- rather than a third-party host, which is also what makes deleting one from
@@ -601,7 +601,7 @@ Five checks, in order. Each exercises a different part of what you just configur
 | 2 | **My Decks → ＋ New deck**, name it, type a line in Notes | The header pill reads **Saved on device** | Local storage only — nothing to do with Supabase. Check the browser isn't in a private window with storage blocked |
 | 3 | Click **Sync Now** | The pill turns **Synced** | Step 3 — the SQL didn't run, or ran on a different project |
 | 4 | In Supabase, **Table Editor → decks** | Your deck is there, `user_id` filled in | Same as above |
-| 5 | Paste an image into a card or the notes | It uploads and renders within a second or two | Step 3 — section 7 of the SQL (the `images` bucket) |
+| 5 | Paste an image into a card or the notes | It uploads and renders within a second or two | Step 3 — section 7 of the SQL (the `images` bucket, and its read policy — a private bucket with no read policy uploads fine and shows nothing) |
 | 6 | **☰ → App Info → Check my setup** | Every row ticked | Each row names the missing table, column, policy or bucket and what to re-run |
 
 Step 6 is the fastest of the six: it probes the project directly — every table and column this version needs, the RLS policies, the `images` bucket, and whether your account can actually see its own decks — and tells you which part of `supabase_setup.sql` didn't take. It reads only; it never writes. It also runs itself once shortly after your first sign-in, so a half-applied schema announces itself instead of just quietly not working.
@@ -652,6 +652,10 @@ Then hard-reload the app (or close every tab) so the service worker picks up the
 **Per-source image folders need no SQL at all.** Uploads are filed into `{uid}/books/…`, `{uid}/decks/…` and `{uid}/unfiled/…` subfolders rather than one flat `{uid}/` folder, and the three storage policies work unchanged: each matches `(storage.foldername(name))[1]`, which is the *first* path segment — [`storage.foldername()` returns every folder a file belongs to](https://supabase.com/docs/guides/storage/schema/helper-functions), so `public/subfolder/avatar.png` gives `['public','subfolder']` and `[1]` is `public`. A deeper key like `{uid}/books/my-book--k3f9/0001-fig1.webp` still presents the uid as segment 1 and is accepted; the segments beneath it are unconstrained by design.
 
 So there is nothing to migrate for the folders themselves, and **nothing about the storage policies should be loosened to accommodate the nesting** — widening the `WITH CHECK` to allow paths whose first segment isn't the uid is exactly what would let one account write into another's images. Images already sitting at the old flat `{uid}/{timestamp}-{random}.ext` keep rendering and stay deletable too, because the app resolves a stored object's path from its URL at any depth.
+
+**⚠️ Order matters for the private-bucket change: deploy the app FIRST, then run the SQL.** Section 7 now sets `images` to private. On a build that predates the signed-URL resolver, that statement makes every image in every note go blank the moment it lands — the markdown still holds a public URL, and there is no longer anything at it. Upload the new files, hard-reload once so the service worker takes them, *then* run the SQL. Nothing in your data changes either way: the same objects stay at the same paths under the same names, and the URLs already written into your notes are byte-identical afterwards.
+
+**The `documents` bucket is new**, and only PDF decks use it. A project that never imports a PDF simply has an empty bucket. Its policies are the same three as `images`, keyed the same way on the first path segment.
 
 **Re-running is still worth it for the storage policies.** Section 7 now drops and recreates its three policies by name, the way section 6 has always done for the table policies, instead of skipping them when they already exist. That guard made re-running a no-op for every project that was already set up — so a project that had run the older `supabase_image_storage.sql` kept that file's bare `auth.uid()` policy bodies indefinitely and never picked up the `(select auth.uid())` form, which Postgres hoists into an InitPlan and evaluates once per statement rather than once per row. An EPUB import is where that bites: it inserts one storage object per figure, hundreds in a row, each one re-running `auth.uid()` under the old bodies. Policies aren't data, so recreating them loses nothing, and if the role running the file isn't allowed to alter `storage.objects`, the whole block rolls back to whatever was already there and prints a `NOTICE` — an upgrade that can't be applied leaves image uploads working rather than stripping their policies.
 
@@ -774,7 +778,7 @@ One deployment can serve any number of accounts. Each signs in with their own em
 
 Two shared things to be aware of:
 
-- **The `images` bucket is world-readable.** It has to be: an image is embedded as a plain public URL in the markdown, and there's no signed-in context when a card is rendered on another device or from the offline cache. Anyone with the URL can view that image, though nobody can *list* the bucket, and paths are random. Writes and deletes are confined to each user's own uid-named folder.
+- **Both Storage buckets are private.** `images` used to be world-readable — an image was embedded as a plain public URL in the markdown, and there was no signed-in context when a card was rendered on another device. It isn't any more: the app resolves a signed URL at render time and falls back to the canonical URL, which its own service worker answers from cache, when it can't. Reads, writes and deletes are all confined to each user's own uid-named folder, in `images` and in `documents` alike, so one person's papers and figures are not readable by another even with the URL.
 - **The legacy `global` style row is readable by everyone.** It holds layout numbers only — fonts, sizes, spacing — never any deck content, and no account can write to it.
 
 Everything else is per-account. To keep libraries fully separate, give each person their own Supabase project instead.
@@ -831,7 +835,7 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
 Do the storage half here rather than in SQL — Supabase blocks it outright (`ERROR: 42501: Direct deletion from storage tables is not allowed. Use the Storage API instead.`), because rows deleted that way would leave the files themselves orphaned. The panel goes through the Storage API, so the files actually go. Take a backup first (**My Decks → ⋯ → Export All → Backup (.zip)**) — none of it is undoable, and a cloud wipe propagates: every device that had synced those decks drops its copy on its next sync.
 
-**Storage limits.** The free tier's 500 MB database is far more than text decks will ever need; the 1 GB storage quota is the one to watch if you paste a lot of images. Uploads are downscaled to 1600 px and re-encoded as WebP in the browser first, so typical screenshots land well under 100 KB — but GIFs and SVGs are passed through untouched to keep them animated/vector.
+**Storage limits.** The free tier's 500 MB database is far more than text decks will ever need; the 1 GB storage quota is the one to watch — and **PDF decks are what will actually spend it**, since a paper is stored whole and unmodified where a figure is a downscaled WebP. **☰ → Storage & Data** has a Documents section listing every stored PDF biggest-first, with a one-tap **Offload** on each: that deletes the cloud copy and keeps the highlights, the notes, the cards and the copy on this device, which makes "finish a paper, download it, offload it" a two-tap loop. If you paste a lot of images, Uploads are downscaled to 1600 px and re-encoded as WebP in the browser first, so typical screenshots land well under 100 KB — but GIFs and SVGs are passed through untouched to keep them animated/vector.
 
 **Device storage.** Decks are also kept in `localStorage`, which browsers cap at roughly 5–10 MB per origin. Large libraries can hit it; the app then warns and stops auto-saving rather than corrupting anything. Images never go there — only their URLs do.
 
@@ -846,7 +850,9 @@ Do the storage half here rather than in SQL — Supabase blocks it outright (`ER
 | `deleted_decks` | Delete tombstones | Never pruned automatically, so a deletion outlives any device still holding a stale copy |
 | `app_style_settings` | Layout and typography, one row per user | Keyed on the user's auth uid, plus a legacy shared `global` row used as a fallback |
 
-Plus four indexes (`decks (user_id, updated_at DESC)`, `decks (user_id, last_accessed_at DESC)`, `cards (deck_id, position)`, `deleted_decks (user_id)`), four RLS policies, and the public `images` Storage bucket with three policies — upload and delete confined to each user's own folder, read open to all.
+Plus four indexes (`decks (user_id, updated_at DESC)`, `decks (user_id, last_accessed_at DESC)`, `cards (deck_id, position)`, `deleted_decks (user_id)`), four RLS policies, and two **private** Storage buckets — `images` and `documents` — with three policies each: upload, delete *and read* all confined to the user's own uid-named folder.
+
+`images` was public-read until native PDF documents landed, because a rendered `![](url)` carried no signed-in context to authenticate with. The app now signs each URL at render time from the session it already has (`src/cloud/storage-urls.js`), so read can be scoped exactly like write is. **The URLs in your notes did not change** — the bucket was not recreated, renamed or migrated, one `UPDATE` flipped its `public` flag and one policy swap replaced open read with owner-scoped read. That canonical `…/object/public/images/{uid}/…` string is now an *identifier* rather than a fetchable address: it is still what the markdown holds, still what the offline image cache is keyed by, and still what a delete resolves a path from.
 
 Inside that per-user folder, uploads are filed by where they came from, so a bucket holding thousands of figures is still readable and one source's images can be cleared out as a unit:
 
@@ -855,6 +861,7 @@ Inside that per-user folder, uploads are filed by where they came from, so a buc
 | `{uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp` | EPUB import — one folder per import **run**, keeping the book's own image filenames |
 | `{uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp` | Image pasted or dropped into a deck's notes |
 | `{uid}/unfiled/{ts}-{rand}.webp` | No owning deck yet (pasted before the deck's first save) |
+| `{uid}/pdfs/{paper-slug}--{importId}/{name}.pdf` | PDF import — in the separate `documents` bucket, one folder per paper |
 
 The `--{id}` suffix is what makes each folder unique: two imports of the same book, or two decks sharing a title, never share a folder. Because the id comes last, renaming a deck starts a new folder but every folder for that deck is still findable by its `localDeckId`. Only the RLS-checked first segment has to be the auth uid, so this nesting needs no policy change, and images already stored flat at `{uid}/{ts}-{rand}.ext` stay readable and deletable.
 

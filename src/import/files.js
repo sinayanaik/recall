@@ -4,6 +4,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { importEpubFile, isEpubName, isJsonName, isMarkdownName, isZipName, reportEpubImportCrash } from "./epub.js?v=__BUILD__";
+import { importPdfFile, isPdfName, reportPdfImportCrash } from "./pdf.js?v=__BUILD__";
 import { sampleMarkdown } from "./sample.js?v=__BUILD__";
 import { setPendingImportFolder, stageImportSources, stageMarkdownImport } from "./staging.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
@@ -109,9 +110,9 @@ export async function readImportSources(file) {
 // the resulting decks under that folder (the My Decks "Import here" buttons);
 // null — every ordinary import — leaves them under their own category.
 //
-// Nothing is created here: every source except EPUB hands off to the review
-// step, where you say whether the files become notes, cards, or both, and
-// whether they land as separate decks, one merged deck, or the open one.
+// Nothing is created here: every source except EPUB and PDF hands off to the
+// review step, where you say whether the files become notes, cards, or both,
+// and whether they land as separate decks, one merged deck, or the open one.
 export async function loadFiles(fileList, folderPath = null) {
   const files = Array.from(fileList || []).filter(Boolean);
   if (!files.length) return;
@@ -120,16 +121,34 @@ export async function loadFiles(fileList, folderPath = null) {
   // An EPUB *is* a zip, and its "application/epub+zip" type matches the /zip/i
   // test, so it has to be split off before anything else looks at the list.
   const isEpub = (file) => isEpubName(file.name) || /epub/i.test(file.type);
+  // A PDF has to come off the list before readImportSources, and for a sharper
+  // reason than the EPUB above: the fall-through at the end of that function
+  // reads any file it does not recognise as TEXT, so a .pdf would be staged as
+  // several megabytes of binary garbage in a review preview — not a failure the
+  // reader could make sense of.
+  const isPdf = (file) => isPdfName(file.name) || /pdf/i.test(file.type);
   const epubs = files.filter(isEpub);
-  const rest = files.filter((file) => !isEpub(file));
+  const pdfs = files.filter((file) => !isEpub(file) && isPdf(file));
+  const rest = files.filter((file) => !isEpub(file) && !isPdf(file));
 
   // An EPUB becomes a whole folder of chapter decks behind its own preview
   // modal, so it can't share the review step. On its own (or several at once)
   // it runs that flow directly; mixed into a batch it is left out and named,
   // rather than silently dropped.
-  if (epubs.length && !rest.length) {
+  if (epubs.length && !rest.length && !pdfs.length) {
     for (const file of epubs) {
       await importEpubFile(file, folderPath).catch(reportEpubImportCrash);
+    }
+    return;
+  }
+
+  // A PDF becomes a deck outright — one per file, opening on its Document tab —
+  // so like an EPUB it has nothing to say in the review step (there is no
+  // "notes or cards?" question to answer about a paper). Several at once is a
+  // deck each, which is what picking five papers means.
+  if (pdfs.length && !rest.length && !epubs.length) {
+    for (const file of pdfs) {
+      await importPdfFile(file, folderPath).catch(reportPdfImportCrash);
     }
     return;
   }
@@ -142,7 +161,10 @@ export async function loadFiles(fileList, folderPath = null) {
 
   stageImportSources(sources, {
     folder: folderPath,
-    skipped: epubs.map((file) => `${file.name} — import EPUBs on their own`)
+    skipped: [
+      ...epubs.map((file) => `${file.name} — import EPUBs on their own`),
+      ...pdfs.map((file) => `${file.name} — import PDFs on their own`)
+    ]
   });
 }
 

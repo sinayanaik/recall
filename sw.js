@@ -137,9 +137,39 @@ let imagePutsSinceTrim = 0;
 // connections; unbounded parallelism would be just as bad the other way.
 const IMAGE_WARM_CONCURRENCY = 5;
 
+// Both bucket URL shapes count as ours. `/object/public/` is the canonical
+// identifier that lives in the markdown; `/object/sign/` is what the page
+// actually fetches now that the buckets are private (see
+// src/cloud/storage-urls.js). Recognising only the first would send every real
+// image request straight past this worker to the network — which is to say,
+// offline reading would have stopped working the day the buckets were locked.
 function isSupabaseImageUrl(url) {
   return url.hostname.endsWith(".supabase.co")
-    && url.pathname.includes("/storage/v1/object/public/");
+    && (url.pathname.includes("/storage/v1/object/public/")
+      || url.pathname.includes("/storage/v1/object/sign/"));
+}
+
+// ONE cache entry per image, whatever signature happens to be on the request.
+//
+// A signed URL carries a `?token=…` JWT and re-signing mints a different one, so
+// caching by the request URL verbatim would store a fresh copy of every image
+// every time its signature was refreshed — an unbounded cache of duplicates, and
+// a guaranteed miss on the canonical URL the app falls back to when it cannot
+// sign at all (offline, or signed out). Both shapes are normalised to the
+// canonical `/object/public/…` form with no query, which is also exactly what
+// cacheUploadedImageOffline writes under and what the warm-on-pull message
+// sends. That is what keeps the offline fallback in the page-side resolver
+// honest: it hands the <img> a URL this cache can already answer.
+function imageCacheKey(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    url.search = "";
+    url.hash = "";
+    url.pathname = url.pathname.replace("/storage/v1/object/sign/", "/storage/v1/object/public/");
+    return url.toString();
+  } catch (_) {
+    return rawUrl;
+  }
 }
 
 // True when the origin is using more of its quota than images are allowed to
@@ -246,6 +276,7 @@ const APP_SHELL = [
   `./styles/33-reading-chrome.css?v=${STAMP}`,
   `./styles/34-inline-highlight-notes.css?v=${STAMP}`,
   `./styles/35-notes-menu.css?v=${STAMP}`,
+  `./styles/36-document.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -271,6 +302,7 @@ const APP_SHELL = [
   `./src/cloud/auth.js?v=${STAMP}`,
   `./src/cloud/deck-list.js?v=${STAMP}`,
   `./src/cloud/net.js?v=${STAMP}`,
+  `./src/cloud/storage-urls.js?v=${STAMP}`,
   `./src/cloud/style-sync.js?v=${STAMP}`,
   `./src/cloud/supabase-client.js?v=${STAMP}`,
   `./src/cloud/web-decks.js?v=${STAMP}`,
@@ -282,6 +314,11 @@ const APP_SHELL = [
   `./src/core/lib-loader.js?v=${STAMP}`,
   `./src/core/state.js?v=${STAMP}`,
   `./src/core/text.js?v=${STAMP}`,
+  `./src/documents/pdf-highlights.js?v=${STAMP}`,
+  `./src/documents/pdf-outline.js?v=${STAMP}`,
+  `./src/documents/pdf-selection.js?v=${STAMP}`,
+  `./src/documents/pdf-store.js?v=${STAMP}`,
+  `./src/documents/pdf-view.js?v=${STAMP}`,
   `./src/editor/highlight-mirror.js?v=${STAMP}`,
   `./src/editor/text-transforms.js?v=${STAMP}`,
   `./src/editor/toolbar-actions.js?v=${STAMP}`,
@@ -313,6 +350,7 @@ const APP_SHELL = [
   `./src/import/html-to-markdown.js?v=${STAMP}`,
   `./src/import/mathml-to-tex.js?v=${STAMP}`,
   `./src/import/parse-cards.js?v=${STAMP}`,
+  `./src/import/pdf.js?v=${STAMP}`,
   `./src/import/sample.js?v=${STAMP}`,
   `./src/import/staging.js?v=${STAMP}`,
   `./src/import/url.js?v=${STAMP}`,
@@ -330,8 +368,8 @@ const APP_SHELL = [
   `./src/library/my-decks-selection.js?v=${STAMP}`,
   `./src/library/tombstones.js?v=${STAMP}`,
   `./src/notes/anchors.js?v=${STAMP}`,
-  `./src/notes/bookmark.js?v=${STAMP}`,
   `./src/notes/bookmark-prompt-store.js?v=${STAMP}`,
+  `./src/notes/bookmark.js?v=${STAMP}`,
   `./src/notes/caret-line.js?v=${STAMP}`,
   `./src/notes/caret.js?v=${STAMP}`,
   `./src/notes/chapters.js?v=${STAMP}`,
@@ -348,8 +386,8 @@ const APP_SHELL = [
   `./src/notes/reading-position.js?v=${STAMP}`,
   `./src/notes/scroll-anchor.js?v=${STAMP}`,
   `./src/notes/selection.js?v=${STAMP}`,
-  `./src/notes/touch-selection.js?v=${STAMP}`,
   `./src/notes/toc.js?v=${STAMP}`,
+  `./src/notes/touch-selection.js?v=${STAMP}`,
   `./src/panels/cloze-panel.js?v=${STAMP}`,
   `./src/panels/highlights-panel.js?v=${STAMP}`,
   `./src/pwa/app-info.js?v=${STAMP}`,
@@ -570,6 +608,13 @@ const CDN_ASSETS = [
   `${CDN}nomnoml/dist/nomnoml.js`,
   `${CDN}turndown@7.1.2/dist/turndown.js`,
   `${CDN}turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js`,
+  // pdf.js and its worker. Both must stay byte-identical to LIB_URLS.pdfjs /
+  // LIB_URLS.pdfjsWorker: the library is injected as a <script src> and the
+  // WORKER is fetch()ed by ensurePdfJs and wrapped in a Blob, so both requests
+  // are answered from this cache with no connection — which is what makes an
+  // already-imported paper readable offline.
+  `${CDN}pdfjs-dist@3.11.174/legacy/build/pdf.min.js`,
+  `${CDN}pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js`,
   ...KATEX_FONTS,
   ...PRISM_LANGS
 ];
@@ -767,18 +812,19 @@ self.addEventListener("message", (event) => {
       const worker = async () => {
         while (next < pending.length) {
           const url = pending[next++];
+          const key = imageCacheKey(url);
           try {
-            const hit = await cache.match(url, { ignoreVary: true });
+            const hit = await cache.match(key, { ignoreVary: true });
             if (hit) {
               // Re-put on every hit so trimImageCache's oldest-first eviction
               // (keys() iteration order) reflects last USE, not last insert —
               // otherwise a deck that's still being read gets evicted just for
               // being warmed a while ago (see IMAGE_CACHE_LIMIT's comment).
-              await cache.put(url, hit);
+              await cache.put(key, hit);
               continue;
             }
             const response = await fetchImageForCache(url);
-            if (response.ok) await cache.put(url, response);
+            if (response.ok) await cache.put(key, response);
           } catch (_) { /* offline or gone — nothing to warm */ }
         }
       };
@@ -820,18 +866,23 @@ self.addEventListener("fetch", (event) => {
     //
     // Never let a failed fetch reject: an <img> that 404s should show as a
     // broken image, not take the request down with an uncaught error.
+    //
+    // The KEY is the canonical form of the URL (see imageCacheKey), not the URL
+    // as requested: the page asks for a signed URL whose token changes every
+    // time it is re-signed, and every one of those has to hit the same entry.
+    const imageKey = imageCacheKey(request.url);
     event.respondWith(
       caches.open(IMAGE_CACHE_NAME).then((cache) =>
-        cache.match(request.url, { ignoreVary: true }).then((cached) => {
+        cache.match(imageKey, { ignoreVary: true }).then((cached) => {
           if (cached) {
             // Re-put so this entry moves to the end of keys() iteration order —
             // see the same touch in the cache-images handler above.
-            cache.put(request.url, cached.clone()).catch(() => {});
+            cache.put(imageKey, cached.clone()).catch(() => {});
             return cached;
           }
           return fetchImageForCache(request.url)
             .then((response) => {
-              if (response.ok) cache.put(request.url, response.clone()).then(maybeTrimImageCache).catch(() => {});
+              if (response.ok) cache.put(imageKey, response.clone()).then(maybeTrimImageCache).catch(() => {});
               return response;
             })
             // A CORS fetch can fail where the plain one would not (a

@@ -78,7 +78,7 @@ import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__B
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
-import { closeStoragePanel, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
+import { closeStoragePanel, formatStorageBytes, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
 import { applyAutoSyncInterval, autoSyncTick, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
 import { updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
 import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
@@ -98,6 +98,11 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
+import { initDocumentMarkMenu } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
+import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
+import { fitDocumentToWidth, initDocumentPinchZoom, reattachDocument, saveDocumentCopy, scheduleDocumentPositionSave, scrollToDocumentPage, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
        // grid | folder | tree
  // tiles | list
@@ -884,6 +889,8 @@ onDomReady(initNotesTocFolding);
 onDomReady(initPagedNotes);
 onDomReady(initNotesCaretLine);
 onDomReady(initMarkMenu);
+onDomReady(initDocumentMarkMenu);
+onDomReady(initDocumentPinchZoom);
 // So an edit made on a mark in the note refreshes the Highlights tab, without
 // highlight-edit.js having to import the panel that owns it.
 onDomReady(() => setHighlightsChangedHandler(renderHighlightsPanel));
@@ -1309,6 +1316,18 @@ el.myDecksImportEpubInput?.addEventListener("change", (event) => {
   if (file) importEpubFile(file).catch(reportEpubImportCrash);
 });
 
+// One deck per paper, so several papers picked at once is several decks —
+// sequentially, because each one uploads and each upload wants the connection
+// to itself.
+el.myDecksImportPdfInput?.addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
+  event.target.value = ""; // allow re-importing the same file again
+  for (const file of files) {
+    await importPdfFile(file).catch(reportPdfImportCrash);
+  }
+});
+document.getElementById("myDecksImportPdfBtn")?.addEventListener("click", () => closeMyDecksMoreMenu());
+
 // View switcher (Grid / Folder / Tree) — pure presentation, repaint from cache.
 el.myDecksViewSwitch?.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-mydecks-view]");
@@ -1442,6 +1461,10 @@ el.storageRefreshBtn?.addEventListener("click", () => refreshStorageReport());
 el.storageBody?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-storage-action]");
   if (button && !button.disabled) runStorageAction(button.dataset.storageAction);
+  // Per-document offload — one row's own button rather than a panel-wide
+  // action, because the whole point is choosing WHICH paper to let go of.
+  const offload = event.target.closest("[data-storage-offload]");
+  if (offload && !offload.disabled) offloadStorageDocument(offload.dataset.storageOffload);
 });
 el.resetStyleBtn?.addEventListener("click", resetStyleProfile);
 el.syncUpBtn.addEventListener("click", syncStyleToWeb);
@@ -2575,3 +2598,136 @@ document.addEventListener("click", (e) => {
   const fire = () => window.setTimeout(() => target.click(), 0);
   onDomReady(fire);
 })();
+
+// ── The Document surface's own controls ─────────────────────────────────────
+//
+// Wired here rather than inside src/documents/pdf-view.js for the same reason
+// every other surface's listeners are: this file is where the app's DOM is
+// bound to its behaviour, and a module that also owned its listeners would have
+// to be loaded before the elements it binds to could respond.
+
+el.documentZoomInBtn?.addEventListener("click", () => zoomDocument(1.25));
+el.documentZoomOutBtn?.addEventListener("click", () => zoomDocument(1 / 1.25));
+el.documentFitBtn?.addEventListener("click", () => fitDocumentToWidth());
+
+el.documentPageInput?.addEventListener("change", () => {
+  const page = Number(el.documentPageInput.value);
+  if (Number.isFinite(page) && page > 0) scrollToDocumentPage(page, 0);
+  el.documentPageInput.value = "";
+});
+
+// The page indicator and the saved reading position both follow the scroller,
+// and both are cheap enough to run on it: the indicator is a text write, and
+// the save is debounced two seconds inside scheduleReadingPositionSave.
+el.documentView?.addEventListener("scroll", () => {
+  updatePageIndicator();
+  scheduleDocumentPositionSave();
+}, { passive: true });
+
+// Fit-width has to be re-measured when the window changes: the whole point of
+// the mode is that the page is as wide as the room there is for it.
+window.addEventListener("resize", () => {
+  if (state.viewMode === "document") fitDocumentToWidth();
+});
+
+el.documentTocBtn?.addEventListener("click", () => {
+  if (!el.documentOutlineDrawer) return;
+  const open = el.documentOutlineDrawer.hidden;
+  el.documentOutlineDrawer.hidden = !open;
+  el.documentTocBtn.setAttribute("aria-expanded", String(open));
+});
+el.documentTocCloseBtn?.addEventListener("click", () => {
+  if (!el.documentOutlineDrawer) return;
+  el.documentOutlineDrawer.hidden = true;
+  el.documentTocBtn?.setAttribute("aria-expanded", "false");
+});
+el.documentOutlineList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-outline-index]");
+  if (!button) return;
+  const entry = documentOutlineEntries()[Number(button.dataset.outlineIndex)];
+  if (!entry?.page) return;
+  scrollToDocumentPage(entry.page, 0);
+  if (el.documentOutlineDrawer) el.documentOutlineDrawer.hidden = true;
+  el.documentTocBtn?.setAttribute("aria-expanded", "false");
+});
+
+el.documentMoreBtn?.addEventListener("click", () => {
+  if (!el.documentMoreMenu) return;
+  const open = el.documentMoreMenu.hidden;
+  el.documentMoreMenu.hidden = !open;
+  el.documentMoreBtn.setAttribute("aria-expanded", String(open));
+  // The dark-page row is a MODE, so its switch has to say which way it is set
+  // without being pressed — the same rule the notes ⋯ menu's three toggles
+  // follow.
+  const invert = el.documentMoreMenu.querySelector('[data-document-action="invert"]');
+  invert?.setAttribute("aria-pressed", String(el.documentStage?.classList.contains("is-pdf-inverted")));
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!el.documentMoreMenu || el.documentMoreMenu.hidden) return;
+  if (event.target.closest(".document-more")) return;
+  el.documentMoreMenu.hidden = true;
+  el.documentMoreBtn?.setAttribute("aria-expanded", "false");
+}, { capture: true, passive: true });
+
+el.documentMoreMenu?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-document-action]");
+  if (!button) return;
+  const action = button.dataset.documentAction;
+  // The re-attach row is a <label> wrapping a file input — closing the menu on
+  // its own click would remove the input before the picker opened.
+  if (action === "reattach") return;
+  if (action !== "invert") {
+    el.documentMoreMenu.hidden = true;
+    el.documentMoreBtn?.setAttribute("aria-expanded", "false");
+  }
+  if (action === "invert") {
+    button.setAttribute("aria-pressed", String(togglePdfInvert()));
+    return;
+  }
+  if (action === "save") {
+    await saveDocumentCopy();
+    return;
+  }
+  if (action === "offload") await offloadCurrentDocument();
+});
+
+el.documentReattachInput?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (el.documentMoreMenu) el.documentMoreMenu.hidden = true;
+  el.documentMoreBtn?.setAttribute("aria-expanded", "false");
+  if (file) await reattachDocument(file, state.meta?.pdf);
+});
+
+// "Remove from cloud" — the offload half of the finish-a-paper loop.
+//
+// Deliberately explicit about what stays, because the words "remove" and
+// "delete" have burned people before: the highlights, the notes and the cards
+// are untouched, and the device copy is untouched. What goes is the megabytes
+// in the bucket, which is the only part that costs anything.
+async function offloadCurrentDocument() {
+  const pdfMeta = state.meta?.pdf;
+  if (!pdfMeta?.path || pdfMeta.offloaded) {
+    showToast("This document isn't in the cloud", "error");
+    return false;
+  }
+  showConfirmModal(
+    `“${pdfMeta.name || "This document"}” will be deleted from your cloud storage, freeing ${formatStorageBytes(pdfMeta.size || 0)}. Your highlights, notes and cards all stay, and so does the copy on this device — but other devices will need the file re-attached to read it.`,
+    async () => {
+      const removed = await deleteRemoteDocument(pdfMeta.path);
+      if (!removed) {
+        showToast("Could not remove the document from the cloud", "error");
+        return;
+      }
+      // `path` is kept, not cleared: it records where the object USED to live,
+      // so an offloaded deck that is later re-uploaded lands in the same place
+      // rather than accumulating a second folder.
+      state.meta = { ...state.meta, pdf: { ...pdfMeta, offloaded: true } };
+      scheduleDeckAutosave();
+      showToast(`Removed from cloud · ${formatStorageBytes(pdfMeta.size || 0)} freed`);
+    },
+    { confirmLabel: "Remove", danger: true }
+  );
+  return true;
+}

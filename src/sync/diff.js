@@ -100,3 +100,27 @@ export function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy
   changes.deleted = unmatchedWeb.size;
   return changes;
 }
+
+// Union of two pdfHighlights arrays, keyed by id, newest `at` winning.
+//
+// Returns null when NEITHER side has any — so a deck that is not a PDF deck
+// never grows an empty key in its meta bag, and the ordinary cloud-wins
+// behaviour of every other key is untouched.
+export function mergePdfHighlights(cloudList, localList) {
+  const cloud = Array.isArray(cloudList) ? cloudList : null;
+  const local = Array.isArray(localList) ? localList : null;
+  if (!cloud && !local) return null;
+  const byId = new Map();
+  const take = (record) => {
+    if (!record?.id) return;
+    const existing = byId.get(record.id);
+    // A record with no timestamp at all (written by a build from before this
+    // existed) is treated as older than one that has one — the same rule
+    // betterReadingPosition uses for the same reason.
+    if (existing && (existing.at || 0) >= (record.at || 0)) return;
+    byId.set(record.id, record);
+  };
+  (cloud || []).forEach(take);
+  (local || []).forEach(take);
+  return [...byId.values()];
+}

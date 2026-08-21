@@ -6,6 +6,7 @@
 // out from contain-intrinsic-size, and an estimate that is wrong by 40% makes
 // the scrollbar jump around while you read.
 
+import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { onTouchGestureRelease, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -2368,6 +2369,19 @@ export function finishNotesLazySpan(container, index) {
     .then(() => enhanceRenderedMarkdown(container, flat))
     .then(() => hydrateLocalImages(flat))
     .then(() => { markNotesLazyChunkContainment(chunk); })
+    // AFTER the containment mark, not between it and the hydrate above.
+    //
+    // Both buckets are private now, so an uploaded image's canonical URL is an
+    // identifier rather than something an <img> can load, and the swap belongs
+    // in this chain — see src/cloud/storage-urls.js. But it must not delay the
+    // containment bookkeeping: a span whose containment is marked one
+    // promise-tick later is a span still standing at an ESTIMATED height for
+    // that tick, and a selection drag crossing it then moves the document under
+    // the reader's finger. Measured: putting this link in front of the mark
+    // moved the paragraph being dragged from by an extra 20px, which is what
+    // tools/large-note-selection-check.mjs case 2 exists to catch. Swapping an
+    // image src is not urgent; holding the text still is.
+    .then(() => resolveStorageImages(flat))
     .catch((error) => console.warn("Deferred note span failed", error));
 }
 
@@ -2864,6 +2878,7 @@ export function rebuildNotesLazySpan(container, plan, index, blocks) {
       .then(() => enhanceRenderedMarkdown(container, fresh))
       .then(() => hydrateLocalImages(fresh))
       .then(() => { markNotesLazyChunkContainment(chunk); })
+      .then(() => resolveStorageImages(fresh))
       .catch((error) => console.warn("Note span re-render failed", error));
   }
 }
@@ -3209,6 +3224,11 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
   // which no browser can load directly — swap in a blob URL so they're visible
   // straight away rather than only after they eventually reach the cloud.
   await hydrateLocalImages(roots || container);
+  // ...and images that DID upload: the bucket is private now, so the canonical
+  // URL in the markdown is a name, not a fetchable address (see
+  // src/cloud/storage-urls.js). Awaited alongside the line above so the swap
+  // lands before the surface is handed to the image controls below.
+  await resolveStorageImages(roots || container);
   if (renderSequence.get(container) !== sequence) return; // a newer render owns the view now
   // Notes AND both card faces are editable surfaces, so all three get the
   // resize/delete grips. Every other caller of renderMarkdown (All Cards, the

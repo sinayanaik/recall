@@ -10,6 +10,7 @@ import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
+import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { IMAGE_BUCKET, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
 import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
@@ -168,7 +169,20 @@ export async function localLibraryStats() {
 }
 
 export async function deviceStorageStats() {
-  const stats = { ...(await localLibraryStats()), queuedImages: 0, cachedImages: 0, quotaUsed: 0, quota: 0 };
+  const stats = {
+    ...(await localLibraryStats()),
+    queuedImages: 0, cachedImages: 0, quotaUsed: 0, quota: 0,
+    // A PDF deck keeps the whole file on the device (that is what makes it
+    // readable offline), so on a library with papers in it this is by far the
+    // largest number on this panel — and leaving it out would make the "on this
+    // device" figure look like a mystery.
+    documents: 0, documentBytes: 0
+  };
+  try {
+    const documents = await localDocumentUsage();
+    stats.documents = documents.length;
+    stats.documentBytes = documents.reduce((sum, entry) => sum + entry.bytes, 0);
+  } catch { /* no document store yet */ }
   try {
     stats.queuedImages = (await allOutboxImages())?.length || 0;
   } catch { /* no outbox yet */ }
@@ -285,8 +299,24 @@ export async function buildStorageReport(onProgress) {
     report.storageError = error?.message || "Could not read the image bucket.";
   }
 
+  // Documents last, and in a try of its own: a project set up before the
+  // `documents` bucket existed answers with an error here, and that must not
+  // take the image figures down with it.
+  try {
+    onProgress?.("Listing documents…");
+    report.documents = await documentUsage();
+  } catch (error) {
+    report.documentsError = error?.message || "Could not read the documents bucket.";
+  }
+
   return report;
 }
+
+// The 1GB Supabase free tier, which is the budget this panel exists to make
+// legible. Not read from the project (there is no API for it) and not enforced
+// anywhere — it is a denominator, so a reader can see "310MB of about 1GB"
+// rather than a number with nothing to compare it to.
+export const FREE_TIER_BYTES = 1024 * 1024 * 1024;
 
 export async function deleteStorageObjects(paths, onProgress) {
   let deleted = 0;
@@ -354,6 +384,11 @@ export async function wipeLocalLibrary() {
     for (const entry of await allOutboxImages()) await deleteOutboxImage(entry.token);
   } catch { /* nothing queued */ }
   revokeLocalImageUrls();
+  // The PDFs are the single largest thing this device holds, so a wipe that
+  // left them behind would not be a wipe. Whatever is still in the cloud comes
+  // back down on the next open; whatever was offloaded asks to be re-attached,
+  // which is the same answer any other device gives for it.
+  await clearAllLocalDocuments();
   try {
     if (typeof caches !== "undefined") await caches.delete(OFFLINE_IMAGE_CACHE);
   } catch { /* nothing cached */ }
@@ -442,6 +477,28 @@ export function renderStoragePanel(busyText = "") {
           : ""}`}`
     : `<p class="storage-note is-warning">${escapeHtml(report.storageError || "No image data.")}</p>`;
 
+  // Sorted biggest first and shown per file, because the action this section
+  // exists to prompt is "which paper do I offload" — and that question is
+  // answered by size, not by name.
+  const documents = report.documents;
+  const documentRows = documents
+    ? documents.objects.slice().sort((a, b) => b.size - a.size).slice(0, 40)
+    : [];
+  const totalCloudBytes = (store?.bytes || 0) + (documents?.bytes || 0);
+  const documentsSection = documents
+    ? `<div class="storage-stats">
+         ${storageStatTile(documents.count, "Documents")}
+         ${storageStatTile(formatStorageBytes(documents.bytes), "Used")}
+         ${storageStatTile(`${Math.round((totalCloudBytes / FREE_TIER_BYTES) * 100)}%`, "Of 1GB free tier", totalCloudBytes > FREE_TIER_BYTES * 0.8 ? "is-warn" : "")}
+       </div>
+       ${documentRows.length ? `<ul class="storage-groups">${documentRows.map((object) => `
+         <li><span class="storage-group-name">${escapeHtml(object.name)}</span>
+             <span class="storage-group-size">${escapeHtml(formatStorageBytes(object.size))}</span>
+             <button type="button" class="storage-offload" data-storage-offload="${escapeHtml(object.path)}" title="Delete this file from the cloud — highlights, notes and cards all stay, and so does any copy on a device that has one">Offload</button></li>`).join("")}</ul>
+         <p class="storage-note">Offloading deletes the cloud copy only. The deck keeps its highlights, notes and cards, and any device that already downloaded the file keeps reading it — other devices ask for it to be re-attached.</p>`
+        : `<p class="storage-note">No documents stored. Import a PDF and the file itself lands here.</p>`}`
+    : `<p class="storage-note is-warning">${escapeHtml(report.documentsError || report.storageError || "No document data.")}</p>`;
+
   body.innerHTML = `
     <div class="storage-card">
       <h2>Cloud database</h2>
@@ -456,6 +513,12 @@ export function renderStoragePanel(busyText = "") {
     </div>
 
     <div class="storage-card">
+      <h2>Documents</h2>
+      <p class="storage-sub">PDFs in the private <code>documents</code> bucket. These are the big files — one paper can outweigh a hundred figures.</p>
+      ${documentsSection}
+    </div>
+
+    <div class="storage-card">
       <h2>This device</h2>
       <p class="storage-sub">The local copy that makes the app work offline.</p>
       <div class="storage-stats">
@@ -463,6 +526,7 @@ export function renderStoragePanel(busyText = "") {
         ${storageStatTile(formatStorageBytes(device.bytes), "On this device")}
         ${storageStatTile(device.cachedImages, "Cached images")}
         ${storageStatTile(device.queuedImages, "Queued uploads", device.queuedImages ? "is-warn" : "")}
+        ${storageStatTile(`${device.documents} · ${formatStorageBytes(device.documentBytes)}`, "PDFs held here")}
       </div>
       ${device.quota ? `<p class="storage-note">Browser storage used by this site: ${escapeHtml(formatStorageBytes(device.quotaUsed))} of about ${escapeHtml(formatStorageBytes(device.quota))} available${storagePersisted === false ? " (not persisted — the browser may reclaim some of this under disk pressure)" : storagePersisted ? " (persisted)" : ""}.</p>` : ""}
       ${device.queuedImages ? `<p class="storage-note is-warning">${device.queuedImages} image${device.queuedImages === 1 ? "" : "s"} still waiting to upload. Sync before clearing this device, or those images are lost.</p>` : ""}
@@ -503,6 +567,28 @@ export function confirmByTyping(word, title, hint) {
       resolve(String(value || "").trim().toUpperCase() === word.toUpperCase());
     }, { placeholder: word });
   });
+}
+
+// One document's cloud copy, deleted from the panel rather than from the deck.
+//
+// The deck's own meta.pdf.offloaded is NOT flipped here — this panel does not
+// know which deck an object belongs to without reading the whole library, and
+// getDocument already treats a 404 exactly as it treats an offloaded document:
+// it falls back to the device copy, and to the re-attach prompt if there is
+// none. The flag is a hint for the reader, not the mechanism.
+export async function offloadStorageDocument(path) {
+  if (storageBusy || !path) return;
+  storageBusy = true;
+  renderStoragePanel("Removing the document from the cloud…");
+  const removed = await deleteRemoteDocument(path);
+  storageBusy = false;
+  if (!removed) {
+    showToast("Could not remove that document", "error");
+    renderStoragePanel();
+    return;
+  }
+  showToast("Removed from cloud", "success");
+  await refreshStorageReport();
 }
 
 export async function runStorageAction(action) {
@@ -574,6 +660,10 @@ export async function runStorageAction(action) {
       "Deletes every deck, card and image in your account AND this device's copy. Tables, buckets, policies and your login all stay, so the app keeps working — it just starts empty. This cannot be undone. Type RESET to confirm.")) return;
     await run("Resetting…", async (progress) => {
       if (store?.objects.length) await deleteStorageObjects(store.objects.map((object) => object.path), progress);
+      if (report.documents?.objects.length) {
+        progress("Deleting documents…");
+        for (const object of report.documents.objects) await deleteRemoteDocument(object.path);
+      }
       progress("Deleting decks and cards…");
       await deleteAllCloudDecks();
       progress("Clearing delete records…");

@@ -69,6 +69,13 @@
 //   paged           can you reach the end of a note in paged reading mode?
 //   ribbon          does the caret band sit where the caret is, and stay still
 //                   when it should?
+//   pdf-document    does a PDF deck work — imported, rendered, selected,
+//                   highlighted, saved and read back? The only check that
+//                   drives the Document surface, and the only one that can
+//                   catch an anchor that works in the session that made it and
+//                   nowhere else. It also reports a page that renders ZERO text
+//                   items, which is the signal for a scanned PDF with no text
+//                   layer: readable, but with no selection and no make-card
 //                   (these three assert OUTCOMES rather than parity — a fix
 //                   changes the answer, so parity cannot see it by design)
 //   sync            do the merge PRIMITIVES behave identically, and still
@@ -159,6 +166,7 @@ const checks = [
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
+    ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
     ["offline       ", ["node", ["tools/offline-check.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])

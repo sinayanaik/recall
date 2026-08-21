@@ -179,7 +179,10 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // blob URLs are released here rather than held until pagehide.
     revokeLocalImageUrls();
     state.notes = payloadNotes;
-    setViewMode("notes");
+    // A PDF deck opens on its Document tab: the document IS the deck, and
+    // landing on an empty Notes tab would look like an import that lost the
+    // file. Every other deck opens on Notes exactly as before.
+    setViewMode(state.meta?.pdf ? "document" : "notes");
     // Cross-device resume — see the identical call in loadWebDeck for why
     // flash/smooth are both off and why the local store is consulted alongside
     // the deck's meta. Only reached on this non-append branch, so

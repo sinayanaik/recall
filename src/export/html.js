@@ -2,6 +2,7 @@
 // still renders with no network and no Supabase project behind it.
 
 import { afterPaint } from "../cards/question-fit.js?v=__BUILD__";
+import { fetchableStorageUrl } from "../cloud/storage-urls.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
@@ -39,7 +40,14 @@ export async function embedImagesAsDataUris(container) {
     const src = img.getAttribute("src");
     if (!src || src.startsWith("data:")) return;
     try {
-      const response = await fetch(src, { mode: "cors" });
+      // The images bucket is private, so a canonical `.../object/public/…`
+      // src — which is what a note holds, and what an un-resolved render or a
+      // cached chunk can still be showing — is not fetchable on its own. Sign
+      // it here rather than trusting whatever the render-time swap happened to
+      // leave on the element; a no-op for a data: URI, a blob, or a link we
+      // never hosted.
+      const fetchSrc = await fetchableStorageUrl(src);
+      const response = await fetch(fetchSrc, { mode: "cors" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob();
       if (!blob.type.startsWith("image/")) throw new Error(`Not image bytes (got ${blob.type || "unknown"})`);

@@ -33,7 +33,7 @@ import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_E
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
-import { calculateSyncDiff, syncTextChanged } from "./diff.js?v=__BUILD__";
+import { calculateSyncDiff, mergePdfHighlights, syncTextChanged } from "./diff.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
@@ -126,6 +126,20 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       localId
     )
   };
+  // The second key where every device holds part of the truth. Highlighting a
+  // paper on a phone in the morning and on a laptop in the afternoon writes two
+  // different arrays, and cloud-wins would silently throw one of them away —
+  // an afternoon of reading, gone with no error and no way to tell.
+  //
+  // Merged by id, newest `at` winning per id: an id is minted once and never
+  // reused, so a union is exactly right for adds, and the per-record timestamp
+  // (bumped on every recolour and every note, see
+  // src/documents/pdf-highlights.js) is what settles a genuine conflict on the
+  // same highlight. A record deleted on one device does come back from the
+  // other until that device pushes — the same shape of tradeoff the deck's own
+  // notes already make, and losing a highlight is the worse failure.
+  const mergedPdfHighlights = mergePdfHighlights(cloudMeta.pdfHighlights, oldSnapshot?.meta?.pdfHighlights);
+  if (mergedPdfHighlights) incomingMeta.pdfHighlights = mergedPdfHighlights;
 
   const cloudIso = cloud.updated_at || new Date().toISOString();
   // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this

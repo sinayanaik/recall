@@ -11,6 +11,9 @@ import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { captureDocumentSelection, resolveDocumentAnchor } from "../documents/pdf-selection.js?v=__BUILD__";
+import { isDocumentViewActive, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
@@ -114,6 +117,29 @@ export function notesAnchorPlainText(src) {
 // selection is still live. Returns null for a selection made anywhere other
 // than the notes surface (so cards framed from a card face aren't note-linked).
 export function captureNotesAnchor() {
+  // ── The Document surface ─────────────────────────────────────────────────
+  //
+  // First, and before the empty-notes guard below: a PDF deck's note is very
+  // often empty (it is yours to write in, and the paper is the document), so
+  // that guard would refuse every card made from a paper.
+  //
+  // A document anchor is a coordinate, not a text hint — see the module comment
+  // in src/documents/pdf-selection.js for why the reasoning at the top of THIS
+  // file inverts for a file that cannot be edited. The `text` is carried
+  // alongside anyway: it is what the card preview and the Highlights export
+  // show, and it is the fallback if a future pdf.js shifts item indexing.
+  if (isDocumentViewActive()) {
+    const capture = captureDocumentSelection();
+    if (!capture?.text) return null;
+    return {
+      pdf: { page: capture.anchor.page, item: capture.anchor.item, ch: capture.anchor.ch },
+      quads: capture.quads,
+      page: capture.page,
+      text: capture.text.slice(0, 400),
+      source: ""
+    };
+  }
+
   const notes = state.notes || "";
   if (!notes.trim()) return null;
   const notesTarget = SELECTION_TARGETS[0]; // { name: "notes", ... }
@@ -166,6 +192,10 @@ export function captureSourceAnchor() {
 export function resolveCardNoteAnchor(card) {
   if (!card) return null;
   const stored = card.noteAnchor;
+  // A document anchor stands on its own: it points into the PDF, not into the
+  // note, so an empty note (the normal state of a PDF deck) is no reason to
+  // withhold the jump.
+  if (stored?.pdf || Number.isFinite(stored?.pdfPage)) return stored;
   if (stored && (stored.text || stored.source)) {
     // A cross-deck anchor (e.g. a quick_notes pin) points at ANOTHER deck's
     // notes — trust it unconditionally; jumpToNoteForCurrentCard loads that
@@ -920,6 +950,37 @@ let cancelResume = null;
 // Patience is what lets the exact path win once streaming catches up instead
 // of settling for that guess after ~1s.
 export function scheduleNoteJump(anchor, options, locator = null) {
+  // ── Jumping into the document ────────────────────────────────────────────
+  //
+  // Everything below this branch is the notes machinery: a text search over
+  // rendered markdown, a proportional estimate, a retry loop that waits for a
+  // streaming note to catch up. None of it applies to a PDF, and none of it is
+  // needed — the anchor already carries the page and the quads already carry
+  // the position on it, so this is a scroll and a flash.
+  //
+  // The one thing that does need patience is the page itself: scrolling to a
+  // page is what makes it render, and the quads cannot be measured until it
+  // has. So the ratio is applied twice — once from whatever is known now, and
+  // once a couple of frames later against the laid-out page.
+  const pdfAnchor = anchor?.pdf || (Number.isFinite(anchor?.pdfPage) ? { page: anchor.pdfPage } : null);
+  if (pdfAnchor && state.meta?.pdf) {
+    if (state.viewMode !== "document") setViewMode("document");
+    const land = () => {
+      const resolved = resolveDocumentAnchor(anchor) || { page: pdfAnchor.page, ratio: anchor?.ratio || 0 };
+      scrollToDocumentPage(resolved.page, Number.isFinite(anchor?.ratio) ? anchor.ratio : resolved.ratio, {
+        smooth: options?.smooth !== false
+      });
+    };
+    land();
+    // The page it landed on has had time to render by now, so the quads it
+    // carries can be measured and flashed.
+    setTimeout(() => {
+      land();
+      if (options?.flash !== false && locator?.highlightId) flashDocumentHighlight(locator.highlightId);
+      options?.onSettled?.();
+    }, 260);
+    return;
+  }
   if (state.viewMode !== "notes") setViewMode("notes");
   const resume = Boolean(options?.resume);
   const patient = resume || Boolean(options?.patient);

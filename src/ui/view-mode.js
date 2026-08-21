@@ -3,6 +3,7 @@
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
@@ -21,7 +22,14 @@ import { measureChromeHeights, resetChromeAutoHide } from "./chrome.js?v=__BUILD
 // keeps the original synchronous ordering, because several of them read the
 // rendered DOM straight afterwards.
 export function setViewMode(mode, options = {}) {
-  const next = mode === "notes" ? "notes" : mode === "highlights" ? "highlights" : "cards";
+  const next = mode === "notes" ? "notes"
+    : mode === "highlights" ? "highlights"
+      // Only a PDF deck HAS a document to show. Asking for one on any other
+      // deck — a stale nav-history entry, a jump built before the deck was
+      // swapped — falls back to cards rather than opening an empty surface with
+      // no tab to leave it by.
+      : mode === "document" ? (state.meta?.pdf ? "document" : "cards")
+        : "cards";
   if (!el.notesStage || !el.viewModeToggle) {
     state.viewMode = next;
     return;
@@ -31,11 +39,15 @@ export function setViewMode(mode, options = {}) {
   state.viewMode = next;
   const notesActive = next === "notes";
   const highlightsActive = next === "highlights";
+  const documentActive = next === "document";
   // Highlights reuses the notes-mode layout (deck/controls give way to a
-  // full-height stage) — it's a notes-adjacent view, not a card view.
-  quizPanel?.classList.toggle("notes-mode", notesActive || highlightsActive);
+  // full-height stage) — it's a notes-adjacent view, not a card view. Document
+  // wants the same layout for the same reason, and more so: a page of a paper
+  // needs every pixel of height the chrome is not using.
+  quizPanel?.classList.toggle("notes-mode", notesActive || highlightsActive || documentActive);
   el.notesStage.hidden = !notesActive;
   if (el.highlightsStage) el.highlightsStage.hidden = !highlightsActive;
+  if (el.documentStage) el.documentStage.hidden = !documentActive;
   el.viewModeToggle.querySelectorAll("[data-view-mode]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.viewMode === next);
   });
@@ -44,7 +56,7 @@ export function setViewMode(mode, options = {}) {
   // an armed-but-unfired save now rather than letting its timer fire against a
   // view the reader has already left. (The save carries the deck key it was
   // captured with, so this is safe even mid-deck-swap.)
-  if (changed && !notesActive) flushReadingPositionSave();
+  if (changed && !notesActive && !documentActive) flushReadingPositionSave();
   // Switching views is navigation, not reading — start with the header visible.
   if (changed) resetChromeAutoHide();
   // The appbar is a different height in each view — the card counters are
@@ -93,6 +105,12 @@ export function setViewMode(mode, options = {}) {
       if (!state.notes.trim()) enterNotesEditing();
     } else if (highlightsActive) {
       renderHighlightsPanel();
+    } else if (documentActive) {
+      // Idempotent for the deck already on screen — this runs on every switch
+      // into the tab, and re-parsing a 40MB paper because someone glanced at
+      // their cards is not a thing to do. Unawaited: the stage is already
+      // visible and shows its own "Opening the document…" line.
+      openDocumentView();
     } else if (changed) {
       showCard();
     }
