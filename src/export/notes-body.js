@@ -17,12 +17,19 @@
 // the database ROW, and the row's `notes` column is the note exactly as stored.
 
 import { highlightNotesSectionMarkdown } from "../format/highlight-notes.js?v=__BUILD__";
-import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
+import { splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 
 export function notesForExport() {
-  const body = readerNotesBody(state.notes || "").replace(/\s+$/, "");
-  const section = highlightNotesSectionMarkdown(state.notes || "");
+  const source = state.notes || "";
+  const { body, tail } = splitHighlightNotesTail(source);
+  // No fence means one of two things and the same answer to both: a note that
+  // has never had a highlight annotated, or one still in the legacy heading
+  // form — which IS this form, so it goes out exactly as it is. Returning
+  // `body` plus a rebuilt section here would print an unmigrated note's
+  // "## Highlight Notes" twice.
+  if (!tail) return source;
+  const section = highlightNotesSectionMarkdown(source);
   if (!section) return body;
   return body ? `${body}\n\n---\n\n${section}` : section;
 }

@@ -40,6 +40,7 @@ import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
+import { documentHighlightLabel } from "./pdf-highlights.js?v=__BUILD__";
 import { annotatedDocumentHighlights } from "./pdf-page-notes.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
 
@@ -120,13 +121,27 @@ async function renderPageForPrint(pageNumber, records) {
   return canvas.toDataURL("image/jpeg", PRINT_PAGE_QUALITY);
 }
 
+// How much of the highlighted passage is printed beside its note. Long enough to
+// find the sentence on the page above; short enough that the label is not taller
+// than the note it labels.
+export const PRINT_EXCERPT_CHARS = 80;
+
+function excerptFor(record) {
+  // documentHighlightLabel, not record.text: a region drawn round a photograph
+  // has no words in it at all, and a blank line above a note is
+  // indistinguishable from a bug. That names it "Region · page 12" instead.
+  const flat = String(documentHighlightLabel(record) || "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  return flat.length > PRINT_EXCERPT_CHARS ? `${flat.slice(0, PRINT_EXCERPT_CHARS).trimEnd()}…` : flat;
+}
+
 function pageNotesHtml(entries) {
   if (!entries.length) return "";
   const rows = entries.map(({ record, note, n }) => `
     <li class="doc-print-note">
       <span class="doc-print-note-num">${n}</span>
       <span class="doc-print-note-body">
-        <span class="doc-print-note-excerpt">${escapeHtml(record.text || "")}</span>
+        <span class="doc-print-note-excerpt">${escapeHtml(excerptFor(record))}</span>
         ${markdownToSafeHtml(note)}
       </span>
     </li>

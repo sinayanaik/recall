@@ -198,6 +198,16 @@
   color: var(--text);
 }
 
+/* No deck, nothing to export. #viewModeToggle carries [hidden] whenever there
+   is no active deck (updateCardControls, src/cards/card-status.js) — the same
+   fact styles/38-reading-rail.css reads to decide whether the reading rail
+   exists — so a ⇓ floating alone on the empty-library screen is decided here
+   rather than by a second flag in JavaScript that could fall out of step. */
+.view-mode-row:has(#viewModeToggle[hidden]) > .view-export-btn,
+.view-mode-row:has(#viewModeToggle[hidden]) > .view-export-menu {
+  display: none;
+}
+
 .view-mode-row > .view-export-btn[aria-expanded="true"] {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
   background: color-mix(in srgb, var(--accent) 22%, transparent);

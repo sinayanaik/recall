@@ -111,6 +111,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-export.js?v=__BUILD__",
     "/src/export/run.js?v=__BUILD__",
     "/src/export/pdf.js?v=__BUILD__",
+    "/src/export/notes-body.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
     "/src/storage/deck-store.js?v=__BUILD__",
@@ -726,7 +727,19 @@ try {
       migratedToFence: migrated.includes("<!--recall:highlight-notes-->") && !migrated.includes("## Highlight Notes"),
       migratedKeptTheProse: migrated.startsWith("Some prose the reader wrote."),
       migratedKeptTheNote: readBack,
-      innocentUntouched: api.fenceLegacySection(innocent) === innocent
+      innocentUntouched: api.fenceLegacySection(innocent) === innocent,
+      // What an export makes of each of the three shapes a note can be in. The
+      // trap the third one is here for: readerNotesBody only knows about the
+      // fence, so a note still in the heading form would have its section
+      // rebuilt and appended to a body that already contained it.
+      exportOfFenced: api.notesForExport(),
+      exportOfLegacy: (() => {
+        const held = api.state.notes;
+        api.state.notes = legacy;
+        const out = api.notesForExport();
+        api.state.notes = held;
+        return out;
+      })()
     };
   }`);
 
@@ -742,6 +755,11 @@ try {
     JSON.stringify(fence.migratedKeptTheNote));
   check("...and a paper that merely CONTAINS that heading is left alone",
     fence.innocentUntouched);
+  check("an export writes the section out once, from either form",
+    fence.exportOfFenced.split("## Highlight Notes").length === 2
+      && fence.exportOfLegacy.split("## Highlight Notes").length === 2
+      && fence.exportOfLegacy.includes("The note that was taken on it."),
+    `fenced=${fence.exportOfFenced.split("## Highlight Notes").length - 1}× legacy=${fence.exportOfLegacy.split("## Highlight Notes").length - 1}×`);
 
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //
