@@ -1,0 +1,198 @@
+/* A highlight's note, said in the note itself
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * styles/27-highlight-notes.css styles the places you go to READ a note — the
+ * mark menu's pencil, the Highlights panel's row, the popup editor. This file
+ * is the other half: the note where it was written, in the paragraph it is
+ * about. See src/notes/inline-highlight-notes.js for what puts it there and
+ * why it goes inside the block rather than beside it.
+ *
+ * ── The one rule everything on a <mark> obeys ────────────────────────────
+ *
+ * Nothing painted on a highlight may advance the text by a pixel.
+ * styles/23-highlight-marks.css exists entirely because `padding: 0 1px` on a
+ * mark widened its own text — and wrapAcrossBlocks emits one mark per line,
+ * list item and table cell, so a ten-bullet highlight moved its text by 20px
+ * and could re-wrap the block it lives in. A rewrap AFTER renderNotesViewPinned
+ * has measured its anchor is the "severe shivering when I highlight" report,
+ * and it would come straight back if the number badge below were real content.
+ *
+ * So: text-decoration for the underline (draws in the space already there), and
+ * an absolutely positioned ::after for the ✎ and the number (out of flow, so
+ * it contributes nothing to the line box). Neither can move a glyph.
+ */
+
+/* ── Layer 1, always on: this highlight has something to say ──────────────
+   A dotted underline in the accent, which reads as "annotated" rather than as
+   a link (solid) or a spelling error (red, wavy) — and which the mark's own
+   background tint sits behind rather than fights with. */
+#notesView mark.has-note {
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  text-underline-offset: 2.5px;
+  /* The containing block for the badge below, and nothing else: an inline
+     element that is `position: relative` with no offsets is laid out exactly
+     where it was. Only on annotated marks, so the other 99% of highlights in a
+     book are not made into containing blocks for no reason. */
+  position: relative;
+}
+
+/* The ✎, at the END of the mark: a highlight can be a single word or half a
+   page, and its start is where the eye already is when it reaches one — the
+   end is where it is looking for what comes next.
+
+   `content` on ::after is not selectable and not in textContent, so it cannot
+   reach the source matcher the way real text would (see the two skips in
+   src/notes/selection.js) — which is the second reason this is drawn rather
+   than appended.
+
+   Hidden while the numbered mode is on: the number below occupies the same
+   corner and says strictly more. */
+#notesView mark.has-note::after {
+  content: "\270E";
+  position: absolute;
+  top: -0.62em;
+  right: -0.18em;
+  font-size: 0.62em;
+  line-height: 1;
+  color: color-mix(in srgb, var(--accent) 72%, var(--muted));
+  pointer-events: none;
+}
+
+/* ── Layer 2, opt-in: the number ──────────────────────────────────────────
+   Same corner, same zero-advance construction, and now it says WHICH note —
+   the number the printed copy below carries, so the two can be matched up when
+   a paragraph holds three of them. */
+body.inline-hl-notes #notesView mark.has-note[data-hn-num]::after {
+  content: attr(data-hn-num);
+  top: -0.55em;
+  right: -0.22em;
+  font-size: 0.58em;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: var(--accent-strong);
+}
+
+/* ── The printed note ─────────────────────────────────────────────────────
+   Hidden unless the mode is on. The nodes are left in the DOM between toggles
+   only for as long as it takes the sweep to remove them (refreshInlineHighlight
+   Notes runs on the toggle), but the rule is written this way round so a
+   half-applied state is invisible rather than half-visible. */
+.hl-inline-note {
+  display: none;
+}
+
+/* Never part of a selection, and never part of what the source matcher reads.
+   This is belt to the braces of the two JS skips: even where those are bypassed
+   (a native double-click extending a selection through it, say), the browser
+   will not carry these words into the range. */
+body.inline-hl-notes .hl-inline-note {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── ...merged into the paragraph, when it is one line ────────────────────
+   What the reader asked for: an aside written on one line reads as an aside,
+   and belongs in the sentence rather than under it. Brackets in CSS rather
+   than in text, so they cost the DOM nothing and cannot end up in a copied
+   selection. */
+body.inline-hl-notes .hl-inline-note.is-merged {
+  display: inline;
+  margin-left: 0.35em;
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+  color: color-mix(in srgb, var(--text) 78%, var(--accent));
+  font-size: 0.92em;
+}
+
+body.inline-hl-notes .hl-inline-note.is-merged::before {
+  content: "[";
+  opacity: 0.5;
+}
+
+body.inline-hl-notes .hl-inline-note.is-merged::after {
+  content: "]";
+  opacity: 0.5;
+}
+
+/* ── ...as a block after it, when it is more ──────────────────────────────
+   A `span` set to `display: block`, not a `<div>` or an `<aside>`: this is
+   appended INSIDE the paragraph it belongs to (see the module's comment on why
+   it may never be a sibling), and a block-level element is not valid content
+   for a <p>. A span is, and display does the rest — so the markup stays legal
+   whatever a future export or copy does with it. */
+body.inline-hl-notes .hl-inline-note.is-block {
+  display: block;
+  margin: 0.55em 0 0.15em;
+  padding: 0.4em 0.7em 0.45em;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 0 7px 7px 0;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: color-mix(in srgb, var(--text) 82%, var(--accent));
+  font-size: 0.9em;
+  line-height: 1.45;
+}
+
+/* Markdown inside a note is real markdown — lists, bold, a second paragraph —
+   so its first and last blocks must not add the margins that would otherwise
+   make the tint box look mis-centred. */
+body.inline-hl-notes .hl-inline-note-body > :first-child {
+  margin-top: 0;
+}
+
+body.inline-hl-notes .hl-inline-note-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* The number, repeated on the note itself so it can be matched to the mark it
+   came from. Superscript on the merged form (it is inside a sentence), a
+   marker on the block form (it is a heading for the passage under it). */
+.hl-inline-note-num {
+  color: var(--accent-strong);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+body.inline-hl-notes .hl-inline-note.is-merged .hl-inline-note-num {
+  font-size: 0.75em;
+  vertical-align: super;
+  margin-right: 0.22em;
+}
+
+body.inline-hl-notes .hl-inline-note.is-block .hl-inline-note-num {
+  float: left;
+  margin-right: 0.5em;
+  font-size: 0.82em;
+  line-height: 1.65;
+  opacity: 0.85;
+}
+
+/* An image inside a printed note is sized for the note it was written in, not
+   for the paragraph it is now sitting in the middle of. Same flat cap, and the
+   same "a more specific !important is the only thing that beats .diagram-shell's
+   own" shape, as the Highlights panel (26) and the popup editor (27). */
+body.inline-hl-notes .hl-inline-note img {
+  max-width: 260px;
+}
+
+body.inline-hl-notes .hl-inline-note .diagram-shell img {
+  width: 260px !important;
+  max-width: 260px !important;
+}
+
+/* ── The section the notes are stored in ──────────────────────────────────
+   Hidden while they are printed in the text, so each note is on screen once
+   rather than twice. The RENDERED view only: the markdown is untouched, so the
+   raw editor, the Highlights tab and every export still carry it — which is
+   what keeps "## Highlight Notes" an ordinary, hand-editable part of the note
+   rather than a private format. src/notes/inline-highlight-notes.js is what
+   marks the blocks; it can only ever mark blocks that follow the LAST
+   "## Highlight Notes" heading in the document, matching sectionStartIn. */
+body.inline-hl-notes #notesView .hl-notes-section-block {
+  display: none;
+}

@@ -383,11 +383,12 @@ const ACCEPTED = {
     "Drops the renderToolbar lookup and its two show/hide calls, for the same " +
     "reason as commitEditIfActive.",
   hideNotesSelectionButton:
-    "Also clears the is-format-open class (the phone bar's ⋯ formatting " +
-    "disclosure). It is a CLASS on the pill, so hiding the pill hides it " +
-    "visually while leaving it set, and the next selection would open already " +
-    "expanded — the one state a collapsed-by-default bar exists to avoid. It " +
-    "is in the fast-path test too, or the early return skips the only reset.",
+    "An early return for the overwhelmingly common 'already fully hidden' " +
+    "case — this is called from every scroll event on the notes view and the " +
+    "raw editor, where the baseline paid half a dozen redundant DOM writes per " +
+    "event. The colour menu is tested separately from the pill because it is a " +
+    "CHILD of it: hiding the pill hides the menu visually while leaving its " +
+    "own `hidden` false, so it would spring back open on the next selection.",
 
   // ── The selection bar appears before it describes the selection ──────────
   // Reported as "the text select options are coming very delayed after
@@ -808,7 +809,36 @@ const ACCEPTED = {
   renderNotesView:
     "Re-counts the pages after every repaint. This is the one place every " +
     "repaint of the rendered notes goes through, so it is the only place that " +
-    "can see a note grow, shrink or be replaced. No-op on continuous mode.",
+    "can see a note grow, shrink or be replaced. No-op on continuous mode. " +
+    "For the same reason it is also where highlight notes are refreshed — the " +
+    "mark menu, the note popup, an undo, a raw edit and a sync pull can all " +
+    "change a note's number or body, and every one of them repaints here. " +
+    "Free when nothing about them changed; see refreshInlineHighlightNotes.",
+  // ── A highlight's note, in the paragraph it is about ────────────────────
+  // src/notes/inline-highlight-notes.js prints a highlight's note where the
+  // highlight is, rather than only in the "## Highlight Notes" section at the
+  // end of the note. Three functions the baseline has had to learn about it.
+  enhanceRenderedMarkdown:
+    "Runs the highlight-note pass over the nodes just built, for #notesView " +
+    "only — a card face and #printRoot have no state.notes to resolve a " +
+    "data-note id against. Scoped to `roots` like every other pass here, which " +
+    "is what keeps a lazily-built book paying only for the chunks it has made.",
+  // ── ...and the mode that hides the browser as well ─────────────────────
+  closeTopmostOverlay:
+    "Tests immersive mode BEFORE the focus-mode escape hatch below it. " +
+    "Immersive mode is focus mode plus the browser's own chrome, through the " +
+    "Fullscreen API (src/ui/chrome.js) — so un-pinning focus alone would bring " +
+    "the app's header back inside a window that is still fullscreen, which is " +
+    "half out of a mode nobody asked to be half out of. Most browsers eat " +
+    "Escape themselves to leave fullscreen and the fullscreenchange listener " +
+    "does this instead; Firefox dispatches it, and this is that path.",
+  cleanedSelectionFragment:
+    "Removes .hl-inline-note along with the buttons and badges. It is a " +
+    "PRINTED COPY of a highlight's note, appended into the paragraph the " +
+    "highlight is in, and its text is nowhere near that paragraph in the raw " +
+    "markdown — left in the clone it would put words into the needle that " +
+    "locateSelectionInSource cannot find, so every highlight, cloze and erase " +
+    "over an annotated paragraph would miss.",
   setViewMode:
     "Resets scrollLeft alongside scrollTop when a DIFFERENT note opens: paged " +
     "mode runs sideways, so leaving scrollLeft alone opened the new note " +
@@ -1493,16 +1523,13 @@ const RESIDUAL_REWRITES = [
   // the question, because those are the only ones this can actually cost.
   [/document\.getElementById\("logoutBtn"\)\?\.addEventListener\("click", handleLogout\); /,
    () => 'document.getElementById("logoutBtn")?.addEventListener("click", () => { const index = readLocalDeckIndex(); const total = index.length; const localOnly = index.filter((meta) => !meta.deckId || !meta.lastSyncedAt).length; const signOutAndWipe = async () => { await handleLogout(); try { await resetLocalLibrary(); showToast(total ? `Signed out — ${total} deck${total === 1 ? "" : "s"} removed from this device` : "Signed out", "success"); } catch (error) { console.warn("Could not clear the local deck library on sign-out", error); showToast("Signed out, but the decks on this device could not be removed", "error"); } }; if (!total) return void signOutAndWipe(); showConfirmModal( `Sign out and remove all ${total} deck${total === 1 ? "" : "s"} from this device? ` + "Everything already synced stays in your Supabase project and comes back when you sign in again." + (localOnly ? ` But ${localOnly} deck${localOnly === 1 ? " has" : "s have"} never synced — ` + `${localOnly === 1 ? "it exists" : "they exist"} only on this device and will be gone for good. ` + "Cancel and use My Decks → ⋯ → Backup first if you need them." : ""), () => { signOutAndWipe(); }, { confirmLabel: "Sign out & delete", danger: true } ); }); '],
-  // The ⋯ formatting disclosure on the floating selection pill. It exists
-  // because the pill became the only formatting surface in the app (see the
-  // ACCEPTED entries for createToolbarHtml and applyRenderFormat), which on a
-  // phone made its bottom-pinned bar twelve controls over two rows — about
-  // 100px of screen sitting on the sentence you had just selected. Collapsing
-  // the formatting row behind this halves it. pointerdown + preventDefault like
-  // every other control on the pill: a click would dissolve the selection the
-  // buttons it reveals are for.
-  [/el\.extractNoteFromSelectionBtn\?\.addEventListener\("pointerdown"/,
-   () => 'el.selectionFormatToggleBtn?.addEventListener("pointerdown", (event) => { event.preventDefault(); event.stopPropagation(); const open = el.selectionFloat?.classList.toggle("is-format-open"); el.selectionFormatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false"); }); el.extractNoteFromSelectionBtn?.addEventListener("pointerdown"'],
+  // There was a patch here for the ⋯ formatting disclosure on the floating
+  // selection pill, which the baseline had no equivalent of. It has been
+  // removed along with the handler itself: the disclosure was shown ONLY on a
+  // phone, so the one surface with the least room was the one surface where
+  // bold cost two taps. The bar now shows all five .sel-group categories at
+  // every width — so once again there is nothing here for the baseline to be
+  // taught about, and the pill's module-scope listeners compare byte for byte.
 
   // The notes input handler records a typing step for undo. See the ACCEPTED
   // block for why the browser's own undo was not enough.

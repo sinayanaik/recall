@@ -85,9 +85,15 @@
 .highlight-note-editor {
   position: fixed;
   z-index: 260;
-  /* Wide enough for the full formatting toolbar (createToolbarHtml) not to
-     wrap onto a second row on an ordinary desktop window; still clamped to
-     the viewport for anything narrower. */
+  /* The DEFAULT box only. Once the reader has dragged or resized it, JS writes
+     width/height/top/left inline and those win — see applyNoteBox and
+     readStoredNoteBox in src/notes/highlight-note-editor.js.
+
+     Wide enough for the full formatting toolbar (createToolbarHtml) not to wrap
+     onto a second row on an ordinary desktop window; still clamped to the
+     viewport for anything narrower. max-height, not height, so an empty note
+     opens as a small box rather than a 560px slab — a size the reader sets
+     explicitly overrides it with a real `height`. */
   width: min(460px, calc(100vw - 24px));
   max-height: min(75vh, 560px);
   display: flex;
@@ -100,11 +106,59 @@
   padding: 12px;
 }
 
+/* An explicit height (the reader resized it) has to beat the max-height above,
+   which would otherwise clamp a window dragged taller than 75vh back down. */
+.highlight-note-editor[style*="height"] {
+  max-height: none;
+}
+
+/* No transition and no text selection while a drag is in flight: a box that
+   eases toward the pointer lags behind it, and a drag that selects the header's
+   own "Note" label leaves a highlight behind when the gesture ends. */
+.highlight-note-editor.is-adjusting {
+  transition: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .highlight-note-editor-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex: 0 0 auto;
+  /* The drag handle. `move` rather than `grab` because the whole strip is the
+     handle and there is nothing to pick up — and the × inside it takes its own
+     `pointer` back below. */
+  cursor: move;
+  /* The header must not scroll the page under a dragging finger. */
+  touch-action: none;
+}
+
+.highlight-note-editor-head .highlight-note-editor-close {
+  cursor: pointer;
+}
+
+/* ── The resize grip ──────────────────────────────────────────────────────
+   Bottom-right, inside the padding, drawn as two hairlines rather than an
+   icon — the same visual shorthand the OS uses, and one that needs no glyph
+   that could come out as a colour emoji. */
+.highlight-note-editor-grip {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background:
+    linear-gradient(135deg, transparent 45%, color-mix(in srgb, var(--muted) 55%, transparent) 45% 55%, transparent 55%),
+    linear-gradient(135deg, transparent 70%, color-mix(in srgb, var(--muted) 55%, transparent) 70% 80%, transparent 80%);
+}
+
+.highlight-note-editor-grip:hover {
+  background:
+    linear-gradient(135deg, transparent 45%, var(--accent) 45% 55%, transparent 55%),
+    linear-gradient(135deg, transparent 70%, var(--accent) 70% 80%, transparent 80%);
 }
 
 .highlight-note-editor-title {
@@ -247,37 +301,69 @@
   cursor: pointer;
 }
 
-.highlight-note-editor-cancel {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel-2);
-  color: var(--text);
-  font-size: 0.82rem;
+/* ── Where Save and Cancel used to be ─────────────────────────────────────
+   The note saves as you type now (see the module comment in
+   src/notes/highlight-note-editor.js), so the footer's right-hand side is a
+   status line rather than two buttons. It appears when a save lands and fades
+   a beat later: a permanent "Saved" is a label, and a label that never changes
+   stops being read.
+
+   It keeps its space while invisible — opacity, not display — so the footer
+   does not twitch every time the text settles. */
+.highlight-note-editor-status {
+  font-size: 0.76rem;
   font-weight: 600;
-  padding: 6px 12px;
-  cursor: pointer;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.18s linear;
+  /* Reserves the width of the word it will hold, so nothing reflows. */
+  min-width: 3.4em;
+  text-align: right;
 }
 
-.highlight-note-editor-save {
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
-  font-size: 0.82rem;
-  font-weight: 700;
-  padding: 6px 14px;
-  cursor: pointer;
+.highlight-note-editor-status.is-visible {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .highlight-note-editor-status {
+    transition: none;
+  }
 }
 
 @media (max-width: 720px) {
+  /* The bottom sheet. !important on the geometry the desktop branch writes
+     inline (applyNoteBox / the anchor fallback), because those are element
+     styles and would otherwise beat any rule here — and a phone has nowhere to
+     drag a window to. The gesture handlers stand down at this width too
+     (isFloating), so nothing writes the inline values in the first place; this
+     is what makes a box saved on a desktop harmless when the same profile is
+     read on a phone. */
   .highlight-note-editor {
     left: 0 !important;
     right: 0;
     bottom: 0;
     top: auto !important;
-    width: 100%;
-    max-height: 80vh;
+    width: 100% !important;
+    height: auto !important;
+    /* !important as well, and not for the inline style — for the
+       [style*="height"] rule above, which lifts the desktop max-height clamp
+       once a box has been resized. The singleton survives a window being
+       dragged narrower, so that inline `height` (and the rule keyed on it) is
+       still there at this width even though nothing here uses it. */
+    max-height: 80vh !important;
     border-radius: 16px 16px 0 0;
     box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  /* No drag, no resize: the sheet is where it is. Left as a plain header rather
+     than one that looks draggable and is not. */
+  .highlight-note-editor-head {
+    cursor: default;
+  }
+
+  .highlight-note-editor-grip {
+    display: none;
   }
 }

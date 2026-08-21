@@ -56,6 +56,7 @@ import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
+import { INLINE_HIGHLIGHT_NOTES_KEY, applyInlineHighlightNotes, setInlineHighlightNotesFlag, toggleInlineHighlightNotes } from "./notes/inline-highlight-notes.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -84,7 +85,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, isMobileChrome, measureChromeHeights, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isMobileChrome, measureChromeHeights, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -336,6 +337,16 @@ try {
   setChromeFocusPinned(false);
 }
 
+// Same shape, same reason: whether highlight notes are printed in the text is
+// a way of reading rather than a property of one note, so it is remembered.
+// Only the FLAG is seeded here — applyInlineHighlightNotes() runs alongside
+// applyChromeCollapse() below, once the body class it sets can be seen.
+try {
+  setInlineHighlightNotesFlag(localStorage.getItem(INLINE_HIGHLIGHT_NOTES_KEY) === "1");
+} catch (_) {
+  setInlineHighlightNotesFlag(false);
+}
+
 // ── Measuring what the collapse actually has to travel ─────────────────────
 // The CSS animates `max-height` (not `height`) because the appbar's natural
 // height depends on how many lines the deck title wraps to — there is no fixed
@@ -393,6 +404,14 @@ document.addEventListener(
 
 el.focusModeBtn?.addEventListener("click", () => setFocusMode(!chromeFocusPinned));
 
+// A click, not a pointerdown: requestFullscreen needs a user gesture and a
+// click IS one, while none of the pill's "don't destroy the selection" reasons
+// apply to a button in the ⋯ menu.
+el.immersiveModeBtn?.addEventListener("click", () => toggleImmersiveMode());
+initImmersiveMode();
+
+el.inlineNotesBtn?.addEventListener("click", () => toggleInlineHighlightNotes());
+
 // Rotating to landscape (or resizing a desktop window down) crosses the mobile
 // breakpoint, which turns the scroll-driven half on or off; re-evaluate.
 chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
@@ -401,6 +420,10 @@ chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
 // transitions a frame later — otherwise every launch in focus mode would open
 // with the header up and visibly fold it away.
 applyChromeCollapse();
+// The body class and the button's pressed state, from the preference seeded
+// above. Its own refresh is a no-op here (there is no note open yet) and the
+// real one runs on the first renderNotesView.
+applyInlineHighlightNotes();
 requestAnimationFrame(() => document.body.classList.add("chrome-ready"));
 
 
@@ -709,15 +732,12 @@ el.eraseNotesSelectionBtn?.addEventListener("pointerdown", (event) => {
 });
 
 
-// The ⋯ disclosure: reveal the formatting row on the bottom-pinned phone bar.
-// pointerdown + preventDefault like every other pill control — a click here
-// would dissolve the very selection the buttons it reveals are for.
-el.selectionFormatToggleBtn?.addEventListener("pointerdown", (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  const open = el.selectionFloat?.classList.toggle("is-format-open");
-  el.selectionFormatToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
-});
+// The ⋯ disclosure that used to reveal the formatting row on the bottom-pinned
+// phone bar is gone, and with it this handler. It was shown ONLY on a phone —
+// so the one place with the least room to spare was the one place where bold
+// cost two taps and the second one had to land on a 34px target that had just
+// appeared. The bar carries all five groups at every width now; see the
+// .sel-group wrappers in index.html.
 
 
 el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
@@ -1894,6 +1914,19 @@ document.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === ".") {
     event.preventDefault();
     setFocusMode(!chromeFocusPinned);
+    return;
+  }
+  // Ctrl/Cmd+Q: the same idea one step further — the app's chrome AND the
+  // browser's, through the Fullscreen API (see setImmersiveMode). Sits here for
+  // the same two reasons Ctrl+. does.
+  //
+  // Reached from a real keypress, so the user-gesture requirement on
+  // requestFullscreen is satisfied. Note that Chrome on Linux and macOS bind
+  // this to quitting the browser at a level preventDefault cannot always reach;
+  // ⛶ in the notes ⋯ menu is the way in where that happens.
+  if ((event.ctrlKey || event.metaKey) && (event.key === "q" || event.key === "Q")) {
+    event.preventDefault();
+    toggleImmersiveMode();
     return;
   }
   // Card shortcuts are meaningless while any modal/panel is open (it either

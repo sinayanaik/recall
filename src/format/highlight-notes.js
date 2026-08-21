@@ -270,7 +270,24 @@ export function pruneOrphanHighlightNotes(source) {
 // wrapAcrossBlocks split this highlight across blocks/list items) is copied
 // through unchanged, id and all (a piece other than the first never has one
 // by construction) — and then updates the notes section to match.
-function rewriteFirstMarkNote(markIndex, makeNote) {
+//
+// ── Why the two side effects are optional ─────────────────────────────────
+//
+// This used to repaint and snapshot unconditionally, which was right when the
+// only caller was a Save button: one press, one edit, one undo step. The popup
+// editor now saves as you type (see src/notes/highlight-note-editor.js), and
+// under that caller both are actively wrong:
+//
+//   rerender — the note being written to is the SECTION at the end of the
+//     document, not the paragraph the highlight is in. Nothing the reader can
+//     see changes, and renderNotesViewPinned on a book-sized note is not a
+//     thing to do between keystrokes. The popup repaints once, on close.
+//   undo — a Ctrl+Z stack with one step per typing pause is not an undo stack.
+//     The editor pushes ONE snapshot for the whole editing session, the same
+//     shape applyFormatToTextarea uses for a formatting run.
+//
+// Both default to true, so every other caller is unchanged.
+function rewriteFirstMarkNote(markIndex, makeNote, { rerender = true, undo = true } = {}) {
   const source = state.notes || "";
   const span = markGroupSpanAt(source, markIndex);
   const first = markSpanAt(source, markIndex);
@@ -285,27 +302,30 @@ function rewriteFirstMarkNote(markIndex, makeNote) {
   // the mark's open tag changes length here (an id is added or dropped), and
   // a section start measured before that would be stale by exactly that much.
   const withMark = source.slice(0, first.start) + rewrittenFirst + source.slice(first.end);
-  pushNotesUndo("highlight");
+  if (undo) pushNotesUndo("highlight");
   state.notes = setHighlightNoteInSource(withMark, id || first.note, text, id ? excerptLabel(first.inner) : null);
-  renderNotesViewPinned();
+  if (rerender) renderNotesViewPinned();
+  // Not optional, either of them. The deck has changed on disk whether or not
+  // anything was repainted, and the Highlights panel is a different surface
+  // that may well be the one the edit was made from.
   scheduleDeckAutosave();
   notifyHighlightsChanged();
   return true;
 }
 
-export function setHighlightNoteAt(markIndex, markdownText) {
+export function setHighlightNoteAt(markIndex, markdownText, options = {}) {
   const text = String(markdownText || "").trim();
-  if (!text) return clearHighlightNoteAt(markIndex);
+  if (!text) return clearHighlightNoteAt(markIndex, options);
   return rewriteFirstMarkNote(markIndex, (first, source) => ({
     // A highlight that already has an id keeps it, so a hand-written section
     // entry isn't orphaned by an edit made through the popup.
     id: isHighlightNoteId(first.note) ? first.note : freshHighlightNoteId(source),
     text
-  }));
+  }), options);
 }
 
-export function clearHighlightNoteAt(markIndex) {
-  return rewriteFirstMarkNote(markIndex, () => ({ id: null, text: "" }));
+export function clearHighlightNoteAt(markIndex, options = {}) {
+  return rewriteFirstMarkNote(markIndex, () => ({ id: null, text: "" }), options);
 }
 
 // One-shot conversion of the old inline-base64 form, run when the raw editor

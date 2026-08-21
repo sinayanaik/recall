@@ -22,7 +22,7 @@ import { closeAppInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard } from "../quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { closeStoragePanel } from "../storage/storage-panel.js?v=__BUILD__";
-import { chromeFocusPinned, setFocusMode } from "./chrome.js?v=__BUILD__";
+import { chromeFocusPinned, isImmersive, setFocusMode, setImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { showToast } from "./feedback.js?v=__BUILD__";
 import { closeHelpModal } from "./help.js?v=__BUILD__";
@@ -143,6 +143,15 @@ export function closeTopmostOverlay() {
   // Escape; on a phone (no Escape key) it is the hardware Back / edge swipe,
   // which lands here through handleBackGesture. Do not "tidy" focus mode into
   // OVERLAY_LAYERS — it would then eat a press aimed at a real overlay.
+  //
+  // Immersive mode is tested FIRST, and is not the same escape. It is focus
+  // mode plus the browser's own chrome (see setImmersiveMode), so un-pinning
+  // focus alone would bring the app's header back inside a window that is still
+  // fullscreen — half out of a mode nobody asked to be half out of. Most
+  // browsers eat Escape themselves to leave fullscreen and never dispatch it
+  // here, in which case the fullscreenchange listener does this; Firefox does
+  // dispatch it, and this is that path.
+  if (isImmersive()) { setImmersiveMode(false); return true; }
   if (chromeFocusPinned) { setFocusMode(false); return true; }
 
   // Nothing left open: make sure a scroll lock didn't outlive its owner.

@@ -273,18 +273,11 @@
   display: none;
 }
 
-/* The divider belongs to the format group — it goes when the group goes. */
-.selection-float:has(.selection-float-format[hidden]) .selection-float-divider {
-  display: none;
-}
-
-.selection-float-divider {
-  width: 1px;
-  align-self: stretch;
-  margin: 3px 2px;
-  flex: 0 0 auto;
-  background: color-mix(in srgb, var(--line) 85%, transparent);
-}
+/* .selection-float-divider is gone with the ⋯ disclosure it separated. The bar
+   is five .sel-group categories now (see index.html), and they are told apart
+   by the space between them rather than by rules drawn between them — which is
+   the one grouping signal that still reads correctly when the bar wraps.
+   See styles/22-selection-bar.css. */
 
 /* The pill's own buttons and the format buttons come from two different
    families (.selection-float-btn and .render-btn) — match their heights so the
@@ -500,32 +493,26 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
 }
 
-/* The disclosure is a phone-only control (hidden by default in 12-notes.css). */
-.selection-float.is-pinned-bottom .selection-float-btn.is-more {
-  display: inline-flex;
-}
+/* ── What used to be here, and why it is not ──────────────────────────────
+   Three rules: one that showed the ⋯ disclosure (phone-only), one that
+   collapsed the formatting group behind it until pressed, and one that turned
+   the divider into a full-width rule between the resulting two rows.
 
-/* Collapsed until ⋯ is pressed — the formatting row AND the rule above it, which
-   is the boundary between two rows and means nothing when there is only one.
-   (0,3,0), so it clears `.selection-float-format { display: inline-flex }`
-   at :260 without needing an id or !important. */
-.selection-float.is-pinned-bottom:not(.is-format-open) .selection-float-format,
-.selection-float.is-pinned-bottom:not(.is-format-open) .selection-float-divider {
-  display: none;
-}
+   All three are gone with the disclosure. It was shown ONLY on the
+   bottom-pinned bar — so the surface with the least room to spare was the one
+   surface where bold, italic and the colour picker each cost two taps, the
+   second landing on a 34px target that had only just appeared. The bar carries
+   its five .sel-group categories at every width now; it still wraps to two
+   rows here, but they are two rows of buttons you can see rather than one row
+   plus a hidden one. See styles/22-selection-bar.css for the grouping.
 
-/* The divider stops being a vertical hairline between two buttons and becomes
-   the rule BETWEEN the two rows — which is what it means here. */
-.selection-float.is-pinned-bottom .selection-float-divider {
-  flex: 1 0 100%;
-  width: auto;
-  height: 1px;
-  margin: 2px 0;
-  align-self: stretch;
-}
-
+   Where the fold falls is left to the arithmetic rather than forced onto one
+   group — a group is `flex: 0 0 auto`, so the bar can only ever break BETWEEN
+   groups, never through one. (styles/22-selection-bar.css does that sum.) What
+   survives from the old rule is the formatting group's INSIDES: it is one
+   .render-toolbar span holding bulletify and the Aa menu, and a run that cannot
+   wrap would push the row past the viewport. */
 .selection-float.is-pinned-bottom .selection-float-format {
-  flex: 1 0 100%;
   flex-wrap: wrap;
   justify-content: center;
   gap: 6px;

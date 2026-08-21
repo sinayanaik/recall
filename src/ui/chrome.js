@@ -307,3 +307,88 @@ export function setFocusMode(pinned) {
   chromeAnchorTop = 0;
   applyChromeCollapse();
 }
+
+// ── Immersive mode: the app's chrome AND the browser's ─────────────────────
+//
+// Focus mode above folds the app's own furniture. What it cannot touch is the
+// ~110px of tab strip, address bar and bookmarks above it — which on a laptop
+// is more than everything this file has been arguing about put together. The
+// Fullscreen API is the only thing that can, and it is a real mode change
+// rather than a class: the browser owns it, the user can leave it with F11 or
+// Escape without telling us, and it needs a gesture to enter.
+//
+// So the two are deliberately separate buttons with separate shortcuts rather
+// than three states on one control. ⤢ / Ctrl+. is reversible with a glance at
+// the header; ⛶ / Ctrl+Q takes over the screen. A tri-state toggle would make
+// you press it once to find out which of the two you were about to get.
+//
+// Entering does BOTH: a fullscreen window still showing the deck title, the
+// category and the tabs is not what anyone means by full screen.
+//
+// ⚠ Ctrl+Q is the browser's own quit accelerator in Chrome on Linux and (as
+// Cmd+Q) on macOS, and preventDefault cannot always take that back. Where it is
+// swallowed, the ⛶ button in the ⋯ menu is the way in.
+export function isFullscreenAvailable() {
+  return typeof document !== "undefined"
+    && Boolean(document.documentElement?.requestFullscreen)
+    && document.fullscreenEnabled !== false;
+}
+
+// Where the API is missing (iOS Safari has it on <video> only), immersive mode
+// degrades to focus mode — so "am I in it" degrades to the same question.
+export function isImmersive() {
+  return isFullscreenAvailable() ? Boolean(document.fullscreenElement) : chromeFocusPinned;
+}
+
+// What #immersiveModeBtn currently says. Starts null (not false) for the same
+// reason focusBtnShowsPinned does: the first call must always paint it.
+export let immersiveBtnShowsOn = null;
+
+export function paintImmersiveButton() {
+  if (!el.immersiveModeBtn) return;
+  const on = isImmersive();
+  if (on === immersiveBtnShowsOn) return;
+  immersiveBtnShowsOn = on;
+  el.immersiveModeBtn.setAttribute("aria-pressed", on ? "true" : "false");
+  el.immersiveModeBtn.title = !isFullscreenAvailable()
+    ? "Full screen isn't available in this browser — Ctrl + Q hides the app's own header instead"
+    : on
+      ? "Leave full screen (Ctrl + Q, or Esc)"
+      : "Full screen (Ctrl + Q) — hide the browser as well";
+}
+
+// Fire-and-forget: requestFullscreen/exitFullscreen REJECT rather than throw
+// when the gesture has expired or a policy refuses, and there is nothing useful
+// to do about it beyond leaving focus mode in whatever state it reached. The
+// button is repainted from the fullscreenchange listener below rather than from
+// here, so what it shows is what actually happened and not what was asked for.
+export function setImmersiveMode(on) {
+  if (on) {
+    setFocusMode(true);
+    if (isFullscreenAvailable() && !document.fullscreenElement) {
+      Promise.resolve(document.documentElement.requestFullscreen()).catch(() => paintImmersiveButton());
+    } else {
+      paintImmersiveButton();
+    }
+    return;
+  }
+  setFocusMode(false);
+  if (document.fullscreenElement) Promise.resolve(document.exitFullscreen()).catch(() => {});
+  else paintImmersiveButton();
+}
+
+export function toggleImmersiveMode() {
+  setImmersiveMode(!isImmersive());
+}
+
+// Leaving fullscreen by F11, by Escape, or by the browser's own control has to
+// leave immersive mode as a WHOLE — otherwise the window comes back with the
+// app's header still folded away and a lit ⛶ button, and nothing the reader
+// pressed did either of those. One path out, whoever asked for it.
+export function initImmersiveMode() {
+  paintImmersiveButton();
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) setFocusMode(false);
+    paintImmersiveButton();
+  });
+}
