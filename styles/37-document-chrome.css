@@ -41,22 +41,28 @@
 }
 
 /* The row carried three tabs plus ☰, the pill and ⋯ in 440px. A PDF deck in
-   NOTES view carries four tabs plus all three of those, which is where the 80px
-   goes. */
+   NOTES view carries four tabs plus all three of those, plus the ⇓ that means
+   "export what I am looking at" — 560px is where four full labels and four
+   controls stop overlapping. Still `min(…, 100%)`, so a phone gets the phone
+   behaviour below rather than a row wider than the screen. */
 .view-mode-row {
-  width: min(520px, 100%);
+  width: min(560px, 100%);
 }
 
 /* ── The glyphs go before the words do ─────────────────────────────────────
-   Four labels, four emoji and three controls do not fit a 360px row, and
+   Four labels, four emoji and four controls do not fit a 360px row, and
    "HIGHLIGHT…" reads as a rendering fault in a way that a missing emoji does
    not (the same argument styles/16-mobile-reading.css:369 already makes for the
-   tabs' side padding). The emoji is decoration; the word is the control. */
+   tabs' side padding). The emoji is decoration; the word is the control.
+
+   The threshold is 640px rather than 560px because the ⇓ took another 30px out
+   of the row, and the point of dropping the emoji is to keep the WORDS whole —
+   a "HIGHLIGHT!" with an emoji beside it is the wrong trade at any width. */
 .view-mode-toggle .vm-ico {
   margin-right: 5px;
 }
 
-@media (max-width: 560px) {
+@media (max-width: 640px) {
   .view-mode-toggle .vm-ico {
     display: none;
   }
@@ -169,6 +175,59 @@
 .view-mode-row > .document-toggle:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
   background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* ── The export button beside the tabs ─────────────────────────────────────
+   Export used to live only in the ☰ drawer, three rows deep and nowhere near
+   the thing being exported. This is one control that means "export what I am
+   looking at"; its menu is rebuilt per view by paintViewExportMenu.
+
+   Sized and treated exactly like the ⋯ two places along, because they are the
+   same KIND of control — a small square in this row that opens a menu over the
+   page — and two menu buttons in one row that look different read as two
+   different mechanisms. */
+.view-mode-row > .view-export-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--text);
+}
+
+.view-mode-row > .view-export-btn[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+
+.view-mode-row > .view-export-btn:hover,
+.view-mode-row > .view-export-btn:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* The same box as .document-more-menu (styles/36-document.css) and anchored the
+   same way — against .view-mode-row, which is position:relative, so opening
+   downward over the page cannot be clipped by .quiz-panel's overflow. */
+.view-mode-row > .view-export-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 46;
+  min-width: 16rem;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
+}
+
+.view-mode-row > .view-export-menu[hidden] {
+  display: none;
 }
 
 /* #documentHead is only where the controls START. liftNotesControlsIntoRow

@@ -364,7 +364,14 @@ export function highlightContextUnits(units, index, step, count) {
 // toggles (src/export/run.js) — each entry still carries `chapter`/`note` as
 // null when its toggle is off, rather than the caller having to know to
 // omit them, so every export builder (Markdown/HTML/PDF) reads one shape.
-export function collectDeckHighlightsForExport({ contextLines = 0, includeChapter = true, includeNotes = true } = {}) {
+//
+// `annotatedOnly` drops every highlight that has no note on it. That is what
+// the Document view's "the notes, as one PDF" export means — a reading of what
+// you WROTE about the paper, rather than a list of every sentence you happened
+// to colour — and it is deliberately independent of `includeNotes`: the filter
+// reads the note before that toggle is applied, or asking for "annotated
+// highlights, without their notes" would quietly return nothing at all.
+export function collectDeckHighlightsForExport({ contextLines = 0, includeChapter = true, includeNotes = true, annotatedOnly = false } = {}) {
   const { source, groups, units } = scanHighlightGroups(state.notes || "");
   const headings = includeChapter ? headingIndexFor(source) : null;
   const items = [];
@@ -374,12 +381,14 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
   // entry shape, so `page` is simply a field they can print.
   if (isPdfDeck()) {
     documentHighlightsInReadingOrder().forEach((record) => {
+      const note = documentHighlightNote(record.id) || null;
+      if (annotatedOnly && !note) return;
       items.push({
         // documentHighlightLabel, so a region round a figure exports as
         // "Region · page 12" rather than as a blank bullet with a colour on it.
         markdown: documentHighlightLabel(record),
         color: record.color,
-        note: includeNotes ? (documentHighlightNote(record.id) || null) : null,
+        note: includeNotes ? note : null,
         before: [],
         after: [],
         chapter: null,
@@ -398,10 +407,12 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     const before = span && contextLines > 0 ? highlightContextUnits(units, span.first, -1, contextLines) : [];
     const after = span && contextLines > 0 ? highlightContextUnits(units, span.last, 1, contextLines) : [];
     const chapter = headings ? headingForOffset(headings, group.offset) : null;
+    const note = group.pieces[0].note || null;
+    if (annotatedOnly && !note) return;
     items.push({
       markdown,
       color: group.color,
-      note: includeNotes ? group.pieces[0].note : null,
+      note: includeNotes ? note : null,
       before,
       after,
       chapter: chapter?.title || null

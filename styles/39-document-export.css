@@ -1,0 +1,128 @@
+/* The Document surface's own export: the paper, with your notes on it.
+ *
+ * Built by src/documents/pdf-export.js into #printRoot and printed through the
+ * same pipeline as every other export (installPdfPrintStyle in
+ * src/export/run.js sets A4 portrait at 14mm). What is here is only what that
+ * pipeline cannot know: one sheet per page, the page as an image, and the notes
+ * for that page printed under it.
+ *
+ * Fixed --print-* colours throughout, like styles/28-export-highlights.css, and
+ * for the same reason: this content can land in the standalone HTML path, which
+ * inlines the LIVE theme around it — a dark page background under a white
+ * scanned page would look like a printing fault.
+ */
+
+.doc-print-sheet {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  margin: 0 0 18px;
+}
+
+/* Each page starts a new sheet — except the first, which would otherwise put a
+   blank page between the cover and page 1. */
+.doc-print-sheet + .doc-print-sheet {
+  break-before: page;
+  page-break-before: always;
+}
+
+.doc-print-page {
+  margin: 0 0 10px;
+  text-align: center;
+}
+
+/* The page is an IMAGE, at whatever pixel width it was rasterised at
+   (PRINT_PAGE_WIDTH). Scaled to the print measure here rather than there, so
+   one rendering serves both the screen preview and the sheet.
+   max-height keeps a portrait page and its notes on one sheet: without it a
+   full-height page image pushes every note onto the following sheet, which is
+   the layout this export exists to avoid. */
+.doc-print-page img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 76vh;
+  margin: 0 auto;
+  object-fit: contain;
+  border: 1px solid var(--print-line, #d4d4d8);
+  border-radius: 2px;
+}
+
+.doc-print-page figcaption {
+  margin-top: 4px;
+  color: var(--print-muted, #6b7280);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The notes for that page, in the same numbered order the badges on screen use
+   — so a note in the export and the badge on the page are the same number. */
+.doc-print-notes {
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border-left: 3px solid var(--print-accent, #0f766e);
+  border-radius: 0 6px 6px 0;
+  background: var(--print-panel-2, #f2f6f6);
+  color: var(--print-text, #18181b);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  /* Two columns on a sheet that has room for them, for the same reason the
+     on-screen strip packs: a page with five notes on it is otherwise a second
+     sheet of mostly whitespace. */
+  column-width: 260px;
+  column-gap: 16px;
+}
+
+.doc-print-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.doc-print-note-num {
+  flex: 0 0 auto;
+  min-width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 999px;
+  background: var(--print-accent, #0f766e);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+}
+
+.doc-print-note-body {
+  min-width: 0;
+}
+
+.doc-print-note-body > :first-child { margin-top: 0; }
+.doc-print-note-body > :last-child { margin-bottom: 0; }
+
+.doc-print-note-excerpt {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--print-muted, #6b7280);
+  font-size: 0.74rem;
+  font-style: italic;
+}
+
+/* A printer draws neither the page images nor the note tint unless background
+   graphics are on. Both are content here, not decoration. */
+@media print {
+  .doc-print-page img,
+  .doc-print-notes {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .doc-print-page img {
+    max-height: 200mm;
+  }
+}

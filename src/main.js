@@ -28,7 +28,7 @@ import { closeAllEditToolbarDropdowns, initToolbars, setCloseMainMenu, setIsMain
 import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/triple-click.js?v=__BUILD__";
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
 import { closePrintPreview, printPreviewOpen } from "./export/pdf.js?v=__BUILD__";
-import { generatePdfDirectly, handleExportAction, handleExportHighlightsAction, handleExportNotesAction } from "./export/run.js?v=__BUILD__";
+import { generatePdfDirectly, handleExportAction, handleExportDocumentAction, handleExportHighlightsAction, handleExportNotesAction } from "./export/run.js?v=__BUILD__";
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
@@ -58,6 +58,7 @@ import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUI
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { INLINE_HIGHLIGHT_NOTES_KEY, applyInlineHighlightNotes, setInlineHighlightNotesFlag, toggleInlineHighlightNotes } from "./notes/inline-highlight-notes.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
@@ -97,11 +98,11 @@ import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BU
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 import { initDocumentMarkMenu } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { fitDocumentToWidth, initDocumentPinchZoom, reattachDocument, saveDocumentCopy, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { fitDocumentToWidth, initDocumentPinchZoom, reattachDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail } from "./ui/reading-rail.js?v=__BUILD__";
@@ -289,7 +290,11 @@ el.bookmarkSetBtn?.addEventListener("click", () => bookmarkCurrentSpot());
 el.bookmarkGoBtn?.addEventListener("click", () => goToBookmark());
 
 el.notesEdit?.addEventListener("input", () => {
-  state.notes = el.notesEdit.value;
+  // Through sourceFromRawEditor, never straight across. The textarea holds the
+  // note's BODY — the highlight-notes block is sliced off it when the editor
+  // opens (see src/notes/notes-edit-split.js) — so a bare assignment here would
+  // delete every highlight note in the deck on the first keystroke.
+  state.notes = sourceFromRawEditor(el.notesEdit.value);
   // Before anything else reacts to the new text. recordNotesTyping is told what
   // the note BECAME; it keeps the previous value itself, because a keystroke can
   // only ever report the result. Consecutive keystrokes coalesce into one undo
@@ -1763,6 +1768,44 @@ const openExportHighlightsModal = () => {
 };
 el.exportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
 el.drawerExportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
+
+// ── The export button beside the tabs ────────────────────────────────────
+//
+// It means "export what I am looking at", so its rows come from the view
+// (paintViewExportMenu, src/ui/view-mode.js) and every one of them dispatches
+// into an export that already existed — the three drawer entries above, the
+// highlights dialog, and the Document surface's own three.
+el.viewExportBtn?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (!el.viewExportMenu) return;
+  const open = el.viewExportMenu.hidden;
+  // Rebuilt on open as well as on every setViewMode: a deck loaded while the
+  // menu has never been opened has never had it painted.
+  if (open) paintViewExportMenu();
+  el.viewExportMenu.hidden = !open;
+  el.viewExportBtn.setAttribute("aria-expanded", String(open));
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!el.viewExportMenu || el.viewExportMenu.hidden) return;
+  if (event.target.closest("#viewExportMenu, #viewExportBtn")) return;
+  closeViewExportMenu();
+}, { capture: true, passive: true });
+
+el.viewExportMenu?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-view-export]");
+  if (!button) return;
+  closeViewExportMenu();
+  const action = button.dataset.viewExport;
+  // "surface:format". A bare format is the cards menu, which is the one that
+  // also carries a scope — always "all" from here; the drawer's own menu is
+  // still where a known/review/uncategorized scope is chosen.
+  const [surface, format] = action.includes(":") ? action.split(":") : ["cards", action];
+  if (surface === "cards") handleExportAction(format, "all");
+  else if (surface === "notes") handleExportNotesAction(format);
+  else if (surface === "doc") handleExportDocumentAction(format);
+  else if (surface === "highlights") openExportHighlightsModal();
+});
 el.exportHighlightsCancelBtn?.addEventListener("click", () => {
   if (!el.exportHighlightsModal) return;
   el.exportHighlightsModal.hidden = true;
@@ -2745,10 +2788,6 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   }
   if (action === "page-notes") {
     togglePdfPageNotes();
-    return;
-  }
-  if (action === "save") {
-    await saveDocumentCopy();
     return;
   }
   if (action === "offload") await offloadCurrentDocument();

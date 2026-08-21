@@ -107,6 +107,10 @@ const API_SRC = `async () => {
     "/src/documents/pdf-store.js?v=__BUILD__",
     "/src/import/pdf.js?v=__BUILD__",
     "/src/format/highlight-notes.js?v=__BUILD__",
+    "/src/format/notes-fence.js?v=__BUILD__",
+    "/src/documents/pdf-export.js?v=__BUILD__",
+    "/src/export/run.js?v=__BUILD__",
+    "/src/export/pdf.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
     "/src/storage/deck-store.js?v=__BUILD__",
@@ -266,10 +270,23 @@ try {
   // ── 3. The file's own highlights ─────────────────────────────────────────
   if (fixture.annotation) {
     check("an existing PDF highlight is imported", imported.highlights === 1, `${imported.highlights} record(s)`);
+    // The fence, not the "## Highlight Notes" heading this used to assert. The
+    // heading is what an EXPORT emits now (src/export/notes-body.js); what is
+    // STORED is a block of HTML comments, because a heading is not a boundary —
+    // a paper whose own text contains those words was indistinguishable from
+    // the app's section — and because a heading renders, which is why the
+    // rendered view had to hunt one down and hide it again.
     check(
-      "its comment lands in the note's Highlight Notes section",
-      imported.notes.includes("## Highlight Notes") && imported.notes.includes(fixture.annotation.comment),
+      "its comment lands in the note's highlight-notes block",
+      imported.notes.includes("<!--recall:highlight-notes-->")
+        && imported.notes.includes("<!--/recall:highlight-notes-->")
+        && imported.notes.includes(fixture.annotation.comment),
       imported.notes.includes(fixture.annotation.comment) ? "" : JSON.stringify(imported.notes.slice(0, 120))
+    );
+    check(
+      "...and nothing else, on a paper whose reader has written nothing",
+      imported.notes.trimStart().startsWith("<!--recall:highlight-notes-->"),
+      JSON.stringify(imported.notes.slice(0, 60))
     );
   }
 
@@ -665,6 +682,152 @@ try {
       pageNotes.columnWidth === "260px" && pageNotes.headSpan === "all" && pageNotes.noteBreak === "avoid",
       `column-width=${pageNotes.columnWidth} head=${pageNotes.headSpan} note=${pageNotes.noteBreak}`);
   }
+
+  // ── 8b. The container the notes live in ──────────────────────────────────
+  //
+  // Three things this format has to get right, and every one of them is a
+  // report from use rather than a hypothetical:
+  //
+  //   the raw editor must not open full of highlight notes. On a PDF deck the
+  //   body is empty — the PDF IS the document — so the "## Highlight Notes"
+  //   section used to be the entire contents of the textarea, with nothing
+  //   separating it from the writing the reader came to do;
+  //
+  //   committing that editor must not lose them. The textarea holds the body
+  //   and the block is re-attached on the way back, through one choke point,
+  //   because seven places copy between state.notes and the textarea and a
+  //   single unrouted one deletes every note in the deck on the next keystroke;
+  //
+  //   and a deck still in the OLD heading form has to migrate, not vanish.
+  const fence = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const before = api.state.notes;
+    const editorSees = api.splitHighlightNotesTail(before).body;
+
+    // A note written the way this app wrote them a version ago.
+    const legacy = "Some prose the reader wrote.\\n\\n---\\n\\n## Highlight Notes\\n\\n"
+      + "### [hn-old1] “an excerpt”\\n\\nThe note that was taken on it.\\n";
+    const migrated = api.migrateLegacyHighlightNotes(legacy);
+    const readBack = api.readHighlightNotes(migrated).get("hn-old1") || "";
+
+    // ...and one that merely MENTIONS the heading, which the old parser could
+    // not tell apart from its own section.
+    const innocent = "# A paper about notes\\n\\n## Highlight Notes\\n\\nA section the author wrote.\\n";
+
+    return {
+      storesAFence: before.includes("<!--recall:highlight-notes-->"),
+      // The whole point: what the editor is handed has none of it in it.
+      editorIsClean: !editorSees.includes("<!--recall:highlight-notes-->")
+        && !editorSees.includes("Highlight Notes"),
+      // Split, then join, is the identity on anything this app wrote.
+      roundTrips: api.joinHighlightNotesTail(editorSees, api.splitHighlightNotesTail(before).tail).trim() === before.trim(),
+      // The export form is still readable prose.
+      exportsAsMarkdown: api.highlightNotesSectionMarkdown(before).startsWith("## Highlight Notes"),
+      migratedToFence: migrated.includes("<!--recall:highlight-notes-->") && !migrated.includes("## Highlight Notes"),
+      migratedKeptTheProse: migrated.startsWith("Some prose the reader wrote."),
+      migratedKeptTheNote: readBack,
+      innocentUntouched: api.fenceLegacySection(innocent) === innocent
+    };
+  }`);
+
+  check("a highlight note is stored in a fenced block", fence.storesAFence);
+  check("...which the raw editor is never handed", fence.editorIsClean);
+  check("...and which split → join puts back byte for byte", fence.roundTrips);
+  check("...while an export still says '## Highlight Notes'", fence.exportsAsMarkdown);
+  check("an older note in the heading form migrates to the fence",
+    fence.migratedToFence && fence.migratedKeptTheProse,
+    `fenced=${fence.migratedToFence} prose=${fence.migratedKeptTheProse}`);
+  check("...carrying its note text across",
+    fence.migratedKeptTheNote === "The note that was taken on it.",
+    JSON.stringify(fence.migratedKeptTheNote));
+  check("...and a paper that merely CONTAINS that heading is left alone",
+    fence.innocentUntouched);
+
+  // ── 8c. Exporting the paper with the notes on it ─────────────────────────
+  //
+  // The Document view's own export, which is the one thing this surface could
+  // not do: save a copy gave you the ORIGINAL file, and the Highlights tab gave
+  // you a list of passages — neither is the paper you read with what you wrote
+  // printed under each page.
+  //
+  // The print DOCUMENT is built here rather than printed: printPreparedDocument
+  // opens a browser print dialog, which a headless check cannot dismiss. What is
+  // asserted is everything up to that point, which is where all the risk is —
+  // the pages rasterise, the right ones are chosen, and every note lands under
+  // its own page.
+  const docExport = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(300);
+    const all = await api.buildDocumentPrintDocument("Fixture", { annotatedOnly: false });
+    const annotated = await api.buildDocumentPrintDocument("Fixture", { annotatedOnly: true });
+    // split(), not a regex literal: this whole function is a template literal
+    // handed to CDP, and a "/" in it is one more thing to escape correctly.
+    const countOf = (html, needle) => html.split(needle).length - 1;
+    const sheets = (html) => countOf(html, 'class="doc-print-sheet"');
+    const images = (html) => countOf(html, '<img src="data:image');
+    return {
+      pageCount: api.currentPdfPageCount(),
+      allSheets: sheets(all),
+      allImages: images(all),
+      annotatedSheets: sheets(annotated),
+      annotatedPages: api.documentPrintPageCount({ annotatedOnly: true }),
+      // The note under the page it belongs to, and the excerpt beside it.
+      annotatedCarriesTheNote: annotated.includes("doc-print-note-body"),
+      // annotatedOnly must not silently print nothing when there ARE notes.
+      annotatedNotEmpty: !annotated.includes("No page of this document has a note"),
+      // ...and the notes-only export is the highlights pipeline with two flags.
+      notesOnly: api.buildHighlightsPrintDocument("Fixture", {
+        annotatedOnly: true, groupByPage: true, includeNotes: true, includeChapter: false
+      })
+    };
+  }`);
+
+  check("every page of the document rasterises for the export",
+    docExport.allSheets === docExport.pageCount && docExport.allImages === docExport.pageCount,
+    `${docExport.allSheets} sheet(s), ${docExport.allImages} image(s) for ${docExport.pageCount} page(s)`);
+  check("...and 'only the annotated pages' prints just those",
+    docExport.annotatedPages > 0
+      && docExport.annotatedSheets === docExport.annotatedPages
+      && docExport.annotatedSheets < docExport.pageCount,
+    `${docExport.annotatedSheets} of ${docExport.pageCount} page(s)`);
+  check("...with the note printed under its own page",
+    docExport.annotatedCarriesTheNote && docExport.annotatedNotEmpty);
+  check("the notes-only export groups them by page",
+    docExport.notesOnly.includes("highlight-export-page-heading")
+      && !docExport.notesOnly.includes("highlight-export-page\">"),
+    docExport.notesOnly.includes("highlight-export-page-heading") ? "" : "no page heading");
+
+  // The export button beside the tabs: one control, rebuilt per view, and it
+  // must never offer a Cards row from the Document view.
+  const exportMenu = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const rowsFor = async (mode) => {
+      api.setViewMode(mode);
+      await settle(220);
+      api.paintViewExportMenu();
+      return Array.from(document.querySelectorAll("#viewExportMenu [data-view-export]"))
+        .map((b) => b.dataset.viewExport);
+    };
+    const document_ = await rowsFor("document");
+    const notes = await rowsFor("notes");
+    const cards = await rowsFor("cards");
+    api.setViewMode("document");
+    await settle(220);
+    const btn = document.getElementById("viewExportBtn");
+    const box = btn.getBoundingClientRect();
+    return { document_, notes, cards, visible: box.width > 0 && box.height > 0 };
+  }`);
+
+  check("the export button is on screen beside the tabs", exportMenu.visible);
+  check("...offering the document's own exports in the Document view",
+    exportMenu.document_.every((row) => row.startsWith("doc:"))
+      && exportMenu.document_.includes("doc:annotated-pdf")
+      && exportMenu.document_.includes("doc:original"),
+    exportMenu.document_.join(", "));
+  check("...the notes exports in Notes, and the card exports in Cards",
+    exportMenu.notes.every((row) => row.startsWith("notes:")) && exportMenu.cards.includes("pdf"),
+    `${exportMenu.notes.length} notes row(s), ${exportMenu.cards.length} cards row(s)`);
 
   // ── 9. The reading rail ──────────────────────────────────────────────────
   //

@@ -1,41 +1,78 @@
 // A note attached to a highlight (Kindle-style "note over a highlight").
 //
-// The note's TEXT lives in a plain-markdown section at the very end of the
-// same note, and the <mark> in the body only carries a short id pointing at
-// it (data-note="hn-3f2a"). Notes used to ride inside the mark itself as
-// base64 (data-note="VGhpcyBpcyBh…"), which meant the raw markdown of an
-// annotated book was littered with unreadable blobs you could neither read
-// nor hand-edit. The section below is the same information in a form anyone
-// can open in any editor and change:
+// The note's TEXT lives in a fenced block at the very end of the same note, and
+// the <mark> in the body only carries a short id pointing at it
+// (data-note="hn-3f2a"):
 //
-//     ---
-//
-//     ## Highlight Notes
-//
-//     ### [hn-3f2a] “the highlighted words…”
+//     <!--recall:highlight-notes-->
+//     <!--hn:hn-3f2a “the highlighted words…”-->
 //
 //     Whatever the reader wrote, as ordinary markdown.
 //
-//     ### [hn-9c1b] “another highlight…”
+//     <!--hn:hn-9c1b “another highlight…”-->
 //
 //     A second note.
+//     <!--/recall:highlight-notes-->
 //
-// Only the `[id]` in each heading is machine-read; the quoted excerpt after
-// it is a human label (regenerated on every save) and the body is free-form
-// markdown for as many paragraphs, lists or images as you like. Editing,
-// reordering or rewriting a body by hand is a supported thing to do — the
-// only rule is: keep the `### [id]` line, since that is what ties the note to
-// its highlight.
+// Only the id in each `<!--hn:…-->` line is machine-read; the quoted excerpt
+// after it is a human label (regenerated on every save) and the body is
+// free-form markdown for as many paragraphs, lists or images as you like.
+//
+// ── Why comments, and not the headings this used to use ───────────────────
+//
+// The first version of this was ordinary markdown — `## Highlight Notes` with a
+// `### [hn-3f2a] “excerpt”` per entry — on the argument that nothing here
+// should be a private encoding a reader could not work out for themselves. It
+// is still readable in that form; that is what notesForExport() emits. But as
+// the CONTAINER a heading was wrong in three ways, and all three were reported:
+//
+//   • It is not a boundary. A document whose own text contains the words
+//     "## Highlight Notes" is indistinguishable from the app's section, which is
+//     why sectionStartIn had to take the LAST match and hope. A comment nobody
+//     types by accident needs no such rule.
+//   • It renders. The section was real markdown at the end of the note, so the
+//     rendered view printed an H2 and a run of H3s under everything the reader
+//     wrote, and inline-highlight-notes.js had to walk the rendered blocks
+//     BACKWARDS looking for an H2 whose text was "Highlight Notes" in order to
+//     hide it again. Comments are stripped by DOMPurify (SANITIZE_CONFIG does
+//     not set ALLOW_COMMENTS), so there is nothing to hide.
+//   • It has no end. "Everything after the heading" meant the section could only
+//     ever be the tail, with no way to say where it stopped — so a paste below
+//     it was swallowed into the last entry. The fence closes.
+//
+// The fence is still, deliberately, plain text in the same file: opening the
+// deck's markdown in any editor and rewriting a body by hand is a supported
+// thing to do. The only rule is: keep the `<!--hn:id-->` line, since that is
+// what ties the note to its highlight.
+//
+// ── Where it is, and what that buys ───────────────────────────────────────
+//
+// The block is always the LAST thing in the note. Every raw-markdown offset in
+// this app — raw-offset.js, locate-selection.js, anchors.js, toc.js, the caret
+// the raw editor resumes at — is an index from the START of the source, so a
+// tail can be sliced off without moving any of them. That is what lets
+// splitHighlightNotesTail() hand the rendered view and the raw editor a body
+// with no highlight notes in it at all, which is the other half of the report
+// this format came from: on a PDF deck the body is empty, so opening the raw
+// editor used to show the reader nothing but their own highlight notes.
 //
 // A highlight that wrapAcrossBlocks split into several adjacent <mark>s (a
 // paragraph or list-item drag) is still ONE annotation, so only the group's
 // FIRST piece ever carries the id — see rewriteFirstMarkNote.
 //
-// Legacy base64 notes still read correctly (see highlightNoteText) and are
-// converted to the section form on their first edit, or in bulk by
-// migrateLegacyHighlightNotes when the raw editor is opened.
+// Two older forms still read correctly and are converted on first edit (or in
+// bulk by migrateLegacyHighlightNotes when the raw editor is opened): the
+// `## Highlight Notes` section above, and — older still — base64 riding inside
+// the mark itself (data-note="VGhpcyBpcyBh…").
 
 import { state } from "../core/state.js?v=__BUILD__";
+import {
+  HIGHLIGHT_NOTES_CLOSE,
+  HIGHLIGHT_NOTES_OPEN,
+  highlightNotesBlockSpan,
+  joinHighlightNotesTail,
+  splitHighlightNotesTail
+} from "./notes-fence.js?v=__BUILD__";
 import { HIGHLIGHT_SCAN_RE, MARK_CLOSE_TAG, markGroupSpanAt, markOpenTag, markSpanAt } from "./highlight.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "./highlight-edit.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
@@ -43,14 +80,25 @@ import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
-// ── The section's own syntax ──────────────────────────────────────────────
-// Deliberately ordinary markdown: a level-2 heading anyone can see in the
-// rendered note, and one level-3 heading per note. Nothing here is a private
-// encoding, so a reader who has never seen this file can still work it out.
+// ── The block's own syntax ────────────────────────────────────────────────
+// Two markers the app owns and nobody types by accident, plus one per entry.
+// Both are HTML comments, so they are invisible in the rendered note and inert
+// in every markdown tool that will ever open this file.
+// The two markers live in src/format/notes-fence.js, with the tail-slicing this
+// file's callers need, because block-cache.js and notes-view.js both have to
+// find the same boundary and neither can import THIS module — see that file's
+// header. Re-exported here so "where do highlight notes live" still has one
+// answer to read.
+export { HIGHLIGHT_NOTES_CLOSE, HIGHLIGHT_NOTES_OPEN, joinHighlightNotesTail, splitHighlightNotesTail };
+const ENTRY_MARKER_RE = /^<!--hn:(hn-[a-z0-9]+)(?:[ \t]+([^]*?))?-->[ \t]*$/;
+const NOTE_ID_RE = /^hn-[a-z0-9]+$/;
+
+// The heading form this replaced. Still parsed (an older deck, a note restored
+// from a backup, a .md someone hand-wrote) and still EMITTED by the exporters,
+// so the format stays something a person can read outside this app.
 export const HIGHLIGHT_NOTES_HEADING = "Highlight Notes";
 const SECTION_HEADING_RE = /^##[ \t]+Highlight Notes[ \t]*$/gm;
 const ENTRY_HEADING_RE = /^###[ \t]+\[(hn-[a-z0-9]+)\][ \t]*(.*)$/;
-const NOTE_ID_RE = /^hn-[a-z0-9]+$/;
 
 // btoa/atob only handle Latin1, so the note's UTF-8 bytes are routed through
 // them one byte at a time rather than the raw string — an emoji or accented
@@ -91,7 +139,13 @@ function freshHighlightNoteId(source, taken = null) {
   for (;;) {
     const id = `hn-${Math.random().toString(36).slice(2, 6)}`;
     if (taken?.has(id)) continue;
-    if (!source.includes(`[${id}]`) && !source.includes(`"${id}"`)) return id;
+    // Three places an id can already be spoken for, and all three have to be
+    // checked or two highlights would share a note: the entry marker
+    // (`<!--hn:id`), a legacy heading entry (`[id]`), and the data-note
+    // attribute on the mark itself (`"id"`).
+    if (source.includes(`hn:${id}`)) continue;
+    if (source.includes(`[${id}]`) || source.includes(`"${id}"`)) continue;
+    return id;
   }
 }
 
@@ -106,16 +160,22 @@ function excerptLabel(inner) {
     .trim();
   if (!flat) return "";
   const clipped = flat.length > 60 ? `${flat.slice(0, 60).trimEnd()}…` : flat;
-  return `“${clipped}”`;
+  return `“${commentSafe(clipped)}”`;
 }
 
-// ── Reading the section ───────────────────────────────────────────────────
+// The label rides inside an HTML comment now, and a comment cannot contain
+// "--": a paper with an em-dash typed as "--" in the highlighted sentence would
+// otherwise close the marker early and take the id with it. ">" is fenced off
+// for the same reason. Only the LABEL goes through this — the note body sits
+// between markers, not inside one, so it is left exactly as written.
+function commentSafe(text) {
+  return String(text).replace(/-{2,}/g, "–").replace(/[<>]/g, "");
+}
 
-// Where the notes section starts, or -1. The LAST heading wins: a book whose
-// own text happens to contain the words "## Highlight Notes" somewhere in the
-// middle must not have that mistaken for the app's section, and this one is
-// always appended at the very end.
-function sectionStartIn(source) {
+// ── Reading the block ─────────────────────────────────────────────────────
+
+// The legacy heading section, for a note written before the fence existed.
+function legacySectionStartIn(source) {
   SECTION_HEADING_RE.lastIndex = 0;
   let start = -1;
   let m;
@@ -123,27 +183,25 @@ function sectionStartIn(source) {
   return start;
 }
 
-// { start, end } of every entry inside the section, in document order. `end`
-// is where the next entry (or the source) begins, so a body keeps whatever
-// blank lines the reader put in it.
-function parseEntries(source, sectionStart) {
-  if (sectionStart < 0) return [];
-  const headEnd = source.indexOf("\n", sectionStart);
-  const bodyStart = headEnd === -1 ? source.length : headEnd + 1;
+// { start, end } of every entry inside a span, in document order. `end` is where
+// the next entry (or the span) ends, so a body keeps whatever blank lines the
+// reader put in it. `markerRe` is what tells the two formats apart; everything
+// else about the walk is identical, which is the point of passing it in.
+function parseEntriesBetween(source, bodyStart, bodyEnd, markerRe) {
   const entries = [];
   const lineRe = /^.*$/gm;
   lineRe.lastIndex = bodyStart;
   let line;
-  while ((line = lineRe.exec(source))) {
-    const match = ENTRY_HEADING_RE.exec(line[0]);
+  while ((line = lineRe.exec(source)) && line.index < bodyEnd) {
+    const match = markerRe.exec(line[0]);
     if (match) {
       if (entries.length) entries[entries.length - 1].end = line.index;
       entries.push({
         id: match[1],
-        label: match[2].trim(),
+        label: (match[2] || "").trim(),
         start: line.index,
         textStart: line.index + line[0].length,
-        end: source.length
+        end: bodyEnd
       });
     }
     if (lineRe.lastIndex === line.index) lineRe.lastIndex += 1; // zero-length match on a blank line
@@ -152,15 +210,47 @@ function parseEntries(source, sectionStart) {
   return entries;
 }
 
+function parseEntries(source, span) {
+  if (!span) return [];
+  return parseEntriesBetween(source, span.bodyStart, span.end, ENTRY_MARKER_RE);
+}
+
+function parseLegacyEntries(source, sectionStart) {
+  if (sectionStart < 0) return [];
+  const headEnd = source.indexOf("\n", sectionStart);
+  const bodyStart = headEnd === -1 ? source.length : headEnd + 1;
+  return parseEntriesBetween(source, bodyStart, source.length, ENTRY_HEADING_RE);
+}
+
+// Every entry in `source`, whichever form it is in. The fence wins when both are
+// present, which is what a half-finished migration looks like.
+function allEntries(source) {
+  const span = highlightNotesBlockSpan(source);
+  if (span) return parseEntries(source, span);
+  return parseLegacyEntries(source, legacySectionStartIn(source));
+}
+
 // Every note in `source`, keyed by id. Cheap enough to call per read (one
 // regex scan of the tail), and always derived from the text rather than
 // cached, so a hand-edit in the raw editor takes effect immediately.
 export function readHighlightNotes(source) {
   const map = new Map();
-  parseEntries(source, sectionStartIn(source)).forEach((entry) => {
+  allEntries(source).forEach((entry) => {
     if (entry.text) map.set(entry.id, entry.text);
   });
   return map;
+}
+
+// The block rewritten as the `## Highlight Notes` markdown it used to be — for
+// the exporters, so a note taken out of this app still reads as prose in any
+// editor. Returns "" when there is nothing to say.
+export function highlightNotesSectionMarkdown(source) {
+  const entries = allEntries(source).filter((entry) => entry.text.trim());
+  if (!entries.length) return "";
+  const body = entries
+    .map((entry) => `${entry.label ? `### [${entry.id}] ${entry.label}` : `### [${entry.id}]`}\n\n${entry.text.trim()}\n`)
+    .join("\n");
+  return `## ${HIGHLIGHT_NOTES_HEADING}\n\n${body}`;
 }
 
 // The note text for whatever a <mark>'s data-note attribute holds: an id
@@ -194,48 +284,53 @@ export function highlightNoteTextAt(markIndex) {
   return span ? highlightNoteText(source, span.note) : "";
 }
 
-// ── Writing the section ───────────────────────────────────────────────────
+// ── Writing the block ─────────────────────────────────────────────────────
 
 function entryBlock(id, label, text) {
-  const heading = label ? `### [${id}] ${label}` : `### [${id}]`;
-  return `${heading}\n\n${text.trim()}\n`;
+  const marker = label ? `<!--hn:${id} ${label}-->` : `<!--hn:${id}-->`;
+  return `${marker}\n\n${text.trim()}\n`;
 }
 
-// Drops the section entirely when its last entry goes, rather than leaving an
-// empty "## Highlight Notes" heading (and the rule above it) behind in a note
-// that no longer has any.
-function removeSection(source, sectionStart) {
-  const head = source.slice(0, sectionStart).replace(/\s+$/, "");
-  return head.replace(/\n*(?:^|\n)-{3,}[ \t]*$/, "");
+// Anything the reader wrote inside the block but before the first entry (a note
+// to themselves about the block, say) is carried through rather than rewritten
+// away — writeEntries rebuilds the whole thing from `entries`, so text that
+// isn't in one has to be preserved explicitly.
+function blockPreamble(source, span, entries) {
+  if (!span) return "";
+  const stop = entries.length ? entries[0].start : span.end;
+  return source.slice(span.bodyStart, stop).trim();
 }
 
-// Anything the reader wrote under the section heading but before the first
-// entry (a note to themselves about the section, say) is carried through
-// rather than rewritten away — this rebuilds the whole section from `entries`,
-// so text that isn't in one has to be preserved explicitly.
-function sectionPreamble(source, sectionStart, entries) {
-  if (sectionStart < 0) return "";
-  const headEnd = source.indexOf("\n", sectionStart);
-  if (headEnd === -1) return "";
-  const stop = entries.length ? entries[0].start : source.length;
-  return source.slice(headEnd + 1, stop).trim();
-}
-
-function writeEntries(source, sectionStart, entries, preamble = "") {
+// Rebuilds the block from `entries`. `span` is where the existing one is, or
+// null to append a new one at the end of `source`.
+//
+// When nothing is left to write the block goes entirely — heading, fence and
+// the `---` rule above it — rather than leaving an empty container behind in a
+// note that no longer has any highlight notes at all.
+function writeEntries(source, span, entries, preamble = "") {
+  const head = span ? source.slice(0, span.start) : source;
   const kept = entries.filter((entry) => entry.text.trim());
-  if (!kept.length) return sectionStart < 0 ? source : removeSection(source, sectionStart);
+  if (!kept.length) {
+    if (!span) return source;
+    return head.replace(/\s+$/, "").replace(/\n*(?:^|\n)-{3,}[ \t]*$/, "");
+  }
   const body = kept.map((entry) => entryBlock(entry.id, entry.label, entry.text)).join("\n");
-  const section = `## ${HIGHLIGHT_NOTES_HEADING}\n\n${preamble ? `${preamble}\n\n` : ""}${body}`;
-  if (sectionStart >= 0) return `${source.slice(0, sectionStart)}${section}`;
-  const head = source.replace(/\s+$/, "");
-  return head ? `${head}\n\n---\n\n${section}` : section;
+  const block = `${HIGHLIGHT_NOTES_OPEN}\n${preamble ? `${preamble}\n\n` : "\n"}${body}${HIGHLIGHT_NOTES_CLOSE}\n`;
+  if (span) return `${head}${block}${source.slice(span.after).replace(/^[ \t]*\n/, "")}`;
+  return joinHighlightNotesTail(source, block.replace(/\n$/, ""));
 }
 
 // Upserts one note, keeping every other entry (and any hand-editing done to
 // it) byte-for-byte. An empty text removes the entry.
+//
+// A note still in the legacy heading form is converted here, on the spot: the
+// entries are read out of it, the section is cut, and the whole lot is written
+// back as a fence. That is the migration for every deck that is edited rather
+// than opened in the raw editor, and it means there is exactly one writer.
 export function setHighlightNoteInSource(source, id, text, label) {
-  const sectionStart = sectionStartIn(source);
-  const entries = parseEntries(source, sectionStart);
+  const upgraded = fenceLegacySection(String(source || ""));
+  const span = highlightNotesBlockSpan(upgraded);
+  const entries = parseEntries(upgraded, span);
   const existing = entries.find((entry) => entry.id === id);
   if (existing) {
     existing.text = String(text || "").trim();
@@ -245,7 +340,24 @@ export function setHighlightNoteInSource(source, id, text, label) {
   } else if (String(text || "").trim()) {
     entries.push({ id, label: label || "", text: String(text).trim() });
   }
-  return writeEntries(source, sectionStart, entries, sectionPreamble(source, sectionStart, entries));
+  return writeEntries(upgraded, span, entries, blockPreamble(upgraded, span, entries));
+}
+
+// A `## Highlight Notes` section rewritten as a fence, in place. Returns the
+// same string identity when there is nothing to convert, which is every note
+// written since — so this is free to call on any write path.
+export function fenceLegacySection(source) {
+  if (!source || highlightNotesBlockSpan(source)) return source;
+  const sectionStart = legacySectionStartIn(source);
+  if (sectionStart < 0) return source;
+  const entries = parseLegacyEntries(source, sectionStart);
+  // A heading with no `### [hn-…]` under it is a heading the READER wrote, not
+  // this app's section. Leave it exactly where it is.
+  if (!entries.length) return source;
+  const headEnd = source.indexOf("\n", sectionStart);
+  const preamble = headEnd === -1 ? "" : source.slice(headEnd + 1, entries[0].start).trim();
+  const head = source.slice(0, sectionStart).replace(/\s+$/, "").replace(/\n*(?:^|\n)-{3,}[ \t]*$/, "");
+  return writeEntries(head, null, entries, preamble);
 }
 
 // Entries whose highlight is gone (the mark was removed, or its text deleted
@@ -265,9 +377,10 @@ export function setHighlightNoteInSource(source, id, text, label) {
 // — that module imports this one, and a leaf like this one has no business
 // importing back into a surface.
 export function pruneOrphanHighlightNotes(source) {
-  const sectionStart = sectionStartIn(source);
-  if (sectionStart < 0) return source;
-  const body = source.slice(0, sectionStart);
+  const upgraded = fenceLegacySection(String(source || ""));
+  const span = highlightNotesBlockSpan(upgraded);
+  if (!span) return source;
+  const body = upgraded.slice(0, span.start);
   const live = new Set();
   HIGHLIGHT_SCAN_RE.lastIndex = 0;
   let m;
@@ -280,10 +393,10 @@ export function pruneOrphanHighlightNotes(source) {
       if (isHighlightNoteId(record?.id)) live.add(record.id);
     });
   }
-  const entries = parseEntries(source, sectionStart);
-  if (entries.every((entry) => live.has(entry.id))) return source;
-  const preamble = sectionPreamble(source, sectionStart, entries);
-  return writeEntries(source, sectionStart, entries.filter((entry) => live.has(entry.id)), preamble);
+  const entries = parseEntries(upgraded, span);
+  if (entries.every((entry) => live.has(entry.id))) return upgraded;
+  const preamble = blockPreamble(upgraded, span, entries);
+  return writeEntries(upgraded, span, entries.filter((entry) => live.has(entry.id)), preamble);
 }
 
 // Rewrites ONLY the group's first <mark> open tag — every other piece (if
@@ -354,7 +467,12 @@ export function clearHighlightNoteAt(markIndex, options = {}) {
 // identity) when there is nothing to convert, which is the overwhelmingly
 // common case and what keeps this off the hot path of opening a big note.
 export function migrateLegacyHighlightNotes(source) {
-  if (!source || !source.includes("data-note=")) return source;
+  // The newer of the two legacy forms first, and on its own path: a note can be
+  // in the heading form without a single base64 blob in it (every note written
+  // between the two formats is), and the base64 walk below would return early
+  // and leave the section un-fenced forever.
+  const fenced = fenceLegacySection(String(source || ""));
+  if (!fenced.includes("data-note=")) return fenced;
   const pending = [];
   const taken = new Set();
   let changed = false;
@@ -362,22 +480,22 @@ export function migrateLegacyHighlightNotes(source) {
   let cursor = 0;
   HIGHLIGHT_SCAN_RE.lastIndex = 0;
   let m;
-  while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
+  while ((m = HIGHLIGHT_SCAN_RE.exec(fenced))) {
     const [whole, color, note, inner] = m;
     if (!note || isHighlightNoteId(note)) continue;
     const text = decodeHighlightNote(note);
     // An undecodable blob is dropped rather than carried: it has no readable
     // form to migrate to, and leaving it would keep the note cryptic forever.
-    const id = text ? freshHighlightNoteId(source, taken) : null;
+    const id = text ? freshHighlightNoteId(fenced, taken) : null;
     if (id) {
       taken.add(id);
       pending.push({ id, text, label: excerptLabel(inner) });
     }
     changed = true;
-    out += source.slice(cursor, m.index) + markOpenTag(color, id || undefined) + inner + MARK_CLOSE_TAG;
+    out += fenced.slice(cursor, m.index) + markOpenTag(color, id || undefined) + inner + MARK_CLOSE_TAG;
     cursor = m.index + whole.length;
   }
-  if (!changed) return source; // the common case: nothing legacy in this note
-  out += source.slice(cursor);
+  if (!changed) return fenced; // the common case: nothing base64 left in this note
+  out += fenced.slice(cursor);
   return pending.reduce((acc, p) => setHighlightNoteInSource(acc, p.id, p.text, p.label), out);
 }

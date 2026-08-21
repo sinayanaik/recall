@@ -14,6 +14,7 @@ import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
 import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
+import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
 import { SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
@@ -355,9 +356,13 @@ export function resetNotesBlockEstimate() {
   el.notesView?.style.removeProperty("--notes-chunk-estimate");
 }
 
+// readerNotesBody, not state.notes: renderNotesView renders the note WITHOUT its
+// highlight-notes block, and this tracker has to hold the same string it did or
+// every call reads as "a different note" and throws the measured mean away.
 export function syncNotesBlockEstimateSource() {
-  if (notesBlockEstimateSource === state.notes) return;
-  setNotesBlockEstimateSource(state.notes);
+  const source = readerNotesBody(state.notes);
+  if (notesBlockEstimateSource === source) return;
+  setNotesBlockEstimateSource(source);
   resetNotesBlockEstimate();
 }
 

@@ -9,6 +9,9 @@ import { adjustCornellRows } from "../cards/all-cards.js?v=__BUILD__";
 import { afterPaint } from "../cards/question-fit.js?v=__BUILD__";
 import { downloadTextFile } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { notesForExport } from "./notes-body.js?v=__BUILD__";
+import { buildDocumentPrintDocument, documentExportBaseName, documentExportUnavailableReason, documentPrintPageCount } from "../documents/pdf-export.js?v=__BUILD__";
+import { saveDocumentCopy } from "../documents/pdf-view.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
@@ -69,7 +72,7 @@ export function notesExportBaseName() {
 }
 
 export async function exportNotesFlat(format) {
-  const notes = state.notes || "";
+  const notes = notesForExport();
   if (!notes.trim()) {
     setStatus("No notes to export.", "error");
     return;
@@ -104,7 +107,7 @@ export async function exportNotesFlat(format) {
     console.error("Notes export failed", error);
     setStatus("Could not prepare the notes export.", "error");
   } finally {
-    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
+    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !notesForExport().trim();
   }
 }
 
@@ -645,7 +648,7 @@ export function handleExportAction(format, scope) {
 }
 
 export async function exportNotesPdf() {
-  const notes = state.notes || "";
+  const notes = notesForExport();
   if (!notes.trim()) {
     setStatus("No notes to export as PDF.", "error");
     return;
@@ -689,8 +692,95 @@ export async function exportNotesPdf() {
     setStatus("Could not prepare the notes PDF export.", "error");
   } finally {
     closePrintPreview();
-    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
+    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !notesForExport().trim();
   }
+}
+
+// ── The Document view's own exports ──────────────────────────────────────
+//
+// Three things, and they are three different questions a reader has about the
+// same paper: the whole document with everything marked on it, only the pages
+// they wrote something about, and the notes on their own without the pages.
+// The third is the highlights export with two options set, so it costs nothing;
+// the first two go through src/documents/pdf-export.js, which rasterises pages.
+
+export async function exportDocumentPdf({ annotatedOnly = false } = {}) {
+  const blocked = documentExportUnavailableReason();
+  if (blocked) {
+    setStatus(blocked, "error");
+    return;
+  }
+  if (!documentPrintPageCount({ annotatedOnly })) {
+    setStatus(annotatedOnly
+      ? "No page of this document has a note on it yet."
+      : "This document has no pages to export.", "error");
+    return;
+  }
+  const title = state.deckTitle || state.sourceTitle || "Document";
+
+  setStatus("Preparing the document PDF…");
+  el.printRoot.innerHTML = "";
+  el.printRoot.classList.add("is-preparing");
+  el.printRoot.classList.remove("is-preview");
+  el.printRoot.setAttribute("aria-hidden", "true");
+  setPrintTitleBeforeExport(document.title);
+  document.title = documentExportBaseName();
+  try {
+    await afterPaint();
+    const html = await buildDocumentPrintDocument(title, { annotatedOnly });
+    // null means the deck was closed while its pages were rendering. Nothing to
+    // report and nothing to print — the reader is looking at something else.
+    if (html === null) return;
+    el.printRoot.innerHTML = html;
+    // No enhanceRenderedMarkdown pass over the PAGES — they are images, and the
+    // only markdown in the document is inside the note bodies, which
+    // markdownToSafeHtml has already rendered. Waiting on fonts still matters:
+    // the notes are set in the app's own face.
+    await (document.fonts?.ready || Promise.resolve());
+    await afterPaint();
+
+    installPdfPrintStyle();
+    const opened = printPreparedDocument();
+    setStatus(opened
+      ? "Opening the document PDF — choose Save as PDF in the dialog."
+      : "Could not prepare the document PDF export.", opened ? undefined : "error");
+  } catch (error) {
+    console.error("Document PDF export failed", error);
+    setStatus("Could not prepare the document PDF export.", "error");
+  } finally {
+    closePrintPreview();
+  }
+}
+
+// The notes with no pages under them: every annotated highlight, grouped by the
+// page it is on. Straight through the highlights pipeline with annotatedOnly
+// and groupByPage — one call site, one option object, so the menu row cannot
+// drift from what it says it does.
+export function exportDocumentNotesPdf() {
+  handleExportHighlightsAction("pdf", {
+    annotatedOnly: true,
+    groupByPage: true,
+    includeNotes: true,
+    includeChapter: false,
+    contextLines: 0
+  });
+}
+
+export function handleExportDocumentAction(action) {
+  if (el.viewExportMenu) el.viewExportMenu.hidden = true;
+  if (action === "original") {
+    saveDocumentCopy();
+    return;
+  }
+  if (action === "notes-pdf") {
+    setStatus("Opening the notes PDF export…");
+    window.setTimeout(() => exportDocumentNotesPdf(), 0);
+    return;
+  }
+  // "pages-pdf" (everything) and "annotated-pdf" (only the pages with notes).
+  const annotatedOnly = action === "annotated-pdf";
+  setStatus("Opening the document PDF export…");
+  window.setTimeout(() => exportDocumentPdf({ annotatedOnly }), 0);
 }
 
 export function handleExportNotesAction(format) {

@@ -2,6 +2,7 @@
 
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
@@ -59,6 +60,7 @@ export function setViewMode(mode, options = {}) {
       button.classList.toggle("is-active", button.dataset.viewMode === next);
     });
   });
+  paintViewExportMenu();
   hideNotesSelectionButton();
   // Leaving the notes is the moment the reading position is final — write out
   // an armed-but-unfired save now rather than letting its timer fire against a
@@ -96,8 +98,13 @@ export function setViewMode(mode, options = {}) {
     // that is no longer open: re-seed it rather than let the next keystroke
     // write it back. Normally an O(1) identity compare — the input listener
     // makes these the very same string object.
-    if (isNotesEditing() && el.notesEdit.value !== state.notes) {
-      el.notesEdit.value = state.notes;
+    // Compared against the EDITOR's view of the note, not the whole source:
+    // the textarea never holds the highlight-notes block, so a raw compare
+    // would differ on every note that has one and re-seed the editor (losing
+    // the caret) on every view change.
+    const editorValue = rawEditorValueFor(state.notes);
+    if (isNotesEditing() && el.notesEdit.value !== editorValue) {
+      el.notesEdit.value = editorValue;
       refreshHighlightBackdrop(el.notesEdit);
       el.notesEdit.setSelectionRange(0, 0);
     }
@@ -157,3 +164,88 @@ export const FOCUS_MODE_KEY = "recall:focusMode";
 // Bumped on every deferred switch so a superseded paint (two fast taps on the
 // toggle) is dropped rather than rendering a view that is no longer chosen.
 export let viewModePaintToken = 0;
+
+
+// ── The export button beside the tabs ─────────────────────────────────────
+//
+// One control that means "export what I am looking at". Its rows are rebuilt
+// from the active view rather than shown and hidden, so there is exactly one
+// menu in the DOM and no chance of a Cards row being reachable from the
+// Document view.
+//
+// Every row is a (label, hint, dataset) triple and nothing more — the handlers
+// live in src/main.js, keyed off data-view-export, and each one calls an export
+// function that already existed. This file deliberately imports none of them:
+// src/export/run.js reaches most of the app, and view-mode.js is imported by
+// half of it.
+const VIEW_EXPORT_MENUS = {
+  cards: {
+    head: "Export cards",
+    rows: [
+      ["pdf", "Cornell PDF", "The two-column study layout"],
+      ["html", "Standalone HTML", ""],
+      ["doc", "Word (.docx)", ""],
+      ["markdown", "Markdown", ""],
+      ["json", "JSON", "A Recall deck, re-importable"],
+      ["sql", "SQL", ""]
+    ]
+  },
+  notes: {
+    head: "Export notes",
+    rows: [
+      ["notes:pdf", "PDF", ""],
+      ["notes:html", "Standalone HTML", ""],
+      ["notes:doc", "Word (.docx)", ""],
+      ["notes:markdown", "Markdown", "Highlight notes ride along as a section"]
+    ]
+  },
+  document: {
+    head: "Export document",
+    rows: [
+      ["doc:annotated-pdf", "Annotated pages + notes", "Only the pages you wrote something about"],
+      ["doc:pages-pdf", "The whole document + notes", "Every page, marked, notes underneath"],
+      ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
+      ["doc:original", "The original PDF", "Byte for byte, as it arrived"]
+    ]
+  },
+  highlights: {
+    head: "Export highlights",
+    rows: [
+      ["highlights:open", "Export highlights…", "Choose context, chapters and notes"]
+    ]
+  }
+};
+
+export function paintViewExportMenu() {
+  const menu = el.viewExportMenu;
+  if (!menu) return;
+  const spec = VIEW_EXPORT_MENUS[state.viewMode] || VIEW_EXPORT_MENUS.cards;
+  menu.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "md-menu-head";
+  const headLabel = document.createElement("span");
+  headLabel.textContent = spec.head;
+  head.appendChild(headLabel);
+  menu.appendChild(head);
+  spec.rows.forEach(([action, label, hint]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "md-menu-item";
+    button.dataset.viewExport = action;
+    const text = document.createElement("span");
+    text.textContent = label;
+    if (hint) {
+      const small = document.createElement("span");
+      small.className = "nhm-hint";
+      small.textContent = hint;
+      text.appendChild(small);
+    }
+    button.appendChild(text);
+    menu.appendChild(button);
+  });
+}
+
+export function closeViewExportMenu() {
+  if (el.viewExportMenu) el.viewExportMenu.hidden = true;
+  el.viewExportBtn?.setAttribute("aria-expanded", "false");
+}

@@ -60,7 +60,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { HIGHLIGHT_SCAN_RE } from "../format/highlight.js?v=__BUILD__";
-import { HIGHLIGHT_NOTES_HEADING, decodeHighlightNote, isHighlightNoteId, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
+import { decodeHighlightNote, isHighlightNoteId, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
@@ -71,11 +71,6 @@ export const INLINE_HIGHLIGHT_NOTES_KEY = "recall:inlineHighlightNotes";
 // The class every injected node carries. Named once because four other files
 // have to agree on it: two selection skips, the stylesheet, and the sweep here.
 export const INLINE_NOTE_CLASS = "hl-inline-note";
-
-// Blocks of the hidden "Highlight Notes" section carry this; the section is
-// only actually hidden while <body> also carries `inline-hl-notes`, so a stale
-// class left on a block by a mode that has since been turned off is inert.
-export const HIDDEN_SECTION_CLASS = "hl-notes-section-block";
 
 export const BODY_INLINE_CLASS = "inline-hl-notes";
 
@@ -283,66 +278,21 @@ function inlineNoteNode(info) {
   return node;
 }
 
-// ── Hiding the section the notes are stored in ────────────────────────────
+// ── The section that used to have to be hidden ───────────────────────────
 //
-// Only while the inline mode is on, and only in the RENDERED view: the markdown
-// is untouched, so the raw editor, the Highlights tab and every export still
-// carry it. Without this the same note is on screen twice — once where it
-// belongs and once at the foot of the document.
+// There was a backwards walk here — up to `noteCount * 3 + 8` top-level blocks
+// from the end of the rendered document, looking for an H2 whose text was
+// "Highlight Notes", so that the whole `## Highlight Notes` section could be
+// tagged .hl-notes-section-block and hidden while this mode was on. Without it
+// every note was on screen twice: once where it belonged and once at the foot
+// of the document.
 //
-// Walked BACKWARDS from the end of the note rather than found with a query.
-// The section is always the last thing in the document (sectionStartIn takes
-// the LAST "## Highlight Notes" heading, so that a book whose own text contains
-// those words is not mistaken for it), and a querySelectorAll for "h2" is a
-// full walk of a document that can be a couple of hundred thousand elements.
-// Backwards, the search costs about two blocks per note and stops the moment it
-// finds the heading.
-//
-// Nothing is marked unless the heading is actually found. A note with no
-// section at all (every one written before a highlight was annotated) would
-// otherwise have its tail hidden by a walk that ran out of budget.
-let hiddenSectionNodes = [];
-
-function clearHiddenSection() {
-  hiddenSectionNodes.forEach((node) => node.classList?.remove(HIDDEN_SECTION_CLASS));
-  hiddenSectionNodes = [];
-}
-
-function topLevelBlocksFromEnd(container, limit) {
-  const out = [];
-  let outer = container.lastElementChild;
-  while (outer && out.length < limit) {
-    if (outer.classList?.contains(NOTES_CHUNK_CLASS)) {
-      let child = outer.lastElementChild;
-      while (child && out.length < limit) {
-        out.push(child);
-        child = child.previousElementSibling;
-      }
-    } else {
-      out.push(outer);
-    }
-    outer = outer.previousElementSibling;
-  }
-  return out;
-}
-
-function hideHighlightNotesSection(container, noteCount) {
-  clearHiddenSection();
-  if (!noteCount) return;
-  // Each entry is a "### [id] …" heading plus its body, so the section is
-  // roughly two blocks per note plus the "## Highlight Notes" heading. Three
-  // per note leaves room for a note written as several paragraphs, and the
-  // walk stops early the moment the heading turns up.
-  const budget = noteCount * 3 + 8;
-  const blocks = topLevelBlocksFromEnd(container, budget);
-  const at = blocks.findIndex(
-    (node) => node.tagName === "H2" && node.textContent.trim() === HIGHLIGHT_NOTES_HEADING
-  );
-  if (at === -1) return; // not built yet, or this note has no section
-  const section = blocks.slice(0, at + 1);
-  section.forEach((node) => node.classList.add(HIDDEN_SECTION_CLASS));
-  hiddenSectionNodes = section;
-}
+// It is gone, and so is the reason for it. Highlight notes live in a fenced
+// block of HTML comments now (src/format/highlight-notes.js), the rendered view
+// is handed splitHighlightNotesTail(state.notes).body, and comments are stripped
+// by DOMPurify — so there is nothing at the foot of the document to find, to
+// budget a walk for, or to mistake a reader's own "## Highlight Notes" heading
+// for.
 
 // ── The passes ────────────────────────────────────────────────────────────
 
@@ -388,12 +338,6 @@ export function annotateHighlightNotes(container, roots = null) {
   scopedQueryAll(roots || [container], "mark[data-note]")
     .forEach((mark) => annotateMark(mark, index, container));
   if (!inlineNotesOn) return;
-  // Only when the tail of the document is part of what was just built — the
-  // section lives there and nowhere else, so every other chunk's arrival is
-  // irrelevant to it.
-  const last = container.lastElementChild;
-  const touchedTail = !roots || roots.some((root) => root === last || last?.contains(root));
-  if (touchedTail) hideHighlightNotesSection(container, index.byAttr.size);
 }
 
 // Whole-document. Every path that can change a NUMBER or a note's TEXT comes
@@ -426,7 +370,6 @@ export function refreshInlineHighlightNotes({ force = false } = {}) {
   if (!inlineNotesOn || !index.byAttr.size) {
     container.querySelectorAll(`.${INLINE_NOTE_CLASS}`).forEach((node) => node.remove());
     container.querySelectorAll("mark[data-hn-num]").forEach((mark) => { delete mark.dataset.hnNum; });
-    clearHiddenSection();
     if (!index.byAttr.size) {
       container.querySelectorAll("mark.has-note").forEach((mark) => mark.classList.remove("has-note"));
       return;
@@ -444,5 +387,4 @@ export function refreshInlineHighlightNotes({ force = false } = {}) {
   container.querySelectorAll(`.${INLINE_NOTE_CLASS}`).forEach((node) => {
     if (!wanted.has(node)) node.remove();
   });
-  if (inlineNotesOn) hideHighlightNotesSection(container, index.byAttr.size);
 }

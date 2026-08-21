@@ -9,6 +9,7 @@ import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUIL
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { rawEditorValueFor } from "./notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
@@ -362,7 +363,7 @@ export function rewriteNoteLinkTarget(title, entry) {
   if (!changed) return;
   state.notes = next;
   if (el.notesEdit && !el.notesEdit.hidden) {
-    el.notesEdit.value = next;
+    el.notesEdit.value = rawEditorValueFor(next);
     refreshHighlightBackdrop(el.notesEdit);
   }
   setNotesScrolledSource(null); // force a real repaint rather than a cache hit

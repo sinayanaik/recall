@@ -10,6 +10,8 @@ import { touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { migrateLegacyHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
+import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
+import { rawEditorValueFor, sourceFromRawEditor } from "./notes-edit-split.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { refreshBookmarkButtonUI } from "./bookmark.js?v=__BUILD__";
@@ -114,21 +116,34 @@ export function clearProgrammaticNotesSelection() {
 // out from under them (see the note on measureNotesBlockEstimate). Callers that
 // mutate the open note pass sameNote so the estimate and the deferred-work queue
 // survive an edit that changed one block out of hundreds.
+// What actually gets rendered: the note WITHOUT its highlight-notes block.
+//
+// That block used to be real markdown — a "## Highlight Notes" heading and a
+// "### [id]" per note — so the rendered view printed the reader's own notes
+// twice, once where they belong and once in a heap at the foot of the document,
+// and inline-highlight-notes.js had to walk the rendered blocks BACKWARDS to
+// find that heading and hide it again. It is a fenced block of HTML comments
+// now (src/format/notes-fence.js) and it simply is not rendered.
+//
+// The SAME string has to reach renderMarkdown and both source trackers, or the
+// block cache's estimate misses on every pass and re-measures a book-sized note
+// for nothing.
 export function renderNotesView({ sameNote = false } = {}) {
   if (!el.notesView) return Promise.resolve();
+  const source = readerNotesBody(state.notes);
   if (sameNote) {
     // Same document, so the existing estimate still describes it and the queued
     // work still points at live nodes. Both trackers are moved onto the new text
     // so the next ordinary render doesn't mistake this edit for a swap. Nodes
     // that DID get replaced are unobserved by releaseDetachedDeferredWork() on
     // the next deferral pass, so skipping the wholesale release leaks nothing.
-    setNotesScrolledSource(state.notes);
-    setNotesBlockEstimateSource(state.notes);
+    setNotesScrolledSource(source);
+    setNotesBlockEstimateSource(source);
   } else {
     // A different note replaces every block, so everything queued against the old
     // one describes nodes that are about to be detached. Released here, while we
     // can still name the root, rather than left for the next render to notice.
-    if (notesScrolledSource !== state.notes) {
+    if (notesScrolledSource !== source) {
       releaseDeferredWork(el.notesView);
       releaseNotesChunkEstimateObserver(el.notesView);
       // Same reasoning, one stage earlier: the span observer holds every chunk
@@ -138,10 +153,10 @@ export function renderNotesView({ sameNote = false } = {}) {
       // saying out loud.
       releaseNotesLazyBuildObserver(el.notesView);
     }
-    setNotesScrolledSource(state.notes);
+    setNotesScrolledSource(source);
     syncNotesBlockEstimateSource();
   }
-  return renderMarkdown(el.notesView, state.notes, true)
+  return renderMarkdown(el.notesView, source, true)
     .then(() => resetClozeButton(el.clozeToggleNotesBtn))
     // Every repaint of the rendered notes comes through here, so this is the
     // one place paged mode has to re-count its pages — the note may have grown
@@ -460,7 +475,11 @@ export function commitNotesEditIfActive() {
   // is O(1) to read — far cheaper than reconstructing an offset from the
   // scroll position, which on a huge note meant scanning the whole document.
   const resumeOffset = el.notesEdit.selectionStart ?? textareaOffsetFromScroll(el.notesEdit);
-  state.notes = el.notesEdit.value;
+  // The editor holds the BODY; sourceFromRawEditor puts the highlight-notes
+  // block back on the end. The resume offset above needs no adjusting for that:
+  // the block is a tail, so an offset into the body means the same thing in
+  // both strings.
+  state.notes = sourceFromRawEditor(el.notesEdit.value);
   resetNotesEditingUI();
   // #notesView's own stale scrollTop (it's never destroyed, just hidden) is
   // what used to make this look like it "worked" for a same-source re-render
@@ -503,10 +522,17 @@ export function enterNotesEditing(cursorOffset = null) {
     state.notes = migrated;
     scheduleDeckAutosave();
   }
-  el.notesEdit.value = state.notes;
+  // The body only. This is the other half of the report the fence came from:
+  // on a PDF deck the body is empty — the PDF is the document — so pressing ✎
+  // used to open an editor containing nothing but the reader's own highlight
+  // notes, with no separation from the writing they came to do because there
+  // was none to have. Now the editor is the note, and a note attached to a
+  // highlight is edited from that highlight.
+  el.notesEdit.value = rawEditorValueFor(state.notes);
   // Adopted, not recorded: opening the editor is not an edit, but the history
   // needs to know what the text is now so the first real keystroke has a
-  // previous value to push.
+  // previous value to push. The WHOLE source, since that is what a snapshot
+  // restores.
   syncNotesHistoryBaseline(state.notes);
   el.notesView.hidden = true;
   el.notesEdit.hidden = false;

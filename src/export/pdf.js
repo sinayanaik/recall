@@ -7,6 +7,7 @@ import { afterPaint } from "../cards/question-fit.js?v=__BUILD__";
 import { syncResults, uncategorizedCards } from "../cards/study.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { notesForExport } from "./notes-body.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
@@ -47,8 +48,8 @@ export function exportMarkdown(scope = "all") {
     scope === "all" ? formatCardList("Review", state.results.review) : null,
     scope === "all" ? "" : null,
     scope === "all" ? formatCardList("Uncategorized", uncategorized) : null,
-    scope === "all" && state.notes.trim() ? "" : null,
-    scope === "all" && state.notes.trim() ? notesExportBlock(state.notes) : null
+    scope === "all" && notesForExport().trim() ? "" : null,
+    scope === "all" && notesForExport().trim() ? notesExportBlock(notesForExport()) : null
   ].filter((line) => line !== null).join("\n");
 
   const blob = new Blob([output], { type: "text/markdown;charset=utf-8" });
@@ -64,7 +65,7 @@ export function exportMarkdown(scope = "all") {
 }
 
 export function exportJson() {
-  if (!state.masterCards.length && !state.notes.trim()) {
+  if (!state.masterCards.length && !notesForExport().trim()) {
     setStatus("No cards to export.", "error");
     return;
   }
@@ -422,7 +423,7 @@ export function buildNotesPrintDocument(title, notesMarkdown) {
 // between highlights" complaint: a flat wall of unstyled paragraphs read as
 // one undifferentiated block, with nothing marking where one highlight ends
 // and the next begins.
-function highlightExportEntryHtml(item) {
+function highlightExportEntryHtml(item, groupedByPage = false) {
   const context = (units) => units.map((u) => `<p class="highlight-export-context">${markdownToSafeHtml(u)}</p>`).join("");
   const note = item.note
     ? `<div class="highlight-export-note"><p class="highlight-export-note-label">Note</p>${markdownToSafeHtml(item.note)}</div>`
@@ -431,7 +432,10 @@ function highlightExportEntryHtml(item) {
   // Its equivalent of the chapter heading above — the difference being that a
   // page is per-highlight rather than per-run, so it rides on the entry itself
   // rather than being drawn once when it changes.
-  const page = item.page
+  // ...unless the list is already GROUPED by page, in which case a page number
+  // on every entry under a "Page 8" heading is the noisy, un-toggleable
+  // repetition the chapter heading above exists to avoid.
+  const page = item.page && !groupedByPage
     ? `<p class="highlight-export-page">p. ${escapeHtml(String(item.page))}</p>`
     : "";
   return `
@@ -453,16 +457,27 @@ function highlightExportEntryHtml(item) {
 // then returns chapter: null for everything) or this highlight sits before
 // the note's first heading — both cases correctly render as "no heading
 // here" rather than a misleading "Untitled section" filler.
-function highlightsExportBodyHtml(items) {
-  if (!items.length) return `<p class="flat-export-empty">No highlights in this deck.</p>`;
+//
+// `groupByPage` is the same rule one axis along, for a PDF deck: a "Page 8"
+// heading drawn once, the first time a highlight from page 8 appears. The items
+// already arrive in documentHighlightsInReadingOrder() order — page, then down
+// the page — so there is nothing to sort, and it is what turns a flat list of
+// passages into something shaped like the paper it came out of.
+function highlightsExportBodyHtml(items, { groupByPage = false, emptyLabel = "No highlights in this deck." } = {}) {
+  if (!items.length) return `<p class="flat-export-empty">${escapeHtml(emptyLabel)}</p>`;
   let lastChapter = null;
+  let lastPage = null;
   return items.map((item) => {
-    let chapterHtml = "";
+    let headingHtml = "";
+    if (groupByPage && item.page && item.page !== lastPage) {
+      lastPage = item.page;
+      headingHtml = `<h2 class="highlight-export-page-heading">Page ${escapeHtml(String(item.page))}</h2>`;
+    }
     if (item.chapter && item.chapter !== lastChapter) {
       lastChapter = item.chapter;
-      chapterHtml = `<h2 class="highlight-export-chapter-heading">${escapeHtml(item.chapter)}</h2>`;
+      headingHtml += `<h2 class="highlight-export-chapter-heading">${escapeHtml(item.chapter)}</h2>`;
     }
-    return chapterHtml + highlightExportEntryHtml(item);
+    return headingHtml + highlightExportEntryHtml(item, groupByPage);
   }).join("");
 }
 
@@ -487,7 +502,7 @@ export function buildHighlightsExportBody(title, options = {}) {
         <p>Highlights &middot; ${new Date().toLocaleString()}</p>
       </header>
       <section class="flat-export-notes rendered highlights-export-body">
-        ${highlightsExportBodyHtml(items)}
+        ${highlightsExportBodyHtml(items, options)}
       </section>
     </div>
   `;
@@ -505,13 +520,18 @@ export function buildHighlightsExportMarkdown(title, options = {}) {
   if (!items.length) return `# ${title}\n\nNo highlights in this deck.\n`;
   const blocks = [];
   let lastChapter = null;
+  let lastPage = null;
   items.forEach((item) => {
+    if (options.groupByPage && item.page && item.page !== lastPage) {
+      lastPage = item.page;
+      blocks.push(`## Page ${item.page}`);
+    }
     if (item.chapter && item.chapter !== lastChapter) {
       lastChapter = item.chapter;
       blocks.push(`## ${item.chapter}`);
     }
     const lines = [...item.before, item.markdown, ...item.after];
-    if (item.page) lines.unshift(`*p. ${item.page}*`);
+    if (item.page && !options.groupByPage) lines.unshift(`*p. ${item.page}*`);
     if (item.note) lines.push(`> **Note:** ${item.note.replace(/\n/g, "\n> ")}`);
     blocks.push(lines.join("\n\n"));
   });
@@ -533,7 +553,7 @@ export function buildHighlightsPrintDocument(title, options = {}) {
         </div>
       </header>
       <section class="rendered highlights-export-body" aria-label="${escapeHtml(title)} highlights">
-        ${highlightsExportBodyHtml(items)}
+        ${highlightsExportBodyHtml(items, options)}
       </section>
     </div>
   `;

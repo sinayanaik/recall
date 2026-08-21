@@ -10,6 +10,7 @@ import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { joinHighlightNotesTail, splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { analyzeMarkdownImport, importContentModesFor, resolveIncomingDeck, snapshotIncomingDeck } from "./analyze.js?v=__BUILD__";
@@ -509,8 +510,14 @@ export function renderImportReview() {
 export function appendNotesToCurrentDeck(body) {
   const incoming = String(body || "").trim();
   if (!incoming) return false;
-  const existing = String(state.notes || "").trim();
-  state.notes = existing ? `${existing}\n\n---\n\n${incoming}` : incoming;
+  // Appended to the BODY, and the highlight-notes block put back after it. That
+  // block is defined as the tail of the note (src/format/notes-fence.js); an
+  // import written straight onto the end would bury it mid-document, where the
+  // next write would find the fence, treat everything after it as note text and
+  // swallow the whole import into the last highlight note.
+  const { body: existing, tail } = splitHighlightNotesTail(state.notes || "");
+  const merged = existing.trim() ? `${existing.trim()}\n\n---\n\n${incoming}` : incoming;
+  state.notes = joinHighlightNotesTail(merged, tail);
   return true;
 }
 

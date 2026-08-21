@@ -96,6 +96,7 @@
     <link rel="stylesheet" href="styles/36-document.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/37-document-chrome.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/38-reading-rail.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/39-document-export.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -141,6 +142,7 @@
     <link rel="modulepreload" href="src/core/lib-loader.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/state.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/text.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-export.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-highlights.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
@@ -157,6 +159,7 @@
     <link rel="modulepreload" href="src/export/docx.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/html.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/markdown.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/notes-body.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/pdf.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/run.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/sql.js?v=__BUILD__">
@@ -165,6 +168,7 @@
     <link rel="modulepreload" href="src/format/highlight-colors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-edit.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-notes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/notes-fence.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/render-toolbar.js?v=__BUILD__">
@@ -209,6 +213,7 @@
     <link rel="modulepreload" href="src/notes/note-links.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-head-overflow.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-history.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/notes-edit-split.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/paged-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/raw-offset.js?v=__BUILD__">
@@ -557,6 +562,22 @@
               <button type="button" data-view-mode="document" hidden><span class="vm-ico" aria-hidden="true">&#128196;</span><span class="vm-label">Document</span></button>
               <button type="button" data-view-mode="highlights"><span class="vm-ico" aria-hidden="true">&#128308;</span><span class="vm-label">Highlights</span></button>
             </div>
+            <!-- ── Export what you are looking at ──────────────────────────
+                 Export used to live only in the ☰ drawer, three rows deep and
+                 nowhere near the thing being exported: "Export Cards" while you
+                 are reading a paper, "Export Notes" on a deck whose notes are a
+                 PDF. The Highlights tab had already grown its own ⇓ button in
+                 its own toolbar for exactly that reason, and this is that idea
+                 for the other three views.
+
+                 ONE button, not four. Its menu is rebuilt from the active view
+                 by paintViewExportMenu (src/ui/view-mode.js), so it always means
+                 "export this", and every row calls a function that already
+                 exists — nothing here is a second implementation of an export.
+                 The drawer entries stay where they are; this is a closer way in,
+                 not a move. -->
+            <button class="tool-button view-export-btn" id="viewExportBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Export" title="Export what you are looking at">&#8659;</button>
+            <div class="view-export-menu" id="viewExportMenu" role="menu" hidden></div>
           </div>
 
           <div class="progress-track" aria-hidden="true">
@@ -846,9 +867,14 @@
               <button class="tool-button document-toggle" id="documentRegionBtn" type="button" aria-pressed="false" title="Select a region — drag a box around a figure, a table or an equation to highlight it" aria-label="Select a region">&#9635;</button>
               <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Document options" title="Document options">&#8943;</button>
               <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
+                <!-- "Save a copy" is not here any more. It downloads the
+                     original PDF, which is an EXPORT, and the ⇓ two buttons
+                     along is now where a view's exports live — as "The original
+                     PDF". Two controls doing the identical thing three buttons
+                     apart in one row is the thing this row was cleaned up to
+                     stop. -->
                 <div class="md-menu-head"><span>Document</span></div>
                 <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on, numbered — the Document surface's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
-                <button class="md-menu-item" type="button" data-document-action="save" title="Download the original PDF, byte for byte"><span>Save a copy</span></button>
                 <button class="md-menu-item" type="button" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
                 <label class="md-menu-item file-pick" data-document-action="reattach" title="Point this deck back at the PDF on this device">
                   <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
