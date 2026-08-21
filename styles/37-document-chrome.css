@@ -125,6 +125,22 @@
   font-size: 0.8rem;
 }
 
+/* ...but NOT the ⋯, which was reported as "almost invisible" and was.
+   `&#8943;` is a midline ellipsis: three dots on the baseline with no ascender
+   and no stem, so at 0.8rem inside a 26px box it renders about four pixels of
+   ink in the middle of an outlined square — on a dark theme, where the border
+   is one hairline of --line and the fill is --panel, there is nothing there to
+   see. The notes ⋯ two views along already had this problem and already fixed
+   it (16-mobile-reading.css:128-134, and its comment says why); this is the
+   same glyph in the same row, so it takes the same size rather than a new one.
+   The glyph stays a glyph: an SVG here would make the two ⋯ buttons in this row
+   different controls to look at. */
+.view-mode-row > .document-more-btn {
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--text);
+}
+
 /* A mode that is ON has to say so without being pressed — the same rule the
    notes ⋯ menu's switches follow, drawn off aria-pressed so it is right
    whoever flipped it. */
@@ -132,6 +148,27 @@
   border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--accent);
+}
+
+/* The ⋯'s own version of that state. It is aria-EXPANDED, not aria-pressed —
+   it opens a menu rather than turning a mode on — so it needs a rule of its
+   own, and it needs one: a menu that opens with its button unchanged leaves
+   nothing on screen saying which control the menu belongs to. */
+.view-mode-row > .document-more-btn[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+
+/* Hover/focus at half that strength, so reaching for it confirms it is a
+   control before it is pressed. Matches .reading-rail-btn:hover and the notes
+   menu's own rows. */
+.view-mode-row > .document-more-btn:hover,
+.view-mode-row > .document-more-btn:focus-visible,
+.view-mode-row > .document-toggle:hover,
+.view-mode-row > .document-toggle:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 /* #documentHead is only where the controls START. liftNotesControlsIntoRow
@@ -381,9 +418,31 @@
    move every anchor on it. As a sibling it costs the page nothing, and it reads
    the same at 360px as at 1440px, which a margin rail cannot claim (fit-width
    leaves a phone no margin at all). */
+/* ── Why it packs into columns ─────────────────────────────────────────────
+   One note per full-width row is the shape a note takes in the note view, where
+   the column IS the reading measure. Here it is wrong twice over: the strip
+   sits under a page that is 900-1200px wide on a laptop, so a full-width row is
+   a line of text three times longer than anything worth reading, and a page
+   with five notes on it becomes a wall you have to scroll past to reach page 9.
+
+   Multi-column, not grid. `grid-template-columns: repeat(auto-fill, minmax(…))`
+   makes every card in a row as tall as the tallest card in it, and highlight
+   notes are of wildly uneven length — two words on one, four paragraphs on the
+   next — so a grid wastes more vertical space than the single column did. A
+   multicol flow balances the COLUMN heights instead, which is the packing that
+   was asked for, and it is the only one of the two that needs no JavaScript.
+
+   `column-width` (not `column-count`) is also the whole responsive story: the
+   browser fits as many 260px columns as there is room for, which is one column
+   at 360px where fit-width makes the page the width of the screen. No media
+   query, and nothing to keep in step with the fit-width breakpoint. */
 .pdf-page-notes {
   flex: 0 0 auto;
-  width: min(760px, 100%);
+  /* Matched to the paper, so the strip reads as belonging to the page above it
+     at every zoom level. --pdf-page-w is published by publishPageWidth() in
+     src/documents/pdf-view.js on every relayout; the fallback is for the frame
+     before the first page is laid out. */
+  width: min(var(--pdf-page-w, 760px), 100%);
   margin: -6px 0 2px;
   padding: 10px 14px;
   border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
@@ -392,9 +451,14 @@
   color: var(--text);
   font-size: 0.86rem;
   line-height: 1.5;
+  column-width: 260px;
+  column-gap: 18px;
 }
 
 .pdf-page-notes-head {
+  /* Across the whole strip, not down the first column — it names the page, not
+     the first three notes on it. */
+  column-span: all;
   margin-bottom: 6px;
   font-size: 0.68rem;
   font-weight: 800;
@@ -407,7 +471,9 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  width: 100%;
+  /* `auto`, not 100%: the button now fills its COLUMN, and a 100% measured
+     against the multicol container would be the full strip width. */
+  width: auto;
   padding: 4px 6px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -416,6 +482,17 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  /* Keeps a note whole. Without it a long note fragments at a column boundary
+     and its number badge ends up in a different column from its text, which
+     reads as two broken notes rather than one long one. A note taller than the
+     column still spills — that is correct, the whole note is meant to be here.
+     page-break-inside for the print path, which is the same export the ⋯ menu
+     offers and which does not honour break-inside in every engine. */
+  break-inside: avoid;
+  page-break-inside: avoid;
+  /* Multicol has no row gap between items — column-gap is between COLUMNS —
+     so stacked notes in one column need their own separation. */
+  margin-bottom: 8px;
 }
 
 .pdf-page-note:hover,
@@ -446,9 +523,17 @@
 .pdf-page-note-body > :last-child { margin-bottom: 0; }
 
 /* The excerpt the note is ABOUT, so a note read under the page still says which
-   highlight it belongs to without scrolling back up to find the badge. */
+   highlight it belongs to without scrolling back up to find the badge.
+   Clamped to two lines: shortLabel() allows 80 characters, which is three lines
+   of italic in a 260px column — the label would then be taller than most of the
+   notes it labels. The full text is still in the title attribute of the badge
+   and one press away in the editor. */
 .pdf-page-note-excerpt {
-  display: block;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
   margin-bottom: 2px;
   color: var(--muted);
   font-size: 0.76rem;

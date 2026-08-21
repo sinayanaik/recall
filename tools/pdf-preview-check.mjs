@@ -622,7 +622,19 @@ try {
       blockIsSibling: block ? block.previousElementSibling === pageEl : false,
       blockText: block ? block.textContent : "",
       heightBefore,
-      heightAfter: pageEl.offsetHeight
+      heightAfter: pageEl.offsetHeight,
+      // The strip is matched to the paper, not to a fixed 760px, so a wide page
+      // gets a wide strip and the columns have somewhere to go. Compared to the
+      // page's own width rather than to a number, since that is the promise.
+      blockWidth: block ? Math.round(block.getBoundingClientRect().width) : 0,
+      pageWidth: Math.round(pageEl.getBoundingClientRect().width),
+      // What multicol actually did. column-width is what makes it responsive,
+      // and column-span:all on the head is what keeps the head across the whole
+      // strip rather than down the first column. (No backticks in here: this
+      // whole function is a template literal handed to CDP.)
+      columnWidth: block ? getComputedStyle(block).columnWidth : "",
+      headSpan: block ? getComputedStyle(block.querySelector(".pdf-page-notes-head")).columnSpan : "",
+      noteBreak: block ? getComputedStyle(block.querySelector(".pdf-page-note")).breakInside : ""
     };
     // ...and off again, so the mode does not leak into anything after this.
     api.togglePdfPageNotes();
@@ -640,6 +652,18 @@ try {
       pageNotes.blockIsSibling && pageNotes.heightBefore === pageNotes.heightAfter,
       `sibling=${pageNotes.blockIsSibling} · page ${pageNotes.heightBefore}px → ${pageNotes.heightAfter}px`);
     check("...and goes away when the mode is turned off", pageNotes.removedWhenOff);
+    // The packing. One full-width row per note under a 900px page is a line of
+    // text nobody wants to read and a page with five notes on it is a wall, so
+    // the strip is a multicol flow now — and the three declarations below are
+    // the whole of it. Asserted as computed style rather than by counting
+    // columns, because how many columns fit is a function of the viewport and
+    // the number of notes, and the check has one note on this page.
+    check("...the strip is matched to the page, not to a fixed column",
+      pageNotes.blockWidth > 0 && Math.abs(pageNotes.blockWidth - pageNotes.pageWidth) <= 2,
+      `strip ${pageNotes.blockWidth}px vs page ${pageNotes.pageWidth}px`);
+    check("...and packs its notes into columns",
+      pageNotes.columnWidth === "260px" && pageNotes.headSpan === "all" && pageNotes.noteBreak === "avoid",
+      `column-width=${pageNotes.columnWidth} head=${pageNotes.headSpan} note=${pageNotes.noteBreak}`);
   }
 
   // ── 9. The reading rail ──────────────────────────────────────────────────
@@ -669,12 +693,24 @@ try {
     await settle(450);
     const inFocus = shown();
     const rowFolded = document.getElementById("viewModeRow").getBoundingClientRect().height < 2;
+    // The grip itself, before it is pressed. "I am not seeing anything in focus
+    // mode" was a report about a control that WAS on screen and rendering — a
+    // 9px, 26%-alpha stripe sitting on top of the scrollbar. So a display test
+    // is not enough: it has to be a box a finger can find, and it has to be the
+    // thing under its own centre rather than something painted over it.
+    const grip = document.getElementById("readingRailGrip");
+    const gripRect = grip.getBoundingClientRect();
+    const gripBox = { w: Math.round(gripRect.width), h: Math.round(gripRect.height) };
+    const hit = document.elementFromPoint(gripRect.left + gripRect.width / 2, gripRect.top + gripRect.height / 2);
+    const gripIsHit = Boolean(hit) && (hit === grip || grip.contains(hit));
     // Expand it the way a reader does, and count what it offers.
-    document.getElementById("readingRailGrip").click();
+    grip.click();
     await settle(120);
     const tray = document.getElementById("readingRailTray");
     const expanded = getComputedStyle(tray).display !== "none";
     const buttons = Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden).length;
+    const labelled = Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden)
+      .every((b) => (b.querySelector(".rr-label")?.textContent || "").trim().length > 0);
     const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;
     const activeMatches = tray.querySelector('[data-view-mode="document"]').classList.contains("is-active");
     // The tray's own view buttons have to actually switch view.
@@ -688,7 +724,7 @@ try {
     const afterFocus = shown();
     api.setViewMode("document");
     await settle(200);
-    return { beforeFocus, inFocus, rowFolded, expanded, buttons, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus };
+    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, gripBox, gripIsHit, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus };
   }`);
 
   check("the rail stays off screen while the chrome is expanded",
@@ -697,9 +733,14 @@ try {
   check("...and appears when focus mode folds the row away",
     rail.inFocus === true && rail.rowFolded,
     `rail=${rail.inFocus} rowFolded=${rail.rowFolded}`);
+  check("...as a hamburger big enough to find, and hittable",
+    rail.gripBox.w >= 24 && rail.gripBox.h >= 24 && rail.gripIsHit,
+    `${rail.gripBox.w}×${rail.gripBox.h}px · hit=${rail.gripIsHit}`);
   check("the grip expands it into the controls focus mode took",
     rail.expanded && rail.buttons === 7,
     `${rail.buttons} button(s)`);
+  check("...every one of them named, not just drawn",
+    rail.labelled, `labels=${rail.labelled}`);
   check("...including the Document view, lit for the view you are in",
     rail.documentIconShown && rail.activeMatches,
     `shown=${rail.documentIconShown} active=${rail.activeMatches}`);
