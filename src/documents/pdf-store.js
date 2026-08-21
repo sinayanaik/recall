@@ -137,6 +137,13 @@ export const DOCUMENT_RETRY_BASE_MS = 800;
 // enough below the 1GB free tier that one file cannot eat it.
 export const MAX_DOCUMENT_BYTES = 100 * 1024 * 1024;
 
+// Long enough for a big paper on a bad connection — 100MB at 1Mbps is thirteen
+// minutes — and paired with the rule below that a TIMEOUT is never retried.
+// Without that pairing this is the worst number in the file: four attempts at
+// ten minutes each is forty minutes of a progress modal the reader cannot get
+// past, which is indistinguishable from the app being broken.
+export const UPLOAD_TIMEOUT_MS = 15 * 60 * 1000;
+
 export function documentStoragePath(userId, folder, name) {
   return `${userId}/pdfs/${folder}/${name}.pdf`;
 }
@@ -160,9 +167,8 @@ export async function uploadDocumentOnce(file, { folder, name }) {
     }),
     // A paper is megabytes where an image is kilobytes, so the ordinary cloud
     // timeout — tuned for a row read — would fail a perfectly healthy upload on
-    // a slow connection. Ten minutes is "this is genuinely stuck", not "this is
-    // a big file on hotel wifi".
-    Math.max(CLOUD_TIMEOUT_MS, 10 * 60 * 1000),
+    // a slow connection. See UPLOAD_TIMEOUT_MS.
+    Math.max(CLOUD_TIMEOUT_MS, UPLOAD_TIMEOUT_MS),
     "upload document"
   );
   if (error) {
@@ -179,12 +185,22 @@ export function documentUploadDelay(ms) {
 
 export async function uploadDocument(file, destination, progress = null) {
   for (let attempt = 1; ; attempt++) {
+    // Checked before the attempt as well as after it: a reader who pressed
+    // Cancel during the backoff must not then sit through another full upload.
+    if (progress?.cancelled()) throw new Error("CANCELLED");
     try {
       return await uploadDocumentOnce(file, destination);
     } catch (error) {
+      // A TIMEOUT is not retried. It already cost UPLOAD_TIMEOUT_MS, the
+      // connection has demonstrated it cannot carry this file, and trying the
+      // same thing three more times only multiplies the wait the reader is
+      // sitting through. Retries exist for a transient refusal — a rate limit,
+      // a dropped socket — which fail fast and often succeed on the next go.
+      const timedOut = /timed out/i.test(error?.message || "");
       const worthRetrying = error?.message !== "NOT_SIGNED_IN"
         && error?.message !== "OFFLINE"
-        && !error?.authFailed;
+        && !error?.authFailed
+        && !timedOut;
       if (!worthRetrying || attempt >= DOCUMENT_UPLOAD_ATTEMPTS) throw error;
       if (progress?.cancelled()) throw error;
       await documentUploadDelay(DOCUMENT_RETRY_BASE_MS * 2 ** (attempt - 1));

@@ -428,6 +428,60 @@ try {
   check("the Highlights panel lists it",
     reloaded.rows >= (fixture.annotation ? 2 : 1), `${reloaded.rows} row(s)`);
 
+  // ── 6. A PDF with no annotations in it ───────────────────────────────────
+  //
+  // The ordinary case, and the one every assertion above manages to miss. A
+  // file that arrives WITH highlights gives its deck a non-empty note (the
+  // imported comments land in "## Highlight Notes"), and it was the empty note
+  // that broke everything: "a deck is cards or notes" made a freshly imported
+  // paper indistinguishable from an empty deck, so it never autosaved and
+  // loadDeckSnapshot threw "No cards in flashcard JSON" when it was opened —
+  // reported to the reader as "That saved deck is corrupted and could not be
+  // loaded", on a deck that was entirely intact.
+  //
+  // So this imports a second, un-annotated copy and does the one thing a reader
+  // does next: opens it.
+  if (!OWN_PDF) {
+    const plain = buildFixturePdf({ annotate: false });
+    const plainResult = await page.evaluate(`async (bytes) => {
+      const { api, settle } = window.__recall;
+      const before = api.readLocalDeckIndex().map((m) => m.id);
+      const file = new File([new Uint8Array(bytes)], "unannotated.pdf", { type: "application/pdf" });
+      await api.importPdfFile(file, null);
+      await settle(400);
+      const index = api.readLocalDeckIndex();
+      const entry = index.find((m) => !before.includes(m.id));
+      if (!entry) return { error: "no deck was created for the un-annotated PDF" };
+      // Let the ordinary debounced autosave land, then open it the way a reader
+      // would — through loadDeckFromLibrary, which is where the throw surfaced.
+      for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+      await settle(400);
+      let loadError = "";
+      const loaded = await api.loadDeckFromLibrary(entry.id).catch((e) => { loadError = String(e?.message || e); return false; });
+      await settle(400);
+      return {
+        notes: api.state.notes || "",
+        loaded,
+        loadError,
+        hasPdfMeta: Boolean(api.state.meta?.pdf),
+        viewMode: api.state.viewMode,
+        tabHidden: document.querySelector('[data-view-mode="document"]')?.hidden,
+        status: document.getElementById("statusBar")?.textContent || ""
+      };
+    }`, Array.from(plain.bytes));
+
+    if (plainResult.error) throw new Error(plainResult.error);
+    check("a PDF with no annotations imports to a deck with an empty note",
+      plainResult.notes.trim() === "", `${plainResult.notes.length} chars of note`);
+    check("...and that deck OPENS rather than reading as corrupted",
+      plainResult.loaded === true && !plainResult.loadError,
+      plainResult.loadError || plainResult.status || "");
+    check("...with its meta.pdf intact", plainResult.hasPdfMeta === true, String(plainResult.hasPdfMeta));
+    check("...and its Document tab on screen",
+      plainResult.viewMode === "document" && plainResult.tabHidden === false,
+      `viewMode=${plainResult.viewMode} tabHidden=${plainResult.tabHidden}`);
+  }
+
   if (SHOT) {
     const shot = await page.call("Page.captureScreenshot", { format: "png" });
     writeFileSync(path.resolve(ROOT, SHOT), Buffer.from(shot.data, "base64"));

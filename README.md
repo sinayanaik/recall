@@ -436,7 +436,35 @@ CREATE POLICY "Users manage own app style settings" ON app_style_settings
 -- rather than a third-party host, which is also what makes deleting one from
 -- inside the app possible.
 INSERT INTO storage.buckets (id, name, public)
-VALUES ('images', 'images', true)
+VALUES ('images', 'images', false)
+ON CONFLICT (id) DO NOTHING;
+
+-- ── Making the buckets private ──────────────────────────────────────────────
+--
+-- The `images` bucket shipped public-read, because a rendered `![](url)` had no
+-- signed-in context to sign with. It does now: the app resolves a signed URL at
+-- render time (src/cloud/storage-urls.js) and falls back to the canonical URL,
+-- which its service worker answers from cache, when it cannot.
+--
+-- The bucket is NOT recreated, renamed or migrated. It is the same bucket,
+-- holding the same objects at the same paths — one UPDATE flips the flag, and
+-- the policy swap below replaces open read with owner-scoped read. Every URL
+-- already sitting in your notes stays byte-identical; only anonymous read goes
+-- away. Safe to re-run: an already-private bucket is updated to private again.
+--
+-- ORDER MATTERS. Run this file only AFTER deploying an app build that resolves
+-- signed URLs — on an older build, every image in every note goes blank the
+-- moment this statement lands.
+UPDATE storage.buckets SET public = false WHERE id IN ('images', 'documents');
+
+-- ── The `documents` bucket ──────────────────────────────────────────────────
+--
+-- Native PDF decks keep the original PDF as the document rather than extracting
+-- it (see README → Documents). Its own bucket, private from the start, so a
+-- paper is never anonymously readable and the storage panel can account for
+-- documents separately from figures.
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('documents', 'documents', false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Dropped and recreated by name, exactly like the table policies in section 6 —
@@ -468,6 +496,10 @@ BEGIN
   DROP POLICY IF EXISTS "Authenticated users can upload their own images" ON storage.objects;
   DROP POLICY IF EXISTS "Authenticated users can delete their own images" ON storage.objects;
   DROP POLICY IF EXISTS "Anyone can view images" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated users can read their own images" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated users can upload their own documents" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated users can delete their own documents" ON storage.objects;
+  DROP POLICY IF EXISTS "Authenticated users can read their own documents" ON storage.objects;
 
   CREATE POLICY "Authenticated users can upload their own images"
     ON storage.objects FOR INSERT
@@ -485,12 +517,50 @@ BEGIN
       AND (storage.foldername(name))[1] = (select auth.uid())::text
     );
 
-  -- Images are embedded as plain public URLs directly in the markdown, so read
-  -- access has to be open: there is no signed-in context when a card is later
-  -- rendered from a synced copy on another device, or from the offline cache.
-  CREATE POLICY "Anyone can view images"
+  -- Read used to be open to anyone, because a rendered `![](url)` carried no
+  -- signed-in context to authenticate with. The app now signs each URL at
+  -- render time from the session it already has (src/cloud/storage-urls.js),
+  -- so read can be scoped exactly like write is — to the uid folder the object
+  -- sits in. The canonical URL in the markdown is unchanged and still works as
+  -- an identifier; it simply no longer serves bytes to a stranger who has it.
+  --
+  -- This policy is also what makes createSignedUrls work at all: signing is
+  -- itself a read, so a user who cannot SELECT an object cannot sign it either.
+  CREATE POLICY "Authenticated users can read their own images"
     ON storage.objects FOR SELECT
-    USING (bucket_id = 'images');
+    TO authenticated
+    USING (
+      bucket_id = 'images'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
+
+  -- The same three, for the documents bucket. Uploads are filed as
+  --   {uid}/pdfs/{paper-slug}--{importId}/{name}.pdf
+  -- so the first-segment check below covers them exactly as it does images, and
+  -- one paper's folder can be inspected or removed as a unit.
+  CREATE POLICY "Authenticated users can upload their own documents"
+    ON storage.objects FOR INSERT
+    TO authenticated
+    WITH CHECK (
+      bucket_id = 'documents'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
+
+  CREATE POLICY "Authenticated users can delete their own documents"
+    ON storage.objects FOR DELETE
+    TO authenticated
+    USING (
+      bucket_id = 'documents'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
+
+  CREATE POLICY "Authenticated users can read their own documents"
+    ON storage.objects FOR SELECT
+    TO authenticated
+    USING (
+      bucket_id = 'documents'
+      AND (storage.foldername(name))[1] = (select auth.uid())::text
+    );
 EXCEPTION
   -- Some projects don't let the SQL Editor's role alter storage.objects. The
   -- EXCEPTION block is a subtransaction, so the DROPs above roll back with it

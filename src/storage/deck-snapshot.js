@@ -20,6 +20,31 @@ import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
+// Is there anything in this deck at all?
+//
+// "Cards or notes" was a complete answer right up until a deck could BE a
+// document. A freshly imported paper is neither: no cards yet, an empty note
+// (it is yours to write in), and a PDF plus its highlights in meta. Under the
+// old test that deck was indistinguishable from an empty one — and this
+// predicate is consulted on BOTH sides of the round trip, so getting it wrong
+// broke both:
+//
+//   saving  — every autosave a PDF deck scheduled was a silent no-op, so an
+//             afternoon of highlighting was discarded on reload;
+//   loading — loadDeckSnapshot threw "No cards in flashcard JSON", which
+//             loadDeckFromLibrary reports as "That saved deck is corrupted and
+//             could not be loaded". Clicking a freshly imported paper did
+//             nothing but show that, on a deck that was completely intact.
+//
+// One function, both callers (see deckHasNothingToSave in local-library.js), so
+// they cannot drift apart again — which is precisely how the second half of
+// this survived the first half being fixed.
+export function deckPayloadHasContent({ cards, notes, meta } = {}) {
+  if (Array.isArray(cards) ? cards.length : cards) return true;
+  if (String(notes || "").trim()) return true;
+  return Boolean(meta?.pdf);
+}
+
 export function deckSnapshot() {
   return {
     app: "recall",
@@ -128,7 +153,9 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     .filter(Boolean);
 
   const payloadNotes = String(payload.notes || "");
-  if (!cards.length && !payloadNotes.trim()) {
+  // `cards` here is the PARSED list (blank-question rows already dropped), not
+  // payload.cards — a file of nothing but unusable rows is still empty.
+  if (!deckPayloadHasContent({ cards, notes: payloadNotes, meta: payload.meta })) {
     throw new Error("No cards in flashcard JSON");
   }
 
