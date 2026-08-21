@@ -72,7 +72,13 @@ export function lineRect(lineIndex, width = 380) {
 
 // { bytes, pages, linesPerPage, annotation } — everything the check needs to
 // know about what it is looking at.
-export function buildFixturePdf({ pages = 4, linesPerPage = 12 } = {}) {
+// `annotate: false` builds the SAME document with no Highlight annotation in
+// it — which is the ordinary case, and the one that was broken while every
+// assertion here passed. A PDF that arrives with annotations gives the deck a
+// non-empty note (the imported comments), and an empty note is exactly what
+// made a freshly imported paper indistinguishable from an empty deck. A fixture
+// that always carries an annotation can never see that.
+export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true } = {}) {
   const objects = [];       // 1-based; objects[i] is object i+1
   const push = (body) => { objects.push(body); return objects.length; };
 
@@ -85,7 +91,7 @@ export function buildFixturePdf({ pages = 4, linesPerPage = 12 } = {}) {
   // shape a reference manager leaves behind, with quadPoints, an RGB colour and
   // a comment. readExistingHighlights is what turns this into a record and its
   // comment into a highlight note.
-  const annotatedPage = Math.min(2, pages);
+  const annotatedPage = annotate ? Math.min(2, pages) : 0;
   const annotatedLine = 1;
   const rect = lineRect(annotatedLine);
   const quadPoints = [rect[0], rect[3], rect[2], rect[3], rect[0], rect[1], rect[2], rect[1]];
@@ -149,6 +155,8 @@ export function buildFixturePdf({ pages = 4, linesPerPage = 12 } = {}) {
     pages,
     linesPerPage,
     title: "The Fixture Paper",
-    annotation: { page: annotatedPage, line: annotatedLine, rect, comment: annotationComment }
+    annotation: annotate
+      ? { page: annotatedPage, line: annotatedLine, rect, comment: annotationComment }
+      : null
   };
 }

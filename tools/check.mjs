@@ -20,6 +20,11 @@
 //   module-symbols  does every cross-module reference resolve?
 //   css-parity      do the stylesheet slices still reassemble to the original?
 //   port-sync       do the extension's copies still match?
+//   readme-sql      ...and does the SQL the README tells you to PASTE still
+//                   match the file? The README embeds the whole of
+//                   supabase_setup.sql and asserts in prose that the two are
+//                   identical, which is not self-enforcing — they drifted, and
+//                   the documented setup path handed out the old schema
 //   vendor          are the vendored libraries on disk, unmodified, and
 //                   precached? (a hole here is a blank page offline, not a
 //                   missing feature — they are blocking tags before main.js)
@@ -136,6 +141,7 @@ const checks = [
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
+  ["readme-sql    ", ["node", ["tools/readme-sql-check.mjs"], ROOT]],
   ["vendor        ", ["node", ["tools/vendor-sync.mjs", "--check"], ROOT]],
   ["precache      ", ["node", ["tools/precache-check.mjs"], ROOT]],
   // Needs no browser and no network — it loads the vendored marked directly and

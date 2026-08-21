@@ -62,9 +62,15 @@ export function normalizePdfTitle(raw) {
 }
 
 export function pdfTitleFor(metadata, fileName) {
-  return normalizePdfTitle(metadata?.info?.Title)
-    || normalizePdfTitle(fileName.replace(/\.pdf$/i, ""))
-    || "Imported PDF";
+  // The generic-title filter applies to the PDF's own METADATA only. Those
+  // words ("paper", "main", "ms", "manuscript") are what a LaTeX class or Word
+  // leaves behind; a FILENAME is something a person typed, so "paper.pdf"
+  // should give a deck called "paper" rather than one called "Imported PDF" —
+  // which is both less informative and identical for every such file.
+  const fromMetadata = normalizePdfTitle(metadata?.info?.Title);
+  if (fromMetadata) return fromMetadata;
+  const fromName = String(fileName || "").replace(/\.pdf$/i, "").replace(/[_\s]+/g, " ").trim();
+  return fromName.slice(0, MAX_PDF_TITLE_LENGTH).trim() || "Imported PDF";
 }
 
 // How many pages are scanned for existing annotations. A getAnnotations() per
@@ -258,7 +264,11 @@ export async function importPdfFile(file, folderPath = null) {
       // what to do about that if they are told.
       uploadError = error?.message === "OFFLINE" ? "you're offline"
         : error?.message === "NOT_SIGNED_IN" ? "you're not signed in"
-          : error?.message || "the upload failed";
+          : error?.message === "CANCELLED" ? "you cancelled it"
+            : /timed out/i.test(error?.message || "") ? "the connection timed out"
+              : /bucket/i.test(error?.message || "")
+                ? "the documents bucket is missing — re-run supabase_setup.sql"
+                : error?.message || "the upload failed";
       console.warn("Could not upload the document", error);
     }
 

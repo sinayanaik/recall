@@ -13,7 +13,7 @@ import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
 import { invalidateNoteLinkIndex } from "../notes/note-links.js?v=__BUILD__";
 import { repairEscapedMathMarkdown } from "../render/math.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
-import { deckSnapshot, loadDeckSnapshot } from "../storage/deck-snapshot.js?v=__BUILD__";
+import { deckPayloadHasContent, deckSnapshot, loadDeckSnapshot } from "../storage/deck-snapshot.js?v=__BUILD__";
 import { allDeckSnapshotIds, cloneSnapshot, deckSnapshotCache, deckStoreUnreadable, deleteDeckSnapshot, flushPendingDeckAutosave, forEachDeckSnapshot, indexedDbUnavailable, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_PREFIX, NOTES_CONFLICT_SUFFIX } from "../storage/keys.js?v=__BUILD__";
 import { handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveStorageFailed, setLastSaveErrorWasQuota } from "../storage/quota.js?v=__BUILD__";
@@ -507,17 +507,12 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
 
 // Whether there is genuinely nothing here to write.
 //
-// It used to be "no cards and no notes", which was complete right up until a
-// deck could BE a document. A freshly imported paper is exactly that shape —
-// no cards yet, an empty note (it is yours to write in), and a PDF plus a
-// growing list of highlights in meta — so under the old test every autosave a
-// PDF deck ever scheduled was a no-op, and an afternoon of highlighting was
-// discarded on reload with the sync pill cheerfully reading "saved".
-//
-// meta.pdf is the discriminator, not meta.pdfHighlights: a paper with no
-// highlights on it yet is still a deck worth having.
+// Shares deckPayloadHasContent with the LOAD side rather than restating it —
+// see that function for what happened when the two disagreed. meta.pdf is the
+// discriminator, not meta.pdfHighlights: a paper nobody has highlighted yet is
+// still a deck worth having.
 export function deckHasNothingToSave() {
-  return !state.masterCards.length && !state.notes.trim() && !state.meta?.pdf;
+  return !deckPayloadHasContent({ cards: state.masterCards, notes: state.notes, meta: state.meta });
 }
 
 export async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false } = {}) {
