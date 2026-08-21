@@ -229,6 +229,16 @@ const POST_SPLIT = {
     "mark that widens its own text re-wraps the block and makes the note " +
     "shiver — see 23-highlight-marks.css for the whole of that story. " +
     "See src/notes/inline-highlight-notes.js.",
+  "35-notes-menu.css":
+    "The notes \u22ef menu as ten sentences rather than ten glyphs. It shipped " +
+    "as a tray of icon buttons \u2014 two of them the same bookmark drawing, " +
+    "filled and not \u2014 whose only explanation was a `title` that a phone " +
+    "has no way to show, and whose three MODES said nothing about being on or " +
+    "off. Each button is a row now: icon, the sentence in .nhm-label, and for " +
+    "the modes a switch drawn from aria-pressed, under headings built from " +
+    "data-nhm-group. The labels are displayed only inside the menu, so a " +
+    "button that has not been moved there is still the icon button it was. " +
+    "See src/notes/notes-head-overflow.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

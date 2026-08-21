@@ -170,13 +170,33 @@ export function setInlineHighlightNotesFlag(value) {
   inlineNotesOn = Boolean(value);
 }
 
-function paintInlineNotesButton() {
+// What the ⋯ menu's row says about this mode. Three separate facts, because a
+// toggle that shows none of them is the report this replaces: a lone † in a row
+// of glyphs, with no word for what it does and no way to tell on from off
+// without pressing it and watching the page.
+//
+//   aria-pressed  drives the On/Off switch drawn beside the label (CSS, off the
+//                 attribute — so it is right whoever flipped the mode).
+//   title         the sentence for a pointer, as before.
+//   the hint      how many notes this note HAS. Pressing a toggle and seeing
+//                 nothing change is the same puzzle again, and with no
+//                 annotated highlights there is genuinely nothing to print;
+//                 .is-empty dims the row rather than disabling it, so pressing
+//                 it still works and still says why nothing happened.
+function paintInlineNotesButton(count) {
   const button = el.inlineNotesBtn;
   if (!button) return;
   button.setAttribute("aria-pressed", inlineNotesOn ? "true" : "false");
   button.title = inlineNotesOn
     ? "Hide highlight notes in the text — read them from the highlight instead"
     : "Show every highlight's note in the text, numbered where it belongs";
+  const total = Number.isFinite(count) ? count : highlightNoteIndex(state.notes || "").byAttr.size;
+  button.classList.toggle("is-empty", total === 0);
+  const hint = button.querySelector(".nhm-hint");
+  if (!hint) return;
+  hint.textContent = total === 0
+    ? "No highlight in this note has a note on it yet"
+    : `${total} highlight note${total === 1 ? "" : "s"} in this note`;
 }
 
 // One path for both ways in, so the button, the stored preference and the DOM
@@ -391,6 +411,12 @@ export function refreshInlineHighlightNotes({ force = false } = {}) {
   if (!container) return;
   const index = highlightNoteIndex(state.notes || "");
   if (!force && index.signature === appliedSignature && inlineNotesOn === appliedInline) return;
+  // Before the early return below has been passed, not after: this is the one
+  // hook every path that changes a note's TEXT or a deck's identity comes
+  // through, so it is where the menu row learns how many notes there are to
+  // print. The signature it is gated on already changes whenever that count
+  // does, so this costs a repaint only when the answer moved.
+  paintInlineNotesButton(index.byAttr.size);
   appliedSignature = index.signature;
   appliedInline = inlineNotesOn;
 
