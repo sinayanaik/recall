@@ -87,6 +87,25 @@ export function updateMeta() {
   el.replayUncategorizedBtn.disabled = uncategorizedCards().length === 0;
   el.replayAllBtn.disabled = state.masterCards.length === 0;
   if (el.viewModeToggle) el.viewModeToggle.hidden = !hasDeck;
+  refreshDocumentTab();
   if (el.exportNotesBtn) el.exportNotesBtn.disabled = !hasDeck || !state.notes.trim();
   if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
+}
+
+// The Document tab exists only for a deck that HAS a document. Shown from
+// meta.pdf and nothing else — a tab that is present on every deck and empty on
+// all but a handful is a worse answer than a tab that appears when it means
+// something.
+//
+// Called from updateMeta, which every deck load, import and swap already runs,
+// so there is no second place that has to remember to keep this in step.
+export function refreshDocumentTab() {
+  const button = el.viewModeToggle?.querySelector('[data-view-mode="document"]');
+  if (!button) return;
+  const hasDocument = Boolean(state.meta?.pdf);
+  button.hidden = !hasDocument;
+  // A deck whose document has gone away underneath the open view (offloaded on
+  // another device and pulled down) must not leave the reader parked on a
+  // surface with no tab to leave by.
+  if (!hasDocument && state.viewMode === "document") setViewMode("notes");
 }

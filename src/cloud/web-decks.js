@@ -369,7 +369,10 @@ export async function loadWebDeck(deckId) {
     state.notes = String(deckData.notes || "");
     state.sourceTitle = deckData.title || "";
     state.importTitleHint = deckData.title || "";
-    setViewMode("notes");
+    // A PDF deck opens on its Document tab: the document IS the deck, and
+    // landing on an empty Notes tab would look like an import that lost the
+    // file. Every other deck opens on Notes exactly as before.
+    setViewMode(state.meta?.pdf ? "document" : "notes");
     // Cross-device resume: this deck's meta may carry a reading position
     // synced from another device, and this device has its own copy of wherever
     // it last got to (see src/notes/reading-position.js). The newer of the two

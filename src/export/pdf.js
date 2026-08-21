@@ -427,8 +427,16 @@ function highlightExportEntryHtml(item) {
   const note = item.note
     ? `<div class="highlight-export-note"><p class="highlight-export-note-label">Note</p>${markdownToSafeHtml(item.note)}</div>`
     : "";
+  // A page number, for a highlight that came off a PDF's Document surface.
+  // Its equivalent of the chapter heading above — the difference being that a
+  // page is per-highlight rather than per-run, so it rides on the entry itself
+  // rather than being drawn once when it changes.
+  const page = item.page
+    ? `<p class="highlight-export-page">p. ${escapeHtml(String(item.page))}</p>`
+    : "";
   return `
     <div class="highlight-export-entry" data-color="${escapeHtml(item.color)}">
+      ${page}
       ${context(item.before)}
       <div class="highlight-export-mark rendered">${markdownToSafeHtml(item.markdown)}</div>
       ${context(item.after)}
@@ -503,6 +511,7 @@ export function buildHighlightsExportMarkdown(title, options = {}) {
       blocks.push(`## ${item.chapter}`);
     }
     const lines = [...item.before, item.markdown, ...item.after];
+    if (item.page) lines.unshift(`*p. ${item.page}*`);
     if (item.note) lines.push(`> **Note:** ${item.note.replace(/\n/g, "\n> ")}`);
     blocks.push(lines.join("\n\n"));
   });

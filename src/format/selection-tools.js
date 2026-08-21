@@ -3,19 +3,22 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { addDocumentHighlight, documentHighlightAtPoint, removeDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { captureDocumentSelection } from "../documents/pdf-selection.js?v=__BUILD__";
+import { isDocumentViewActive } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleWrapPair } from "../editor/text-transforms.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "./highlight-colors.js?v=__BUILD__";
 import { makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults, renderTargetConfig } from "./render-toolbar.js?v=__BUILD__";
 import { createLinkedNoteFlow } from "../notes/note-links.js?v=__BUILD__";
+import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { activeEditingTarget, activeRenderedTarget, ensurePillSelectionCapture, hideNotesSelectionButton, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
 import { noteLinkMarkupFor } from "../render/note-links.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
-import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 
 // On mobile the button is pinned to a fixed spot at the bottom of the screen
@@ -94,6 +97,19 @@ export function clozeTextareaSelection(target) {
 // platforms where the tap itself dissolved it. Returns
 //   { kind:"rendered", name, sel } | { kind:"editing", target } | null
 export function pillActionTarget() {
+  // The Document surface answers first, and answers with a shape of its own.
+  // Everything below resolves a target by NAME so renderTargetConfig can hand
+  // back a markdown source to splice into; there is no markdown here, and the
+  // selection is captured as PDF coordinates instead.
+  //
+  // Captured on the spot rather than from pillSelectionCapture: every pill
+  // button is pointerdown + preventDefault, so the selection is still alive at
+  // this instant, and a document capture is cheap (a range walk and its client
+  // rects) in a way the markdown one is not.
+  if (isDocumentViewActive()) {
+    const capture = captureDocumentSelection();
+    return capture ? { kind: "document", capture } : null;
+  }
   // The expensive half of the capture is deferred so the bar can appear at once
   // (see schedulePillSelectionCapture). If a button is pressed before that pass
   // has run, this is where it gets paid for — still with the selection alive,
@@ -164,7 +180,25 @@ export function eraseTextareaSelection(target) {
 // buttons, so no tap ever collapses the selection being acted on.
 export function applyPillHighlight(color) {
   const target = pillActionTarget();
-  if (target?.kind === "rendered") {
+  if (target?.kind === "document") {
+    // "clear" on the document surface means "un-highlight what I have
+    // selected", the same as it does in a note — resolved by hit-testing the
+    // selection's own first quad rather than by stripping tags, since there are
+    // no tags to strip.
+    if (color === "clear") {
+      const rect = window.getSelection()?.rangeCount
+        ? window.getSelection().getRangeAt(0).getBoundingClientRect()
+        : null;
+      const record = rect ? documentHighlightAtPoint(rect.left + 1, rect.top + rect.height / 2) : null;
+      if (record) removeDocumentHighlight(record.id);
+      else showToast("Nothing highlighted there", "error");
+    } else {
+      addDocumentHighlight(target.capture, color);
+    }
+    // The selection has served its purpose and a live one over a fresh
+    // highlight hides the colour that was just applied.
+    window.getSelection()?.removeAllRanges();
+  } else if (target?.kind === "rendered") {
     makeHighlightFromSelection(renderTargetConfig(target.name), color, target.sel);
   } else if (target?.kind === "editing") {
     highlightTextareaSelection(target.target, color);

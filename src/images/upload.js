@@ -154,9 +154,17 @@ export async function optimizeImage(file) {
   });
 }
 
-// Storage bucket for uploaded images (see supabase_setup.sql, section 7). Public
-// read so a rendered `![](url)` works with no signed-in context; writes are
-// scoped per-user by RLS, keyed on the user.id folder prefix used below.
+// Storage bucket for uploaded images (see supabase_setup.sql, section 7).
+// PRIVATE: read, write and delete are all scoped per-user by RLS, keyed on the
+// user.id folder prefix used below.
+//
+// getPublicUrl is still what an upload returns, and still what goes in the
+// markdown — it just stopped being fetchable and became an IDENTIFIER. That is
+// deliberate and is what let the buckets be locked down without rewriting a
+// single note, re-keying the offline image cache, or touching
+// supabaseImagePathFromUrl. A signed URL is resolved at render time instead —
+// see src/cloud/storage-urls.js, which is also where the offline fallback back
+// to this canonical form lives.
 export const IMAGE_BUCKET = "images";
 
 // Extension for the stored object's filename. Superset of IMAGE_MIME_EXT (which
@@ -226,7 +234,7 @@ export function deckImageFolder() {
   return `decks/${slug}--${localId}`;
 }
 
-// Resolves a Supabase public-storage URL back to its object path within
+// Resolves a canonical Supabase storage URL back to its object path within
 // IMAGE_BUCKET, or null if `url` isn't one of ours (a legacy ImgBB/Drive/
 // external link) — the signal deleteSupabaseImage uses to know whether
 // there's anything it can actually delete.
@@ -301,6 +309,9 @@ export async function uploadImageToSupabase(file, { folder = null, name = null }
     err.authFailed = /permission|policy|not.*authoriz|row-level security/i.test(error.message || "");
     throw err;
   }
+  // The canonical URL — an identifier now, not a fetchable address (see
+  // IMAGE_BUCKET above). Returned unchanged so the markdown, the offline cache
+  // key and supabaseImagePathFromUrl all keep agreeing on one string per image.
   const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path);
   await cacheUploadedImageOffline(data.publicUrl, file);
   return data.publicUrl;

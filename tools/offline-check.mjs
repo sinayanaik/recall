@@ -27,6 +27,13 @@
 // precached before the worker activates, in a cache the release sweep spares.
 // This asserts that, by making the browser behave in each of those ways.
 //
+// Two later cases test the same question for two things that are NOT vendored
+// and cannot be: pdf.js's worker (fetched and wrapped in a Blob by
+// ensurePdfJs, which must degrade to a main-thread fake worker rather than to a
+// dead workerSrc) and the signed-URL image resolver (which, unable to sign,
+// must leave the canonical URL in place — that URL is precisely the key sw.js
+// caches images under, so it is the offline path rather than a broken one).
+//
 // Served under a hostname that is neither localhost nor 127.0.0.1, because the
 // app deliberately unregisters its worker on those (see registerServiceWorker).
 
@@ -380,6 +387,62 @@ async function main() {
       });
       check("online with no session: the sign-in offer opens the login screen", opensLogin,
         opensLogin ? "" : "clicking it did not show #loginOverlay");
+      await page.close();
+    }
+
+    // ── 6. The two fallbacks the PDF feature rests on, with the CDN cut ────
+    //
+    // Both are the same kind of claim as cases 1-3 — "what does this do when
+    // the network refuses" — and both would otherwise only ever be exercised
+    // on a machine that happened to be offline at the right moment.
+    //
+    //   ensurePdfJs's worker fallback. The library loads (from the worker's
+    //   precache), the WORKER source fetch does not, and pdf.js is left with
+    //   no workerSrc — which is deliberate: it falls back to a main-thread
+    //   fake worker, slower but correct. What must not happen is workerSrc
+    //   being set to something unreachable, which fails the parse outright.
+    //
+    //   The canonical-URL image fallback. With no way to sign, the resolver
+    //   leaves an <img> pointing at the canonical `…/object/public/…` URL,
+    //   which is exactly the key sw.js caches under (see imageCacheKey). If
+    //   the resolver were to rewrite the src to a signature it could not mint,
+    //   or sw.js were to stop recognising the canonical form, every image in
+    //   every note would go blank offline — the failure the private-bucket
+    //   change is most able to introduce.
+    {
+      const page = await browser.newPage();
+      await page.goto(origin, { waitUntil: "networkidle2", timeout: 30000 });
+      await goOffline(page);
+
+      const pdfjs = await page.evaluate(async () => {
+        const mod = await import("/src/core/lib-loader.js?v=__BUILD__");
+        // Pretend the library itself arrived (it would, from the precache) so
+        // this measures the WORKER fetch and nothing else.
+        window.pdfjsLib = window.pdfjsLib || { GlobalWorkerOptions: {} };
+        const ok = await mod.ensurePdfJs();
+        return { ok, workerSrc: window.pdfjsLib.GlobalWorkerOptions.workerSrc || "" };
+      }).catch((error) => ({ error: String(error?.message || error) }));
+      check("offline: ensurePdfJs still reports the library as usable",
+        pdfjs.ok === true, JSON.stringify(pdfjs));
+      check("offline: it leaves workerSrc unset rather than pointing at a dead URL",
+        !pdfjs.workerSrc || pdfjs.workerSrc.startsWith("blob:"),
+        `workerSrc = ${JSON.stringify(pdfjs.workerSrc)}`);
+
+      const images = await page.evaluate(async () => {
+        const mod = await import("/src/cloud/storage-urls.js?v=__BUILD__");
+        const canonical = "https://offlinecheck.supabase.co/storage/v1/object/public/images/u1/decks/d--1/pic.webp";
+        const root = document.createElement("div");
+        root.innerHTML = `<img src="${canonical}">`;
+        document.body.appendChild(root);
+        await mod.resolveStorageImages(root);
+        const src = root.querySelector("img").getAttribute("src");
+        root.remove();
+        return { src, canonical, signable: mod.canSignStorageUrls() };
+      }).catch((error) => ({ error: String(error?.message || error) }));
+      check("offline: an image keeps its canonical URL, which the worker's cache answers",
+        images.src === images.canonical, JSON.stringify(images));
+      check("offline: signing is correctly reported as impossible",
+        images.signable === false, String(images.signable));
       await page.close();
     }
   } finally {

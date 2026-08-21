@@ -93,6 +93,7 @@
     <link rel="stylesheet" href="styles/33-reading-chrome.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/34-inline-highlight-notes.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/35-notes-menu.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/36-document.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -126,6 +127,7 @@
     <link rel="modulepreload" href="src/cloud/auth.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cloud/deck-list.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cloud/net.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/cloud/storage-urls.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cloud/style-sync.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cloud/supabase-client.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cloud/web-decks.js?v=__BUILD__">
@@ -137,6 +139,11 @@
     <link rel="modulepreload" href="src/core/lib-loader.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/state.js?v=__BUILD__">
     <link rel="modulepreload" href="src/core/text.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-highlights.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-store.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/editor/highlight-mirror.js?v=__BUILD__">
     <link rel="modulepreload" href="src/editor/text-transforms.js?v=__BUILD__">
     <link rel="modulepreload" href="src/editor/toolbar-actions.js?v=__BUILD__">
@@ -168,6 +175,7 @@
     <link rel="modulepreload" href="src/import/html-to-markdown.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/mathml-to-tex.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/parse-cards.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/pdf.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/sample.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/staging.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/url.js?v=__BUILD__">
@@ -185,8 +193,8 @@
     <link rel="modulepreload" href="src/library/my-decks-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/tombstones.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/anchors.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/bookmark.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/bookmark-prompt-store.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/bookmark.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret-line.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
@@ -203,8 +211,8 @@
     <link rel="modulepreload" href="src/notes/reading-position.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/scroll-anchor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/selection.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/touch-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/toc.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/touch-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/cloze-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/app-info.js?v=__BUILD__">
@@ -533,6 +541,10 @@
             <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="Deck view">
               <button class="is-active" type="button" data-view-mode="cards">&#9634; Cards</button>
               <button type="button" data-view-mode="notes">&#128221; Notes</button>
+              <!-- Only a deck with meta.pdf ever shows this (see
+                   refreshDocumentTab) — it is not a third empty tab on every
+                   deck in the library, it is the surface a PDF deck opens on. -->
+              <button type="button" data-view-mode="document" hidden>&#128196; Document</button>
               <button type="button" data-view-mode="highlights">&#128308; Highlights</button>
             </div>
           </div>
@@ -786,6 +798,53 @@
             <div class="highlights-list" id="highlightsList"></div>
             <p class="highlights-empty" id="highlightsEmpty" hidden>No highlights yet. Select text in your notes and tap the highlight button to mark it.</p>
           </div>
+          <!-- ── The Document surface ─────────────────────────────────────
+               The PDF, rendered by pdf.js exactly as its author laid it out.
+               There is no markdown behind this: #documentView holds one .pdf-page
+               per page, and each rendered page carries a canvas, a mark layer and
+               a transparent text layer that makes native selection work.
+
+               Its own toolbar rather than .notes-head, for the same reason the
+               highlights stage has one: that row is display:none whenever the
+               panel is in notes mode and only works because JS lifts its
+               controls into #viewModeRow first. -->
+          <div class="document-stage" id="documentStage" hidden>
+            <div class="document-toolbar">
+              <button class="notes-toc-toggle" id="documentTocBtn" type="button" title="Contents" aria-label="Contents" aria-expanded="false" aria-controls="documentOutlineDrawer"><span class="notes-toc-bars" aria-hidden="true"></span></button>
+              <span class="face-label">Document</span>
+              <div class="document-page-jump">
+                <input class="document-page-input" id="documentPageInput" type="number" min="1" step="1" inputmode="numeric" aria-label="Go to page">
+                <span class="document-page-indicator" id="documentPageIndicator" aria-live="polite"></span>
+              </div>
+              <button class="tool-button document-zoom" id="documentZoomOutBtn" type="button" title="Zoom out" aria-label="Zoom out">&#8722;</button>
+              <button class="tool-button document-zoom" id="documentZoomInBtn" type="button" title="Zoom in" aria-label="Zoom in">&#43;</button>
+              <button class="tool-button document-zoom" id="documentFitBtn" type="button" title="Fit the page to the window width" aria-label="Fit to width">&#8596;</button>
+              <div class="document-more">
+                <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Document options" title="Document options">&#8943;</button>
+                <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
+                  <div class="md-menu-head"><span>Document</span></div>
+                  <button class="md-menu-item" type="button" data-document-action="invert" title="Invert the page for dark themes — off by default, because a paper with photographs in it looks wrong inverted"><span>Dark page<span class="nhm-hint">Invert the page for dark themes</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                  <button class="md-menu-item" type="button" data-document-action="save" title="Download the original PDF, byte for byte"><span>Save a copy</span></button>
+                  <button class="md-menu-item" type="button" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
+                  <label class="md-menu-item file-pick" data-document-action="reattach" title="Point this deck back at the PDF on this device">
+                    <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
+                    <span>Re-attach the PDF…</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="document-scroll" id="documentView"></div>
+            <nav class="notes-toc-drawer document-toc-drawer" id="documentOutlineDrawer" hidden aria-label="Document contents">
+              <div class="notes-toc-head">
+                <span class="notes-toc-title">Contents</span>
+                <button class="notes-toc-close" id="documentTocCloseBtn" type="button" title="Close" aria-label="Close contents">&times;</button>
+              </div>
+              <div class="notes-toc-scroll">
+                <ol class="notes-toc-list document-toc-list" id="documentOutlineList"></ol>
+                <p class="notes-toc-empty" id="documentOutlineEmpty" hidden>This PDF has no built-in table of contents.</p>
+              </div>
+            </nav>
+          </div>
           <!-- ── The selection bar, in five groups ────────────────────────
                Everything here is one press away, at every width. It used to be
                twelve controls in a run, with the formatting half folded behind
@@ -937,7 +996,7 @@
 
           <div class="import-source-row">
             <label class="file-pick import-action-btn" id="importFilePick">
-              <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed,application/epub+zip">
+              <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,.pdf,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed,application/epub+zip,application/pdf">
               <span class="import-icon" aria-hidden="true">📁</span>
               <span>Choose files</span>
             </label>
@@ -1204,8 +1263,8 @@
                    way to put something in the folder you're looking at. The
                    picker below is shared with every folder row's own Import
                    button; myDecksImportFolder records which one opened it. -->
-              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.md, .txt, .json, .zip, .epub) into this folder — you choose whether they become notes or cards, and whether each file gets its own deck"><span class="md-btn-label">Import</span></button>
-              <input id="myDecksImportInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,text/markdown,text/plain,application/json,application/zip,application/epub+zip" hidden>
+              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.md, .txt, .json, .zip, .epub, .pdf) into this folder — you choose whether they become notes or cards, and whether each file gets its own deck"><span class="md-btn-label">Import</span></button>
+              <input id="myDecksImportInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,.pdf,text/markdown,text/plain,application/json,application/zip,application/epub+zip,application/pdf" hidden>
               <!-- Everything else lives behind one "⋯" so the toolbar is a single
                    row at every width. Ids are unchanged, so the existing
                    listeners (and syncMyDecksChrome's hidden/label handling for
@@ -1223,6 +1282,13 @@
                   <label class="md-menu-item file-pick" id="myDecksImportEpubBtn" data-md-icon="book" title="Import an EPUB book as one folder with a deck per chapter">
                     <input id="myDecksImportEpubInput" type="file" accept=".epub,application/epub+zip" hidden>
                     <span>Import EPUB</span>
+                  </label>
+                  <!-- One deck per paper, opening on its Document tab. Nothing
+                       is extracted: the PDF stays the document and the deck's
+                       Notes tab is yours to write in. -->
+                  <label class="md-menu-item file-pick" id="myDecksImportPdfBtn" data-md-icon="book" title="Import a PDF as a deck you read, highlight and make cards from — the file itself, laid out as its author left it">
+                    <input id="myDecksImportPdfInput" type="file" multiple accept=".pdf,application/pdf" hidden>
+                    <span>Import PDF</span>
                   </label>
                   <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore decks &amp; notes from a backup archive (.zip or .json)"><span>Restore backup</span></button>
                   <input id="restoreFileInput" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden>
@@ -1365,6 +1431,20 @@
               <li><strong>See what points here</strong> — open the <strong>☰ On this page</strong> drawer in the notes header; under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
               <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the deck title bar and Cards/Notes toggle fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">Documents 📄 — read the PDF, not a translation of it</h3>
+            <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Decks → ⋯ → Import PDF</strong>) and you get one deck per paper, opening on a third tab: <strong>Document</strong>, beside Notes and Cards. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
+            <ul class="help-list">
+              <li><strong>Select text on the page → the same selection bar you already know</strong> — <strong>Highlight</strong> in any of the four colours, <strong>Add note</strong>, or <strong>+ Make card</strong>. The card remembers the page and the exact passage, so "Go to notes" on that card brings you back to it</li>
+              <li><strong>Highlights already in the file are imported</strong> — a paper you have been annotating in Zotero, Preview or Okular arrives with those highlights in place, and any comment on one becomes a note on it</li>
+              <li><strong>They show up everywhere your other highlights do</strong> — the <strong>Highlights</strong> tab lists them with their page numbers, and the highlights export carries the page too</li>
+              <li><strong>The Notes tab is still yours</strong> — an ordinary Markdown note beside the paper, with clozes, math and note links all working as they always have. The two are one deck</li>
+              <li><strong>Contents, zoom, dark page</strong> — <strong>☰</strong> opens the PDF's own table of contents; <strong>+ − ↔</strong> zoom and fit to width; <strong>⋯ → Dark page</strong> inverts the page for a dark theme, off by default because a paper full of photographs looks wrong inverted</li>
+              <li><strong>Finish a paper, then let go of it</strong> — <strong>⋯ → Save a copy</strong> downloads the original file, and <strong>⋯ → Remove from cloud</strong> frees the storage it was using. Your highlights, notes and cards all stay, and so does the copy on this device; another device asks you to re-attach the file, and checks it really is the same one before painting a single highlight on it</li>
+              <li><strong>A scanned PDF with no text layer</strong> reads perfectly well, but there is no text to select in it — so no text highlights and no make-card-from-text. There is no OCR</li>
             </ul>
           </section>
 

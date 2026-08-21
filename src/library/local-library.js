@@ -505,6 +505,21 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   return meta;
 }
 
+// Whether there is genuinely nothing here to write.
+//
+// It used to be "no cards and no notes", which was complete right up until a
+// deck could BE a document. A freshly imported paper is exactly that shape —
+// no cards yet, an empty note (it is yours to write in), and a PDF plus a
+// growing list of highlights in meta — so under the old test every autosave a
+// PDF deck ever scheduled was a no-op, and an afternoon of highlighting was
+// discarded on reload with the sync pill cheerfully reading "saved".
+//
+// meta.pdf is the discriminator, not meta.pdfHighlights: a paper with no
+// highlights on it yet is still a deck worth having.
+export function deckHasNothingToSave() {
+  return !state.masterCards.length && !state.notes.trim() && !state.meta?.pdf;
+}
+
 export async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false } = {}) {
   // A whole folder is open as one document. There is no such deck, and
   // resolveSaveTarget below would happily invent one — mint a local id, write
@@ -512,7 +527,7 @@ export async function saveDeckToLibrary({ id = null, silent = false, updatedAt =
   // reconcile push that to every device. The edits belong to the decks the
   // document was built from; saveFolderDeck puts them there.
   if (!id && isFolderDeckActive()) return saveFolderDeck({ silent });
-  if (!state.masterCards.length && !state.notes.trim()) {
+  if (deckHasNothingToSave()) {
     if (!silent) setStatus("Add some cards or notes before saving a deck.", "error");
     return null;
   }
@@ -580,7 +595,7 @@ export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
   // flushWorkingDeck() calls THIS from pagehide/visibilitychange, so without it
   // simply switching tabs while reading a folder would mint the merged deck.
   if (!id && isFolderDeckActive()) return saveFolderDeckSync();
-  if (!state.masterCards.length && !state.notes.trim()) return null;
+  if (deckHasNothingToSave()) return null;
   if (deckStoreUnreadable) return null;
   const { snapshot, localId } = resolveSaveTarget(id);
   const previousSnapshot = cachedDeckSnapshotSync(localId);

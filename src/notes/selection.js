@@ -1461,6 +1461,50 @@ export function positionNotesSelectionButton() {
   const mobile = Boolean(styleMobileMedia?.matches);
   if (!mobile) button.classList.remove("is-pinned-bottom");
 
+  // ── The Document surface ─────────────────────────────────────────────────
+  //
+  // Its own branch rather than a fourth SELECTION_TARGET, because a target's
+  // whole contract is "this is a surface whose markdown source can be spliced"
+  // — every consumer resolves it through renderTargetConfig to a getSource /
+  // setSource pair, and a PDF has neither. What the pill needs here is much
+  // less: show it, and let its three document-capable buttons (highlight, the
+  // colour menu, make-card) route through pillActionTarget's document branch.
+  //
+  // Everything else is hidden rather than left to fail quietly. A cloze, an
+  // erase, a bold and a "move this into its own note" all rewrite markdown; on
+  // a document there is nothing for them to rewrite, and a button that does
+  // nothing is worse than one that is not there.
+  //
+  // Tested against `state` and the DOM rather than by importing
+  // isDocumentViewActive from src/documents/pdf-view.js — deliberately. This
+  // module sits inside three import cycles already (see the notes on
+  // block-cache.js and notes-view.js above), and pulling the whole document
+  // subtree in ahead of them for the sake of one boolean is exactly the kind of
+  // reordering those notes exist to warn about. The two predicates agree on
+  // everything the pill cares about.
+  if (state.viewMode === "document" && el.documentView && !el.documentView.hidden) {
+    const documentRange = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
+    const documentText = documentRange ? documentRange.toString().trim() : "";
+    if (!documentText || !el.documentView?.contains(documentRange.startContainer)) {
+      hideNotesSelectionButton();
+      return;
+    }
+    cardBtn.dataset.selectionText = documentText;
+    cardBtn.title = "Make a card from this passage";
+    pillSelectionCapture = { targetName: "document", editing: false, sel: null, markdown: documentText, at: rangeBoundaries(documentRange) };
+    delete button.dataset.renderTarget;
+    if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = true;
+    if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = true;
+    if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = true;
+    if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
+    // A cloze is markdown ({{…}} spliced into the source) and so is a quick-note
+    // pin's round-trip through the note; neither has a home on a document.
+    if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = true;
+    button.hidden = false;
+    if (mobile) return pinSelectionButtonToBottom(button);
+    return placeSelectionPillNearRange(button, documentRange);
+  }
+
   const editingTarget = activeEditingTarget();
   if (editingTarget) {
     const raw = notesEditSelectionText(editingTarget);
@@ -1498,6 +1542,10 @@ export function positionNotesSelectionButton() {
     if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = false;
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
+    // Put back what the document branch above hides — the pill is one element
+    // shared by every surface, so a control hidden for one has to be restored
+    // by the others rather than staying hidden for the rest of the session.
+    if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = false;
     // Splitting text into its own note only makes sense from a note. A card
     // face would end up with a link on it that you cannot follow while
     // studying, so the button is simply not offered there.
@@ -1584,6 +1632,7 @@ export function positionNotesSelectionButton() {
   cardBtn.title = "Make a card";
   schedulePillSelectionCapture();
   button.dataset.renderTarget = renderedTarget.name;
+  if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = false;
   if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = false;
   // Highlight and erase work for every rendered face (notes AND card
   // question/answer — renderTargetConfig handles all three). Splitting out a

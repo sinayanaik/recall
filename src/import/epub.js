@@ -1020,10 +1020,17 @@ export function showEpubPreview({ title, author, chapterCount, imageCount, exist
 // chapter conversion + deck creation) — replaces the earlier silent wait
 // (status-bar text alone, easy to miss behind the My Decks panel) with
 // continuous visible feedback so the import never looks frozen.
-export function showEpubProgress(title) {
+//
+// Shared with the PDF importer (src/import/pdf.js), which has the same problem
+// and the same cancel semantics — hence `kind`, which is the only thing the two
+// callers differ on. Kept here rather than lifted into a module of its own: it
+// is a progress modal for a long import, both importers are long imports, and a
+// third file to hold twenty lines of markup would be filing rather than
+// structure.
+export function showImportProgress(title, kind = "EPUB") {
   const modal = document.createElement("section");
   modal.className = "category-choice-modal epub-progress-modal";
-  modal.setAttribute("aria-label", "Importing EPUB");
+  modal.setAttribute("aria-label", `Importing ${kind}`);
 
   const shell = document.createElement("div");
   shell.className = "category-choice-shell epub-progress-shell";
@@ -1070,7 +1077,7 @@ export function showEpubProgress(title) {
 // Uploads images, converts every spine chapter, then saves one deck per
 // chapter into a new folder named after the book.
 export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = "chapters", folderPath = null) {
-  const progress = showEpubProgress(bookTitle);
+  const progress = showImportProgress(bookTitle, "EPUB");
   // Hoisted out of the try so the catch below can put the user's own working
   // deck back even if the import blows up partway through the save loop.
   let savedState = null;

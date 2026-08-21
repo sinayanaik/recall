@@ -13,6 +13,7 @@ import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__B
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
 // A highlight is a literal <mark>…</mark> pair sitting in state.notes — same
@@ -187,7 +188,62 @@ export function scanHighlightGroups(source) {
   return { source, raw, groups, units };
 }
 
+// ── A PDF deck's highlights, as the same rows ───────────────────────────────
+//
+// The panel, the exports and the highlights view all consume ONE row shape, and
+// they consume it from this function — so a document highlight becomes a row
+// here rather than becoming a second panel. Every one of those consumers then
+// works untouched.
+//
+// The differences from the markdown branch are the two that are real: there is
+// no source unit to slice (a PDF has no markdown, so `span` is null and
+// `markdown` is the highlight's own captured text), and the mark is addressed
+// by id rather than by ordinal.
+export function collectDocumentHighlightRows() {
+  return documentHighlightsInReadingOrder().map((record) => {
+    const text = String(record.text || "").trim();
+    return {
+      // Rendered as plain text: it came out of a PDF, so there is no markdown
+      // in it to interpret, and a paper containing "*" or "_" must not turn
+      // half a sentence italic in the panel.
+      markdown: text.replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
+      span: null,
+      page: record.page,
+      marks: [{
+        // The panel keys a row's actions on `markIndex`; for a document
+        // highlight the id IS the key, and every consumer that acts on it goes
+        // through the handler sets in src/documents/pdf-highlights.js.
+        markIndex: record.id,
+        highlightId: record.id,
+        markCount: 0,
+        page: record.page,
+        color: record.color,
+        note: documentHighlightNote(record.id) || null,
+        anchor: {
+          pdf: record.anchor || { page: record.page, item: 0, ch: 0 },
+          quads: record.quads,
+          page: record.page,
+          text,
+          deckId: state.deckId,
+          deckTitle: state.deckTitle
+        }
+      }]
+    };
+  });
+}
+
 export function collectDeckHighlights() {
+  // A PDF deck's highlights are coordinates in the file, not <mark>s in the
+  // note — but its Notes tab is still an ordinary note the reader may have
+  // highlighted too, so both sources are collected rather than one replacing
+  // the other.
+  if (isPdfDeck()) {
+    return [...collectDocumentHighlightRows(), ...collectNoteHighlightRows()];
+  }
+  return collectNoteHighlightRows();
+}
+
+export function collectNoteHighlightRows() {
   const { source, raw, groups, units } = scanHighlightGroups(state.notes || "");
   const rows = [];
   groups.forEach((group) => {
@@ -275,6 +331,23 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
   const { source, groups, units } = scanHighlightGroups(state.notes || "");
   const headings = includeChapter ? headingIndexFor(source) : null;
   const items = [];
+  // A PDF deck's highlights come first, in reading order, and carry their page
+  // instead of a chapter — which is what an exported list of passages from a
+  // paper has to say to be useful at all. Every export builder reads the same
+  // entry shape, so `page` is simply a field they can print.
+  if (isPdfDeck()) {
+    documentHighlightsInReadingOrder().forEach((record) => {
+      items.push({
+        markdown: String(record.text || "").trim(),
+        color: record.color,
+        note: includeNotes ? (documentHighlightNote(record.id) || null) : null,
+        before: [],
+        after: [],
+        chapter: null,
+        page: record.page || null
+      });
+    });
+  }
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group);
     const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
@@ -335,6 +408,15 @@ export function renderHighlightsPanel() {
     body.className = "highlight-body";
     const preview = document.createElement("div");
     preview.className = "highlight-preview rendered";
+    // A page number, for a document highlight. A note's highlights are found by
+    // their words; a paper's are found by their page, and a list of forty
+    // passages with no page on any of them is a list you cannot navigate.
+    if (item.page) {
+      const page = document.createElement("span");
+      page.className = "highlight-page";
+      page.textContent = `p. ${item.page}`;
+      body.appendChild(page);
+    }
     body.appendChild(preview);
     toRender.push([preview, item, "preview"]);
     // Any attached note (see format/highlight-notes.js) renders under the
@@ -372,8 +454,13 @@ export function renderHighlightsPanel() {
       jumpBtn.title = jumpLabel;
       jumpBtn.setAttribute("aria-label", jumpLabel);
       jumpBtn.textContent = item.marks.length > 1 ? `Go to → (${i + 1})` : "Go to →";
+      // The locator is the exact-target shortcut: a <mark>'s ordinal in the
+      // note, or a document highlight's id. scheduleNoteJump's document branch
+      // reads the second and flashes the quads it paints.
       jumpBtn.addEventListener("click", () =>
-        scheduleNoteJump(mark.anchor, { patient: true }, { markIndex: mark.markIndex, markCount: mark.markCount })
+        scheduleNoteJump(mark.anchor, { patient: true }, mark.highlightId
+          ? { highlightId: mark.highlightId }
+          : { markIndex: mark.markIndex, markCount: mark.markCount })
       );
       const noteBtn = document.createElement("button");
       noteBtn.type = "button";
@@ -384,7 +471,12 @@ export function renderHighlightsPanel() {
       noteBtn.setAttribute("aria-label", noteLabel);
       noteBtn.innerHTML = "&#9998;";
       noteBtn.addEventListener("click", () =>
-        openHighlightNoteEditor(mark.markIndex, noteBtn.getBoundingClientRect(), mark.note)
+        openHighlightNoteEditor(
+          mark.markIndex,
+          noteBtn.getBoundingClientRect(),
+          mark.note,
+          mark.highlightId ? DOCUMENT_NOTE_HANDLERS : undefined
+        )
       );
       actions.append(jumpBtn, noteBtn);
       jumps.appendChild(actions);
@@ -466,7 +558,11 @@ function renderNoteBodyWithImageResize(noteBody, mark) {
     view: noteBody,
     getSource: () => mark.note || "",
     setSource: (newText) => {
-      setHighlightNoteAt(mark.markIndex, newText);
+      // Same edit, different destination — a document highlight's note is
+      // written by id into the section rather than by <mark> ordinal. Both end
+      // up as the same entry in the same "## Highlight Notes" section.
+      if (mark.highlightId) setDocumentHighlightNote(mark.highlightId, newText);
+      else setHighlightNoteAt(mark.markIndex, newText);
       mark.note = newText;
     },
     rerender: () => {}

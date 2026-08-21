@@ -294,6 +294,36 @@ const INVARIANTS = String.raw`(api) => {
     return r.cards[0].question === "MINE" || ("cloud overwrote a newer local edit: " + r.cards[0].question);
   });
 
+  // 2b. The same promise, for a PDF deck's highlights.
+  //
+  //     meta is otherwise cloud-wins, which is fine for a reading position and
+  //     fatal for an afternoon of highlighting: two devices reading the same
+  //     paper each write a whole array, and taking one of them costs the other
+  //     everything. Merged by id, newest \`at\` per id.
+  must("highlights made on two devices are both kept", () => {
+    const r = api.mergePdfHighlights([{ id: "h1", at: 1 }], [{ id: "h2", at: 2 }]);
+    const ids = r.map((x) => x.id).sort().join(",");
+    return ids === "h1,h2" || ("kept " + ids);
+  });
+  must("an empty cloud list does not erase this device's highlights", () => {
+    const r = api.mergePdfHighlights([], [{ id: "h2", at: 2 }]);
+    return (r.length === 1 && r[0].id === "h2") || ("kept " + JSON.stringify(r));
+  });
+  must("a cloud with no pdfHighlights key at all does not erase them either", () => {
+    const r = api.mergePdfHighlights(undefined, [{ id: "h2", at: 2 }]);
+    return (r && r.length === 1 && r[0].id === "h2") || ("kept " + JSON.stringify(r));
+  });
+  must("the newer edit to one highlight wins, whichever side it is on", () => {
+    const a = api.mergePdfHighlights([{ id: "h", at: 1, color: "yellow" }], [{ id: "h", at: 9, color: "green" }]);
+    const b = api.mergePdfHighlights([{ id: "h", at: 9, color: "green" }], [{ id: "h", at: 1, color: "yellow" }]);
+    return (a[0].color === "green" && b[0].color === "green")
+      || ("got " + a[0].color + " / " + b[0].color);
+  });
+  must("a deck that is not a PDF deck grows no pdfHighlights key", () => {
+    const r = api.mergePdfHighlights(undefined, undefined);
+    return r === null || ("returned " + JSON.stringify(r));
+  });
+
   // 3. A deletion stays deleted.
   must("a tombstoned card is not resurrected from the cloud", () => {
     const r = api.mergeCloudCardsIntoSnapshot(

@@ -7,7 +7,7 @@
 // overflow the storage it is protecting.
 
 import { state } from "../core/state.js?v=__BUILD__";
-import { readLocalDeckIndex, saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
+import { deckHasNothingToSave, readLocalDeckIndex, saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
 import { LOCAL_DECK_PREFIX } from "./keys.js?v=__BUILD__";
 import { deckAutosaveStorageFailed, deckAutosaveTimer, handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveTimer } from "./quota.js?v=__BUILD__";
 import { setSyncIndicator } from "../sync/indicator.js?v=__BUILD__";
@@ -630,7 +630,11 @@ export function scheduleDeckAutosave() {
     // An empty deck (e.g. the last card was just deleted) has nothing to
     // save — saveDeckToLibrary correctly no-ops and returns null for this,
     // but that's not a storage failure, so don't treat it as one.
-    if (!state.masterCards.length && !state.notes.trim()) {
+    //
+    // Shares saveDeckToLibrary's own predicate rather than restating it: they
+    // have to agree, and when they last disagreed a PDF deck's highlights were
+    // silently dropped on every reload while this line reported "saved".
+    if (deckHasNothingToSave()) {
       setSyncIndicator("saved");
       return;
     }

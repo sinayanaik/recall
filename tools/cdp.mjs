@@ -76,6 +76,7 @@ export function launchChrome(chromePath, extraArgs = []) {
       buf += chunk;
       const match = buf.match(/DevTools listening on (ws:\/\/\S+)/);
       if (!match) return;
+      clearTimeout(deadline);
       proc.stderr.off("data", onData);
       resolve({
         proc,
@@ -86,10 +87,15 @@ export function launchChrome(chromePath, extraArgs = []) {
         }
       });
     };
+    // Cleared on success, like every other deadline in this file — see the
+    // comment on `send` below for what an uncleared one costs.
+    const deadline = setTimeout(() => reject(new Error("Chrome did not report a DevTools endpoint")), 30000);
     proc.stderr.on("data", onData);
-    proc.on("error", reject);
-    proc.on("exit", (code) => reject(new Error(`Chrome exited before listening (code ${code})`)));
-    setTimeout(() => reject(new Error("Chrome did not report a DevTools endpoint")), 30000);
+    proc.on("error", (error) => { clearTimeout(deadline); reject(error); });
+    proc.on("exit", (code) => {
+      clearTimeout(deadline);
+      reject(new Error(`Chrome exited before listening (code ${code})`));
+    });
   });
 }
 
@@ -111,7 +117,8 @@ export async function connect(wsUrl) {
     let message;
     try { message = JSON.parse(event.data); } catch (_) { return; }
     if (message.id != null && pending.has(message.id)) {
-      const { resolve, reject } = pending.get(message.id);
+      const { resolve, reject, timer } = pending.get(message.id);
+      clearTimeout(timer);
       pending.delete(message.id);
       if (message.error) reject(new Error(`${message.error.message} (${JSON.stringify(message.error.data ?? "")})`));
       else resolve(message.result);
@@ -127,13 +134,20 @@ export async function connect(wsUrl) {
 
   const send = (method, params = {}, sessionId = undefined) => new Promise((resolve, reject) => {
     const id = (nextId += 1);
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
-    setTimeout(() => {
+    // The timer is CLEARED when the answer arrives, and cleared through the
+    // pending entry so the message handler can reach it. It used to be left
+    // armed: an answered call kept a ten-minute timer on the event loop, so a
+    // check that had printed its summary and killed its browser still would
+    // not EXIT for ten minutes after the last CDP call. Under check.mjs, which
+    // reads each check through spawnSync, that is indistinguishable from a
+    // hang — the suite stops, on a check that has already passed.
+    const timer = setTimeout(() => {
       if (!pending.has(id)) return;
       pending.delete(id);
       reject(new Error(`${method} timed out after ${CALL_TIMEOUT_MS}ms`));
     }, CALL_TIMEOUT_MS);
+    pending.set(id, { resolve, reject, timer });
+    socket.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
   });
 
   return {
@@ -205,13 +219,18 @@ export async function openPage(client) {
     // module has run.
     async goto(url, { timeout = 90000 } = {}) {
       const loaded = new Promise((resolve, reject) => {
-        const off = client.on((message) => {
+        let off = () => {};
+        const deadline = setTimeout(() => {
+          off();
+          reject(new Error(`navigation to ${url} timed out`));
+        }, timeout);
+        off = client.on((message) => {
           if (message.sessionId !== sessionId) return;
           if (message.method !== "Page.loadEventFired") return;
+          clearTimeout(deadline);
           off();
           resolve();
         });
-        setTimeout(() => { off(); reject(new Error(`navigation to ${url} timed out`)); }, timeout);
       });
       await call("Page.navigate", { url });
       await loaded;

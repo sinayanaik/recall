@@ -1,0 +1,733 @@
+// The Document surface: the PDF, rendered as its author laid it out.
+//
+// Nothing is extracted here. There is no markdown behind this view and no
+// intermediate representation — the page you are looking at is pdf.js painting
+// the original file, which is the entire reason this feature exists. A
+// LaTeX-heavy two-column paper loses nothing on the way in, because there is no
+// way in.
+//
+// ── Two layers per page ─────────────────────────────────────────────────────
+//
+//   <canvas>          the page as pixels
+//   .pdf-mark-layer   absolutely-positioned divs, one per highlight quad
+//   .pdf-text-layer   absolutely-positioned, transparent spans — one per text
+//                     item, carrying data-item-index
+//
+// The text layer is what makes NATIVE browser selection work over a canvas: the
+// spans sit exactly over their glyphs, so dragging across them selects real DOM
+// text, which the existing selection pill, the touch-selection controller and
+// Ctrl+C all already understand. data-item-index is what turns that selection
+// back into a stable anchor (see pdf-selection.js).
+//
+// ── Virtualized, for the same reason renderNotesLazily is ───────────────────
+//
+// Every page gets a placeholder sized from its viewport immediately, so the
+// scrollbar is honest from the first frame; only pages near the viewport get a
+// canvas and a text layer, and anything beyond a small window either side is
+// torn back down to its placeholder. Opening a 300-page thesis is therefore one
+// screenful of work, not three hundred.
+
+import { el } from "../core/dom.js?v=__BUILD__";
+import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
+import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
+import { buildDocumentOutline, clearDocumentOutline } from "./pdf-outline.js?v=__BUILD__";
+import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
+import { scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
+import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
+import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
+
+// How many pages either side of the visible run keep their canvas. Two is
+// enough that a fast flick never shows an empty placeholder for long, and small
+// enough that a rendered window of a big paper stays a handful of canvases
+// rather than a memory leak with a scrollbar.
+export const PDF_RENDER_WINDOW = 2;
+
+// How far outside the scroller a page counts as "coming up". A page is a whole
+// screen tall, so a margin of one viewport height is one page of lead time.
+export const PDF_OBSERVER_MARGIN = "100% 0px";
+
+export const PDF_MIN_SCALE = 0.4;
+
+export const PDF_MAX_SCALE = 5;
+
+// Fit-width leaves this much room either side, so a page is never flush against
+// the scroller's edge (and so the shadow that separates one page from the next
+// has somewhere to fall).
+export const PDF_FIT_PADDING = 24;
+
+// A canvas is painted at devicePixelRatio so text is sharp, but a phone at
+// dpr 3 rendering a 300-dpi page is a lot of pixels for no visible gain.
+export const PDF_MAX_CANVAS_SCALE = 2;
+
+export const PDF_DARK_CLASS = "is-pdf-inverted";
+
+export const PDF_DARK_KEY = "recall:pdfInvert";
+
+// ── The open document ───────────────────────────────────────────────────────
+
+// Everything about the PDF currently on screen. Replaced wholesale on a deck
+// swap; null when no PDF deck is open.
+export let openPdf = null;
+
+// Bumped on every open, so a page render that resolves after the reader has
+// moved on is dropped rather than painted into a document that is no longer
+// there. Same guard shape as renderSequence in block-cache.js.
+export let pdfOpenToken = 0;
+
+export function currentPdfDocument() {
+  return openPdf?.doc || null;
+}
+
+export function currentPdfPageCount() {
+  return openPdf?.pageCount || 0;
+}
+
+// The live viewport for one page — what pdf-selection.js and pdf-highlights.js
+// convert between client coordinates and PDF user space with. Null for a page
+// that has never been laid out (nothing can be measured against it yet).
+export function pdfPageViewport(pageNumber) {
+  return openPdf?.pages?.get(pageNumber)?.viewport || null;
+}
+
+export function pdfPageElement(pageNumber) {
+  return openPdf?.pages?.get(pageNumber)?.el || null;
+}
+
+export function pdfMarkLayer(pageNumber) {
+  return openPdf?.pages?.get(pageNumber)?.markLayer || null;
+}
+
+// Whether the Document surface is the one a selection or a jump should act on.
+export function isDocumentViewActive() {
+  return state.viewMode === "document" && Boolean(openPdf);
+}
+
+// ── Opening ─────────────────────────────────────────────────────────────────
+
+export function tearDownDocumentView() {
+  pdfOpenToken += 1;
+  if (openPdf?.observer) openPdf.observer.disconnect();
+  if (openPdf?.doc) {
+    // Releases the worker's copy of the file. Without this, opening five papers
+    // in a session keeps five parsed documents alive in the worker.
+    openPdf.doc.destroy().catch(() => {});
+  }
+  openPdf = null;
+  clearDocumentOutline();
+  if (el.documentView) el.documentView.innerHTML = "";
+  if (el.documentPageIndicator) el.documentPageIndicator.textContent = "";
+}
+
+// Shown instead of the pages when the file itself is not here: offloaded from
+// the cloud and never downloaded on this device, or downloaded once and since
+// cleared. Everything else about the deck — highlights, notes, cards — is
+// intact, which is exactly what the message has to say, or "re-attach" reads
+// as "start again".
+function renderMissingDocumentPrompt(pdfMeta) {
+  const view = el.documentView;
+  if (!view) return;
+  view.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "pdf-missing";
+  const heading = document.createElement("h2");
+  heading.textContent = "Re-attach the PDF to read it";
+  const body = document.createElement("p");
+  body.textContent = pdfMeta?.offloaded
+    ? `“${pdfMeta.name || "This document"}” was removed from the cloud to save space, and this device doesn't have a copy. Your highlights, notes and cards are all still here — pick the same file to read it again.`
+    : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and it can't be downloaded right now. Your highlights, notes and cards are all still here.`;
+  const pick = document.createElement("label");
+  pick.className = "pdf-missing-pick";
+  pick.textContent = "Choose the PDF…";
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".pdf,application/pdf";
+  input.hidden = true;
+  pick.appendChild(input);
+  const note = document.createElement("p");
+  note.className = "pdf-missing-note";
+  // Not a formality. A highlight is a coordinate into one exact file; painted
+  // over a different edition of the same paper it would sit over the wrong
+  // words, silently. Refusing a mismatch is the only honest option.
+  note.textContent = pdfMeta?.sha256
+    ? "It has to be the same file — the highlights are positions in it, and a different copy would put them over the wrong words."
+    : "";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    await reattachDocument(file, pdfMeta);
+  });
+  panel.append(heading, body, pick);
+  if (note.textContent) panel.appendChild(note);
+  view.appendChild(panel);
+}
+
+// Take a picked file as this deck's document again, if it really is the same
+// file. Exported because the Document menu offers it too, for a deck whose PDF
+// is present but which the reader wants to re-point at a local copy.
+export async function reattachDocument(file, pdfMeta) {
+  const hash = await sha256(file);
+  if (pdfMeta?.sha256 && hash && hash !== pdfMeta.sha256) {
+    showToast("That's a different file — the highlights would land in the wrong places", "error");
+    return false;
+  }
+  const deckLocalId = state.localDeckId;
+  if (!deckLocalId) {
+    showToast("Save this deck before re-attaching its PDF", "error");
+    return false;
+  }
+  await putDocument({ deckLocalId, blob: file, sha256: hash, name: file.name, at: Date.now() });
+  showToast("PDF re-attached");
+  await openDocumentView({ force: true });
+  return true;
+}
+
+// Open the PDF for the deck in `state` into #documentView.
+//
+// Idempotent for the deck already on screen — setViewMode calls this on every
+// switch into the Document tab, and re-parsing a 40MB paper because someone
+// looked at their cards is not a thing to do. `force` is for the two cases where
+// the bytes themselves changed underneath us (a re-attach, a fresh import).
+export async function openDocumentView({ force = false } = {}) {
+  const view = el.documentView;
+  const pdfMeta = state.meta?.pdf;
+  if (!view || !pdfMeta) return false;
+
+  const deckKey = currentDeckKey();
+  if (!force && openPdf && openPdf.deckKey === deckKey) {
+    // Already open: only the layout can have gone stale (a rotate, a resize
+    // while the tab was hidden).
+    relayoutDocument();
+    return true;
+  }
+
+  tearDownDocumentView();
+  const token = pdfOpenToken;
+  view.innerHTML = "";
+  const loading = document.createElement("p");
+  loading.className = "pdf-loading";
+  loading.textContent = "Opening the document…";
+  view.appendChild(loading);
+
+  if (!(await ensurePdfJs())) {
+    view.innerHTML = "";
+    const failed = document.createElement("p");
+    failed.className = "pdf-loading is-error";
+    failed.textContent = "The PDF viewer could not load. Reconnect once so it can be cached, and it will work offline after that.";
+    view.appendChild(failed);
+    return false;
+  }
+  if (token !== pdfOpenToken) return false;
+
+  const blob = await getDocument(state.localDeckId, pdfMeta);
+  if (token !== pdfOpenToken) return false;
+  if (!blob) {
+    renderMissingDocumentPrompt(pdfMeta);
+    return false;
+  }
+
+  let doc;
+  try {
+    // A COPY of the bytes, deliberately: pdf.js transfers the buffer it is
+    // given to its worker, which detaches it — and the blob in the store is the
+    // one thing that must survive, since it is the only copy on this device.
+    const data = new Uint8Array(await blob.arrayBuffer());
+    doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+  } catch (error) {
+    console.error("Could not read the PDF", error);
+    view.innerHTML = "";
+    const failed = document.createElement("p");
+    failed.className = "pdf-loading is-error";
+    failed.textContent = `Could not read this PDF — ${error?.message || "unexpected error"}`;
+    view.appendChild(failed);
+    return false;
+  }
+  if (token !== pdfOpenToken) {
+    doc.destroy().catch(() => {});
+    return false;
+  }
+
+  const first = await doc.getPage(1);
+  const baseViewport = first.getViewport({ scale: 1 });
+
+  openPdf = {
+    deckKey,
+    doc,
+    pageCount: doc.numPages,
+    // Every page starts out assumed to be the size of page 1 — which is true
+    // for essentially every paper, and self-correcting for the ones where it
+    // isn't: a page's real viewport replaces the assumption the moment it is
+    // rendered, and the placeholder resizes then.
+    baseWidth: baseViewport.width,
+    baseHeight: baseViewport.height,
+    scale: 1,
+    fitWidth: true,
+    pages: new Map(),
+    rendered: new Set(),
+    observer: null
+  };
+
+  view.innerHTML = "";
+  openPdf.scale = fitWidthScale();
+  buildPagePlaceholders();
+  observePages();
+  applyPdfInvert(readPdfInvertPreference());
+  updatePageIndicator();
+  // Off the critical path: the pages are already on screen and readable, and
+  // an outline can need a fetch per entry on a long book.
+  buildDocumentOutline(doc).catch((error) => console.warn("Could not read the PDF outline", error));
+
+  const resume = state.meta?.readingPosition;
+  if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
+  return true;
+}
+
+// ── Layout ──────────────────────────────────────────────────────────────────
+
+export function fitWidthScale() {
+  const view = el.documentView;
+  if (!view || !openPdf?.baseWidth) return 1;
+  const available = Math.max(200, view.clientWidth - PDF_FIT_PADDING * 2);
+  return clampScale(available / openPdf.baseWidth);
+}
+
+export function clampScale(scale) {
+  return Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, scale));
+}
+
+function buildPagePlaceholders() {
+  const view = el.documentView;
+  const frag = document.createDocumentFragment();
+  for (let pageNumber = 1; pageNumber <= openPdf.pageCount; pageNumber++) {
+    const page = document.createElement("div");
+    page.className = "pdf-page";
+    page.dataset.pageNumber = String(pageNumber);
+    page.style.width = `${Math.round(openPdf.baseWidth * openPdf.scale)}px`;
+    page.style.height = `${Math.round(openPdf.baseHeight * openPdf.scale)}px`;
+    // A page number that is visible even before the page paints, so scrubbing
+    // through a long document never looks like a blank screen.
+    const label = document.createElement("span");
+    label.className = "pdf-page-label";
+    label.textContent = String(pageNumber);
+    page.appendChild(label);
+    openPdf.pages.set(pageNumber, { el: page, viewport: null, markLayer: null, textLayer: null, task: null });
+    frag.appendChild(page);
+  }
+  view.appendChild(frag);
+}
+
+function observePages() {
+  const view = el.documentView;
+  openPdf.observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      const pageNumber = Number(entry.target.dataset.pageNumber);
+      if (!pageNumber) return;
+      if (entry.isIntersecting) renderPage(pageNumber);
+    });
+    trimRenderedPages();
+    updatePageIndicator();
+  }, { root: view, rootMargin: PDF_OBSERVER_MARGIN });
+  openPdf.pages.forEach((entry) => openPdf.observer.observe(entry.el));
+}
+
+// Re-lay everything out at the current scale. Rendered pages are dropped back
+// to placeholders rather than re-scaled in CSS: a canvas stretched by a
+// transform is blurry, and the whole promise of this surface is that the page
+// looks the way it was laid out.
+export function relayoutDocument({ refit = false } = {}) {
+  if (!openPdf) return;
+  if (refit && openPdf.fitWidth) openPdf.scale = fitWidthScale();
+  openPdf.pages.forEach((entry, pageNumber) => {
+    const width = (entry.viewport ? entry.viewport.width / (entry.renderScale || 1) : openPdf.baseWidth) * openPdf.scale;
+    const height = (entry.viewport ? entry.viewport.height / (entry.renderScale || 1) : openPdf.baseHeight) * openPdf.scale;
+    entry.el.style.width = `${Math.round(width)}px`;
+    entry.el.style.height = `${Math.round(height)}px`;
+    if (openPdf.rendered.has(pageNumber)) unrenderPage(pageNumber);
+  });
+  openPdf.pages.forEach((entry, pageNumber) => {
+    if (isPageNearViewport(pageNumber)) renderPage(pageNumber);
+  });
+  updatePageIndicator();
+}
+
+export function setDocumentScale(scale, { fitWidth = false } = {}) {
+  if (!openPdf) return;
+  openPdf.fitWidth = fitWidth;
+  openPdf.scale = clampScale(scale);
+  relayoutDocument();
+}
+
+export function zoomDocument(step) {
+  if (!openPdf) return;
+  setDocumentScale(openPdf.scale * step);
+}
+
+export function fitDocumentToWidth() {
+  if (!openPdf) return;
+  openPdf.fitWidth = true;
+  openPdf.scale = fitWidthScale();
+  relayoutDocument();
+}
+
+function isPageNearViewport(pageNumber) {
+  const view = el.documentView;
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!view || !entry) return false;
+  const top = entry.el.offsetTop;
+  const bottom = top + entry.el.offsetHeight;
+  const from = view.scrollTop - view.clientHeight;
+  const to = view.scrollTop + view.clientHeight * 2;
+  return bottom >= from && top <= to;
+}
+
+// ── Rendering one page ──────────────────────────────────────────────────────
+
+async function renderPage(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry || entry.task || openPdf.rendered.has(pageNumber)) return;
+  const token = pdfOpenToken;
+  const scale = openPdf.scale;
+  // Every await below re-checks this. A render is several async hops — get the
+  // page, rasterise it, fetch its text content — and in that time the reader
+  // can have scrolled far enough that trimRenderedPages decides this page
+  // should not be on screen at all. Without a generation to compare against,
+  // the finished canvas is appended to a placeholder that was just torn back
+  // down, which leaves a page that LOOKS rendered while openPdf.rendered says
+  // it is not: it is never re-rendered at the next zoom, and never trimmed
+  // again either.
+  const generation = (entry.generation = (entry.generation || 0) + 1);
+  const stale = () => token !== pdfOpenToken || openPdf?.scale !== scale || entry.generation !== generation;
+  entry.task = (async () => {
+    const page = await openPdf.doc.getPage(pageNumber);
+    if (stale()) return;
+    const viewport = page.getViewport({ scale });
+    // The placeholder was sized from page 1's dimensions; this is where a page
+    // that is genuinely a different size (a landscape figure, an appendix)
+    // corrects itself.
+    entry.el.style.width = `${Math.round(viewport.width)}px`;
+    entry.el.style.height = `${Math.round(viewport.height)}px`;
+    entry.viewport = viewport;
+    entry.renderScale = scale;
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-canvas";
+    const outputScale = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+    canvas.width = Math.floor(viewport.width * outputScale);
+    canvas.height = Math.floor(viewport.height * outputScale);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    const context = canvas.getContext("2d", { alpha: false });
+    const transform = outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0];
+    await page.render({ canvasContext: context, viewport, transform }).promise;
+    if (stale()) return;
+
+    const markLayer = document.createElement("div");
+    markLayer.className = "pdf-mark-layer";
+    const textLayer = await buildTextLayer(page, viewport);
+    if (stale()) return;
+
+    entry.el.querySelector(".pdf-page-label")?.remove();
+    entry.el.append(canvas, markLayer, textLayer);
+    entry.markLayer = markLayer;
+    entry.textLayer = textLayer;
+    openPdf.rendered.add(pageNumber);
+    // Painted as part of the render rather than on a later pass, so a highlight
+    // is never briefly missing from a page the reader is already looking at.
+    paintDocumentHighlights(pageNumber);
+  })()
+    .catch((error) => {
+      if (error?.name !== "RenderingCancelledException") console.warn(`Could not render page ${pageNumber}`, error);
+    })
+    .finally(() => { if (entry) entry.task = null; });
+}
+
+// Await whatever render is in flight for a page, and make sure one has been
+// STARTED if the page is near the viewport and has none. The virtualized view
+// is driven by an IntersectionObserver, which fires on the browser's own
+// schedule — so "scroll there and wait a bit" is a race, and this is the
+// non-racy form of it. Used by tools/pdf-preview-check.mjs, and by anything
+// that needs a page's text layer to exist before it can measure against it.
+export async function whenDocumentPageReady(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry) return false;
+  if (!openPdf.rendered.has(pageNumber) && !entry.task) renderPage(pageNumber);
+  // A loop, not a single await: renderPage clears entry.task in a `finally`,
+  // and a render that was superseded mid-flight leaves the page unrendered with
+  // a new task already queued behind it.
+  for (let i = 0; i < 200; i++) {
+    if (entry.task) await entry.task;
+    if (openPdf?.rendered.has(pageNumber)) return true;
+    if (!entry.task) {
+      renderPage(pageNumber);
+      if (!entry.task) return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
+function unrenderPage(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry) return;
+  // Invalidates any render still in flight for this page, so its canvas is
+  // dropped rather than appended into the placeholder this is about to rebuild.
+  entry.generation = (entry.generation || 0) + 1;
+  openPdf.rendered.delete(pageNumber);
+  entry.el.innerHTML = "";
+  entry.markLayer = null;
+  entry.textLayer = null;
+  const label = document.createElement("span");
+  label.className = "pdf-page-label";
+  label.textContent = String(pageNumber);
+  entry.el.appendChild(label);
+}
+
+// Anything more than PDF_RENDER_WINDOW pages outside the visible run goes back
+// to being a placeholder. A canvas is several megabytes of bitmap; a hundred of
+// them is the difference between a reader and a memory profile.
+function trimRenderedPages() {
+  if (!openPdf) return;
+  const current = currentDocumentPage();
+  // Snapshotted, because unrenderPage deletes from the very Set being walked.
+  [...openPdf.rendered].forEach((pageNumber) => {
+    if (Math.abs(pageNumber - current) > PDF_RENDER_WINDOW + 1) unrenderPage(pageNumber);
+  });
+}
+
+// ── The text layer ──────────────────────────────────────────────────────────
+//
+// Built by hand rather than through pdf.js's own renderTextLayer, for one
+// reason: every span has to carry the INDEX of the text item it came from.
+// That index is half of a highlight's anchor (see pdf-selection.js), so it has
+// to be exact and it has to survive a re-render — which means owning the loop
+// that creates the spans rather than inferring indices from someone else's DOM
+// afterwards.
+export async function buildTextLayer(page, viewport) {
+  const layer = document.createElement("div");
+  layer.className = "pdf-text-layer";
+  layer.style.width = `${Math.floor(viewport.width)}px`;
+  layer.style.height = `${Math.floor(viewport.height)}px`;
+  const content = await page.getTextContent();
+  const frag = document.createDocumentFragment();
+  content.items.forEach((item, index) => {
+    if (!item.str) return;
+    const span = document.createElement("span");
+    span.dataset.itemIndex = String(index);
+    span.textContent = item.str;
+    // pdf.js's own transform maths, kept verbatim in spirit: the item transform
+    // composed with the viewport transform gives the glyph run's baseline
+    // origin and its scale, and the span is placed and stretched to match so a
+    // selection over it selects the words that are actually painted there.
+    const tx = window.pdfjsLib.Util.transform(viewport.transform, item.transform);
+    const fontHeight = Math.hypot(tx[2], tx[3]);
+    const angle = Math.atan2(tx[1], tx[0]);
+    span.style.left = `${tx[4]}px`;
+    span.style.top = `${tx[5] - fontHeight}px`;
+    span.style.fontSize = `${fontHeight}px`;
+    span.style.fontFamily = content.styles?.[item.fontName]?.fontFamily || "sans-serif";
+    // Horizontal scale, so the invisible text is exactly as wide as the visible
+    // glyphs. Without it a selection highlight drifts further from the words the
+    // further along the line it goes — which is the difference between "this
+    // works" and "this nearly works".
+    const expected = item.width * viewport.scale;
+    const transforms = [];
+    if (angle) transforms.push(`rotate(${angle}rad)`);
+    if (expected > 0 && fontHeight > 0) {
+      span.dataset.expectedWidth = String(expected);
+      transforms.push("scaleX(var(--pdf-span-scale, 1))");
+    }
+    if (transforms.length) span.style.transform = transforms.join(" ");
+    frag.appendChild(span);
+  });
+  layer.appendChild(frag);
+  // Measured in one pass AFTER the whole layer is in the document: reading
+  // offsetWidth per span while still appending would be a forced layout per
+  // text item, which on a dense two-column page is hundreds of them.
+  requestAnimationFrame(() => {
+    if (!layer.isConnected) return;
+    layer.querySelectorAll("span[data-expected-width]").forEach((span) => {
+      const actual = span.offsetWidth;
+      if (!actual) return;
+      span.style.setProperty("--pdf-span-scale", String(Number(span.dataset.expectedWidth) / actual));
+    });
+  });
+  return layer;
+}
+
+// ── Position ────────────────────────────────────────────────────────────────
+
+// The page the reader is actually on: the first one whose bottom is still below
+// the top of the scroller. Deliberately not "the most visible page" — on a
+// two-page-tall window the answer flickers between two pages as you scroll,
+// and a page indicator that flickers is worse than one that is slightly eager.
+export function currentDocumentPage() {
+  const view = el.documentView;
+  if (!view || !openPdf) return 1;
+  const top = view.scrollTop;
+  for (let pageNumber = 1; pageNumber <= openPdf.pageCount; pageNumber++) {
+    const entry = openPdf.pages.get(pageNumber);
+    if (entry && entry.el.offsetTop + entry.el.offsetHeight > top + 4) return pageNumber;
+  }
+  return openPdf.pageCount;
+}
+
+// How far into the current page the reader is, 0..1 — the second half of a
+// resumable position. A page is a whole screen on a phone, so "page 12" alone
+// would put someone back at the top of a page they were three quarters through.
+export function currentDocumentRatio() {
+  const view = el.documentView;
+  const entry = openPdf?.pages.get(currentDocumentPage());
+  if (!view || !entry?.el.offsetHeight) return 0;
+  return Math.min(1, Math.max(0, (view.scrollTop - entry.el.offsetTop) / entry.el.offsetHeight));
+}
+
+export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true } = {}) {
+  const view = el.documentView;
+  const entry = openPdf?.pages.get(Math.min(Math.max(1, Math.round(pageNumber)), openPdf?.pageCount || 1));
+  if (!view || !entry) return false;
+  view.scrollTo({
+    top: entry.el.offsetTop + entry.el.offsetHeight * (Number.isFinite(ratio) ? ratio : 0),
+    behavior: smooth ? "smooth" : "auto"
+  });
+  updatePageIndicator();
+  return true;
+}
+
+export function updatePageIndicator() {
+  if (!el.documentPageIndicator || !openPdf) return;
+  el.documentPageIndicator.textContent = `${currentDocumentPage()} / ${openPdf.pageCount}`;
+}
+
+// Written through exactly the plumbing the notes view uses — same store, same
+// debounce, same flush-on-leave — so a PDF deck resumes where you left it on
+// this device and, through meta.readingPosition, on the next one.
+//
+// `offset` carries the page number, not because anything reads it as a
+// character index but because writeStoredReadingPosition requires a finite
+// `offset` to accept the entry at all; `pdfPage`/`ratio` are what the document
+// branch of scheduleNoteJump actually uses.
+export function scheduleDocumentPositionSave() {
+  if (!openPdf) return;
+  const page = currentDocumentPage();
+  const position = { offset: page, pdfPage: page, ratio: currentDocumentRatio(), at: Date.now() };
+  scheduleReadingPositionSave(currentDeckKey(), position);
+  // ...and into the deck's own meta, which is what travels between devices.
+  //
+  // deckSnapshot picks meta.readingPosition up from scroll-anchor.js's
+  // in-memory tracker, and that tracker only ever watches #notesView — a
+  // surface a PDF deck's reader never touches. So without this line the local
+  // store above would resume correctly on this device and nothing would ever
+  // reach the phone. Written straight onto meta rather than scheduling a save:
+  // it rides along on whichever save happens next, which is the same
+  // deliberately simple strategy the notes position uses.
+  if (state.meta && typeof state.meta === "object") state.meta.readingPosition = position;
+}
+
+// ── Dark themes ─────────────────────────────────────────────────────────────
+//
+// A CSS filter on the canvas alone, never on the text or mark layers: inverting
+// the whole page would invert the highlight colours too and turn a yellow
+// highlight into a blue one. Off by default, because a paper with photographs
+// or coloured figures in it looks wrong inverted and only the reader knows
+// which kind of document this is.
+export function readPdfInvertPreference() {
+  try {
+    return localStorage.getItem(PDF_DARK_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+export function applyPdfInvert(on) {
+  el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
+  try {
+    localStorage.setItem(PDF_DARK_KEY, on ? "1" : "0");
+  } catch (_) { /* private mode — the preference just doesn't persist */ }
+}
+
+export function togglePdfInvert() {
+  const next = !el.documentStage?.classList.contains(PDF_DARK_CLASS);
+  applyPdfInvert(next);
+  return next;
+}
+
+// ── Save a copy ─────────────────────────────────────────────────────────────
+
+// The original bytes, straight to disk. Not a re-export and not a print: the
+// point of keeping the PDF as the document is that you still have the PDF.
+export async function saveDocumentCopy() {
+  const pdfMeta = state.meta?.pdf;
+  if (!pdfMeta) return false;
+  const blob = await getDocument(state.localDeckId, pdfMeta);
+  if (!blob) {
+    setStatus("This device doesn't have a copy of the PDF to save.", "error");
+    return false;
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = pdfMeta.name || `${state.deckTitle || "document"}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  showToast("Saved a copy");
+  return true;
+}
+
+// ── Pinch to zoom ───────────────────────────────────────────────────────────
+//
+// Two fingers change the scale directly, rather than letting the browser's own
+// page zoom take over — which on a document surface is the wrong gesture: it
+// scales the toolbar and the tabs along with the page, and it leaves the reader
+// panning a viewport instead of reading a column.
+//
+// Committed as a REAL re-render, throttled, rather than shown as a CSS
+// transform and committed on release. A transform would be the cheaper live
+// feedback, but a scaled canvas is a blurry canvas, and "the page looks exactly
+// as its author laid it out" is the one promise this whole surface exists to
+// keep — showing a soft approximation mid-gesture undoes it at precisely the
+// moment the reader is looking closely. The render window on a phone is two or
+// three modest canvases, so a re-render every PINCH_COMMIT_MS is affordable.
+export const PINCH_COMMIT_MS = 100;
+
+// Below this the gesture is a two-finger scroll, not a pinch. Without it, the
+// small distance drift in a two-finger pan reads as a zoom and the page creeps.
+export const PINCH_MIN_RATIO = 0.02;
+
+let pinch = null;
+
+function touchDistance(touches) {
+  return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+}
+
+export function initDocumentPinchZoom() {
+  const view = el.documentView;
+  if (!view) return;
+
+  view.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 2 || !openPdf) return;
+    pinch = { startDistance: touchDistance(event.touches), startScale: openPdf.scale, lastCommit: 0 };
+  }, { passive: true });
+
+  view.addEventListener("touchmove", (event) => {
+    if (!pinch || event.touches.length !== 2 || !openPdf) return;
+    const distance = touchDistance(event.touches);
+    if (!pinch.startDistance) return;
+    const ratio = distance / pinch.startDistance;
+    if (Math.abs(ratio - 1) < PINCH_MIN_RATIO) return;
+    // preventDefault only once this really is a pinch, so a two-finger scroll
+    // still scrolls. The listener is therefore NOT passive — which is the whole
+    // reason this one differs from the two around it.
+    event.preventDefault();
+    const now = performance.now();
+    if (now - pinch.lastCommit < PINCH_COMMIT_MS) return;
+    pinch.lastCommit = now;
+    setDocumentScale(pinch.startScale * ratio);
+  }, { passive: false });
+
+  const end = () => { pinch = null; };
+  view.addEventListener("touchend", end, { passive: true });
+  view.addEventListener("touchcancel", end, { passive: true });
+}

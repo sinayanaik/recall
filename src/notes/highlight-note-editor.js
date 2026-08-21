@@ -40,7 +40,11 @@ import { renderNotesViewPinned } from "./notes-view.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 
 let els = null;
-let openMarkIndex = -1;
+// The key of the highlight being edited: a <mark>'s ordinal in state.notes for
+// a note, a document highlight's own id for a PDF. null — never -1 — means "no
+// editor open", so that a key of 0 (the first mark in a note) is not mistaken
+// for "closed".
+let openMarkIndex = null;
 
 // ── Autosave ──────────────────────────────────────────────────────────────
 //
@@ -236,7 +240,7 @@ function ensureHighlightNoteEditor() {
   const flushNoteSave = () => {
     clearTimeout(saveTimer);
     saveTimer = 0;
-    if (openMarkIndex < 0) return;
+    if (openMarkIndex == null) return;
     const text = textarea.value;
     if (text === savedText) return;
     // { rerender: false } — the text being written lives in the "Highlight
@@ -249,7 +253,7 @@ function ensureHighlightNoteEditor() {
     // { undo: !undoPushed } — one Ctrl+Z step for the whole editing session,
     // the same shape applyFormatToTextarea uses for a formatting run. A stack
     // with one entry per typing pause is not an undo stack.
-    setHighlightNoteAt(openMarkIndex, text, { rerender: false, undo: !undoPushed });
+    noteHandlers.save(openMarkIndex, text, { rerender: false, undo: !undoPushed });
     undoPushed = true;
     savedText = text;
     dirtySinceOpen = true;
@@ -294,12 +298,12 @@ function ensureHighlightNoteEditor() {
 
   closeBtn.addEventListener("click", () => closeHighlightNoteEditor());
   deleteBtn.addEventListener("click", () => {
-    if (openMarkIndex < 0) return closeHighlightNoteEditor();
+    if (openMarkIndex == null) return closeHighlightNoteEditor();
     // Cancel the pending autosave rather than letting it re-add what was just
     // deleted: the timer holds the old text, and it would fire after this.
     clearTimeout(saveTimer);
     saveTimer = 0;
-    clearHighlightNoteAt(openMarkIndex, { undo: !undoPushed });
+    noteHandlers.remove(openMarkIndex, { undo: !undoPushed });
     savedText = "";
     // Deleted, then closed — the note IS gone from the section, and the
     // paragraph it was printed into still shows the old copy until a repaint.
@@ -430,20 +434,41 @@ export function closeHighlightNoteEditor() {
   // a view change — so this is the one place that has to make the text safe.
   els.flushNoteSave();
   els.root.hidden = true;
-  openMarkIndex = -1;
+  openMarkIndex = null;
   // The single repaint the autosave deferred. It is what puts the edited note
   // back in front of the reader when the inline mode is on, and what refreshes
   // the mark's own "has a note" underline when the first note on a highlight
   // was just written — so it is skipped only when nothing was written at all.
-  if (dirtySinceOpen) renderNotesViewPinned();
+  if (dirtySinceOpen) noteHandlers.repaint();
   dirtySinceOpen = false;
+  noteHandlers = NOTES_NOTE_HANDLERS;
 }
 
 // `anchorRect` is whatever the trigger button/mark reports from
 // getBoundingClientRect() — used only on desktop-width screens; the mobile
 // bottom-sheet layout ignores it entirely (see the CSS media query).
-export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkdown) {
+// Where a note is written to, as a pair of verbs.
+//
+// The editor itself — the draggable window, the write/preview toggle, the
+// autosave debounce, the one-undo-step-per-session bookkeeping — is identical
+// whether the highlight it belongs to is a <mark> in the markdown or a record
+// in meta.pdfHighlights. Only the destination differs, so only the destination
+// is passed in. Defaulting to the notes pair keeps every existing caller
+// unchanged.
+export const NOTES_NOTE_HANDLERS = {
+  save: (key, text, options) => setHighlightNoteAt(key, text, options),
+  remove: (key, options) => clearHighlightNoteAt(key, options),
+  // Called on close. The notes editor repaints the note so the mark's own
+  // "has a note" underline and the inline copy both catch up; a document
+  // highlight has its own repaint and passes a different one.
+  repaint: () => renderNotesViewPinned()
+};
+
+let noteHandlers = NOTES_NOTE_HANDLERS;
+
+export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkdown, destination = NOTES_NOTE_HANDLERS) {
   const { root, textarea, deleteBtn, status, setMode } = ensureHighlightNoteEditor();
+  noteHandlers = destination || NOTES_NOTE_HANDLERS;
   openMarkIndex = markIndex;
   textarea.value = existingNoteMarkdown || "";
   // The session's bookkeeping, reset per open. `savedText` starts as what is

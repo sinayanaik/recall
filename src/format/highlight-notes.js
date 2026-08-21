@@ -250,6 +250,20 @@ export function setHighlightNoteInSource(source, id, text, label) {
 
 // Entries whose highlight is gone (the mark was removed, or its text deleted
 // in the raw editor) would otherwise pile up at the end of the note forever.
+//
+// ── The second source of live ids ─────────────────────────────────────────
+//
+// A <mark> in the body is no longer the only thing that can own a note. A PDF
+// deck's highlights live in meta.pdfHighlights and use ids from this very
+// namespace — that is the point, and it is what lets the note editor, the
+// section format and the Highlights panel be reused verbatim for them. But it
+// means a scan of the body alone sees none of them: every note taken on a paper
+// would read as an orphan and be swept away the first time any highlight was
+// edited.
+//
+// Read straight off `state` rather than through src/documents/pdf-highlights.js
+// — that module imports this one, and a leaf like this one has no business
+// importing back into a surface.
 export function pruneOrphanHighlightNotes(source) {
   const sectionStart = sectionStartIn(source);
   if (sectionStart < 0) return source;
@@ -259,6 +273,12 @@ export function pruneOrphanHighlightNotes(source) {
   let m;
   while ((m = HIGHLIGHT_SCAN_RE.exec(body))) {
     if (isHighlightNoteId(m[2])) live.add(m[2]);
+  }
+  const pdfHighlights = state.meta?.pdfHighlights;
+  if (Array.isArray(pdfHighlights)) {
+    pdfHighlights.forEach((record) => {
+      if (isHighlightNoteId(record?.id)) live.add(record.id);
+    });
   }
   const entries = parseEntries(source, sectionStart);
   if (entries.every((entry) => live.has(entry.id))) return source;

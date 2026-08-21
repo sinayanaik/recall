@@ -239,6 +239,15 @@ const POST_SPLIT = {
     "data-nhm-group. The labels are displayed only inside the menu, so a " +
     "button that has not been moved there is still the icon button it was. " +
     "See src/notes/notes-head-overflow.js.",
+  "36-document.css":
+    "The Document surface \u2014 a PDF rendered page by page by pdf.js, in " +
+    "three stacked layers whose ORDER is the whole design: the canvas at the " +
+    "bottom, the highlights over it, and a transparent text layer on top that " +
+    "is what makes native selection work over a canvas at all. Highlights use " +
+    "the same four colour tokens as a <mark> at the same mix ratios, so one " +
+    "palette covers both surfaces. Dark themes invert the CANVAS only \u2014 " +
+    "inverting the page would turn a yellow highlight blue. " +
+    "See src/documents/pdf-view.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline
