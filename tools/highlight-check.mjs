@@ -496,12 +496,248 @@ const PROBE = `(api) => {
     return true;
   });
 
+  // ── A highlight's note, said where the highlight is ─────────────────────
+  //
+  // src/notes/inline-highlight-notes.js. Two layers over the same index: an
+  // always-on mark saying a highlight carries a note, and an opt-in mode that
+  // numbers them and prints each note in the paragraph it belongs to.
+
+  // The note bodies live in a "## Highlight Notes" section at the end (see
+  // format/highlight-notes.js); the marks in the body only point at them.
+  // "hn-dead" is the case that matters most here: an id whose entry was
+  // deleted by hand is NOT a note, and nothing may light up for it.
+  const NOTED = [
+    "First paragraph with <mark data-note=\\"hn-aaaa\\">an annotated span</mark> in it.",
+    "",
+    "Second one with <mark data-note=\\"hn-bbbb\\">a longer annotation</mark> here.",
+    "",
+    "Third has <mark data-note=\\"hn-dead\\">a dangling id</mark> and <mark>a plain highlight</mark>.",
+    "",
+    "---",
+    "",
+    "## Highlight Notes",
+    "",
+    "### [hn-aaaa] \\u201Can annotated span\\u201D",
+    "",
+    "One line of commentary.",
+    "",
+    "### [hn-bbbb] \\u201Ca longer annotation\\u201D",
+    "",
+    "First line of a longer note.",
+    "",
+    "Second paragraph of it."
+  ].join("\\n");
+
+  check("note index: numbered in document order, dangling ids skipped", () => {
+    const index = api.highlightNoteIndex(NOTED);
+    const got = [...index.byAttr.entries()].map(([attr, info]) => attr + "=" + info.n).join(",");
+    if (got !== "hn-aaaa=1,hn-bbbb=2") return "numbered as " + JSON.stringify(got);
+    if (index.byAttr.has("hn-dead")) return "an id with no section entry was numbered";
+    return true;
+  });
+
+  check("note index: a legacy base64 note is numbered alongside the rest", () => {
+    // The pre-section form, still readable and still an annotation — it must
+    // not be a second case every caller has to remember.
+    const blob = api.encodeHighlightNote("Written before the section existed.");
+    const source = "Para with <mark data-note=\\"" + blob + "\\">an old note</mark>.\\n\\n" + NOTED;
+    const index = api.highlightNoteIndex(source);
+    const info = index.byAttr.get(blob);
+    if (!info) return "the legacy note was not indexed at all";
+    if (info.n !== 1) return "numbered " + info.n + ", expected 1 (it comes first)";
+    if (info.text !== "Written before the section existed.") return "decoded as " + JSON.stringify(info.text);
+    return true;
+  });
+
+  check("note index: memoized on the source, and its signature tracks edits", () => {
+    const source = NOTED;
+    if (api.highlightNoteIndex(source) !== api.highlightNoteIndex(source)) {
+      return "a second call for the same string rebuilt the index";
+    }
+    const before = api.highlightNoteIndex(source).signature;
+    // An edit that touches no note at all must NOT move the signature — that
+    // is what keeps the whole-document refresh off every ordinary repaint.
+    const unrelated = source.replace("First paragraph", "First paragraph, edited");
+    if (api.highlightNoteIndex(unrelated).signature !== before) {
+      return "an edit to ordinary prose changed the signature";
+    }
+    // ...and an edit to a note's TEXT must move it, or the printed copy would
+    // go stale. Same length, so a length-only signature would miss this.
+    const retyped = source.replace("One line of commentary.", "One line of commentarY.");
+    if (api.highlightNoteIndex(retyped).signature === before) {
+      return "a same-length edit to a note body left the signature unchanged";
+    }
+    return true;
+  });
+
+  // The DOM half. A real container with real rendered blocks, so the pass has
+  // paragraphs to find hosts in and a section to hide.
+  const renderNoted = () => {
+    const host = document.createElement("div");
+    host.className = "rendered notes-rendered";
+    host.innerHTML = api.markdownToSafeHtml(NOTED);
+    document.body.appendChild(host);
+    return host;
+  };
+
+  check("an annotated highlight is marked, a plain one is not", () => {
+    api.state.notes = NOTED;
+    api.setInlineHighlightNotesFlag(false);
+    const host = renderNoted();
+    try {
+      api.annotateHighlightNotes(host);
+      const marks = [...host.querySelectorAll("mark")];
+      const got = marks.map((m) => m.textContent + ":" + (m.classList.contains("has-note") ? "yes" : "no")).join(", ");
+      const want = "an annotated span:yes, a longer annotation:yes, a dangling id:no, a plain highlight:no";
+      if (got !== want) return got;
+      // The mode is off, so nothing is numbered and nothing is printed.
+      if (host.querySelector("mark[data-hn-num]")) return "a number was set with the mode off";
+      if (host.querySelector(".hl-inline-note")) return "a note was printed with the mode off";
+      return true;
+    } finally { host.remove(); }
+  });
+
+  check("inline mode: one-line notes merge, longer ones become blocks", () => {
+    api.state.notes = NOTED;
+    api.setInlineHighlightNotesFlag(true);
+    const host = renderNoted();
+    try {
+      api.annotateHighlightNotes(host);
+      const printed = [...host.querySelectorAll(".hl-inline-note")];
+      if (printed.length !== 2) return "printed " + printed.length + " notes, expected 2";
+      const [first, second] = printed;
+      if (!first.classList.contains("is-merged")) return "a one-line note did not merge into its paragraph";
+      if (!second.classList.contains("is-block")) return "a multi-paragraph note was merged instead of blocked";
+      // Inside the paragraph the highlight is in — never a sibling of it. A
+      // top-level sibling would break placeNotesChunks' identity comparison
+      // and be swept away on the next render (see the module comment).
+      for (const node of printed) {
+        if (node.parentElement.tagName !== "P") return "printed into a " + node.parentElement.tagName + ", not the paragraph";
+        if (!node.parentElement.querySelector("mark")) return "printed into a paragraph with no highlight in it";
+      }
+      if (!first.textContent.includes("One line of commentary")) return "the merged note lost its text";
+      if (!second.textContent.includes("Second paragraph of it")) return "the block note lost its second paragraph";
+      // The numbers on the marks and on the printed copies have to agree, or
+      // a paragraph with two notes in it cannot be read at all.
+      const nums = [...host.querySelectorAll("mark[data-hn-num]")].map((m) => m.dataset.hnNum).join(",");
+      if (nums !== "1,2") return "marks numbered " + JSON.stringify(nums);
+      if (printed.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "printed copies numbered differently from their marks";
+      return true;
+    } finally { host.remove(); }
+  });
+
+  check("inline mode: the section the notes are stored in is hidden", () => {
+    api.state.notes = NOTED;
+    api.setInlineHighlightNotesFlag(true);
+    const host = renderNoted();
+    try {
+      api.annotateHighlightNotes(host);
+      const heading = [...host.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Highlight Notes");
+      if (!heading) return "the section heading is not in the rendered note";
+      if (!heading.classList.contains("hl-notes-section-block")) return "the heading was not marked hidden";
+      // Everything after it too, or half the section stays on screen.
+      for (let node = heading.nextElementSibling; node; node = node.nextElementSibling) {
+        if (!node.classList.contains("hl-notes-section-block")) {
+          return "a block after the heading was left visible: " + node.tagName;
+        }
+      }
+      // ...and nothing BEFORE it: the body of the note is not the section.
+      if (host.querySelector("p.hl-notes-section-block")) {
+        const first = host.querySelector("p.hl-notes-section-block");
+        if (!heading.compareDocumentPosition(first) || (heading.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_PRECEDING)) {
+          return "a paragraph before the heading was hidden";
+        }
+      }
+      return true;
+    } finally { host.remove(); }
+  });
+
+  check("inline mode: two notes in one paragraph, and a re-run replaces in place", () => {
+    // A paragraph with two annotated highlights is where every "just take the
+    // last child" shortcut in this pass falls over — and where a stale copy is
+    // most visible, since the two notes sit side by side.
+    const two = [
+      "One para with <mark data-note=\\"hn-cccc\\">the first span</mark> and <mark data-note=\\"hn-dddd\\">the second</mark>.",
+      "",
+      "## Highlight Notes",
+      "",
+      "### [hn-cccc]",
+      "",
+      "Note about the first.",
+      "",
+      "### [hn-dddd]",
+      "",
+      "Note about the second."
+    ].join("\\n");
+    api.state.notes = two;
+    api.setInlineHighlightNotesFlag(true);
+    // The REAL #notesView, not a container of our own, because the pass under
+    // test here is refreshInlineHighlightNotes — the whole-document one, which
+    // resolves its container from el and which sweeps any printed copy the
+    // pass did not claim. That sweep is what a wrongly-returned node breaks,
+    // and it is invisible to the per-chunk pass every case above uses.
+    const host = api.el.notesView;
+    const restore = host.innerHTML;
+    host.innerHTML = api.markdownToSafeHtml(two);
+    try {
+      api.refreshInlineHighlightNotes({ force: true });
+      const para = host.querySelector("p");
+      let printed = [...para.querySelectorAll(".hl-inline-note")];
+      if (printed.length !== 2) return "printed " + printed.length + " notes into the paragraph, expected 2";
+      if (printed.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "numbered " + printed.map((n) => n.dataset.hnKey).join(",");
+
+      // Running the pass again must change nothing at all — the enhancement
+      // passes re-run on every repaint, and a pass that appends rather than
+      // recognises would double every note on screen.
+      const before = printed.slice();
+      api.refreshInlineHighlightNotes({ force: true });
+      printed = [...para.querySelectorAll(".hl-inline-note")];
+      if (printed.length !== 2) return "a second pass left " + printed.length + " notes";
+      if (printed[0] !== before[0] || printed[1] !== before[1]) return "a second pass rebuilt nodes that had not changed";
+
+      // Now edit the FIRST note only. It must be replaced where it stands —
+      // not appended after the second — and the second must be left alone.
+      api.state.notes = two.replace("Note about the first.", "Rewritten note about the first.");
+      api.refreshInlineHighlightNotes({ force: true });
+      printed = [...para.querySelectorAll(".hl-inline-note")];
+      if (printed.length !== 2) return "editing one note left " + printed.length + " on screen";
+      if (printed.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "the replacement landed out of order: " + printed.map((n) => n.dataset.hnKey).join(",");
+      if (!printed[0].textContent.includes("Rewritten")) return "the edited note still shows its old text";
+      if (printed[1] !== before[1]) return "the untouched note was rebuilt too";
+      return true;
+    } finally {
+      host.innerHTML = restore;
+      api.setInlineHighlightNotesFlag(false);
+      api.refreshInlineHighlightNotes({ force: true });
+    }
+  });
+
+  check("inline mode: a note with no section entry prints nothing", () => {
+    api.state.notes = NOTED;
+    api.setInlineHighlightNotesFlag(true);
+    const host = renderNoted();
+    try {
+      api.annotateHighlightNotes(host);
+      const dangling = [...host.querySelectorAll("mark")].find((m) => m.textContent === "a dangling id");
+      if (dangling.dataset.hnNum) return "the dangling id was numbered " + dangling.dataset.hnNum;
+      const para = dangling.closest("p");
+      if (para.querySelector(".hl-inline-note")) return "something was printed for an id with no note";
+      return true;
+    } finally {
+      host.remove();
+      api.setInlineHighlightNotesFlag(false);
+    }
+  });
+
   return results;
 }`;
 
 const API_SRC = `async () => {
   const mods = await Promise.all([
     import("/src/format/highlight.js?v=__BUILD__"),
+    import("/src/core/state.js?v=__BUILD__"),
+    import("/src/core/dom.js?v=__BUILD__"),
+    import("/src/notes/inline-highlight-notes.js?v=__BUILD__"),
     import("/src/format/locate-selection.js?v=__BUILD__"),
     import("/src/notes/selection.js?v=__BUILD__"),
     import("/src/editor/text-transforms.js?v=__BUILD__"),

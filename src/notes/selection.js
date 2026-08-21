@@ -92,23 +92,17 @@ export function hideNotesSelectionButton() {
   // tested separately on purpose: it is a child of the pill, so hiding the pill
   // hides it visually while leaving its own `hidden` false, and skipping the
   // reset below would spring it back open on the next selection.
-  // The formatting disclosure is tested here alongside the colour menu and for
-  // the same reason: it is a CLASS on the pill, so hiding the pill hides it
-  // visually while leaving the class set, and the next selection would open
-  // already expanded — the one state the collapsed-by-default bar exists to
-  // avoid. It has to be part of the fast path's "already fully reset" test too,
-  // or that early return skips the only place it gets cleared.
+  // There used to be a third thing to reset here — `is-format-open`, the class
+  // the ⋯ disclosure set to reveal the formatting group. The disclosure is
+  // gone: the bar now shows every group at every width (see the five
+  // .sel-group wrappers in index.html), so there is no collapsed default left
+  // to spring back to and nothing to clear.
   if (el.selectionFloat?.hidden
       && !pillSelectionCapture
-      && !el.selectionFloat.classList.contains("is-format-open")
       && el.highlightSelectionMenu?.hidden !== false) {
     return;
   }
-  if (el.selectionFloat) {
-    el.selectionFloat.hidden = true;
-    el.selectionFloat.classList.remove("is-format-open");
-    el.selectionFormatToggleBtn?.setAttribute("aria-expanded", "false");
-  }
+  if (el.selectionFloat) el.selectionFloat.hidden = true;
   if (el.makeCardFromSelectionBtn) el.makeCardFromSelectionBtn.dataset.selectionText = "";
   // The colour menu is a child of the pill, so hiding the pill hides it too —
   // but it would come back open on the next selection without this.
@@ -277,7 +271,14 @@ export function cleanedSelectionFragment(range) {
   const snapped = snapRangeToAtomicBlocks(range);
   const container = document.createElement("div");
   container.appendChild(snapped.cloneContents());
-  container.querySelectorAll("button, .code-lang-badge, style, script").forEach((node) => node.remove());
+  // .hl-inline-note is a PRINTED COPY of a highlight's note, appended into the
+  // paragraph the highlight is in (src/notes/inline-highlight-notes.js). It is
+  // not in the markdown at that point — its text lives in the "Highlight Notes"
+  // section at the end of the note — so leaving it in the clone would put words
+  // into the needle that appear nowhere near this paragraph in the source, and
+  // locateSelectionInSource would miss every highlight, cloze and erase made
+  // over an annotated paragraph.
+  container.querySelectorAll("button, .code-lang-badge, .hl-inline-note, style, script").forEach((node) => node.remove());
   restoreSelectionTables(container, snapped);
   restoreSelectionListItems(container, snapped);
   return container;
@@ -480,6 +481,12 @@ export function emitTextWithLineBreaks(node, sink, stop) {
     // Mermaid inlines a stylesheet into its SVG; reading it as text emits the
     // whole thing as a wall of CSS.
     if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+    // A highlight's note, printed into the paragraph it annotates. Skipped for
+    // the same reason cleanedSelectionFragment removes it — the words are not
+    // in the source here — and it needs saying TWICE because this walk runs
+    // over the LIVE dom (countRenderedTextBefore, which is where the occurrence
+    // count comes from) and never sees that clone.
+    if (child.classList?.contains("hl-inline-note")) continue;
     const isTight = TIGHT_BLOCK_TAGS.has(child.tagName);
     const isLoose = LOOSE_BLOCK_TAGS.has(child.tagName);
     const isCell = CELL_TAGS.has(child.tagName);

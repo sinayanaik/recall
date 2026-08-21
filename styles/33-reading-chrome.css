@@ -1,0 +1,208 @@
+/* The reading room's own chrome: quieter while you are reading, at every width
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * styles/16-mobile-reading.css did this for a phone, where four stacked bars
+ * over a 757px viewport made it unarguable. A laptop has the pixels, and that
+ * is exactly why nothing was ever done about it — but "there is room for it" is
+ * not the same as "it belongs on screen", which is the argument
+ * src/notes/notes-head-overflow.js already made for the notes header's
+ * thirteen buttons. Measured on a 1280x800 window with a note open:
+ *
+ *   .appbar        ☰ ‹ MAPF-LNS2: FAST REPAIRING FOR MULTI-AGENT PATH FINDING…
+ *                      ROBOTICS/UNIQUELYU/LITERATURE REVIEW · 0/0 · Known 0 /
+ *                      Review 0 · Saved on device · ↻ 2m
+ *   .view-mode-row ☰ [ CARDS | NOTES | HIGHLIGHTS ] ✎|👁 ⋯
+ *
+ * Two bars, ~96px, of which the reader is using the tabs. The rest is a title
+ * they chose, a category they filed it under, a card score for cards they are
+ * not looking at, and a sync countdown that ticks once a second in their
+ * peripheral vision.
+ *
+ * So while reading — and ONLY while reading — this drops what means nothing
+ * here and quiets what is left. Nothing is hidden that cannot be got back by
+ * pressing Cards, and nothing is hidden that is the only copy of itself:
+ *
+ *   • the counters and the countdown are about cards and about sync; both are
+ *     in full in the Cards view, and the sync pill's own colour and text still
+ *     say whether the deck is saved (the countdown alone goes, exactly as
+ *     16-mobile-reading.css:141 already does it on a phone);
+ *   • the title and category stay — they say WHICH note this is — but as text
+ *     rather than as a headline and a filled pill;
+ *   • the ✏ / 🏷 edit buttons wait for the pointer. They are two of the four
+ *     things in the header that look pressable, and neither is something you
+ *     reach for mid-paragraph. Keyboard focus reveals them too, so they are not
+ *     lost to anyone tabbing (and a coarse pointer keeps them visible outright,
+ *     since there is no hover to reveal them with).
+ *
+ * ── Why :has() and not a body class ──────────────────────────────────────
+ *
+ * setViewMode already publishes the state this needs — `quizPanel.classList
+ * .toggle("notes-mode", …)` (src/ui/view-mode.js:36) — and .appbar is a SIBLING
+ * of that panel, not an ancestor, so the selector has to walk up to <body> and
+ * back down. Adding a second class on <body> saying the same thing is a second
+ * thing to keep in step, and body.chrome-collapsed's own rules already reach
+ * across the tree this way (styles/12-notes.css:1255).
+ *
+ * ── Why no height is written here ────────────────────────────────────────
+ *
+ * --appbar-h and --view-toggle-h are MEASURED (readChromeHeights, via
+ * scrollHeight so the max-height clamp can't bound its own measurement) and
+ * re-measured on every view change (setViewMode → measureChromeHeights). A
+ * hardcoded height here would be a third opinion about a box two other places
+ * already agree on, and the first one to go stale.
+ */
+
+/* ── What is not about reading ────────────────────────────────────────────
+   The card position and the score. Both are live and correct — they are just
+   answering a question nobody in Notes view asked. (The sync countdown goes
+   with them; the pill it lives in stays.) */
+body:has(.quiz-panel.notes-mode) .appbar #positionText,
+body:has(.quiz-panel.notes-mode) .appbar #scoreText,
+body:has(.quiz-panel.notes-mode) .appbar .sync-countdown {
+  display: none;
+}
+
+/* A separator whose neighbours have both gone is a dot in the middle of
+   nothing. There are two in the row (index.html:506, :509) and only the second
+   still has content on both sides, so the FIRST is the one to drop — matched
+   positionally rather than by a class of its own, since neither is named. */
+body:has(.quiz-panel.notes-mode) .appbar .deck-meta-row2 .deck-meta-sep:first-of-type {
+  display: none;
+}
+
+/* ── The title, as text ───────────────────────────────────────────────────
+   Still uppercase and still the first thing in the header — this is which note
+   you have open, and losing that is not "subtle", it is missing. What goes is
+   the weight (850 is a headline) and the accent tint that made it compete with
+   the note's own headings a few lines below it. Two lines, then ellipsis: the
+   full title is in the element's own tooltip and in My Decks either way, and a
+   five-line title is a wall of chrome by itself. */
+body:has(.quiz-panel.notes-mode) .appbar .deck-title {
+  color: color-mix(in srgb, var(--accent) 34%, var(--muted));
+  font-weight: 650;
+  letter-spacing: 0.015em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* Hover still says it is pressable (it opens the title editor), so the
+   affordance is kept where the pointer is, not painted permanently. */
+body:has(.quiz-panel.notes-mode) .appbar .deck-title:hover {
+  color: var(--accent);
+}
+
+/* ── The category, as a label ─────────────────────────────────────────────
+   A filled accent pill for a value that never changes while you read. The text
+   stays (it is the note's shelf) and the box goes, leaving a quiet label that
+   still lights up under the pointer — so nothing about it is less reachable,
+   only less loud. */
+body:has(.quiz-panel.notes-mode) .appbar .deck-category {
+  border-color: transparent;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent-strong) 55%, var(--muted));
+  font-weight: 700;
+  padding-inline: 0;
+  min-height: 0;
+}
+
+body:has(.quiz-panel.notes-mode) .appbar .deck-category:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+  padding-inline: 7px;
+}
+
+/* ── The two edit buttons wait to be reached for ──────────────────────────
+   Revealed by a pointer anywhere in .deck-meta (not per-button: they sit on
+   different rows, and making each appear only under its own cursor means
+   hunting for a control you cannot see). Kept in the layout — visibility, not
+   display — so nothing moves when they appear.
+
+   :focus-within covers the keyboard: tab into either and both are visible. */
+body:has(.quiz-panel.notes-mode) .appbar .deck-meta .deck-title-edit {
+  opacity: 0;
+  transition: opacity 0.14s linear;
+}
+
+body:has(.quiz-panel.notes-mode) .appbar .deck-meta:hover .deck-title-edit,
+body:has(.quiz-panel.notes-mode) .appbar .deck-meta:focus-within .deck-title-edit {
+  opacity: 1;
+}
+
+/* No hover to reveal them with. A touch screen gets them at full strength —
+   the same trade 16-mobile-reading.css:180 makes for the per-image controls,
+   from the other side. */
+@media (hover: none), (pointer: coarse) {
+  body:has(.quiz-panel.notes-mode) .appbar .deck-meta .deck-title-edit {
+    opacity: 1;
+  }
+}
+
+/* ── Less air around it ───────────────────────────────────────────────────
+   The appbar has no vertical padding of its own; .app-shell's --app-pad and
+   --app-gap are what put ~24px between the top of the window and the note.
+   Halved while reading. Written on the shell rather than as a padding
+   override so every child that composes with these two tokens stays in step. */
+body:has(.quiz-panel.notes-mode) .app-shell {
+  --app-pad: clamp(3px, 0.7vw, 7px);
+  --app-gap: 6px;
+}
+
+/* ── The tabs stop competing with the note ────────────────────────────────
+   A segmented control with a border, an inset highlight and a filled active
+   pill is the loudest object on a page whose subject is a paragraph of text.
+   The frame goes; the active tab keeps a tint (that is the one piece of state
+   the control exists to show) and everything else becomes quiet text. */
+body:has(.quiz-panel.notes-mode) .quiz-panel .view-mode-toggle:not([hidden]) {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  padding: 1px;
+}
+
+body:has(.quiz-panel.notes-mode) .view-mode-toggle button {
+  min-height: 22px;
+  font-size: 0.62rem;
+  font-weight: 750;
+}
+
+body:has(.quiz-panel.notes-mode) .view-mode-toggle button.is-active {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  box-shadow: none;
+}
+
+/* The row's own bottom margin, halved with everything else. */
+body:has(.quiz-panel.notes-mode) .view-mode-row {
+  margin-bottom: 3px;
+}
+
+/* ── Immersive mode's button ──────────────────────────────────────────────
+   ⛶ (fullscreen) rather than ⤢ (focus): the two live side by side in the ⋯
+   menu and do different amounts of the same thing — focus mode folds the app's
+   own chrome, immersive mode folds the BROWSER's as well. Pressed-on reads the
+   same as the focus button's (styles/12-notes.css:1182) so the pair is one
+   control language rather than two.
+
+   inline-grid to match .focus-mode-btn, whose own rule exists because
+   .edit-card-btn's display does not centre a bare glyph. */
+.immersive-mode-btn {
+  display: inline-grid;
+}
+
+.immersive-mode-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+/* Fullscreen paints the root element, and the page's own background comes from
+   <body> — so without this the letterboxing around a narrow reading column is
+   the UA's white, in every theme. */
+:root:fullscreen {
+  background: var(--bg);
+}

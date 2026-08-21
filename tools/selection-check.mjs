@@ -497,6 +497,121 @@ try {
     return null;
   });
 
+  // Reported as "the categorisation of the text selection options ... can be
+  // more better layout especially think in mind about mobile devices where I
+  // have to click one extra button for more options, everything needs to come
+  // at one go".
+  //
+  // Both halves are checked, because they are one design: the twelve controls
+  // are grouped by intent, AND every group is on screen at the width where the
+  // ⋯ disclosure used to hide half of them. The phone check is the load-bearing
+  // one — the disclosure was shown ONLY on the bottom-pinned bar, so the
+  // surface with the least room was the one where bold cost two taps.
+  await check("every selection tool is one press away, in categories", async () => {
+    const read = () => page.evaluate(() => {
+      const float = document.getElementById("selectionFloat");
+      if (!float) return null;
+      const visible = (node) => {
+        const style = getComputedStyle(node);
+        return style.display !== "none" && style.visibility !== "hidden" && node.getBoundingClientRect().width > 0;
+      };
+      const groups = [...float.querySelectorAll(".sel-group")];
+      return {
+        order: groups.map((g) => g.dataset.selGroup),
+        hidden: groups.filter((g) => !visible(g)).map((g) => g.dataset.selGroup),
+        // Every control the bar carries, whether or not it is reachable.
+        buttons: [...float.querySelectorAll("button")].filter((b) => !b.closest("[hidden]")).length,
+        reachable: [...float.querySelectorAll("button")]
+          .filter((b) => !b.closest("[hidden]") && visible(b)).length,
+        // The disclosure and the divider it separated: both gone.
+        disclosure: Boolean(document.getElementById("selectionFormatToggleBtn")),
+        divider: Boolean(float.querySelector(".selection-float-divider")),
+        // A control outside every group would be one the categories do not
+        // account for — the run of twelve, creeping back one button at a time.
+        ungrouped: [...float.children]
+          .filter((n) => n.tagName === "BUTTON")
+          .map((n) => n.id || n.className),
+        pinned: float.classList.contains("is-pinned-bottom"),
+        // Rows by OVERLAP, not by `top`. The groups are not all the same
+        // height — the formatting group's buttons are 26px against the
+        // others' 34 — so `align-items: center` leaves it sitting 4px lower
+        // on the very same row, and bucketing by top edge would report every
+        // single-row bar as two.
+        rows: groups.filter(visible)
+          .map((g) => g.getBoundingClientRect())
+          .sort((a, b) => a.top - b.top)
+          .reduce((bands, box) => {
+            const last = bands[bands.length - 1];
+            if (last && box.top < last) return bands;      // overlaps the open band
+            bands.push(box.bottom);
+            return bands;
+          }, []).length,
+      };
+    });
+
+    // The bar is SHOWN rather than raised by a drag, and deliberately: this
+    // case is about the bar's layout — which groups exist, and whether every
+    // control in them is on screen — not about the selection machinery, which
+    // the eight cases above it already drive with real mouse input. Showing it
+    // directly is also the only way to measure the phone layout, where the
+    // touch controller puts `user-select: none` on the reading surfaces
+    // (styles/32-touch-select.css) and a synthetic mouse drag selects nothing.
+    // `is-pinned-bottom` is the class pinSelectionButtonToBottom() adds.
+    const show = (pinned) => page.evaluate((pin) => {
+      const float = document.getElementById("selectionFloat");
+      float.hidden = false;
+      float.classList.toggle("is-pinned-bottom", pin);
+      if (!pin) { float.style.top = "300px"; float.style.left = "40px"; }
+      else { float.style.top = ""; float.style.left = ""; }
+    }, pinned);
+    const hide = () => page.evaluate(() => {
+      const float = document.getElementById("selectionFloat");
+      float.hidden = true;
+      float.classList.remove("is-pinned-bottom");
+      float.style.top = "";
+      float.style.left = "";
+    });
+
+    await page.evaluate(() => window.__api.setViewMode("notes"));
+    await new Promise((r) => setTimeout(r, 300));
+    await show(false);
+    const wide = await read();
+    if (!wide) return "the selection bar is not in the page";
+    if (wide.disclosure) return "the ⋯ formatting disclosure is still there";
+    if (wide.divider) return "the .selection-float-divider survived the regroup";
+    if (wide.ungrouped.length) return `controls outside any group: ${wide.ungrouped.join(", ")}`;
+    const expected = ["capture", "mark", "style", "use", "cut"];
+    if (wide.order.join(",") !== expected.join(",")) {
+      return `groups are ${wide.order.join(",")}, expected ${expected.join(",")}`;
+    }
+    if (wide.hidden.length) return `hidden on a desktop: ${wide.hidden.join(", ")}`;
+    if (wide.reachable !== wide.buttons) {
+      return `${wide.buttons - wide.reachable} of ${wide.buttons} controls are not reachable on a desktop`;
+    }
+    if (wide.rows !== 1) return `the desktop pill wrapped onto ${wide.rows} rows`;
+
+    // ...and now the width that actually had the problem. 390px is the phone
+    // this file's other cases use, and where .is-pinned-bottom applies.
+    await page.setViewport({ width: 390, height: 844 });
+    await new Promise((r) => setTimeout(r, 400));
+    await show(true);
+    const phone = await read();
+    await hide();
+    await page.setViewport({ width: 900, height: 800 });
+    await new Promise((r) => setTimeout(r, 400));
+
+    if (!phone.pinned) return "the phone bar is not pinned to the bottom — this case measured the wrong layout";
+    if (phone.hidden.length) return `still hidden on a phone: ${phone.hidden.join(", ")}`;
+    if (phone.reachable !== phone.buttons) {
+      return `${phone.buttons - phone.reachable} of ${phone.buttons} controls need a second tap on a phone`;
+    }
+    // Two rows is the design (see the arithmetic in styles/22-selection-bar.css);
+    // three would mean a group had to be split and the bar covers more of the
+    // sentence than it is about.
+    if (phone.rows > 2) return `the phone bar took ${phone.rows} rows`;
+    return null;
+  });
+
   // Reported as "bundle bold, italic, underline, code, strikethrough, text
   // colour inside a separate nested item because I rarely use them". Nine
   // controls sat across the bar in front of the ones that get used.

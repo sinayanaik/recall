@@ -55,6 +55,8 @@ const OVERFLOW_SELECTORS = [
   ".notes-head > #bookmarkSetBtn",
   ".notes-head > #bookmarkGoBtn",
   ".notes-head > #focusModeBtn",
+  ".notes-head > #immersiveModeBtn",
+  ".notes-head > #inlineNotesBtn",
 ];
 
 let notesHeadMoreBtn = null;

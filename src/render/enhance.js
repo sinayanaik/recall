@@ -2,7 +2,9 @@
 // their language and copy button, equations get numbered, diagrams render,
 // dead note links get marked.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureMermaid, ensureNomnoml } from "../core/lib-loader.js?v=__BUILD__";
+import { annotateHighlightNotes } from "../notes/inline-highlight-notes.js?v=__BUILD__";
 import { loadNoteLinkIndex, noteLinkEntriesByTitle, parseNoteLinkTarget } from "../notes/note-links.js?v=__BUILD__";
 import { isTopLevelBlockParent } from "./block-cache.js?v=__BUILD__";
 import { codeLanguageLabel, codeLanguageOrGeneric, configurePrismLanguages, declaredCodeLanguage, inferCodeLanguage, normalizeCodeLanguage } from "./code-language.js?v=__BUILD__";
@@ -232,6 +234,12 @@ export async function enhanceRenderedMarkdown(container, roots = null) {
 
   fitMarkdownTables(container, roots);
   markMissingNoteLinks(scope);
+  // Notes-view only. A highlight can be annotated anywhere it can be made, but
+  // the section its text lives in belongs to state.notes — a card face renders
+  // a card, and #printRoot renders whatever an export handed it, so neither has
+  // a note to resolve an id against. Scoped to `roots` like every pass above,
+  // which is what keeps a book paying only for the chunks it has built.
+  if (container === el.notesView) annotateHighlightNotes(container, roots);
   await diagramWork;
 }
 

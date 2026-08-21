@@ -1,38 +1,116 @@
-/* The selection bar's formatting group: the ⋯ disclosure, and the font list
+/* The selection bar: its five groups, and the text-style popover
  * Added AFTER the 13-way split of styles.css, in a file of its own so that
  * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
  * Loaded last, so it settles ties against the slices without having to inflate
  * its own specificity to win them.
  *
- * Both of these exist because the floating selection pill became the ONLY
+ * Everything here exists because the floating selection pill became the ONLY
  * formatting surface in the app. The persistent strips are gone — the notes
- * render toolbar first, and now the card faces' one and the B/I/U half of all
+ * render toolbar first, and then the card faces' one and the B/I/U half of all
  * three raw-edit toolbars — because every button on them refused without a
  * selection, so they were permanent rows that could do nothing until you made
  * one, while covering the text you were reading.
  *
- * That move brought two things here that need styling the slices never had a
- * rule for: the font picker, which had lived only in the raw editor's toolbar
- * and would otherwise have become unreachable, and a way to keep the phone bar
- * from growing to two rows now that it carries everything.
+ * That move left the pill carrying twelve controls, and two problems with it.
+ * The first was reach: a bar clamped to a phone's width could not show them
+ * all, and the answer at the time was a ⋯ disclosure — which put the second tap
+ * on exactly the surface with the least room to spare. The second was legibility:
+ * twelve identical circles in a row say nothing about which of them does what.
+ *
+ * Both are answered below by grouping instead of hiding. The disclosure is
+ * gone, every control is one press away at every width, and the categories are
+ * marked out by the space between them.
  */
 
-/* ── The ⋯ formatting disclosure ──────────────────────────────────────────
-   Phone-only. On the bottom-pinned bar the formatting row is collapsed by
-   default (see 16-mobile-reading.css) and this opens it; on a desktop the pill
-   tracks the selection and has room to carry the formatting inline, so there is
-   nothing to disclose — and a button that expands something already expanded is
-   worse than no button at all.
+/* ── Five groups, told apart by the space between them ────────────────────
+   There used to be a ⋯ disclosure here, and it was phone-only: on the
+   bottom-pinned bar the formatting group was collapsed by default and this
+   opened it. That is the wrong way round. The bar's twelve controls fit on a
+   desktop, where the pill follows the selection — the surface that could not
+   fit them was the phone's, and hiding half of them THERE meant every format
+   cost two taps, the second on a 34px target that had only just appeared.
 
-   Shown again by `.selection-float.is-pinned-bottom .selection-float-btn.is-more`
-   at (0,4,0), which beats this (0,2,0) rule on specificity rather than on order,
-   so it does not matter that this file loads after that one. */
-.selection-float-btn.is-more {
-  display: none;
-  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
-  color: var(--accent);
-  font-size: 0.85rem;
+   So everything is shown at every width, and the problem that created — twelve
+   identical circles in a row, saying nothing about which does what — is solved
+   by grouping rather than by hiding. Five categories, ordered by how much of
+   the selection they put at risk:
+
+     capture   make a card / a cloze / a quick note OUT of these words
+     mark      colour them, or move them into a note of their own
+     style     change how these exact words read
+     use       take them elsewhere — copy, share, search
+     cut       delete them
+
+   ── Proximity, not rules ────────────────────────────────────────────────
+   The obvious separator is a hairline between groups, and it is the wrong
+   choice here: .selection-float is flex-wrap: wrap at every width
+   (16-mobile-reading.css:256) and genuinely wraps on a phone, so a hairline
+   drawn before each group lands at the START of any group that begins a row —
+   a rule separating a group from the edge of the bar. CSS has no "is this the
+   first item on its line" selector to suppress it with.
+
+   Space has no such problem: 3px inside a group, 11px between them. It reads
+   as grouping on one row and on two, and it costs the bar ~30px of width it
+   gets back from the ⋯ button and the divider that are no longer there. */
+.sel-group {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 3px;
 }
+
+.selection-float {
+  gap: 11px;
+}
+
+/* A group whose every control is hidden must not leave an 11px gap behind.
+   Two paths do this: #shareSelectionBtn is REMOVED from the DOM where
+   navigator.share is absent (initTouchSelection), and
+   #extractNoteFromSelectionBtn is hidden on a card face, where a [[link]] is
+   not something you can follow while studying. Neither empties a whole group
+   today — this is the rule that keeps that true if one ever does. */
+.sel-group:not(:has(> :not([hidden]))) {
+  display: none;
+}
+
+/* ── ...and on the phone bar, where the groups can land on two rows ───────
+   16-mobile-reading.css:487 sets `gap: 4px` on .is-pinned-bottom, at the same
+   (0,2,0) as this rule — restated here rather than edited there because that
+   file's gap is about the BAR being compact and this one is about the groups
+   being distinguishable, and they want different numbers. This file loads
+   after it, so equal specificity settles it.
+
+   9px rather than the 11 above: the bar is clamped to the viewport here and
+   every pixel of gap is a pixel the buttons do not get. */
+.selection-float.is-pinned-bottom {
+  gap: 9px;
+}
+
+/* Space alone stops being enough once the bar wraps: two groups on separate
+   rows are separated by a row, not by 9px, and the eye cannot tell where one
+   category ended and the next began. So each group gets a faint tray here —
+   the same shape as the bar's own, one step quieter. Phone-only, because a
+   desktop pill is a single row where the gaps do all the work. */
+.selection-float.is-pinned-bottom .sel-group {
+  padding: 2px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+/* ── Why no group is given a row of its own ───────────────────────────────
+   The tempting rule here is `flex: 1 0 100%` on one group so the fold falls
+   somewhere chosen rather than somewhere arithmetic. It is not needed, and it
+   costs a row. Measured on a 360px screen, where the bar is 344px wide and the
+   trays and gaps are as above:
+
+     capture 116 + mark 99            = 224   row 1
+     style 58 + use 116 + cut 42      = 234   row 2
+
+   Two rows, every group whole, because a group is `flex: 0 0 auto` and so can
+   only wrap between groups — never through one. Forcing the formatting group
+   onto a line by itself would have made that three rows, and a taller bar
+   covers more of the sentence it is about. Left to the arithmetic, and the
+   arithmetic has ~100px of slack on the narrowest screen the app supports. */
 
 /* ── The font list ────────────────────────────────────────────────────────
    Shares .render-color-menu, so it opens, closes and positions through exactly

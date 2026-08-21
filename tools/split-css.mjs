@@ -115,9 +115,15 @@ const POST_SPLIT = {
     "The floating selection pill is now the ONLY formatting surface — the card " +
     "faces' persistent render toolbar and the B/I/U half of all three raw-edit " +
     "toolbars are gone, because every button on them refused without a " +
-    "selection. That brought the font picker here from the raw toolbar (it " +
-    "would otherwise be unreachable) and needed a ⋯ disclosure to keep the " +
-    "phone bar at one row now that it carries everything.",
+    "selection. That left the pill carrying twelve controls, with two problems: " +
+    "a phone-width bar could not show them all, and twelve identical circles in " +
+    "a row say nothing about which does what. The first answer was a ⋯ " +
+    "disclosure, which put a second tap on exactly the surface with the least " +
+    "room to spare; it is gone. Both are answered by grouping instead — five " +
+    "categories (capture / mark / style / use / cut) told apart by the space " +
+    "between them, every control one press away at every width. Space rather " +
+    "than hairlines because the bar genuinely wraps on a phone, and a rule " +
+    "drawn before each group lands at the START of any group that begins a row.",
   "25-sync-report.css":
     "The per-phase timing panel in the sync report. \"Sync is slow\" used to be " +
     "unanswerable: the only thing on screen during a run was a button label, so " +
@@ -200,6 +206,29 @@ const POST_SPLIT = {
     "src/notes/touch-selection.js when canTouchSelect() passes — a desktop " +
     "never gets the class and so never reaches a declaration in this file. " +
     "See tools/touch-selection-check.mjs.",
+  "33-reading-chrome.css":
+    "The reading room's own chrome, quieted at EVERY width. " +
+    "16-mobile-reading.css made this argument for a phone, where four stacked " +
+    "bars over a 757px viewport made it unarguable; a laptop has the pixels, " +
+    "which is why nothing was ever done about it. Measured on a 1280x800 " +
+    "window with a note open: two bars and ~96px, of which the reader is using " +
+    "the tabs — the rest is a card score for cards they are not looking at, a " +
+    "sync countdown ticking once a second, a headline-weight title and a " +
+    "filled category pill. While the quiz panel is in notes-mode (and only " +
+    "then) the counters and countdown go, the title and category become text, " +
+    "the two edit pencils wait for a pointer, and the tabs lose their frame. " +
+    "Also the immersive-mode button's own pressed state, and the background " +
+    "the root element paints in fullscreen.",
+  "34-inline-highlight-notes.css":
+    "A highlight that carries a note, said in the note itself. Two layers: a " +
+    "permanent zero-advance mark on any annotated highlight, and an opt-in " +
+    "mode that numbers them and prints each note where it belongs — merged " +
+    "into its own paragraph in brackets when it is one line, as a tinted " +
+    "callout after it when it is more. Every indicator over a <mark> is drawn " +
+    "with position/text-decoration and never with inline content, because a " +
+    "mark that widens its own text re-wraps the block and makes the note " +
+    "shiver — see 23-highlight-marks.css for the whole of that story. " +
+    "See src/notes/inline-highlight-notes.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

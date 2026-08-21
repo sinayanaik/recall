@@ -90,6 +90,8 @@
     <link rel="stylesheet" href="styles/30-signed-out-chip.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/31-touch-selection.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/32-touch-select.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/33-reading-chrome.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/34-inline-highlight-notes.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -188,6 +190,7 @@
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-note-editor.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/inline-highlight-notes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/link-picker.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/mark-menu.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/note-links.js?v=__BUILD__">
@@ -674,14 +677,39 @@
                    Escape and the shortcut also exit — necessary on desktop,
                    where the collapsed appbar takes ☰ and Back with it. -->
               <button class="edit-card-btn focus-mode-btn" id="focusModeBtn" type="button" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Toggle focus mode">&#10530;</button>
-              <!-- Phones only (hidden above 720px). Six of the buttons above
-                   move INTO the menu below on a narrow screen, which is what
-                   lets this header be one row there instead of two. They are
-                   moved, not duplicated — see src/notes/notes-head-overflow.js —
-                   so every handler already wired to them keeps working, and the
-                   menu sits inside .notes-head so the [data-render-target]
-                   delegation still resolves for the ones that format a
-                   selection. -->
+              <!-- Focus mode's louder sibling: it folds the app's own chrome
+                   AND takes the browser's, through the Fullscreen API. Two
+                   buttons rather than three states on one, because they are
+                   different promises — ⤢ is reversible with a glance at the
+                   header, ⛶ takes over the screen — and a tri-state toggle
+                   makes you press twice to find out which one you are in.
+                   Where the Fullscreen API is missing (iOS Safari) this
+                   degrades to focus mode and says so in its title. -->
+              <button class="edit-card-btn immersive-mode-btn" id="immersiveModeBtn" type="button" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Toggle full screen">&#9974;</button>
+              <!-- Every highlight's note, printed where it belongs, numbered in
+                   reading order. Off by default and remembered: a note read
+                   with its annotations in it is a different document from the
+                   one you write in, and which you want depends on what you are
+                   doing rather than on which note is open.
+
+                   † rather than the ✎ the mark menu uses for the same feature:
+                   that button EDITS one note and this one PRINTS all of them,
+                   and the dagger is already the mark that means "there is a
+                   note about this, set out below". It is also monochrome,
+                   which ✎ at this size in a colour font is not. -->
+              <button class="edit-card-btn inline-notes-btn" id="inlineNotesBtn" type="button" aria-pressed="false" title="Show every highlight's note in the text, numbered where it belongs" aria-label="Toggle highlight notes in the text">&#8224;</button>
+              <!-- Every low-frequency button above moves INTO the menu below —
+                   the cloze trio, make-card, pin, the two bookmark controls,
+                   focus, full screen and the highlight-notes toggle: eight at
+                   the last count, and at EVERY width rather than only on a
+                   phone (see applyNotesHeadOverflow, and the reasoning in
+                   src/notes/notes-head-overflow.js — having room for a control
+                   is not a reason to show it).
+
+                   They are moved, not duplicated, so every handler already
+                   wired to them keeps working, and the menu sits inside
+                   .notes-head so the [data-render-target] delegation still
+                   resolves for the ones that format a selection. -->
               <button class="edit-card-btn notes-head-more-btn" id="notesHeadMoreBtn" type="button" aria-expanded="false" aria-haspopup="true" aria-controls="notesHeadMoreMenu" title="More notes tools" aria-label="More notes tools" hidden>&#8943;</button>
               <div class="notes-head-more-menu" id="notesHeadMoreMenu" hidden></div>
             </div>
@@ -724,29 +752,73 @@
             <div class="highlights-list" id="highlightsList"></div>
             <p class="highlights-empty" id="highlightsEmpty" hidden>No highlights yet. Select text in your notes and tap the highlight button to mark it.</p>
           </div>
+          <!-- ── The selection bar, in five groups ────────────────────────
+               Everything here is one press away, at every width. It used to be
+               twelve controls in a run, with the formatting half folded behind
+               a "⋯" disclosure that was shown ONLY on a phone — so the one
+               place with the least room was the one place where bold cost two
+               taps, and the run itself gave no clue which button did what
+               until you read all twelve tooltips.
+
+               Grouping is the fix for both. A group is a category of intent,
+               and they are ordered by how destructive they are:
+
+                 capture  make a card / a cloze / a quick note OUT of this
+                 mark     colour it, or move it somewhere better
+                 style    change how these exact words read
+                 use      take it elsewhere — copy, share, search
+                 cut      delete it
+
+               Groups also wrap as units, which is what lets the phone bar be
+               two honest rows of related buttons instead of one row plus a
+               hidden one. Nothing is behind a disclosure any more.
+
+               The order of the BUTTONS is unchanged from the run they came
+               from, and every id and class is the one that was there before:
+               handlers are wired by id (src/main.js) and by the
+               [data-render-action] delegation, so these are the same nodes in
+               new wrappers, not new buttons. -->
           <div class="selection-float" id="selectionFloat" hidden>
-            <button class="selection-float-btn" id="makeCardFromSelectionBtn" type="button" title="Make a card from the selection" aria-label="Make a card from the selection">&#43;</button>
-            <button class="selection-float-btn is-cloze" id="makeClozeFromSelectionBtn" type="button" title="Hide the selection as a cloze" aria-label="Hide the selection as a cloze"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg></button>
-            <button class="selection-float-btn is-quick-note" id="pinQuickNoteFromSelectionBtn" type="button" title="Pin the selection to quick_notes" aria-label="Pin the selection to quick_notes">&#128204;</button>
-            <!-- The swatch is DRAWN, not an emoji. This used to be a 🔴 (U+1F534),
-                 a colour-font glyph whose colour no stylesheet can change — so
-                 the one affordance for highlighting always said "red" no matter
-                 which of the six colours was actually about to be applied.
-                 data-render-swatch="highlight" opts it into refreshRenderSwatches(),
-                 which repaints every such element from renderFormatDefaults.
-                 The ▾ opens the colour menu on the pill itself, so choosing a
-                 colour never costs you the selection you are standing on. -->
-            <span class="selection-float-highlight">
-              <button class="selection-float-btn is-highlight" id="highlightSelectionBtn" type="button" title="Highlight the selection" aria-label="Highlight the selection"><span class="pill-swatch" data-render-swatch="highlight" aria-hidden="true"></span></button>
-              <button class="selection-float-btn is-highlight-menu" id="highlightSelectionMenuBtn" type="button" title="Choose highlight colour" aria-label="Choose highlight colour" aria-haspopup="true" aria-expanded="false"><span aria-hidden="true">&#9662;</span></button>
-              <div class="selection-float-menu" id="highlightSelectionMenu" hidden></div>
+            <span class="sel-group" data-sel-group="capture">
+              <button class="selection-float-btn" id="makeCardFromSelectionBtn" type="button" title="Make a card from the selection" aria-label="Make a card from the selection">&#43;</button>
+              <button class="selection-float-btn is-cloze" id="makeClozeFromSelectionBtn" type="button" title="Hide the selection as a cloze" aria-label="Hide the selection as a cloze"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg></button>
+              <button class="selection-float-btn is-quick-note" id="pinQuickNoteFromSelectionBtn" type="button" title="Pin the selection to quick_notes" aria-label="Pin the selection to quick_notes">&#128204;</button>
             </span>
-            <!-- Split the selection out into a note of its own, leaving a
-                 [[link]] behind. Sits next to the eraser because it is the
-                 other action that removes text from where you are — except
-                 this one keeps it, somewhere better. -->
-            <button class="selection-float-btn is-extract" id="extractNoteFromSelectionBtn" type="button" title="Move the selection into its own note" aria-label="Move the selection into its own note">&#8618;</button>
-            <button class="selection-float-btn is-erase" id="eraseNotesSelectionBtn" type="button" title="Delete the selection" aria-label="Delete the selection">&#9003;</button>
+            <span class="sel-group" data-sel-group="mark">
+              <!-- The swatch is DRAWN, not an emoji. This used to be a 🔴 (U+1F534),
+                   a colour-font glyph whose colour no stylesheet can change — so
+                   the one affordance for highlighting always said "red" no matter
+                   which of the six colours was actually about to be applied.
+                   data-render-swatch="highlight" opts it into refreshRenderSwatches(),
+                   which repaints every such element from renderFormatDefaults.
+                   The ▾ opens the colour menu on the pill itself, so choosing a
+                   colour never costs you the selection you are standing on. -->
+              <span class="selection-float-highlight">
+                <button class="selection-float-btn is-highlight" id="highlightSelectionBtn" type="button" title="Highlight the selection" aria-label="Highlight the selection"><span class="pill-swatch" data-render-swatch="highlight" aria-hidden="true"></span></button>
+                <button class="selection-float-btn is-highlight-menu" id="highlightSelectionMenuBtn" type="button" title="Choose highlight colour" aria-label="Choose highlight colour" aria-haspopup="true" aria-expanded="false"><span aria-hidden="true">&#9662;</span></button>
+                <div class="selection-float-menu" id="highlightSelectionMenu" hidden></div>
+              </span>
+              <!-- Split the selection out into a note of its own, leaving a
+                   [[link]] behind. It marks up the note's structure rather than
+                   its words, which is why it sits with the highlighter and not
+                   with the eraser it used to stand next to — both remove text
+                   from where you are, but this one keeps it, somewhere better,
+                   and putting it beside a delete button said otherwise. -->
+              <button class="selection-float-btn is-extract" id="extractNoteFromSelectionBtn" type="button" title="Move the selection into its own note" aria-label="Move the selection into its own note">&#8618;</button>
+            </span>
+            <!-- Inline formatting — bulletify, plus B I U S </>, the fonts and
+                 the text colours behind one "Aa" — filled by initRenderToolbars.
+                 It used to be a permanent strip in the notes header, where it
+                 could do nothing: every one of these refuses unless there is a
+                 selection. Here it appears with the selection and goes with it.
+
+                 data-render-target on the pill (set per selection by
+                 positionNotesSelectionButton, since the pill serves the notes
+                 AND both card faces) is what routes these through the shared
+                 [data-render-action] delegation in main.js. -->
+            <span class="sel-group" data-sel-group="style">
+              <span class="selection-float-format render-toolbar" id="selectionFloatFormat"></span>
+            </span>
             <!-- Copy / Share / Web search — the three things Android's own
                  selection bar offered, which the app now has to offer itself.
                  src/notes/touch-selection.js suppresses the native long press
@@ -763,34 +835,19 @@
 
                  Share is REMOVED from the DOM by initTouchSelection's wiring
                  where navigator.share is absent (every desktop browser but
-                 Safari), rather than left sitting there doing nothing. -->
-            <button class="selection-float-btn is-copy" id="copySelectionBtn" type="button" title="Copy the selection" aria-label="Copy the selection">&#128203;</button>
-            <button class="selection-float-btn is-share" id="shareSelectionBtn" type="button" title="Share the selection" aria-label="Share the selection">&#8599;</button>
-            <button class="selection-float-btn is-search" id="searchSelectionBtn" type="button" title="Search the web for the selection" aria-label="Search the web for the selection">&#128269;</button>
-            <!-- Inline formatting — B I U S </> and the text-colour picker —
-                 filled by initRenderToolbars. It used to be a permanent strip in
-                 the notes header, where it could do nothing: every one of these
-                 refuses unless there is a selection. Here it appears with the
-                 selection and goes with it.
-
-                 data-render-target on the pill (set per selection by
-                 positionNotesSelectionButton, since the pill serves the notes
-                 AND both card faces) is what routes these through the shared
-                 [data-render-action] delegation in main.js. -->
-            <!-- Disclosure for the formatting row, which on a phone is
-                 collapsed by default: the bar carries twelve controls, and as
-                 two permanent rows of 36px targets it covered ~100px of the
-                 text you had just selected. Hidden on desktop, where the pill
-                 follows the selection and shows everything inline.
-
-                 "⋯" rather than the "Aa" you might expect, because the font
-                 picker INSIDE the group it opens is already "Aa" (it kept the
-                 raw toolbar's glyph when it moved here) and two "Aa" buttons
-                 visible at once, one nested in the other's disclosure, read as
-                 a mistake. -->
-            <button class="selection-float-btn is-more" id="selectionFormatToggleBtn" type="button" title="Formatting" aria-label="Show formatting options" aria-expanded="false" aria-controls="selectionFloatFormat"><span aria-hidden="true">&#8943;</span></button>
-            <span class="selection-float-divider" aria-hidden="true"></span>
-            <span class="selection-float-format render-toolbar" id="selectionFloatFormat"></span>
+                 Safari), rather than left sitting there doing nothing — which
+                 is why this group can legitimately end up holding two. -->
+            <span class="sel-group" data-sel-group="use">
+              <button class="selection-float-btn is-copy" id="copySelectionBtn" type="button" title="Copy the selection" aria-label="Copy the selection">&#128203;</button>
+              <button class="selection-float-btn is-share" id="shareSelectionBtn" type="button" title="Share the selection" aria-label="Share the selection">&#8599;</button>
+              <button class="selection-float-btn is-search" id="searchSelectionBtn" type="button" title="Search the web for the selection" aria-label="Search the web for the selection">&#128269;</button>
+            </span>
+            <!-- Alone, and last. The only control here that destroys what you
+                 selected; in the old run it sat between "split into a note" and
+                 "copy", one 34px circle from both. -->
+            <span class="sel-group" data-sel-group="cut">
+              <button class="selection-float-btn is-erase" id="eraseNotesSelectionBtn" type="button" title="Delete the selection" aria-label="Delete the selection">&#9003;</button>
+            </span>
           </div>
 
           <div class="controls" aria-label="Card actions">
