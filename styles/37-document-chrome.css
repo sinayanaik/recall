@@ -222,18 +222,65 @@
 
 /* The same box as .document-more-menu (styles/36-document.css) and anchored the
    same way — against .view-mode-row, which is position:relative, so opening
-   downward over the page cannot be clipped by .quiz-panel's overflow. */
+   downward over the page cannot be clipped by .quiz-panel's overflow.
+   --panel/--line, for the reason set out over there: --surface and --border are
+   not tokens this app has. */
 .view-mode-row > .view-export-menu {
   position: absolute;
   right: 0;
   top: calc(100% + 4px);
   z-index: 46;
   min-width: 16rem;
+  /* Capped, so a hint wraps to a second line instead of stretching the box out
+     to the width of its longest sentence — and clamped to the viewport, because
+     this menu opens on a phone too. */
+  max-width: min(21rem, calc(100vw - 24px));
   padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
+}
+
+/* A menu row's second line: what this export actually gives you.
+   `display: block` is the load-bearing half. styles/35-notes-menu.css:27 hides
+   .nhm-hint outright and turns it back on only inside .notes-head-more-menu,
+   because those rows are icon buttons everywhere else and must still look like
+   icon buttons — which means the hint on the document ⋯ menu's own "Notes on
+   the page" row has never been on screen either. Both menus are named here. */
+.view-mode-row > .view-export-menu .md-menu-item > span,
+.view-mode-row > .document-more-menu .md-menu-item > span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.view-mode-row > .view-export-menu .nhm-hint,
+.view-mode-row > .document-more-menu .nhm-hint {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+/* .md-menu-item indents any row with no icon by 34px, which is right in the My
+   Decks menu where icon rows and format rows sit together. Every row here is a
+   format row, so the indent is just a ragged left edge. */
+.view-mode-row > .view-export-menu .md-menu-item {
+  min-height: 30px;
+  padding: 5px 9px;
+}
+
+.view-mode-row > .view-export-menu .md-menu-head {
+  padding: 4px 9px 6px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .view-mode-row > .view-export-menu[hidden] {
@@ -520,7 +567,12 @@
   color: var(--text);
   font-size: 0.86rem;
   line-height: 1.5;
-  column-width: 260px;
+  /* The shorthand, so both halves apply: at most --pdf-note-cols columns (set
+     per block by noteBlockFor from how many notes there are), each at least
+     260px wide. The count stops a lone note being stranded in one narrow
+     column; the width is what collapses the lot to a single column on a phone,
+     with no media query and nothing to keep in step with fit-width. */
+  columns: var(--pdf-note-cols, 1) 260px;
   column-gap: 18px;
 }
 
@@ -540,9 +592,13 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  /* `auto`, not 100%: the button now fills its COLUMN, and a 100% measured
-     against the multicol container would be the full strip width. */
-  width: auto;
+  /* 100%, and it has to be spelled out: in a multicol container the percentage
+     resolves against the COLUMN box, not the strip, so this is "fill the
+     column" and not "be as wide as all of them". `width: auto` does not do it —
+     a <button> is sized shrink-to-fit whatever its display is, so an auto-width
+     note came out as wide as its longest line and left the rest of its column
+     empty. */
+  width: 100%;
   padding: 4px 6px;
   border: 1px solid transparent;
   border-radius: 8px;

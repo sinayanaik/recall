@@ -32,6 +32,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* --panel and --line, NOT --surface and --border.
+   Those two do not exist. styles/01-tokens.css defines --panel/--line (and
+   --panel-2), and there is no --surface or --border in any of the ten themes —
+   so `background: var(--surface)` was an invalid declaration and this menu has
+   been opening with NO background and NO border since it landed. Over a note
+   that reads as a floating list; over a white PDF page, which is what this menu
+   opens on, it reads as light-grey text on nothing. Same pair the notes ⋯ menu
+   three files along already uses (styles/16-mobile-reading.css:78). */
 .document-more-menu {
   position: absolute;
   right: 0;
@@ -39,8 +47,8 @@
   z-index: 40;
   min-width: 15rem;
   padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
 }
@@ -228,9 +236,9 @@
 .pdf-missing-pick {
   display: inline-block;
   padding: 8px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--panel);
   color: var(--text);
   cursor: pointer;
 }
@@ -313,8 +321,8 @@
   font: inherit;
   font-size: 0.75rem;
   color: var(--text);
-  background: var(--surface-2, transparent);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 1px solid var(--line);
   border-radius: 999px;
   cursor: pointer;
 }

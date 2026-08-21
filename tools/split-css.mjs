@@ -271,7 +271,22 @@ const POST_SPLIT = {
     "the selection handles') expands into seven icon buttons and puts itself " +
     "away again. display:none outside focus mode, because every one of those " +
     "controls is already on screen in the row above when the chrome is not " +
-    "folded. See src/ui/reading-rail.js.",
+    "folded. The grip is a \u263c-sized \u2630 rather than the original " +
+    "nine-pixel stripe: a 26%-alpha tint has no background it reliably " +
+    "contrasts with over an arbitrary PDF page, right:0 lands it on the " +
+    "scrollbar, and top:50% is the one band the eye does not sweep. " +
+    "See src/ui/reading-rail.js.",
+  "39-document-export.css":
+    "The Document surface's own export: the paper, with your notes on it. One " +
+    "sheet per page, the page as an image rasterised by pdf.js with its " +
+    "highlights painted on, and that page's notes printed underneath in two " +
+    "columns \u2014 the same packing the on-screen strip uses, for the same " +
+    "reason. Printed through the existing pipeline (installPdfPrintStyle), so " +
+    "what is here is only what that pipeline cannot know. Fixed --print-* " +
+    "colours throughout, like 28-export-highlights.css: this content can land " +
+    "in the standalone HTML path, which inlines the LIVE theme around it, and " +
+    "a dark background under a white scanned page reads as a printing fault. " +
+    "See src/documents/pdf-export.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

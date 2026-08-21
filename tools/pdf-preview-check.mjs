@@ -43,6 +43,8 @@ const args = process.argv.slice(2);
 const SHOT = (args.find((a) => a.startsWith("--shot=")) || "").slice(7)
   || (args.includes("--shot") ? "pdf-document.png" : "");
 const OWN_PDF = args.find((a) => a.endsWith(".pdf"));
+// --shot-menu opens the ⇓ export menu before the shot is taken.
+const SHOT_MENU = args.includes("--shot-menu");
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
 //
@@ -651,6 +653,12 @@ try {
       // strip rather than down the first column. (No backticks in here: this
       // whole function is a template literal handed to CDP.)
       columnWidth: block ? getComputedStyle(block).columnWidth : "",
+      // Capped at how many notes there are, so the ONE note on this page gets
+      // the whole strip rather than a 260px column with three empty ones beside
+      // it. Read off the block, since it is set per block.
+      columnCount: block ? getComputedStyle(block).columnCount : "",
+      noteCount: block ? block.querySelectorAll(".pdf-page-note").length : 0,
+      noteWidth: block ? Math.round(block.querySelector(".pdf-page-note").getBoundingClientRect().width) : 0,
       headSpan: block ? getComputedStyle(block.querySelector(".pdf-page-notes-head")).columnSpan : "",
       noteBreak: block ? getComputedStyle(block.querySelector(".pdf-page-note")).breakInside : ""
     };
@@ -682,6 +690,17 @@ try {
     check("...and packs its notes into columns",
       pageNotes.columnWidth === "260px" && pageNotes.headSpan === "all" && pageNotes.noteBreak === "avoid",
       `column-width=${pageNotes.columnWidth} head=${pageNotes.headSpan} note=${pageNotes.noteBreak}`);
+    // Two halves of one promise. The cap is what stops a lone note being
+    // stranded in a 260px column with three empty ones beside it; the width is
+    // what says each note actually FILLS the column it was given, which
+    // `width: auto` on a <button> quietly does not.
+    const columns = Number(pageNotes.columnCount) || 1;
+    check("...but never more columns than there are notes",
+      columns === pageNotes.noteCount,
+      `${pageNotes.noteCount} note(s), ${columns} column(s)`);
+    check("...and each note fills the column it is in",
+      pageNotes.noteWidth > (pageNotes.blockWidth / columns) * 0.75,
+      `note ${pageNotes.noteWidth}px of ~${Math.round(pageNotes.blockWidth / columns)}px`);
   }
 
   // ── 8b. The container the notes live in ──────────────────────────────────
@@ -1001,8 +1020,16 @@ try {
       // The import's own toast sits over the control row this shot exists to
       // show — it is the check's doing, not the app's.
       document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      // ...and, with --shot-menu, the export menu open over it: it is new UI
+      // built per view, and a shot of the row alone cannot show whether its rows
+      // are the RIGHT ones for the view under them.
+      if (SHOT_MENU) {
+        api.paintViewExportMenu();
+        document.getElementById("viewExportBtn").click();
+        await settle(120);
+      }
       await settle(60);
-    }`);
+    }`.replace("SHOT_MENU", String(SHOT_MENU)));
     const shot = await page.call("Page.captureScreenshot", { format: "png" });
     writeFileSync(path.resolve(ROOT, SHOT), Buffer.from(shot.data, "base64"));
     console.log(`      screenshot → ${SHOT}`);
