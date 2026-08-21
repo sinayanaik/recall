@@ -6,6 +6,7 @@
 
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { migrateLegacyHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
@@ -346,7 +347,21 @@ export async function settleNotesPin(view, anchors) {
     // already holds the flag (setTouchSelectionDragging reports into it) and
     // this module already imports from it, so there is no new module edge to
     // reason about.
-    if (touchSelectionDragActive()) return;
+    //
+    // ── ...and of the PRESS as well as the drag ──────────────────────────
+    //
+    // A drag is not the only gesture a scrollTop write can ruin. A press is
+    // cancelled outright if the content under the resting finger moves more
+    // than PRESS_SCROLL_TOLERANCE_PX (src/notes/touch-selection.js), and a
+    // correction landing inside those 240ms does exactly that — silently, so
+    // the reader sees a long press that did nothing and presses again. That is
+    // half of "I have to press again and again", and the drag flag cannot see
+    // it because the drag has not started yet.
+    //
+    // touchGestureHoldsSurface() covers both, and lives in core/ so that
+    // block-cache.js can ask the same question without closing a cycle. See
+    // src/core/gesture.js.
+    if (touchSelectionDragActive() || touchGestureHoldsSurface()) return;
     // Paged mode never gets here: renderNotesViewPinned handles it by restoring
     // scrollLeft directly, because re-deriving a page from a block anchor is
     // what made a highlight in the first column turn the page backwards. If the

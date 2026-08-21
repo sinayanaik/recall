@@ -83,10 +83,24 @@ body.has-touch-select .card-face .rendered {
 }
 
 /* ── 3. Hold the surface still under a live gesture ────────────────────────
-   Set for as long as a press-drag or a handle drag is in flight. The controller
-   preventDefault()s the touchmove itself — that is what actually stops the
-   scroll — and this is the compositor's copy of the same statement, so a fling
-   already in flight when a handle is grabbed does not carry on underneath it.
+   Set for as long as a press-drag or a handle drag is in flight.
+
+   What actually stops the scroll is the controller's preventDefault() on the
+   touchmove, and this rule is NOT a second copy of that statement — it cannot
+   be. `touch-action` is resolved when a touch sequence BEGINS, from the hit
+   test at touchdown; changing it partway through has no effect on the gesture
+   in flight. A class added by beginDrag() therefore governs the NEXT touch, not
+   the one that is dragging.
+
+   That is worth having and is why the rule stays: a finger that comes down on
+   the surface while a selection drag is already live (a second finger, or the
+   next touch of a reader who lifted and reached straight back) starts its
+   sequence with `none` already resolved. What it is not is a safety net for the
+   drag itself. The controller reads `event.cancelable` for that — see
+   gestureStolen in src/notes/touch-selection.js — because the browser stating
+   per event whether we still own the gesture is the only reliable answer, and
+   believing this rule was holding the page is how a selection came to be
+   dragged across a page that was scrolling underneath it.
 
    `is-touch-DRAGGING`, not `is-touch-selecting`. The two are deliberately
    different classes and the distinction is load-bearing: `is-touch-selecting`

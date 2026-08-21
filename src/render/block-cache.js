@@ -7,6 +7,7 @@
 // the scrollbar jump around while you read.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { onTouchGestureRelease, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
@@ -1092,6 +1093,28 @@ export const measuredChunkEstimates = new WeakSet();
 // element) whenever the edit is big enough to change chunk membership at all.
 export function measureNotesChunkEstimate(chunk) {
   if (measuredChunkEstimates.has(chunk)) return;
+  // ── ...but never a span that has not been built ─────────────────────────
+  //
+  // On a viewport-built note the chunks are SPANS, and an unread one is an
+  // EMPTY div holding a min-height (styles/19-notes-chunks.css). Its
+  // offsetHeight is that min-height — the guess — and pinning it here is worse
+  // than leaving it alone in two compounding ways:
+  //
+  //   • The WeakSet is marked before the measurement, deliberately (see the
+  //     "once per chunk" note above), so this burns the chunk's single shot on
+  //     a number that describes nothing. When the span is later built, the
+  //     placeholder it goes on claiming is the guess, permanently.
+  //   • Which makes the crossing this function exists to smooth into the one
+  //     that lurches: contain-intrinsic-size and the real content are now
+  //     guaranteed to disagree, by however far the density estimate was out.
+  //
+  // Both observers can reach a pending chunk — scheduleNotesChunkEstimates
+  // registers every unmeasured one, and the build observer's own runway is the
+  // same 1200px — so the guard belongs here rather than at either caller. It is
+  // not a lost measurement: buildNotesLazySpan drops is-pending when the span
+  // lands, and the chunk is still unmeasured, so the next pass measures it for
+  // real.
+  if (chunk.classList?.contains(NOTES_CHUNK_PENDING_CLASS)) return;
   measuredChunkEstimates.add(chunk);
   const had = chunk.style.contentVisibility;
   chunk.style.contentVisibility = "visible";
@@ -1121,6 +1144,53 @@ export function measureNotesChunkEstimate(chunk) {
 // it was ever given, same trap documented on runNearViewportAndDefer).
 export const notesChunkEstimateObservers = new Map();
 
+// ── This pass stands down for a finger too ────────────────────────────────
+//
+// Same argument as the span builder below, one level smaller: measuring a chunk
+// forces it to lay out and then rewrites its contain-intrinsic-size, and a
+// chunk above the reader swapping a guessed placeholder for its real height
+// moves the document under them. Under a RESTING finger that is worse than
+// under a scrolling one — a press is cancelled outright if the content moves
+// more than PRESS_SCROLL_TOLERANCE_PX (src/notes/touch-selection.js), silently,
+// and the reader just sees a long press that did nothing.
+//
+// Measured on the 549KB fixture in tools/large-note-selection-check.mjs: a
+// press taken straight after a jump into unread content found the paragraph
+// under the finger 37px from where it had been aimed, and the press was
+// correctly refused. Deferring this pass is what makes that zero.
+//
+// Only the OPPORTUNISTIC pass defers. pinChunkHeights (src/notes/selection.js)
+// calls measureNotesChunkEstimate directly and deliberately, on the chunks a
+// live drag is about to free containment on, and must go on doing so — measuring
+// there is precisely what stops the freeing from moving the page.
+const deferredChunkEstimates = new Map();
+
+function queueChunkEstimate(root, chunk) {
+  let queued = deferredChunkEstimates.get(root);
+  if (!queued) {
+    queued = new Set();
+    deferredChunkEstimates.set(root, queued);
+  }
+  queued.add(chunk);
+}
+
+// No safety timer here, unlike the span builds below, and that is a decision
+// rather than an omission: a span that never arrives is a blank screenful of a
+// book, where an estimate that never arrives is a placeholder still standing at
+// the note-wide guess — which is what every chunk starts at anyway. The cost of
+// the failure is the cost of not having the feature, so it does not need
+// insuring twice.
+export function flushChunkEstimates() {
+  Array.from(deferredChunkEstimates.entries()).forEach(([root, queued]) => {
+    deferredChunkEstimates.delete(root);
+    queued.forEach((chunk) => {
+      if (chunk.isConnected) measureNotesChunkEstimate(chunk);
+    });
+  });
+}
+
+onTouchGestureRelease(flushChunkEstimates);
+
 export function notesChunkEstimateObserver(root) {
   const existing = notesChunkEstimateObservers.get(root);
   if (existing) return existing;
@@ -1132,6 +1202,10 @@ export function notesChunkEstimateObserver(root) {
         // guards it), but leaving a measured chunk under observation would mean
         // every scroll tick re-delivers an entry for it forever.
         observer.unobserve(entry.target);
+        // ...which is also why a deferral has to QUEUE rather than simply
+        // return: the entry is gone by the time we decide, and nothing would
+        // ever deliver it again.
+        if (touchGestureHoldsSurface()) { queueChunkEstimate(root, entry.target); return; }
         measureNotesChunkEstimate(entry.target);
       });
     },
@@ -1151,6 +1225,9 @@ export function releaseNotesChunkEstimateObserver(root) {
     observer.disconnect();
     notesChunkEstimateObservers.delete(root);
   }
+  // Anything queued describes chunks of the note being replaced. Dropped rather
+  // than flushed, same as the deferred span builds.
+  deferredChunkEstimates.delete(root);
 }
 
 // Registers every not-yet-measured chunk in `container`. A chunk already
@@ -2303,6 +2380,107 @@ export function finishNotesLazySpan(container, index) {
 // anything at all.
 export const notesLazyBuildObservers = new Map();
 
+// ── ...but never underneath a finger ──────────────────────────────────────
+//
+// Building a span is a lex plus a render plus a replaceChildren, synchronously,
+// inside a scroll callback. That is affordable when the reader is scrolling —
+// the span bound is chosen so it fits a frame — and it is not affordable at all
+// on the frames a selection gesture is running in, for two reasons that
+// compound:
+//
+//   • It changes the document's height. The placeholder is standing at an
+//     ESTIMATE (`--span-estimate`, or the stylesheet's flat fallback until
+//     measureNotesLazyDensity has run), and the difference between that and the
+//     real height moves everything below it. Under a resting finger that
+//     cancels the press outright — PRESS_SCROLL_TOLERANCE_PX in
+//     src/notes/touch-selection.js — which is the "I have to press again and
+//     again" report. Under a dragging one it moves the words out from under the
+//     boundary being placed.
+//
+//   • It blocks the renderer. Chrome only lets the page cancel a touch scroll
+//     for as long as the main thread answers the touch in time; miss that
+//     deadline and the rest of the sequence goes non-blocking, the
+//     preventDefault holding the surface still becomes a no-op, and the
+//     compositor scrolls the page out from under the gesture. That is the
+//     reported "as soon as I try to select more content it starts to scroll",
+//     and the biggest single thing that can block the renderer mid-drag is
+//     this function.
+//
+// So a gesture defers it. The entry has already been unobserved by the time we
+// decide, so the queue below is the only remaining record of it and MUST be
+// drained: src/core/gesture.js calls back the moment the finger lifts, which is
+// where flushNotesLazyBuilds runs.
+//
+// Deferring is safe by arithmetic rather than by hope. The runway is
+// DEFERRED_WORK_MARGIN (1200px) and the fastest a gesture can move the view is
+// the edge auto-scroll's EDGE_MAX_SPEED_PX per frame — about 960px/s — so a
+// drag needs well over a second at full tilt to outrun it, and a drag is over
+// long before that. A reader who does outrun it sees a placeholder for a moment
+// instead of having the page taken away from them, which is the trade this is
+// making.
+const deferredLazyBuilds = new Map();
+
+// A backstop, and nothing more. The release listener is the real drain and it
+// runs on every touchend and touchcancel; this only exists so that a gesture
+// whose end never arrived — a browser quirk, a view swapped out from under a
+// held finger — cannot leave a reader looking at a blank placeholder with
+// nothing left to trigger the build. Long enough that no real gesture reaches
+// it, so it never competes with the deferral it is insuring.
+export const NOTES_LAZY_BUILD_DEFER_MAX_MS = 4000;
+
+let deferredLazyBuildTimer = 0;
+
+export function queueNotesLazyBuild(root, index) {
+  let queued = deferredLazyBuilds.get(root);
+  if (!queued) {
+    queued = new Set();
+    deferredLazyBuilds.set(root, queued);
+  }
+  queued.add(index);
+  if (deferredLazyBuildTimer) return;
+  deferredLazyBuildTimer = setTimeout(() => {
+    deferredLazyBuildTimer = 0;
+    flushAllNotesLazyBuilds();
+  }, NOTES_LAZY_BUILD_DEFER_MAX_MS);
+}
+
+export function flushNotesLazyBuilds(root) {
+  const queued = deferredLazyBuilds.get(root);
+  if (!queued || !queued.size) return 0;
+  deferredLazyBuilds.delete(root);
+  const plan = notesLazyPlans.get(root);
+  // The note was swapped or re-planned while the finger was down; those indices
+  // describe a document that is no longer on screen. Dropping them is correct —
+  // whatever replaced it observed its own chunks.
+  if (!plan) return 0;
+  const finished = [];
+  // In document order, so a reader who queued three spans on the way down gets
+  // them back in the order they will read them.
+  Array.from(queued).sort((a, b) => a - b).forEach((index) => {
+    if (buildNotesLazySpan(root, index)) finished.push(index);
+  });
+  finished.forEach((index) => finishNotesLazySpan(root, index));
+  if (finished.length) {
+    scheduleNotesChunkEstimates(root);
+    scheduleNotesBlockEstimate(root);
+    scheduleNotesLazyDensity(root);
+  }
+  return finished.length;
+}
+
+// Every root at once, which is what the gesture release actually knows: the
+// controller hands the surface back without saying which of the three reading
+// surfaces it was on, and only #notesView is ever viewport-built anyway.
+export function flushAllNotesLazyBuilds() {
+  if (deferredLazyBuildTimer) {
+    clearTimeout(deferredLazyBuildTimer);
+    deferredLazyBuildTimer = 0;
+  }
+  Array.from(deferredLazyBuilds.keys()).forEach((root) => flushNotesLazyBuilds(root));
+}
+
+onTouchGestureRelease(flushAllNotesLazyBuilds);
+
 export function notesLazyBuildObserver(root) {
   const existing = notesLazyBuildObservers.get(root);
   if (existing) return existing;
@@ -2315,12 +2493,15 @@ export function notesLazyBuildObserver(root) {
       // queue stacks up to 250ms of drain latency on top of the runway, and a
       // fling covers 1200px well inside that. The span size bound is what makes
       // that affordable — see NOTES_LAZY_SPAN_MAX_CHARS.
+      const held = touchGestureHoldsSurface();
       const finished = [];
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
         observer.unobserve(entry.target);
         const index = plan.chunks.indexOf(entry.target);
         if (index === -1) return;
+        // ...unless a finger is on the surface. See the note above.
+        if (held) { queueNotesLazyBuild(root, index); return; }
         if (buildNotesLazySpan(root, index)) finished.push(index);
       });
       finished.forEach((index) => finishNotesLazySpan(root, index));
@@ -2348,6 +2529,10 @@ export function releaseNotesLazyBuildObserver(root) {
     observer.disconnect();
     notesLazyBuildObservers.delete(root);
   }
+  // Anything still queued describes chunks of a plan that is going away. Dropped
+  // rather than flushed: building them would render spans of the note that is
+  // being replaced, into a container the next render is about to overwrite.
+  deferredLazyBuilds.delete(root);
 }
 
 // Stop describing this surface as viewport-built — and say so in the BLOCK
