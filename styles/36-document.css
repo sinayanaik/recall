@@ -12,6 +12,40 @@
  * viewport pdf.js reports, so a coordinate means the same thing in all three.
  */
 
+/* ── --surface-2, defined at last ──────────────────────────────────────────
+ *
+ * The rule below has read `var(--surface-2, var(--bg))` since the day this
+ * surface landed, and --surface-2 was defined in no theme and never has been:
+ * these two files are the only references to it in the repo. So the fallback
+ * won every time — and styles/01-tokens.css sets --bg to #000000 for the three
+ * dark-amoled themes. On those, an empty #documentView is a full-screen pure
+ * black panel, and `.is-pdf-inverted .pdf-page` was #111, so a page that had
+ * not rasterised yet was a black rectangle inside it at a contrast ratio of
+ * 1.10 — which is not an edge anybody can see on an OLED screen.
+ *
+ * That is why "the Document tab is black" arrived as ONE bug report rather
+ * than four. A document that failed to open, a page whose render never landed,
+ * a scroller with no pages in it and a page that simply had not drawn yet were
+ * the same photograph. This is the half that makes them tell-apart-able; the
+ * rest is in src/documents/pdf-view.js.
+ *
+ * Derived rather than written out ten times: a tenth colour per theme is a
+ * tenth colour to keep in step, and the answer is the same everywhere — a
+ * little of the theme's own ink stirred into its own background. Both halves
+ * re-resolve per theme, because every theme block in 01-tokens.css is also
+ * :root. Kept small (4%) because the mount must stay a MOUNT — an amoled theme
+ * that stops being black is not a fix — and the legibility is bought on the
+ * page side instead, further down, where a canvas covers it the moment one
+ * lands and it therefore costs nothing.
+ *
+ * Here rather than in styles/01-tokens.css because that file is one of the
+ * thirteen frozen slices tools/split-css.mjs compares byte for byte against
+ * pre-modular:styles.css. This file is already a POST_SPLIT file, and it is
+ * the file that asks for the token. */
+:root {
+  --surface-2: color-mix(in srgb, var(--text) 4%, var(--bg));
+}
+
 .document-stage {
   display: flex;
   flex-direction: column;
@@ -59,7 +93,11 @@
   overflow: auto;
   overscroll-behavior: contain;
   padding: 16px 0 48px;
-  background: var(--surface-2, var(--bg));
+  /* No `, var(--bg)` fallback any more. The token is defined now
+     (styles/01-tokens.css) and the fallback was the bug: it fired on every
+     theme, and on the amoled ones it painted the desk the same #000000 as an
+     unrendered page. */
+  background: var(--surface-2);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -123,9 +161,26 @@
   justify-content: center;
   font-size: 2rem;
   font-weight: 600;
-  color: rgb(0 0 0 / 0.12);
+  /* 0.12 alpha is right over white paper and was the whole label on a dark
+     page: 16% white on #111 is not a page number, it is a smudge, and a reader
+     whose pages had not rendered had nothing to read at all. Legible enough to
+     say "page 7, still loading" — see the is-pdf-inverted rule below, which
+     lifts it further — and still quiet enough to vanish under the canvas the
+     moment one lands. */
+  color: rgb(0 0 0 / 0.16);
   user-select: none;
   pointer-events: none;
+}
+
+/* A page whose render threw. Same slot as the page number, because it is the
+   same question — "what is this rectangle?" — with a different answer, and the
+   reader is already looking here. */
+.pdf-page-label.is-error {
+  padding: 0 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: center;
+  color: var(--danger);
 }
 
 .pdf-canvas {
@@ -236,12 +291,34 @@
   filter: invert(1) hue-rotate(180deg);
 }
 
+/* The undrawn page, on a dark theme — the other half of --surface-2.
+ *
+ * This was #111 against a mount of #000: a contrast ratio of 1.10, which is to
+ * say two rectangles nobody can tell apart, and the page number printed on it
+ * at 16% white composited to about #333 — 1.51 against its own page, which is
+ * not a ratio anyone reads a number at. So the one affordance that says "this
+ * page has not drawn YET, as opposed to at all" was invisible in exactly the
+ * theme where it was the only thing on screen.
+ *
+ * A lighter page costs nothing once the page has drawn: the canvas covers the
+ * whole box, so this colour is only ever seen where there is no canvas. That is
+ * the whole trade and it is the right way round. Measured, so the check in
+ * tools/pdf-preview-check.mjs has a real threshold rather than a taste: 1.45
+ * against the mount, and 3.7 for the page number against its page. */
 .document-stage.is-pdf-inverted .pdf-page {
-  background: #111;
+  background: #2a2f33;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.5);
 }
 
 .document-stage.is-pdf-inverted .pdf-page-label {
-  color: rgb(255 255 255 / 0.16);
+  color: rgb(255 255 255 / 0.42);
+}
+
+/* Stated again, because the rule above is one class more specific than
+   .pdf-page-label.is-error and would otherwise dim a failure message back down
+   to a page number on exactly the theme where it matters most. */
+.document-stage.is-pdf-inverted .pdf-page-label.is-error {
+  color: var(--danger);
 }
 
 /* Multiply over an inverted (dark) page would make a highlight invisible —

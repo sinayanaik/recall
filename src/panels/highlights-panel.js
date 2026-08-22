@@ -5,6 +5,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
 import { highlightNoteResolver, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
+import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { notesAnchorPlainText, scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
@@ -13,7 +14,7 @@ import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__B
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentExcerptLabel, documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck, sameDocumentLine, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
@@ -232,7 +233,53 @@ export function addRegionPreview(body, record) {
 }
 
 export function collectDocumentHighlightRows() {
-  return documentHighlightsInReadingOrder().map((record) => {
+  const rows = [];
+  documentHighlightsInReadingOrder().forEach((record) => {
+    const row = documentRowFor(record);
+    // ── One line, one row, one "Go to" ──────────────────────────────────────
+    //
+    // Every PDF record used to become its own row, because the merge test below
+    // (in collectNoteHighlightRows) requires a markdown `span` on both rows and
+    // a document highlight has none. So three highlights on one line of a paper
+    // were three rows, three previews of overlapping fragments and three "Go
+    // to" buttons that all scrolled to the same place — which is what "if there
+    // are multiple highlights in a single line then one goto is sufficient"
+    // was about.
+    //
+    // Merged on the geometry the file already carries (sameDocumentLine), so a
+    // "line" here means a line of the paper rather than anything this panel had
+    // to guess. Deliberately a LINE and not a paragraph: a paragraph of a
+    // two-column paper is a dozen lines and half a screen, and collapsing that
+    // far would hide which of them was actually marked.
+    //
+    // Unconditional, unlike the markdown path, which splits a merged row again
+    // the moment either highlight has a note. That rule exists there because
+    // its rows label notes positionally ("Note on highlight 2") and two notes
+    // under one line are then ambiguous. These rows label each note with its
+    // own excerpt instead, so there is nothing to be ambiguous about and no
+    // reason to duplicate the line.
+    const previous = rows[rows.length - 1];
+    if (previous?.lineRecord && sameDocumentLine(previous.lineRecord, record)) {
+      previous.marks.push(row.marks[0]);
+      // The row's own text grows to cover the line's whole marked run, so the
+      // preview is not just the first highlight's words with two more "Go to"s
+      // beside it.
+      if (row.markdown && !previous.markdown.includes(row.markdown)) {
+        previous.markdown = `${previous.markdown} … ${row.markdown}`;
+      }
+      // A region keeps its picture even when it shares a line with a text
+      // highlight — the thumbnail is the row's most useful content.
+      if (!previous.region && row.region) previous.region = row.region;
+      return;
+    }
+    rows.push(row);
+  });
+  return rows;
+}
+
+// One row for one record, before any same-line merging.
+function documentRowFor(record) {
+  {
     // A region drawn round a photograph has no words in it at all, and a blank
     // row in a list of highlights is indistinguishable from a bug — so it is
     // named by where it is. (A region round a boxed equation or a table usually
@@ -246,6 +293,9 @@ export function collectDocumentHighlightRows() {
       markdown: text.replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
       span: null,
       page: record.page,
+      // The record this row's line band is measured from, so the caller can ask
+      // whether the next highlight shares its line. Not read anywhere else.
+      lineRecord: record,
       marks: [{
         // The panel keys a row's actions on `markIndex`; for a document
         // highlight the id IS the key, and every consumer that acts on it goes
@@ -256,6 +306,12 @@ export function collectDocumentHighlightRows() {
         page: record.page,
         color: record.color,
         note: documentHighlightNote(record.id) || null,
+        // What to CALL this highlight when its note is listed under a row that
+        // holds several. A positional "Note on highlight 2" renumbers whenever
+        // a neighbour is added or deleted, and on a merged row it is the only
+        // thing saying which highlight a note belongs to — so it is the words
+        // themselves, which cannot drift.
+        excerpt: documentExcerptLabel(text),
         anchor: {
           pdf: record.anchor || { page: record.page, item: 0, ch: 0 },
           quads: record.quads,
@@ -266,7 +322,7 @@ export function collectDocumentHighlightRows() {
         }
       }]
     };
-  });
+  }
 }
 
 export function collectDeckHighlights() {
@@ -280,8 +336,31 @@ export function collectDeckHighlights() {
   return collectNoteHighlightRows();
 }
 
+// ── The panel reads the same string the reader is looking at ──────────────
+//
+// readerNotesBody, not state.notes. The rendered notes view is fed
+// readerNotesBody(state.notes) — the note with its `<!--recall:highlight-notes-->`
+// tail sliced off (src/notes/notes-view.js, src/format/notes-fence.js) — and
+// this panel scanned the whole string, tail included. That was fine for exactly
+// as long as the tail could not contain a `<mark>`, and it can: the highlight
+// note popup ships the full formatting toolbar, whose Highlight dropdown writes
+// a literal <mark> into whatever the reader is typing.
+//
+// One highlighted word inside one note and the panel goes wrong in three ways
+// at once. The mark in the tail becomes a row of its own — a highlight of a
+// highlight's note, listed as if it were in the document. `markCount`
+// (raw.length) exceeds the number of <mark>s the rendered view actually has,
+// which is the exact equality revealNoteMark tests before it will use the fast
+// path, so "Go to →" silently degrades to a fuzzy text search for EVERY row in
+// the panel, not just the phantom one. And pressing ✎ on the phantom row
+// rewrites a <mark> inside the tail, which is how a note ends up attached to
+// something that is not a highlight at all.
+//
+// This is a regression rather than an oversight: the commit that introduced the
+// fence moved the rendered view and the raw editor onto readerNotesBody and
+// left this file reading state.notes.
 export function collectNoteHighlightRows() {
-  const { source, raw, groups, units } = scanHighlightGroups(state.notes || "");
+  const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(state.notes || ""));
   const rows = [];
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group);
@@ -372,7 +451,11 @@ export function highlightContextUnits(units, index, step, count) {
 // reads the note before that toggle is applied, or asking for "annotated
 // highlights, without their notes" would quietly return nothing at all.
 export function collectDeckHighlightsForExport({ contextLines = 0, includeChapter = true, includeNotes = true, annotatedOnly = false } = {}) {
-  const { source, groups, units } = scanHighlightGroups(state.notes || "");
+  // readerNotesBody for the same reason collectNoteHighlightRows uses it: a
+  // <mark> a reader typed into a highlight's own note is not a highlight of the
+  // document, and exporting it as one puts a note's fragment in a list of
+  // passages from the paper.
+  const { source, groups, units } = scanHighlightGroups(readerNotesBody(state.notes || ""));
   const headings = includeChapter ? headingIndexFor(source) : null;
   const items = [];
   // A PDF deck's highlights come first, in reading order, and carry their page
@@ -486,7 +569,15 @@ export function renderHighlightsPanel() {
       if (item.marks.length > 1) {
         const label = document.createElement("div");
         label.className = "highlight-note-label";
-        label.textContent = `Note on highlight ${i + 1}`;
+        // The highlight's own words where it has them, and only a number as a
+        // last resort. "Note on highlight 2" is a position in a list that
+        // renumbers whenever a neighbour is added or removed — and on a row
+        // that merged several highlights of one line it was the ONLY thing
+        // saying which highlight a note belonged to. Which is what "in
+        // highlighted notes I'm seeing a random note from another highlight
+        // area" looks like from the reading side: the note was right and its
+        // label had drifted.
+        label.textContent = mark.excerpt ? `Note on ${mark.excerpt}` : `Note on highlight ${i + 1}`;
         noteBlock.appendChild(label);
       }
       const noteBody = document.createElement("div");
@@ -500,29 +591,55 @@ export function renderHighlightsPanel() {
     // "Note" pair per mark so each is still individually reachable.
     const jumps = document.createElement("div");
     jumps.className = "highlight-jumps";
+    // ── One "Go to" for a row whose highlights share a line ─────────────────
+    //
+    // A row holds several marks for two different reasons, and they want
+    // opposite things. The markdown path merges highlights that resolved to the
+    // same source unit, and each of those can be a separate <mark> somewhere
+    // else in a long note — so each keeps its own numbered jump. The document
+    // path merges highlights that are on the same LINE of the same page, and
+    // every one of those scrolls to the same place: three buttons, one
+    // destination, which is the "one goto is sufficient" in the report.
+    //
+    // `highlightId` is what tells them apart, and it is also what makes the
+    // single jump exact rather than approximate — scheduleNoteJump flashes that
+    // record's own quads, so the reader still sees which of the line's
+    // highlights they arrived at.
+    const oneJump = item.marks.length > 1 && item.marks.every((m) => m.highlightId);
     item.marks.forEach((mark, i) => {
       const actions = document.createElement("div");
       actions.className = "highlight-mark-actions";
-      const jumpBtn = document.createElement("button");
-      jumpBtn.type = "button";
-      jumpBtn.className = "highlight-jump-btn";
-      const jumpLabel = item.marks.length > 1 ? `Go to highlight ${i + 1} of ${item.marks.length} in the notes` : "Go to this highlight in the notes";
-      jumpBtn.title = jumpLabel;
-      jumpBtn.setAttribute("aria-label", jumpLabel);
-      jumpBtn.textContent = item.marks.length > 1 ? `Go to → (${i + 1})` : "Go to →";
-      // The locator is the exact-target shortcut: a <mark>'s ordinal in the
-      // note, or a document highlight's id. scheduleNoteJump's document branch
-      // reads the second and flashes the quads it paints.
-      jumpBtn.addEventListener("click", () =>
-        scheduleNoteJump(mark.anchor, { patient: true }, mark.highlightId
-          ? { highlightId: mark.highlightId }
-          : { markIndex: mark.markIndex, markCount: mark.markCount })
-      );
+      // The jump, on the first mark only when they all land in the same place.
+      // The ✎ stays on EVERY mark either way: collapsing the jumps is about not
+      // offering three buttons for one destination, and it must not cost the
+      // reader the ability to write a note on the second highlight of a line.
+      if (!oneJump || i === 0) {
+        const jumpBtn = document.createElement("button");
+        jumpBtn.type = "button";
+        jumpBtn.className = "highlight-jump-btn";
+        const many = !oneJump && item.marks.length > 1;
+        const jumpLabel = oneJump
+          ? `Go to this line ${item.page ? `on page ${item.page}` : "in the document"}`
+          : many ? `Go to highlight ${i + 1} of ${item.marks.length} in the notes`
+            : "Go to this highlight in the notes";
+        jumpBtn.title = jumpLabel;
+        jumpBtn.setAttribute("aria-label", jumpLabel);
+        jumpBtn.textContent = many ? `Go to → (${i + 1})` : "Go to →";
+        // The locator is the exact-target shortcut: a <mark>'s ordinal in the
+        // note, or a document highlight's id. scheduleNoteJump's document branch
+        // reads the second and flashes the quads it paints.
+        jumpBtn.addEventListener("click", () =>
+          scheduleNoteJump(mark.anchor, { patient: true }, mark.highlightId
+            ? { highlightId: mark.highlightId }
+            : { markIndex: mark.markIndex, markCount: mark.markCount })
+        );
+        actions.appendChild(jumpBtn);
+      }
       const noteBtn = document.createElement("button");
       noteBtn.type = "button";
       noteBtn.className = "highlight-note-btn";
       noteBtn.classList.toggle("has-note", Boolean(mark.note));
-      const noteLabel = mark.note ? "Edit the note on this highlight" : "Add a note to this highlight";
+      const noteLabel = `${mark.note ? "Edit the note on" : "Add a note to"} ${mark.excerpt || "this highlight"}`;
       noteBtn.title = noteLabel;
       noteBtn.setAttribute("aria-label", noteLabel);
       noteBtn.innerHTML = "&#9998;";
@@ -534,7 +651,7 @@ export function renderHighlightsPanel() {
           mark.highlightId ? DOCUMENT_NOTE_HANDLERS : undefined
         )
       );
-      actions.append(jumpBtn, noteBtn);
+      actions.appendChild(noteBtn);
       jumps.appendChild(actions);
     });
     row.append(body, jumps);

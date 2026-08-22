@@ -240,7 +240,22 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:no
 /* Which view you are in, painted by setViewMode onto the rail's buttons exactly
    as it paints the tabs — so the rail is never a second opinion about where the
    reader is. */
-.reading-rail-btn.is-active {
+.reading-rail-btn.is-active,
+/* ── ...and which MODES are on ─────────────────────────────────────────────
+ *
+ * refreshReadingRailModes() has mirrored aria-pressed onto the rail's Dark
+ * page, Select a region, Notes in the text and Full screen rows since the day
+ * the rail was written — and nothing in this file ever painted it. Four working
+ * toggles, every one of them reporting its state to a screen reader and to
+ * nobody looking at the screen: press Dark page in the rail and the page goes
+ * dark, and the row that did it looks exactly as it did before.
+ *
+ * That is the whole of "why is there no toggleable button so it's informative
+ * which is active". They were toggles already; they were just invisible ones.
+ * Same treatment as .is-active above, because it is the same statement — this
+ * row is the one you are in — and the house pattern for a pressed control in
+ * the row focus mode folds away (styles/37-document-chrome.css). */
+.reading-rail-btn[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 46%, var(--line));
   background: color-mix(in srgb, var(--accent) 20%, transparent);
   color: var(--accent);

@@ -43,21 +43,38 @@ import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 // rather than a memory leak with a scrollbar.
 export const PDF_RENDER_WINDOW = 2;
 
-// How far outside the scroller a page counts as "coming up". A page is a whole
-// screen tall, so a margin of one viewport height is one page of lead time.
+// How far outside the scroller a page counts as "coming up", in viewport
+// heights. A page is a whole screen tall, so a lead of 1 is one page of runway.
 //
-// Half that on a touch screen. The margin buys lead time at the price of
-// rendering pages nobody is looking at yet, and a phone pays a great deal more
-// for each of those than a laptop does — while also being the device where a
-// flick covers less distance. One page of runway either side is still one page.
-export const PDF_OBSERVER_MARGIN = "100% 0px";
+// Half that on a touch screen. The lead buys time at the price of rendering
+// pages nobody is looking at yet, and a phone pays a great deal more for each of
+// those than a laptop does — while also being the device where a flick covers
+// less distance. Half a page of runway either side is still most of a page.
+//
+// ── One number, because two of them cost a black screen ────────────────────
+//
+// "Is this page coming up?" is asked in two places: the IntersectionObserver's
+// rootMargin, and isPageNearViewport's arithmetic. They used to be written out
+// separately, and they disagreed — the margin was halved on a touch screen and
+// isPageNearViewport was not. So on a phone, and only on a phone, there was a
+// band between half a viewport and a whole one where a page counted as near for
+// every retry path in this file and was invisible to the observer, which is the
+// only thing that ever STARTS a first render. A render invalidated in that band
+// had nothing left that would ask for it again. What that looks like is a page
+// stuck on its placeholder for good, and a placeholder with dark page on is a
+// black rectangle. Both halves are derived from this one constant now.
+export const PDF_OBSERVER_LEAD = 1;
 
-export const PDF_OBSERVER_MARGIN_COARSE = "50% 0px";
+export const PDF_OBSERVER_LEAD_COARSE = 0.5;
+
+export function documentObserverLead() {
+  return window.matchMedia?.("(pointer: coarse)")?.matches
+    ? PDF_OBSERVER_LEAD_COARSE
+    : PDF_OBSERVER_LEAD;
+}
 
 export function documentObserverMargin() {
-  return window.matchMedia?.("(pointer: coarse)")?.matches
-    ? PDF_OBSERVER_MARGIN_COARSE
-    : PDF_OBSERVER_MARGIN;
+  return `${Math.round(documentObserverLead() * 100)}% 0px`;
 }
 
 export const PDF_MIN_SCALE = 0.4;
@@ -162,6 +179,11 @@ export function tearDownDocumentView() {
   // every one of them a picture of something else.
   regionThumbnails.clear();
   if (openPdf?.observer) openPdf.observer.disconnect();
+  if (openPdf?.resizeObserver) openPdf.resizeObserver.disconnect();
+  clearTimeout(openPdf?.watchdog);
+  // Every page's render deadline too. These outlive the document they were
+  // armed for otherwise, and fire against an openPdf that is a different paper.
+  openPdf?.pages?.forEach((entry) => clearTimeout(entry.deadline));
   if (openPdf?.doc) {
     // Releases the worker's copy of the file. Without this, opening five papers
     // in a session keeps five parsed documents alive in the worker.
@@ -243,7 +265,21 @@ export async function reattachDocument(file, pdfMeta) {
 // switch into the Document tab, and re-parsing a 40MB paper because someone
 // looked at their cards is not a thing to do. `force` is for the two cases where
 // the bytes themselves changed underneath us (a re-attach, a fresh import).
-export async function openDocumentView({ force = false } = {}) {
+export async function openDocumentView(options = {}) {
+  documentOpensInFlight += 1;
+  try {
+    return await openDocumentViewBody(options);
+  } finally {
+    documentOpensInFlight -= 1;
+  }
+}
+
+// How many openDocumentView calls are between their first line and their last.
+// supersededOpen() is the only reader: it is what lets a bumped token mean
+// "a newer open owns the surface" rather than "the surface was abandoned".
+let documentOpensInFlight = 0;
+
+async function openDocumentViewBody({ force = false } = {}) {
   const view = el.documentView;
   const pdfMeta = state.meta?.pdf;
   if (!view || !pdfMeta) return false;
@@ -270,17 +306,23 @@ export async function openDocumentView({ force = false } = {}) {
   view.appendChild(loading);
 
   if (!(await ensurePdfJs())) {
-    view.innerHTML = "";
-    const failed = document.createElement("p");
-    failed.className = "pdf-loading is-error";
-    failed.textContent = "The PDF viewer could not load. Reconnect once so it can be cached, and it will work offline after that.";
-    view.appendChild(failed);
+    showDocumentViewError("The PDF viewer could not load. Reconnect once so it can be cached, and it will work offline after that.");
     return false;
   }
-  if (token !== pdfOpenToken) return false;
+  // ── A superseded open leaves the surface to its successor, and says so if
+  //    there is no successor ────────────────────────────────────────────────
+  //
+  // These three checks used to `return false` bare. That is right when a newer
+  // open really is in flight — it owns the view now and will fill it. It is
+  // wrong the rest of the time, and the rest of the time happens: the token is
+  // also bumped by tearDownDocumentView on a deck swap and a re-attach, and
+  // what was left behind was either the "Opening the document…" line for ever
+  // or an empty scroller, which on an amoled theme is a black screen with no
+  // way to tell it from a page. supersededOpen() draws the distinction.
+  if (token !== pdfOpenToken) return supersededOpen();
 
   const blob = await getDocument(state.localDeckId, pdfMeta);
-  if (token !== pdfOpenToken) return false;
+  if (token !== pdfOpenToken) return supersededOpen();
   if (!blob) {
     renderMissingDocumentPrompt(pdfMeta);
     return false;
@@ -295,23 +337,32 @@ export async function openDocumentView({ force = false } = {}) {
     doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
   } catch (error) {
     console.error("Could not read the PDF", error);
-    view.innerHTML = "";
-    const failed = document.createElement("p");
-    failed.className = "pdf-loading is-error";
-    failed.textContent = `Could not read this PDF — ${error?.message || "unexpected error"}`;
-    view.appendChild(failed);
+    showDocumentViewError(`Could not read this PDF — ${error?.message || "unexpected error"}`);
     return false;
   }
   if (token !== pdfOpenToken) {
     doc.destroy().catch(() => {});
-    return false;
+    return supersededOpen();
   }
 
   const first = await doc.getPage(1);
   const baseViewport = first.getViewport({ scale: 1 });
 
   openPdf = {
-    deckKey,
+    // Re-read HERE, not the `deckKey` captured before the first await.
+    //
+    // A PDF deck opens on its Document tab, and the loader that does it
+    // (src/storage/deck-snapshot.js) sets `state.localDeckId = null` and then
+    // calls setViewMode("document") synchronously, which lands here — while the
+    // library loader sets the real local id only once the snapshot has been
+    // applied. So the key captured up there is the key of a deck with no local
+    // id, and it never matches currentDeckKey() again. What that cost was the
+    // idempotence this whole function is built around: every later switch into
+    // the Document tab saw a mismatch, tore the document down and re-parsed the
+    // file. On a 40MB paper on a phone that is seconds of worker time, and one
+    // more trip through every path this fix is about, each time the reader
+    // glances at their cards.
+    deckKey: currentDeckKey(),
     doc,
     pageCount: doc.numPages,
     // Every page starts out assumed to be the size of page 1 — which is true
@@ -324,25 +375,141 @@ export async function openDocumentView({ force = false } = {}) {
     fitWidth: true,
     pages: new Map(),
     rendered: new Set(),
-    observer: null
+    observer: null,
+    resizeObserver: null,
+    watchdog: 0
   };
 
   view.innerHTML = "";
   openPdf.scale = fitWidthScale();
   buildPagePlaceholders();
   observePages();
+  watchDocumentViewSize();
   applyPdfInvert(readPdfInvertPreference());
   updatePageIndicator();
   // The pages exist now, so the printed notes have something to be inserted
   // after. Before the outline, which is deliberately off the critical path.
-  onDocumentOpened();
+  //
+  // Wrapped, which it was not. This reaches src/documents/pdf-page-notes.js and
+  // from there into the markdown pipeline for every note on the document; a
+  // throw anywhere in it used to reject this function's promise — and nothing
+  // awaits it (src/ui/view-mode.js calls openDocumentView() bare) — so the
+  // resume scroll and the sweep below were simply skipped, silently, with the
+  // pages left wherever the observer had got to.
+  try {
+    onDocumentOpened();
+  } catch (error) {
+    console.warn("Could not build the document's page notes", error);
+  }
   // Off the critical path: the pages are already on screen and readable, and
   // an outline can need a fetch per entry on a long book.
   buildDocumentOutline(doc).catch((error) => console.warn("Could not read the PDF outline", error));
 
   const resume = state.meta?.readingPosition;
   if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
+  // Ask for the pages outright rather than waiting to be told about them. The
+  // IntersectionObserver above will usually get there first and this will find
+  // every page already asked for — but "usually" is what this whole bug was:
+  // the observer fires on a CHANGE in intersection, and on a first open there
+  // is no change to notice if the scroller was not laid out when the pages were
+  // observed. See renderPagesNearViewport.
+  renderPagesNearViewport();
+  armDocumentRenderWatchdog(token);
   return true;
+}
+
+// ── Two nets under the observer ─────────────────────────────────────────────
+
+// The scroller changing size is a render-relevant event that NOTHING was
+// listening for. `window.resize` does not fire for it — folding the header away
+// for focus mode, the on-screen keyboard closing, the chrome's own collapse
+// transition finishing are all internal layout changes — and the resize handler
+// in src/main.js additionally returns early unless the WIDTH changed, because
+// re-fitting on a phone's constant height wobble would be its own bug.
+//
+// So a document opened while the scroller was still 0 or half-height had its
+// pages measured against a viewport that was about to change and no way to hear
+// that it had. A width change re-fits (which re-lays out and sweeps); a
+// height-only change just sweeps, which is cheap and idempotent.
+function watchDocumentViewSize() {
+  const view = el.documentView;
+  if (!view || typeof ResizeObserver !== "function") return;
+  let lastWidth = view.clientWidth;
+  openPdf.resizeObserver = new ResizeObserver(() => {
+    if (!openPdf) return;
+    const width = view.clientWidth;
+    const widthChanged = width !== lastWidth;
+    lastWidth = width;
+    if (widthChanged && openPdf.fitWidth) {
+      relayoutDocument({ refit: true });
+      return;
+    }
+    renderPagesNearViewport();
+  });
+  openPdf.resizeObserver.observe(view);
+}
+
+// How long after an open to check that SOMETHING painted. Long enough for a
+// page to have rasterised on a slow phone, short enough that a reader who is
+// looking at nothing is not looking at it for long.
+export const PDF_RENDER_WATCHDOG_MS = 1200;
+
+// The last net, and the one that answers the actual report: "I open a PDF and
+// see a black rectangle, and it never comes back."
+//
+// Every mechanism above is a reason a page might not render. This is the one
+// that does not care which of them it was. If, a beat after the document is
+// open, not a single page has rasterised, then whatever the arithmetic decided
+// was wrong — so page 1 is rendered unconditionally and the sweep is run again.
+// If that still leaves nothing, the surface SAYS so instead of staying black:
+// an empty page with a message is a bug report; an empty page without one is a
+// reader who thinks the app is broken and cannot tell you why.
+function armDocumentRenderWatchdog(token) {
+  clearTimeout(openPdf?.watchdog);
+  openPdf.watchdog = setTimeout(() => {
+    if (!openPdf || token !== pdfOpenToken) return;
+    if (openPdf.rendered.size) return;
+    console.warn("No page rasterised within the watchdog window — forcing page 1");
+    // forceRenderPage, not renderPage. If the reason nothing rendered is a
+    // first render that never settled, renderPage would be turned away by its
+    // own in-flight guard and this net would catch nothing.
+    forceRenderPage(1);
+    renderPagesNearViewport();
+    setTimeout(() => {
+      if (!openPdf || token !== pdfOpenToken || openPdf.rendered.size) return;
+      showDocumentViewError("This document's pages did not render. Reopen the deck, and if it keeps happening the file may be damaged.");
+    }, PDF_RENDER_WATCHDOG_MS);
+  }, PDF_RENDER_WATCHDOG_MS);
+}
+
+// An open that found its token bumped under it.
+//
+// Two different things bump pdfOpenToken and they need opposite answers. If
+// another openDocumentView is genuinely in flight it owns the surface and this
+// one must get out of the way without touching it — anything else would be two
+// opens writing to one view. But tearDownDocumentView also bumps the token on a
+// deck swap and a re-attach, and then nobody is coming: whatever this open had
+// already put on screen ("Opening the document…", or nothing at all) is what
+// the reader is left looking at, for ever.
+//
+// documentOpensInFlight tells the two apart. It is incremented for the whole
+// body of openDocumentView, so "greater than one" means a successor exists.
+function supersededOpen() {
+  if (documentOpensInFlight > 1) return false;
+  if (!openPdf) showDocumentViewError("The document was closed while it was opening. Open the deck again.");
+  return false;
+}
+
+// One place that puts a message where the pages should be, so every failure
+// path says something rather than three of them saying nothing.
+function showDocumentViewError(message) {
+  const view = el.documentView;
+  if (!view) return;
+  view.innerHTML = "";
+  const failed = document.createElement("p");
+  failed.className = "pdf-loading is-error";
+  failed.textContent = message;
+  view.appendChild(failed);
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────────
@@ -508,9 +675,11 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
     }
   });
   near.forEach((pageNumber) => renderPage(pageNumber));
-  openPdf.pages.forEach((entry, pageNumber) => {
-    if (!near.has(pageNumber) && isPageNearViewport(pageNumber)) renderPage(pageNumber);
-  });
+  // The second half of this used to be the only thing asking for the pages that
+  // had NOT been rendered before, and it is renderPagesNearViewport's job now —
+  // same question, one definition, and a floor under it. Called after the two
+  // passes above so every page has its new height first.
+  renderPagesNearViewport();
   updatePageIndicator();
 }
 
@@ -548,15 +717,76 @@ export function isDocumentFitWidth() {
   return Boolean(openPdf?.fitWidth);
 }
 
-function isPageNearViewport(pageNumber) {
+// Where a page sits in the SCROLLER's own coordinates.
+//
+// A .pdf-page's offsetParent is .document-stage — deliberately, see pagesHost()
+// — and the stage's first child is #documentHead, the control row. So a raw
+// offsetTop is measured from the top of that row while every scrollTop it gets
+// compared against is measured from the scroller's content origin, and the two
+// differ by the row's height plus the scroller's own padding. The bias is
+// constant, so nothing was badly wrong; it is why a resume to page 1 landed
+// forty-odd pixels into the page instead of at its top. Subtracted once, here,
+// rather than at four call sites that would each have to remember.
+export function pageOffsetTop(entryEl) {
+  const view = el.documentView;
+  if (!entryEl) return 0;
+  return entryEl.offsetTop - (view?.offsetTop || 0);
+}
+
+// Is this page on screen, or close enough to be worth rasterising now?
+//
+// The lead is documentObserverLead() — the SAME number the observer's
+// rootMargin is built from, so "near" means one thing on every device. See the
+// note on that constant for what having two answers cost.
+export function isPageNearViewport(pageNumber) {
   const view = el.documentView;
   const entry = openPdf?.pages.get(pageNumber);
   if (!view || !entry) return false;
-  const top = entry.el.offsetTop;
+  const top = pageOffsetTop(entry.el);
   const bottom = top + entry.el.offsetHeight;
-  const from = view.scrollTop - view.clientHeight;
-  const to = view.scrollTop + view.clientHeight * 2;
+  // A scroller that has not been laid out yet (height 0) would otherwise say
+  // "nothing is near" about a document that is entirely on screen — which is
+  // one of the ways a freshly opened PDF ended up with no rendered page at all.
+  // A zero-height viewport is not an answer, so fall back to the window's.
+  const lead = documentObserverLead() * Math.max(view.clientHeight, window.innerHeight || 0, 1);
+  const from = view.scrollTop - lead;
+  const to = view.scrollTop + Math.max(view.clientHeight, 1) + lead;
   return bottom >= from && top <= to;
+}
+
+// ── The sweep ───────────────────────────────────────────────────────────────
+//
+// Render everything that is near the viewport, right now, without waiting to be
+// told. This is the fix for the whole class of "the page never came back":
+// renderPage was only ever reached from the IntersectionObserver, and an
+// IntersectionObserver fires on a CHANGE in intersection — so once a render was
+// invalidated (a scale that moved under it, a trim, a throw) with the page's
+// intersection unchanged, nothing was left to ask again. Nothing re-observed
+// either. On a first open with no scroll to make, that is a document that is
+// simply never drawn.
+//
+// So every moment that can invalidate a render, or reveal that one never
+// happened, ends by calling this: the open itself, a relayout, the scroller
+// changing size, the chrome folding away. It is idempotent and cheap — a page
+// already in openPdf.rendered returns from renderPage's first line, and a page
+// with a render in flight records a re-request rather than starting a second.
+//
+// Page 1 is a floor, not a courtesy. If the arithmetic above is ever wrong
+// again, the failure should be a page that is drawn when it did not need to be,
+// not a reader looking at nothing.
+export function renderPagesNearViewport() {
+  if (!openPdf) return 0;
+  let asked = 0;
+  openPdf.pages.forEach((entry, pageNumber) => {
+    if (!isPageNearViewport(pageNumber)) return;
+    asked += 1;
+    renderPage(pageNumber);
+  });
+  if (!asked && openPdf.pages.size) {
+    renderPage(1);
+    asked = 1;
+  }
+  return asked;
 }
 
 // ── Rendering one page ──────────────────────────────────────────────────────
@@ -586,6 +816,26 @@ async function renderPage(pageNumber) {
   // So the request is recorded and re-issued the moment the in-flight render
   // settles. One retry per request, never a loop: a render that fails on its
   // own sets nothing.
+  //
+  // ── ...and "the moment it settles" is a promise, so it needs a deadline ──
+  //
+  // The guard above is right until the in-flight render never finishes, and
+  // then it is a dead end — the dead end this whole bug turned out to be. A
+  // pdf.js render is a round trip to a worker, and a worker on a phone is a
+  // thing the OS can kill under memory pressure without telling anyone: the
+  // promise neither resolves nor rejects, entry.task stays truthy for the rest
+  // of the session, and every later request is turned away right here. The
+  // observer on a scroll, a pinch commit, leaving the tab and coming back —
+  // all three of the things a reader tries — reach this line and return. The
+  // rerender flag they set is only ever read from inside the .finally() that
+  // is never going to run.
+  //
+  // That is exactly "it never comes back", as a matter of control flow rather
+  // than of probability, and it is why the previous fix for this symptom did
+  // not land: that change altered what happens UNDER this guard and left the
+  // guard, so the case where a render settles was fixed and the case where one
+  // does not was untouched. forceRenderPage below is the way out, and
+  // entry.deadline is what calls it without waiting for the reader.
   if (entry.task) {
     entry.rerender = true;
     return;
@@ -602,7 +852,8 @@ async function renderPage(pageNumber) {
   // again either.
   const generation = (entry.generation = (entry.generation || 0) + 1);
   const stale = () => token !== pdfOpenToken || openPdf?.scale !== scale || entry.generation !== generation;
-  entry.task = (async () => {
+  let task;
+  task = (async () => {
     const page = await openPdf.doc.getPage(pageNumber);
     if (stale()) return;
     const viewport = page.getViewport({ scale });
@@ -632,6 +883,10 @@ async function renderPage(pageNumber) {
     entry.el.querySelector(".pdf-canvas.is-stale")?.remove();
     entry.el.append(canvas);
     openPdf.rendered.add(pageNumber);
+    // A page that drew has no failed attempts behind it any more. Without this
+    // a page that needed two goes would carry that count into every later
+    // re-render — a zoom, a rotate — and hit the ceiling early.
+    entry.attempts = 0;
     // ── The page is on screen; the layers follow ──────────────────────────
     //
     // The pixels used to wait for the text layer, which is one absolutely
@@ -652,10 +907,28 @@ async function renderPage(pageNumber) {
       .finally(() => { if (entry.layerTask) entry.layerTask = null; });
   })()
     .catch((error) => {
-      if (error?.name !== "RenderingCancelledException") console.warn(`Could not render page ${pageNumber}`, error);
+      // A cancellation is the system working — a scale moved, a page was
+      // trimmed — and says nothing to the reader.
+      if (error?.name === "RenderingCancelledException") return;
+      console.warn(`Could not render page ${pageNumber}`, error);
+      // Everything else does. A page that threw keeps its placeholder, and a
+      // placeholder with dark page on is a black rectangle: exactly the thing
+      // that cannot be told apart from a page that simply has not painted yet.
+      // So it says which it is, on the page itself, where the reader is looking.
+      if (!stale()) showPageRenderFailure(pageNumber, error?.message || "unexpected error");
     })
     .finally(() => {
       if (!entry) return;
+      clearTimeout(entry.deadline);
+      entry.deadline = 0;
+      // Only the render the entry is actually WAITING ON clears its handle.
+      // Two renders can be alive for one page at once — stalePageForRelayout
+      // bumps the generation and a fresh renderPage starts while the old one is
+      // still awaiting getTextContent, and forceRenderPage below creates that
+      // situation deliberately. The loser landing second must not null out the
+      // winner's task, or the next request finds nothing in flight and starts a
+      // third render of a page that is already being drawn.
+      if (entry.task !== task) return;
       entry.task = null;
       // The request that arrived while this one was in flight (see the guard at
       // the top). Re-checked rather than trusted: the page can have been trimmed
@@ -665,6 +938,77 @@ async function renderPage(pageNumber) {
       entry.rerender = false;
       if (!openPdf?.rendered.has(pageNumber) && isPageNearViewport(pageNumber)) renderPage(pageNumber);
     });
+  entry.task = task;
+  entry.attempts = (entry.attempts || 0) + 1;
+  // The deadline, and the reason this page can come back at all.
+  //
+  // Nothing is cancelled here — there is nothing to cancel, the worker is what
+  // is not answering. The ENTRY is released instead, so the next request is
+  // allowed to start a fresh render rather than being turned away by the
+  // in-flight guard at the top of this function for the rest of the session.
+  // Bumping the generation (in forceRenderPage) is what makes that safe: if the
+  // abandoned render ever does land, stale() is true for it and it drops its
+  // own canvas, exactly as a render superseded by a zoom already does.
+  entry.deadline = setTimeout(() => {
+    entry.deadline = 0;
+    if (token !== pdfOpenToken || entry.task !== task) return;
+    if (entry.attempts >= PDF_RENDER_ATTEMPTS) {
+      entry.task = null;
+      showPageRenderFailure(pageNumber, "the page renderer stopped answering");
+      return;
+    }
+    console.warn(`Page ${pageNumber} did not answer in ${PDF_RENDER_DEADLINE_MS}ms — starting again`);
+    forceRenderPage(pageNumber);
+  }, PDF_RENDER_DEADLINE_MS);
+}
+
+// How long a page's render may go unanswered before it is started again.
+// Generous on purpose: a dense two-column page on a throttled phone is honestly
+// seconds of work, and abandoning a render that was going to land costs a
+// wasted canvas and a visible flash. What this is for is the render that was
+// never going to land at all.
+export const PDF_RENDER_DEADLINE_MS = 15000;
+
+// ...and how many times to try before saying so out loud. A worker the OS has
+// killed does not come back on its own, and a retry loop with no end is a phone
+// with its CPU on for a page that is never going to draw.
+export const PDF_RENDER_ATTEMPTS = 3;
+
+// renderPage, for a page that MUST come back.
+//
+// The in-flight guard at the top of renderPage is the right default and a dead
+// end when the render it is waiting for never settles (see the long note there).
+// This is the only thing that steps over it, and it is deliberately not
+// something the ordinary render paths can reach: only the deadline above and the
+// open watchdog call it.
+function forceRenderPage(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry) return;
+  clearTimeout(entry.deadline);
+  entry.deadline = 0;
+  // The abandoned render is now stale by generation, so if it ever lands it
+  // discards its own canvas instead of painting into a page that has moved on.
+  entry.generation = (entry.generation || 0) + 1;
+  entry.task = null;
+  entry.rerender = false;
+  openPdf.rendered.delete(pageNumber);
+  renderPage(pageNumber);
+}
+
+// A page that could not be drawn says so, ON the page.
+//
+// Every render failure in this file used to be a console.warn and nothing else,
+// which on a dark theme with dark page on is a black rectangle and no
+// explanation — the same picture as a page that simply has not painted yet. A
+// message on the placeholder rather than a toast, because it is a fact about ONE
+// page of a document whose other pages are fine, and a toast about page 47 is
+// long gone by the time the reader scrolls to it.
+function showPageRenderFailure(pageNumber, reason) {
+  const entry = openPdf?.pages.get(pageNumber);
+  const label = entry?.el?.querySelector(".pdf-page-label");
+  if (!label) return;
+  label.classList.add("is-error");
+  label.textContent = `Page ${pageNumber} could not be drawn — ${reason}`;
 }
 
 // The mark and text layers, off the critical path. See the comment at the call
@@ -770,6 +1114,12 @@ function unrenderPage(pageNumber) {
   // Invalidates any render still in flight for this page, so its canvas is
   // dropped rather than appended into the placeholder this is about to rebuild.
   entry.generation = (entry.generation || 0) + 1;
+  // ...and its deadline goes with it. The page is a placeholder again by
+  // intent, so a timer firing later to complain that it never drew would be
+  // reporting this function's own work as a failure.
+  clearTimeout(entry.deadline);
+  entry.deadline = 0;
+  entry.attempts = 0;
   openPdf.rendered.delete(pageNumber);
   entry.el.innerHTML = "";
   entry.markLayer = null;
@@ -864,7 +1214,7 @@ export function currentDocumentPage() {
   const top = view.scrollTop;
   for (let pageNumber = 1; pageNumber <= openPdf.pageCount; pageNumber++) {
     const entry = openPdf.pages.get(pageNumber);
-    if (entry && entry.el.offsetTop + entry.el.offsetHeight > top + 4) return pageNumber;
+    if (entry && pageOffsetTop(entry.el) + entry.el.offsetHeight > top + 4) return pageNumber;
   }
   return openPdf.pageCount;
 }
@@ -876,7 +1226,7 @@ export function currentDocumentRatio() {
   const view = el.documentView;
   const entry = openPdf?.pages.get(currentDocumentPage());
   if (!view || !entry?.el.offsetHeight) return 0;
-  return Math.min(1, Math.max(0, (view.scrollTop - entry.el.offsetTop) / entry.el.offsetHeight));
+  return Math.min(1, Math.max(0, (view.scrollTop - pageOffsetTop(entry.el)) / entry.el.offsetHeight));
 }
 
 export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true } = {}) {
@@ -884,7 +1234,7 @@ export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true } = 
   const entry = openPdf?.pages.get(Math.min(Math.max(1, Math.round(pageNumber)), openPdf?.pageCount || 1));
   if (!view || !entry) return false;
   view.scrollTo({
-    top: entry.el.offsetTop + entry.el.offsetHeight * (Number.isFinite(ratio) ? ratio : 0),
+    top: pageOffsetTop(entry.el) + entry.el.offsetHeight * (Number.isFinite(ratio) ? ratio : 0),
     behavior: smooth ? "smooth" : "auto"
   });
   updatePageIndicator();

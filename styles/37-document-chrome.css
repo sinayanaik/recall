@@ -350,7 +350,7 @@
 .document-pager .document-page-input:hover,
 .document-pager .document-page-input:focus {
   border-color: var(--line);
-  background: var(--surface-2, transparent);
+  background: var(--surface-2);
 }
 
 /* The spinners are 20px of arrows on a control that already has a keyboard and

@@ -1089,9 +1089,18 @@
           <button class="reading-rail-btn" data-rail-scope="notes" type="button" data-rail-action="inline-notes" aria-pressed="false" title="Print every highlight's note in the text it annotates" aria-label="Notes in the text"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes in the text</span></button>
           <button class="reading-rail-btn" type="button" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
           <button class="reading-rail-btn" type="button" data-rail-action="sync" title="Sync all decks with the cloud now" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-action="immersive" aria-pressed="false" title="Full screen (Ctrl + Q) — the app's chrome and the browser's" aria-label="Full screen"><span class="rr-ico" aria-hidden="true">&#9974;</span><span class="rr-label">Full screen</span></button>
           <span class="reading-rail-sep" aria-hidden="true"></span>
-          <button class="reading-rail-btn" type="button" data-rail-action="leave-focus" title="Leave focus mode (Esc)" aria-label="Leave focus mode"><span class="rr-ico" aria-hidden="true">&#10593;</span><span class="rr-label">Leave focus</span></button>
+          <!-- The two reading modes, as two toggles that say which way each is
+               set. This used to be one toggle (Full screen) whose pressed state
+               no stylesheet painted, plus a one-way "Leave focus" — so the rail
+               could turn focus mode off and could never say it was on, and the
+               real focus toggle (#focusModeBtn) is inside the row that focus
+               mode folds away, i.e. unreachable exactly when it applies.
+               Pressing Focus mode here still leaves focus mode, because that is
+               what a toggle that is on does; the difference is that it now
+               looks like something that is on. -->
+          <button class="reading-rail-btn" type="button" data-rail-action="focus" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Focus mode"><span class="rr-ico" aria-hidden="true">&#10530;</span><span class="rr-label">Focus mode</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-action="immersive" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Full screen"><span class="rr-ico" aria-hidden="true">&#9974;</span><span class="rr-label">Full screen</span></button>
         </div>
       </div>
     </main>

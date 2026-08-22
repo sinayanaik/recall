@@ -3,7 +3,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { addDocumentHighlight, documentHighlightAtPoint, removeDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { addDocumentHighlight, documentHighlightsCovering, documentHighlightsUnderRects, recolourDocumentHighlight, removeDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { captureDocumentSelection } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleWrapPair } from "../editor/text-transforms.js?v=__BUILD__";
@@ -107,8 +107,21 @@ export function pillActionTarget() {
   // this instant, and a document capture is cheap (a range walk and its client
   // rects) in a way the markdown one is not.
   if (isDocumentViewActive()) {
-    const capture = captureDocumentSelection();
-    return capture ? { kind: "document", capture } : null;
+    // Live first, snapshot second — and the snapshot is the half that was
+    // missing. Every pill button is pointerdown + preventDefault, so on a mouse
+    // the selection genuinely is still alive at this instant and the live
+    // capture is the freshest answer. On a touch screen it very often is not:
+    // the swatch opens a colour menu, choosing a colour is a second tap, and
+    // the selection is gone by then. captureDocumentSelection() returns null
+    // for a collapsed selection, so this function returned null, so NONE of the
+    // three branches in applyPillHighlight ran and the button did nothing —
+    // not even the "Nothing highlighted there" toast. The markdown surfaces
+    // have had this fallback all along (ensurePillSelectionCapture, below);
+    // the document surface was the one that recorded a capture and never read
+    // it back.
+    const capture = captureDocumentSelection() || pillSelectionCapture?.document || null;
+    const rects = pillSelectionCapture?.targetName === "document" ? pillSelectionCapture.rects : null;
+    return capture ? { kind: "document", capture, rects } : null;
   }
   // The expensive half of the capture is deferred so the bar can appear at once
   // (see schedulePillSelectionCapture). If a button is pressed before that pass
@@ -169,6 +182,18 @@ export function eraseTextareaSelection(target) {
   showToast("Selection erased");
 }
 
+// The client rects of whatever the pill is acting on: the live selection when
+// there still is one, and otherwise the ones recorded when the pill appeared.
+// Same live-then-snapshot order, and for the same reason, as pillActionTarget.
+function selectionRects(target) {
+  const selection = window.getSelection();
+  if (selection?.rangeCount && !selection.isCollapsed) {
+    const live = Array.from(selection.getRangeAt(0).getClientRects());
+    if (live.length) return live;
+  }
+  return target?.rects || [];
+}
+
 // ── The pill's own colour menu ─────────────────────────────────────────────
 //
 // Why it exists rather than sending you to the render toolbar: reaching the
@@ -182,18 +207,49 @@ export function applyPillHighlight(color) {
   const target = pillActionTarget();
   if (target?.kind === "document") {
     // "clear" on the document surface means "un-highlight what I have
-    // selected", the same as it does in a note — resolved by hit-testing the
-    // selection's own first quad rather than by stripping tags, since there are
+    // selected", the same as it does in a note — resolved against the
+    // selection's own geometry rather than by stripping tags, since there are
     // no tags to strip.
     if (color === "clear") {
-      const rect = window.getSelection()?.rangeCount
-        ? window.getSelection().getRangeAt(0).getBoundingClientRect()
-        : null;
-      const record = rect ? documentHighlightAtPoint(rect.left + 1, rect.top + rect.height / 2) : null;
-      if (record) removeDocumentHighlight(record.id);
-      else showToast("Nothing highlighted there", "error");
+      // Every line of the selection, not one guessed point.
+      //
+      // This used to hit-test the selection's BOUNDING rect at
+      // `left + 1, mid-height`. For a selection inside one line that is a point
+      // on the words; for a selection spanning two lines it is a point in the
+      // left margin between them, and for a drag across a two-column paper it
+      // is a point in the gutter. So "remove this highlight" answered "Nothing
+      // highlighted there" for most of the selections anyone actually makes,
+      // which is what "the cancel/delete button for highlights is broken" was.
+      //
+      // A range reports one client rect per line fragment, so testing each of
+      // them asks the question the reader meant: un-highlight what I have
+      // selected. Every record the selection touches goes, because a selection
+      // that covers two highlights meant both.
+      const under = documentHighlightsUnderRects(selectionRects(target));
+      under.forEach((record) => removeDocumentHighlight(record.id));
+      const removed = under.length;
+      if (!removed) showToast("Nothing highlighted there", "error");
+      else showToast(removed === 1 ? "Highlight removed" : `${removed} highlights removed`);
     } else {
-      addDocumentHighlight(target.capture, color);
+      // Recolour what is already there rather than stacking another record on
+      // top of it. Re-highlighting a passage in a new colour used to ADD a
+      // second record over the first: two entries in the panel for one
+      // sentence, two "Go to" buttons, and a tap resolving to whichever was
+      // made first (documentHighlightAtPoint returns the earliest match). That
+      // is one of the ways "multiple highlights in a single line" happened
+      // without the reader ever making two.
+      //
+      // COVERED, not merely touched, and the distinction is the whole rule.
+      // Selecting a paragraph that happens to contain one highlighted word and
+      // pressing green means "make this paragraph green" — recolouring the word
+      // and leaving the rest unmarked would be the app deciding it knew better.
+      // Selecting words that are ALREADY entirely highlighted and pressing
+      // green means "make that one green". So: recolour when the selection adds
+      // nothing new, and add a highlight when it does.
+      const rects = selectionRects(target);
+      const covering = documentHighlightsCovering(rects);
+      if (covering.length) covering.forEach((record) => recolourDocumentHighlight(record.id, color));
+      else addDocumentHighlight(target.capture, color);
     }
     // The selection has served its purpose and a live one over a fresh
     // highlight hides the colour that was just applied.
