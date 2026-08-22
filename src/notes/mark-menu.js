@@ -184,7 +184,15 @@ export function initMarkMenu() {
   view.addEventListener("click", (event) => {
     // Never steal a click meant for something else that happens to sit inside a
     // highlight — a note link, a cloze, an image control.
-    if (event.target.closest("a, button, .cloze, .notes-img-controls")) return;
+    //
+    // `.notes-img-controls` is the name of a control box that no longer exists
+    // (surface-controls.js removes it only as legacy), so for as long as it was
+    // the only image name here the guard covered nothing: the delete button is
+    // a <button> and was caught by that, but the resize grip is a bare <div>
+    // and tapping the corner of an image inside a highlight opened this menu
+    // instead of starting the drag. Named the way src/cards/swipe.js already
+    // names it for the same reason.
+    if (event.target.closest("a, button, .cloze, .notes-img-controls, .notes-img-resize-handle, .notes-img-size-badge")) return;
     const mark = event.target.closest("mark");
     if (!mark || !view.contains(mark)) {
       closeMarkMenu();

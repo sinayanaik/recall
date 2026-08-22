@@ -1938,6 +1938,19 @@ function onRootTouchStart(event) {
   const root = event.currentTarget;
   const touch = event.touches[0];
 
+  // Not on an image's own controls. The resize grip takes pointer capture and
+  // drags the corner of the picture, but this listener is passive and bound on
+  // the reading root, so beginImageResize's preventDefault cannot reach it: a
+  // finger resting on the grip for the 240ms before it starts to drag armed a
+  // text press over the image at the same time as the resize. The grip is a
+  // bare <div>, so it has to be named — the same reason src/cards/swipe.js and
+  // src/notes/mark-menu.js name it.
+  if (event.target?.closest?.(".notes-img-resize-handle, .notes-img-delete-btn, .notes-img-size-badge, .diagram-zoom")) {
+    cancelPress();
+    dismissPending = false;
+    return;
+  }
+
   // A touch that lands inside the current selection is a grab, not a new
   // selection — leave it alone so the reader can reach for a handle.
   //

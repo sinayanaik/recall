@@ -143,6 +143,13 @@ export async function hydrateLocalImages(root = document) {
     if (url) {
       node.src = url;
       node.dataset.pendingUpload = "1";
+      // The token, kept where it can still be read after the src is gone.
+      // enhanceSurfaceImageControls pairs each rendered image with the markdown
+      // token it came from by URL, and the markdown for this one still says
+      // `recall-img:<token>` — so once src is a blob: URL there is nothing left
+      // to match on, and the image (and every image after it) loses its resize
+      // grip. See sourceUrlForImage in src/images/surface-controls.js.
+      node.dataset.localToken = token;
       node.title = "Waiting to upload — will sync when you're back online";
     }
   }));

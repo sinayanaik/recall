@@ -2387,6 +2387,20 @@ export function finishNotesLazySpan(container, index) {
     // tools/large-note-selection-check.mjs case 2 exists to catch. Swapping an
     // image src is not urgent; holding the text still is.
     .then(() => resolveStorageImages(flat))
+    // ── The last span pays for the grips ───────────────────────────────────
+    //
+    // finalizeRenderedSurface refuses to attach image and diagram resize grips
+    // while any span is unbuilt, because both passes bind by POSITION and would
+    // write the wrong token index onto a shell (see the comment there). That is
+    // right — but nothing ever ran them AFTERWARDS, so a note over
+    // NOTES_LAZY_MIN_CHARS had no grip on any image for as long as it stayed
+    // open, however far it had been read. The moment the last span lands is the
+    // moment the walk becomes exact, so that is where the pass belongs.
+    //
+    // Cheap by construction: notesLazyPending is a loop over the span flags,
+    // this fires at most once per note, and scheduleSurfaceFinalize is already
+    // coalesced to one pass per container per frame.
+    .then(() => { if (!notesLazyPending(container)) scheduleSurfaceFinalize(container); })
     .catch((error) => console.warn("Deferred note span failed", error));
 }
 
