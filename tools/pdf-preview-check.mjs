@@ -964,8 +964,23 @@ try {
         hostWidth: Math.round(host.getBoundingClientRect().width),
         blockWidth: block ? Math.round(block.getBoundingClientRect().width) : 0,
         scrollWidth: view.scrollWidth,
-        clientWidth: view.clientWidth
+        clientWidth: view.clientWidth,
+        // A sheet, not a strip: the paper's own shadow, and no accent rail.
+        shadow: block ? getComputedStyle(block).boxShadow : "",
+        // The type is a function of the paper's width, which is what stops the
+        // notes reading as the document and the page as a thumbnail. Measured
+        // by zooming rather than by parsing the declaration: what matters is
+        // that a pinch takes the notes with it.
+        typeAtFit: block ? parseFloat(getComputedStyle(block).fontSize) : 0
       };
+      api.zoomDocument(1.6);
+      await settle(300);
+      const zoomed = document.querySelector('.pdf-page-notes[data-page-number="1"]');
+      result.typeZoomedIn = zoomed ? parseFloat(getComputedStyle(zoomed).fontSize) : 0;
+      result.pageZoomedIn = Math.round(document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect().width);
+      result.blockZoomedIn = zoomed ? Math.round(zoomed.getBoundingClientRect().width) : 0;
+      api.fitDocumentToWidth();
+      await settle(300);
       // Put the deck back exactly as it was: the export checks below count the
       // annotated pages, and four more of them on page 1 would rewrite their
       // answers.
@@ -999,6 +1014,19 @@ try {
   check("...and the page opening at the full width of the screen",
     notesFit.every((f) => f.pageWidth >= f.clientWidth - 1),
     notesFit.map((f) => `${f.width}:page ${f.pageWidth}px of ${f.clientWidth}px`).join(" "));
+  // ── ...and it is a PAGE of notes, not a strip beside one ────────────────
+  check("...the notes read as a sheet of the same document",
+    notesFit.every((f) => f.shadow && f.shadow !== "none"),
+    notesFit.map((f) => `${f.width}:${f.shadow.slice(0, 28)}`).join(" | "));
+  // The other half of the report: a flat 0.86rem next to a page whose own body
+  // text is about 6px at fit width read as twice the size of the document it
+  // was annotating. Sized off --pdf-page-w, a zoom takes the notes with it.
+  check("...with type that scales with the paper, not against it",
+    notesFit.every((f) => f.pageZoomedIn > f.pageWidth && f.typeZoomedIn > f.typeAtFit),
+    notesFit.map((f) => `${f.width}: page ${f.pageWidth}→${f.pageZoomedIn}px, type ${f.typeAtFit}→${f.typeZoomedIn}px`).join(" · "));
+  check("...and a sheet that stays exactly as wide as its page at any zoom",
+    notesFit.every((f) => Math.abs(f.blockZoomedIn - f.pageZoomedIn) <= 2),
+    notesFit.map((f) => `${f.width}:sheet ${f.blockZoomedIn}px vs page ${f.pageZoomedIn}px`).join(" "));
 
   // ── 8b. The container the notes live in ──────────────────────────────────
   //

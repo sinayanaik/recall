@@ -583,14 +583,35 @@
      ever used in. */
   width: var(--pdf-page-w, 760px);
   max-width: 100%;
-  margin: -6px 0 2px;
-  padding: 10px 14px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  border-radius: 0 10px 10px 0;
-  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  /* ── A page of notes, not a strip beside one ───────────────────────────
+     The report: "the disproportionate scaling and visual between the pdf pages
+     and the notes — I want the extra notes to be page views too, same as pdf
+     pages."
+
+     So it is a sheet: the paper's width (above), the paper's shadow, the
+     paper's own place in the column with .pdf-pages' gap around it rather than
+     a negative margin pulling it up under the page. The accent rail that used
+     to mark it as an annotation is gone — a page does not need a flag to say it
+     is a page, and the head says which page these notes came off.
+
+     Everything below is sized in terms of --pdf-page-w, which is the other half
+     of the report. The type used to be a flat 0.86rem: on a phone, where
+     fit-width makes a Letter page 348px and its own body text about 6px, a
+     14px note beside it was more than twice the size of the document it was
+     annotating — the notes read as the document and the paper read as a
+     thumbnail. Scaled to the paper, a note is smaller than the page's own text
+     on a laptop and legible-but-quiet on a phone, and pinching the page zooms
+     the notes with it. The clamp is the floor under "legible": below about 11px
+     a note is not small, it is gone. */
+  margin: 0;
+  padding: calc(var(--pdf-page-w, 760px) * 0.05);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.28);
   color: var(--text);
-  font-size: 0.86rem;
-  line-height: 1.5;
+  font-size: clamp(11px, calc(var(--pdf-page-w, 760px) * 0.022), 18px);
+  line-height: 1.55;
   /* The shorthand, so both halves apply: at most --pdf-note-cols columns (set
      per block by noteBlockFor from how many notes there are), each at least
      260px wide. The count stops a lone note being stranded in one narrow
@@ -601,11 +622,17 @@
 }
 
 .pdf-page-notes-head {
-  /* Across the whole strip, not down the first column — it names the page, not
-     the first three notes on it. */
+  /* Across the whole sheet, not down the first column — it names the page, not
+     the first three notes on it.
+
+     em and not rem, here and in every rule below: the sheet's own font-size is
+     a function of the paper's width, and a child sized in rem would keep the
+     one fixed size this whole change is about. */
   column-span: all;
-  margin-bottom: 6px;
-  font-size: 0.68rem;
+  margin-bottom: 0.9em;
+  padding-bottom: 0.5em;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.72em;
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -615,7 +642,7 @@
 .pdf-page-note {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 0.6em;
   /* 100%, and it has to be spelled out: in a multicol container the percentage
      resolves against the COLUMN box, not the strip, so this is "fill the
      column" and not "be as wide as all of them". `width: auto` does not do it —
@@ -641,7 +668,7 @@
   page-break-inside: avoid;
   /* Multicol has no row gap between items — column-gap is between COLUMNS —
      so stacked notes in one column need their own separation. */
-  margin-bottom: 8px;
+  margin-bottom: 0.7em;
 }
 
 .pdf-page-note:hover,
@@ -652,15 +679,15 @@
 
 .pdf-page-note-num {
   flex: 0 0 auto;
-  min-width: 16px;
-  height: 16px;
-  margin-top: 3px;
+  min-width: 1.5em;
+  height: 1.5em;
+  margin-top: 0.2em;
   border-radius: 999px;
   background: var(--accent-strong);
   color: #fff;
-  font-size: 0.62rem;
+  font-size: 0.7em;
   font-weight: 800;
-  line-height: 16px;
+  line-height: 1.5em;
   text-align: center;
 }
 
@@ -677,14 +704,42 @@
    of italic in a 260px column — the label would then be taller than most of the
    notes it labels. The full text is still in the title attribute of the badge
    and one press away in the editor. */
+/* Dark page: the sheet follows the paper, not the theme.
+   .pdf-page is #2a2f33 with dark page on (styles/36-document.css), and a notes
+   page that stayed light beside it would be the brightest thing on a screen the
+   reader deliberately darkened — and would stop reading as a page of the same
+   document, which is the whole point of the shape. Not the invert filter: that
+   is for a CANVAS of someone else's colours, and this sheet's colours are ours
+   already. */
+.document-stage.is-pdf-inverted .pdf-page-notes {
+  background: #2a2f33;
+  border-color: rgb(255 255 255 / 0.14);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.5);
+  color: rgb(255 255 255 / 0.92);
+}
+
+.document-stage.is-pdf-inverted .pdf-page-notes-head,
+.document-stage.is-pdf-inverted .pdf-page-note-excerpt {
+  color: rgb(255 255 255 / 0.55);
+}
+
+.document-stage.is-pdf-inverted .pdf-page-notes-head {
+  border-bottom-color: rgb(255 255 255 / 0.14);
+}
+
+.document-stage.is-pdf-inverted .pdf-page-note:hover,
+.document-stage.is-pdf-inverted .pdf-page-note:focus-visible {
+  border-color: rgb(255 255 255 / 0.2);
+}
+
 .pdf-page-note-excerpt {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
   overflow: hidden;
-  margin-bottom: 2px;
+  margin-bottom: 0.2em;
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.88em;
   font-style: italic;
 }
