@@ -256,6 +256,20 @@ for (const [name, source] of Object.entries(SHAPES)) {
     assert(cut >= image.raw.length, `${name} #${nth}: delete cut ${cut} chars for a ${image.raw.length}-char image`);
     const removedExtra = cut - image.raw.length;
     assert(removedExtra <= 4, `${name} #${nth}: delete cut ${removedExtra} chars beyond the image itself`);
+    // Stronger, and the one that matters: whatever came out ALONGSIDE the
+    // image can only be white space and at most one row separator. A delete
+    // that ate a word, a bullet, a table pipe or a fence would show up here
+    // however plausible the surviving text looked.
+    const range = api.imageRemovalRange(source, image);
+    const collateral = source.slice(range.start, range.end).replace(image.raw, "");
+    assert(
+      /^[\s|]*$/.test(collateral) && (collateral.match(/\|/g) || []).length <= 1,
+      `${name} #${nth}: delete also removed ${JSON.stringify(collateral)}`
+    );
+    assert(
+      source.slice(0, range.start) + source.slice(range.end) === next,
+      `${name} #${nth}: delete changed the note outside the range it took`
+    );
     // No hole where the picture was.
     assert(!/\n{3,}/.test(next), `${name} #${nth}: delete left a blank hole:\n      ${JSON.stringify(next)}`);
     assert(!/^[^\S\n]*\|/m.test(next.replace(/^\|.*\|$/gm, "")), `${name} #${nth}: delete left a stray row separator:\n      ${JSON.stringify(next)}`);
@@ -267,6 +281,34 @@ for (const [name, source] of Object.entries(SHAPES)) {
   const surface = makeSurface(SHAPES.standalone);
   api.removeSourceImage(surface, { url: "https://img.test/1.png", nth: 0 });
   assert(surface.getSource() === "Before.\n\nAfter.\n", `standalone delete left ${JSON.stringify(surface.getSource())}`);
+}
+
+// A table row keeps its own pipes — those are structure, not separators.
+{
+  const surface = makeSurface(SHAPES.tableCell);
+  api.removeSourceImage(surface, { url: "https://img.test/6.png", nth: 0 });
+  assert(
+    surface.getSource() === "| a | b |\n|---|---|\n|  | x |\n",
+    `tableCell delete left ${JSON.stringify(surface.getSource())}`
+  );
+}
+
+// An image alone on a line under a bullet takes itself, not the bullet.
+{
+  const surface = makeSurface("- one\n- ![](https://img.test/b.png)\n- three\n");
+  api.removeSourceImage(surface, { url: "https://img.test/b.png", nth: 0 });
+  assert(
+    surface.getSource() === "- one\n- \n- three\n",
+    `bullet delete left ${JSON.stringify(surface.getSource())}`
+  );
+}
+
+// ...and one inside a fence is not an image at all, so nothing can act on it.
+{
+  const surface = makeSurface(SHAPES.fencedCode);
+  const before = surface.getSource();
+  api.removeSourceImage(surface, { url: "https://img.test/no-1.png", nth: 0 });
+  assert(surface.getSource() === before, "a delete aimed at a fenced-code image rewrote the note");
 }
 
 // A side-by-side row loses its separator with the image, not afterwards.
