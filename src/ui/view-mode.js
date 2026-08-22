@@ -4,6 +4,7 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { closeDocumentNoteEditor } from "../documents/pdf-notes-view.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
@@ -36,6 +37,10 @@ export function setViewMode(mode, options = {}) {
     return;
   }
   if (next === "cards") resetNotesEditingUI();
+  // A note being typed into the Notes tab of a document deck commits on the way
+  // out, exactly as the note popup flushes in closeHighlightNoteEditor: leaving
+  // a view is not a reason to lose a sentence. A no-op when nothing is open.
+  closeDocumentNoteEditor();
   const changed = state.viewMode !== next;
   state.viewMode = next;
   const notesActive = next === "notes";

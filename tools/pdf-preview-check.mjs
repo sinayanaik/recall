@@ -119,6 +119,8 @@ const API_SRC = `async () => {
     "/src/storage/deck-store.js?v=__BUILD__",
     "/src/documents/pdf-region.js?v=__BUILD__",
     "/src/documents/pdf-page-notes.js?v=__BUILD__",
+    "/src/documents/pdf-notes-view.js?v=__BUILD__",
+    "/src/notes/notes-edit-split.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
@@ -1181,10 +1183,12 @@ try {
   // Three things this format has to get right, and every one of them is a
   // report from use rather than a hypothetical:
   //
-  //   the raw editor must not open full of highlight notes. On a PDF deck the
-  //   body is empty — the PDF IS the document — so the "## Highlight Notes"
-  //   section used to be the entire contents of the textarea, with nothing
-  //   separating it from the writing the reader came to do;
+  //   the raw editor of a MARKDOWN deck must not open full of highlight notes:
+  //   the block is machine-managed text and it used to sit under the reader's
+  //   own writing with nothing between them. (A document deck is the exception
+  //   and gets the whole source — see section 8d, where the body is empty
+  //   because the paper is the document, so slicing the block off left the
+  //   editor with nothing in it at all);
   //
   //   committing that editor must not lose them. The textarea holds the body
   //   and the block is re-attached on the way back, through one choke point,
@@ -1252,6 +1256,78 @@ try {
       && fence.exportOfLegacy.split("## Highlight Notes").length === 2
       && fence.exportOfLegacy.includes("The note that was taken on it."),
     `fenced=${fence.exportOfFenced.split("## Highlight Notes").length - 1}× legacy=${fence.exportOfLegacy.split("## Highlight Notes").length - 1}×`);
+
+  // ── 8d. The Notes tab of a document deck ────────────────────────────────
+  //
+  // "The highlighted notes are not visible anywhere as continuous, easily
+  // editable text. They're on the Highlights panel, but that's not a good place
+  // to edit — I want this in the notes panel itself, as notes."
+  //
+  // Both surfaces that could have shown them sliced the fenced block off, and on
+  // a PDF deck the body is empty, so both were blank. The Notes tab is built
+  // from the highlights themselves now, and the raw editor gets the whole source
+  // — the one deck where the block IS the reader's writing.
+  const docNotes = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("notes");
+    await settle(400);
+    const view = document.getElementById("notesView");
+    const section = view.querySelector(":scope > .doc-notes");
+    const articles = Array.from(view.querySelectorAll(".doc-note[data-highlight-id]"));
+    const records = api.documentHighlightsInReadingOrder();
+    // Every highlight, not only the annotated ones: this is where a note is
+    // WRITTEN, so one with nothing on it yet is a blank waiting for a note.
+    const withNotes = articles.filter((a) => !a.querySelector(".doc-note-body").classList.contains("is-empty"));
+    // Press one and type into it, which is the whole request.
+    const target = articles.find((a) => a.querySelector(".doc-note-body").classList.contains("is-empty")) || articles[0];
+    const id = target.dataset.highlightId;
+    target.querySelector(".doc-note-body").click();
+    await settle(120);
+    const area = target.querySelector(".doc-note-edit");
+    const focused = document.activeElement === area;
+    area.value = "Typed straight into the notes panel.";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(120);
+    // Still typing: nothing may have been rebuilt under the reader yet.
+    const stillOpen = target.querySelector(".doc-note-edit") === area;
+    area.dispatchEvent(new Event("blur"));
+    await settle(250);
+    const stored = api.readHighlightNotes(api.state.notes || "").get(id) || "";
+    const rendered = view.querySelector('.doc-note[data-highlight-id="' + id + '"] .doc-note-body');
+    // ...and the raw editor, which is the "all of it at once" half.
+    const editorSees = api.rawEditorValueFor(api.state.notes || "");
+    const roundTrip = api.sourceFromRawEditor(editorSees) === api.state.notes;
+    // Put it back so nothing downstream sees a note this check invented.
+    api.setDocumentHighlightNote(id, "");
+    await settle(150);
+    api.setViewMode("document");
+    await settle(200);
+    return {
+      hasSection: Boolean(section),
+      articles: articles.length,
+      records: records.length,
+      annotated: withNotes.length,
+      focused,
+      stillOpen,
+      stored,
+      renderedText: rendered ? rendered.textContent.trim() : "",
+      editorHasFence: editorSees.includes("<!--recall:highlight-notes-->"),
+      roundTrip
+    };
+  }`);
+
+  check("a document deck's Notes tab is its highlight notes",
+    docNotes.hasSection && docNotes.articles === docNotes.records && docNotes.records > 0,
+    `${docNotes.articles} note(s) for ${docNotes.records} highlight(s), ${docNotes.annotated} written on`);
+  check("...pressing one opens a textarea in the flow, focused",
+    docNotes.focused && docNotes.stillOpen);
+  check("...and what is typed there is the highlight's note",
+    docNotes.stored === "Typed straight into the notes panel."
+      && docNotes.renderedText === "Typed straight into the notes panel.",
+    `stored "${docNotes.stored}" · shown "${docNotes.renderedText}"`);
+  check("...with the raw editor handed the whole source, block and all",
+    docNotes.editorHasFence && docNotes.roundTrip,
+    `fence in editor=${docNotes.editorHasFence}, editor round-trips=${docNotes.roundTrip}`);
 
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //

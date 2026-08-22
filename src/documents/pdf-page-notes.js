@@ -44,6 +44,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { hash32 } from "../core/text.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import {
@@ -125,15 +126,6 @@ export function annotatedDocumentHighlights() {
 // moved. The signature has to cover everything that is rendered: which
 // highlights, in what order, with what NUMBER (a note added on page 2 renumbers
 // every note after it), and what the note says.
-function hash32(text) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(36);
-}
-
 function pageNotesSignature(entries) {
   return entries
     .map(({ record, note, n }) => `${n}:${record.id}:${record.color || ""}:${hash32(documentHighlightLabel(record))}:${hash32(note)}`)

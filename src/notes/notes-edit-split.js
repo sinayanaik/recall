@@ -28,8 +28,37 @@
 import { state } from "../core/state.js?v=__BUILD__";
 import { joinHighlightNotesTail, splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
 
+// ── ...except on a document deck, where the block IS the note ─────────────
+//
+// The paragraph above is the case this module was written for: a markdown deck,
+// where the block is machine-managed text sitting under the reader's own
+// writing with nothing between them.
+//
+// A PDF deck is the opposite case, and it turned the same slice into the
+// problem: the body is empty because the paper is the document, so cutting the
+// block left the raw editor with nothing in it at all. Every note the reader had
+// taken on the paper existed, was stored, was exported — and could not be opened
+// as text anywhere in the app. "The highlighted notes are not visible anywhere
+// as continuous, easily editable text."
+//
+// So on such a deck the editor is handed the whole source, markers and all. That
+// is not a private encoding leaking out: the fence is plain text in the same
+// file, and src/format/highlight-notes.js states outright that rewriting a body
+// by hand is a supported thing to do — the only rule being to keep the
+// `<!--hn:id-->` line that ties a note to its highlight.
+//
+// Read off state.meta directly rather than through isPdfDeck(), which lives in
+// src/documents/pdf-highlights.js: this module is imported by src/ui/view-mode
+// .js and the undo stack, and pulling the document subtree in behind them for
+// one boolean is the reordering the notes on selection.js warn about. The two
+// predicates are the same test.
+function documentDeck() {
+  return Boolean(state.meta?.pdf);
+}
+
 // The raw markdown for `source` with its highlight notes taken off the end.
 export function rawEditorValueFor(source) {
+  if (documentDeck()) return String(source ?? "");
   return splitHighlightNotesTail(source).body;
 }
 
@@ -37,5 +66,10 @@ export function rawEditorValueFor(source) {
 // deck currently has. Reads the tail from state.notes rather than from a
 // remembered copy — see above.
 export function sourceFromRawEditor(value) {
+  // The editor already holds the tail on a document deck, so re-attaching one
+  // would give the deck two of them — and the second would win every later read
+  // (highlightNotesBlockSpan takes the LAST opening marker), quietly stranding
+  // everything in the first.
+  if (documentDeck()) return String(value ?? "");
   return joinHighlightNotesTail(String(value ?? ""), splitHighlightNotesTail(state.notes || "").tail);
 }

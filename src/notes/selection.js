@@ -302,7 +302,13 @@ export function cleanedSelectionFragment(range) {
   // into the needle that appear nowhere near this paragraph in the source, and
   // locateSelectionInSource would miss every highlight, cloze and erase made
   // over an annotated paragraph.
-  container.querySelectorAll("button, .code-lang-badge, .hl-inline-note, style, script").forEach((node) => node.remove());
+  // .doc-notes is the same argument one step further. On a PDF deck the whole
+  // Notes tab is built by src/documents/pdf-notes-view.js from the highlight
+  // notes, so NOTHING on that surface is a slice of the markdown the matcher
+  // searches — the note text is in the fenced block at the end of the source,
+  // and matching a selection from here would splice a <mark> into machine-
+  // managed text.
+  container.querySelectorAll("button, .code-lang-badge, .hl-inline-note, .doc-notes, style, script").forEach((node) => node.remove());
   restoreSelectionTables(container, snapped);
   restoreSelectionListItems(container, snapped);
   return container;
@@ -511,6 +517,10 @@ export function emitTextWithLineBreaks(node, sink, stop) {
     // over the LIVE dom (countRenderedTextBefore, which is where the occurrence
     // count comes from) and never sees that clone.
     if (child.classList?.contains("hl-inline-note")) continue;
+    // ...and the document deck's whole notes surface, for the same reason and
+    // with the same need to say it twice: this walk runs over the LIVE dom and
+    // never sees cleanedSelectionFragment's clone.
+    if (child.classList?.contains("doc-notes")) continue;
     const isTight = TIGHT_BLOCK_TAGS.has(child.tagName);
     const isLoose = LOOSE_BLOCK_TAGS.has(child.tagName);
     const isCell = CELL_TAGS.has(child.tagName);
