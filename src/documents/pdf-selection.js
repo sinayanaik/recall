@@ -44,13 +44,54 @@ export function pageNumberForNode(node) {
   return page ? Number(page.dataset.pageNumber) || 0 : 0;
 }
 
+// The span a boundary that landed BETWEEN two items belongs to.
+//
+// buildTextLayer writes a whitespace text node between one item's span and the
+// next, so a selection spanning several items reads as prose rather than as one
+// welded string (see the long note there). Those separators are real nodes, so a
+// drag can end on one — and a boundary on a separator used to make
+// textSpanForNode return null, which made captureDocumentSelection return null,
+// which is a highlight that silently did not happen.
+//
+// A boundary at the start of a selection belongs to the item AFTER the gap; one
+// at the end belongs to the item BEFORE it. Nothing outside the text layer is
+// walked: a drag that began in the page margin still has no anchor, which is
+// what pdf-region.js relies on.
+function spanAcrossGap(node, edge) {
+  const layer = node?.parentElement;
+  if (!layer?.classList?.contains("pdf-text-layer")) return null;
+  let sibling = edge === "end" ? node.previousSibling : node.nextSibling;
+  while (sibling) {
+    const span = sibling.nodeType === Node.ELEMENT_NODE && sibling.hasAttribute?.(TEXT_ITEM_ATTR)
+      ? sibling
+      : null;
+    if (span) return span;
+    sibling = edge === "end" ? sibling.previousSibling : sibling.nextSibling;
+  }
+  return null;
+}
+
 // { page, item, ch } for one selection boundary, or null when the boundary is
 // not over text (the margin, a figure, the gap between pages).
-export function boundaryAnchor(container, offset) {
-  const span = textSpanForNode(container);
+//
+// `edge` says which end of the selection this is, and is only consulted for a
+// boundary that landed on a separator between two items — see spanAcrossGap.
+export function boundaryAnchor(container, offset, edge = "start") {
+  const gapSpan = textSpanForNode(container) ? null : spanAcrossGap(container, edge);
+  const span = textSpanForNode(container) || gapSpan;
   if (!span) return null;
   const page = pageNumberForNode(span);
   if (!page) return null;
+  // A boundary that came off a separator has no character offset of its own:
+  // it is the very start of the item after the gap, or the very end of the one
+  // before it.
+  if (gapSpan) {
+    return {
+      page,
+      item: Number(span.dataset.itemIndex) || 0,
+      ch: edge === "end" ? (span.textContent || "").length : 0
+    };
+  }
   // A boundary placed on the SPAN rather than in its text node reports a child
   // index, not a character offset — 0 means "before the text", anything else
   // means "after it".
@@ -125,8 +166,8 @@ export function captureDocumentSelection() {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
   const range = selection.getRangeAt(0);
-  const anchor = boundaryAnchor(range.startContainer, range.startOffset);
-  const focus = boundaryAnchor(range.endContainer, range.endOffset);
+  const anchor = boundaryAnchor(range.startContainer, range.startOffset, "start");
+  const focus = boundaryAnchor(range.endContainer, range.endOffset, "end");
   if (!anchor || !focus) return null;
   const text = range.toString().replace(/\s+/g, " ").trim();
 
@@ -214,6 +255,54 @@ export function textItemBox(item) {
 
 export function boxesIntersect(box, rect) {
   return box.x1 >= rect[0] && box.x0 <= rect[2] && box.y1 >= rect[1] && box.y0 <= rect[3];
+}
+
+// The separator between two adjacent text items, as buildTextLayer writes it
+// into the layer. One definition, because the two have to agree: this is what
+// makes a repaired highlight's text identical to what a fresh capture over the
+// same words produces.
+export function textItemGap(previous, next) {
+  if (!previous) return "";
+  if (previous.hasEOL) return "\n";
+  return /\s$/.test(previous.str || "") || /^\s/.test(next?.str || "") ? "" : " ";
+}
+
+// The words a stored { item, ch } anchor pair covers, read back off the page's
+// own text items.
+//
+// This is the exact counterpart of range.toString() over the text layer, and it
+// exists for repairDocumentHighlightText: a highlight made before the layer had
+// separators in it stored its words welded together, and the anchors it stored
+// alongside them are enough to say what those words actually were. Character
+// exact, so a highlight over half a line is rebuilt as half a line and not as
+// the whole of it (which is what textForQuads below would give — right for an
+// imported annotation, which has no anchors, and too coarse for this).
+//
+// "" for anchors that do not describe a run on one page: a highlight across a
+// page break has no single item list to read from.
+export function textForAnchorRange(items, anchor, focus) {
+  if (!Array.isArray(items) || !anchor || !focus) return "";
+  if (anchor.page !== focus.page) return "";
+  const forwards = anchor.item < focus.item || (anchor.item === focus.item && anchor.ch <= focus.ch);
+  const from = forwards ? anchor : focus;
+  const to = forwards ? focus : anchor;
+  if (!items[from.item] || !items[to.item]) return "";
+  if (from.item === to.item) {
+    return String(items[from.item].str || "").slice(from.ch, to.ch).replace(/\s+/g, " ").trim();
+  }
+  let out = String(items[from.item].str || "").slice(from.ch);
+  // `previous` is the last item that CONTRIBUTED, not items[i - 1]: an item with
+  // an empty str emits no span, so buildTextLayer never writes a separator for
+  // it either, and the two have to agree about that as well.
+  let previous = items[from.item];
+  for (let i = from.item + 1; i <= to.item; i += 1) {
+    const item = items[i];
+    if (!item || !item.str) continue;
+    out += textItemGap(previous, item);
+    out += i === to.item ? String(item.str).slice(0, to.ch) : String(item.str);
+    previous = item;
+  }
+  return out.replace(/\s+/g, " ").trim();
 }
 
 // The text a set of quads covers, plus the { item, ch } the first of them

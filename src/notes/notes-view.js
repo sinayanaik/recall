@@ -128,6 +128,25 @@ export function clearProgrammaticNotesSelection() {
 // The SAME string has to reach renderMarkdown and both source trackers, or the
 // block cache's estimate misses on every pass and re-measures a book-sized note
 // for nothing.
+// ── The document surface's own Notes tab, registered rather than imported ──
+//
+// A PDF deck's body is empty (the paper is the document) and its highlight notes
+// are sliced off every markdown surface by src/format/notes-fence.js — so this
+// view had nothing to show and the Highlights panel was the only place a note
+// taken on a paper could be read or changed. src/documents/pdf-notes-view.js is
+// what shows them, and it takes this surface over outright for such a deck: a
+// note has an id and a boundary, and rendered markdown blocks have neither.
+//
+// Registered, not imported, for the reason this file's other hooks are: it sits
+// inside three import cycles already, and pulling the whole document subtree in
+// ahead of them is exactly the reordering those notes warn about. src/main.js
+// knows both ends.
+let renderDocumentNotesInstead = () => null;
+
+export function setDocumentNotesRenderer(fn) {
+  renderDocumentNotesInstead = typeof fn === "function" ? fn : () => null;
+}
+
 export function renderNotesView({ sameNote = false } = {}) {
   if (!el.notesView) return Promise.resolve();
   const source = readerNotesBody(state.notes);
@@ -156,7 +175,11 @@ export function renderNotesView({ sameNote = false } = {}) {
     setNotesScrolledSource(source);
     syncNotesBlockEstimateSource();
   }
-  return renderMarkdown(el.notesView, source, true)
+  // A document deck's notes are built by pdf-notes-view.js instead of rendered
+  // from markdown. Everything after it is unchanged and still worth running: the
+  // cloze button, the paged layout and the inline highlight notes all no-op on a
+  // surface with no rendered blocks in it, and the bookmark button is per-deck.
+  return (renderDocumentNotesInstead() || renderMarkdown(el.notesView, source, true))
     .then(() => resetClozeButton(el.clozeToggleNotesBtn))
     // Every repaint of the rendered notes comes through here, so this is the
     // one place paged mode has to re-count its pages — the note may have grown

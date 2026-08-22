@@ -22,8 +22,8 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { quadToPageBox } from "./pdf-selection.js?v=__BUILD__";
-import { pdfMarkLayer } from "./pdf-view.js?v=__BUILD__";
+import { quadToPageBox, textForAnchorRange } from "./pdf-selection.js?v=__BUILD__";
+import { pdfMarkLayer, pdfPageTextItems } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
@@ -163,11 +163,17 @@ export function freshDocumentHighlightId() {
 // have to follow a highlight change — the autosave and the panel refresh —
 // cannot be forgotten. Exactly the pair rewriteHighlightGroup makes for a
 // <mark> (src/format/highlight-edit.js).
-function commitDocumentHighlights(next) {
+// `notify` is the opt-out, and only the opt-out: the autosave is unconditional,
+// because a record that is not written down is a record that is lost. What a
+// caller can decline is TELLING everything — which rebuilds the Highlights panel
+// and every printed notes page in the document, and is far too much to do per
+// keystroke-pause or once per page as it paints. Both of the callers that
+// decline it arrange for exactly one notify of their own afterwards.
+function commitDocumentHighlights(next, { notify = true } = {}) {
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
   state.meta.pdfHighlights = next;
   scheduleDeckAutosave();
-  notifyHighlightsChanged();
+  if (notify) notifyHighlightsChanged();
 }
 
 // What to CALL a highlight in a list — the Highlights panel, an export, the
@@ -192,6 +198,96 @@ export function documentExcerptLabel(text) {
   if (!flat) return "";
   const clipped = flat.length > 60 ? `${flat.slice(0, 60).trimEnd()}…` : flat;
   return `“${clipped}”`;
+}
+
+// ── Repairing the words a highlight was stored with ────────────────────────
+//
+// "I'm seeing garbage value most of the time when I'm highlighting something and
+// then try to write a note for it."
+//
+// buildTextLayer used to put one bare <span> per text item in the layer with
+// nothing between them, and a highlight's text is range.toString() over that —
+// which concatenates text data and ignores elements. So every selection that
+// spanned more than one item was stored welded together: "DURRANT-WHYTE" and
+// "Simultaneous Localization…" arriving as "DURRANT-WHYTESimultaneous…". That
+// string is the highlight's name everywhere it appears — the note's excerpt, the
+// Highlights panel, the printed notes page, every export — and there is no
+// surface in the app that can fix it, because none of them owns it.
+//
+// The layer has separators now, so no NEW highlight can be stored that way. This
+// is for the ones that already are. Every highlight also stored the { item, ch }
+// anchors the selection was made at, and those are enough to read the same words
+// back off the page's own text items exactly as a fresh capture would now
+// produce them.
+//
+// ── What it will not touch ────────────────────────────────────────────────
+//
+// Only a record whose stored text and re-read text are the SAME CHARACTERS with
+// different whitespace. That is the whole signature of this bug, and it is a
+// test nothing else passes: a hand-edited excerpt, an annotation imported from
+// the file with its own comment, a region named by where it is, a highlight
+// whose page has been re-paginated — every one of those differs by more than
+// whitespace and is left exactly as it is. A note's own text is never read or
+// rewritten here; only the quoted label on it, which is regenerated on every
+// save anyway.
+function squashWhitespace(text) {
+  return String(text || "").replace(/\s+/g, "");
+}
+
+// One notify for a whole sweep, not one per record or one per page.
+//
+// The repair runs from the page-painted hook, which is inside the layer build —
+// notifying from there would rebuild the Highlights panel and every printed
+// notes page in the middle of a page rendering, once per page, which is the
+// churn this feature is otherwise being fixed to avoid.
+let repairNotifyTimer = 0;
+
+export const REPAIR_NOTIFY_MS = 120;
+
+function scheduleRepairNotify() {
+  clearTimeout(repairNotifyTimer);
+  repairNotifyTimer = setTimeout(() => {
+    repairNotifyTimer = 0;
+    notifyHighlightsChanged();
+  }, REPAIR_NOTIFY_MS);
+}
+
+export function repairDocumentHighlightText(pageNumber) {
+  const items = pdfPageTextItems(pageNumber);
+  if (!items?.length) return false;
+  const records = documentHighlights();
+  if (!records.length) return false;
+  let notes = state.notes || "";
+  let changed = false;
+  const next = records.map((record) => {
+    // A region is named by where it is, not by what it says (see
+    // documentHighlightLabel), and an imported annotation has no anchors to
+    // read back from.
+    if (record.kind === "area") return record;
+    const quads = record.quads || [];
+    if (!quads.length || quads.some((quad) => quad.page !== pageNumber)) return record;
+    const stored = String(record.text || "");
+    if (!stored) return record;
+    const derived = textForAnchorRange(items, record.anchor, record.focus);
+    if (!derived || derived === stored) return record;
+    if (squashWhitespace(derived) !== squashWhitespace(stored)) return record;
+    changed = true;
+    const note = readHighlightNotes(notes).get(record.id) || "";
+    // Only when there IS a note: setHighlightNoteInSource treats an empty text
+    // as "remove this entry", so writing a label for a highlight that has no
+    // note would be a no-op on a good day and a removal on a bad one.
+    if (note) notes = setHighlightNoteInSource(notes, record.id, note, documentExcerptLabel(derived));
+    // `at` deliberately does NOT move. This is a deterministic repair every
+    // device makes for itself the first time it paints the page, not an edit —
+    // and a bumped timestamp would let it out-rank a recolour somebody actually
+    // made on another device.
+    return { ...record, text: derived };
+  });
+  if (!changed) return false;
+  if (notes !== state.notes) state.notes = notes;
+  commitDocumentHighlights(next, { notify: false });
+  scheduleRepairNotify();
+  return true;
 }
 
 // ── Create / recolour / remove ──────────────────────────────────────────────
@@ -277,7 +373,23 @@ export function documentHighlightNote(id) {
   return readHighlightNotes(state.notes || "").get(id) || "";
 }
 
-export function setDocumentHighlightNote(id, text, { undo = false } = {}) {
+// `rerender` is the note editor's autosave option, and it is honoured here now.
+//
+// "Whenever I'm editing the highlight the whole PDF rendering gets refreshed."
+//
+// The editor saves as you type — one write per typing pause — and every one of
+// those writes went through commitDocumentHighlights, whose notify rebuilds the
+// Highlights panel AND tears down and re-creates every printed notes page in the
+// document. So a sentence typed into a note re-laid out the whole paper
+// underneath it, three or four times over, moving the reader each time.
+//
+// The editor has always said which writes are worth repainting for: it passes
+// { rerender: false } on every autosave and calls repaint() exactly once on the
+// way out (closeHighlightNoteEditor). The notes side honours that; the document
+// side dropped it on the floor. Both agree now — and the deck autosave inside
+// commitDocumentHighlights is unconditional either way, so nothing typed is at
+// risk of not being written down.
+export function setDocumentHighlightNote(id, text, { undo = false, rerender = true } = {}) {
   const record = documentHighlightById(id);
   if (!record) return false;
   // One snapshot per editing session, taken on the first write — the same
@@ -289,7 +401,7 @@ export function setDocumentHighlightNote(id, text, { undo = false } = {}) {
   // `at` moves too: a note is an edit to the highlight, and the sync merge
   // decides by timestamp.
   commitDocumentHighlights(documentHighlights().map((entry) =>
-    entry.id === id ? { ...entry, at: Date.now() } : entry));
+    entry.id === id ? { ...entry, at: Date.now() } : entry), { notify: rerender });
   return true;
 }
 

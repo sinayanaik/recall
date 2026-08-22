@@ -110,12 +110,19 @@ export const PDF_MAX_SCALE = 5;
 // the scroller's edge (and so the shadow that separates one page from the next
 // has somewhere to fall).
 //
-// A phone gets less of it. 24px each side is 12% of a 390px screen spent on
-// margin around a page that is mostly margin already, and it is the difference
-// between a wide document fitting and not.
+// A phone gets NONE of it, which is the whole of "the PDF never opens at 100%
+// width". 24px each side is 12% of a 390px screen spent on margin around a page
+// that is mostly margin already; 8px was still 4% of it, and a page that stops
+//4% short of the screen is a page the reader can see is not fitting.
+//
+// The reason the gutter existed at all — somewhere for the shadow that separates
+// one page from the next to fall — is answered by the GAP between pages instead
+// (.pdf-pages carries one, 8px on a narrow screen: styles/36-document.css). A
+// shadow falls into that gap perfectly well, and nothing about page separation
+// needs the sides.
 export const PDF_FIT_PADDING = 24;
 
-export const PDF_FIT_PADDING_NARROW = 8;
+export const PDF_FIT_PADDING_NARROW = 0;
 
 export const PDF_NARROW_WIDTH = 560;
 
@@ -201,6 +208,15 @@ export function pdfPageElement(pageNumber) {
 
 export function pdfMarkLayer(pageNumber) {
   return openPdf?.pages?.get(pageNumber)?.markLayer || null;
+}
+
+// One page's text content items, as pdf.js handed them over when the text layer
+// was built — null for a page that has none on screen. Kept rather than fetched
+// because getTextContent() is a round trip to the worker and this page has
+// already paid for one; see repairDocumentHighlightText in pdf-highlights.js,
+// which is the only reader.
+export function pdfPageTextItems(pageNumber) {
+  return openPdf?.pages?.get(pageNumber)?.textItems || null;
 }
 
 // Whether the Document surface is the one a selection or a jump should act on.
@@ -1106,11 +1122,12 @@ async function buildPageLayers(pageNumber, entry, page, viewport, stale) {
   if (stale()) return;
   const markLayer = document.createElement("div");
   markLayer.className = "pdf-mark-layer";
-  const textLayer = await buildTextLayer(page, viewport);
+  const { layer: textLayer, items } = await buildTextLayer(page, viewport);
   if (stale()) return;
   entry.el.append(markLayer, textLayer);
   entry.markLayer = markLayer;
   entry.textLayer = textLayer;
+  entry.textItems = items;
   // Painted as part of the layer build rather than on a later pass, so a
   // highlight is never briefly missing from a page the reader can already see
   // the marks of.
@@ -1212,6 +1229,9 @@ function unrenderPage(pageNumber) {
   entry.el.innerHTML = "";
   entry.markLayer = null;
   entry.textLayer = null;
+  // The items belong to the layer that is being dropped. Keeping them would be
+  // a page of text content held for a page that is a grey rectangle again.
+  entry.textItems = null;
   const label = document.createElement("span");
   label.className = "pdf-page-label";
   label.textContent = String(pageNumber);
@@ -1245,8 +1265,41 @@ export async function buildTextLayer(page, viewport) {
   layer.style.height = `${Math.floor(viewport.height)}px`;
   const content = await page.getTextContent();
   const frag = document.createDocumentFragment();
+  let previous = null;
   content.items.forEach((item, index) => {
     if (!item.str) return;
+    // ── The separator between one text item and the next ──────────────────
+    //
+    // This is what "I'm seeing garbage value most of the time when I'm
+    // highlighting something and then try to write a note for it" was.
+    //
+    // A highlight's text comes from range.toString() over this layer
+    // (captureDocumentSelection), and Range.toString() concatenates TEXT DATA:
+    // it walks text nodes and ignores everything else. With one bare <span> per
+    // item and nothing between them, a selection spanning two items came back
+    // welded together — "DURRANT-WHYTE" and "Simultaneous Localization…", two
+    // separate lines of a title page, arriving as "DURRANT-WHYTESimultaneous…".
+    // That string is then the excerpt on the highlight's note, in the panel, in
+    // the printed page notes and in every export, and there is no way to fix it
+    // from any of them.
+    //
+    // A real whitespace TEXT NODE, therefore, and not a <br>: pdf.js's own text
+    // layer uses <br> for its line breaks, which reads correctly and is
+    // invisible to toString() — the one thing this has to be visible to. The
+    // spans are absolutely positioned, so an extra text node in the flow costs
+    // no layout and moves nothing.
+    //
+    // hasEOL is pdf.js saying "this item ended a line". Between items on the
+    // SAME line a space is added only when neither side already has one: an
+    // item is very often a fragment of a word (kerning, a ligature, a font
+    // switch mid-word), and a space inserted there would break the word instead
+    // of the join.
+    if (previous) {
+      const gap = previous.hasEOL ? "\n"
+        : (/\s$/.test(previous.str) || /^\s/.test(item.str) ? "" : " ");
+      if (gap) frag.appendChild(document.createTextNode(gap));
+    }
+    previous = item;
     const span = document.createElement("span");
     span.dataset.itemIndex = String(index);
     span.textContent = item.str;
@@ -1287,7 +1340,12 @@ export async function buildTextLayer(page, viewport) {
       span.style.setProperty("--pdf-span-scale", String(Number(span.dataset.expectedWidth) / actual));
     });
   });
-  return layer;
+  // The items go back with the layer, so the one caller can keep them on the
+  // page's entry. textForQuads() needs them to name a highlight from its quads
+  // (see repairDocumentHighlightText in pdf-highlights.js), and a second
+  // getTextContent() for that would be a round trip to the worker for something
+  // this function has already paid for.
+  return { layer, items: content.items };
 }
 
 // ── Position ────────────────────────────────────────────────────────────────

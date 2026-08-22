@@ -59,6 +59,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { hash32 } from "../core/text.js?v=__BUILD__";
 import { HIGHLIGHT_SCAN_RE } from "../format/highlight.js?v=__BUILD__";
 import { decodeHighlightNote, isHighlightNoteId, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
@@ -104,15 +105,6 @@ let indexValue = null;
 // each body. What a full refresh actually needs to know is "did any number or
 // any note text change", and this answers it without holding a second copy of
 // every note. See refreshInlineHighlightNotes.
-function hash32(text) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(36);
-}
-
 function buildIndex(source) {
   const byAttr = new Map();
   // The gate that keeps this off the hot path of opening an unannotated note:

@@ -44,6 +44,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { hash32 } from "../core/text.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import {
@@ -57,6 +58,7 @@ import {
   currentDocumentPage,
   currentDocumentRatio,
   pdfPageElement,
+  pdfPageViewport,
   scrollToDocumentPage
 } from "./pdf-view.js?v=__BUILD__";
 
@@ -109,6 +111,27 @@ export function annotatedDocumentHighlights() {
   return out;
 }
 
+// ── What a page's notes currently ARE, as one short string ────────────────
+//
+// Both painters below rebuild their DOM from scratch, and both are called for
+// every page in the document on every highlight change. That was affordable
+// when a highlight change meant a highlight being made or deleted; it is not
+// when it means a keystroke pause in the note editor, which is what
+// notifyHighlightsChanged had become (see setDocumentHighlightNote). Tearing
+// down and re-creating every printed page of notes while somebody is typing
+// into one of them is "the whole PDF rendering gets refreshed", and it moves the
+// reader every time it happens.
+//
+// So each painter records what it drew and skips a page whose answer has not
+// moved. The signature has to cover everything that is rendered: which
+// highlights, in what order, with what NUMBER (a note added on page 2 renumbers
+// every note after it), and what the note says.
+function pageNotesSignature(entries) {
+  return entries
+    .map(({ record, note, n }) => `${n}:${record.id}:${record.color || ""}:${hash32(documentHighlightLabel(record))}:${hash32(note)}`)
+    .join("|");
+}
+
 function openNoteFor(record, anchorEl) {
   const rect = anchorEl?.getBoundingClientRect?.() || null;
   openHighlightNoteEditor(record.id, rect, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
@@ -140,11 +163,22 @@ export function paintPageNoteBadges(pageNumber) {
     layer?.remove();
     return;
   }
+  // The SCALE is part of the signature, and it has to be. A badge is placed by
+  // quadToPageBox, which converts through the live viewport — so every badge on
+  // the page belongs to the zoom it was painted at. stalePageForRelayout drops
+  // the mark and text layers on a zoom precisely because their coordinates are
+  // in the old scale; the badge layer is not its to drop (that constant lives
+  // here, and pdf-view.js importing this module back would close a cycle), so
+  // the layer survives a relayout and the guard would happily skip repainting it
+  // at the new one. Naming the scale is what makes "nothing has changed" true.
+  const signature = `${pdfPageViewport(pageNumber)?.scale || 0}#${pageNotesSignature(annotated)}`;
+  if (layer && layer.dataset.signature === signature) return;
   if (!layer) {
     layer = document.createElement("div");
     layer.className = BADGE_LAYER_CLASS;
     pageEl.appendChild(layer);
   }
+  layer.dataset.signature = signature;
   layer.innerHTML = "";
   const frag = document.createDocumentFragment();
   annotated.forEach(({ record, note, n }) => {
@@ -245,8 +279,12 @@ function shortLabel(label) {
 export function refreshPdfPageNotes() {
   const view = el.documentView;
   if (!view) return;
-  view.querySelectorAll(`.${PAGE_NOTES_CLASS}`).forEach((node) => node.remove());
-  if (!pageNotesOn || !state.meta?.pdf) return;
+  const existing = new Map();
+  view.querySelectorAll(`.${PAGE_NOTES_CLASS}`).forEach((node) => existing.set(node.dataset.pageNumber, node));
+  if (!pageNotesOn || !state.meta?.pdf) {
+    existing.forEach((node) => node.remove());
+    return;
+  }
   const byPage = new Map();
   annotatedDocumentHighlights().forEach((entry) => {
     const page = Number(entry.record.page || entry.record.quads?.[0]?.page || 0);
@@ -254,11 +292,49 @@ export function refreshPdfPageNotes() {
     if (!byPage.has(page)) byPage.set(page, []);
     byPage.get(page).push(entry);
   });
+  // ── Only the pages whose notes actually moved ────────────────────────────
+  //
+  // This used to remove every block and build them all again, which is a
+  // markdown render per note and a re-layout of the whole document — on every
+  // call, and this is called from notifyHighlightsChanged, which the note editor
+  // reaches on every typing pause. That is the visible half of "the whole PDF
+  // rendering gets refreshed": the paper below the note you are writing jumping
+  // as its blocks are taken out and put back.
+  //
+  // setDocumentHighlightNote no longer notifies per keystroke (see there), so
+  // most of those calls are gone. This is the other half, for the ones that are
+  // left: a highlight made or deleted anywhere renumbers the notes after it and
+  // so has to reach every page, and almost every page's answer is unchanged.
+  let changed = false;
+  const anchorPage = currentDocumentPage();
+  const anchorRatio = currentDocumentRatio();
   byPage.forEach((entries, pageNumber) => {
+    const key = String(pageNumber);
+    const previous = existing.get(key);
+    existing.delete(key);
+    const signature = pageNotesSignature(entries);
+    if (previous && previous.dataset.signature === signature) return;
     const pageEl = pdfPageElement(pageNumber);
-    if (!pageEl) return;
-    pageEl.after(noteBlockFor(pageNumber, entries));
+    if (!pageEl) {
+      previous?.remove();
+      return;
+    }
+    const block = noteBlockFor(pageNumber, entries);
+    block.dataset.signature = signature;
+    changed = true;
+    if (previous) previous.replaceWith(block);
+    else pageEl.after(block);
   });
+  // Whatever is left over is a page that has no annotated highlight any more.
+  existing.forEach((node) => {
+    node.remove();
+    changed = true;
+  });
+  // A block that changed height moved everything below it, and the reader may be
+  // looking at any of that. Same correction applyPdfPageNotes makes around its
+  // own rebuild, made here so every caller gets it — and skipped entirely when
+  // nothing was rebuilt, which is now the common case.
+  if (changed && anchorPage) scrollToDocumentPage(anchorPage, anchorRatio, { smooth: false });
 }
 
 // Every page currently on screen, plus the printed blocks. The counterpart of
@@ -309,10 +385,10 @@ export function paintPdfPageNotesButton() {
 // looking at the page they were looking at.
 export function applyPdfPageNotes() {
   paintPdfPageNotesButton();
-  const page = currentDocumentPage();
-  const ratio = currentDocumentRatio();
+  // The reading-position correction that used to be spelled out here lives
+  // inside refreshPdfPageNotes now, so every caller gets it and not just this
+  // one — and so it is skipped on the calls that rebuild nothing.
   refreshPdfPageNotes();
-  if (page) scrollToDocumentPage(page, ratio, { smooth: false });
 }
 
 export function togglePdfPageNotes() {

@@ -320,6 +320,7 @@ const APP_SHELL = [
   `./src/documents/pdf-export.js?v=${STAMP}`,
   `./src/documents/pdf-highlights.js?v=${STAMP}`,
   `./src/documents/pdf-outline.js?v=${STAMP}`,
+  `./src/documents/pdf-notes-view.js?v=${STAMP}`,
   `./src/documents/pdf-page-notes.js?v=${STAMP}`,
   `./src/documents/pdf-region.js?v=${STAMP}`,
   `./src/documents/pdf-selection.js?v=${STAMP}`,

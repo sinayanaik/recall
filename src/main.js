@@ -57,7 +57,7 @@ import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNo
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { INLINE_HIGHLIGHT_NOTES_KEY, applyInlineHighlightNotes, setInlineHighlightNotesFlag, toggleInlineHighlightNotes } from "./notes/inline-highlight-notes.js?v=__BUILD__";
-import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setDocumentNotesRenderer, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -100,7 +100,8 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
-import { initDocumentMarkMenu } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { initDocumentMarkMenu, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { closeDocumentNoteEditor, initDocumentNotesEditing, renderDocumentNotes } from "./documents/pdf-notes-view.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
@@ -929,11 +930,30 @@ onDomReady(() => {
 // that makes one without closing an import cycle it documents at length. Same
 // registration idiom as the two hooks above.
 onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
+// A PDF deck's Notes tab is its highlight notes, built by the document module
+// rather than rendered from markdown — see the note on setDocumentNotesRenderer
+// for why that surface is taken over rather than rendered into. Same
+// registration idiom, same reason: notes-view.js must not import the document
+// subtree.
+onDomReady(() => {
+  setDocumentNotesRenderer(renderDocumentNotes);
+  initDocumentNotesEditing();
+});
 // The badges are painted with each page as it renders, and the printed notes are
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
 // why these are registered rather than imported.
 onDomReady(() => {
-  setDocumentPagePaintedHook(paintPageNoteBadges);
+  // Two things happen as a page paints, in this order and for this reason.
+  //
+  // repairDocumentHighlightText re-reads the words of any highlight on the page
+  // that was stored before the text layer had separators in it (see its own
+  // comment) — so the badge, and everything else that names a highlight, is
+  // built from the corrected text rather than showing the welded version for one
+  // frame and then changing under the reader.
+  setDocumentPagePaintedHook((pageNumber) => {
+    repairDocumentHighlightText(pageNumber);
+    paintPageNoteBadges(pageNumber);
+  });
   setDocumentOpenedHook(refreshPdfPageNotes);
 });
 // So an edit made on a mark in the note refreshes the Highlights tab, without

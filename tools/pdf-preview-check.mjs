@@ -45,6 +45,13 @@ const SHOT = (args.find((a) => a.startsWith("--shot=")) || "").slice(7)
 const OWN_PDF = args.find((a) => a.endsWith(".pdf"));
 // --shot-menu opens the ⇓ export menu before the shot is taken.
 const SHOT_MENU = args.includes("--shot-menu");
+// --shot-pages takes the shot on a PHONE with the printed notes turned on: the
+// two things that only meet there are a page fitted edge to edge and the sheet
+// of notes under it, and neither is visible in the desktop shot above.
+const SHOT_PAGES = args.includes("--shot-pages");
+// --shot-notes takes it on the Notes tab instead, which on a document deck is
+// the highlight notes (src/documents/pdf-notes-view.js).
+const SHOT_NOTES = args.includes("--shot-notes");
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
 //
@@ -119,6 +126,8 @@ const API_SRC = `async () => {
     "/src/storage/deck-store.js?v=__BUILD__",
     "/src/documents/pdf-region.js?v=__BUILD__",
     "/src/documents/pdf-page-notes.js?v=__BUILD__",
+    "/src/documents/pdf-notes-view.js?v=__BUILD__",
+    "/src/notes/notes-edit-split.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
@@ -465,6 +474,90 @@ try {
     check("...and is narrower than the page it sits on",
       got[2] > got[0] && got[2] < 612, `x1 = ${Math.round(got[2])}`);
   }
+
+  // ── 4b. A selection that spans more than one text item ───────────────────
+  //
+  // "I'm seeing garbage value most of the time when I'm highlighting something
+  // and then try to write a note for it."
+  //
+  // Section 4 above selects the whole of ONE text item, which is the one shape
+  // of selection this bug cannot show: a highlight's text is range.toString()
+  // over the text layer, and Range.toString() concatenates text DATA and ignores
+  // elements — so with one bare <span> per item and nothing between them, every
+  // selection that crossed an item boundary came back welded together. Two lines
+  // of a title page arrived as "DURRANT-WHYTESimultaneous…", and that string is
+  // then the highlight's name in the note, the panel, the printed page and every
+  // export.
+  //
+  // The second half is the repair: the words of a highlight already stored that
+  // way are read back off the page's own text items through the { item, ch }
+  // anchors it stored alongside them, when the page paints.
+  const acrossItems = await page.evaluate(`async (pageNumber) => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(pageNumber, 0, { smooth: false });
+    await api.whenDocumentPageReady(pageNumber);
+    const el = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+    const spans = Array.from(el.querySelectorAll(".pdf-text-layer span[data-item-index]"));
+    if (spans.length < 4) return { error: "not enough text items to span" };
+    const range = document.createRange();
+    range.setStart(spans[1].firstChild, 0);
+    range.setEnd(spans[3].firstChild, spans[3].firstChild.length);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const capture = api.captureDocumentSelection();
+    selection.removeAllRanges();
+    if (!capture) return { error: "captureDocumentSelection returned null across items" };
+    // What the three items say, and what they used to weld into.
+    const parts = [spans[1], spans[2], spans[3]].map((s) => s.textContent);
+    const welded = parts.join("");
+    const spaced = parts.join(" ");
+    const record = api.addDocumentHighlight(capture, "yellow");
+    api.setDocumentHighlightNote(record.id, "A note on a passage that runs across three items.");
+    await settle(150);
+    // Now put the record back the way a build without separators would have
+    // stored it, and make the page paint again. Nothing else is touched: the
+    // anchors are the ones the capture really produced.
+    const list = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, text: welded } : r));
+    api.state.meta.pdfHighlights = list;
+    api.zoomDocument(1.1);
+    await settle(700);
+    api.fitDocumentToWidth();
+    await settle(500);
+    const repaired = (api.state.meta.pdfHighlights || []).find((r) => r.id === record.id);
+    const notes = api.state.notes || "";
+    const result = {
+      captured: capture.text,
+      welded,
+      spaced,
+      repairedText: repaired ? repaired.text : "",
+      // The quoted label on the note is regenerated from the record's text, so
+      // it has to have moved with it — that label is what the printed notes page
+      // and the Highlights panel show.
+      labelHasWelded: notes.indexOf(welded) !== -1,
+      labelHasSpaced: notes.indexOf(spaced.slice(0, 40)) !== -1,
+      noteKept: (api.readHighlightNotes(notes).get(record.id) || "")
+    };
+    api.removeDocumentHighlight(record.id);
+    await settle(200);
+    return result;
+  }`, madeOn);
+
+  if (acrossItems.error) throw new Error(acrossItems.error);
+  check("a selection across three text items keeps the words apart",
+    acrossItems.captured === acrossItems.spaced,
+    `got "${acrossItems.captured.slice(0, 64)}"`);
+  check("...rather than welding them into one string",
+    acrossItems.captured !== acrossItems.welded && acrossItems.welded !== acrossItems.spaced,
+    `welded would be "${acrossItems.welded.slice(0, 64)}"`);
+  check("a highlight already stored welded repairs itself when its page paints",
+    acrossItems.repairedText === acrossItems.spaced,
+    `now "${acrossItems.repairedText.slice(0, 64)}"`);
+  check("...taking the quoted label on its note with it",
+    !acrossItems.labelHasWelded && acrossItems.labelHasSpaced);
+  check("...and leaving the note itself alone",
+    acrossItems.noteKept === "A note on a passage that runs across three items.",
+    `"${acrossItems.noteKept}"`);
 
   // ── 5. Reload from IndexedDB, and repaint ────────────────────────────────
   const reloaded = await page.evaluate(`async (pageNumber, id) => {
@@ -910,15 +1003,199 @@ try {
       `note ${pageNotes.noteWidth}px of ~${Math.round(pageNotes.blockWidth / columns)}px`);
   }
 
+  // ── 8c. Typing into a note leaves the document where it was ─────────────
+  //
+  // "Whenever I'm editing the highlight the whole PDF rendering gets refreshed."
+  //
+  // Two mechanisms, both of them here. The editor autosaves on a 700ms debounce
+  // and passes { rerender: false }, which the document side used to drop — so
+  // every typing pause rebuilt the Highlights panel and every printed notes page
+  // in the document. And refreshPdfPageNotes removed and re-created every block
+  // whether or not its page's notes had moved.
+  //
+  // Asserted on NODE IDENTITY, which is the only honest way to ask "was this
+  // rebuilt": a block that was torn down and built again renders the same text.
+  const quiet = region.record ? await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    api.setPdfPageNotesFlag(false);
+    api.togglePdfPageNotes();
+    await settle(200);
+    const pick = () => document.querySelector('.pdf-page-notes[data-page-number="2"]');
+    const before = pick();
+    if (!before) return { error: "no printed notes block to watch" };
+    const badgeLayerBefore = document.querySelector('.pdf-page[data-page-number="2"] .pdf-badge-layer');
+    // Two autosaves, exactly as typing produces them.
+    api.setDocumentHighlightNote(id, "Typed once.", { rerender: false });
+    await settle(80);
+    api.setDocumentHighlightNote(id, "Typed twice, still typing.", { rerender: false });
+    await settle(150);
+    const sameAfterTyping = pick() === before;
+    // ...and the one repaint the editor makes on the way out.
+    api.repaintPdfPageNotes();
+    await settle(150);
+    const afterRepaint = pick();
+    const result = {
+      sameAfterTyping,
+      textWhileTyping: before.textContent.indexOf("still typing") !== -1,
+      rebuiltOnRepaint: afterRepaint !== before,
+      textAfterRepaint: afterRepaint ? afterRepaint.textContent.indexOf("still typing") !== -1 : false,
+      // A second repaint with nothing changed must not rebuild anything: that is
+      // the signature guard, and it is what makes a highlight made on page 9 not
+      // re-render the notes on every other page of the document.
+      idleRebuilt: false,
+      badgeLayerKept: false
+    };
+    api.repaintPdfPageNotes();
+    await settle(150);
+    result.idleRebuilt = pick() !== afterRepaint;
+    result.badgeLayerKept = document.querySelector('.pdf-page[data-page-number="2"] .pdf-badge-layer') === badgeLayerBefore;
+    api.setDocumentHighlightNote(id, "A note on the figure, for the check.");
+    api.togglePdfPageNotes();
+    await settle(150);
+    return result;
+  }`, region.record.id) : null;
+
+  if (quiet) {
+    if (quiet.error) throw new Error(quiet.error);
+    check("typing into a note rebuilds nothing in the document",
+      quiet.sameAfterTyping && !quiet.textWhileTyping,
+      `same block=${quiet.sameAfterTyping}, block still shows the old text=${!quiet.textWhileTyping}`);
+    check("...and the one repaint on close brings it up to date",
+      quiet.rebuiltOnRepaint && quiet.textAfterRepaint);
+    check("...while a repaint with nothing to say rebuilds nothing at all",
+      !quiet.idleRebuilt && quiet.badgeLayerKept,
+      `block rebuilt=${quiet.idleRebuilt}, badge layer kept=${quiet.badgeLayerKept}`);
+  }
+
+  // ── 8a. ...and the strip does not decide how wide the DOCUMENT is ────────
+  //
+  // "The PDFs are never by default taking 100% of width."
+  //
+  // .pdf-pages is `width: max-content`, because a page wider than the window has
+  // to be scrollable to. max-content means the widest CHILD sizes it — and the
+  // strip above is `columns: N 260px`, whose max-content contribution is
+  // N × 260px plus the gaps. One page with two notes on it is 538px; one with
+  // four is 1094px. On a 390px phone that made the page column two to three
+  // screens wide, with the correctly-fitted page centred inside it and hanging
+  // off to the right.
+  //
+  // Every fit-width check in this file passed while that happened, because none
+  // of them ever turned the printed notes ON. This one does, and it measures the
+  // page against the SCREEN — the one thing that does not move.
+  const notesFit = [];
+  for (const width of [360, 390]) {
+    await emulatePhone(page, { width, height: 780 });
+    const one = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await settle(600);
+      // Four notes on ONE page, which is what it takes to reach four columns.
+      // Fabricated quads rather than real selections: this is a layout question,
+      // and every millimetre of it is decided by how many notes a page has.
+      const made = [];
+      for (let i = 0; i < 4; i += 1) {
+        const y = 600 - i * 40;
+        const record = api.addDocumentHighlight({
+          page: 1,
+          anchor: { page: 1, item: i, ch: 0 },
+          focus: { page: 1, item: i, ch: 4 },
+          text: "Fit width, with notes on, line " + (i + 1),
+          quads: [{ page: 1, rect: [72, y - 12, 320, y] }]
+        });
+        if (record) made.push(record.id);
+      }
+      made.forEach((id, i) => api.setDocumentHighlightNote(id,
+        "Note " + (i + 1) + " on page 1, long enough to want a column of its own."));
+      api.setPdfPageNotesFlag(false);
+      api.togglePdfPageNotes();
+      await settle(400);
+      const view = document.getElementById("documentView");
+      const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+      const host = view.querySelector(":scope > .pdf-pages");
+      const block = document.querySelector('.pdf-page-notes[data-page-number="1"]');
+      const result = {
+        notes: block ? block.querySelectorAll(".pdf-page-note").length : 0,
+        screenWidth: Math.round(window.innerWidth),
+        pageWidth: Math.round(pageEl.getBoundingClientRect().width),
+        hostWidth: Math.round(host.getBoundingClientRect().width),
+        blockWidth: block ? Math.round(block.getBoundingClientRect().width) : 0,
+        scrollWidth: view.scrollWidth,
+        clientWidth: view.clientWidth,
+        // A sheet, not a strip: the paper's own shadow, and no accent rail.
+        shadow: block ? getComputedStyle(block).boxShadow : "",
+        // The type is a function of the paper's width, which is what stops the
+        // notes reading as the document and the page as a thumbnail. Measured
+        // by zooming rather than by parsing the declaration: what matters is
+        // that a pinch takes the notes with it.
+        typeAtFit: block ? parseFloat(getComputedStyle(block).fontSize) : 0
+      };
+      api.zoomDocument(1.6);
+      await settle(300);
+      const zoomed = document.querySelector('.pdf-page-notes[data-page-number="1"]');
+      result.typeZoomedIn = zoomed ? parseFloat(getComputedStyle(zoomed).fontSize) : 0;
+      result.pageZoomedIn = Math.round(document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect().width);
+      result.blockZoomedIn = zoomed ? Math.round(zoomed.getBoundingClientRect().width) : 0;
+      api.fitDocumentToWidth();
+      await settle(300);
+      // Put the deck back exactly as it was: the export checks below count the
+      // annotated pages, and four more of them on page 1 would rewrite their
+      // answers.
+      api.togglePdfPageNotes();
+      made.forEach((id) => api.removeDocumentHighlight(id));
+      await settle(200);
+      return result;
+    }`);
+    notesFit.push({ width, ...one });
+  }
+
+  await page.call("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 });
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+  });
+
+  check("four notes on one page all print under it",
+    notesFit.every((f) => f.notes === 4),
+    notesFit.map((f) => `${f.width}:${f.notes} note(s)`).join(" "));
+  // The regression itself. Without `contain: inline-size` on .pdf-page-notes the
+  // host comes back at 1094px on both of these.
+  check("...without the strip widening the page column past the screen",
+    notesFit.every((f) => f.hostWidth <= f.screenWidth + 1),
+    notesFit.map((f) => `${f.width}:host ${f.hostWidth}px`).join(" "));
+  check("...leaving nothing to pan sideways to",
+    notesFit.every((f) => f.scrollWidth <= f.clientWidth + 1),
+    notesFit.map((f) => `${f.width}:${f.scrollWidth}/${f.clientWidth}`).join(" "));
+  // Edge to edge, not "nearly". PDF_FIT_PADDING_NARROW is 0, so the only thing
+  // between the paper and the screen is whatever the scroller's own scrollbar
+  // takes.
+  check("...and the page opening at the full width of the screen",
+    notesFit.every((f) => f.pageWidth >= f.clientWidth - 1),
+    notesFit.map((f) => `${f.width}:page ${f.pageWidth}px of ${f.clientWidth}px`).join(" "));
+  // ── ...and it is a PAGE of notes, not a strip beside one ────────────────
+  check("...the notes read as a sheet of the same document",
+    notesFit.every((f) => f.shadow && f.shadow !== "none"),
+    notesFit.map((f) => `${f.width}:${f.shadow.slice(0, 28)}`).join(" | "));
+  // The other half of the report: a flat 0.86rem next to a page whose own body
+  // text is about 6px at fit width read as twice the size of the document it
+  // was annotating. Sized off --pdf-page-w, a zoom takes the notes with it.
+  check("...with type that scales with the paper, not against it",
+    notesFit.every((f) => f.pageZoomedIn > f.pageWidth && f.typeZoomedIn > f.typeAtFit),
+    notesFit.map((f) => `${f.width}: page ${f.pageWidth}→${f.pageZoomedIn}px, type ${f.typeAtFit}→${f.typeZoomedIn}px`).join(" · "));
+  check("...and a sheet that stays exactly as wide as its page at any zoom",
+    notesFit.every((f) => Math.abs(f.blockZoomedIn - f.pageZoomedIn) <= 2),
+    notesFit.map((f) => `${f.width}:sheet ${f.blockZoomedIn}px vs page ${f.pageZoomedIn}px`).join(" "));
+
   // ── 8b. The container the notes live in ──────────────────────────────────
   //
   // Three things this format has to get right, and every one of them is a
   // report from use rather than a hypothetical:
   //
-  //   the raw editor must not open full of highlight notes. On a PDF deck the
-  //   body is empty — the PDF IS the document — so the "## Highlight Notes"
-  //   section used to be the entire contents of the textarea, with nothing
-  //   separating it from the writing the reader came to do;
+  //   the raw editor of a MARKDOWN deck must not open full of highlight notes:
+  //   the block is machine-managed text and it used to sit under the reader's
+  //   own writing with nothing between them. (A document deck is the exception
+  //   and gets the whole source — see section 8d, where the body is empty
+  //   because the paper is the document, so slicing the block off left the
+  //   editor with nothing in it at all);
   //
   //   committing that editor must not lose them. The textarea holds the body
   //   and the block is re-attached on the way back, through one choke point,
@@ -986,6 +1263,78 @@ try {
       && fence.exportOfLegacy.split("## Highlight Notes").length === 2
       && fence.exportOfLegacy.includes("The note that was taken on it."),
     `fenced=${fence.exportOfFenced.split("## Highlight Notes").length - 1}× legacy=${fence.exportOfLegacy.split("## Highlight Notes").length - 1}×`);
+
+  // ── 8d. The Notes tab of a document deck ────────────────────────────────
+  //
+  // "The highlighted notes are not visible anywhere as continuous, easily
+  // editable text. They're on the Highlights panel, but that's not a good place
+  // to edit — I want this in the notes panel itself, as notes."
+  //
+  // Both surfaces that could have shown them sliced the fenced block off, and on
+  // a PDF deck the body is empty, so both were blank. The Notes tab is built
+  // from the highlights themselves now, and the raw editor gets the whole source
+  // — the one deck where the block IS the reader's writing.
+  const docNotes = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("notes");
+    await settle(400);
+    const view = document.getElementById("notesView");
+    const section = view.querySelector(":scope > .doc-notes");
+    const articles = Array.from(view.querySelectorAll(".doc-note[data-highlight-id]"));
+    const records = api.documentHighlightsInReadingOrder();
+    // Every highlight, not only the annotated ones: this is where a note is
+    // WRITTEN, so one with nothing on it yet is a blank waiting for a note.
+    const withNotes = articles.filter((a) => !a.querySelector(".doc-note-body").classList.contains("is-empty"));
+    // Press one and type into it, which is the whole request.
+    const target = articles.find((a) => a.querySelector(".doc-note-body").classList.contains("is-empty")) || articles[0];
+    const id = target.dataset.highlightId;
+    target.querySelector(".doc-note-body").click();
+    await settle(120);
+    const area = target.querySelector(".doc-note-edit");
+    const focused = document.activeElement === area;
+    area.value = "Typed straight into the notes panel.";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(120);
+    // Still typing: nothing may have been rebuilt under the reader yet.
+    const stillOpen = target.querySelector(".doc-note-edit") === area;
+    area.dispatchEvent(new Event("blur"));
+    await settle(250);
+    const stored = api.readHighlightNotes(api.state.notes || "").get(id) || "";
+    const rendered = view.querySelector('.doc-note[data-highlight-id="' + id + '"] .doc-note-body');
+    // ...and the raw editor, which is the "all of it at once" half.
+    const editorSees = api.rawEditorValueFor(api.state.notes || "");
+    const roundTrip = api.sourceFromRawEditor(editorSees) === api.state.notes;
+    // Put it back so nothing downstream sees a note this check invented.
+    api.setDocumentHighlightNote(id, "");
+    await settle(150);
+    api.setViewMode("document");
+    await settle(200);
+    return {
+      hasSection: Boolean(section),
+      articles: articles.length,
+      records: records.length,
+      annotated: withNotes.length,
+      focused,
+      stillOpen,
+      stored,
+      renderedText: rendered ? rendered.textContent.trim() : "",
+      editorHasFence: editorSees.includes("<!--recall:highlight-notes-->"),
+      roundTrip
+    };
+  }`);
+
+  check("a document deck's Notes tab is its highlight notes",
+    docNotes.hasSection && docNotes.articles === docNotes.records && docNotes.records > 0,
+    `${docNotes.articles} note(s) for ${docNotes.records} highlight(s), ${docNotes.annotated} written on`);
+  check("...pressing one opens a textarea in the flow, focused",
+    docNotes.focused && docNotes.stillOpen);
+  check("...and what is typed there is the highlight's note",
+    docNotes.stored === "Typed straight into the notes panel."
+      && docNotes.renderedText === "Typed straight into the notes panel.",
+    `stored "${docNotes.stored}" · shown "${docNotes.renderedText}"`);
+  check("...with the raw editor handed the whole source, block and all",
+    docNotes.editorHasFence && docNotes.roundTrip,
+    `fence in editor=${docNotes.editorHasFence}, editor round-trips=${docNotes.roundTrip}`);
 
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //
@@ -1668,6 +2017,7 @@ try {
   }
 
   if (SHOT) {
+    if (SHOT_PAGES) await emulatePhone(page, { width: 390, height: 780 });
     // The Document surface itself, not whatever the last assertion happened to
     // leave on screen — the run ends inside the un-annotated-import case, which
     // finishes with My Decks open over the whole window.
@@ -1675,7 +2025,18 @@ try {
       const { api, settle } = window.__recall;
       api.closeMyDecksPanel();
       await settle(100);
-      await api.loadDeckFromLibrary(api.readLocalDeckIndex()[0].id);
+      // The deck with HIGHLIGHTS on it, not simply the first one in the index:
+      // the run also imports a slide deck and an un-annotated paper, and a shot
+      // of a document with nothing marked on it shows none of what this feature
+      // is. Falls back to the first deck if somehow none has any.
+      const index = api.readLocalDeckIndex();
+      let picked = null;
+      for (const entry of index) {
+        await api.loadDeckFromLibrary(entry.id);
+        await settle(200);
+        if ((api.state.meta && api.state.meta.pdfHighlights || []).length) { picked = entry.id; break; }
+      }
+      if (!picked) await api.loadDeckFromLibrary(index[0].id);
       await settle(300);
       api.closeMyDecksPanel();
       api.setViewMode("document");
@@ -1693,8 +2054,22 @@ try {
         document.getElementById("viewExportBtn").click();
         await settle(120);
       }
+      if (SHOT_PAGES) {
+        api.setPdfPageNotesFlag(false);
+        api.togglePdfPageNotes();
+        await api.whenDocumentPageReady(2);
+        await settle(300);
+        api.scrollToDocumentPage(2, 0, { smooth: false });
+        await settle(500);
+      }
+      if (SHOT_NOTES) {
+        api.setViewMode("notes");
+        await settle(400);
+      }
       await settle(60);
-    }`.replace("SHOT_MENU", String(SHOT_MENU)));
+    }`.replace("SHOT_MENU", String(SHOT_MENU))
+      .replace("SHOT_PAGES", String(SHOT_PAGES))
+      .replace("SHOT_NOTES", String(SHOT_NOTES)));
     const shot = await page.call("Page.captureScreenshot", { format: "png" });
     writeFileSync(path.resolve(ROOT, SHOT), Buffer.from(shot.data, "base64"));
     console.log(`      screenshot → ${SHOT}`);
