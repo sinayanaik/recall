@@ -45,7 +45,20 @@ export const PDF_RENDER_WINDOW = 2;
 
 // How far outside the scroller a page counts as "coming up". A page is a whole
 // screen tall, so a margin of one viewport height is one page of lead time.
+//
+// Half that on a touch screen. The margin buys lead time at the price of
+// rendering pages nobody is looking at yet, and a phone pays a great deal more
+// for each of those than a laptop does — while also being the device where a
+// flick covers less distance. One page of runway either side is still one page.
 export const PDF_OBSERVER_MARGIN = "100% 0px";
+
+export const PDF_OBSERVER_MARGIN_COARSE = "50% 0px";
+
+export function documentObserverMargin() {
+  return window.matchMedia?.("(pointer: coarse)")?.matches
+    ? PDF_OBSERVER_MARGIN_COARSE
+    : PDF_OBSERVER_MARGIN;
+}
 
 export const PDF_MIN_SCALE = 0.4;
 
@@ -59,6 +72,22 @@ export const PDF_FIT_PADDING = 24;
 // A canvas is painted at devicePixelRatio so text is sharp, but a phone at
 // dpr 3 rendering a 300-dpi page is a lot of pixels for no visible gain.
 export const PDF_MAX_CANVAS_SCALE = 2;
+
+// ...and a ceiling on the bitmap itself, because the cap above is a ratio and
+// the thing it multiplies grows without limit. A page zoomed to 3x on a 3x
+// phone is a ~2300×3300 canvas — 7.7 million pixels, three of them in the
+// render window — to show a fifth of the page. Past this the output scale walks
+// back toward 1, which costs sharpness exactly where the page is already
+// magnified enough not to need it.
+export const PDF_MAX_CANVAS_PIXELS = 4_000_000;
+
+// The device pixel ratio to rasterise a page of this size at.
+export function canvasOutputScale(width, height) {
+  const wanted = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+  const area = Math.max(1, width * height);
+  const affordable = Math.sqrt(PDF_MAX_CANVAS_PIXELS / area);
+  return Math.max(1, Math.min(wanted, affordable));
+}
 
 export const PDF_DARK_CLASS = "is-pdf-inverted";
 
@@ -388,7 +417,7 @@ function observePages() {
     });
     trimRenderedPages();
     updatePageIndicator();
-  }, { root: view, rootMargin: PDF_OBSERVER_MARGIN });
+  }, { root: view, rootMargin: documentObserverMargin() });
   openPdf.pages.forEach((entry) => openPdf.observer.observe(entry.el));
 }
 
@@ -521,7 +550,7 @@ async function renderPage(pageNumber) {
 
     const canvas = document.createElement("canvas");
     canvas.className = "pdf-canvas";
-    const outputScale = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+    const outputScale = canvasOutputScale(viewport.width, viewport.height);
     canvas.width = Math.floor(viewport.width * outputScale);
     canvas.height = Math.floor(viewport.height * outputScale);
     canvas.style.width = `${Math.floor(viewport.width)}px`;
@@ -531,31 +560,70 @@ async function renderPage(pageNumber) {
     await page.render({ canvasContext: context, viewport, transform }).promise;
     if (stale()) return;
 
-    const markLayer = document.createElement("div");
-    markLayer.className = "pdf-mark-layer";
-    const textLayer = await buildTextLayer(page, viewport);
-    if (stale()) return;
-
     entry.el.querySelector(".pdf-page-label")?.remove();
     // ...and the previous scale's canvas, which stalePageForRelayout left in
     // place precisely so there was something to look at until this moment.
     entry.el.querySelector(".pdf-canvas.is-stale")?.remove();
-    entry.el.append(canvas, markLayer, textLayer);
-    entry.markLayer = markLayer;
-    entry.textLayer = textLayer;
+    entry.el.append(canvas);
     openPdf.rendered.add(pageNumber);
-    // Painted as part of the render rather than on a later pass, so a highlight
-    // is never briefly missing from a page the reader is already looking at.
-    paintDocumentHighlights(pageNumber);
-    // ...and the note badges with them, for the same reason: a highlight that
-    // has a note has to say so from the first frame it is on screen.
-    onPagePainted(pageNumber);
+    // ── The page is on screen; the layers follow ──────────────────────────
+    //
+    // The pixels used to wait for the text layer, which is one absolutely
+    // positioned span per text item — several thousand of them on a dense
+    // two-column page, plus a getTextContent round trip to the worker. On a
+    // phone that is the difference between the page appearing when it is drawn
+    // and the page appearing when it is drawn AND made selectable, for every
+    // page in the render window and again at every zoom.
+    //
+    // So the canvas is appended the moment it is rasterised and the two layers
+    // are built on the next idle moment. Selection and highlights land a beat
+    // after the words are readable, which is the right way round: nobody
+    // selects text they have not read yet. Anything that must have them —
+    // tools/pdf-preview-check.mjs, a highlight measuring against a text item —
+    // goes through whenDocumentPageReady, which awaits this too.
+    entry.layerTask = buildPageLayers(pageNumber, entry, page, viewport, stale)
+      .catch((error) => console.warn(`Could not build the layers for page ${pageNumber}`, error))
+      .finally(() => { if (entry.layerTask) entry.layerTask = null; });
   })()
     .catch((error) => {
       if (error?.name !== "RenderingCancelledException") console.warn(`Could not render page ${pageNumber}`, error);
     })
     .finally(() => { if (entry) entry.task = null; });
 }
+
+// The mark and text layers, off the critical path. See the comment at the call
+// site for why they are not part of the render that puts the page on screen.
+async function buildPageLayers(pageNumber, entry, page, viewport, stale) {
+  await whenIdle();
+  if (stale()) return;
+  const markLayer = document.createElement("div");
+  markLayer.className = "pdf-mark-layer";
+  const textLayer = await buildTextLayer(page, viewport);
+  if (stale()) return;
+  entry.el.append(markLayer, textLayer);
+  entry.markLayer = markLayer;
+  entry.textLayer = textLayer;
+  // Painted as part of the layer build rather than on a later pass, so a
+  // highlight is never briefly missing from a page the reader can already see
+  // the marks of.
+  paintDocumentHighlights(pageNumber);
+  // ...and the note badges with them, for the same reason: a highlight that has
+  // a note has to say so from the first frame it is on screen.
+  onPagePainted(pageNumber);
+}
+
+// requestIdleCallback where there is one, a frame where there is not. The
+// timeout is the backstop: a page that is being scrolled past fast enough that
+// the browser never goes idle still gets its text layer promptly, because the
+// alternative is a page that cannot be selected until the reader stops.
+function whenIdle() {
+  return new Promise((resolve) => {
+    if (typeof requestIdleCallback === "function") requestIdleCallback(() => resolve(), { timeout: PDF_LAYER_IDLE_MS });
+    else requestAnimationFrame(() => resolve());
+  });
+}
+
+export const PDF_LAYER_IDLE_MS = 200;
 
 // Await whatever render is in flight for a page, and make sure one has been
 // STARTED if the page is near the viewport and has none. The virtualized view
@@ -572,7 +640,13 @@ export async function whenDocumentPageReady(pageNumber) {
   // a new task already queued behind it.
   for (let i = 0; i < 200; i++) {
     if (entry.task) await entry.task;
-    if (openPdf?.rendered.has(pageNumber)) return true;
+    if (openPdf?.rendered.has(pageNumber)) {
+      // ...and the layers, which the render deliberately does not wait for.
+      // "Ready" here has always meant "there is a text layer to measure
+      // against", and that is what every caller of this uses it for.
+      if (entry.layerTask) await entry.layerTask;
+      return Boolean(entry.textLayer);
+    }
     if (!entry.task) {
       renderPage(pageNumber);
       if (!entry.task) return false;
