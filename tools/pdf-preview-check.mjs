@@ -45,6 +45,13 @@ const SHOT = (args.find((a) => a.startsWith("--shot=")) || "").slice(7)
 const OWN_PDF = args.find((a) => a.endsWith(".pdf"));
 // --shot-menu opens the ⇓ export menu before the shot is taken.
 const SHOT_MENU = args.includes("--shot-menu");
+// --shot-pages takes the shot on a PHONE with the printed notes turned on: the
+// two things that only meet there are a page fitted edge to edge and the sheet
+// of notes under it, and neither is visible in the desktop shot above.
+const SHOT_PAGES = args.includes("--shot-pages");
+// --shot-notes takes it on the Notes tab instead, which on a document deck is
+// the highlight notes (src/documents/pdf-notes-view.js).
+const SHOT_NOTES = args.includes("--shot-notes");
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
 //
@@ -2010,6 +2017,7 @@ try {
   }
 
   if (SHOT) {
+    if (SHOT_PAGES) await emulatePhone(page, { width: 390, height: 780 });
     // The Document surface itself, not whatever the last assertion happened to
     // leave on screen — the run ends inside the un-annotated-import case, which
     // finishes with My Decks open over the whole window.
@@ -2017,7 +2025,18 @@ try {
       const { api, settle } = window.__recall;
       api.closeMyDecksPanel();
       await settle(100);
-      await api.loadDeckFromLibrary(api.readLocalDeckIndex()[0].id);
+      // The deck with HIGHLIGHTS on it, not simply the first one in the index:
+      // the run also imports a slide deck and an un-annotated paper, and a shot
+      // of a document with nothing marked on it shows none of what this feature
+      // is. Falls back to the first deck if somehow none has any.
+      const index = api.readLocalDeckIndex();
+      let picked = null;
+      for (const entry of index) {
+        await api.loadDeckFromLibrary(entry.id);
+        await settle(200);
+        if ((api.state.meta && api.state.meta.pdfHighlights || []).length) { picked = entry.id; break; }
+      }
+      if (!picked) await api.loadDeckFromLibrary(index[0].id);
       await settle(300);
       api.closeMyDecksPanel();
       api.setViewMode("document");
@@ -2035,8 +2054,22 @@ try {
         document.getElementById("viewExportBtn").click();
         await settle(120);
       }
+      if (SHOT_PAGES) {
+        api.setPdfPageNotesFlag(false);
+        api.togglePdfPageNotes();
+        await api.whenDocumentPageReady(2);
+        await settle(300);
+        api.scrollToDocumentPage(2, 0, { smooth: false });
+        await settle(500);
+      }
+      if (SHOT_NOTES) {
+        api.setViewMode("notes");
+        await settle(400);
+      }
       await settle(60);
-    }`.replace("SHOT_MENU", String(SHOT_MENU)));
+    }`.replace("SHOT_MENU", String(SHOT_MENU))
+      .replace("SHOT_PAGES", String(SHOT_PAGES))
+      .replace("SHOT_NOTES", String(SHOT_NOTES)));
     const shot = await page.call("Page.captureScreenshot", { format: "png" });
     writeFileSync(path.resolve(ROOT, SHOT), Buffer.from(shot.data, "base64"));
     console.log(`      screenshot → ${SHOT}`);
