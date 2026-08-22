@@ -77,14 +77,51 @@ export function documentObserverMargin() {
   return `${Math.round(documentObserverLead() * 100)}% 0px`;
 }
 
+// ── How far out a reader may zoom, and why it is not one number ───────────
+//
+// This was a flat 0.4, applied to every scale in the file — including the one
+// fit-width computes. That is fine for a paper and wrong for anything wider
+// than about two and a half phone-widths, which is to say for every slide deck:
+// a 1280pt 16:9 slide on a 390px phone wants 0.267 to fit, got floored to 0.4,
+// and rendered 512px wide in a 342px scroller. Half as wide again as the screen,
+// on open, with no way out — pressing − or pinching in hit the same floor, and
+// "Fit to width" was a no-op because openPdf.fitWidth was already true and the
+// scale it recomputed was the same clamped 0.4. So the reader got a page they
+// could not fit, could not zoom out of, and could only pan around.
+//
+// The floor exists to stop a reader zooming out until the page is a stamp they
+// have lost. Fit-width is by definition not that, so it cannot be the thing the
+// floor forbids. Two numbers now:
+//
+//   PDF_MIN_SCALE      the floor for a DELIBERATE zoom-out, and it still holds
+//                      — unless fit-width is lower, in which case fit-width is,
+//                      because a reader must always be able to reach the whole
+//                      page (see documentMinScale).
+//   PDF_ABS_MIN_SCALE  a hard floor under everything, including fit-width. Not
+//                      a reading limit: a guard against a measurement going
+//                      wrong upstream and sizing every page to nothing.
 export const PDF_MIN_SCALE = 0.4;
+
+export const PDF_ABS_MIN_SCALE = 0.05;
 
 export const PDF_MAX_SCALE = 5;
 
 // Fit-width leaves this much room either side, so a page is never flush against
 // the scroller's edge (and so the shadow that separates one page from the next
 // has somewhere to fall).
+//
+// A phone gets less of it. 24px each side is 12% of a 390px screen spent on
+// margin around a page that is mostly margin already, and it is the difference
+// between a wide document fitting and not.
 export const PDF_FIT_PADDING = 24;
+
+export const PDF_FIT_PADDING_NARROW = 8;
+
+export const PDF_NARROW_WIDTH = 560;
+
+export function fitPaddingFor(width) {
+  return width && width < PDF_NARROW_WIDTH ? PDF_FIT_PADDING_NARROW : PDF_FIT_PADDING;
+}
 
 // A canvas is painted at devicePixelRatio so text is sharp, but a phone at
 // dpr 3 rendering a 300-dpi page is a lot of pixels for no visible gain.
@@ -373,6 +410,10 @@ async function openDocumentViewBody({ force = false } = {}) {
     baseHeight: baseViewport.height,
     scale: 1,
     fitWidth: true,
+    // The scale at which the whole page fits across, remembered because
+    // documentMinScale needs it to know how far out a zoom may go. Written by
+    // fitWidthScale on the line below and on every refit after it.
+    fitScale: 0,
     pages: new Map(),
     rendered: new Set(),
     observer: null,
@@ -531,9 +572,43 @@ export function documentFittedWidth() {
 export function fitWidthScale() {
   const view = el.documentView;
   if (!view || !openPdf?.baseWidth) return 1;
-  fittedWidth = view.clientWidth;
-  const available = Math.max(200, fittedWidth - PDF_FIT_PADDING * 2);
-  return clampScale(available / openPdf.baseWidth);
+  const width = view.clientWidth;
+  // A scroller with no box has not been measured, it has been guessed at, and
+  // recording that guess is worse than not answering: fittedWidth is what the
+  // resize handler compares live widths against, so a 0 here makes the next
+  // real width look like a change that has already been handled. Keep the scale
+  // the page has and wait to be measured — the ResizeObserver on the scroller
+  // will call back the moment there is something to measure.
+  if (!width) return openPdf.scale || 1;
+  fittedWidth = width;
+  // Never floored at PDF_MIN_SCALE. Whatever it takes to fit the page IS the
+  // fit — see the note on that constant for what flooring it cost.
+  const available = Math.max(1, width - fitPaddingFor(width) * 2);
+  const scale = clampScale(available / openPdf.baseWidth, PDF_ABS_MIN_SCALE);
+  openPdf.fitScale = scale;
+  return scale;
+}
+
+// How far below fit-width a deliberate zoom-out may go. Half again is enough to
+// see a spread, or the shape of a page you are looking for, and not so far that
+// the page becomes a stamp.
+export const PDF_ZOOM_OUT_HEADROOM = 0.5;
+
+// The lowest scale a deliberate zoom-out may reach.
+//
+// Relative to what fits, not an absolute. A flat floor means the same number is
+// generous for a paper and unreachable for a slide — 0.4 let a reader of a
+// 612pt page zoom out to two thirds of fit, and stopped a reader of a 1280pt
+// slide from reaching fit at all. Every document gets the same headroom now:
+// out to half the width that fits, whatever that width happens to be.
+//
+// PDF_MIN_SCALE survives as a CAP on the floor rather than as the floor: a
+// document small enough that half its fit scale is still large does not get to
+// keep the reader zoomed in.
+export function documentMinScale() {
+  const fit = openPdf?.fitScale;
+  if (!Number.isFinite(fit) || fit <= 0) return PDF_MIN_SCALE;
+  return Math.max(PDF_ABS_MIN_SCALE, Math.min(PDF_MIN_SCALE, fit * PDF_ZOOM_OUT_HEADROOM));
 }
 
 // Note the finite check, which is not decoration. Math.max(0.4, NaN) is NaN and
@@ -542,9 +617,10 @@ export function fitWidthScale() {
 // which leaves every page 0×0 in a flex column: an empty scroller where the
 // document was. A blank surface is far too expensive a way to find out that one
 // arithmetic went wrong upstream.
-export function clampScale(scale) {
+export function clampScale(scale, floor = null) {
   if (!Number.isFinite(scale)) return 1;
-  return Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, scale));
+  const low = Number.isFinite(floor) ? floor : documentMinScale();
+  return Math.min(PDF_MAX_SCALE, Math.max(low, scale));
 }
 
 // ── The pages live in a box of their own ──────────────────────────────────
@@ -640,6 +716,18 @@ function publishPageWidth(width) {
 // it is a grey placeholder.
 export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
   if (!openPdf) return;
+  // Any pinch transform still on the page host is dropped first, unconditionally.
+  //
+  // A pinch paints a CSS transform on .pdf-pages and the commit takes it off
+  // again — but the commit runs from touchend, and a touchend is not something
+  // to rely on: iOS hands a two-finger gesture to its own page zoom part way
+  // through, an element can be re-parented under the fingers, a tab can be
+  // backgrounded mid-gesture. What is left then is a scaled, translated box
+  // whose LAYOUT is unchanged, so the scroll extents do not cover where the
+  // content now appears: a page that looks zoomed in, sits half off screen, and
+  // cannot be panned to. Every relayout is a fresh statement of where the pages
+  // are, so it is also the right moment to be sure nothing is transforming them.
+  clearPinchPaint();
   if (refit && openPdf.fitWidth) openPdf.scale = fitWidthScale();
   // Sized in one pass, then re-rendered in a second, because isPageNearViewport
   // reads offsetTop and every page has to have its new height before the first
@@ -1543,6 +1631,12 @@ export function initDocumentPinchZoom() {
   }, { passive: true });
 
   view.addEventListener("touchmove", (event) => {
+    // A gesture that stops being two fingers is over, and it has to be ENDED
+    // rather than merely ignored: returning here left the transform painted and
+    // the pinch object live, so the next touchend committed a scale from a
+    // gesture the reader had already abandoned — or, if no touchend arrived at
+    // all, left the page transformed for good.
+    if (pinch && event.touches.length !== 2) { endPinch(); return; }
     if (!pinch || event.touches.length !== 2 || !openPdf) return;
     const distance = touchDistance(event.touches);
     if (!pinch.startDistance) return;
@@ -1561,7 +1655,7 @@ export function initDocumentPinchZoom() {
   // One commit, when the fingers lift. `touchend` fires per finger, so this
   // runs on the first of the two leaving — which is right: the gesture is over
   // as soon as it stops being two fingers.
-  const end = () => {
+  const endPinch = () => {
     const gesture = pinch;
     pinch = null;
     if (!gesture || !openPdf) { clearPinchPaint(); return; }
@@ -1577,6 +1671,50 @@ export function initDocumentPinchZoom() {
       afterLayout: anchor ? () => restorePageAnchor(anchor, gesture.focal) : null
     });
   };
-  view.addEventListener("touchend", end, { passive: true });
-  view.addEventListener("touchcancel", end, { passive: true });
+  view.addEventListener("touchend", endPinch, { passive: true });
+  view.addEventListener("touchcancel", endPinch, { passive: true });
+
+  // ── iOS, which does not always let the touch path finish ─────────────────
+  //
+  // Safari on iOS raises its own gesturestart/gesturechange/gestureend for a
+  // two-finger pinch, and it can take the gesture over from the touch events
+  // part way through — at which point the touchend this file is waiting for
+  // never comes and the transform painted above stays on the page for the rest
+  // of the session. That is the "zoomed in, will not pan, will not zoom out"
+  // shape exactly, and it is why relayoutDocument now clears the paint
+  // unconditionally as well.
+  //
+  // These three are the belt to that braces. gesturechange carries an absolute
+  // `scale` relative to the start of the gesture, which is the same number the
+  // touch path derives from the finger distance, so the two agree by
+  // construction and either can drive the same commit.
+  view.addEventListener("gesturestart", (event) => {
+    if (!openPdf) return;
+    event.preventDefault();
+    const host = pagesHost();
+    if (!host) return;
+    const focal = { x: event.clientX, y: event.clientY };
+    const hostRect = host.getBoundingClientRect();
+    pinch = {
+      startDistance: 0,
+      startScale: openPdf.scale,
+      focal,
+      origin: { x: focal.x - hostRect.left, y: focal.y - hostRect.top },
+      ratio: 1
+    };
+  });
+
+  view.addEventListener("gesturechange", (event) => {
+    if (!pinch || !openPdf) return;
+    event.preventDefault();
+    const wanted = Number(event.scale);
+    if (!Number.isFinite(wanted) || wanted <= 0) return;
+    pinch.ratio = clampScale(pinch.startScale * wanted) / pinch.startScale;
+    paintPinch(pinch.origin, pinch.ratio);
+  });
+
+  view.addEventListener("gestureend", (event) => {
+    if (pinch) event.preventDefault();
+    endPinch();
+  });
 }

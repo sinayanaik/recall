@@ -51,6 +51,17 @@
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+  /* ...and min-WIDTH: 0, which is the one that was missing and the one that
+     let a wide document push the whole app off the side of the screen.
+     A flex item's min-width defaults to `auto`, which means "never shrink below
+     my content's intrinsic width" — and .pdf-pages below is `width: max-content`,
+     so a 16:9 slide's intrinsic width IS the page. The stage therefore grew to
+     the page, the scroller grew with it, and #documentView reported a
+     clientWidth of 512 on a 360px phone: the page "fitted" its scroller
+     perfectly while hanging half off the screen, with the whole app-shell
+     scrolling sideways under it. min-height: 0 was already here for exactly
+     this reason in the other axis; this is its other half. */
+  min-width: 0;
   position: relative;
 }
 
@@ -90,6 +101,12 @@
 .document-scroll {
   flex: 1 1 auto;
   min-height: 0;
+  /* The same fix one level down — the scroller is itself a flex item — plus a
+     ceiling, so an ancestor that is laid out some other way cannot reintroduce
+     the overflow. A scroller is the thing that is SUPPOSED to absorb content
+     wider than itself; it can only do that if it is allowed to be narrower. */
+  min-width: 0;
+  max-width: 100%;
   overflow: auto;
   overscroll-behavior: contain;
   padding: 16px 0 48px;
