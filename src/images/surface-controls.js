@@ -9,6 +9,8 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { deleteSupabaseImage } from "./upload.js?v=__BUILD__";
+import { CANONICAL_SRC_ATTR } from "../cloud/storage-urls.js?v=__BUILD__";
+import { LOCAL_IMAGE_SCHEME } from "./outbox.js?v=__BUILD__";
 import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, fencePattern, normalizeImageUrl, parseDiagramWidth } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -87,6 +89,26 @@ export function sourceMayHaveImages(source) {
 // to. (The fence walk is the expensive half — the DOM query below it is not.)
 export function sourceMayHaveDiagrams(source) {
   return /mermaid|nomnoml/i.test(source || "");
+}
+
+// The URL this rendered image is written as IN THE MARKDOWN, which is not
+// necessarily its `src`. Two passes rewrite src between the render and here,
+// both of them deliberately (see block-cache.js's render tail):
+//
+//   • resolveStorageImages swaps the canonical Supabase URL the note holds for
+//     a short-lived signed one, keeping the original in data-canonical-src;
+//   • hydrateLocalImages swaps a `recall-img:<token>` placeholder for the
+//     blob: URL its bytes are sitting at, keeping the token in dataset.
+//
+// enhanceSurfaceImageControls pairs shells with tokens by URL, so reading
+// `src` there meant that on any signed-in device every image mismatched and
+// lost its grip — and, because the walk did not advance past a mismatch, so did
+// every image after it. This is the URL that matching has to use.
+export function sourceUrlForImage(img) {
+  if (!img) return "";
+  const token = img.dataset?.localToken;
+  if (token) return `${LOCAL_IMAGE_SCHEME}${token}`;
+  return img.getAttribute(CANONICAL_SRC_ATTR) || img.getAttribute("src") || "";
 }
 
 export function parseImgTagFromHtml(html) {
@@ -520,11 +542,25 @@ export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, ref
 // the moment one such image appeared: a resize grip meant for a later image got
 // attached to (and would then rewrite) the wrong one.
 //
-// Instead, match each classified image to its shell by src, walked as an ordered
-// subsequence: a shell whose image isn't in the classified list fails the src
-// check and is simply skipped (keeping only its Zoom pill) rather than consuming
-// a control slot. src is compared through normalizeImageUrl so a Drive link whose
-// rendered src was already rewritten still matches its raw markdown href.
+// Instead, match each classified image to its shell by URL, walked as an ordered
+// subsequence: a shell whose image isn't in the classified list fails the check
+// and is simply skipped (keeping only its Zoom pill) rather than consuming a
+// control slot. The URL is read through sourceUrlForImage (so a signed or
+// blob:-hydrated src still matches the href the markdown holds) and compared
+// through normalizeImageUrl (so a rewritten Drive link does too).
+//
+// Two things the first version of this got wrong, both of which cost EVERY
+// image after the first bad one its grip:
+//
+//   • it read `src`, which by this point is neither of the two URLs the
+//     markdown could be holding — see sourceUrlForImage;
+//   • an unmatched shell returned without advancing, so the walk stalled on it
+//     forever instead of resynchronising. A shell that matches a LATER slot now
+//     skips the slots in between, which is the same ordered-subsequence rule
+//     read the other way round: unclassified images are skipped over on the
+//     shell side, and images the DOM does not hold (a lazily built note, a
+//     highlight-note preview showing one paragraph) are skipped over on the
+//     token side.
 export function enhanceSurfaceImageControls(surface) {
   const view = surface?.view;
   if (!view) return;
@@ -548,10 +584,15 @@ export function enhanceSurfaceImageControls(surface) {
     const img = shell.querySelector("img");
     if (!img) return;
     if (slotIdx >= slots.length) return;
-    const slot = slots[slotIdx];
-    const src = normalizeImageUrl(img.getAttribute("src") || "");
-    if (src !== slot.url) return; // unclassified image (table cell, linked, …) — Zoom only
-    slotIdx++;
+    const src = normalizeImageUrl(sourceUrlForImage(img));
+    // The next slot for THIS image, at or after where the walk has got to. A
+    // miss means the shell is an unclassified image (a table cell, a link in
+    // running text) — Zoom pill only, and the walk stays where it was.
+    let at = slotIdx;
+    while (at < slots.length && slots[at].url !== src) at += 1;
+    if (at >= slots.length) return;
+    const slot = slots[at];
+    slotIdx = at + 1;
 
     const { entry, subIndex } = slot;
     img.draggable = false;
@@ -598,6 +639,16 @@ export function enhanceSurfaceImageControls(surface) {
 // fence sits. Walking the shared fencePattern() keeps the two lists in lockstep;
 // if the counts ever disagree, no grip is attached rather than a grip that would
 // resize the wrong diagram.
+//
+// "Disagree" used to mean `diagrams.length !== fences.length`, which is a
+// stronger test than the mapping needs and made one late diagram cost every
+// diagram in the note its grip. A diagram is drawn deferred (.is-diagram-pending,
+// see render/deferred-work.js), so a note read from the top routinely has fewer
+// elements in the DOM than fences in the source for as long as the reader has
+// not scrolled to the last one. The elements that ARE there are still the first
+// N fences in order, so the pairing is exact for them: only a DOM holding MORE
+// diagrams than the source has fences means the two lists have genuinely lost
+// each other, and that is the case that still refuses to attach anything.
 export function findDiagramFences(source) {
   const text = String(source || "");
   const pattern = fencePattern();
@@ -637,11 +688,12 @@ export function enhanceSurfaceDiagramControls(surface) {
   if (!sourceMayHaveDiagrams(surface.getSource?.() || "")) return;
   const fences = findDiagramFences(surface.getSource());
   const diagrams = Array.from(view.querySelectorAll(".mermaid, .nomnoml-diagram"));
-  if (!diagrams.length || diagrams.length !== fences.length) return;
+  if (!diagrams.length || diagrams.length > fences.length) return;
 
   diagrams.forEach((node, index) => {
     const shell = node.parentElement;
     if (!shell?.classList.contains("diagram-shell")) return;
+    if (index >= fences.length) return;
     const widthPx = fences[index].widthPx;
     if (widthPx) {
       node.style.setProperty("--notes-img-w", `${widthPx}px`);

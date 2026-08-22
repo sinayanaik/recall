@@ -66,6 +66,39 @@
   gap: 16px;
 }
 
+/* ── The box the pages sit in ──────────────────────────────────────────────
+   The scroller above centres its children, which is right until a page is
+   wider than the window: a centred overflow is split between both sides and
+   scrollLeft cannot go below zero, so the left margin of every zoomed page was
+   unreachable. This box is what fixes that, and it is also the single element
+   the pinch gesture transforms.
+
+   `align-self: flex-start` is the whole trick and it is easy to lose: as a
+   centred flex ITEM this box would overflow both ways exactly as the pages did.
+   Started at the left edge instead, `min-width: 100%` keeps the centring while
+   the page is narrower (the box fills the scroller, the page centres inside it)
+   and `width: max-content` lets it grow past the scroller when the page is
+   wider, with its left edge at scroll origin where it can be reached.
+
+   Unpositioned on purpose — see pagesHost() in src/documents/pdf-view.js. */
+.pdf-pages {
+  align-self: flex-start;
+  width: max-content;
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Only while a pinch is in flight, written by the gesture itself. `will-change`
+   is deliberately not here: it is set for the length of the gesture and taken
+   off again, because a permanent compositing layer for every page of a document
+   is the opposite of what this is for. */
+.pdf-pages.is-pinching {
+  transform-origin: 0 0;
+}
+
 /* A page is a page whatever the theme: white paper with a shadow, so the
    boundary between one page and the next is legible without a rule. The dark
    answer is the invert filter below, not a grey page. */
@@ -97,6 +130,16 @@
 
 .pdf-canvas {
   display: block;
+}
+
+/* The previous zoom's pixels, stretched to the new page box while the real
+   render is in flight (stalePageForRelayout in src/documents/pdf-view.js). Soft
+   for those few frames, and replaced the moment the fresh canvas lands — which
+   is a better thing to be looking at than the grey placeholder that used to be
+   there. Nothing sits on top of it: the text and mark layers are dropped at the
+   same moment, because their coordinates belong to the old scale. */
+.pdf-canvas.is-stale {
+  pointer-events: none;
 }
 
 .pdf-mark-layer,
@@ -310,6 +353,7 @@
    styles/37-document-chrome.css). The page gap is still worth tightening. */
 @media (max-width: 560px) {
   .document-scroll { padding: 8px 0 32px; gap: 8px; }
+  .pdf-pages { gap: 8px; }
 }
 
 /* One row's own offload button in the Storage panel's Documents list. Sized to

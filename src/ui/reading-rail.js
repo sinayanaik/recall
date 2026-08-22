@@ -48,9 +48,15 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
-import { hasStudyTextSelection, setFocusMode } from "./chrome.js?v=__BUILD__";
+import { hasStudyTextSelection, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
+import { bookmarkCurrentSpot, goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
+import { toggleInlineHighlightNotes } from "../notes/inline-highlight-notes.js?v=__BUILD__";
+import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
+import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
+import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
+import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 
 // How long an expanded rail waits before folding itself back up after a touch.
 // There is no pointerleave on a finger, so something has to end it — and long
@@ -74,6 +80,11 @@ export function setReadingRailExpanded(open) {
 
 function expandWithIdleTimeout() {
   setReadingRailExpanded(true);
+  // Which rows apply, and which way each mode is set — read at the moment the
+  // tray is opened rather than when one of its own rows is pressed, since dark
+  // page and region select can equally have been flipped from the document
+  // controls before focus mode folded them away.
+  refreshReadingRailRows();
   // Only for a coarse pointer. A mouse has pointerleave, which is a better
   // answer than a timer — a rail that folds away while the pointer is still on
   // it reads as a glitch.
@@ -122,6 +133,66 @@ export function refreshReadingRail() {
   hintTimer = setTimeout(() => rail.classList.remove("is-hinting"), RAIL_HINT_MS);
 }
 
+// ── Which rows belong to the view being read ──────────────────────────────
+//
+// Some of the rail's rows belong to one surface: dark page and select a region
+// mean nothing over a markdown note, and the bookmarks mean nothing over a page
+// of a PDF — bookmarkCurrentSpot returns without a word unless the notes view
+// is the one on screen, and a row that does nothing when pressed is worse than
+// no row.
+//
+// Painted when the tray OPENS rather than from setViewMode, for two reasons:
+// the tray is display:none until then, so there is no moment where a wrong
+// answer is on screen; and reaching back into this file from view-mode.js would
+// close the very import cycle the note at the top of this file exists to avoid
+// — reading-rail reaches setViewMode, the bookmarks, the style panel and sync,
+// and none of those may be pulled in ahead of view-mode's own evaluation.
+export function refreshReadingRailRows() {
+  const tray = el.readingRailTray;
+  if (!tray) return;
+  tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
+    node.hidden = node.dataset.railScope !== state.viewMode;
+  });
+  // "Go to bookmark" only once there is one to go to, exactly as
+  // refreshBookmarkButtonUI hides the button this row stands in for.
+  const goRow = tray.querySelector('[data-rail-action="bookmark-go"]');
+  if (goRow && !goRow.hidden) goRow.hidden = Boolean(el.bookmarkGoBtn?.hidden);
+  refreshReadingRailModes();
+}
+
+// The rail's modes and one of its labels, read back off the controls that own
+// them.
+//
+// Dark page, region select, inline notes and full screen each already publish
+// their state as aria-pressed on their own button (togglePdfInvert,
+// toggleRegionSelect, paintInlineNotesButton, paintImmersiveButton), and the
+// bookmark button already says whether pressing it will SET a bookmark or MOVE
+// the one you have. All of those buttons are in the row focus mode folds away,
+// so the rail's copies have to be told. Copying the answer is right and
+// deriving it again would not be: two readings of one mode is exactly the
+// "second opinion" this file exists to avoid.
+export function refreshReadingRailModes() {
+  const tray = el.readingRailTray;
+  if (!tray) return;
+  const row = (action) => tray.querySelector(`[data-rail-action="${action}"]`);
+  const mirrorMode = (action, source) => {
+    const node = row(action);
+    if (!node) return;
+    node.setAttribute("aria-pressed", source?.getAttribute("aria-pressed") === "true" ? "true" : "false");
+  };
+  mirrorMode("dark-page", el.documentDarkBtn);
+  mirrorMode("region", el.documentRegionBtn);
+  mirrorMode("inline-notes", el.inlineNotesBtn);
+  mirrorMode("immersive", el.immersiveModeBtn);
+  const setRow = row("bookmark-set");
+  const setLabel = el.bookmarkSetBtn?.querySelector(".nhm-label")?.textContent?.trim();
+  const rowLabel = setRow?.querySelector(".rr-label");
+  // "Bookmark here" / "Move bookmark here" — a note keeps exactly one, and a
+  // reader should not have to lose theirs to find that out.
+  if (rowLabel && setLabel) rowLabel.textContent = setLabel.startsWith("Move") ? "Move bookmark here" : "Bookmark here";
+  if (setRow && el.bookmarkSetBtn?.title) setRow.title = el.bookmarkSetBtn.title;
+}
+
 // The contents of whatever is being read. One button, because "contents" means
 // one thing to a reader and the fact that a markdown TOC and a PDF outline are
 // built by different modules is not their problem.
@@ -157,6 +228,7 @@ export function initReadingRail() {
     if (event.pointerType === "touch") return;
     if (hasStudyTextSelection()) return;
     setReadingRailExpanded(true);
+    refreshReadingRailRows();
   });
 
   rail.addEventListener("pointerleave", (event) => {
@@ -176,8 +248,21 @@ export function initReadingRail() {
     const action = button.dataset.railAction;
     if (action === "decks") openMyDecksPanel();
     else if (action === "contents") toggleContents();
+    else if (action === "bookmark-set") bookmarkCurrentSpot();
+    else if (action === "bookmark-go") goToBookmark();
+    else if (action === "inline-notes") toggleInlineHighlightNotes();
+    else if (action === "style") openStylePanel();
+    else if (action === "sync") reconcileAllDecks({ explicit: true });
+    else if (action === "immersive") toggleImmersiveMode();
+    else if (action === "fit-width") fitDocumentToWidth();
+    else if (action === "dark-page") togglePdfInvert();
+    else if (action === "region") toggleRegionSelect();
     else if (action === "leave-focus") setFocusMode(false);
     setReadingRailExpanded(false);
+    // The three modes among these say which way they are set, and the functions
+    // that own that state paint their ORIGINAL buttons — which are in the folded
+    // row, not here. So the rail reads the answer back off them.
+    refreshReadingRailModes();
   });
 
   // A press anywhere else folds it back up — the rail overlays the page, and one

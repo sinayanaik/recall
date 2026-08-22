@@ -86,7 +86,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -102,7 +102,7 @@ import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode }
 import { initDocumentMarkMenu } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { fitDocumentToWidth, initDocumentPinchZoom, reattachDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail } from "./ui/reading-rail.js?v=__BUILD__";
@@ -409,7 +409,13 @@ document.addEventListener(
     // frames, and every one of the extra ones used to pay for a closest() walk
     // up the tree before being thrown away here anyway.
     if (chromeScrollFrame) return;
-    if (chromeFocusPinned || !isMobileChrome()) return;
+    // isFocusModeActive, not chromeFocusPinned: once a scroll down has locked
+    // the chrome away there is nothing further for this listener to decide, and
+    // a reader who spends the next twenty minutes scrolling should not pay a
+    // closest() walk and a rAF per frame to be told so. Both ways out of the
+    // mode reset the anchor (setFocusMode, resetChromeAutoHide), so the next
+    // scroll after one re-anchors from wherever the reader actually is.
+    if (isFocusModeActive() || !isMobileChrome()) return;
     const target = event.target;
     if (!(target instanceof Element) || !target.closest(".study-layout")) return;
     setChromeScrollFrame(requestAnimationFrame(() => {
@@ -421,7 +427,7 @@ document.addEventListener(
 );
 
 
-el.focusModeBtn?.addEventListener("click", () => setFocusMode(!chromeFocusPinned));
+el.focusModeBtn?.addEventListener("click", () => setFocusMode(!isFocusModeActive()));
 
 // A click, not a pointerdown: requestFullscreen needs a user gesture and a
 // click IS one, while none of the pill's "don't destroy the selection" reasons
@@ -2009,7 +2015,7 @@ document.addEventListener("keydown", (event) => {
   // can't shadow anything while you're typing raw markdown.
   if ((event.ctrlKey || event.metaKey) && event.key === ".") {
     event.preventDefault();
-    setFocusMode(!chromeFocusPinned);
+    setFocusMode(!isFocusModeActive());
     return;
   }
   // Ctrl/Cmd+Q: the same idea one step further — the app's chrome AND the
@@ -2724,11 +2730,46 @@ function wakeDocumentPager() {
 // that the cluster is not simply always on for anyone reading downward.
 const DOCUMENT_PAGER_WAKE_MS = 1200;
 
+// ── Re-fitting the page, and the three ways this used to be wrong ─────────
+//
 // Fit-width has to be re-measured when the window changes: the whole point of
-// the mode is that the page is as wide as the room there is for it.
+// the mode is that the page is as wide as the room there is for it. This used
+// to be a bare `fitDocumentToWidth()` on every resize, which on a phone is
+// three separate bugs at once.
+//
+//   1. fitDocumentToWidth SETS fitWidth. So a reader who had pinched to read a
+//      dense figure had that zoom thrown away by any resize at all — they were
+//      put back at fit-width without touching anything.
+//   2. On a phone, "any resize at all" means ordinary scrolling. Showing and
+//      hiding the URL bar changes the viewport height, and
+//      interactive-widget=resizes-content (index.html) fires one more every
+//      time a keyboard opens. None of those change the WIDTH, which is the
+//      only measurement fit-width depends on.
+//   3. Each one ran a full relayoutDocument(), which re-rasterises every page
+//      in the render window and rebuilds its text layer — hundreds to a few
+//      thousand spans a page. That is most of what "the PDF viewer is very slow
+//      on mobile" was: the viewer re-rendering itself while being scrolled.
+//
+// So: only in fit-width mode, only when the width actually changed, and
+// debounced — a drag-resize on a desktop fires this continuously. refit:true is
+// relayoutDocument's own path for exactly this and re-measures the scale
+// without claiming the mode.
+let documentRefitTimer = 0;
+let documentRefitWidth = 0;
+
 window.addEventListener("resize", () => {
-  if (state.viewMode === "document") fitDocumentToWidth();
+  if (state.viewMode !== "document") return;
+  const width = el.documentView?.clientWidth || 0;
+  if (!width || width === documentRefitWidth) return;
+  documentRefitWidth = width;
+  if (!isDocumentFitWidth()) return;
+  clearTimeout(documentRefitTimer);
+  documentRefitTimer = setTimeout(() => relayoutDocument({ refit: true }), DOCUMENT_REFIT_MS);
 });
+
+// Long enough that a desktop drag-resize costs one relayout rather than sixty,
+// short enough that a rotation looks like it re-fitted immediately.
+const DOCUMENT_REFIT_MS = 150;
 
 el.documentTocBtn?.addEventListener("click", () => {
   if (!el.documentOutlineDrawer) return;
