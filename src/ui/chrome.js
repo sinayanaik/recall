@@ -38,6 +38,20 @@ export function setChromeCollapseHandler(fn) {
   onChromeCollapse = typeof fn === "function" ? fn : () => {};
 }
 
+// ...and a second one, for the same reason and registered the same way: the
+// rail carries its own copy of the Focus mode and Full screen rows, and it
+// reads their state back off the original buttons rather than deriving it
+// (refreshReadingRailModes). Copying an answer means being told when the answer
+// changes — otherwise a mode flipped by Ctrl+Q, by Escape, or by the browser's
+// own F11 while the tray is open leaves the rail showing the state before.
+// The tray repainting only when it is OPENED covered the common case and not
+// that one.
+let onChromeModes = () => {};
+
+export function setChromeModesHandler(fn) {
+  onChromeModes = typeof fn === "function" ? fn : () => {};
+}
+
 export let chromeFocusPinned = false;
 
 // Setter: an imported binding is read-only, and main.js seeds it from localStorage at startup.
@@ -245,25 +259,35 @@ export function applyChromeCollapse() {
     chromeSettleUntil = performance.now() + CHROME_SETTLE_MS;
     scheduleChromeRefit();
   }
-  // Gated on the PIN changing, not on `changed`. This used to run on every
+  // Gated on the ANSWER changing, not on `changed`. This used to run on every
   // call, which on a phone means every scroll-driven auto-hide tick rewriting
   // three attributes on a button that is hidden in Cards view anyway — but it
   // cannot be gated on `collapsed` changing either: pinning while the phone
   // has already auto-hidden the chrome leaves `collapsed` true throughout, and
   // the button would keep showing ⤢ for a mode that is now on.
-  if (chromeFocusPinned !== focusBtnShowsPinned && el.focusModeBtn) {
-    focusBtnShowsPinned = chromeFocusPinned;
-    el.focusModeBtn.setAttribute("aria-pressed", chromeFocusPinned ? "true" : "false");
+  //
+  // The answer is isFocusModeActive() — pin OR lock — and not the pin alone,
+  // which is what it used to be. The button's click handler has always read
+  // pin-or-lock (src/main.js), so the two disagreed for the whole of the state
+  // the lock exists to describe: scroll down on a phone, chromeFocusLocked goes
+  // true, the header folds away, and the toggle still reads Off. Pressing an
+  // Off-looking toggle then turned focus mode off, which is not a thing a
+  // toggle is allowed to do. One reading, used by both.
+  const active = isFocusModeActive();
+  if (active !== focusBtnShowsPinned && el.focusModeBtn) {
+    focusBtnShowsPinned = active;
+    el.focusModeBtn.setAttribute("aria-pressed", active ? "true" : "false");
     // Into the glyph SPAN, never onto the button. The button also carries its
     // name and its On/Off switch now (it is a row in the ⋯ menu, see
     // notes-head-overflow.js), and `button.textContent = …` would delete both
     // the first time the pin was turned on. The fallback is for a layout that
     // has not got a glyph span — the old behaviour, unchanged.
     const glyph = el.focusModeBtn.querySelector(".nhm-ico") || el.focusModeBtn;
-    glyph.textContent = chromeFocusPinned ? "⤡" : "⤢";
-    el.focusModeBtn.title = chromeFocusPinned
+    glyph.textContent = active ? "⤡" : "⤢";
+    el.focusModeBtn.title = active
       ? "Focus mode on (Ctrl + . or Esc) — bring the header back"
       : "Focus mode (Ctrl + .) — keep the header hidden while you read";
+    onChromeModes();
   }
 }
 
@@ -376,8 +400,21 @@ export function setFocusMode(pinned) {
 // the header; ⛶ / Ctrl+Q takes over the screen. A tri-state toggle would make
 // you press it once to find out which of the two you were about to get.
 //
-// Entering does BOTH: a fullscreen window still showing the deck title, the
-// category and the tabs is not what anyone means by full screen.
+// ── ...and they are INDEPENDENT, which they were not ───────────────────────
+//
+// Entering full screen used to turn focus mode on, and leaving it used to turn
+// focus mode off, on the argument that a fullscreen window still showing the
+// deck title and the tabs is not what anyone means by full screen. That reads
+// well and it is wrong the moment either mode has a light on it: the reader
+// presses one toggle and watches a different toggle change by itself, and then
+// presses Escape and watches a mode they set by hand ten minutes ago switch off
+// with it. A control that moves when you did not touch it is not a control.
+//
+// So each one now does exactly what its own label says. Full screen is the
+// browser's chrome; focus mode is the app's; wanting both is two presses, and
+// both of them stay pressed until something the reader did unpresses them.
+// Escape still leaves full screen first and focus mode second
+// (src/ui/back-gesture.js), which is the right order and unaffected by this.
 //
 // ⚠ Ctrl+Q is the browser's own quit accelerator in Chrome on Linux and (as
 // Cmd+Q) on macOS, and preventDefault cannot always take that back. Where it is
@@ -388,10 +425,16 @@ export function isFullscreenAvailable() {
     && document.fullscreenEnabled !== false;
 }
 
-// Where the API is missing (iOS Safari has it on <video> only), immersive mode
-// degrades to focus mode — so "am I in it" degrades to the same question.
+// Where the API is missing (iOS Safari has it on <video> only) there is no
+// immersive mode to be in, and this says so.
+//
+// It used to answer `chromeFocusPinned` there, which was the honest answer
+// while entering full screen implied focus mode. Now that the two are
+// independent it would be a lie in the one direction that matters: the Full
+// screen button would light up because the reader turned FOCUS mode on, on the
+// device where pressing Full screen does nothing at all.
 export function isImmersive() {
-  return isFullscreenAvailable() ? Boolean(document.fullscreenElement) : chromeFocusPinned;
+  return isFullscreenAvailable() ? Boolean(document.fullscreenElement) : false;
 }
 
 // What #immersiveModeBtn currently says. Starts null (not false) for the same
@@ -403,6 +446,9 @@ export function paintImmersiveButton() {
   const on = isImmersive();
   if (on === immersiveBtnShowsOn) return;
   immersiveBtnShowsOn = on;
+  // The rail carries a copy of this row and reads its state back off this
+  // button. Told, rather than left to notice on its next open.
+  onChromeModes();
   el.immersiveModeBtn.setAttribute("aria-pressed", on ? "true" : "false");
   el.immersiveModeBtn.title = !isFullscreenAvailable()
     ? "Full screen isn't available in this browser — Ctrl + Q hides the app's own header instead"
@@ -413,12 +459,15 @@ export function paintImmersiveButton() {
 
 // Fire-and-forget: requestFullscreen/exitFullscreen REJECT rather than throw
 // when the gesture has expired or a policy refuses, and there is nothing useful
-// to do about it beyond leaving focus mode in whatever state it reached. The
-// button is repainted from the fullscreenchange listener below rather than from
-// here, so what it shows is what actually happened and not what was asked for.
+// to do about it. The button is repainted from the fullscreenchange listener
+// below rather than from here, so what it shows is what actually happened and
+// not what was asked for.
+//
+// Focus mode is deliberately not touched — see the note above this section.
+// This function is about the browser's chrome; setFocusMode is about the app's;
+// a reader who wants both presses both, and neither light moves on its own.
 export function setImmersiveMode(on) {
   if (on) {
-    setFocusMode(true);
     if (isFullscreenAvailable() && !document.fullscreenElement) {
       Promise.resolve(document.documentElement.requestFullscreen()).catch(() => paintImmersiveButton());
     } else {
@@ -426,7 +475,6 @@ export function setImmersiveMode(on) {
     }
     return;
   }
-  setFocusMode(false);
   if (document.fullscreenElement) Promise.resolve(document.exitFullscreen()).catch(() => {});
   else paintImmersiveButton();
 }
@@ -436,13 +484,15 @@ export function toggleImmersiveMode() {
 }
 
 // Leaving fullscreen by F11, by Escape, or by the browser's own control has to
-// leave immersive mode as a WHOLE — otherwise the window comes back with the
-// app's header still folded away and a lit ⛶ button, and nothing the reader
-// pressed did either of those. One path out, whoever asked for it.
+// be reflected here, or the ⛶ button stays lit for a mode the window is no
+// longer in. One path out, whoever asked for it.
+//
+// It used to call setFocusMode(false) here as well, to match setImmersiveMode
+// turning focus mode on. Both halves of that coupling are gone (see the note
+// above isFullscreenAvailable): pressing F11 must not switch off a mode the
+// reader set by hand and did not ask to leave. What comes back is a window with
+// its browser chrome restored and the app's own chrome exactly as it was.
 export function initImmersiveMode() {
   paintImmersiveButton();
-  document.addEventListener("fullscreenchange", () => {
-    if (!document.fullscreenElement) setFocusMode(false);
-    paintImmersiveButton();
-  });
+  document.addEventListener("fullscreenchange", () => paintImmersiveButton());
 }

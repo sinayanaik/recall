@@ -48,7 +48,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
-import { hasStudyTextSelection, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
+import { hasStudyTextSelection, isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { bookmarkCurrentSpot, goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
@@ -163,9 +163,10 @@ export function refreshReadingRailRows() {
 // The rail's modes and one of its labels, read back off the controls that own
 // them.
 //
-// Dark page, region select, inline notes and full screen each already publish
-// their state as aria-pressed on their own button (togglePdfInvert,
-// toggleRegionSelect, paintInlineNotesButton, paintImmersiveButton), and the
+// Dark page, region select, inline notes, full screen and focus mode each
+// already publish their state as aria-pressed on their own button
+// (togglePdfInvert, toggleRegionSelect, paintInlineNotesButton,
+// paintImmersiveButton, applyChromeCollapse), and the
 // bookmark button already says whether pressing it will SET a bookmark or MOVE
 // the one you have. All of those buttons are in the row focus mode folds away,
 // so the rail's copies have to be told. Copying the answer is right and
@@ -184,6 +185,7 @@ export function refreshReadingRailModes() {
   mirrorMode("region", el.documentRegionBtn);
   mirrorMode("inline-notes", el.inlineNotesBtn);
   mirrorMode("immersive", el.immersiveModeBtn);
+  mirrorMode("focus", el.focusModeBtn);
   const setRow = row("bookmark-set");
   const setLabel = el.bookmarkSetBtn?.querySelector(".nhm-label")?.textContent?.trim();
   const rowLabel = setRow?.querySelector(".rr-label");
@@ -257,7 +259,13 @@ export function initReadingRail() {
     else if (action === "fit-width") fitDocumentToWidth();
     else if (action === "dark-page") togglePdfInvert();
     else if (action === "region") toggleRegionSelect();
-    else if (action === "leave-focus") setFocusMode(false);
+    // A toggle, not the one-way "Leave focus" this replaced. In the rail it is
+    // always on when it is reachable — the rail only exists while the chrome is
+    // collapsed — so pressing it does leave focus mode, which is what the old
+    // row did. What is different is that the row now SAYS it is on, which is
+    // the whole reason it changed: a control that only ever offers to undo
+    // itself never tells you what state you are in.
+    else if (action === "focus") setFocusMode(!isFocusModeActive());
     setReadingRailExpanded(false);
     // The three modes among these say which way they are set, and the functions
     // that own that state paint their ORIGINAL buttons — which are in the folded

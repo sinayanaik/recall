@@ -86,7 +86,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -105,7 +105,7 @@ import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
-import { initReadingRail, refreshReadingRail } from "./ui/reading-rail.js?v=__BUILD__";
+import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
 import { importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
        // grid | folder | tree
@@ -915,6 +915,13 @@ onDomReady(initDocumentRegionSelect);
 onDomReady(() => {
   initReadingRail();
   setChromeCollapseHandler(refreshReadingRail);
+  // The rail's Focus mode and Full screen rows are copies that read their state
+  // back off the original buttons, so they have to be told when a mode changes
+  // by some route other than pressing them: Ctrl+. , Ctrl+Q, Escape, the phone's
+  // Back key, or the browser's own F11. Registered rather than imported for the
+  // reason the collapse handler above is — src/ui/chrome.js sits low in the
+  // import graph and the rail sits high; this file is the one that knows both.
+  setChromeModesHandler(refreshReadingRailModes);
 });
 // The badges are painted with each page as it renders, and the printed notes are
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
