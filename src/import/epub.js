@@ -10,7 +10,10 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { optimizeImage, storageFolderSlug, storageGroupId, uploadImageToSupabase } from "../images/upload.js?v=__BUILD__";
+import { formatStorageBytes } from "../core/text.js?v=__BUILD__";
+import { compressImageToPreset, normalizeImageCompressionChoice, readImageCompressionChoice, writeImageCompressionChoice } from "../images/compress.js?v=__BUILD__";
+import { compressionSavingLabel, imageCompressionLevels } from "../images/compress-dialog.js?v=__BUILD__";
+import { storageFolderSlug, storageGroupId, uploadImageToSupabase } from "../images/upload.js?v=__BUILD__";
 import { htmlToMarkdown } from "./html-to-markdown.js?v=__BUILD__";
 import { decksUnderFolder } from "../library/folder-tree.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
@@ -340,8 +343,79 @@ export async function uploadEpubImageWithRetry(file, progress, destination = {})
   }
 }
 
-// Uploads every manifest image through the existing optimize+Supabase Storage
-// pipeline, returning { urlMap: Map(zip path -> hosted URL), failed: [zip path], reason }.
+// ── What this book's figures will cost ─────────────────────────────────────
+//
+// A book carries hundreds of images, so the import asks the same "how hard
+// should these be squeezed" question a paste does — once, in the preview modal
+// it already shows, rather than opening a second dialog or (worse) one per
+// figure.
+//
+// The number beside the choice is an ESTIMATE, and says so. Encoding every
+// figure to answer it would do the whole import's work before the user has
+// pressed Import; encoding the biggest few and applying their ratio to the
+// manifest's own byte total is within a few percent and costs three decodes.
+export const EPUB_COMPRESSION_SAMPLE = 3;
+
+// Uncompressed size per manifest image, from the zip's own central directory —
+// no decompression. JSZip keeps it on the internal `_data`, so this is written
+// to survive not finding it: a book whose entries do not carry it simply gets
+// no absolute numbers, and the ratio is still shown.
+export function epubImageByteTotal(zip, imageEntries) {
+  let bytes = 0;
+  let known = 0;
+  for (const entry of imageEntries) {
+    const file = epubZipFile(zip, entry.path, entry.rawPath);
+    const size = file?._data?.uncompressedSize;
+    if (!Number.isFinite(size)) continue;
+    bytes += size;
+    known += 1;
+  }
+  if (!known) return { bytes: 0, known: 0 };
+  // Scale up if some entries were unreadable, so the total describes the book
+  // rather than the part of it that answered.
+  return { bytes: Math.round(bytes * (imageEntries.length / known)), known };
+}
+
+// The largest few figures, since they dominate the total and a book's small
+// decorations compress differently from its plates.
+export async function epubCompressionSample(zip, imageEntries) {
+  return imageEntries
+    .map((entry) => ({ entry, size: epubZipFile(zip, entry.path, entry.rawPath)?._data?.uncompressedSize || 0 }))
+    .sort((a, b) => b.size - a.size)
+    .slice(0, EPUB_COMPRESSION_SAMPLE)
+    .map((row) => row.entry);
+}
+
+// { count, bytes, estimatedBytes, ratio, sampled } — bytes 0 when the zip would
+// not say. Never throws: a failed estimate must not stop a book being imported.
+export async function estimateEpubImageCompression(zip, imageEntries, choice) {
+  const count = imageEntries.length;
+  const { bytes } = epubImageByteTotal(zip, imageEntries);
+  if (!count) return { count: 0, bytes: 0, estimatedBytes: 0, ratio: 1, sampled: 0 };
+  let before = 0;
+  let after = 0;
+  let sampled = 0;
+  for (const entry of await epubCompressionSample(zip, imageEntries)) {
+    try {
+      const zipped = epubZipFile(zip, entry.path, entry.rawPath);
+      if (!zipped) continue;
+      const blob = await zipped.async("blob");
+      const name = entry.path.split("/").pop() || "image";
+      const file = new File([blob], name, { type: entry.mediaType || blob.type || "image/jpeg" });
+      const result = await compressImageToPreset(file, choice);
+      before += file.size;
+      after += result.file?.size || file.size;
+      sampled += 1;
+    } catch (error) {
+      console.warn("Could not sample an EPUB image for the size estimate", error);
+    }
+  }
+  const ratio = before > 0 ? after / before : 1;
+  return { count, bytes, estimatedBytes: Math.round(bytes * ratio), ratio, sampled };
+}
+
+// Uploads every manifest image through the existing compress+Supabase Storage
+// pipeline at the level chosen in the preview modal, returning { urlMap: Map(zip path -> hosted URL), failed: [zip path], reason }.
 // An image that still won't upload after retries is left out of the map, and
 // epubContainerToMarkdown then drops that <img> rather than failing the whole
 // book — but the paths and the last failure message come back so the import can
@@ -352,7 +426,7 @@ export async function uploadEpubImageWithRetry(file, progress, destination = {})
 // `folder` is this import run's own bucket folder — every figure in the book
 // lands there and nowhere else, so the whole run can be inspected or removed as
 // one unit.
-export async function uploadEpubImages(zip, imageEntries, progress, folder = null) {
+export async function uploadEpubImages(zip, imageEntries, progress, folder = null, compression = null) {
   const urlMap = new Map();
   const failed = [];
   let reason = "";
@@ -369,7 +443,7 @@ export async function uploadEpubImages(zip, imageEntries, progress, folder = nul
       const blob = await entry.async("blob");
       const name = path.split("/").pop() || `image-${i}`;
       const file = new File([blob], name, { type: mediaType || blob.type || "image/jpeg" });
-      const optimized = await optimizeImage(file);
+      const optimized = (await compressImageToPreset(file, compression)).file;
       // Keep the book's own filename so a figure is identifiable in the bucket,
       // behind a zero-padded index. The index both preserves the book's image
       // order in an alphabetically-sorted listing and guarantees uniqueness
@@ -833,6 +907,10 @@ export function showEpubPreview({ title, author, chapterCount, imageCount, exist
         <div class="epub-preview-stat"><strong class="epub-preview-chapters"></strong><span>Chapters</span></div>
         <div class="epub-preview-stat"><strong class="epub-preview-images"></strong><span>Images</span></div>
       </div>
+      <div class="epub-preview-compress">
+        <p class="epub-preview-compress-label">Figure quality — one setting for every image in the book</p>
+        <p class="epub-preview-compress-total" aria-live="polite"></p>
+      </div>
       <div class="epub-preview-mode" role="radiogroup" aria-label="Import as">
         <label class="epub-preview-mode-option">
           <input type="radio" name="epub-import-mode" value="chapters" checked>
@@ -975,6 +1053,46 @@ export function showEpubPreview({ title, author, chapterCount, imageCount, exist
       });
     }
 
+    // ── How hard the book's figures are squeezed ───────────────────────────
+    // The same levels a paste offers, asked once for the whole run. The line
+    // under them is sampled rather than exact (see estimateEpubImageCompression)
+    // and is labelled with a "≈" so it never reads as a promise. Estimating runs
+    // off the modal's critical path, like the TOC and the chapter preview: the
+    // stat tiles and Import are usable while it settles.
+    let compression = readImageCompressionChoice();
+    const compressBox = shell.querySelector(".epub-preview-compress");
+    const compressTotal = shell.querySelector(".epub-preview-compress-total");
+    let estimateRun = 0;
+    const paintEstimate = () => {
+      const token = ++estimateRun;
+      compressTotal.textContent = "Estimating…";
+      estimateEpubImageCompression(zip, imageEntries, compression).then((estimate) => {
+        if (token !== estimateRun || !modal.isConnected) return;
+        if (!estimate.sampled) {
+          compressTotal.textContent = `${imageCount} image${imageCount === 1 ? "" : "s"}`;
+          return;
+        }
+        const saving = compressionSavingLabel(1, estimate.ratio);
+        compressTotal.textContent = estimate.bytes
+          ? `${imageCount} images · ≈ ${formatStorageBytes(estimate.bytes)} → ≈ ${formatStorageBytes(estimate.estimatedBytes)}${saving ? ` (${saving})` : ""}`
+          : `${imageCount} images · about ${saving || "the same size"} at this level`;
+      }).catch(() => {
+        if (token === estimateRun) compressTotal.textContent = `${imageCount} image${imageCount === 1 ? "" : "s"}`;
+      });
+    };
+    if (imageCount > 0) {
+      const levels = imageCompressionLevels((picked) => {
+        compression = picked;
+        levels.select(compression);
+        paintEstimate();
+      });
+      compressBox.querySelector(".epub-preview-compress-label").after(levels.element);
+      levels.select(compression);
+      paintEstimate();
+    } else {
+      compressBox.hidden = true;
+    }
+
     // The "folder already holds N decks" warning only applies to the
     // per-chapter mode (the whole-book mode saves one deck, no folder), so
     // it toggles with the mode choice rather than being fixed at open time.
@@ -1005,7 +1123,12 @@ export function showEpubPreview({ title, author, chapterCount, imageCount, exist
     shell.querySelectorAll("[data-epub-cancel]").forEach((button) => {
       button.addEventListener("click", () => cleanup(null));
     });
-    shell.querySelector("[data-epub-confirm]")?.addEventListener("click", () => cleanup({ mode: selectedMode() }));
+    shell.querySelector("[data-epub-confirm]")?.addEventListener("click", () => {
+      // Remembered here as well as in the paste dialog: they are one preference,
+      // and a reader who squeezes their books hard means it for their pastes too.
+      if (imageCount > 0) writeImageCompressionChoice(compression);
+      cleanup({ mode: selectedMode(), compression: normalizeImageCompressionChoice(compression) });
+    });
     modal.addEventListener("click", (event) => {
       if (event.target === modal) cleanup(null);
     });
@@ -1076,7 +1199,7 @@ export function showImportProgress(title, kind = "EPUB") {
 
 // Uploads images, converts every spine chapter, then saves one deck per
 // chapter into a new folder named after the book.
-export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = "chapters", folderPath = null) {
+export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode = "chapters", folderPath = null, compression = null) {
   const progress = showImportProgress(bookTitle, "EPUB");
   // Hoisted out of the try so the catch below can put the user's own working
   // deck back even if the import blows up partway through the save loop.
@@ -1088,7 +1211,7 @@ export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, 
     // delete. storageGroupId is what makes each run distinct.
     const imageFolder = `books/${storageFolderSlug(bookTitle, "book")}--${storageGroupId()}`;
     const { urlMap: imageUrlMap, failed: failedImages, reason: imageFailReason } =
-      await uploadEpubImages(zip, imageEntries, progress, imageFolder);
+      await uploadEpubImages(zip, imageEntries, progress, imageFolder, compression);
     const chapters = await convertEpubChapters(zip, pkg.spine, markers, imageUrlMap, progress);
 
     if (!chapters.length) {
@@ -1335,5 +1458,5 @@ export async function importEpubFile(file, folderPath = null) {
   // is non-fatal (the titles it couldn't read just keep their fallbacks).
   await tocPreviewPromise.catch(() => {});
 
-  await runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode, folderPath);
+  await runEpubImport(zip, pkg, bookTitle, imageEntries, markers, mode, folderPath, choice.compression);
 }

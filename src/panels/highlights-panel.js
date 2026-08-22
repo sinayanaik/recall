@@ -680,10 +680,10 @@ export function renderHighlightsPanel() {
 // pattern in notes/highlight-note-editor.js). Scoping BOTH the surface's
 // view (this row's own preview container, holding only its own image(s))
 // AND its source (item.markdown, not the whole note) to the same slice is
-// what makes the shell↔image-token matching inside
-// enhanceSurfaceImageControls valid: that matching assumes its `view` and
-// its `getSource()` describe the same document walked in the same order,
-// which a lone row's container and the FULL state.notes would not.
+// what makes the shell↔markdown matching inside enhanceSurfaceImageControls
+// valid: a control it attaches here writes back through THIS surface's
+// setSource, so its `view` and its `getSource()` have to describe the same
+// document — which a lone row's container and the FULL state.notes would not.
 function renderRowPreviewWithImageResize(preview, item) {
   if (!item.span) {
     renderMarkdown(preview, item.markdown);
@@ -718,11 +718,11 @@ function renderRowPreviewWithImageResize(preview, item) {
 // self-contained markdown (not a slice of anything else), so — same
 // reasoning as renderRowPreviewWithImageResize — scoping the surface's view
 // to just this noteBody and its source to just this note text keeps
-// enhanceSurfaceImageControls' shell↔token matching valid.
+// enhanceSurfaceImageControls' shell↔markdown matching valid.
 //
 // setSource commits through setHighlightNoteAt, which (like any highlight
 // edit) calls notifyHighlightsChanged() and rebuilds the WHOLE panel — so by
-// the time rebuildSurfaceFromTokens's own rerender() call would run, this
+// the time replaceSourceImage's own rerender() call would run, this
 // noteBody has already been discarded in favour of a freshly rendered one.
 // rerender is therefore a deliberate no-op here; the real refresh already
 // happened.

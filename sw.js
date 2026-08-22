@@ -107,8 +107,9 @@ const CDN_CACHE_NAME = "recall-cdn-v1";
 //
 // 1500 was chosen against an assumed 200-400KB per image. Measured against a
 // real library instead (a 3300-image backup archive at 208MB) the average is
-// nearer 60KB, because optimizeImage's 1600px WebP compresses far better than
-// that guess: the old ceiling was reserving ~500MB of headroom to store ~90MB.
+// nearer 60KB, because the default 1600px WebP level (src/images/compress.js)
+// compresses far better than that guess: the old ceiling was reserving ~500MB
+// of headroom to store ~90MB.
 // At this ceiling the same library fits entirely, so a device re-downloads each
 // image once, ever, rather than continuously.
 const IMAGE_CACHE_LIMIT = 6000;
@@ -280,6 +281,8 @@ const APP_SHELL = [
   `./styles/37-document-chrome.css?v=${STAMP}`,
   `./styles/38-reading-rail.css?v=${STAMP}`,
   `./styles/39-document-export.css?v=${STAMP}`,
+  `./styles/40-image-controls.css?v=${STAMP}`,
+  `./styles/41-image-compress.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -349,6 +352,8 @@ const APP_SHELL = [
   `./src/format/locate-selection.js?v=${STAMP}`,
   `./src/format/render-toolbar.js?v=${STAMP}`,
   `./src/format/selection-tools.js?v=${STAMP}`,
+  `./src/images/compress.js?v=${STAMP}`,
+  `./src/images/compress-dialog.js?v=${STAMP}`,
   `./src/images/outbox.js?v=${STAMP}`,
   `./src/images/paste.js?v=${STAMP}`,
   `./src/images/surface-controls.js?v=${STAMP}`,

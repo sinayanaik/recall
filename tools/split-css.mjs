@@ -287,6 +287,20 @@ const POST_SPLIT = {
     "in the standalone HTML path, which inlines the LIVE theme around it, and " +
     "a dark background under a white scanned page reads as a printing fault. " +
     "See src/documents/pdf-export.js.",
+  "40-image-controls.css":
+    "Resize and delete controls that are usable on an image of ANY size. The " +
+    "shell hugs its picture, so on a thumbnail the grip, the delete button and " +
+    "the Zoom pill were painted on top of each other and on top of the image \u2014 " +
+    "which is what 'small images have no controls' looks like. A tiny shell " +
+    "gets a size floor and a compact layout for the three, and the two controls " +
+    "that EDIT come back up from the 45% touch dim that 16-mobile-reading.css " +
+    "applies to all three.",
+  "41-image-compress.css":
+    "The 'choose a compression level' dialog every image upload now goes " +
+    "through, and the same level picker inside the EPUB import preview. Frame " +
+    "borrowed from .category-choice-modal (08-panels.css) \u2014 the app's one " +
+    "modal shape; what is here is the level row, the folded Advanced sliders, " +
+    "and the per-file before/after list.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

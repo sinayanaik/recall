@@ -1,8 +1,9 @@
 // Uploading a pasted or dropped image to the user's own Supabase Storage.
 //
-// Images are downscaled and re-encoded before upload — a phone photo is
-// several megabytes and nothing here needs that — and animated GIFs are left
-// alone, since re-encoding one loses the animation.
+// Images are downscaled and re-encoded before they get here — a phone photo is
+// several megabytes and nothing here needs that — at a level the person doing
+// the uploading picks and confirms (src/images/compress.js and its dialog).
+// Animated GIFs are left alone, since re-encoding one loses the animation.
 
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
@@ -52,106 +53,6 @@ export function replaceInTextarea(textarea, find, replace) {
   textarea.selectionStart = newStart;
   textarea.selectionEnd = newEnd;
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-// Downscale + re-encode an image before upload to cut file size (screenshots are
-// often huge PNGs). Animated GIFs and SVGs are passed through untouched — canvas
-// would flatten/rasterize them. Falls back to the original file on any error or if
-// the "optimized" result isn't actually smaller.
-export const IMAGE_MAX_DIMENSION = 1600;
-
-export const IMAGE_QUALITY = 0.82;
-
-export const IMAGE_MIME_EXT = { "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png" };
-
-// Count a GIF's frames by walking its block structure. Only an ANIMATED gif has
-// to skip optimization — the canvas path would flatten it to a still — but a
-// single-frame GIF is just a picture, and passing every GIF through untouched
-// meant a multi-megabyte one was stored and served at full size forever.
-// Anything unparseable returns 2, i.e. "treat as animated", which is the answer
-// that can only cost bytes rather than destroy the image.
-export function gifFrameCount(bytes) {
-  if (bytes.length < 13 || bytes[0] !== 0x47 || bytes[1] !== 0x49 || bytes[2] !== 0x46) return 2;
-  let at = 10;
-  // Global colour table: flag is the high bit of the packed field at byte 10,
-  // and its size is 3 × 2^(N+1) where N is the low three bits.
-  if (bytes[at] & 0x80) at += 3 * (1 << ((bytes[at] & 0x07) + 1));
-  at += 3; // packed field + background colour index + pixel aspect ratio
-  const skipSubBlocks = () => {
-    while (at < bytes.length) {
-      const size = bytes[at++];
-      if (!size) return true;
-      at += size;
-    }
-    return false;
-  };
-  let frames = 0;
-  while (at < bytes.length) {
-    const marker = bytes[at++];
-    if (marker === 0x3B) break;            // trailer
-    if (marker === 0x21) {                 // extension: label, then sub-blocks
-      at += 1;
-      if (!skipSubBlocks()) return 2;
-      continue;
-    }
-    if (marker !== 0x2C) return 2;         // not a valid block boundary
-    frames += 1;
-    if (frames > 1) return frames;         // animated — no need to finish
-    at += 8;                               // image descriptor, up to its packed field
-    const packed = bytes[at++];
-    if (packed & 0x80) at += 3 * (1 << ((packed & 0x07) + 1)); // local colour table
-    at += 1;                               // LZW minimum code size
-    if (!skipSubBlocks()) return 2;
-  }
-  return frames;
-}
-
-export async function optimizeImage(file) {
-  const fileType = (file && file.type) || "";
-  // SVG is vector: already small, and rasterizing it would be a downgrade.
-  if (!fileType.startsWith("image/") || fileType === "image/svg+xml") return file;
-  if (fileType === "image/gif") {
-    try {
-      const head = new Uint8Array(await file.slice(0, 4 * 1024 * 1024).arrayBuffer());
-      if (gifFrameCount(head) > 1) return file;
-    } catch {
-      return file;
-    }
-  }
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const w = img.naturalWidth, h = img.naturalHeight;
-      if (!w || !h) { resolve(file); return; }
-      const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(w, h));
-      // Whether the re-encode is allowed to lose on bytes alone. If the source
-      // is oversized, the downscale is the point: a 4000px JPEG that is already
-      // well compressed would otherwise be stored at 4000px and decoded at that
-      // size on every single view, on every device.
-      const wasDownscaled = scale < 1;
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(w * scale);
-      canvas.height = Math.round(h * scale);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) { resolve(file); return; }
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const toBlob = (mime) => new Promise((res) => canvas.toBlob(res, mime, IMAGE_QUALITY));
-      // WebP keeps transparency and compresses better; fall back to JPEG if it's unsupported.
-      toBlob("image/webp")
-        .then((blob) => blob || toBlob("image/jpeg"))
-        .then((blob) => {
-          if (!blob || (blob.size >= file.size && !wasDownscaled)) { resolve(file); return; }
-          const ext = IMAGE_MIME_EXT[blob.type] || "img";
-          const baseName = (file.name || "image").replace(/\.[^.]+$/, "");
-          resolve(new File([blob], `${baseName}.${ext}`, { type: blob.type }));
-        })
-        .catch(() => resolve(file));
-    };
-    img.src = url;
-  });
 }
 
 // Storage bucket for uploaded images (see supabase_setup.sql, section 7).

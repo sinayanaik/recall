@@ -1,0 +1,66 @@
+/* The resize grip and delete button on an image, made usable at any size.
+
+   A separate file rather than more rules inside 06-rendered.css: the original
+   thirteen stylesheets still have to reassemble byte-for-byte into the
+   pre-modular styles.css (see tools/split-css.mjs and the css-parity check),
+   so anything written since the split lives in its own numbered file. */
+
+/* ── A picture too small to hold its own controls ───────────────────────────
+   The shell hugs its image — `width: fit-content` in the notes view, and a
+   420px cap on an un-resized one — so on a 60px thumbnail the 22px delete
+   button, the 18px grip and the Zoom pill are all painted on top of each other
+   AND on top of the picture. Which is what "small images have no controls"
+   looks like from the reading side: they are there, and there is nowhere for
+   them to be.
+
+   The shell gets a floor to its size instead, so there is always room beside
+   the picture for the three of them, and the three get a compact size inside
+   it. `is-tiny-image` is set by markTinyImageShell (src/images/surface-
+   controls.js) from the image's committed or natural width — never from a
+   measured rect, which on a note carrying dozens of images would be a forced
+   layout each. */
+.diagram-shell.is-tiny-image {
+  min-width: 108px;
+  min-height: 72px;
+}
+
+.diagram-shell.is-tiny-image .notes-img-delete-btn {
+  width: 20px;
+  height: 20px;
+  font-size: 0.68rem;
+}
+
+.diagram-shell.is-tiny-image .notes-img-resize-handle {
+  width: 16px;
+  height: 16px;
+}
+
+/* The pill shares the bottom row with the grip (06-rendered.css moves it to the
+   left when an image is editable), and at full size the two of them are wider
+   than the shell's floor. */
+.diagram-shell.is-tiny-image .diagram-zoom {
+  min-height: 22px;
+  padding: 0 7px;
+  font-size: 0.62rem;
+}
+
+/* ── ...and visible on a touch screen ──────────────────────────────────────
+   styles/16-mobile-reading.css dims all three controls to 45% on a coarse
+   pointer, because a phone has no hover to distinguish the image you are
+   working with from the twenty you are scrolling past. That is right for the
+   Zoom pill, which is a convenience. It is too far for the two that EDIT: at
+   45% over a busy photo they read as absent, which is exactly the report this
+   file answers — "the resize and delete controls are missing on almost every
+   image".
+
+   So the split: the pill stays calm, the grip and the delete button come back
+   up to legible, and both get a ring in the surface colour so they stay
+   readable against a photo of any brightness. Still quieter than the desktop
+   full-strength treatment, and unchanged the moment a drag starts. */
+@media (hover: none), (pointer: coarse) {
+  #notesView .diagram-shell .notes-img-resize-handle,
+  #notesView .diagram-shell .notes-img-delete-btn {
+    opacity: 0.82;
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--panel) 75%, transparent), 0 1px 4px rgba(0, 0, 0, 0.35);
+  }
+}

@@ -23,6 +23,7 @@ import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady }
 import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
 import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
+import { formatStorageBytes } from "./core/text.js?v=__BUILD__";
 import { handleToolbarClick } from "./editor/toolbar-actions.js?v=__BUILD__";
 import { closeAllEditToolbarDropdowns, initToolbars, setCloseMainMenu, setIsMainMenuOpen, toggleClozes } from "./editor/toolbars.js?v=__BUILD__";
 import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/triple-click.js?v=__BUILD__";
@@ -33,7 +34,7 @@ import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
-import { dragContainsImage, firstImageFile, gifSourceUrlFromTransfer, insertTransferImage } from "./images/paste.js?v=__BUILD__";
+import { allImageFiles, dragContainsImage, gifSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
 import { imagePickerActive } from "./images/upload.js?v=__BUILD__";
 import { importEpubFile, isEpubName, reportEpubImportCrash } from "./import/epub.js?v=__BUILD__";
 import { loadFiles, loadSample, showImportSourceDrawer, stagePastedMarkdown } from "./import/files.js?v=__BUILD__";
@@ -79,7 +80,7 @@ import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__B
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
-import { closeStoragePanel, formatStorageBytes, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
+import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
 import { applyAutoSyncInterval, autoSyncTick, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
 import { updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
 import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
@@ -2402,16 +2403,18 @@ document.addEventListener("paste", (event) => {
   const clipboardData = event.clipboardData || window.clipboardData;
   if (!clipboardData) return;
 
-  // Image on the clipboard (screenshot, copied image) → upload to Supabase Storage and insert markdown.
-  const imageFile = firstImageFile(clipboardData);
-  if (imageFile) {
+  // Image(s) on the clipboard (a screenshot, a copied image, or a multi-file
+  // copy out of a folder) → ask how to compress them, then upload to Supabase
+  // Storage and insert the markdown.
+  const imageFiles = allImageFiles(clipboardData);
+  if (imageFiles.length) {
     event.preventDefault();
     // Read the caret and the clipboard's GIF hint synchronously: the event's
     // clipboardData is unreadable once the handler returns, and resolving a GIF
     // is async, so both have to be captured before awaiting anything.
     const atPos = target.selectionStart;
-    const gifUrl = imageFile.type === "image/gif" ? null : gifSourceUrlFromTransfer(clipboardData);
-    insertTransferImage(target, imageFile, gifUrl, atPos);
+    const gifUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? gifSourceUrlFromTransfer(clipboardData) : null;
+    insertTransferImages(target, imageFiles, gifUrl, atPos);
     return;
   }
 
@@ -2468,12 +2471,14 @@ document.addEventListener("drop", (event) => {
   if (!dragContainsImage(event.dataTransfer)) return;
   // Prevent the browser from navigating away to open the dropped file.
   event.preventDefault();
-  const imageFile = firstImageFile(event.dataTransfer);
-  if (imageFile) {
+  const imageFiles = allImageFiles(event.dataTransfer);
+  if (imageFiles.length) {
     // Same GIF-flattening problem as paste: dragging an animated GIF out of a
-    // page hands over a still, with the original's URL alongside it.
-    const gifUrl = imageFile.type === "image/gif" ? null : gifSourceUrlFromTransfer(event.dataTransfer);
-    insertTransferImage(event.target, imageFile, gifUrl, event.target.selectionStart);
+    // page hands over a still, with the original's URL alongside it. Only a
+    // single dragged image can carry that hint — a multi-file drop is files
+    // from a folder, which arrive whole.
+    const gifUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? gifSourceUrlFromTransfer(event.dataTransfer) : null;
+    insertTransferImages(event.target, imageFiles, gifUrl, event.target.selectionStart);
   } else showToast("Only image files can be dropped here", "info");
 });
 

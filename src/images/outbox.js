@@ -7,7 +7,8 @@
 
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { deckImageFolder, insertAtCursor, optimizeImage, replaceInTextarea, uploadImageToSupabase } from "./upload.js?v=__BUILD__";
+import { chooseImageCompression } from "./compress-dialog.js?v=__BUILD__";
+import { deckImageFolder, insertAtCursor, replaceInTextarea, uploadImageToSupabase } from "./upload.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 import { forEachDeckSnapshot, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
@@ -19,7 +20,8 @@ import { showToast } from "../ui/feedback.js?v=__BUILD__";
 // enhanceSurfaceImageControls below), so it always lands on its own visual row
 // regardless of whether it shares a markdown paragraph with other text. That
 // same paragraph-sharing case gets the corner-drag resize grip immediately
-// too (findImageTokens' `isInline` case), not a "move to its own line" step.
+// too (findSourceImages sees every image, whatever encloses it), not a "move
+// to its own line" step.
 // `atPos` (optional) forces the placeholder to the caret captured before the file
 // picker opened; without it the current caret is used (paste/drop already have focus).
 // ── Offline image outbox ─────────────────────────────────────────────────────
@@ -301,18 +303,32 @@ export async function rewriteLocalImageReferences(replacements) {
   if (indexChanged) writeLocalDeckIndex(index);
 }
 
+// Ask what to do with it, then do it. Every interactive path — paste, drop,
+// the toolbar picker — comes through here or through the prepared half below,
+// so an upload is never something that just happened: the level is chosen and
+// the sizes are seen first (src/images/compress-dialog.js), and cancelling
+// leaves the note exactly as it was.
 export async function insertImageUpload(textarea, file, atPos) {
+  if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
+  const chosen = await chooseImageCompression([file]);
+  if (!chosen?.items?.length) return;
+  await insertPreparedImageUpload(textarea, chosen.items[0].upload, atPos);
+}
+
+// The half that runs once the compression level is settled: the file handed in
+// is already the exact blob that will be stored. Callers with SEVERAL images
+// (a bulk pick, a multi-file drop) ask once and then call this per file, which
+// is what keeps one dialog per batch rather than one per picture.
+export async function insertPreparedImageUpload(textarea, file, atPos) {
   if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
   const uploadToken = `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
   insertAtCursor(textarea, uploadToken, atPos);
-  showToast("Optimizing image…", "info");
-  let optimized = file;
+  showToast("Uploading image…", "info");
   // Resolved before the await so the image is filed under the deck the user
   // actually pasted into, even if they switch decks while it uploads.
   const folder = deckImageFolder();
   try {
-    optimized = await optimizeImage(file);
-    const url = await uploadImageToSupabase(optimized, { folder });
+    const url = await uploadImageToSupabase(file, { folder });
     replaceInTextarea(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
     return;
@@ -337,7 +353,7 @@ export async function insertImageUpload(textarea, file, atPos) {
     // deck's images when it finally uploads, however many decks the user has
     // opened in between. Entries queued before this existed have no folder and
     // fall back to unfiled/.
-    await putOutboxImage({ token, blob: optimized, folder, savedAt: new Date().toISOString() });
+    await putOutboxImage({ token, blob: file, folder, savedAt: new Date().toISOString() });
   } catch (error) {
     console.warn("Could not queue the image for upload", error);
     replaceInTextarea(textarea, uploadToken, "");
