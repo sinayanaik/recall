@@ -145,22 +145,22 @@ const ACCEPTED = {
     "walking to the selection through a sink that keeps only a short tail " +
     "(countRenderedTextBefore), and the walk is deferred behind a lazy getter " +
     "because only the pill's ACTIONS need the number — selecting text does not.",
-  surfaceLexTokens:
-    "Memoized on the source string, and hands mutating callers a copy. " +
-    "marked.lexer() over a whole note is ~125ms on a book and this was called " +
-    "on the tail of EVERY render — every edit, every highlight, every " +
-    "raw<->rendered toggle.",
   enhanceSurfaceImageControls:
-    "Returns before lexing when the source cannot contain an image " +
-    "(sourceMayHaveImages). A note with no images had nothing to attach and " +
-    "still paid for a full lex of itself on every render.",
+    "Pairs each rendered image with the markdown SLICE holding the same URL " +
+    "(findSourceImages) instead of with the top-level marked token that " +
+    "contained it. The token walk could not see an image in a table cell, one " +
+    "wrapped in a link inside a sentence, or one inside an HTML block — all " +
+    "three rendered with no resize grip and no delete button — and pairing by " +
+    "position meant the pass could not run at all until the whole note was in " +
+    "the DOM, so no image in an imported book had controls until it had been " +
+    "read end to end. Takes { partial, scope }: partial leaves only the " +
+    "ambiguous case (the same image used twice in one note) to the pass that " +
+    "runs when the last span lands, and scope binds just the span that was " +
+    "built rather than re-walking every shell built so far.",
   enhanceSurfaceDiagramControls:
     "Returns before the fence walk when the source names no diagram " +
     "(sourceMayHaveDiagrams). The `diagrams.length` test below it was always " +
     "the real gate — it just sat downstream of a regex walk of the whole note.",
-  commitDeepImageWidth: "Asks surfaceLexTokens for a mutable copy — see its entry.",
-  commitImageWidth: "Asks surfaceLexTokens for a mutable copy — see its entry.",
-  removeImageAt: "Asks surfaceLexTokens for a mutable copy — see its entry.",
   scheduleSurfaceFinalize:
     "The deferred (big-note) path waits for an idle callback rather than the " +
     "next animation frame, and so stores which kind of handle it holds. The " +
@@ -686,7 +686,12 @@ const ACCEPTED = {
     "chunk is now measured for real (one forced layout, one offsetHeight read) " +
     "as it nears the viewport, same lookahead shape as the diagram/table " +
     "deferral, so the placeholder it is skipped at is its own real size instead " +
-    "of the note-wide guess.",
+    "of the note-wide guess. It also no longer withholds the IMAGE controls " +
+    "while a note is still being built span by span: those bind by URL now and " +
+    "need no complete DOM (see enhanceSurfaceImageControls). The DIAGRAM " +
+    "controls still wait, because they pair diagrams to fences by ordinal " +
+    "position and a jump into the middle of a book would bind a drag to the " +
+    "wrong one.",
   approximateRawOffsetForBlock:
     "Climbs to a chunk's child as well as the root's. Climbing past the block " +
     "to the chunk finds nothing in entry.nodes, so this returned null for every " +
@@ -1263,6 +1268,44 @@ const ACCEPTED = {
   exportNotesPdf: "notesForExport() — see exportNotesFlat.",
   exportMarkdown: "notesForExport() — see exportNotesFlat.",
   exportJson: "notesForExport() — see exportNotesFlat.",
+  // ── Choosing how hard an image is squeezed, before it is uploaded ────────
+  // Every upload used to re-encode to one fixed setting and then say
+  // "Optimizing image…" once it was already in flight. The level is a choice
+  // now, shown with each file's real before/after size, and nothing is sent
+  // until it is confirmed. See src/images/compress.js and its dialog.
+  insertImageUpload:
+    "Asks first. It opens the compression dialog for the one file and hands " +
+    "the answer to insertPreparedImageUpload, which is the old body minus the " +
+    "optimize step — so a cancelled dialog inserts nothing and uploads " +
+    "nothing, where before the placeholder and the upload were already away.",
+  openImagePicker:
+    "A bulk pick asks ONCE for all of it: the change handler collects every " +
+    "chosen image, opens one dialog, then inserts each prepared file at the " +
+    "caret it captured. It also stops clearing imagePickerActive before the " +
+    "dialog — that flag is what keeps edit mode alive across a modal that " +
+    "takes focus off the textarea, and the dialog now holds and releases it. " +
+    "The window-refocus listener is guarded for the same reason: on a browser " +
+    "that delivers focus AFTER change, it would otherwise clear the flag out " +
+    "from under a modal that had just taken it.",
+  showEpubPreview:
+    "Carries the same compression levels, because an import is a bulk upload " +
+    "of hundreds of figures and must not ask per figure — or in a second " +
+    "dialog. The line under them is sampled from the largest few images and " +
+    "marked with a \u2248 (estimateEpubImageCompression). Resolves " +
+    "{ mode, compression } rather than { mode }.",
+  uploadEpubImages:
+    "Takes the level chosen in the preview and calls compressImageToPreset " +
+    "instead of the fixed optimizeImage. Everything else in the loop — the " +
+    "retries, the storage names, the cancellation — is untouched.",
+  importEpubFile:
+    "Passes the preview's compression answer through to runEpubImport.",
+  attachNotesImageResizeHandle:
+    "Marks its shell is-tiny-image (markTinyImageShell) so a thumbnail's grip, " +
+    "delete button and Zoom pill stop being painted on top of each other and " +
+    "on top of the picture — which is what \"the controls are missing on small " +
+    "images\" actually looked like. Measured from the committed or natural " +
+    "width, never from a rect: this runs once per image on the tail of every " +
+    "render, and a rect each would be a forced reflow per picture.",
 };
 
 // Functions whose ONLY change is that a write to a module-level binding now goes
@@ -1353,6 +1396,72 @@ function replaceCall(text, fn, build) {
 // (the old name) and in the ADDED list (the new one), which is the honest way
 // to show it — the tool matches by name and cannot know the two are related.
 const REMOVED = {
+  // ── The image controls stopped being bound by token index ───────────────
+  // The eleven entries below were one scheme: find an image by walking
+  // marked's top-level tokens, remember WHICH token it was, and commit a
+  // resize or a delete by rebuilding the whole note from that token array.
+  // It could not see an image in a table cell (marked keeps cells in
+  // .header/.rows, which nothing walked), one wrapped in a link inside running
+  // text, or one inside a <div>…</div> block — those rendered with no controls
+  // at all. It could not run until the entire note was in the DOM, so no image
+  // in a note over NOTES_LAZY_MIN_CHARS (i.e. any imported book) had a grip
+  // until the reader had scrolled it end to end. And committing one width
+  // re-emitted every block of the markdown, re-normalising the blank lines of
+  // a 2.6MB book to change one number.
+  //
+  // Replaced by findSourceImages + replaceSourceImage in the same file: an
+  // image is the slice of source it is written as, found by one regex pass
+  // that skips fenced code, and a commit splices that slice and nothing else.
+  // tools/image-controls-check.mjs holds marked up as the oracle for it.
+  lexMarkdownTokens:
+    "the whole-note lex the scheme rested on. Nothing lexes a note to find an " +
+    "image any more.",
+  surfaceLexTokens:
+    "its memo. The replacement (surfaceSourceImages) caches the same way on " +
+    "the same key, over a regex pass rather than marked.lexer's ~125ms on a " +
+    "book.",
+  findImageTokens: "the token walker itself — see the note above.",
+  pipeRowImages:
+    "recognised a `|`-separated image row as a token shape. The scan finds " +
+    "each image in such a row directly; pipeRowLinePattern still keeps a " +
+    "delete from leaving the row with a stray separator.",
+  collectImagesDeep:
+    "hunted images nested inside a token's subtree, which is unnecessary once " +
+    "nothing asks what encloses an image.",
+  parseImgTagFromHtml:
+    "read a raw <img> through the DOM. parseImgTagAttrs does the same as pure " +
+    "string work, so tools/image-controls-check.mjs can run it in Node.",
+  commitImageWidth:
+    "wrote a width by rebuilding the note from its token array; " +
+    "commitSourceImageWidth splices that image's own slice.",
+  commitDeepImageWidth:
+    "the nested-token variant of the same. There is one write path now, " +
+    "whatever encloses the image.",
+  removeImageAt:
+    "the delete half of the token rebuild. removeSourceImage and " +
+    "imageRemovalRange replace it, and take the emptied line or the row " +
+    "separator a delete would otherwise leave behind.",
+  removeSurfaceImage:
+    "removeImageAt plus the storage-object delete. The guard it wrapped " +
+    "(deckStillReferencesImage — never hard-delete a file another copy still " +
+    "points at) is unchanged and now sits inside removeSourceImage.",
+  rebuildSurfaceFromTokens:
+    "re-emitted the WHOLE note to change one image. Nothing rebuilds a note " +
+    "from tokens any more.",
+  // ── ...and the two upload helpers the compression choice replaced ────────
+  optimizeImage:
+    "one fixed level (1600px, WebP at 82%), applied without asking and " +
+    "announced after the upload was already in flight. Generalised into " +
+    "compressImageToPreset(file, choice) — the same encode, with the same GIF " +
+    "frame guard, the same SVG pass-through, the same WebP\u2192JPEG fallback " +
+    "and the same \"not actually smaller\" rule — with the level as an " +
+    "argument. Its old numbers ARE the Balanced preset, so the default is " +
+    "byte-identical behaviour to what every existing note's images were " +
+    "uploaded under.",
+  firstImageFile:
+    "took the FIRST image out of a paste or a drop and silently discarded the " +
+    "rest — the one way of adding images that could lose some. allImageFiles " +
+    "returns all of them, and one compression dialog covers the batch.",
   fetchText:
     "declared TWICE in the baseline (app.js:25472 and app.js:29556). Legal in a " +
     "classic script, where the second silently won for every caller; a hard " +

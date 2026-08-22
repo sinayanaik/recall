@@ -53,3 +53,15 @@ export function hash32(text) {
   }
   return (h >>> 0).toString(36);
 }
+
+// Bytes as a person reads them. Lives here rather than beside the storage panel
+// that first needed it, because core/ imports nothing: the image compression
+// dialog needs the same formatting, and reaching into a panel module for it
+// would have made a cycle out of a six-line function.
+export function formatStorageBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}

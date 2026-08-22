@@ -97,6 +97,8 @@
     <link rel="stylesheet" href="styles/37-document-chrome.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/38-reading-rail.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/39-document-export.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/40-image-controls.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/41-image-compress.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -174,6 +176,8 @@
     <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/render-toolbar.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/selection-tools.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/images/compress.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/images/compress-dialog.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/outbox.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/paste.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/surface-controls.js?v=__BUILD__">
@@ -1642,17 +1646,18 @@
               <tr><td><kbd>Aa</kbd></td><td>Font family picker</td></tr>
               <tr><td><kbd>A</kbd> <em>(underlined)</em></td><td>Text colour — the letter wears the colour it will apply. Tap it to use that colour in one tap; tap the ▾ beside it to pick another, which becomes the new default. The highlighter is the same idea with the colour behind the letter</td></tr>
               <tr><td><kbd>-</kbd></td><td>Toggle bullet list</td></tr>
-              <tr><td><kbd>🖼️</kbd></td><td>Insert an image (opens a file picker, uploads to your Supabase project)</td></tr>
+              <tr><td><kbd>🖼️</kbd></td><td>Insert an image — opens a file picker (pick as many as you like), then asks how hard to compress them before anything is uploaded to your Supabase project</td></tr>
               <tr><td><kbd>Tx</kbd></td><td>Clear all formatting from the selection</td></tr>
             </table>
             <h4 class="help-subsection-title">Images 🖼️</h4>
             <p>Add images three ways while editing a card:</p>
             <ul class="help-list">
               <li><strong>Paste</strong> — copy any image (a screenshot, or an image from a webpage) and press <kbd>Ctrl</kbd>+<kbd>V</kbd> in the editor</li>
-              <li><strong>Drag &amp; drop</strong> — drag an image file onto the editor <em>(desktop)</em></li>
+              <li><strong>Drag &amp; drop</strong> — drag one image file onto the editor, or several at once <em>(desktop)</em></li>
               <li><strong>🖼️ in the editor</strong> — tap the image button (it sits beside <kbd>-</kbd> and <kbd>Tx</kbd> in raw-edit mode, the three controls that act on the caret or the line rather than on a selection) to open your file picker. <em>On phones and tablets this offers your camera or photo library</em></li>
             </ul>
-            <p>Each image is <strong>optimized in your browser</strong> (downscaled to 1600px max and re-encoded to WebP) before being uploaded to your own <strong>Supabase Storage</strong> bucket; an <code>![](…)</code> link is then inserted automatically. No separate key to set up — the same sign-in that unlocks sync unlocks image uploads. Images need a connection to upload. Hover a rendered image and use its <strong>🗑</strong> button to remove it from the note — since it's your own storage, that also deletes the file for good, unlike the old ImgBB host.</p>
+            <p><strong>Nothing uploads until you say so.</strong> Whichever way an image arrives, a dialog opens first: choose a compression level — <strong>Original</strong>, <strong>High</strong>, <strong>Balanced</strong> (1600px · 82%, the default), <strong>Small</strong>, <strong>Tiny</strong>, or open <strong>Advanced</strong> for your own quality and longest side — and see each file's real size before and after, plus the dimensions it will be stored at. The sizes shown <em>are</em> the compressed files, not a guess about them. Press <strong>Upload</strong> and exactly those are sent; press Cancel and nothing is inserted and nothing is uploaded. Picking several images at once, dropping a handful, or importing a whole EPUB asks <em>once</em>, for all of them together. Animated GIFs and SVGs are always kept whole.</p>
+            <p>Uploads go to your own <strong>Supabase Storage</strong> bucket, and an <code>![](…)</code> link is inserted automatically. No separate key to set up — the same sign-in that unlocks sync unlocks image uploads. Images need a connection to upload; picked while offline, they wait on this device and go up when you're back. Every rendered image in a note carries its own controls, whatever its size and wherever it sits — in a bullet, in a table cell, inside a link: drag the <strong>blue corner grip</strong> to resize it, or use the <strong>🗑</strong> button to remove it. Since it's your own storage, removing it also deletes the file for good (unless the same image is used elsewhere in the deck), unlike the old ImgBB host.</p>
             <p><strong>Google Drive links</strong> just work: paste a public share link like <code>![](https://drive.google.com/file/d/FILE_ID/view)</code> and it renders directly — no need to convert it first.</p>
           </section>
 

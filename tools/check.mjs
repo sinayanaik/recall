@@ -48,6 +48,12 @@
 //                   earlier attempt in this area was reverted over corruption
 //                   found by a fuzzer, with nothing left in git to read — this
 //                   is the standing answer to that warning
+//   image-controls  does every image the renderer renders get a resize grip and
+//                   a delete button — including the ones in a table cell, a
+//                   link, or an HTML block that had none for as long as they
+//                   were bound by token index — and does using one rewrite that
+//                   image's own slice and nothing else in the note? marked is
+//                   the oracle for "what is an image"
 //   precache        does sw.js precache every module the app imports, and
 //                   nothing that no longer exists? (a missing entry breaks the
 //                   app OFFLINE only; a stale one stops any worker activating)
@@ -154,6 +160,11 @@ const checks = [
   // path decides what a note IS, one span at a time, and gets no browser and no
   // network to do it.
   ["viewport      ", ["node", ["tools/viewport-split-check.mjs"], ROOT]],
+  // Same shape again: pure string work, marked as the oracle. It asks whether
+  // every image the renderer renders is one the resize/delete controls can
+  // find, and whether using one rewrites that image's slice and nothing else
+  // in the note.
+  ["image-controls", ["node", ["tools/image-controls-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],

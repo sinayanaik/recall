@@ -106,14 +106,15 @@ export function invalidateRenderedBlockCache() {
 }
 
 // ── Coalesced surface finalization ─────────────────────────────────────────
-// enhanceSurfaceImageControls re-lexes the WHOLE note (surfaceLexTokens),
-// enhanceSurfaceDiagramControls re-scans it for diagram fences, and the notes
-// tail re-derives the table of contents — each an O(whole document) pass.
+// enhanceSurfaceImageControls re-scans the WHOLE note for images
+// (surfaceSourceImages), enhanceSurfaceDiagramControls re-scans it for diagram
+// fences, and the notes tail re-derives the table of contents — each an
+// O(whole document) pass.
 // renderMarkdown runs them once, but EVERY placeholder-upgrade batch (one per
 // scroll chunk on a large note) ran them again synchronously, turning a single
 // render into O(document) × O(number of scroll batches). That is what made a
 // large book crawl. These scans are idempotent and only exist to (re)bind the
-// token indices / heading list against the current DOM, so it's safe — and
+// image slices / heading list against the current DOM, so it's safe — and
 // vastly cheaper — to coalesce them: at most one pass per container per frame,
 // shared by the render tail and every upgrade batch that lands in the same
 // window.
@@ -127,21 +128,26 @@ export const SURFACE_FINALIZE_IDLE_TIMEOUT_MS = 300;
 
 export function finalizeRenderedSurface(container) {
   const surface = imageSurfaceForView(container);
-  // ── Not while part of the note is unbuilt ────────────────────────────────
+  // ── Images always; diagrams only once the note is whole ──────────────────
   //
-  // Both of these bind by POSITION: they walk the note's image/diagram tokens
-  // in source order and the view's shells in document order, pairing them off.
-  // On a viewport-built note the shells present are a subset of the tokens, so
-  // the walk desynchronises — and what it writes is `shell.dataset.tokenIndex`,
-  // which is the index a resize drag later rewrites in the markdown. A wrong
-  // index there would resize the wrong image, so the pass simply does not run
-  // until the whole note is real. Reading is unaffected: the width of a resized
-  // image travels in its own <img style> through the markdown (see
-  // commitImageWidth), and diagram zoom is bound per element by enhance.js.
-  // Anything that needs the grips (an export, a print) materializes first.
-  if (surface && !notesLazyPending(container)) {
-    enhanceSurfaceImageControls(surface);
-    enhanceSurfaceDiagramControls(surface);
+  // Diagrams bind by POSITION: enhanceSurfaceDiagramControls walks the note's
+  // diagram fences in source order and the view's .mermaid elements in document
+  // order, pairing them off. On a viewport-built note the elements present are
+  // a subset of the fences, so a jump into the middle of a book desynchronises
+  // the walk and a drag would then resize the wrong diagram. It waits.
+  //
+  // Images do not: enhanceSurfaceImageControls pairs each shell with the
+  // markdown slice holding the same URL (see findSourceImages), which needs no
+  // ordering and no complete DOM. It used to wait here too, and that is why an
+  // imported book — every note over NOTES_LAZY_MIN_CHARS — showed no resize
+  // grip and no delete button on any image until the reader had scrolled it end
+  // to end. It is told the note is partial so it can leave the one ambiguous
+  // case (the same image used twice) to the pass that runs when the last span
+  // lands.
+  const partial = notesLazyPending(container);
+  if (surface) {
+    enhanceSurfaceImageControls(surface, { partial });
+    if (!partial) enhanceSurfaceDiagramControls(surface);
   }
   if (container === el.notesView) {
     // Not buildNotesToc(). The list is drawn when the drawer is looked at (see
@@ -2387,20 +2393,28 @@ export function finishNotesLazySpan(container, index) {
     // tools/large-note-selection-check.mjs case 2 exists to catch. Swapping an
     // image src is not urgent; holding the text still is.
     .then(() => resolveStorageImages(flat))
-    // ── The last span pays for the grips ───────────────────────────────────
+    // ── Each span pays for its own grips ───────────────────────────────────
     //
-    // finalizeRenderedSurface refuses to attach image and diagram resize grips
-    // while any span is unbuilt, because both passes bind by POSITION and would
-    // write the wrong token index onto a shell (see the comment there). That is
-    // right — but nothing ever ran them AFTERWARDS, so a note over
-    // NOTES_LAZY_MIN_CHARS had no grip on any image for as long as it stayed
-    // open, however far it had been read. The moment the last span lands is the
-    // moment the walk becomes exact, so that is where the pass belongs.
+    // The images this span just built get their resize/delete controls now,
+    // scoped to the nodes it added — a book being read is grippable as it is
+    // read, rather than only once it has been read end to end (which is what
+    // "no image in an imported book has any controls" was). Scoped so this
+    // costs one span's shells per span rather than every shell built so far.
+    //
+    // finalizeRenderedSurface still runs the unscoped pass when the last span
+    // lands: that is where the diagram grips (which bind by ordinal position
+    // and genuinely cannot survive a partial DOM) and the one ambiguous image
+    // case (the same image used twice in one note) are bound.
     //
     // Cheap by construction: notesLazyPending is a loop over the span flags,
-    // this fires at most once per note, and scheduleSurfaceFinalize is already
-    // coalesced to one pass per container per frame.
-    .then(() => { if (!notesLazyPending(container)) scheduleSurfaceFinalize(container); })
+    // the unscoped pass fires at most once per note, and scheduleSurfaceFinalize
+    // is already coalesced to one pass per container per frame.
+    .then(() => {
+      const pending = notesLazyPending(container);
+      const surface = imageSurfaceForView(container);
+      if (surface && pending) enhanceSurfaceImageControls(surface, { partial: true, scope: flat });
+      if (!pending) scheduleSurfaceFinalize(container);
+    })
     .catch((error) => console.warn("Deferred note span failed", error));
 }
 
