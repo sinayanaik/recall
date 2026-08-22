@@ -135,44 +135,62 @@ export function refreshReadingRail() {
 
 // ── Which rows belong to the view being read ──────────────────────────────
 //
-// Three of the rail's rows are the Document surface's own controls, and they
-// mean nothing over a markdown note. Painted when the tray OPENS rather than
-// from setViewMode, for two reasons: the tray is display:none until then, so
-// there is no moment where a wrong answer is on screen; and reaching back into
-// this file from view-mode.js would close the very import cycle the note at the
-// top of this file exists to avoid — reading-rail reaches setViewMode, the
-// bookmarks, the style panel and sync, and none of those may be pulled in ahead
-// of view-mode's own evaluation.
+// Some of the rail's rows belong to one surface: dark page and select a region
+// mean nothing over a markdown note, and the bookmarks mean nothing over a page
+// of a PDF — bookmarkCurrentSpot returns without a word unless the notes view
+// is the one on screen, and a row that does nothing when pressed is worse than
+// no row.
+//
+// Painted when the tray OPENS rather than from setViewMode, for two reasons:
+// the tray is display:none until then, so there is no moment where a wrong
+// answer is on screen; and reaching back into this file from view-mode.js would
+// close the very import cycle the note at the top of this file exists to avoid
+// — reading-rail reaches setViewMode, the bookmarks, the style panel and sync,
+// and none of those may be pulled in ahead of view-mode's own evaluation.
 export function refreshReadingRailRows() {
   const tray = el.readingRailTray;
   if (!tray) return;
-  const documentView = state.viewMode === "document";
-  tray.querySelectorAll('[data-rail-scope="document"]').forEach((node) => {
-    node.hidden = !documentView;
+  tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
+    node.hidden = node.dataset.railScope !== state.viewMode;
   });
+  // "Go to bookmark" only once there is one to go to, exactly as
+  // refreshBookmarkButtonUI hides the button this row stands in for.
+  const goRow = tray.querySelector('[data-rail-action="bookmark-go"]');
+  if (goRow && !goRow.hidden) goRow.hidden = Boolean(el.bookmarkGoBtn?.hidden);
   refreshReadingRailModes();
 }
 
-// The rail's three toggles, read back off the buttons that own the state.
+// The rail's modes and one of its labels, read back off the controls that own
+// them.
 //
-// Dark page, region select and inline notes each already publish their mode as
-// aria-pressed on their own control (togglePdfInvert, toggleRegionSelect,
-// paintInlineNotesButton) — but those controls are in the row focus mode folds
-// away, so the rail's copies have to be told. Copying the answer is right and
+// Dark page, region select, inline notes and full screen each already publish
+// their state as aria-pressed on their own button (togglePdfInvert,
+// toggleRegionSelect, paintInlineNotesButton, paintImmersiveButton), and the
+// bookmark button already says whether pressing it will SET a bookmark or MOVE
+// the one you have. All of those buttons are in the row focus mode folds away,
+// so the rail's copies have to be told. Copying the answer is right and
 // deriving it again would not be: two readings of one mode is exactly the
 // "second opinion" this file exists to avoid.
 export function refreshReadingRailModes() {
   const tray = el.readingRailTray;
   if (!tray) return;
-  const mirror = (action, source) => {
-    const row = tray.querySelector(`[data-rail-action="${action}"]`);
-    if (!row) return;
-    row.setAttribute("aria-pressed", source?.getAttribute("aria-pressed") === "true" ? "true" : "false");
+  const row = (action) => tray.querySelector(`[data-rail-action="${action}"]`);
+  const mirrorMode = (action, source) => {
+    const node = row(action);
+    if (!node) return;
+    node.setAttribute("aria-pressed", source?.getAttribute("aria-pressed") === "true" ? "true" : "false");
   };
-  mirror("dark-page", el.documentDarkBtn);
-  mirror("region", el.documentRegionBtn);
-  mirror("inline-notes", el.inlineNotesBtn);
-  mirror("immersive", el.immersiveModeBtn);
+  mirrorMode("dark-page", el.documentDarkBtn);
+  mirrorMode("region", el.documentRegionBtn);
+  mirrorMode("inline-notes", el.inlineNotesBtn);
+  mirrorMode("immersive", el.immersiveModeBtn);
+  const setRow = row("bookmark-set");
+  const setLabel = el.bookmarkSetBtn?.querySelector(".nhm-label")?.textContent?.trim();
+  const rowLabel = setRow?.querySelector(".rr-label");
+  // "Bookmark here" / "Move bookmark here" — a note keeps exactly one, and a
+  // reader should not have to lose theirs to find that out.
+  if (rowLabel && setLabel) rowLabel.textContent = setLabel.startsWith("Move") ? "Move bookmark here" : "Bookmark here";
+  if (setRow && el.bookmarkSetBtn?.title) setRow.title = el.bookmarkSetBtn.title;
 }
 
 // The contents of whatever is being read. One button, because "contents" means

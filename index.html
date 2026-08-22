@@ -1067,13 +1067,13 @@
           <button class="reading-rail-btn" type="button" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes</span></button>
           <button class="reading-rail-btn" type="button" data-view-mode="document" hidden title="Document" aria-label="Document"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">Document</span></button>
           <button class="reading-rail-btn" type="button" data-view-mode="highlights" title="Highlights" aria-label="Highlights"><span class="rr-ico" aria-hidden="true">&#128308;</span><span class="rr-label">Highlights</span></button>
-          <span class="reading-rail-sep" aria-hidden="true"></span>
+          <span class="reading-rail-sep" data-rail-scope="notes" aria-hidden="true"></span>
           <!-- ── The place you are keeping ──────────────────────────────
                The two bookmark controls live in the notes ⋯ menu, which is in
                the row focus mode folds away — so the one mode you would most
                want to drop a bookmark from was the one mode you could not. -->
-          <button class="reading-rail-btn" type="button" data-rail-action="bookmark-set" title="Bookmark this spot" aria-label="Bookmark this spot"><span class="rr-ico" aria-hidden="true">&#128278;</span><span class="rr-label">Bookmark here</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-action="bookmark-go" title="Go to the bookmark" aria-label="Go to the bookmark"><span class="rr-ico" aria-hidden="true">&#8617;</span><span class="rr-label">Go to bookmark</span></button>
+          <button class="reading-rail-btn" data-rail-scope="notes" type="button" data-rail-action="bookmark-set" title="Bookmark this spot" aria-label="Bookmark this spot"><span class="rr-ico" aria-hidden="true">&#128278;</span><span class="rr-label">Bookmark here</span></button>
+          <button class="reading-rail-btn" data-rail-scope="notes" type="button" data-rail-action="bookmark-go" title="Go to the bookmark" aria-label="Go to the bookmark"><span class="rr-ico" aria-hidden="true">&#8617;</span><span class="rr-label">Go to bookmark</span></button>
           <!-- ── The document's own three ───────────────────────────────
                Hidden outside Document view by refreshRailScope, exactly as the
                Document tab above is hidden on a deck with no PDF. "Fit to
@@ -1086,7 +1086,7 @@
           <button class="reading-rail-btn" type="button" data-rail-scope="document" data-rail-action="region" aria-pressed="false" title="Select a region — drag a box around a figure, a table or an equation" aria-label="Select a region"><span class="rr-ico" aria-hidden="true">&#9635;</span><span class="rr-label">Select a region</span></button>
           <span class="reading-rail-sep" aria-hidden="true"></span>
           <!-- ── The rest of what the folded row was holding ────────────-->
-          <button class="reading-rail-btn" type="button" data-rail-action="inline-notes" aria-pressed="false" title="Print every highlight's note in the text it annotates" aria-label="Notes in the text"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes in the text</span></button>
+          <button class="reading-rail-btn" data-rail-scope="notes" type="button" data-rail-action="inline-notes" aria-pressed="false" title="Print every highlight's note in the text it annotates" aria-label="Notes in the text"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes in the text</span></button>
           <button class="reading-rail-btn" type="button" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
           <button class="reading-rail-btn" type="button" data-rail-action="sync" title="Sync all decks with the cloud now" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
           <button class="reading-rail-btn" type="button" data-rail-action="immersive" aria-pressed="false" title="Full screen (Ctrl + Q) — the app's chrome and the browser's" aria-label="Full screen"><span class="rr-ico" aria-hidden="true">&#9974;</span><span class="rr-label">Full screen</span></button>
