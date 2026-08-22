@@ -100,7 +100,7 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
-import { initDocumentMarkMenu } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { initDocumentMarkMenu, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
@@ -933,7 +933,17 @@ onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
 // why these are registered rather than imported.
 onDomReady(() => {
-  setDocumentPagePaintedHook(paintPageNoteBadges);
+  // Two things happen as a page paints, in this order and for this reason.
+  //
+  // repairDocumentHighlightText re-reads the words of any highlight on the page
+  // that was stored before the text layer had separators in it (see its own
+  // comment) — so the badge, and everything else that names a highlight, is
+  // built from the corrected text rather than showing the welded version for one
+  // frame and then changing under the reader.
+  setDocumentPagePaintedHook((pageNumber) => {
+    repairDocumentHighlightText(pageNumber);
+    paintPageNoteBadges(pageNumber);
+  });
   setDocumentOpenedHook(refreshPdfPageNotes);
 });
 // So an edit made on a mark in the note refreshes the Highlights tab, without

@@ -466,6 +466,90 @@ try {
       got[2] > got[0] && got[2] < 612, `x1 = ${Math.round(got[2])}`);
   }
 
+  // ── 4b. A selection that spans more than one text item ───────────────────
+  //
+  // "I'm seeing garbage value most of the time when I'm highlighting something
+  // and then try to write a note for it."
+  //
+  // Section 4 above selects the whole of ONE text item, which is the one shape
+  // of selection this bug cannot show: a highlight's text is range.toString()
+  // over the text layer, and Range.toString() concatenates text DATA and ignores
+  // elements — so with one bare <span> per item and nothing between them, every
+  // selection that crossed an item boundary came back welded together. Two lines
+  // of a title page arrived as "DURRANT-WHYTESimultaneous…", and that string is
+  // then the highlight's name in the note, the panel, the printed page and every
+  // export.
+  //
+  // The second half is the repair: the words of a highlight already stored that
+  // way are read back off the page's own text items through the { item, ch }
+  // anchors it stored alongside them, when the page paints.
+  const acrossItems = await page.evaluate(`async (pageNumber) => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(pageNumber, 0, { smooth: false });
+    await api.whenDocumentPageReady(pageNumber);
+    const el = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+    const spans = Array.from(el.querySelectorAll(".pdf-text-layer span[data-item-index]"));
+    if (spans.length < 4) return { error: "not enough text items to span" };
+    const range = document.createRange();
+    range.setStart(spans[1].firstChild, 0);
+    range.setEnd(spans[3].firstChild, spans[3].firstChild.length);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const capture = api.captureDocumentSelection();
+    selection.removeAllRanges();
+    if (!capture) return { error: "captureDocumentSelection returned null across items" };
+    // What the three items say, and what they used to weld into.
+    const parts = [spans[1], spans[2], spans[3]].map((s) => s.textContent);
+    const welded = parts.join("");
+    const spaced = parts.join(" ");
+    const record = api.addDocumentHighlight(capture, "yellow");
+    api.setDocumentHighlightNote(record.id, "A note on a passage that runs across three items.");
+    await settle(150);
+    // Now put the record back the way a build without separators would have
+    // stored it, and make the page paint again. Nothing else is touched: the
+    // anchors are the ones the capture really produced.
+    const list = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, text: welded } : r));
+    api.state.meta.pdfHighlights = list;
+    api.zoomDocument(1.1);
+    await settle(700);
+    api.fitDocumentToWidth();
+    await settle(500);
+    const repaired = (api.state.meta.pdfHighlights || []).find((r) => r.id === record.id);
+    const notes = api.state.notes || "";
+    const result = {
+      captured: capture.text,
+      welded,
+      spaced,
+      repairedText: repaired ? repaired.text : "",
+      // The quoted label on the note is regenerated from the record's text, so
+      // it has to have moved with it — that label is what the printed notes page
+      // and the Highlights panel show.
+      labelHasWelded: notes.indexOf(welded) !== -1,
+      labelHasSpaced: notes.indexOf(spaced.slice(0, 40)) !== -1,
+      noteKept: (api.readHighlightNotes(notes).get(record.id) || "")
+    };
+    api.removeDocumentHighlight(record.id);
+    await settle(200);
+    return result;
+  }`, madeOn);
+
+  if (acrossItems.error) throw new Error(acrossItems.error);
+  check("a selection across three text items keeps the words apart",
+    acrossItems.captured === acrossItems.spaced,
+    `got "${acrossItems.captured.slice(0, 64)}"`);
+  check("...rather than welding them into one string",
+    acrossItems.captured !== acrossItems.welded && acrossItems.welded !== acrossItems.spaced,
+    `welded would be "${acrossItems.welded.slice(0, 64)}"`);
+  check("a highlight already stored welded repairs itself when its page paints",
+    acrossItems.repairedText === acrossItems.spaced,
+    `now "${acrossItems.repairedText.slice(0, 64)}"`);
+  check("...taking the quoted label on its note with it",
+    !acrossItems.labelHasWelded && acrossItems.labelHasSpaced);
+  check("...and leaving the note itself alone",
+    acrossItems.noteKept === "A note on a passage that runs across three items.",
+    `"${acrossItems.noteKept}"`);
+
   // ── 5. Reload from IndexedDB, and repaint ────────────────────────────────
   const reloaded = await page.evaluate(`async (pageNumber, id) => {
     const { api, settle } = window.__recall;
