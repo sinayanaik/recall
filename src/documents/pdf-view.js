@@ -110,12 +110,19 @@ export const PDF_MAX_SCALE = 5;
 // the scroller's edge (and so the shadow that separates one page from the next
 // has somewhere to fall).
 //
-// A phone gets less of it. 24px each side is 12% of a 390px screen spent on
-// margin around a page that is mostly margin already, and it is the difference
-// between a wide document fitting and not.
+// A phone gets NONE of it, which is the whole of "the PDF never opens at 100%
+// width". 24px each side is 12% of a 390px screen spent on margin around a page
+// that is mostly margin already; 8px was still 4% of it, and a page that stops
+//4% short of the screen is a page the reader can see is not fitting.
+//
+// The reason the gutter existed at all — somewhere for the shadow that separates
+// one page from the next to fall — is answered by the GAP between pages instead
+// (.pdf-pages carries one, 8px on a narrow screen: styles/36-document.css). A
+// shadow falls into that gap perfectly well, and nothing about page separation
+// needs the sides.
 export const PDF_FIT_PADDING = 24;
 
-export const PDF_FIT_PADDING_NARROW = 8;
+export const PDF_FIT_PADDING_NARROW = 0;
 
 export const PDF_NARROW_WIDTH = 560;
 

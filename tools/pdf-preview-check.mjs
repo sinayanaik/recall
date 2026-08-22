@@ -910,6 +910,96 @@ try {
       `note ${pageNotes.noteWidth}px of ~${Math.round(pageNotes.blockWidth / columns)}px`);
   }
 
+  // ── 8a. ...and the strip does not decide how wide the DOCUMENT is ────────
+  //
+  // "The PDFs are never by default taking 100% of width."
+  //
+  // .pdf-pages is `width: max-content`, because a page wider than the window has
+  // to be scrollable to. max-content means the widest CHILD sizes it — and the
+  // strip above is `columns: N 260px`, whose max-content contribution is
+  // N × 260px plus the gaps. One page with two notes on it is 538px; one with
+  // four is 1094px. On a 390px phone that made the page column two to three
+  // screens wide, with the correctly-fitted page centred inside it and hanging
+  // off to the right.
+  //
+  // Every fit-width check in this file passed while that happened, because none
+  // of them ever turned the printed notes ON. This one does, and it measures the
+  // page against the SCREEN — the one thing that does not move.
+  const notesFit = [];
+  for (const width of [360, 390]) {
+    await emulatePhone(page, { width, height: 780 });
+    const one = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await settle(600);
+      // Four notes on ONE page, which is what it takes to reach four columns.
+      // Fabricated quads rather than real selections: this is a layout question,
+      // and every millimetre of it is decided by how many notes a page has.
+      const made = [];
+      for (let i = 0; i < 4; i += 1) {
+        const y = 600 - i * 40;
+        const record = api.addDocumentHighlight({
+          page: 1,
+          anchor: { page: 1, item: i, ch: 0 },
+          focus: { page: 1, item: i, ch: 4 },
+          text: "Fit width, with notes on, line " + (i + 1),
+          quads: [{ page: 1, rect: [72, y - 12, 320, y] }]
+        });
+        if (record) made.push(record.id);
+      }
+      made.forEach((id, i) => api.setDocumentHighlightNote(id,
+        "Note " + (i + 1) + " on page 1, long enough to want a column of its own."));
+      api.setPdfPageNotesFlag(false);
+      api.togglePdfPageNotes();
+      await settle(400);
+      const view = document.getElementById("documentView");
+      const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+      const host = view.querySelector(":scope > .pdf-pages");
+      const block = document.querySelector('.pdf-page-notes[data-page-number="1"]');
+      const result = {
+        notes: block ? block.querySelectorAll(".pdf-page-note").length : 0,
+        screenWidth: Math.round(window.innerWidth),
+        pageWidth: Math.round(pageEl.getBoundingClientRect().width),
+        hostWidth: Math.round(host.getBoundingClientRect().width),
+        blockWidth: block ? Math.round(block.getBoundingClientRect().width) : 0,
+        scrollWidth: view.scrollWidth,
+        clientWidth: view.clientWidth
+      };
+      // Put the deck back exactly as it was: the export checks below count the
+      // annotated pages, and four more of them on page 1 would rewrite their
+      // answers.
+      api.togglePdfPageNotes();
+      made.forEach((id) => api.removeDocumentHighlight(id));
+      await settle(200);
+      return result;
+    }`);
+    notesFit.push({ width, ...one });
+  }
+
+  await page.call("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 });
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+  });
+
+  check("four notes on one page all print under it",
+    notesFit.every((f) => f.notes === 4),
+    notesFit.map((f) => `${f.width}:${f.notes} note(s)`).join(" "));
+  // The regression itself. Without `contain: inline-size` on .pdf-page-notes the
+  // host comes back at 1094px on both of these.
+  check("...without the strip widening the page column past the screen",
+    notesFit.every((f) => f.hostWidth <= f.screenWidth + 1),
+    notesFit.map((f) => `${f.width}:host ${f.hostWidth}px`).join(" "));
+  check("...leaving nothing to pan sideways to",
+    notesFit.every((f) => f.scrollWidth <= f.clientWidth + 1),
+    notesFit.map((f) => `${f.width}:${f.scrollWidth}/${f.clientWidth}`).join(" "));
+  // Edge to edge, not "nearly". PDF_FIT_PADDING_NARROW is 0, so the only thing
+  // between the paper and the screen is whatever the scroller's own scrollbar
+  // takes.
+  check("...and the page opening at the full width of the screen",
+    notesFit.every((f) => f.pageWidth >= f.clientWidth - 1),
+    notesFit.map((f) => `${f.width}:page ${f.pageWidth}px of ${f.clientWidth}px`).join(" "));
+
   // ── 8b. The container the notes live in ──────────────────────────────────
   //
   // Three things this format has to get right, and every one of them is a

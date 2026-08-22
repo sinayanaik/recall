@@ -554,11 +554,35 @@
    query, and nothing to keep in step with the fit-width breakpoint. */
 .pdf-page-notes {
   flex: 0 0 auto;
-  /* Matched to the paper, so the strip reads as belonging to the page above it
-     at every zoom level. --pdf-page-w is published by publishPageWidth() in
-     src/documents/pdf-view.js on every relayout; the fallback is for the frame
-     before the first page is laid out. */
-  width: min(var(--pdf-page-w, 760px), 100%);
+  /* ── The declaration that keeps the PAGE at 100% width ─────────────────
+     A definite length, not `min(var(--pdf-page-w), 100%)`, and that is the
+     whole of "the PDFs never take 100% of the width".
+
+     .pdf-pages is `width: max-content` — it has to be, or a page wider than the
+     window could not be scrolled to (see pagesHost() in
+     src/documents/pdf-view.js). max-content means the widest CHILD sizes it, and
+     a percentage width is indefinite during that pass, so this box fell back to
+     sizing on its CONTENTS: `columns: N 260px` below, whose max-content
+     contribution is N × 260px plus the gaps. A page with two notes on it is
+     538px; one with four is 1125px. On a 390px phone that made the whole page
+     column three screens wide — and the paper, correctly fitted, was then
+     centred inside it and hung off to the right with dead space beside it and
+     no way to see all of it but to pinch out.
+
+     Every fit-width check in tools/pdf-preview-check.mjs passed while that
+     happened, because none of them ever turned the printed notes on. One does
+     now.
+
+     --pdf-page-w is published on #documentView by publishPageWidth() in
+     src/documents/pdf-view.js, on every relayout and before any notes block can
+     exist (it is written while the placeholders are built). So the paper's width
+     is always a real length here, the strip is exactly as wide as the page it
+     belongs to at every zoom — and multicol resolves its own column count
+     against that width, which is what collapses four columns to one on a phone
+     with no media query. max-width is the guard for the frame the fallback is
+     ever used in. */
+  width: var(--pdf-page-w, 760px);
+  max-width: 100%;
   margin: -6px 0 2px;
   padding: 10px 14px;
   border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
