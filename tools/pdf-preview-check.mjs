@@ -908,9 +908,21 @@ try {
     await settle(120);
     const tray = document.getElementById("readingRailTray");
     const expanded = getComputedStyle(tray).display !== "none";
-    const buttons = Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden).length;
-    const labelled = Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden)
-      .every((b) => (b.querySelector(".rr-label")?.textContent || "").trim().length > 0);
+    const visible = () => Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden);
+    const buttons = visible().length;
+    const labelled = visible().every((b) => (b.querySelector(".rr-label")?.textContent || "").trim().length > 0);
+    // What it OFFERS, by name, rather than how many rows it happens to have.
+    // A count is a test that fails every time a control is added and passes
+    // every time the wrong one is removed; these are the things focus mode
+    // takes away, so these are the things the rail has to give back.
+    const offers = (action) => visible().some((b) => b.dataset.railAction === action);
+    const railOffers = ["decks", "contents", "bookmark-set", "bookmark-go", "inline-notes", "style", "sync", "immersive", "leave-focus"]
+      .filter((action) => !offers(action));
+    // The document's own three, which are hidden over a markdown note and shown
+    // over a page — a rail that offered "Fit to width" while reading a note
+    // would be offering a control with nothing to act on.
+    const documentRows = ["fit-width", "dark-page", "region"];
+    const documentRowsInDocument = documentRows.filter((action) => !offers(action));
     const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;
     const activeMatches = tray.querySelector('[data-view-mode="document"]').classList.contains("is-active");
     // The tray's own view buttons have to actually switch view.
@@ -918,13 +930,18 @@ try {
     await settle(250);
     const switched = api.state.viewMode;
     const collapsedAfterUse = getComputedStyle(tray).display === "none";
+    // ...and the document rows have to have gone with the document view.
+    grip.click();
+    await settle(120);
+    const documentRowsOutside = documentRows.filter((action) => offers(action));
+    document.getElementById("readingRail").dataset.expanded = "false";
     // ...and leaving focus mode has to take the rail with it.
     api.setFocusMode(false);
     await settle(450);
     const afterFocus = shown();
     api.setViewMode("document");
     await settle(200);
-    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, gripBox, gripIsHit, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus };
+    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, gripBox, gripIsHit, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside };
   }`);
 
   check("the rail stays off screen while the chrome is expanded",
@@ -937,10 +954,17 @@ try {
     rail.gripBox.w >= 24 && rail.gripBox.h >= 24 && rail.gripIsHit,
     `${rail.gripBox.w}×${rail.gripBox.h}px · hit=${rail.gripIsHit}`);
   check("the grip expands it into the controls focus mode took",
-    rail.expanded && rail.buttons === 7,
-    `${rail.buttons} button(s)`);
+    rail.expanded && rail.railOffers.length === 0,
+    rail.railOffers.length ? `missing: ${rail.railOffers.join(", ")}` : `${rail.buttons} row(s)`);
   check("...every one of them named, not just drawn",
     rail.labelled, `labels=${rail.labelled}`);
+  check("...with the document's own controls in the document view, and only there",
+    rail.documentRowsInDocument.length === 0 && rail.documentRowsOutside.length === 0,
+    rail.documentRowsInDocument.length
+      ? `missing in Document: ${rail.documentRowsInDocument.join(", ")}`
+      : rail.documentRowsOutside.length
+        ? `shown outside Document: ${rail.documentRowsOutside.join(", ")}`
+        : "3 row(s), Document only");
   check("...including the Document view, lit for the view you are in",
     rail.documentIconShown && rail.activeMatches,
     `shown=${rail.documentIconShown} active=${rail.activeMatches}`);

@@ -86,7 +86,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -421,7 +421,7 @@ document.addEventListener(
 );
 
 
-el.focusModeBtn?.addEventListener("click", () => setFocusMode(!chromeFocusPinned));
+el.focusModeBtn?.addEventListener("click", () => setFocusMode(!isFocusModeActive()));
 
 // A click, not a pointerdown: requestFullscreen needs a user gesture and a
 // click IS one, while none of the pill's "don't destroy the selection" reasons
@@ -2009,7 +2009,7 @@ document.addEventListener("keydown", (event) => {
   // can't shadow anything while you're typing raw markdown.
   if ((event.ctrlKey || event.metaKey) && event.key === ".") {
     event.preventDefault();
-    setFocusMode(!chromeFocusPinned);
+    setFocusMode(!isFocusModeActive());
     return;
   }
   // Ctrl/Cmd+Q: the same idea one step further — the app's chrome AND the

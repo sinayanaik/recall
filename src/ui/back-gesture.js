@@ -22,7 +22,7 @@ import { closeAppInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard } from "../quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { closeStoragePanel } from "../storage/storage-panel.js?v=__BUILD__";
-import { chromeFocusPinned, isImmersive, setFocusMode, setImmersiveMode } from "./chrome.js?v=__BUILD__";
+import { isFocusModeActive, isImmersive, setFocusMode, setImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { showToast } from "./feedback.js?v=__BUILD__";
 import { closeHelpModal } from "./help.js?v=__BUILD__";
@@ -152,7 +152,11 @@ export function closeTopmostOverlay() {
   // here, in which case the fullscreenchange listener does this; Firefox does
   // dispatch it, and this is that path.
   if (isImmersive()) { setImmersiveMode(false); return true; }
-  if (chromeFocusPinned) { setFocusMode(false); return true; }
+  // isFocusModeActive, not chromeFocusPinned: scrolling down on a phone folds
+  // the chrome away and LOCKS it there without touching the pin, and Back has
+  // to be a way out of that state too — on a phone it is very nearly the only
+  // one a reader who has not found the rail will try.
+  if (isFocusModeActive()) { setFocusMode(false); return true; }
 
   // Nothing left open: make sure a scroll lock didn't outlive its owner.
   unlockPageScroll();
