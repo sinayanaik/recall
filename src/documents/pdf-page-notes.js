@@ -179,10 +179,28 @@ export function paintPageNoteBadges(pageNumber) {
 
 // ── Layer 2: the printed notes ──────────────────────────────────────────────
 
+// The most columns a page's notes are ever packed into. Past four, a note is a
+// column of two-word lines and the packing is costing more than it saves.
+export const PAGE_NOTES_MAX_COLUMNS = 4;
+
 function noteBlockFor(pageNumber, entries) {
   const block = document.createElement("div");
   block.className = PAGE_NOTES_CLASS;
   block.dataset.pageNumber = String(pageNumber);
+  // How many columns this page's notes are ALLOWED, which is not the same
+  // question as how many fit.
+  //
+  // `column-width` alone answers "how many fit", and on a wide page that is four
+  // — including for a page with ONE note on it, where multicol cannot split an
+  // unbreakable item (break-inside: avoid, and it has to be, or a note's number
+  // badge ends up in a different column from its text). The single note would
+  // sit in a 260px column with three empty ones beside it: narrower than the
+  // full-width row this replaced, which is the opposite of the point.
+  //
+  // So the count is capped at the number of notes there are to pack. One note
+  // gets the whole strip; five get four columns; and the width floor in CSS
+  // still collapses that to fewer on a narrow page, with no media query.
+  block.style.setProperty("--pdf-note-cols", String(Math.min(entries.length, PAGE_NOTES_MAX_COLUMNS)));
   const head = document.createElement("div");
   head.className = "pdf-page-notes-head";
   head.textContent = `Notes · page ${pageNumber}`;

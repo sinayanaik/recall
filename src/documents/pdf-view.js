@@ -333,6 +333,7 @@ function buildPagePlaceholders() {
     page.dataset.pageNumber = String(pageNumber);
     page.style.width = `${Math.round(openPdf.baseWidth * openPdf.scale)}px`;
     page.style.height = `${Math.round(openPdf.baseHeight * openPdf.scale)}px`;
+    if (pageNumber === 1) publishPageWidth(openPdf.baseWidth * openPdf.scale);
     // A page number that is visible even before the page paints, so scrubbing
     // through a long document never looks like a blank screen.
     const label = document.createElement("span");
@@ -359,6 +360,22 @@ function observePages() {
   openPdf.pages.forEach((entry) => openPdf.observer.observe(entry.el));
 }
 
+// How wide the paper currently is, in CSS pixels, published for the ONE thing
+// outside this module that has to match it: the notes strip printed under each
+// page (styles/37-document-chrome.css). That strip used to be a fixed
+// min(760px, 100%) column, which lined up with the page at exactly one zoom
+// level and at no other.
+//
+// On #documentView and never on :root. src/ui/chrome.js sets out at length why
+// a custom property written on the document element is expensive — it
+// invalidates style for the whole tree — and this one is written on every frame
+// of a pinch-zoom, which is precisely the case that argument is about. Written
+// once per relayout rather than once per page, since every page of a paper is
+// the same width and the first one is as good an answer as any.
+function publishPageWidth(width) {
+  el.documentView?.style.setProperty("--pdf-page-w", `${Math.round(width)}px`);
+}
+
 // Re-lay everything out at the current scale. Rendered pages are dropped back
 // to placeholders rather than re-scaled in CSS: a canvas stretched by a
 // transform is blurry, and the whole promise of this surface is that the page
@@ -371,6 +388,7 @@ export function relayoutDocument({ refit = false } = {}) {
     const height = (entry.viewport ? entry.viewport.height / (entry.renderScale || 1) : openPdf.baseHeight) * openPdf.scale;
     entry.el.style.width = `${Math.round(width)}px`;
     entry.el.style.height = `${Math.round(height)}px`;
+    if (pageNumber === 1) publishPageWidth(width);
     if (openPdf.rendered.has(pageNumber)) unrenderPage(pageNumber);
   });
   openPdf.pages.forEach((entry, pageNumber) => {

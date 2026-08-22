@@ -2,6 +2,7 @@
 // it out of context.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { commitNotesEditIfActive, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
@@ -209,7 +210,7 @@ export function clozeNotesTableColumn(tableIndex, colIndex) {
     return;
   }
   state.notes = lines.join("\n");
-  if (el.notesEdit) el.notesEdit.value = state.notes;
+  if (el.notesEdit) el.notesEdit.value = rawEditorValueFor(state.notes);
   scheduleDeckAutosave();
   renderNotesViewPinned();
   showToast(`Clozed ${changed} cell${changed === 1 ? "" : "s"}`);

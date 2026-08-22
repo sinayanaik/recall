@@ -31,6 +31,7 @@
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { rawEditorValueFor } from "./notes-edit-split.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -173,9 +174,15 @@ function applyNotesHistoryEntry(entry) {
   syncNotesHistoryBaseline(entry.text);
 
   if (editing) {
-    el.notesEdit.value = entry.text;
-    const caret = Math.min(entry.at.editing ? entry.at.caret : 0, entry.text.length);
-    const caretEnd = Math.min(entry.at.editing ? entry.at.caretEnd : caret, entry.text.length);
+    // The snapshot is the whole source; the editor only ever shows the body, and
+    // the caret offsets in `entry.at` were recorded against that body. Clamped
+    // to the value actually written, not to the snapshot's length, or an undo
+    // taken at the very end of a note would put the caret past the end of the
+    // textarea.
+    const editorValue = rawEditorValueFor(entry.text);
+    el.notesEdit.value = editorValue;
+    const caret = Math.min(entry.at.editing ? entry.at.caret : 0, editorValue.length);
+    const caretEnd = Math.min(entry.at.editing ? entry.at.caretEnd : caret, editorValue.length);
     el.notesEdit.setSelectionRange(caret, caretEnd);
     // Not a dispatched "input": that would re-enter recordNotesTyping and, worse,
     // run every other input listener (the note-link picker, the autosave) as

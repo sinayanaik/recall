@@ -3,6 +3,7 @@
 
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { applyInlineStyleProperty, clearInlineStyleProperty, smartBulletify, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../editor/text-transforms.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
@@ -67,7 +68,7 @@ export function renderTargetConfig(target) {
         // stale hidden value can never be seen, and every other reader of .value
         // (notesEditSelectionText, applyFormatToTextarea, activeEditingTarget,
         // commitNotesEditIfActive) tests `hidden` or isNotesEditing() first.
-        if (el.notesEdit && !el.notesEdit.hidden) el.notesEdit.value = v;
+        if (el.notesEdit && !el.notesEdit.hidden) el.notesEdit.value = rawEditorValueFor(v);
         syncNotesHistoryBaseline(v);
       },
       // Everything routed through here (highlight, erase, cloze, the rendered

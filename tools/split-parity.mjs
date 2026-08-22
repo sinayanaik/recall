@@ -1227,6 +1227,42 @@ const ACCEPTED = {
     "Clears the dwell timer up front, because the committed branch returns " +
     "without going through resetCardDrag — it inlines the reset — and would " +
     "otherwise leave a timer armed to fire into the next card.",
+
+  // ── Highlight notes moved out of the note body ──────────────────────────
+  // They used to be a "## Highlight Notes" markdown section appended to the end
+  // of state.notes. They are a fenced block of HTML comments now
+  // (src/format/notes-fence.js), and — this is what these six entries are —
+  // that block is sliced off at two boundaries: the rendered view never paints
+  // it, and the raw editor never holds it. See src/format/highlight-notes.js
+  // for why the heading was the wrong container.
+  syncNotesBlockEstimateSource:
+    "Tracks notesBody(state.notes), not state.notes. renderNotesView renders " +
+    "the note WITHOUT its highlight-notes block, and this tracker has to hold " +
+    "the same string it did or every call reads as 'a different note' and " +
+    "throws the measured block-height mean away.",
+  rewriteNoteLinkTarget:
+    "Writes rawEditorValueFor(next) into the open textarea rather than `next`. " +
+    "The editor holds the note's BODY; handing it the whole source would put " +
+    "the highlight-notes block back on screen and, on the next keystroke, " +
+    "append a second copy of it.",
+  appendNotesToCurrentDeck:
+    "Appends to the BODY and re-attaches the highlight-notes block after it. " +
+    "That block is defined as the TAIL of the note; an import written straight " +
+    "onto the end would bury the fence mid-document, where the next write " +
+    "would treat everything after it as note text and swallow the import into " +
+    "the last highlight note.",
+  clozeNotesTableColumn:
+    "Same one-line reason as rewriteNoteLinkTarget: the textarea gets " +
+    "rawEditorValueFor(state.notes), not state.notes.",
+  exportNotesFlat:
+    "Reads notesForExport() (src/export/notes-body.js) instead of state.notes. " +
+    "An export puts the highlight notes back in the readable '## Highlight " +
+    "Notes' form the fence replaced — the fence is the right container inside " +
+    "the app and the wrong thing to hand someone as a file. Same change, same " +
+    "reason, in exportNotesPdf, exportMarkdown and exportJson below.",
+  exportNotesPdf: "notesForExport() — see exportNotesFlat.",
+  exportMarkdown: "notesForExport() — see exportNotesFlat.",
+  exportJson: "notesForExport() — see exportNotesFlat.",
 };
 
 // Functions whose ONLY change is that a write to a module-level binding now goes

@@ -43,6 +43,8 @@ const args = process.argv.slice(2);
 const SHOT = (args.find((a) => a.startsWith("--shot=")) || "").slice(7)
   || (args.includes("--shot") ? "pdf-document.png" : "");
 const OWN_PDF = args.find((a) => a.endsWith(".pdf"));
+// --shot-menu opens the ⇓ export menu before the shot is taken.
+const SHOT_MENU = args.includes("--shot-menu");
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
 //
@@ -107,6 +109,11 @@ const API_SRC = `async () => {
     "/src/documents/pdf-store.js?v=__BUILD__",
     "/src/import/pdf.js?v=__BUILD__",
     "/src/format/highlight-notes.js?v=__BUILD__",
+    "/src/format/notes-fence.js?v=__BUILD__",
+    "/src/documents/pdf-export.js?v=__BUILD__",
+    "/src/export/run.js?v=__BUILD__",
+    "/src/export/pdf.js?v=__BUILD__",
+    "/src/export/notes-body.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
     "/src/storage/deck-store.js?v=__BUILD__",
@@ -266,10 +273,23 @@ try {
   // ── 3. The file's own highlights ─────────────────────────────────────────
   if (fixture.annotation) {
     check("an existing PDF highlight is imported", imported.highlights === 1, `${imported.highlights} record(s)`);
+    // The fence, not the "## Highlight Notes" heading this used to assert. The
+    // heading is what an EXPORT emits now (src/export/notes-body.js); what is
+    // STORED is a block of HTML comments, because a heading is not a boundary —
+    // a paper whose own text contains those words was indistinguishable from
+    // the app's section — and because a heading renders, which is why the
+    // rendered view had to hunt one down and hide it again.
     check(
-      "its comment lands in the note's Highlight Notes section",
-      imported.notes.includes("## Highlight Notes") && imported.notes.includes(fixture.annotation.comment),
+      "its comment lands in the note's highlight-notes block",
+      imported.notes.includes("<!--recall:highlight-notes-->")
+        && imported.notes.includes("<!--/recall:highlight-notes-->")
+        && imported.notes.includes(fixture.annotation.comment),
       imported.notes.includes(fixture.annotation.comment) ? "" : JSON.stringify(imported.notes.slice(0, 120))
+    );
+    check(
+      "...and nothing else, on a paper whose reader has written nothing",
+      imported.notes.trimStart().startsWith("<!--recall:highlight-notes-->"),
+      JSON.stringify(imported.notes.slice(0, 60))
     );
   }
 
@@ -622,7 +642,25 @@ try {
       blockIsSibling: block ? block.previousElementSibling === pageEl : false,
       blockText: block ? block.textContent : "",
       heightBefore,
-      heightAfter: pageEl.offsetHeight
+      heightAfter: pageEl.offsetHeight,
+      // The strip is matched to the paper, not to a fixed 760px, so a wide page
+      // gets a wide strip and the columns have somewhere to go. Compared to the
+      // page's own width rather than to a number, since that is the promise.
+      blockWidth: block ? Math.round(block.getBoundingClientRect().width) : 0,
+      pageWidth: Math.round(pageEl.getBoundingClientRect().width),
+      // What multicol actually did. column-width is what makes it responsive,
+      // and column-span:all on the head is what keeps the head across the whole
+      // strip rather than down the first column. (No backticks in here: this
+      // whole function is a template literal handed to CDP.)
+      columnWidth: block ? getComputedStyle(block).columnWidth : "",
+      // Capped at how many notes there are, so the ONE note on this page gets
+      // the whole strip rather than a 260px column with three empty ones beside
+      // it. Read off the block, since it is set per block.
+      columnCount: block ? getComputedStyle(block).columnCount : "",
+      noteCount: block ? block.querySelectorAll(".pdf-page-note").length : 0,
+      noteWidth: block ? Math.round(block.querySelector(".pdf-page-note").getBoundingClientRect().width) : 0,
+      headSpan: block ? getComputedStyle(block.querySelector(".pdf-page-notes-head")).columnSpan : "",
+      noteBreak: block ? getComputedStyle(block.querySelector(".pdf-page-note")).breakInside : ""
     };
     // ...and off again, so the mode does not leak into anything after this.
     api.togglePdfPageNotes();
@@ -640,7 +678,193 @@ try {
       pageNotes.blockIsSibling && pageNotes.heightBefore === pageNotes.heightAfter,
       `sibling=${pageNotes.blockIsSibling} · page ${pageNotes.heightBefore}px → ${pageNotes.heightAfter}px`);
     check("...and goes away when the mode is turned off", pageNotes.removedWhenOff);
+    // The packing. One full-width row per note under a 900px page is a line of
+    // text nobody wants to read and a page with five notes on it is a wall, so
+    // the strip is a multicol flow now — and the three declarations below are
+    // the whole of it. Asserted as computed style rather than by counting
+    // columns, because how many columns fit is a function of the viewport and
+    // the number of notes, and the check has one note on this page.
+    check("...the strip is matched to the page, not to a fixed column",
+      pageNotes.blockWidth > 0 && Math.abs(pageNotes.blockWidth - pageNotes.pageWidth) <= 2,
+      `strip ${pageNotes.blockWidth}px vs page ${pageNotes.pageWidth}px`);
+    check("...and packs its notes into columns",
+      pageNotes.columnWidth === "260px" && pageNotes.headSpan === "all" && pageNotes.noteBreak === "avoid",
+      `column-width=${pageNotes.columnWidth} head=${pageNotes.headSpan} note=${pageNotes.noteBreak}`);
+    // Two halves of one promise. The cap is what stops a lone note being
+    // stranded in a 260px column with three empty ones beside it; the width is
+    // what says each note actually FILLS the column it was given, which
+    // `width: auto` on a <button> quietly does not.
+    const columns = Number(pageNotes.columnCount) || 1;
+    check("...but never more columns than there are notes",
+      columns === pageNotes.noteCount,
+      `${pageNotes.noteCount} note(s), ${columns} column(s)`);
+    check("...and each note fills the column it is in",
+      pageNotes.noteWidth > (pageNotes.blockWidth / columns) * 0.75,
+      `note ${pageNotes.noteWidth}px of ~${Math.round(pageNotes.blockWidth / columns)}px`);
   }
+
+  // ── 8b. The container the notes live in ──────────────────────────────────
+  //
+  // Three things this format has to get right, and every one of them is a
+  // report from use rather than a hypothetical:
+  //
+  //   the raw editor must not open full of highlight notes. On a PDF deck the
+  //   body is empty — the PDF IS the document — so the "## Highlight Notes"
+  //   section used to be the entire contents of the textarea, with nothing
+  //   separating it from the writing the reader came to do;
+  //
+  //   committing that editor must not lose them. The textarea holds the body
+  //   and the block is re-attached on the way back, through one choke point,
+  //   because seven places copy between state.notes and the textarea and a
+  //   single unrouted one deletes every note in the deck on the next keystroke;
+  //
+  //   and a deck still in the OLD heading form has to migrate, not vanish.
+  const fence = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const before = api.state.notes;
+    const editorSees = api.splitHighlightNotesTail(before).body;
+
+    // A note written the way this app wrote them a version ago.
+    const legacy = "Some prose the reader wrote.\\n\\n---\\n\\n## Highlight Notes\\n\\n"
+      + "### [hn-old1] “an excerpt”\\n\\nThe note that was taken on it.\\n";
+    const migrated = api.migrateLegacyHighlightNotes(legacy);
+    const readBack = api.readHighlightNotes(migrated).get("hn-old1") || "";
+
+    // ...and one that merely MENTIONS the heading, which the old parser could
+    // not tell apart from its own section.
+    const innocent = "# A paper about notes\\n\\n## Highlight Notes\\n\\nA section the author wrote.\\n";
+
+    return {
+      storesAFence: before.includes("<!--recall:highlight-notes-->"),
+      // The whole point: what the editor is handed has none of it in it.
+      editorIsClean: !editorSees.includes("<!--recall:highlight-notes-->")
+        && !editorSees.includes("Highlight Notes"),
+      // Split, then join, is the identity on anything this app wrote.
+      roundTrips: api.joinHighlightNotesTail(editorSees, api.splitHighlightNotesTail(before).tail).trim() === before.trim(),
+      // The export form is still readable prose.
+      exportsAsMarkdown: api.highlightNotesSectionMarkdown(before).startsWith("## Highlight Notes"),
+      migratedToFence: migrated.includes("<!--recall:highlight-notes-->") && !migrated.includes("## Highlight Notes"),
+      migratedKeptTheProse: migrated.startsWith("Some prose the reader wrote."),
+      migratedKeptTheNote: readBack,
+      innocentUntouched: api.fenceLegacySection(innocent) === innocent,
+      // What an export makes of each of the three shapes a note can be in. The
+      // trap the third one is here for: readerNotesBody only knows about the
+      // fence, so a note still in the heading form would have its section
+      // rebuilt and appended to a body that already contained it.
+      exportOfFenced: api.notesForExport(),
+      exportOfLegacy: (() => {
+        const held = api.state.notes;
+        api.state.notes = legacy;
+        const out = api.notesForExport();
+        api.state.notes = held;
+        return out;
+      })()
+    };
+  }`);
+
+  check("a highlight note is stored in a fenced block", fence.storesAFence);
+  check("...which the raw editor is never handed", fence.editorIsClean);
+  check("...and which split → join puts back byte for byte", fence.roundTrips);
+  check("...while an export still says '## Highlight Notes'", fence.exportsAsMarkdown);
+  check("an older note in the heading form migrates to the fence",
+    fence.migratedToFence && fence.migratedKeptTheProse,
+    `fenced=${fence.migratedToFence} prose=${fence.migratedKeptTheProse}`);
+  check("...carrying its note text across",
+    fence.migratedKeptTheNote === "The note that was taken on it.",
+    JSON.stringify(fence.migratedKeptTheNote));
+  check("...and a paper that merely CONTAINS that heading is left alone",
+    fence.innocentUntouched);
+  check("an export writes the section out once, from either form",
+    fence.exportOfFenced.split("## Highlight Notes").length === 2
+      && fence.exportOfLegacy.split("## Highlight Notes").length === 2
+      && fence.exportOfLegacy.includes("The note that was taken on it."),
+    `fenced=${fence.exportOfFenced.split("## Highlight Notes").length - 1}× legacy=${fence.exportOfLegacy.split("## Highlight Notes").length - 1}×`);
+
+  // ── 8c. Exporting the paper with the notes on it ─────────────────────────
+  //
+  // The Document view's own export, which is the one thing this surface could
+  // not do: save a copy gave you the ORIGINAL file, and the Highlights tab gave
+  // you a list of passages — neither is the paper you read with what you wrote
+  // printed under each page.
+  //
+  // The print DOCUMENT is built here rather than printed: printPreparedDocument
+  // opens a browser print dialog, which a headless check cannot dismiss. What is
+  // asserted is everything up to that point, which is where all the risk is —
+  // the pages rasterise, the right ones are chosen, and every note lands under
+  // its own page.
+  const docExport = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(300);
+    const all = await api.buildDocumentPrintDocument("Fixture", { annotatedOnly: false });
+    const annotated = await api.buildDocumentPrintDocument("Fixture", { annotatedOnly: true });
+    // split(), not a regex literal: this whole function is a template literal
+    // handed to CDP, and a "/" in it is one more thing to escape correctly.
+    const countOf = (html, needle) => html.split(needle).length - 1;
+    const sheets = (html) => countOf(html, 'class="doc-print-sheet"');
+    const images = (html) => countOf(html, '<img src="data:image');
+    return {
+      pageCount: api.currentPdfPageCount(),
+      allSheets: sheets(all),
+      allImages: images(all),
+      annotatedSheets: sheets(annotated),
+      annotatedPages: api.documentPrintPageCount({ annotatedOnly: true }),
+      // The note under the page it belongs to, and the excerpt beside it.
+      annotatedCarriesTheNote: annotated.includes("doc-print-note-body"),
+      // annotatedOnly must not silently print nothing when there ARE notes.
+      annotatedNotEmpty: !annotated.includes("No page of this document has a note"),
+      // ...and the notes-only export is the highlights pipeline with two flags.
+      notesOnly: api.buildHighlightsPrintDocument("Fixture", {
+        annotatedOnly: true, groupByPage: true, includeNotes: true, includeChapter: false
+      })
+    };
+  }`);
+
+  check("every page of the document rasterises for the export",
+    docExport.allSheets === docExport.pageCount && docExport.allImages === docExport.pageCount,
+    `${docExport.allSheets} sheet(s), ${docExport.allImages} image(s) for ${docExport.pageCount} page(s)`);
+  check("...and 'only the annotated pages' prints just those",
+    docExport.annotatedPages > 0
+      && docExport.annotatedSheets === docExport.annotatedPages
+      && docExport.annotatedSheets < docExport.pageCount,
+    `${docExport.annotatedSheets} of ${docExport.pageCount} page(s)`);
+  check("...with the note printed under its own page",
+    docExport.annotatedCarriesTheNote && docExport.annotatedNotEmpty);
+  check("the notes-only export groups them by page",
+    docExport.notesOnly.includes("highlight-export-page-heading")
+      && !docExport.notesOnly.includes("highlight-export-page\">"),
+    docExport.notesOnly.includes("highlight-export-page-heading") ? "" : "no page heading");
+
+  // The export button beside the tabs: one control, rebuilt per view, and it
+  // must never offer a Cards row from the Document view.
+  const exportMenu = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const rowsFor = async (mode) => {
+      api.setViewMode(mode);
+      await settle(220);
+      api.paintViewExportMenu();
+      return Array.from(document.querySelectorAll("#viewExportMenu [data-view-export]"))
+        .map((b) => b.dataset.viewExport);
+    };
+    const document_ = await rowsFor("document");
+    const notes = await rowsFor("notes");
+    const cards = await rowsFor("cards");
+    api.setViewMode("document");
+    await settle(220);
+    const btn = document.getElementById("viewExportBtn");
+    const box = btn.getBoundingClientRect();
+    return { document_, notes, cards, visible: box.width > 0 && box.height > 0 };
+  }`);
+
+  check("the export button is on screen beside the tabs", exportMenu.visible);
+  check("...offering the document's own exports in the Document view",
+    exportMenu.document_.every((row) => row.startsWith("doc:"))
+      && exportMenu.document_.includes("doc:annotated-pdf")
+      && exportMenu.document_.includes("doc:original"),
+    exportMenu.document_.join(", "));
+  check("...the notes exports in Notes, and the card exports in Cards",
+    exportMenu.notes.every((row) => row.startsWith("notes:")) && exportMenu.cards.includes("pdf"),
+    `${exportMenu.notes.length} notes row(s), ${exportMenu.cards.length} cards row(s)`);
 
   // ── 9. The reading rail ──────────────────────────────────────────────────
   //
@@ -669,12 +893,24 @@ try {
     await settle(450);
     const inFocus = shown();
     const rowFolded = document.getElementById("viewModeRow").getBoundingClientRect().height < 2;
+    // The grip itself, before it is pressed. "I am not seeing anything in focus
+    // mode" was a report about a control that WAS on screen and rendering — a
+    // 9px, 26%-alpha stripe sitting on top of the scrollbar. So a display test
+    // is not enough: it has to be a box a finger can find, and it has to be the
+    // thing under its own centre rather than something painted over it.
+    const grip = document.getElementById("readingRailGrip");
+    const gripRect = grip.getBoundingClientRect();
+    const gripBox = { w: Math.round(gripRect.width), h: Math.round(gripRect.height) };
+    const hit = document.elementFromPoint(gripRect.left + gripRect.width / 2, gripRect.top + gripRect.height / 2);
+    const gripIsHit = Boolean(hit) && (hit === grip || grip.contains(hit));
     // Expand it the way a reader does, and count what it offers.
-    document.getElementById("readingRailGrip").click();
+    grip.click();
     await settle(120);
     const tray = document.getElementById("readingRailTray");
     const expanded = getComputedStyle(tray).display !== "none";
     const buttons = Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden).length;
+    const labelled = Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden)
+      .every((b) => (b.querySelector(".rr-label")?.textContent || "").trim().length > 0);
     const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;
     const activeMatches = tray.querySelector('[data-view-mode="document"]').classList.contains("is-active");
     // The tray's own view buttons have to actually switch view.
@@ -688,7 +924,7 @@ try {
     const afterFocus = shown();
     api.setViewMode("document");
     await settle(200);
-    return { beforeFocus, inFocus, rowFolded, expanded, buttons, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus };
+    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, gripBox, gripIsHit, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus };
   }`);
 
   check("the rail stays off screen while the chrome is expanded",
@@ -697,9 +933,14 @@ try {
   check("...and appears when focus mode folds the row away",
     rail.inFocus === true && rail.rowFolded,
     `rail=${rail.inFocus} rowFolded=${rail.rowFolded}`);
+  check("...as a hamburger big enough to find, and hittable",
+    rail.gripBox.w >= 24 && rail.gripBox.h >= 24 && rail.gripIsHit,
+    `${rail.gripBox.w}×${rail.gripBox.h}px · hit=${rail.gripIsHit}`);
   check("the grip expands it into the controls focus mode took",
     rail.expanded && rail.buttons === 7,
     `${rail.buttons} button(s)`);
+  check("...every one of them named, not just drawn",
+    rail.labelled, `labels=${rail.labelled}`);
   check("...including the Document view, lit for the view you are in",
     rail.documentIconShown && rail.activeMatches,
     `shown=${rail.documentIconShown} active=${rail.activeMatches}`);
@@ -779,8 +1020,16 @@ try {
       // The import's own toast sits over the control row this shot exists to
       // show — it is the check's doing, not the app's.
       document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      // ...and, with --shot-menu, the export menu open over it: it is new UI
+      // built per view, and a shot of the row alone cannot show whether its rows
+      // are the RIGHT ones for the view under them.
+      if (SHOT_MENU) {
+        api.paintViewExportMenu();
+        document.getElementById("viewExportBtn").click();
+        await settle(120);
+      }
       await settle(60);
-    }`);
+    }`.replace("SHOT_MENU", String(SHOT_MENU)));
     const shot = await page.call("Page.captureScreenshot", { format: "png" });
     writeFileSync(path.resolve(ROOT, SHOT), Buffer.from(shot.data, "base64"));
     console.log(`      screenshot → ${SHOT}`);

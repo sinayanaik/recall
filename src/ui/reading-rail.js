@@ -10,8 +10,17 @@
 // pressing the thing, and entering focus mode again — which is not a mode, it is
 // a chore, and it is why people stop using focus mode.
 //
-// So this is what stays behind: a nine-pixel grip on the right edge that expands
-// into the seven controls focus mode took away, and puts itself away afterwards.
+// So this is what stays behind: a small ☰ on the right edge that expands into
+// the seven controls focus mode took away, and puts itself away afterwards.
+//
+// It was a nine-pixel grip, on the argument that an icon at that size is a guess
+// and a grip says "there is something here" without naming it. In use nobody
+// found it — "I am not seeing anything in focus mode" — for reasons that are
+// specific and are set out in styles/38-reading-rail.css: a 26%-alpha tint has
+// no background it reliably contrasts with, right:0 lands it on the scrollbar,
+// and top:50% is the one band the eye does not sweep. The grip is a real button
+// now, it sits near the top, and refreshReadingRail lights it for a beat as the
+// header folds so it is seen at the moment it is wanted.
 //
 // ── Three rules it follows ─────────────────────────────────────────────────
 //
@@ -39,7 +48,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
-import { setFocusMode } from "./chrome.js?v=__BUILD__";
+import { hasStudyTextSelection, setFocusMode } from "./chrome.js?v=__BUILD__";
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 
@@ -72,6 +81,14 @@ function expandWithIdleTimeout() {
   idleTimer = setTimeout(() => setReadingRailExpanded(false), RAIL_IDLE_MS);
 }
 
+// How long the grip stays lit after focus mode is entered. Long enough to be
+// noticed at the moment the header vanishes — which is when the reader is
+// actually asking where the tabs went — and short enough that it is a flicker
+// on the edge rather than a second piece of furniture.
+export const RAIL_HINT_MS = 1500;
+
+let hintTimer = 0;
+
 // WHETHER the rail is on screen is decided in CSS, from two facts the app
 // already publishes: body.chrome-collapsed, and whether #viewModeToggle is
 // hidden (updateCardControls hides it when no deck is loaded, and a rail of
@@ -80,12 +97,29 @@ function expandWithIdleTimeout() {
 // appbar from the quiz panel — so there is no second opinion here that could go
 // stale, and no import edge from the modules that own those two facts.
 //
-// What is left for JavaScript is the one thing CSS cannot do: put the tray away.
-// A rail left expanded when the chrome comes back is a column of icons that
-// reappears already open the next time focus mode is entered.
+// Two things are left for JavaScript.
+//
+//   • Put the tray away. A rail left expanded when the chrome comes back is a
+//     column of icons that reappears already open the next time focus mode is
+//     entered.
+//   • Say it is there. The grip is deliberately quiet, and a quiet control on a
+//     screen edge is findable only by someone who already knows about it —
+//     which was the whole of the report that produced the ☰ redesign. So
+//     entering focus mode brightens it for RAIL_HINT_MS. applyChromeCollapse
+//     calls this in the same breath as it toggles the class, so the hint lands
+//     on exactly the frame the header folds away on and never on any other.
 export function refreshReadingRail() {
-  if (!el.readingRail) return;
-  if (!document.body.classList.contains("chrome-collapsed")) setReadingRailExpanded(false);
+  const rail = el.readingRail;
+  if (!rail) return;
+  clearTimeout(hintTimer);
+  hintTimer = 0;
+  if (!document.body.classList.contains("chrome-collapsed")) {
+    rail.classList.remove("is-hinting");
+    setReadingRailExpanded(false);
+    return;
+  }
+  rail.classList.add("is-hinting");
+  hintTimer = setTimeout(() => rail.classList.remove("is-hinting"), RAIL_HINT_MS);
 }
 
 // The contents of whatever is being read. One button, because "contents" means
@@ -114,8 +148,14 @@ export function initReadingRail() {
 
   // Hover opens it on a pointer, which is what makes the grip cost one gesture
   // rather than two. `pointerenter` and not `mouseenter` so a stylus counts.
+  //
+  // Never mid-selection. Dragging a selection out to the right edge of the
+  // window is how you extend it to the end of a line, and a tray unfolding over
+  // the words being selected is the app taking the gesture away at the moment
+  // it is being made.
   rail.addEventListener("pointerenter", (event) => {
     if (event.pointerType === "touch") return;
+    if (hasStudyTextSelection()) return;
     setReadingRailExpanded(true);
   });
 

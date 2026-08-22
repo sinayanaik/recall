@@ -219,14 +219,3 @@ body.inline-hl-notes .hl-inline-note .diagram-shell img {
   max-width: 260px !important;
 }
 
-/* ── The section the notes are stored in ──────────────────────────────────
-   Hidden while they are printed in the text, so each note is on screen once
-   rather than twice. The RENDERED view only: the markdown is untouched, so the
-   raw editor, the Highlights tab and every export still carry it — which is
-   what keeps "## Highlight Notes" an ordinary, hand-editable part of the note
-   rather than a private format. src/notes/inline-highlight-notes.js is what
-   marks the blocks; it can only ever mark blocks that follow the LAST
-   "## Highlight Notes" heading in the document, matching sectionStartIn. */
-body.inline-hl-notes #notesView .hl-notes-section-block {
-  display: none;
-}
