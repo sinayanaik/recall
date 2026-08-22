@@ -373,7 +373,23 @@ export function documentHighlightNote(id) {
   return readHighlightNotes(state.notes || "").get(id) || "";
 }
 
-export function setDocumentHighlightNote(id, text, { undo = false } = {}) {
+// `rerender` is the note editor's autosave option, and it is honoured here now.
+//
+// "Whenever I'm editing the highlight the whole PDF rendering gets refreshed."
+//
+// The editor saves as you type — one write per typing pause — and every one of
+// those writes went through commitDocumentHighlights, whose notify rebuilds the
+// Highlights panel AND tears down and re-creates every printed notes page in the
+// document. So a sentence typed into a note re-laid out the whole paper
+// underneath it, three or four times over, moving the reader each time.
+//
+// The editor has always said which writes are worth repainting for: it passes
+// { rerender: false } on every autosave and calls repaint() exactly once on the
+// way out (closeHighlightNoteEditor). The notes side honours that; the document
+// side dropped it on the floor. Both agree now — and the deck autosave inside
+// commitDocumentHighlights is unconditional either way, so nothing typed is at
+// risk of not being written down.
+export function setDocumentHighlightNote(id, text, { undo = false, rerender = true } = {}) {
   const record = documentHighlightById(id);
   if (!record) return false;
   // One snapshot per editing session, taken on the first write — the same
@@ -385,7 +401,7 @@ export function setDocumentHighlightNote(id, text, { undo = false } = {}) {
   // `at` moves too: a note is an edit to the highlight, and the sync merge
   // decides by timestamp.
   commitDocumentHighlights(documentHighlights().map((entry) =>
-    entry.id === id ? { ...entry, at: Date.now() } : entry));
+    entry.id === id ? { ...entry, at: Date.now() } : entry), { notify: rerender });
   return true;
 }
 

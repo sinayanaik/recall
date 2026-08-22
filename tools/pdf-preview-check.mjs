@@ -994,6 +994,70 @@ try {
       `note ${pageNotes.noteWidth}px of ~${Math.round(pageNotes.blockWidth / columns)}px`);
   }
 
+  // ── 8c. Typing into a note leaves the document where it was ─────────────
+  //
+  // "Whenever I'm editing the highlight the whole PDF rendering gets refreshed."
+  //
+  // Two mechanisms, both of them here. The editor autosaves on a 700ms debounce
+  // and passes { rerender: false }, which the document side used to drop — so
+  // every typing pause rebuilt the Highlights panel and every printed notes page
+  // in the document. And refreshPdfPageNotes removed and re-created every block
+  // whether or not its page's notes had moved.
+  //
+  // Asserted on NODE IDENTITY, which is the only honest way to ask "was this
+  // rebuilt": a block that was torn down and built again renders the same text.
+  const quiet = region.record ? await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    api.setPdfPageNotesFlag(false);
+    api.togglePdfPageNotes();
+    await settle(200);
+    const pick = () => document.querySelector('.pdf-page-notes[data-page-number="2"]');
+    const before = pick();
+    if (!before) return { error: "no printed notes block to watch" };
+    const badgeLayerBefore = document.querySelector('.pdf-page[data-page-number="2"] .pdf-badge-layer');
+    // Two autosaves, exactly as typing produces them.
+    api.setDocumentHighlightNote(id, "Typed once.", { rerender: false });
+    await settle(80);
+    api.setDocumentHighlightNote(id, "Typed twice, still typing.", { rerender: false });
+    await settle(150);
+    const sameAfterTyping = pick() === before;
+    // ...and the one repaint the editor makes on the way out.
+    api.repaintPdfPageNotes();
+    await settle(150);
+    const afterRepaint = pick();
+    const result = {
+      sameAfterTyping,
+      textWhileTyping: before.textContent.indexOf("still typing") !== -1,
+      rebuiltOnRepaint: afterRepaint !== before,
+      textAfterRepaint: afterRepaint ? afterRepaint.textContent.indexOf("still typing") !== -1 : false,
+      // A second repaint with nothing changed must not rebuild anything: that is
+      // the signature guard, and it is what makes a highlight made on page 9 not
+      // re-render the notes on every other page of the document.
+      idleRebuilt: false,
+      badgeLayerKept: false
+    };
+    api.repaintPdfPageNotes();
+    await settle(150);
+    result.idleRebuilt = pick() !== afterRepaint;
+    result.badgeLayerKept = document.querySelector('.pdf-page[data-page-number="2"] .pdf-badge-layer') === badgeLayerBefore;
+    api.setDocumentHighlightNote(id, "A note on the figure, for the check.");
+    api.togglePdfPageNotes();
+    await settle(150);
+    return result;
+  }`, region.record.id) : null;
+
+  if (quiet) {
+    if (quiet.error) throw new Error(quiet.error);
+    check("typing into a note rebuilds nothing in the document",
+      quiet.sameAfterTyping && !quiet.textWhileTyping,
+      `same block=${quiet.sameAfterTyping}, block still shows the old text=${!quiet.textWhileTyping}`);
+    check("...and the one repaint on close brings it up to date",
+      quiet.rebuiltOnRepaint && quiet.textAfterRepaint);
+    check("...while a repaint with nothing to say rebuilds nothing at all",
+      !quiet.idleRebuilt && quiet.badgeLayerKept,
+      `block rebuilt=${quiet.idleRebuilt}, badge layer kept=${quiet.badgeLayerKept}`);
+  }
+
   // ── 8a. ...and the strip does not decide how wide the DOCUMENT is ────────
   //
   // "The PDFs are never by default taking 100% of width."
