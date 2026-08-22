@@ -35,7 +35,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { findChrome, launchChrome, connect, openPage } from "./cdp.mjs";
+import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
 import { buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -973,9 +973,33 @@ try {
     // every time the wrong one is removed; these are the things focus mode
     // takes away, so these are the things the rail has to give back.
     const offers = (action) => visible().some((b) => b.dataset.railAction === action);
-    // What the rail owes a reader in EVERY view.
-    const railOffers = ["decks", "contents", "style", "sync", "immersive", "leave-focus"]
+    // What the rail owes a reader in EVERY view. "focus" was "leave-focus", a
+    // one-way button: the rail could turn focus mode off and had no way to say
+    // it was on, while the real toggle sits inside the row focus mode folds
+    // away. Both modes are toggles here now, which is what the two assertions
+    // below are about.
+    const railOffers = ["decks", "contents", "style", "sync", "immersive", "focus"]
       .filter((action) => !offers(action));
+    // ...and both of them SAY which way they are set — to a reader, not only to
+    // a screen reader. refreshReadingRailModes has mirrored aria-pressed onto
+    // these rows since the rail was written and no stylesheet ever painted it,
+    // so every one of them was a working toggle that looked identical on and
+    // off. Read back through getComputedStyle for exactly that reason: the
+    // attribute being right is the half that was already true.
+    const modeRow = (action) => visible().find((b) => b.dataset.railAction === action) || null;
+    const pressedPaints = (action) => {
+      const row = modeRow(action);
+      if (!row) return false;
+      const was = row.getAttribute("aria-pressed");
+      row.setAttribute("aria-pressed", "false");
+      const off = getComputedStyle(row).backgroundColor;
+      row.setAttribute("aria-pressed", "true");
+      const on = getComputedStyle(row).backgroundColor;
+      row.setAttribute("aria-pressed", was === null ? "false" : was);
+      return off !== on;
+    };
+    const modesAnnounce = ["focus", "immersive"].every((a) => Boolean(modeRow(a)?.hasAttribute("aria-pressed")));
+    const modesPaint = ["focus", "immersive"].every(pressedPaints);
     // ...and the rows that belong to one surface. A row that does nothing when
     // pressed is worse than no row: bookmarkCurrentSpot returns without a word
     // unless the notes view is on screen, and "Fit to width" has no page to fit
@@ -1008,7 +1032,7 @@ try {
     const afterFocus = shown();
     api.setViewMode("document");
     await settle(200);
-    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, gripBox, gripIsHit, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, notesRowsInDocument, notesRowsInNotes };
+    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, gripBox, gripIsHit, modesAnnounce, modesPaint, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, notesRowsInDocument, notesRowsInNotes };
   }`);
 
   check("the rail stays off screen while the chrome is expanded",
@@ -1023,6 +1047,10 @@ try {
   check("the grip expands it into the controls focus mode took",
     rail.expanded && rail.railOffers.length === 0,
     rail.railOffers.length ? `missing: ${rail.railOffers.join(", ")}` : `${rail.buttons} row(s)`);
+  check("...with both reading modes as toggles, not a one-way Leave focus",
+    rail.modesAnnounce, `aria-pressed on focus + immersive = ${rail.modesAnnounce}`);
+  check("...and a pressed one that actually looks pressed",
+    rail.modesPaint, `the aria-pressed rule paints = ${rail.modesPaint}`);
   check("...every one of them named, not just drawn",
     rail.labelled, `labels=${rail.labelled}`);
   check("...with the document's own controls in the document view, and only there",
@@ -1045,6 +1073,270 @@ try {
   check("...and its view buttons switch view, then put the tray away",
     rail.switched === "highlights" && rail.collapsedAfterUse,
     `viewMode=${rail.switched} collapsed=${rail.collapsedAfterUse}`);
+
+  // ── 9b. A phone, an amoled theme, dark page, focus mode ──────────────────
+  //
+  // The report this exists for: open a PDF deck's Document tab on an Android
+  // phone and get a full-screen black rectangle where the paper should be, and
+  // it never comes back — not by scrolling, not by pinching, not by leaving the
+  // tab and coming back.
+  //
+  // Everything above this line passed against the code that did that, which is
+  // the first thing worth saying about it. Section 2b even drives two zooms in
+  // one tick specifically to catch a page left blank. What none of it did was
+  // run as a PHONE: emulatePhone is the mechanism, and the half that matters is
+  // not the 390px — it is setTouchEmulationEnabled, because `(pointer: coarse)`
+  // is the media query documentObserverLead() branches on. A "phone" check that
+  // only narrows the viewport runs the desktop render path and proves nothing
+  // about the device every one of these reports came from.
+  //
+  // Four things had to be true at once for that to be ONE report rather than
+  // four, and all four are asserted below:
+  //
+  //   * --surface-2 was defined in no theme, so .document-scroll's
+  //     `background: var(--surface-2, var(--bg))` always took the fallback —
+  //     and three themes set --bg to #000000. An empty scroller was a pure
+  //     black panel;
+  //   * `.is-pdf-inverted .pdf-page` was #111, so a page that had not drawn was
+  //     a black rectangle inside it, at a contrast ratio of 1.10;
+  //   * the only thing that ever STARTED a page's first render was an
+  //     IntersectionObserver whose root is that scroller, and an
+  //     IntersectionObserver speaks only on a CHANGE — so a report of "nothing
+  //     is intersecting", made against a scroller that had not been laid out
+  //     yet, was final;
+  //   * and every recovery went through one expression, `isPageNearViewport(n)
+  //     && renderPage(n)`, either half of which could be a permanent no.
+  //
+  // The canvas is SAMPLED, not counted. getContext("2d", { alpha: false })
+  // initialises a bitmap to opaque black, so an element test passes for a
+  // canvas that was allocated and never painted — which is this exact failure
+  // wearing the shape of a pass.
+  await emulatePhone(page, { width: 390, height: 844 });
+
+  const onPhone = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // The reader's actual configuration, set the way the app persists it so
+    // nothing here is a special case the app never otherwise reaches.
+    try {
+      localStorage.setItem("recall:pdfInvert", "1");
+      localStorage.setItem("recall:focusMode", "1");
+    } catch (e) { /* the calls below still set the live state */ }
+    document.documentElement.dataset.theme = "dark-amoled";
+    api.applyPdfInvert(true);
+    api.setFocusMode(true);
+    // The fold is a 220ms transition and it CHANGES THE SCROLLER'S HEIGHT,
+    // which is the geometry every assertion below depends on.
+    await settle(450);
+
+    const coarse = window.matchMedia("(pointer: coarse)").matches;
+
+    // Opened the way the app opens it: from another view, with the stage
+    // hidden, and with openDocumentView called in the same tick the stage is
+    // un-hidden — which is what setViewMode does, and is why the scroller can
+    // be measured at zero height.
+    api.tearDownDocumentView();
+    api.setViewMode("cards");
+    await settle(200);
+    api.setViewMode("document");
+    const opened = await api.openDocumentView({ force: true });
+    await settle(1500);
+
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+    const canvas = pageEl && pageEl.querySelector("canvas.pdf-canvas");
+
+    // What the reader can actually tell apart. Not "are these two colours
+    // different" — #000 and #111 ARE different, and are the same rectangle on
+    // an OLED screen — but a contrast ratio, which is the number that says
+    // whether there is an edge there at all.
+    const channel = (v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+    const rgb = (value) => (String(value).match(/[\\d.]+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+    const lum = (value) => { const c = rgb(value); return 0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]); };
+    const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    // The label's colour is an rgba OVER the page, so it has to be composited
+    // before it can be compared to it: getComputedStyle reports what was
+    // authored, not what was painted.
+    const over = (fg, bg) => {
+      const f = rgb(fg), b = rgb(bg);
+      const a = Number((String(fg).match(/[\\d.]+/g) || [])[3] ?? 1);
+      return "rgb(" + f.map((v, i) => Math.round(v * a + b[i] * (1 - a))).join(",") + ")";
+    };
+
+    const mount = getComputedStyle(view).backgroundColor;
+    const paper = pageEl ? getComputedStyle(pageEl).backgroundColor : "";
+    // The placeholder's page number, measured off a PROBE rather than off
+    // whichever page happens to still be one. On a four-page fixture at phone
+    // width every page can have rasterised by now, and renderPage removes the
+    // label as it appends the canvas — so reading a real page's label is a race
+    // this check would lose intermittently and silently. The probe is the same
+    // two elements the placeholder is built from, so it resolves the same
+    // cascade; it is never in the layout long enough to be seen.
+    const probePage = document.createElement("div");
+    probePage.className = "pdf-page";
+    const probeLabel = document.createElement("span");
+    probeLabel.className = "pdf-page-label";
+    probeLabel.textContent = "1";
+    probePage.appendChild(probeLabel);
+    view.appendChild(probePage);
+    const labelColor = getComputedStyle(probeLabel).color;
+    const probePaper = getComputedStyle(probePage).backgroundColor;
+    probePage.remove();
+
+    // The bitmap itself. Downscaled onto a scratch canvas in one drawImage, so
+    // this reads 768 pixels rather than a million, and reported as a spread of
+    // luminance: a canvas that was allocated and never painted is one value
+    // repeated, whatever that value happens to be.
+    let darkest = -1, lightest = -1;
+    if (canvas && canvas.width && canvas.height) {
+      const scratch = document.createElement("canvas");
+      scratch.width = 24;
+      scratch.height = 32;
+      const ctx = scratch.getContext("2d");
+      ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, 24, 32);
+      const data = ctx.getImageData(0, 0, 24, 32).data;
+      darkest = 255; lightest = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+        if (y < darkest) darkest = y;
+        if (y > lightest) lightest = y;
+      }
+    }
+
+    return {
+      coarse,
+      opened,
+      surfaceToken: getComputedStyle(document.documentElement).getPropertyValue("--surface-2").trim(),
+      pages: document.querySelectorAll(".pdf-page").length,
+      pageCount: api.currentPdfPageCount(),
+      scrollerHeight: Math.round(view.getBoundingClientRect().height),
+      hasCanvas: Boolean(canvas),
+      isStale: Boolean(canvas && canvas.classList.contains("is-stale")),
+      placeholder: Boolean(pageEl && pageEl.querySelector(".pdf-page-label")),
+      items: pageEl ? pageEl.querySelectorAll(".pdf-text-layer span[data-item-index]").length : 0,
+      mount, paper, labelColor, probePaper,
+      mountVsPaper: paper ? ratio(mount, paper) : 0,
+      labelVsPaper: labelColor && probePaper ? ratio(over(labelColor, probePaper), probePaper) : 0,
+      darkest: Math.round(darkest),
+      lightest: Math.round(lightest)
+    };
+  }`);
+
+  check("the phone check is actually running as a phone",
+    onPhone.coarse === true, `(pointer: coarse) = ${onPhone.coarse}`);
+  check("a phone opens the document onto pages, not an empty scroller",
+    onPhone.opened === true && onPhone.pages === onPhone.pageCount && onPhone.scrollerHeight > 100,
+    `opened=${onPhone.opened} · ${onPhone.pages}/${onPhone.pageCount} page(s) · scroller ${onPhone.scrollerHeight}px`);
+  check("...and page 1 carries a fresh canvas, not a placeholder",
+    onPhone.hasCanvas && !onPhone.isStale && !onPhone.placeholder,
+    onPhone.placeholder ? "p1:placeholder" : onPhone.isStale ? "p1:stale" : onPhone.hasCanvas ? "p1:fresh" : "p1:empty");
+  check("...with a page actually painted on it, not an empty bitmap",
+    onPhone.lightest - onPhone.darkest >= 40,
+    `luminance ${onPhone.darkest}..${onPhone.lightest}`);
+  check("...and its text layer built at the scale it landed on",
+    onPhone.items > 0, `p1:${onPhone.items} item(s)`);
+  check("--surface-2 resolves to a colour rather than falling through to --bg",
+    onPhone.surfaceToken !== "", onPhone.surfaceToken || "(undefined — the fallback wins)");
+  // 1.4 is not a decoration threshold. #000 against #111 is 1.10: two
+  // rectangles nobody can tell apart on an OLED phone, which is why "the
+  // document did not open" and "the page has not drawn yet" arrived as one
+  // report and took two attempts to tell apart.
+  check("...so an empty scroller is not the same black as an undrawn page",
+    onPhone.mountVsPaper >= 1.4,
+    `${onPhone.mount} vs ${onPhone.paper} = ${onPhone.mountVsPaper.toFixed(2)}:1`);
+  check("...and the placeholder's page number is legible on it",
+    onPhone.labelVsPaper >= 3,
+    `${onPhone.labelColor} on ${onPhone.probePaper} = ${onPhone.labelVsPaper.toFixed(2)}:1`);
+
+  // ── 9c. A first render that never answers ────────────────────────────────
+  //
+  // renderPage's in-flight guard — "a render is already going, remember the
+  // request and let that one finish" — is right until the render it is waiting
+  // for never finishes, and then it is a dead end. A pdf.js render is a round
+  // trip to a worker, and a worker on a phone is a thing the OS can kill
+  // without telling anyone: the promise neither resolves nor rejects,
+  // entry.task stays truthy, and every later request is turned away by that
+  // guard. The rerender flag those requests set is only ever read from inside
+  // the finally() that is never going to run.
+  //
+  // That is "it never comes back" as a matter of control flow, and it is why
+  // the previous fix for this symptom did not land: that change altered what
+  // happens UNDER the guard and left the guard.
+  //
+  // Simulated by hanging exactly one getPage, once, and then doing the three
+  // things the reader actually did.
+  const hung = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const doc = api.currentPdfDocument();
+    const real = doc.getPage.bind(doc);
+    let hangs = 1;
+    doc.getPage = (n) => (n === 1 && hangs-- > 0) ? new Promise(() => {}) : real(n);
+
+    // A zoom, which is a real scale change, so page 1 keeps its old canvas as
+    // the stretched is-stale one while a fresh render is asked for — and that
+    // ask is the one that hangs. Precisely the shape the previous fix for this
+    // symptom described and did not cure: a page that had rendered before keeps
+    // the stretched stale canvas forever, with no text layer and no highlights.
+    //
+    // So stuck asks for a FRESH canvas, not for any canvas. A stale one is
+    // present throughout and is exactly what the reader is complaining about.
+    const fresh = () => {
+      const c = document.querySelector('.pdf-page[data-page-number="1"] canvas.pdf-canvas');
+      return Boolean(c && !c.classList.contains("is-stale"));
+    };
+    api.zoomDocument(1.25);
+    await settle(600);
+    const stuck = !fresh();
+
+    // Everything the reader tried, in the order they tried it.
+    api.scrollToDocumentPage(3, 0, { smooth: false });
+    await settle(300);
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(300);
+    api.fitDocumentToWidth();
+    await settle(300);
+    api.setViewMode("cards");
+    await settle(150);
+    api.setViewMode("document");
+    await api.openDocumentView();
+    // Long enough for the render deadline to release the pinned entry. Nothing
+    // shorter can pass: the whole point is that no amount of READER action
+    // reaches a render that never settles, so what rescues it is a timer.
+    await settle(Math.max(2000, api.PDF_RENDER_DEADLINE_MS + 3000));
+
+    const el = document.querySelector('.pdf-page[data-page-number="1"]');
+    doc.getPage = real;
+    return {
+      stuck,
+      canvas: fresh(),
+      placeholder: Boolean(el && el.querySelector(".pdf-page-label")),
+      error: Boolean(el && el.querySelector(".pdf-page-label.is-error"))
+    };
+  }`);
+
+  check("a first render that never answers does leave the page blank at first",
+    hung.stuck === true, `stuck=${hung.stuck}`);
+  check("...and the page comes back anyway, without the reader doing anything",
+    hung.canvas && !hung.placeholder,
+    hung.error ? "the page says it could not be drawn"
+      : hung.placeholder ? "p1:placeholder — still stuck"
+        : hung.canvas ? "p1:fresh" : "p1:empty");
+
+  // Back to the desktop viewport and the ordinary preferences, so section 10
+  // and the screenshot are not taken on a phone in focus mode with dark page on.
+  await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setFocusMode(false);
+    api.applyPdfInvert(false);
+    try {
+      localStorage.setItem("recall:pdfInvert", "0");
+      localStorage.setItem("recall:focusMode", "0");
+    } catch (e) { /* the live state above is what the rest of the run reads */ }
+    await settle(450);
+  }`);
+  await page.call("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 });
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+  });
 
   // ── 10. A PDF with no annotations in it ──────────────────────────────────
   //

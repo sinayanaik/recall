@@ -220,10 +220,9 @@ export async function ensureJsZip() {
 // so it is answered from the precache with no connection — whereas a fetch
 // pdf.js made internally would not necessarily be.
 //
-// If any of that fails, workerSrc is deliberately left UNSET rather than
-// pointed at something broken: pdf.js then falls back to a main-thread "fake
-// worker", which is slower on a big document but completely correct. A paper
-// that opens slowly beats a paper that does not open.
+// If any of that fails, workerSrc is set to the plain CDN URL rather than left
+// unset — see the note in the catch below, which is where the reasoning that
+// used to sit here turned out to be wrong about what pdf.js actually does.
 export let pdfWorkerBlobUrl = "";
 
 export async function ensurePdfJs() {
@@ -239,8 +238,34 @@ export async function ensurePdfJs() {
     pdfWorkerBlobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerBlobUrl;
   } catch (error) {
-    console.warn("pdf.js worker unavailable — falling back to the main thread", error);
+    console.warn("pdf.js worker unavailable — naming the CDN copy instead", error);
   }
+  // ── The fallback, written down rather than assumed ─────────────────────────
+  //
+  // This used to leave workerSrc UNSET, on the stated belief that pdf.js then
+  // falls back to a main-thread "fake worker" — slower, but correct. Checked
+  // against the build this app actually pins (3.11.174, legacy), that is not
+  // what happens. PDFWorker.workerSrc reads GlobalWorkerOptions.workerSrc and,
+  // when it is empty, falls back to a URL it derived from document.currentScript
+  // at LIBRARY EVALUATION time — throwing `No "GlobalWorkerOptions.workerSrc"
+  // specified.` when even that is null. The read sits outside its own
+  // try/catch, so that throw comes straight back out of getDocument().
+  //
+  // Which is to say: whether this branch degraded gracefully or failed outright
+  // depended on whether document.currentScript happened to be readable when
+  // pdf.js evaluated. True for the classic <script> loadScriptOnce injects;
+  // false the moment anything loads pdf.js another way — which is exactly what
+  // tools/pdf-preview-check.mjs does, and why it has to install a workerSrc of
+  // its own. Not a thing to leave to chance in a branch that only ever runs
+  // after something else has already gone wrong.
+  //
+  // So name it. pdf.js's own createCDNWrapper wraps a cross-origin worker URL
+  // in a blob that importScripts() it, so the Worker constructor's same-origin
+  // rule is pdf.js's problem rather than ours — and a worker created from a
+  // blob URL inherits this page's service worker, so it still resolves from the
+  // precache with no connection, which was the whole point of the fetch above.
+  const options = window.pdfjsLib.GlobalWorkerOptions;
+  if (options && !options.workerSrc) options.workerSrc = LIB_URLS.pdfjsWorker;
   return true;
 }
 
