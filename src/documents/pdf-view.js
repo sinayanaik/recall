@@ -251,8 +251,13 @@ export async function openDocumentView({ force = false } = {}) {
   const deckKey = currentDeckKey();
   if (!force && openPdf && openPdf.deckKey === deckKey) {
     // Already open: only the layout can have gone stale (a rotate, a resize
-    // while the tab was hidden).
-    relayoutDocument();
+    // while the tab was hidden) — and `refit` is what makes that true. A bare
+    // relayout re-lays the pages out at the scale they already had, which is
+    // the one thing that cannot have gone stale; the window resize handler
+    // never heard about the change, because it only listens while the Document
+    // view is the one on screen. So a phone rotated in the notes and switched
+    // back arrived with the portrait scale still on the page.
+    relayoutDocument({ refit: true });
     return true;
   }
 
@@ -342,14 +347,36 @@ export async function openDocumentView({ force = false } = {}) {
 
 // ── Layout ──────────────────────────────────────────────────────────────────
 
+// The scroller width the current fit-width scale was measured against.
+//
+// The resize handler in src/main.js needs this to tell a width change from the
+// height-only ones a phone fires constantly (the URL bar showing and hiding, a
+// keyboard opening), and it cannot keep the answer itself: it only hears about
+// resizes that happen while the Document view is the one on screen. Rotate the
+// phone while reading the notes and come back, and its own memo would still be
+// holding the portrait width — the one width at which no refit is needed.
+let fittedWidth = 0;
+
+export function documentFittedWidth() {
+  return fittedWidth;
+}
+
 export function fitWidthScale() {
   const view = el.documentView;
   if (!view || !openPdf?.baseWidth) return 1;
-  const available = Math.max(200, view.clientWidth - PDF_FIT_PADDING * 2);
+  fittedWidth = view.clientWidth;
+  const available = Math.max(200, fittedWidth - PDF_FIT_PADDING * 2);
   return clampScale(available / openPdf.baseWidth);
 }
 
+// Note the finite check, which is not decoration. Math.max(0.4, NaN) is NaN and
+// so is Math.min(5, NaN), so a NaN got through here unchanged — and every page
+// is then sized `NaNpx`, which is an invalid declaration the browser discards,
+// which leaves every page 0×0 in a flex column: an empty scroller where the
+// document was. A blank surface is far too expensive a way to find out that one
+// arithmetic went wrong upstream.
 export function clampScale(scale) {
+  if (!Number.isFinite(scale)) return 1;
   return Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, scale));
 }
 
@@ -536,7 +563,33 @@ function isPageNearViewport(pageNumber) {
 
 async function renderPage(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
-  if (!entry || entry.task || openPdf.rendered.has(pageNumber)) return;
+  if (!entry || openPdf.rendered.has(pageNumber)) return;
+  // ── A render asked for while one is in flight is REMEMBERED, not dropped ──
+  //
+  // This used to `return` here and that was a page that never came back. The
+  // sequence is two relayouts close together — a pinch commit and the refit
+  // behind it, two zoom presses, the debounced resize landing on a phone while
+  // the first pages of a freshly opened document are still rasterising — and it
+  // goes: relayout at scale A starts a render; relayout at scale B calls this
+  // for the same page and is turned away; the scale-A render finishes, sees
+  // `openPdf.scale !== scale` and correctly throws its own canvas away. Nothing
+  // is left to start a scale-B render. The IntersectionObserver does not help:
+  // the page's intersection has not CHANGED, so it never fires again.
+  //
+  // What that looks like is the whole of this bug. A page that had rendered
+  // before keeps the stretched stale canvas forever, with no text layer and no
+  // highlights. A page that had not — every page of a document being opened for
+  // the first time — keeps its placeholder forever, which on a phone with dark
+  // page on is a black rectangle where the paper should be. There is nowhere to
+  // scroll to from the top of page 1, so nothing shakes it loose either.
+  //
+  // So the request is recorded and re-issued the moment the in-flight render
+  // settles. One retry per request, never a loop: a render that fails on its
+  // own sets nothing.
+  if (entry.task) {
+    entry.rerender = true;
+    return;
+  }
   const token = pdfOpenToken;
   const scale = openPdf.scale;
   // Every await below re-checks this. A render is several async hops — get the
@@ -601,7 +654,17 @@ async function renderPage(pageNumber) {
     .catch((error) => {
       if (error?.name !== "RenderingCancelledException") console.warn(`Could not render page ${pageNumber}`, error);
     })
-    .finally(() => { if (entry) entry.task = null; });
+    .finally(() => {
+      if (!entry) return;
+      entry.task = null;
+      // The request that arrived while this one was in flight (see the guard at
+      // the top). Re-checked rather than trusted: the page can have been trimmed
+      // or scrolled away from in the meantime, and this render may itself have
+      // been the one that satisfied it.
+      if (!entry.rerender) return;
+      entry.rerender = false;
+      if (!openPdf?.rendered.has(pageNumber) && isPageNearViewport(pageNumber)) renderPage(pageNumber);
+    });
 }
 
 // The mark and text layers, off the critical path. See the comment at the call

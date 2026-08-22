@@ -102,7 +102,7 @@ import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode }
 import { initDocumentMarkMenu } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail } from "./ui/reading-rail.js?v=__BUILD__";
@@ -2754,14 +2754,20 @@ const DOCUMENT_PAGER_WAKE_MS = 1200;
 // debounced — a drag-resize on a desktop fires this continuously. refit:true is
 // relayoutDocument's own path for exactly this and re-measures the scale
 // without claiming the mode.
+//
+// "The width actually changed" is asked of documentFittedWidth() — the width
+// the page's current scale was measured against — and not of a memo kept here.
+// A memo here is only ever written while the Document view is on screen, so a
+// phone rotated in the notes view and switched back would be holding the
+// portrait width and conclude, at landscape width, that nothing had changed.
+// (openDocumentView re-fits on the way back in for the same reason; this is the
+// half that covers a resize while the document is already the view.)
 let documentRefitTimer = 0;
-let documentRefitWidth = 0;
 
 window.addEventListener("resize", () => {
   if (state.viewMode !== "document") return;
   const width = el.documentView?.clientWidth || 0;
-  if (!width || width === documentRefitWidth) return;
-  documentRefitWidth = width;
+  if (!width || width === documentFittedWidth()) return;
   if (!isDocumentFitWidth()) return;
   clearTimeout(documentRefitTimer);
   documentRefitTimer = setTimeout(() => relayoutDocument({ refit: true }), DOCUMENT_REFIT_MS);

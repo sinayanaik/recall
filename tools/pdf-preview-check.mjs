@@ -346,6 +346,63 @@ try {
       rendered.outline.map((e) => `${e.title}→${e.page}`).join(" "));
   }
 
+  // ── 2b. A relayout landing on a render that is still in flight ───────────
+  //
+  // Two zooms in one tick, which is not a contrived thing to do: it is a pinch
+  // commit with the debounced refit behind it, two taps on +, or — the report
+  // this check was written for — a phone's first resize landing while the pages
+  // of a freshly opened document are still rasterising.
+  //
+  // renderPage used to turn away a request that arrived while a render was in
+  // flight, and the in-flight render then correctly threw its own canvas away
+  // because the scale had moved under it. Nobody was left to start the render
+  // at the new scale, and the IntersectionObserver never fired again because
+  // the page's intersection had not changed. Every visible page stayed on its
+  // stretched stale canvas with no text layer — or, for a document being opened
+  // for the first time, on a bare placeholder, which with dark page on is a
+  // black rectangle where the paper should be.
+  const raced = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await api.whenDocumentPageReady(1);
+    const pageWidth = () => Math.round(document.querySelector('.pdf-page[data-page-number="1"]')?.getBoundingClientRect().width || 0);
+    const before = pageWidth();
+    api.zoomDocument(1.25);
+    api.zoomDocument(1.25);
+    await settle(2500);
+    // Page 1 alone, and deliberately: at the zoom these two steps reach, page 2
+    // is a long way below the window and relayoutDocument is RIGHT to drop it
+    // back to a placeholder. The page the reader is looking at is the whole
+    // claim here.
+    const pages = [1].map((n) => {
+      const el = document.querySelector('.pdf-page[data-page-number="' + n + '"]');
+      return {
+        page: n,
+        canvas: Boolean(el?.querySelector("canvas.pdf-canvas")),
+        stale: Boolean(el?.querySelector("canvas.pdf-canvas.is-stale")),
+        placeholder: Boolean(el?.querySelector(".pdf-page-label")),
+        items: el?.querySelectorAll(".pdf-text-layer span[data-item-index]").length || 0
+      };
+    });
+    return { before, after: pageWidth(), pages };
+  }`);
+
+  check("two zooms in one tick still re-render the page",
+    raced.pages.every((p) => p.canvas && !p.stale && !p.placeholder),
+    raced.pages.map((p) => `p${p.page}:${p.placeholder ? "placeholder" : p.stale ? "stale" : p.canvas ? "fresh" : "empty"}`).join(" "));
+  check("...with its text layer rebuilt at the scale it landed on",
+    raced.pages.every((p) => p.items > 0),
+    raced.pages.map((p) => `p${p.page}:${p.items}`).join(" "));
+  check("...and the zoom itself took", raced.after > raced.before,
+    `${raced.before}px → ${raced.after}px`);
+
+  await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.fitDocumentToWidth();
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(400);
+  }`);
+
   // ── 4. A selection on page 3 becomes a highlight ─────────────────────────
   const madeOn = Math.min(3, rendered.count);
   const made = await page.evaluate(`async (pageNumber) => {
