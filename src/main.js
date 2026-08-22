@@ -86,7 +86,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, chromeFocusPinned, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -409,7 +409,13 @@ document.addEventListener(
     // frames, and every one of the extra ones used to pay for a closest() walk
     // up the tree before being thrown away here anyway.
     if (chromeScrollFrame) return;
-    if (chromeFocusPinned || !isMobileChrome()) return;
+    // isFocusModeActive, not chromeFocusPinned: once a scroll down has locked
+    // the chrome away there is nothing further for this listener to decide, and
+    // a reader who spends the next twenty minutes scrolling should not pay a
+    // closest() walk and a rAF per frame to be told so. Both ways out of the
+    // mode reset the anchor (setFocusMode, resetChromeAutoHide), so the next
+    // scroll after one re-anchors from wherever the reader actually is.
+    if (isFocusModeActive() || !isMobileChrome()) return;
     const target = event.target;
     if (!(target instanceof Element) || !target.closest(".study-layout")) return;
     setChromeScrollFrame(requestAnimationFrame(() => {

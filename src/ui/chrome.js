@@ -303,15 +303,13 @@ export function trackChromeScroll(target) {
     chromeAnchorTop = top;
     return;
   }
+  // Defensive: the listener in main.js already bails while the mode is on, and
+  // this is the second half of that fact rather than a second opinion about it.
+  if (chromeFocusLocked) return;
   // Reaching the top of the note used to bring the header back, and so did any
-  // upward scroll past CHROME_SHOW_DELTA. Both are gone: see chromeFocusLocked.
-  // The anchor is still advanced, so that the scroll AFTER the reader unlocks
-  // the chrome is measured from where they actually are rather than from
-  // wherever they were when it folded.
-  if (chromeFocusLocked) {
-    chromeAnchorTop = top;
-    return;
-  }
+  // upward scroll past CHROME_SHOW_DELTA. Both are gone — see chromeFocusLocked:
+  // the lock is what makes focus mode a mode rather than something that leaks
+  // away the first time a thumb corrects past a figure.
   if (top <= CHROME_TOP_ZONE) {
     chromeAnchorTop = top;
     return;
