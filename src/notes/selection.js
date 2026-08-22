@@ -85,6 +85,30 @@ export let notesSelectionTimer = null;
 //   { targetName, editing, sel, markdown }
 export let pillSelectionCapture = null;
 
+// ── The document surface's own capture, registered rather than imported ────
+//
+// The pill's Highlight and its ✕ act on whatever is selected. On the markdown
+// surfaces they can fall back to pillSelectionCapture — a snapshot taken when
+// the pill appeared, while the selection was certainly still alive — and on the
+// document surface they could not, because the only thing that can describe a
+// PDF selection is captureDocumentSelection() in src/documents/pdf-selection.js
+// and this module must not import it. The comment on the document branch of
+// paintNotesSelectionButton sets out why: this file already sits inside three
+// import cycles, and pulling the whole document subtree in ahead of them is
+// exactly the reordering those notes exist to warn about.
+//
+// So the function is handed in, the same shape as setChromeCollapseHandler and
+// setHighlightsChangedHandler, and src/main.js — which knows both ends —
+// registers it. What it buys is on the pill: without a snapshot, a tap that
+// collapses the selection (which is every tap on a touch screen) left
+// pillActionTarget with nothing to act on, and the Highlight swatch and the ✕
+// did nothing at all. Not a toast, not an error. Nothing.
+let captureDocumentPillSelection = () => null;
+
+export function setDocumentPillCaptureHook(fn) {
+  captureDocumentPillSelection = typeof fn === "function" ? fn : () => null;
+}
+
 export function hideNotesSelectionButton() {
   // Called from every scroll event on the notes view and the raw editor, where
   // "already fully hidden" is the overwhelmingly common case — make that a few
@@ -1491,7 +1515,18 @@ export function positionNotesSelectionButton() {
     }
     cardBtn.dataset.selectionText = documentText;
     cardBtn.title = "Make a card from this passage";
-    pillSelectionCapture = { targetName: "document", editing: false, sel: null, markdown: documentText, at: rangeBoundaries(documentRange) };
+    // `document` carries the PDF-space capture as well as the text, because by
+    // the time a pill button is pressed on a phone the selection this was taken
+    // from is usually gone. Taken here, where it is certainly still alive.
+    pillSelectionCapture = {
+      targetName: "document",
+      editing: false,
+      sel: null,
+      markdown: documentText,
+      at: rangeBoundaries(documentRange),
+      document: captureDocumentPillSelection(),
+      rects: Array.from(documentRange.getClientRects()).map((r) => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom }))
+    };
     delete button.dataset.renderTarget;
     if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = true;
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = true;

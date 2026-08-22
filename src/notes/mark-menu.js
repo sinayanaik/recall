@@ -16,6 +16,7 @@ import { MARK_HIGHLIGHT_COLORS } from "../format/highlight-colors.js?v=__BUILD__
 import { recolourHighlightAt, removeHighlightAt } from "../format/highlight-edit.js?v=__BUILD__";
 import { highlightNoteTextAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./highlight-note-editor.js?v=__BUILD__";
+import { sourceMarkIndexFor } from "./anchors.js?v=__BUILD__";
 
 let menuEl = null;
 // A <mark>'s ordinal for a note, a highlight id for a document — see the
@@ -137,8 +138,14 @@ function ensureMarkMenu() {
 export function openMarkMenuFor(mark) {
   const view = el.notesView;
   if (!view || !mark) return;
-  const marks = [...view.querySelectorAll("mark")];
-  const index = marks.indexOf(mark);
+  // The mark's ordinal in the SOURCE, not its index among the nodes on screen.
+  // Every verb in NOTES_MARK_HANDLERS counts <mark> opens in state.notes, and
+  // the two numbers are only the same while the DOM holds every mark the note
+  // has — which stops being true on any note long enough to be built as it is
+  // read. Below that threshold nothing changes; above it, this is the
+  // difference between removing the highlight that was tapped and removing a
+  // different one. See sourceMarkIndexFor.
+  const index = sourceMarkIndexFor(view, mark);
   if (index === -1) return;
   openMarkMenuWith(mark, index, NOTES_MARK_HANDLERS);
 }

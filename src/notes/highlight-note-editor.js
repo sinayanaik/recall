@@ -467,6 +467,21 @@ export const NOTES_NOTE_HANDLERS = {
 let noteHandlers = NOTES_NOTE_HANDLERS;
 
 export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkdown, destination = NOTES_NOTE_HANDLERS) {
+  // ── Finish the note that is already open before opening another ──────────
+  //
+  // closeHighlightNoteEditor's own comment claims "the mark menu opening
+  // another note" lands there. It did not: nothing on this path called it, and
+  // the popup is a singleton, so opening a second note simply overwrote
+  // openMarkIndex and savedText while the 700ms autosave timer from the first
+  // was still armed. When that timer fired it read the textarea — which by then
+  // held the NEW note — compared it to savedText, found them equal and returned.
+  // The last thing typed into the previous highlight's note was gone, with a
+  // "Saved" line having been shown for it.
+  //
+  // Done here rather than at the three call sites (the mark menu, the
+  // Highlights panel, a page-note badge) so no fourth one can forget. It is a
+  // no-op when nothing is open, and flushing an unchanged note writes nothing.
+  closeHighlightNoteEditor();
   const { root, textarea, deleteBtn, status, setMode } = ensureHighlightNoteEditor();
   noteHandlers = destination || NOTES_NOTE_HANDLERS;
   openMarkIndex = markIndex;

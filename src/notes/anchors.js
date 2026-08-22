@@ -808,6 +808,49 @@ export function lazyNoteMarkNode(view, markIndex, markCount) {
   return chunk.querySelectorAll("mark")[markIndex - base] || null;
 }
 
+// The inverse of lazyNoteMarkNode: given a <mark> in the rendered note, which
+// mark is it in the SOURCE?
+//
+// Everything that edits a highlight — removeHighlightAt, recolourHighlightAt,
+// setHighlightNoteAt — is addressed by source ordinal, by how many <mark> opens
+// precede it in state.notes. The mark menu handed those functions a DOM index
+// instead (`[...view.querySelectorAll("mark")].indexOf(mark)`), on the
+// assumption that the two are the same number. revealNoteMark, twenty lines
+// down, exists because they are not: it tests marks.length === markCount before
+// it will trust the fast path, and falls back to this machinery when the test
+// fails.
+//
+// It fails on any note long enough to be built as it is read — most of its
+// marks are not in the document at all — and the DOM index is then smaller than
+// the ordinal by however many marks sit in the chunks above. What that meant is
+// that ✕ removed a different highlight from the one that was tapped, and ✎
+// opened and then SAVED OVER a different highlight's note. Both were reported.
+//
+// Returns -1 when the answer cannot be established, which callers must treat as
+// "do nothing" rather than as zero.
+export function sourceMarkIndexFor(view, mark) {
+  if (!view || !mark) return -1;
+  const marks = [...view.querySelectorAll("mark")];
+  const domIndex = marks.indexOf(mark);
+  if (domIndex === -1) return -1;
+  const plan = notesLazyPlan(view);
+  // An eagerly rendered note holds every one of its marks, so the DOM index IS
+  // the ordinal — the case the old code assumed was the only one.
+  if (!plan) return domIndex;
+  const offsets = markOpenOffsets(plan.prepared);
+  if (offsets.length === marks.length) return domIndex;
+  // Otherwise: which chunk holds this mark, how many marks the source has
+  // before that chunk starts, and how far into the chunk it is.
+  const chunkIndex = plan.chunks.findIndex((chunk) => chunk && chunk.contains(mark));
+  if (chunkIndex === -1 || !plan.spans[chunkIndex]) return -1;
+  let base = 0;
+  while (base < offsets.length && offsets[base] < plan.spans[chunkIndex].start) base += 1;
+  const within = [...plan.chunks[chunkIndex].querySelectorAll("mark")].indexOf(mark);
+  if (within === -1) return -1;
+  const index = base + within;
+  return index < offsets.length ? index : -1;
+}
+
 export function revealNoteMark(locator, options) {
   const view = el.notesView;
   if (!view || view.hidden || !locator) return false;

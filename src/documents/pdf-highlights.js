@@ -29,6 +29,7 @@ import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { closeMarkMenu, openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
+import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 
 export const PDF_MARK_CLASS = "pdf-mark";
@@ -52,12 +53,60 @@ export function isPdfDeck() {
 // by page, then down the page. Stored order is creation order, and a reader who
 // goes back to annotate page 2 after finishing page 9 does not want that row
 // at the bottom of the list.
+// ── Lines, in PDF user space ───────────────────────────────────────────────
+//
+// A "line" here is a band of y values on one page: the geometry the file itself
+// carries, read straight off record.quads[].rect and deliberately NOT through
+// quadToPageBox, which needs a live viewport and therefore a page that is
+// currently rendered. The Highlights panel has to work with the document closed
+// and with an offloaded file, so nothing about which highlights share a line
+// can depend on anything being on screen.
+//
+// PDF user space has its origin at the bottom left, so rect is
+// [x0, yBottom, x1, yTop] and a LARGER y is higher up the page.
+function firstQuadOn(record) {
+  const page = Number(record?.page || 0);
+  const quads = record?.quads || [];
+  return quads.find((quad) => quad.page === page) || quads[0] || null;
+}
+
+// Two highlights are on the same line when their quads' y ranges overlap by
+// more than half the shorter one. Not "the same y": a superscript, a different
+// font size, or two runs the producer emitted at slightly different baselines
+// all sit on one line to a reader and differ by a point or two here. The same
+// argument QUAD_MERGE_TOLERANCE makes in pdf-selection.js, as a fraction rather
+// than an absolute, because it has to hold at any font size.
+export const LINE_BAND_OVERLAP = 0.5;
+
+export function sameDocumentLine(a, b) {
+  const qa = firstQuadOn(a);
+  const qb = firstQuadOn(b);
+  if (!qa || !qb || qa.page !== qb.page) return false;
+  const [, aBottom, , aTop] = qa.rect;
+  const [, bBottom, , bTop] = qb.rect;
+  const overlap = Math.min(aTop, bTop) - Math.max(aBottom, bBottom);
+  if (overlap <= 0) return false;
+  const shorter = Math.min(aTop - aBottom, bTop - bBottom);
+  return shorter > 0 && overlap / shorter > LINE_BAND_OVERLAP;
+}
+
 export function documentHighlightsInReadingOrder() {
   return documentHighlights().slice().sort((a, b) => {
     if (a.page !== b.page) return (a.page || 0) - (b.page || 0);
+    const qa = firstQuadOn(a);
+    const qb = firstQuadOn(b);
     // Larger y is HIGHER on the page — PDF user space has its origin at the
     // bottom left, so reading order is descending y.
-    return (b.quads?.[0]?.rect?.[3] || 0) - (a.quads?.[0]?.rect?.[3] || 0);
+    const down = (qb?.rect?.[3] || 0) - (qa?.rect?.[3] || 0);
+    // ...and WITHIN a line, left to right. This tiebreak was missing, so two
+    // highlights on one line fell through to Array.sort's stability — which is
+    // to say to the order they were CREATED in. Highlight the end of a line and
+    // then its beginning and the panel listed them backwards, and the numbered
+    // badges printed on the page counted right-to-left. Compared by line band
+    // rather than by exact y, or a two-point baseline difference puts two words
+    // of one sentence in different "rows" again.
+    if (sameDocumentLine(a, b)) return (qa?.rect?.[0] || 0) - (qb?.rect?.[0] || 0);
+    return down;
   });
 }
 
@@ -76,12 +125,36 @@ export function documentHighlightNoteIds() {
 // deliberately in the same namespace: this IS a highlight-note id. Uniqueness
 // is checked against both the records and the note text, since either can
 // already be using one.
+//
+// ── The check that was missing, and what it cost ──────────────────────────
+//
+// This tested the note text for `[id]` and `"id"` — the two LEGACY forms, a
+// heading entry and a base64 data-note attribute — and not for `hn:${id}`,
+// which is the marker the current fenced format actually uses
+// (ENTRY_MARKER_RE, src/format/highlight-notes.js). Its twin
+// freshHighlightNoteId does test for it.
+//
+// So an id already owned by a live `<!--hn:X …-->` entry could be minted
+// again, and the brand-new highlight then wore that entry's note: "in
+// highlighted notes I'm seeing a random note from another highlight area",
+// exactly. pruneOrphanHighlightNotes is thorough and counts meta.pdfHighlights
+// as live, so reaching this needs a route that skips it — a sync merge that
+// carried the note tail without the record, a restore, a hand-edit — but every
+// one of those is a route a reader can be on, and the fix is one line.
+//
+// The id is six characters rather than four for the same reason. Four base-36
+// characters is a 1.7-million space that the birthday bound turns into an even
+// chance of a collision at about 1,500 highlights, which a heavily annotated
+// book reaches; and `Math.random().toString(36).slice(2, 6)` can return FEWER
+// than four when the fraction is short, shrinking it further. Existing ids stay
+// valid: nothing here parses an id's length, it only compares them.
 export function freshDocumentHighlightId() {
   const taken = new Set(documentHighlightNoteIds());
   const notes = state.notes || "";
   for (;;) {
-    const id = `hn-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `hn-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
     if (taken.has(id)) continue;
+    if (notes.includes(`hn:${id}`)) continue;
     if (!notes.includes(`[${id}]`) && !notes.includes(`"${id}"`)) return id;
   }
 }
@@ -162,12 +235,33 @@ export function recolourDocumentHighlight(id, color) {
 export function removeDocumentHighlight(id) {
   const record = documentHighlightById(id);
   if (!record) return;
-  commitDocumentHighlights(documentHighlights().filter((entry) => entry.id !== id));
-  // The note that was attached to it would otherwise sit in the "Highlight
-  // Notes" section forever with nothing pointing at it — the same cleanup
-  // removeHighlightAt does for a <mark>.
+  // An undo step, which this did not take. Deleting a <mark> in a note is
+  // undoable (see rewriteHighlightGroup in src/format/highlight-edit.js) and
+  // deleting a highlight on a paper was not — one mis-tap and a passage and its
+  // note were simply gone. Taken before anything is written, so it holds the
+  // note as it was.
+  pushNotesUndo("remove highlight");
+  const next = documentHighlights().filter((entry) => entry.id !== id);
+  // ── Prune BEFORE the commit, not after it ────────────────────────────────
+  //
+  // The note attached to this highlight would otherwise sit in the fenced
+  // "Highlight Notes" block forever with nothing pointing at it — the same
+  // cleanup removeHighlightAt does for a <mark>. It used to run after
+  // commitDocumentHighlights, and commitDocumentHighlights is the only thing
+  // that fires notifyHighlightsChanged(), which is the only thing that rebuilds
+  // the Highlights panel and the printed page notes. So the panel was rebuilt
+  // from a state.notes that still held the deleted highlight's note, and there
+  // it stayed — visibly attached to nothing — until some unrelated edit
+  // happened to refresh the panel again.
+  //
+  // pruneOrphanHighlightNotes reads state.meta.pdfHighlights to decide what is
+  // live, so the records have to be in place first: assigned here, then
+  // committed once, then everything told once.
+  state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
+  state.meta.pdfHighlights = next;
   const pruned = pruneOrphanHighlightNotes(state.notes || "");
   if (pruned !== state.notes) state.notes = pruned;
+  commitDocumentHighlights(next);
   repaintDocumentHighlights();
 }
 
@@ -183,9 +277,14 @@ export function documentHighlightNote(id) {
   return readHighlightNotes(state.notes || "").get(id) || "";
 }
 
-export function setDocumentHighlightNote(id, text) {
+export function setDocumentHighlightNote(id, text, { undo = false } = {}) {
   const record = documentHighlightById(id);
   if (!record) return false;
+  // One snapshot per editing session, taken on the first write — the same
+  // contract rewriteFirstMarkNote honours for a <mark>'s note. The document
+  // handlers used to drop this option on the floor, so a note written on a
+  // paper was the one kind of note in the app that could not be undone.
+  if (undo) pushNotesUndo("highlight note");
   state.notes = setHighlightNoteInSource(state.notes || "", id, text, documentExcerptLabel(documentHighlightLabel(record)));
   // `at` moves too: a note is an edit to the highlight, and the sync merge
   // decides by timestamp.
@@ -194,8 +293,8 @@ export function setDocumentHighlightNote(id, text) {
   return true;
 }
 
-export function clearDocumentHighlightNote(id) {
-  return setDocumentHighlightNote(id, "");
+export function clearDocumentHighlightNote(id, options) {
+  return setDocumentHighlightNote(id, "", options);
 }
 
 // ── Painting ────────────────────────────────────────────────────────────────
@@ -290,6 +389,127 @@ export function documentHighlightAtPoint(clientX, clientY) {
   return null;
 }
 
+// Every highlight any of these client rects touches, in reading order.
+//
+// documentHighlightAtPoint above answers "what is under this finger", which is
+// the right question for a tap and the wrong one for a selection: a selection
+// is a run of line fragments, and the one point the old caller derived from it
+// — the left edge of its bounding box at half its height — lands in the margin
+// between the lines for anything spanning more than one. That is why removing a
+// highlight by selecting it reported "Nothing highlighted there" for most real
+// selections.
+//
+// Intersection rather than containment, because a reader dragging across a
+// highlight rarely covers it exactly and always means it.
+export function documentHighlightsUnderRects(rects) {
+  const found = [];
+  if (!Array.isArray(rects) || !rects.length) return found;
+  // Which page each rect is on, resolved GEOMETRICALLY rather than by
+  // hit-testing. document.elementFromPoint returns whatever is topmost at a
+  // point, and at the moment this runs there is reliably something else there:
+  // the selection pill floats over the text it was raised for, and a note
+  // badge, the mark menu or an open panel can be over it too. Asking the page
+  // boxes directly cannot be wrong about z-order because it never consults it.
+  const pages = [];
+  document.querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
+    const pageNumber = Number(pageEl.dataset.pageNumber);
+    if (pageNumber) pages.push({ pageNumber, box: pageEl.getBoundingClientRect() });
+  });
+  if (!pages.length) return found;
+  // Each rect, in the page-relative coordinates quadToPageBox reports in.
+  const targets = [];
+  rects.forEach((rect) => {
+    if (!rect || rect.right <= rect.left || rect.bottom <= rect.top) return;
+    const midY = (rect.top + rect.bottom) / 2;
+    const midX = (rect.left + rect.right) / 2;
+    const on = pages.find(({ box }) => midX >= box.left && midX <= box.right
+      && midY >= box.top && midY <= box.bottom);
+    if (!on) return;
+    targets.push({
+      page: on.pageNumber,
+      left: rect.left - on.box.left,
+      top: rect.top - on.box.top,
+      right: rect.right - on.box.left,
+      bottom: rect.bottom - on.box.top
+    });
+  });
+  if (!targets.length) return found;
+  documentHighlightsInReadingOrder().forEach((record) => {
+    const hit = (record.quads || []).some((quad) => {
+      const quadBox = quadToPageBox(quad);
+      if (!quadBox) return false;
+      return targets.some((t) => t.page === quad.page
+        && t.left < quadBox.left + quadBox.width && t.right > quadBox.left
+        && t.top < quadBox.top + quadBox.height && t.bottom > quadBox.top);
+    });
+    if (hit) found.push(record);
+  });
+  return found;
+}
+
+// The highlights that between them COVER every rect of a selection.
+//
+// documentHighlightsUnderRects answers "what does this selection touch", which
+// is what removing wants. Recolouring wants the stricter question — "is this
+// selection already highlighted, all of it?" — because the two differ exactly
+// where it matters: a paragraph containing one highlighted word touches that
+// word and is nowhere near covered by it. Answering the loose question there
+// would recolour the word and leave the paragraph unmarked, which is not what
+// pressing a colour over a paragraph means.
+//
+// Returns the covering records, or an empty list if any part of the selection
+// is bare. The tolerance is a couple of CSS pixels: a quad is built from a
+// glyph run's own box and a selection rect from the range's, and they agree to
+// about that.
+export const COVER_TOLERANCE = 2;
+
+export function documentHighlightsCovering(rects) {
+  const touching = documentHighlightsUnderRects(rects);
+  if (!touching.length) return [];
+  const boxes = [];
+  touching.forEach((record) => {
+    (record.quads || []).forEach((quad) => {
+      const box = quadToPageBox(quad);
+      if (box) boxes.push({ page: quad.page, ...box });
+    });
+  });
+  const pages = new Map();
+  document.querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
+    const pageNumber = Number(pageEl.dataset.pageNumber);
+    if (pageNumber) pages.set(pageNumber, pageEl.getBoundingClientRect());
+  });
+  const covered = rects.every((rect) => {
+    if (!rect || rect.right <= rect.left) return true;
+    for (const [pageNumber, pageBox] of pages) {
+      const midY = (rect.top + rect.bottom) / 2;
+      if (midY < pageBox.top || midY > pageBox.bottom) continue;
+      const left = rect.left - pageBox.left;
+      const right = rect.right - pageBox.left;
+      const top = rect.top - pageBox.top;
+      const bottom = rect.bottom - pageBox.top;
+      // Every horizontal slice of this rect has to sit inside some quad on the
+      // same line. Walked left to right rather than summed, so two quads either
+      // side of an unhighlighted gap do not add up to "covered".
+      let x = left;
+      let progressed = true;
+      while (x < right - COVER_TOLERANCE && progressed) {
+        progressed = false;
+        for (const box of boxes) {
+          if (box.page !== pageNumber) continue;
+          if (bottom <= box.top + COVER_TOLERANCE || top >= box.top + box.height - COVER_TOLERANCE) continue;
+          if (box.left > x + COVER_TOLERANCE || box.left + box.width <= x + COVER_TOLERANCE) continue;
+          x = box.left + box.width;
+          progressed = true;
+          break;
+        }
+      }
+      return x >= right - COVER_TOLERANCE;
+    }
+    return false;
+  });
+  return covered ? touching : [];
+}
+
 // ── Importing the PDF's own highlights ──────────────────────────────────────
 //
 // A paper that arrives already annotated in Zotero, Preview or Okular carries
@@ -367,8 +587,12 @@ export const DOCUMENT_MARK_HANDLERS = {
 };
 
 export const DOCUMENT_NOTE_HANDLERS = {
-  save: (id, text) => setDocumentHighlightNote(id, text),
-  remove: (id) => clearDocumentHighlightNote(id),
+  // The options are passed through, not dropped. The editor sends
+  // `{ rerender, undo }`; `rerender` means nothing here (the note's text is not
+  // on the page), but `undo` is what gives a PDF highlight's note the same one
+  // snapshot per session every other note in the app gets.
+  save: (id, text, options) => setDocumentHighlightNote(id, text, options),
+  remove: (id, options) => clearDocumentHighlightNote(id, options),
   // Nothing on the page changes when a note is written — the note's text lives
   // in the deck's markdown, not in the PDF — but the highlight's own "has a
   // note" state does, and the Highlights panel is a different surface that may

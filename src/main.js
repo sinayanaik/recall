@@ -63,7 +63,7 @@ import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, setDocumentPillCaptureHook } from "./notes/selection.js?v=__BUILD__";
 import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
@@ -87,6 +87,7 @@ import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
@@ -923,6 +924,11 @@ onDomReady(() => {
   // import graph and the rail sits high; this file is the one that knows both.
   setChromeModesHandler(refreshReadingRailModes);
 });
+// The pill's Highlight and ✕ need a description of the PDF selection taken
+// while it is still alive, and src/notes/selection.js cannot import the module
+// that makes one without closing an import cycle it documents at length. Same
+// registration idiom as the two hooks above.
+onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
 // The badges are painted with each page as it renders, and the printed notes are
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
 // why these are registered rather than imported.

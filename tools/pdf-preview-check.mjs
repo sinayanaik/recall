@@ -510,6 +510,156 @@ try {
   check("the Highlights panel lists it",
     reloaded.rows >= (fixture.annotation ? 2 : 1), `${reloaded.rows} row(s)`);
 
+  // ── 5b. The highlight/note pipeline ──────────────────────────────────────
+  //
+  // Four reports, four separate causes, none of which any check here could see.
+  //
+  //   * a fresh highlight arriving already wearing another highlight's note;
+  //   * the Highlights panel scanning a different string from the one the
+  //     reader is looking at, so a <mark> typed INTO a note became a row of its
+  //     own and broke the exact "Go to" for every other row;
+  //   * ✕ on a selection reporting "Nothing highlighted there";
+  //   * and several highlights on one line each getting their own row and their
+  //     own "Go to", in an order that came from when they were made rather than
+  //     from where they are on the page.
+  const pipeline = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const out = {};
+
+    // ── An id that must not be re-minted ──────────────────────────────────
+    //
+    // Put a note entry in the fence whose id belongs to no record — what a sync
+    // merge that carried the tail without the record, or a restore, leaves
+    // behind — and mint two hundred ids. Not one of them may collide with it,
+    // because a collision IS the reported symptom: the new highlight silently
+    // adopts the orphan's note.
+    const orphan = "hn-orph01";
+    const before = api.state.notes;
+    api.state.notes = api.setHighlightNoteInSource(before || "", orphan, "A note with no highlight.", "orphan");
+    out.orphanStored = api.readHighlightNotes(api.state.notes).get(orphan) || "";
+    let collided = false;
+    for (let i = 0; i < 200; i += 1) if (api.freshDocumentHighlightId() === orphan) collided = true;
+    out.idCollides = collided;
+    api.state.notes = before;
+
+    // ── The panel reads what the reader reads ─────────────────────────────
+    //
+    // A <mark> inside a highlight's own note. The pill's Highlight button
+    // writes exactly this, so it is not a contrived string.
+    const rowsBefore = api.collectDeckHighlights().length;
+    const notesBefore = api.state.notes;
+    const ids = api.documentHighlightsInReadingOrder().map((r) => r.id);
+    api.state.notes = api.setHighlightNoteInSource(
+      notesBefore || "", ids[0], 'A note with a <mark data-color="green">highlighted phrase</mark> in it.', "note");
+    out.rowsWithMarkInNote = api.collectDeckHighlights().length;
+    out.rowsBefore = rowsBefore;
+    api.state.notes = notesBefore;
+
+    // ── Two highlights on one line ────────────────────────────────────────
+    //
+    // Made right-to-left on purpose: reading order has to put them back in the
+    // order they are READ in, which is the tiebreak that was missing — two
+    // highlights with the same first-quad y fell through to Array.sort's
+    // stability, which is to say to the order they were created in.
+    api.setViewMode("document");
+    await api.openDocumentView();
+    await settle(400);
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await api.whenDocumentPageReady(1);
+    const page1 = document.querySelector('.pdf-page[data-page-number="1"]');
+    const spans = page1 ? Array.from(page1.querySelectorAll(".pdf-text-layer span[data-item-index]")) : [];
+    out.spans = spans.length;
+    // A body line, not the heading — and one long enough to cut in two.
+    const line = spans.slice(1).find((sp) => (sp.firstChild?.length || 0) >= 12) || null;
+    out.lineText = line ? (line.textContent || "").slice(0, 24) : "";
+    const madeIds = [];
+    if (line) {
+      const text = line.firstChild;
+      const len = text.length;
+      // The right half first, then the left half.
+      for (const [from, to] of [[Math.ceil(len * 0.6), len], [0, Math.floor(len * 0.4)]]) {
+        const range = document.createRange();
+        range.setStart(text, from);
+        range.setEnd(text, to);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        const capture = api.captureDocumentSelection();
+        const record = capture && api.addDocumentHighlight(capture, "yellow");
+        if (record) madeIds.push(record.id);
+        sel.removeAllRanges();
+      }
+    }
+    out.madeOnOneLine = madeIds.length;
+    if (madeIds.length === 2) {
+      const [right, left] = madeIds.map((id) => api.documentHighlightById(id));
+      out.sameLine = api.sameDocumentLine(left, right);
+      const order = api.documentHighlightsInReadingOrder().map((r) => r.id);
+      out.leftComesFirst = order.indexOf(madeIds[1]) < order.indexOf(madeIds[0]);
+      const rows = api.collectDocumentHighlightRows();
+      const shared = rows.find((r) => r.marks.length > 1);
+      out.mergedRow = Boolean(shared);
+      out.marksInMergedRow = shared ? shared.marks.length : 0;
+
+      // ── ✕ over a selection that spans the whole line ────────────────────
+      //
+      // The old hit test read the selection's BOUNDING rect at its left edge,
+      // half way down — a point in the margin for anything taller than one
+      // line, and the reason this reported "Nothing highlighted there".
+      const whole = document.createRange();
+      whole.setStart(line.firstChild, 0);
+      whole.setEnd(line.firstChild, line.firstChild.length);
+      const rects = Array.from(whole.getClientRects());
+      out.rectCount = rects.length;
+      // ...and with something ON TOP of the words, which is the normal case:
+      // the selection pill is raised over the text it was raised for. A hit
+      // test would find that overlay and answer "no page here".
+      const overlay = document.createElement("div");
+      overlay.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999";
+      document.body.appendChild(overlay);
+      out.foundUnderOverlay = api.documentHighlightsUnderRects(rects).length;
+      overlay.remove();
+      out.foundUnderSelection = api.documentHighlightsUnderRects(rects).length;
+      // Touched is not covered. The whole line is only partly highlighted — the
+      // two runs leave a gap in the middle — so pressing a colour over it means
+      // "highlight this line", not "recolour the two bits of it that are
+      // already marked".
+      out.coveringWholeLine = api.documentHighlightsCovering(rects).length;
+      // ...and over words that ARE entirely highlighted, it is a recolour.
+      const inner = document.createRange();
+      inner.setStart(line.firstChild, 0);
+      inner.setEnd(line.firstChild, Math.floor(line.firstChild.length * 0.4));
+      out.coveringMarkedRun = api.documentHighlightsCovering(Array.from(inner.getClientRects())).length;
+      madeIds.forEach((id) => api.removeDocumentHighlight(id));
+      out.goneAfterRemove = madeIds.every((id) => !api.documentHighlightById(id));
+    }
+    return out;
+  }`);
+
+  check("a fresh highlight id never lands on an orphaned note's id",
+    pipeline.orphanStored !== "" && pipeline.idCollides === false,
+    pipeline.orphanStored === "" ? "the orphan entry was not written" : "200 ids, 0 collisions");
+  check("a <mark> typed INTO a note is not listed as a highlight of the paper",
+    pipeline.rowsWithMarkInNote === pipeline.rowsBefore,
+    `${pipeline.rowsBefore} row(s) before, ${pipeline.rowsWithMarkInNote} with a mark in a note`);
+  check("two highlights on one line are recognised as one line",
+    pipeline.madeOnOneLine === 2 && pipeline.sameLine === true,
+    `${pipeline.madeOnOneLine} made of 2 · sameLine=${pipeline.sameLine} · ${pipeline.spans} span(s) "${pipeline.lineText}"`);
+  check("...and read left to right, whichever was made first",
+    pipeline.leftComesFirst === true, `leftComesFirst=${pipeline.leftComesFirst}`);
+  check("...and share one row, so one Go to is enough",
+    pipeline.mergedRow === true && pipeline.marksInMergedRow === 2,
+    `${pipeline.marksInMergedRow} mark(s) in the merged row`);
+  check("a selection over the line finds the highlights under it",
+    pipeline.foundUnderSelection === 2 && pipeline.foundUnderOverlay === 2,
+    `${pipeline.foundUnderSelection} found over ${pipeline.rectCount} rect(s), ${pipeline.foundUnderOverlay} with something on top`);
+  check("a partly-marked line is not treated as already highlighted",
+    pipeline.coveringWholeLine === 0, `${pipeline.coveringWholeLine} covering record(s)`);
+  check("...but a run that IS marked recolours instead of stacking a duplicate",
+    pipeline.coveringMarkedRun === 1, `${pipeline.coveringMarkedRun} covering record(s)`);
+  check("...and removing them actually removes them",
+    pipeline.goneAfterRemove === true, `gone=${pipeline.goneAfterRemove}`);
+
   // ── 6. The control row, at two widths ────────────────────────────────────
   //
   // A PDF deck is the first deck with FOUR tabs, and `.view-mode-toggle` had
