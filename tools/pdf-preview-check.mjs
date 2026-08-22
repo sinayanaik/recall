@@ -1289,6 +1289,14 @@ try {
     await settle(200);
     api.setViewMode("document");
     const opened = await api.openDocumentView({ force: true });
+    await settle(600);
+    // ...and at page 1, which is the page every assertion below is about.
+    // Earlier sections leave a reading position on page 3, and an open resumes
+    // to it — correctly. A phone's render lead is half a viewport either side
+    // (documentObserverLead), so page 1 is genuinely not due to be rasterised
+    // from there, and asserting that it has been would be asserting that the
+    // virtualisation does not work.
+    api.scrollToDocumentPage(1, 0, { smooth: false });
     await settle(1500);
 
     const view = document.getElementById("documentView");
@@ -1359,6 +1367,8 @@ try {
       pages: document.querySelectorAll(".pdf-page").length,
       pageCount: api.currentPdfPageCount(),
       scrollerHeight: Math.round(view.getBoundingClientRect().height),
+      scrollerWidth: Math.round(view.getBoundingClientRect().width),
+      pageBox: pageEl ? Math.round(pageEl.getBoundingClientRect().width) + "x" + Math.round(pageEl.getBoundingClientRect().height) : "none",
       hasCanvas: Boolean(canvas),
       isStale: Boolean(canvas && canvas.classList.contains("is-stale")),
       placeholder: Boolean(pageEl && pageEl.querySelector(".pdf-page-label")),
@@ -1378,7 +1388,7 @@ try {
     `opened=${onPhone.opened} · ${onPhone.pages}/${onPhone.pageCount} page(s) · scroller ${onPhone.scrollerHeight}px`);
   check("...and page 1 carries a fresh canvas, not a placeholder",
     onPhone.hasCanvas && !onPhone.isStale && !onPhone.placeholder,
-    onPhone.placeholder ? "p1:placeholder" : onPhone.isStale ? "p1:stale" : onPhone.hasCanvas ? "p1:fresh" : "p1:empty");
+    `${onPhone.placeholder ? "p1:placeholder" : onPhone.isStale ? "p1:stale" : onPhone.hasCanvas ? "p1:fresh" : "p1:empty"} · page ${onPhone.pageBox} in a ${onPhone.scrollerWidth}px scroller`);
   check("...with a page actually painted on it, not an empty bitmap",
     onPhone.lightest - onPhone.darkest >= 40,
     `luminance ${onPhone.darkest}..${onPhone.lightest}`);
@@ -1487,6 +1497,121 @@ try {
   await page.call("Emulation.setDeviceMetricsOverride", {
     width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
   });
+
+  // ── 9d. A wide document, on a phone ──────────────────────────────────────
+  //
+  // "It doesn't start at 100% width, and I can't pan or zoom out."
+  //
+  // Every fixture above is Letter portrait, 612pt — which on any phone fits
+  // across at a scale comfortably above the floor, so no check here has ever
+  // asked whether fit-width can actually reach the width it needs. A slide deck
+  // can not: a 1280pt 16:9 slide on a 390px screen wants 0.267 and the floor
+  // was a flat 0.4, so the page opened 512px wide in a 342px scroller. Pressing
+  // − or pinching in hit the same floor, and "Fit to width" recomputed the same
+  // clamped number — a page the reader could not fit, could not zoom out of,
+  // and could only pan around.
+  //
+  // Asserted at three widths, because the failure is a function of the ratio
+  // between the page and the screen and picking one width is picking one answer.
+  if (!OWN_PDF) {
+    const wide = buildFixturePdf({ pages: 2, annotate: false, width: 1280, height: 720 });
+    const wideResult = await page.evaluate(`async (bytes) => {
+      const { api, settle } = window.__recall;
+      const before = api.readLocalDeckIndex().map((m) => m.id);
+      const file = new File([new Uint8Array(bytes)], "slides.pdf", { type: "application/pdf" });
+      await api.importPdfFile(file, null);
+      await settle(400);
+      const index = api.readLocalDeckIndex();
+      const entry = index.find((m) => !before.includes(m.id));
+      if (!entry) return { error: "no deck was created for the wide PDF" };
+      for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+      await api.loadDeckFromLibrary(entry.id);
+      // loadDeckFromLibrary reaches openDocumentView through setViewMode and
+      // does not await it, so ask for the document directly before measuring.
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await settle(400);
+      // Measured off the rendered page rather than off api.openPdf: the check's
+      // api object is a flattened snapshot of each module's exports, so a
+      // binding the module reassigns later — which openPdf is, on every open —
+      // is a stale null here forever. The page's own proportions prove the same
+      // thing, and prove it about what actually reached the screen.
+      const el1 = document.querySelector('.pdf-page[data-page-number="1"]');
+      const box = el1 ? el1.getBoundingClientRect() : null;
+      return { deckId: entry.id, ratio: box && box.height ? box.width / box.height : 0 };
+    }`, [...wide.bytes]);
+    if (wideResult.error) throw new Error(wideResult.error);
+
+    check("a 16:9 slide deck opens as a wide document",
+      Math.abs(wideResult.ratio - 1280 / 720) < 0.02,
+      `page is ${wideResult.ratio.toFixed(3)}:1 (16:9 is ${(1280 / 720).toFixed(3)})`);
+
+    const fits = [];
+    for (const width of [360, 390, 430]) {
+      await emulatePhone(page, { width, height: 780 });
+      const one = await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        api.setViewMode("document");
+        await api.openDocumentView({ force: true });
+        await settle(900);
+        const view = document.getElementById("documentView");
+        const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+        const host = view.querySelector(":scope > .pdf-pages");
+        // Zoom all the way out from wherever it landed, then fit again — both
+        // routes have to reach a page that fits, because "Fit to width" doing
+        // nothing was half of the report.
+        api.zoomDocument(0.8);
+        await settle(300);
+        const afterZoomOut = Math.round(document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect().width);
+        api.fitDocumentToWidth();
+        await settle(400);
+        const refitted = document.querySelector('.pdf-page[data-page-number="1"]');
+        return {
+          // The WINDOW, not the scroller. Measuring the page against its own
+          // scroller is the assertion that cannot fail: without min-width: 0 a
+          // wide page widens the scroller to fit itself, so the two matched
+          // exactly while the page hung half off the side of the screen and the
+          // whole app scrolled sideways. The screen is the thing that does not
+          // move.
+          screenWidth: Math.round(window.innerWidth),
+          viewWidth: Math.round(view.clientWidth),
+          pageWidth: Math.round(pageEl.getBoundingClientRect().width),
+          refittedWidth: Math.round(refitted.getBoundingClientRect().width),
+          afterZoomOut,
+          scrollWidth: view.scrollWidth,
+          clientWidth: view.clientWidth,
+          // Nothing may be left transforming the page host: a stuck pinch
+          // transform is a page that looks zoomed in and cannot be panned to,
+          // because a transform moves the pixels and not the scroll extents.
+          hostTransform: host ? getComputedStyle(host).transform : "none"
+        };
+      }`);
+      fits.push({ width, ...one });
+    }
+
+    fits.forEach(({ width, screenWidth, viewWidth, pageWidth }) => {
+      check(`...and fits across a ${width}px phone on open`,
+        pageWidth <= screenWidth && viewWidth <= screenWidth,
+        `page ${pageWidth}px, scroller ${viewWidth}px, screen ${screenWidth}px`);
+    });
+    check("...with no horizontal panning left to do at fit width",
+      fits.every((f) => f.scrollWidth <= f.clientWidth + 1),
+      fits.map((f) => `${f.width}:${f.scrollWidth}/${f.clientWidth}`).join(" "));
+    check("...and zooming out actually zooms out",
+      fits.every((f) => f.afterZoomOut < f.pageWidth),
+      fits.map((f) => `${f.width}:${f.pageWidth}\u2192${f.afterZoomOut}`).join(" "));
+    check("...and Fit to width brings it back to the width",
+      fits.every((f) => f.refittedWidth <= f.screenWidth && f.refittedWidth > f.screenWidth * 0.8),
+      fits.map((f) => `${f.width}:${f.refittedWidth}/${f.screenWidth}`).join(" "));
+    check("...leaving nothing transforming the page host",
+      fits.every((f) => f.hostTransform === "none" || f.hostTransform === "matrix(1, 0, 0, 1, 0, 0)"),
+      fits.map((f) => f.hostTransform).join(" | "));
+
+    await page.call("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 });
+    await page.call("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+    });
+  }
 
   // ── 10. A PDF with no annotations in it ──────────────────────────────────
   //

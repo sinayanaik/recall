@@ -78,7 +78,12 @@ export function lineRect(lineIndex, width = 380) {
 // non-empty note (the imported comments), and an empty note is exactly what
 // made a freshly imported paper indistinguishable from an empty deck. A fixture
 // that always carries an annotation can never see that.
-export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true } = {}) {
+// `width`/`height` override the page box. The default is Letter portrait, which
+// is what every assertion built around fixtureLineOrigin measures against — so
+// only pass them for a check that is ABOUT the page's proportions. The one that
+// does is the fit-width case: a 16:9 slide is over twice as wide as a phone,
+// and "does a page fit across" cannot be asked of a document that already fits.
+export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true, width = PAGE_WIDTH, height = PAGE_HEIGHT } = {}) {
   const objects = [];       // 1-based; objects[i] is object i+1
   const push = (body) => { objects.push(body); return objects.length; };
 
@@ -108,7 +113,7 @@ export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true 
     const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
     const annots = pageNumber === annotatedPage ? ` /Annots [${annotationId} 0 R]` : "";
     pageIds.push(push(
-      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] `
+      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${width} ${height}] `
       + `/Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R${annots} >>`
     ));
   }
