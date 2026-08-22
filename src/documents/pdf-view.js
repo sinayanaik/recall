@@ -444,7 +444,7 @@ function publishPageWidth(width) {
 // See stalePageForRelayout: the old pixels stay, stretched, for the few frames
 // the fresh render takes, because the alternative on screen is not a crisp page,
 // it is a grey placeholder.
-export function relayoutDocument({ refit = false } = {}) {
+export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
   if (!openPdf) return;
   if (refit && openPdf.fitWidth) openPdf.scale = fitWidthScale();
   // Sized in one pass, then re-rendered in a second, because isPageNearViewport
@@ -459,6 +459,12 @@ export function relayoutDocument({ refit = false } = {}) {
     if (pageNumber === 1) publishPageWidth(width);
     if (openPdf.rendered.has(pageNumber)) entry.pendingSize = { width, height };
   });
+  // Between the two passes, deliberately. A zoom moves the scroll offsets so the
+  // point the reader was looking at stays where it was (restorePageAnchor), and
+  // the second pass below decides which pages to render from those offsets — so
+  // doing it after would render the pages the reader was about to leave and
+  // leave the ones they land on to a second round through the observer.
+  if (afterLayout) afterLayout();
   openPdf.pages.forEach((entry, pageNumber) => {
     if (!entry.pendingSize) return;
     const { width, height } = entry.pendingSize;
@@ -481,16 +487,23 @@ export function relayoutDocument({ refit = false } = {}) {
   updatePageIndicator();
 }
 
-export function setDocumentScale(scale, { fitWidth = false } = {}) {
+export function setDocumentScale(scale, { fitWidth = false, afterLayout = null } = {}) {
   if (!openPdf) return;
   openPdf.fitWidth = fitWidth;
   openPdf.scale = clampScale(scale);
-  relayoutDocument();
+  relayoutDocument({ afterLayout });
 }
 
 export function zoomDocument(step) {
   if (!openPdf) return;
-  setDocumentScale(openPdf.scale * step);
+  // Anchored, exactly as a pinch is. An unanchored zoom keeps scrollTop where
+  // it was while everything under it grows, so pressing + walks the reader
+  // steadily backwards through the document.
+  const focal = viewportFocal();
+  const anchor = focal && pageAnchorAt(focal);
+  setDocumentScale(openPdf.scale * step, {
+    afterLayout: anchor ? () => restorePageAnchor(anchor, focal) : null
+  });
 }
 
 export function fitDocumentToWidth() {
@@ -1013,37 +1026,61 @@ function touchMidpoint(touches) {
   };
 }
 
-// Where the pages box sits inside the scroller's CONTENT, which is not zero:
-// .document-scroll has 16px of top padding. Both numbers survive a relayout
-// (padding does not change with the zoom), so reading them before the commit
-// and using them after it is sound.
-function pagesContentOffset() {
+// ── Keeping the point under the fingers under the fingers ─────────────────
+//
+// Anchored to a PAGE and a fraction of it, not to a scaled coordinate in the
+// scroller. The obvious version — "every content coordinate multiplies by the
+// zoom ratio" — is wrong here in a way that only shows up a long way into a
+// document: the gaps between pages are a fixed 16px and do not scale with them,
+// so by page 100 a 1.5x zoom would have accumulated 99 gaps' worth of error and
+// landed the reader eight hundred pixels from where they were looking.
+//
+// A page and two fractions has no such assumption in it. Whatever the new
+// layout is, the anchored point is re-found in it exactly.
+function pageAnchorAt(focal) {
   const view = el.documentView;
-  const host = pagesHost();
-  if (!view || !host) return { left: 0, top: 0 };
-  const viewRect = view.getBoundingClientRect();
-  const hostRect = host.getBoundingClientRect();
+  if (!view || !openPdf) return null;
+  // elementFromPoint rather than a walk over every page: a 300-page document
+  // would otherwise cost 300 forced layouts to answer one question. It can miss
+  // — the fingers can be over the pager, or in the gap between two pages — and
+  // the page the reader is on is the right answer when it does.
+  const hit = document.elementFromPoint(focal.x, focal.y)?.closest?.(".pdf-page");
+  const pageNumber = Number(hit?.dataset.pageNumber) || currentDocumentPage();
+  const pageEl = openPdf.pages.get(pageNumber)?.el;
+  if (!pageEl) return null;
+  const rect = pageEl.getBoundingClientRect();
   return {
-    left: hostRect.left - viewRect.left + view.scrollLeft,
-    top: hostRect.top - viewRect.top + view.scrollTop
+    pageNumber,
+    fx: rect.width ? (focal.x - rect.left) / rect.width : 0.5,
+    fy: rect.height ? (focal.y - rect.top) / rect.height : 0
   };
 }
 
-// Keep the point under the fingers under the fingers.
-//
-// A point at `p` in the pages box's own coordinates is at `offset + p - scroll`
-// on screen, and re-rendering at `ratio` moves it to `p * ratio`. Solving for
-// the scroll that leaves it where it was is the whole of this. The same
-// arithmetic zoomDiagramTo does for the diagram modal — written out here rather
-// than shared because that one owns a transform and this one owns a scroller.
-function anchorDocumentZoom(focal, ratio, before) {
+// ...and put it back there, after the relayout has changed every page's size.
+// Reading the page's rect here forces the pending layout, which is what makes
+// the arithmetic below describe the document as it now is.
+function restorePageAnchor(anchor, focal) {
   const view = el.documentView;
-  if (!view || !Number.isFinite(ratio) || ratio === 1) return;
+  const entry = anchor && openPdf?.pages.get(anchor.pageNumber);
+  if (!view || !entry) return;
+  const viewRect = view.getBoundingClientRect();
+  const pageRect = entry.el.getBoundingClientRect();
+  // The anchored point, in the scroller's own content coordinates.
+  const contentX = pageRect.left - viewRect.left + view.scrollLeft + pageRect.width * anchor.fx;
+  const contentY = pageRect.top - viewRect.top + view.scrollTop + pageRect.height * anchor.fy;
+  view.scrollLeft = contentX - (focal.x - viewRect.left);
+  view.scrollTop = contentY - (focal.y - viewRect.top);
+}
+
+// The centre of the scroller, for the zoom controls: a button press has no
+// finger position to anchor on, and the middle of what you are looking at is
+// the next best answer — and a great deal better than the top of the page,
+// which is where an unanchored zoom leaves you.
+function viewportFocal() {
+  const view = el.documentView;
+  if (!view) return null;
   const rect = view.getBoundingClientRect();
-  const x = focal.x - rect.left;
-  const y = focal.y - rect.top;
-  view.scrollLeft = before.offset.left + (x + before.left - before.offset.left) * ratio - x;
-  view.scrollTop = before.offset.top + (y + before.top - before.offset.top) * ratio - y;
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
 }
 
 // The live half. `origin` is the focal point in the pages box's own
@@ -1115,23 +1152,17 @@ export function initDocumentPinchZoom() {
     const gesture = pinch;
     pinch = null;
     if (!gesture || !openPdf) { clearPinchPaint(); return; }
-    // Paint dropped FIRST: pagesContentOffset measures the box with
-    // getBoundingClientRect, and a box that is still scaled reports where the
-    // transform put it rather than where the layout has it. Dropping the
-    // transform cannot move the scroll offsets — nothing scrolls during a pinch,
-    // so they were never past the untransformed maximum.
+    // Paint dropped FIRST: pageAnchorAt measures with getBoundingClientRect,
+    // and a box that is still scaled reports where the transform put it rather
+    // than where the layout has it. Dropping the transform cannot move the
+    // scroll offsets — nothing scrolls during a pinch, so they were never past
+    // the untransformed maximum.
     clearPinchPaint();
     if (gesture.ratio === 1) return;
-    const before = {
-      left: view.scrollLeft,
-      top: view.scrollTop,
-      offset: pagesContentOffset()
-    };
-    const from = openPdf.scale;
-    setDocumentScale(gesture.startScale * gesture.ratio);
-    // Against the scale that was actually applied, not the one asked for: at
-    // either end of the range the clamp means those are different numbers.
-    anchorDocumentZoom(gesture.focal, openPdf.scale / from, before);
+    const anchor = pageAnchorAt(gesture.focal);
+    setDocumentScale(gesture.startScale * gesture.ratio, {
+      afterLayout: anchor ? () => restorePageAnchor(anchor, gesture.focal) : null
+    });
   };
   view.addEventListener("touchend", end, { passive: true });
   view.addEventListener("touchcancel", end, { passive: true });
