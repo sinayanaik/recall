@@ -324,8 +324,40 @@ export function clampScale(scale) {
   return Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, scale));
 }
 
-function buildPagePlaceholders() {
+// ── The pages live in a box of their own ──────────────────────────────────
+//
+// #documentView is the scroller and it centres what is in it. That is right
+// while the page is narrower than the window and wrong the moment it is not:
+// a centred overflow is split between both sides, and scrollLeft cannot go
+// below zero — so at any zoom past fit-width the left margin of every page was
+// simply unreachable. Half of a zoomed page, gone.
+//
+// So the pages sit in one box that is `min-width: 100%` (centred as before when
+// the page is narrower) and `width: max-content` starting at the left edge when
+// it is wider (nothing to reach for; the whole page is scrollable). It is also
+// the single element the pinch gesture transforms, which is the other reason it
+// exists.
+//
+// Deliberately UNPOSITIONED: .pdf-page's offsetParent stays .document-stage, so
+// every offsetTop reading in this file — the page the reader is on, the resume
+// scroll, isPageNearViewport — means exactly what it meant before. Everything
+// outside this module reaches pages by descendant query, so none of it notices
+// the box at all.
+export function pagesHost() {
   const view = el.documentView;
+  if (!view) return null;
+  let host = view.querySelector(":scope > .pdf-pages");
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "pdf-pages";
+    view.appendChild(host);
+  }
+  return host;
+}
+
+function buildPagePlaceholders() {
+  const view = pagesHost();
+  if (!view) return;
   const frag = document.createDocumentFragment();
   for (let pageNumber = 1; pageNumber <= openPdf.pageCount; pageNumber++) {
     const page = document.createElement("div");
@@ -376,23 +408,46 @@ function publishPageWidth(width) {
   el.documentView?.style.setProperty("--pdf-page-w", `${Math.round(width)}px`);
 }
 
-// Re-lay everything out at the current scale. Rendered pages are dropped back
-// to placeholders rather than re-scaled in CSS: a canvas stretched by a
-// transform is blurry, and the whole promise of this surface is that the page
-// looks the way it was laid out.
+// Re-lay everything out at the current scale. A page's canvas is never simply
+// stretched to the new size and left there — a canvas scaled in CSS is a blurry
+// canvas, and the promise of this surface is that the page looks the way it was
+// laid out — but it is not thrown away before its replacement exists either.
+// See stalePageForRelayout: the old pixels stay, stretched, for the few frames
+// the fresh render takes, because the alternative on screen is not a crisp page,
+// it is a grey placeholder.
 export function relayoutDocument({ refit = false } = {}) {
   if (!openPdf) return;
   if (refit && openPdf.fitWidth) openPdf.scale = fitWidthScale();
+  // Sized in one pass, then re-rendered in a second, because isPageNearViewport
+  // reads offsetTop and every page has to have its new height before the first
+  // of those answers are worth anything.
+  const near = new Set();
   openPdf.pages.forEach((entry, pageNumber) => {
     const width = (entry.viewport ? entry.viewport.width / (entry.renderScale || 1) : openPdf.baseWidth) * openPdf.scale;
     const height = (entry.viewport ? entry.viewport.height / (entry.renderScale || 1) : openPdf.baseHeight) * openPdf.scale;
     entry.el.style.width = `${Math.round(width)}px`;
     entry.el.style.height = `${Math.round(height)}px`;
     if (pageNumber === 1) publishPageWidth(width);
-    if (openPdf.rendered.has(pageNumber)) unrenderPage(pageNumber);
+    if (openPdf.rendered.has(pageNumber)) entry.pendingSize = { width, height };
   });
   openPdf.pages.forEach((entry, pageNumber) => {
-    if (isPageNearViewport(pageNumber)) renderPage(pageNumber);
+    if (!entry.pendingSize) return;
+    const { width, height } = entry.pendingSize;
+    entry.pendingSize = null;
+    // Only a page that is about to be re-rendered keeps its old pixels. One
+    // that is not is dropped outright: a stale canvas is not in openPdf.rendered
+    // any more, so trimRenderedPages would never come back for it and every zoom
+    // would leave another few megabytes of bitmap behind.
+    if (isPageNearViewport(pageNumber)) {
+      near.add(pageNumber);
+      stalePageForRelayout(pageNumber, width, height);
+    } else {
+      unrenderPage(pageNumber);
+    }
+  });
+  near.forEach((pageNumber) => renderPage(pageNumber));
+  openPdf.pages.forEach((entry, pageNumber) => {
+    if (!near.has(pageNumber) && isPageNearViewport(pageNumber)) renderPage(pageNumber);
   });
   updatePageIndicator();
 }
@@ -414,6 +469,14 @@ export function fitDocumentToWidth() {
   openPdf.fitWidth = true;
   openPdf.scale = fitWidthScale();
   relayoutDocument();
+}
+
+// Is the page still tracking the width of the window, or has the reader set a
+// zoom of their own? The window resize handler in src/main.js is the caller:
+// re-fitting a page somebody deliberately zoomed is not a re-fit, it is
+// throwing their zoom away.
+export function isDocumentFitWidth() {
+  return Boolean(openPdf?.fitWidth);
 }
 
 function isPageNearViewport(pageNumber) {
@@ -474,6 +537,9 @@ async function renderPage(pageNumber) {
     if (stale()) return;
 
     entry.el.querySelector(".pdf-page-label")?.remove();
+    // ...and the previous scale's canvas, which stalePageForRelayout left in
+    // place precisely so there was something to look at until this moment.
+    entry.el.querySelector(".pdf-canvas.is-stale")?.remove();
     entry.el.append(canvas, markLayer, textLayer);
     entry.markLayer = markLayer;
     entry.textLayer = textLayer;
@@ -514,6 +580,38 @@ export async function whenDocumentPageReady(pageNumber) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   return false;
+}
+
+// The relayout half of unrenderPage: same invalidation, but the canvas is kept.
+//
+// relayoutDocument used to call unrenderPage on every rendered page, so every
+// zoom step — and on a phone that meant ten steps a second through a pinch —
+// flashed each visible page to a grey page number and back. What is left behind
+// here is the previous canvas, stretched in CSS to the page's new box: soft for
+// the few frames the re-render takes, and replaced by real pixels the moment it
+// lands (renderPage drops `.is-stale` along with the placeholder label).
+//
+// The text and mark layers are NOT kept. Their coordinates are in the old
+// scale, so a stretched text layer would put the selectable boxes off the
+// glyphs and a stretched mark layer would paint highlights over the wrong
+// words. Missing for a few frames is right; wrong is not.
+function stalePageForRelayout(pageNumber, width, height) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry) return;
+  const canvas = entry.el.querySelector(".pdf-canvas");
+  if (!canvas) {
+    unrenderPage(pageNumber);
+    return;
+  }
+  entry.generation = (entry.generation || 0) + 1;
+  openPdf.rendered.delete(pageNumber);
+  entry.markLayer?.remove();
+  entry.textLayer?.remove();
+  entry.markLayer = null;
+  entry.textLayer = null;
+  canvas.classList.add("is-stale");
+  canvas.style.width = `${Math.round(width)}px`;
+  canvas.style.height = `${Math.round(height)}px`;
 }
 
 function unrenderPage(pageNumber) {
@@ -803,17 +901,29 @@ export async function saveDocumentCopy() {
 // scales the toolbar and the tabs along with the page, and it leaves the reader
 // panning a viewport instead of reading a column.
 //
-// Committed as a REAL re-render, throttled, rather than shown as a CSS
-// transform and committed on release. A transform would be the cheaper live
-// feedback, but a scaled canvas is a blurry canvas, and "the page looks exactly
-// as its author laid it out" is the one promise this whole surface exists to
-// keep — showing a soft approximation mid-gesture undoes it at precisely the
-// moment the reader is looking closely. The render window on a phone is two or
-// three modest canvases, so a re-render every PINCH_COMMIT_MS is affordable.
-export const PINCH_COMMIT_MS = 100;
-
-// Below this the gesture is a two-finger scroll, not a pinch. Without it, the
-// small distance drift in a two-finger pan reads as a zoom and the page creeps.
+// ── Why this is a transform now, when it deliberately was not ─────────────
+//
+// It used to commit a REAL re-render every PINCH_COMMIT_MS, on the argument
+// that a scaled canvas is a blurry canvas and "the page looks the way its
+// author laid it out" is the promise this surface exists to keep. The argument
+// is right about the resting state and wrong about the gesture, for a reason
+// that is only visible on a phone: relayoutDocument drops every rendered page
+// back to a PLACEHOLDER before re-rendering it, and a re-render is several
+// async hops. So what a pinch actually showed was not a crisp page — it was the
+// grey page-number placeholder, ten times a second, while the phone
+// re-rasterised three canvases and rebuilt two thousand text spans per page for
+// each one of those ten frames. That is most of "the PDF viewer is very slow on
+// mobile".
+//
+// So: the gesture is a transform on .pdf-pages (one composited element, no
+// layout, no rasterising, tracks the fingers at 60fps) and the re-render
+// happens ONCE, when the fingers lift. The promise is kept where it is
+// checkable — at rest, at every zoom level, the page is rendered at that zoom —
+// and what the soft frames replace is a placeholder, not a page.
+//
+// Below this ratio the gesture is a two-finger scroll, not a pinch. Without it
+// the small distance drift in a two-finger pan reads as a zoom and the page
+// creeps.
 export const PINCH_MIN_RATIO = 0.02;
 
 let pinch = null;
@@ -822,13 +932,90 @@ function touchDistance(touches) {
   return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
 }
 
+function touchMidpoint(touches) {
+  return {
+    x: (touches[0].clientX + touches[1].clientX) / 2,
+    y: (touches[0].clientY + touches[1].clientY) / 2
+  };
+}
+
+// Where the pages box sits inside the scroller's CONTENT, which is not zero:
+// .document-scroll has 16px of top padding. Both numbers survive a relayout
+// (padding does not change with the zoom), so reading them before the commit
+// and using them after it is sound.
+function pagesContentOffset() {
+  const view = el.documentView;
+  const host = pagesHost();
+  if (!view || !host) return { left: 0, top: 0 };
+  const viewRect = view.getBoundingClientRect();
+  const hostRect = host.getBoundingClientRect();
+  return {
+    left: hostRect.left - viewRect.left + view.scrollLeft,
+    top: hostRect.top - viewRect.top + view.scrollTop
+  };
+}
+
+// Keep the point under the fingers under the fingers.
+//
+// A point at `p` in the pages box's own coordinates is at `offset + p - scroll`
+// on screen, and re-rendering at `ratio` moves it to `p * ratio`. Solving for
+// the scroll that leaves it where it was is the whole of this. The same
+// arithmetic zoomDiagramTo does for the diagram modal — written out here rather
+// than shared because that one owns a transform and this one owns a scroller.
+function anchorDocumentZoom(focal, ratio, before) {
+  const view = el.documentView;
+  if (!view || !Number.isFinite(ratio) || ratio === 1) return;
+  const rect = view.getBoundingClientRect();
+  const x = focal.x - rect.left;
+  const y = focal.y - rect.top;
+  view.scrollLeft = before.offset.left + (x + before.left - before.offset.left) * ratio - x;
+  view.scrollTop = before.offset.top + (y + before.top - before.offset.top) * ratio - y;
+}
+
+// The live half. `origin` is the focal point in the pages box's own
+// coordinates, measured once before anything is transformed — transform-origin
+// is read in that same pre-transform space, so measuring it again mid-gesture
+// would compound.
+function paintPinch(origin, ratio) {
+  const host = pagesHost();
+  if (!host) return;
+  host.classList.add("is-pinching");
+  host.style.willChange = "transform";
+  host.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+  host.style.transform = `scale(${ratio})`;
+}
+
+function clearPinchPaint() {
+  const host = pagesHost();
+  if (!host) return;
+  host.classList.remove("is-pinching");
+  host.style.transform = "";
+  host.style.transformOrigin = "";
+  host.style.willChange = "";
+}
+
 export function initDocumentPinchZoom() {
   const view = el.documentView;
   if (!view) return;
 
   view.addEventListener("touchstart", (event) => {
     if (event.touches.length !== 2 || !openPdf) return;
-    pinch = { startDistance: touchDistance(event.touches), startScale: openPdf.scale, lastCommit: 0 };
+    const host = pagesHost();
+    if (!host) return;
+    const focal = touchMidpoint(event.touches);
+    const hostRect = host.getBoundingClientRect();
+    pinch = {
+      startDistance: touchDistance(event.touches),
+      startScale: openPdf.scale,
+      // Fixed at the midpoint the gesture STARTED from, and not re-read as the
+      // fingers move: transform-origin is in pre-transform coordinates, so a
+      // moving origin would compound with the scale already applied. It is also
+      // the point the commit anchors on, so the two halves agree by
+      // construction.
+      focal,
+      origin: { x: focal.x - hostRect.left, y: focal.y - hostRect.top },
+      ratio: 1
+    };
   }, { passive: true });
 
   view.addEventListener("touchmove", (event) => {
@@ -836,18 +1023,42 @@ export function initDocumentPinchZoom() {
     const distance = touchDistance(event.touches);
     if (!pinch.startDistance) return;
     const ratio = distance / pinch.startDistance;
-    if (Math.abs(ratio - 1) < PINCH_MIN_RATIO) return;
+    if (Math.abs(ratio - 1) < PINCH_MIN_RATIO && pinch.ratio === 1) return;
     // preventDefault only once this really is a pinch, so a two-finger scroll
     // still scrolls. The listener is therefore NOT passive — which is the whole
     // reason this one differs from the two around it.
     event.preventDefault();
-    const now = performance.now();
-    if (now - pinch.lastCommit < PINCH_COMMIT_MS) return;
-    pinch.lastCommit = now;
-    setDocumentScale(pinch.startScale * ratio);
+    // Clamped against the same limits the commit will apply, so the page does
+    // not stretch to a size it is about to snap back from.
+    pinch.ratio = clampScale(pinch.startScale * ratio) / pinch.startScale;
+    paintPinch(pinch.origin, pinch.ratio);
   }, { passive: false });
 
-  const end = () => { pinch = null; };
+  // One commit, when the fingers lift. `touchend` fires per finger, so this
+  // runs on the first of the two leaving — which is right: the gesture is over
+  // as soon as it stops being two fingers.
+  const end = () => {
+    const gesture = pinch;
+    pinch = null;
+    if (!gesture || !openPdf) { clearPinchPaint(); return; }
+    // Paint dropped FIRST: pagesContentOffset measures the box with
+    // getBoundingClientRect, and a box that is still scaled reports where the
+    // transform put it rather than where the layout has it. Dropping the
+    // transform cannot move the scroll offsets — nothing scrolls during a pinch,
+    // so they were never past the untransformed maximum.
+    clearPinchPaint();
+    if (gesture.ratio === 1) return;
+    const before = {
+      left: view.scrollLeft,
+      top: view.scrollTop,
+      offset: pagesContentOffset()
+    };
+    const from = openPdf.scale;
+    setDocumentScale(gesture.startScale * gesture.ratio);
+    // Against the scale that was actually applied, not the one asked for: at
+    // either end of the range the clamp means those are different numbers.
+    anchorDocumentZoom(gesture.focal, openPdf.scale / from, before);
+  };
   view.addEventListener("touchend", end, { passive: true });
   view.addEventListener("touchcancel", end, { passive: true });
 }
