@@ -331,6 +331,7 @@ const APP_SHELL = [
   `./src/documents/pdf-store.js?v=${STAMP}`,
   `./src/documents/pdf-view.js?v=${STAMP}`,
   `./src/editor/highlight-mirror.js?v=${STAMP}`,
+  `./src/editor/markdown-keys.js?v=${STAMP}`,
   `./src/editor/text-transforms.js?v=${STAMP}`,
   `./src/editor/toolbar-actions.js?v=${STAMP}`,
   `./src/editor/toolbars.js?v=${STAMP}`,

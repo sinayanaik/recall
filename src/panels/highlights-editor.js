@@ -40,6 +40,7 @@ import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__
 import { highlightNoteTextAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { installMarkdownKeys } from "../editor/markdown-keys.js?v=__BUILD__";
 import { NOTE_AUTOSAVE_MS } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
@@ -307,6 +308,15 @@ function openNoteEditor(article, entry) {
     if (event.key !== "Escape") return;
     event.stopPropagation();
     commitOpenNote();
+  });
+  // The same formatting keys the note popup has, on the same terms — this is
+  // the other place a highlight's note gets written, and the two should not
+  // disagree about what Ctrl+B does. Ctrl+E means the same thing it means
+  // everywhere else, "show me the other mode", which here is the rendered note:
+  // committing puts the textarea away and paints it back.
+  installMarkdownKeys(area, {
+    toggleMode: () => commitOpenNote(),
+    done: () => commitOpenNote()
   });
   fit();
   area.focus();

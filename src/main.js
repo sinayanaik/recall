@@ -1991,6 +1991,13 @@ el.card.addEventListener("touchend", handleTouchEnd);
 el.card.addEventListener("touchcancel", handleTouchCancel);
 
 document.addEventListener("keydown", (event) => {
+  // An editor that owns a key stops the event on its own element, so nothing
+  // below should ever see one — installMarkdownKeys does exactly that for the
+  // note popup and the Highlights tab's in-place editor. This is the guard
+  // against the next surface someone adds and forgets: the handler below
+  // catches Ctrl+E wherever it lands, deliberately, which is how it came to
+  // flip the notes view behind a popup somebody was typing into.
+  if (event.target.closest?.(".highlight-note-editor, .hl-note")) return;
   // Ctrl/Cmd+E toggles raw/rendered view — checked first so it still fires
   // while focus is inside the question/answer/notes edit textareas.
   if ((event.ctrlKey || event.metaKey) && (event.key === "e" || event.key === "E")) {
