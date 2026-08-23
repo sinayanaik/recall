@@ -262,6 +262,10 @@ export const el = {
   readingRailGrip: document.querySelector("#readingRailGrip"),
   readingRailTray: document.querySelector("#readingRailTray"),
   myDecksImportPdfInput: document.querySelector("#myDecksImportPdfInput"),
+  // The drawer's "Attach a PDF" row, for a deck that was created without one.
+  // Hidden by refreshDocumentTab whenever the open deck already has a document.
+  attachPdfBtn: document.querySelector("#attachPdfBtn"),
+  attachPdfInput: document.querySelector("#attachPdfInput"),
   frameCardModal: document.querySelector("#frameCardModal"),
   frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),

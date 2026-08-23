@@ -25,7 +25,7 @@ import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
 import { formatStorageBytes } from "./core/text.js?v=__BUILD__";
 import { handleToolbarClick } from "./editor/toolbar-actions.js?v=__BUILD__";
-import { closeAllEditToolbarDropdowns, initToolbars, setCloseMainMenu, setIsMainMenuOpen, toggleClozes } from "./editor/toolbars.js?v=__BUILD__";
+import { closeAllEditToolbarDropdowns, closeMainMenu, initToolbars, setCloseMainMenu, setIsMainMenuOpen, toggleClozes } from "./editor/toolbars.js?v=__BUILD__";
 import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/triple-click.js?v=__BUILD__";
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
 import { closePrintPreview, printPreviewOpen } from "./export/pdf.js?v=__BUILD__";
@@ -112,7 +112,7 @@ import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocum
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
-import { importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
+import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
        // grid | folder | tree
  // tiles | list
@@ -1410,6 +1410,17 @@ el.myDecksImportPdfInput?.addEventListener("change", async (event) => {
   }
 });
 document.getElementById("myDecksImportPdfBtn")?.addEventListener("click", () => closeMyDecksMoreMenu());
+
+// The same file, onto the deck already open, for a deck that was created without
+// a PDF. Not an import: nothing about the deck's title, category, cards or notes
+// body is touched — see attachPdfToOpenDeck.
+el.attachPdfInput?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0] || null;
+  event.target.value = ""; // allow picking the same file again after a failure
+  if (!file) return;
+  closeMainMenu();
+  await attachPdfToOpenDeck(file).catch(reportPdfImportCrash);
+});
 
 // View switcher (Grid / Folder / Tree) — pure presentation, repaint from cache.
 el.myDecksViewSwitch?.addEventListener("click", (e) => {

@@ -15,6 +15,7 @@
 // reportPdfImportCrash — so the dispatch in files.js stays symmetric and a
 // reader of that file does not have to learn two shapes.
 
+import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -32,7 +33,9 @@ import { setMyDecksCwd, setMyDecksView } from "../library/my-decks-prefs.js?v=__
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { persistWorkingDeck } from "../storage/quota.js?v=__BUILD__";
 import { openMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
+import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
+import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
 export function isPdfName(name) {
   return /\.pdf$/i.test(String(name || ""));
@@ -144,6 +147,19 @@ export async function readExistingHighlights(doc, progress) {
     });
   }
   return { records, notes };
+}
+
+// Why the document did not reach the cloud, in the reader's terms. Deliberately
+// not fatal to either caller: the deck is readable on this device either way,
+// and what is lost is the copy that would let them open it on their phone —
+// which they can only decide what to do about if they are told.
+export function describePdfUploadFailure(error) {
+  if (error?.message === "OFFLINE") return "you're offline";
+  if (error?.message === "NOT_SIGNED_IN") return "you're not signed in";
+  if (error?.message === "CANCELLED") return "you cancelled it";
+  if (/timed out/i.test(error?.message || "")) return "the connection timed out";
+  if (/bucket/i.test(error?.message || "")) return "the documents bucket is missing — re-run supabase_setup.sql";
+  return error?.message || "the upload failed";
 }
 
 export function reportPdfImportCrash(error) {
@@ -268,13 +284,7 @@ export async function importPdfFile(file, folderPath = null) {
       // readable on this device either way; what the reader loses is the copy
       // that would let them open it on their phone, and they can only decide
       // what to do about that if they are told.
-      uploadError = error?.message === "OFFLINE" ? "you're offline"
-        : error?.message === "NOT_SIGNED_IN" ? "you're not signed in"
-          : error?.message === "CANCELLED" ? "you cancelled it"
-            : /timed out/i.test(error?.message || "") ? "the connection timed out"
-              : /bucket/i.test(error?.message || "")
-                ? "the documents bucket is missing — re-run supabase_setup.sql"
-                : error?.message || "the upload failed";
+      uploadError = describePdfUploadFailure(error);
       console.warn("Could not upload the document", error);
     }
 
@@ -309,6 +319,145 @@ export async function importPdfFile(file, folderPath = null) {
     const message = `Could not import "${title}" — ${error?.message || error?.name || "unexpected error"}`;
     setStatus(message, "error");
     showToast(message, "error");
+  } finally {
+    await doc?.destroy?.().catch(() => {});
+    progress.close();
+  }
+}
+
+// ── Attaching a PDF to a deck that already exists ───────────────────────────
+//
+// "Once a deck has been created without a PDF there is no option to attach one
+// again." There genuinely was not. Importing a PDF made a NEW deck, and the
+// Document surface — which owns "Re-attach the PDF…" — only exists for a deck
+// that already has meta.pdf, so a deck without one had no way in at all. That
+// left three ordinary situations with no route out: a paper whose import failed
+// after the deck was written, notes typed up before the file was to hand, and a
+// deck made by hand that the reader then wanted to read the paper alongside.
+//
+// Re-attach is a different thing and stays where it is. That one points a deck
+// back at bytes it already knows the hash of, and REFUSES a file that does not
+// match, because a highlight is a coordinate into one exact file. This one is
+// for a deck that has no document at all, so there is nothing to match against
+// and nothing to refuse.
+//
+// Everything else is the import path, deliberately: the same page count, the
+// same annotations read out of the file, the same device-copy-then-upload order,
+// the same "it is on this device but not in the cloud" wording when the upload
+// cannot happen. What it does NOT do is touch the deck's title, category, cards
+// or notes body — this is an addition to a deck the reader already has, not an
+// import that happens to land on top of one.
+export async function attachPdfToOpenDeck(file) {
+  if (!file) return false;
+  if (!state.deckTitle && !state.masterCards.length && !String(state.notes || "").trim()) {
+    showToast("Open or create a deck first, then attach its PDF", "error");
+    return false;
+  }
+  if (state.meta?.pdf) {
+    // The Document surface's own row is the right control for this, and it is
+    // the one that checks the hash.
+    showToast("This deck already has a PDF — use Document ⋯ → Re-attach the PDF", "info");
+    return false;
+  }
+  if (file.size > MAX_DOCUMENT_BYTES) {
+    const message = `${file.name} is larger than the ${Math.round(MAX_DOCUMENT_BYTES / (1024 * 1024))}MB limit for a document.`;
+    setStatus(message, "error");
+    showToast(message, "error");
+    return false;
+  }
+  setStatus(`Reading ${file.name}…`);
+  if (!(await ensurePdfJs())) {
+    setStatus("The PDF reader did not load — reconnect once and try again.", "error");
+    showToast("The PDF reader did not load", "error");
+    return false;
+  }
+
+  const progress = showImportProgress(state.deckTitle || file.name, "PDF");
+  let doc = null;
+  try {
+    progress.update("Reading the document…", 0.05);
+    const data = new Uint8Array(await file.arrayBuffer());
+    doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    const pageCount = doc.numPages;
+    const { records, notes } = await readExistingHighlights(doc, progress);
+    await doc.destroy().catch(() => {});
+    doc = null;
+
+    progress.update("Hashing the file…", 0.65);
+    const hash = await sha256(file);
+
+    // Written into the deck BEFORE the save, so the save is what persists them —
+    // one write, and no window in which the deck claims a document it has not
+    // stored the bytes for.
+    let deckNotes = state.notes || "";
+    notes.forEach((note) => { deckNotes = setHighlightNoteInSource(deckNotes, note.id, note.text, note.label); });
+    state.notes = deckNotes;
+    state.meta = {
+      ...(state.meta && typeof state.meta === "object" ? state.meta : {}),
+      pdf: {
+        name: file.name,
+        size: file.size,
+        pages: pageCount,
+        sha256: hash,
+        path: null,
+        importedAt: new Date().toISOString()
+      },
+      // Merged rather than assigned: a deck can already carry highlights from
+      // its own <mark>s, and an id minted here is from the same namespace.
+      pdfHighlights: [...(Array.isArray(state.meta?.pdfHighlights) ? state.meta.pdfHighlights : []), ...records]
+    };
+
+    progress.update("Saving the deck…", 0.7);
+    if (!(await saveDeckToLibrary({ silent: true }))) {
+      throw new Error("could not save the deck on this device");
+    }
+    const deckLocalId = state.localDeckId;
+
+    // The device copy first, and before the upload: it is the copy the reader is
+    // about to open, and the one that survives being offline.
+    progress.update("Storing the document on this device…", 0.75);
+    await putDocument({ deckLocalId, blob: file, sha256: hash, name: file.name, at: Date.now() });
+
+    let uploadError = "";
+    try {
+      progress.update("Uploading the document…", 0.85);
+      const folder = `${storageFolderSlug(state.deckTitle || "paper", "paper")}--${storageGroupId()}`;
+      const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "document") }, progress);
+      state.meta = { ...state.meta, pdf: { ...state.meta.pdf, path } };
+      await saveDeckToLibrary({ silent: true });
+    } catch (error) {
+      uploadError = describePdfUploadFailure(error);
+      console.warn("Could not upload the document", error);
+    }
+
+    // The Document tab does not exist until meta.pdf does, so both of these have
+    // to run before the view can be switched to it.
+    updateMeta();
+    setViewMode("document");
+    await openDocumentView({ force: true });
+
+    const imported = records.length
+      ? ` · ${records.length} existing highlight${records.length === 1 ? "" : "s"} imported`
+      : "";
+    const summary = `Attached "${file.name}" — ${pageCount} page${pageCount === 1 ? "" : "s"}${imported}`;
+    progress.update(summary, 1);
+    if (uploadError) {
+      const message = `${summary}. It's on this device, but not in the cloud — ${uploadError}. Sync once you're back to read it elsewhere.`;
+      setStatus(message, "error");
+      showToast(message, "error");
+    } else {
+      setStatus(`${summary}.`);
+      showToast(summary);
+    }
+    return true;
+  } catch (error) {
+    console.error("PDF attach failed", error);
+    // The deck is left exactly as it was: meta.pdf is only written after the
+    // parse succeeds, and a save that fails throws before it.
+    const message = `Could not attach "${file.name}" — ${error?.message || error?.name || "unexpected error"}`;
+    setStatus(message, "error");
+    showToast(message, "error");
+    return false;
   } finally {
     await doc?.destroy?.().catch(() => {});
     progress.close();

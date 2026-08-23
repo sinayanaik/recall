@@ -99,6 +99,17 @@ export function updateMeta() {
 //
 // Called from updateMeta, which every deck load, import and swap already runs,
 // so there is no second place that has to remember to keep this in step.
+//
+// ── ...and the way IN, for a deck that has none ──────────────────────────
+//
+// The same rule, inverted, decides the drawer's "Attach a PDF" row. That
+// question — "once a deck has been created without a PDF there is no option to
+// attach one again" — was exactly right: importing a PDF makes a NEW deck, and
+// "Re-attach the PDF…" lives inside the Document surface, which does not exist
+// until meta.pdf does. So a deck with no document had no route to one at all,
+// and a deck WITH one has a better route than this (Re-attach checks the hash;
+// this cannot, having nothing to check against). One flag, two controls, and
+// they are never both offered.
 export function refreshDocumentTab() {
   const button = el.viewModeToggle?.querySelector('[data-view-mode="document"]');
   if (!button) return;
@@ -109,6 +120,9 @@ export function refreshDocumentTab() {
   // remembered opens an empty surface on a deck that has no document.
   const railButton = el.readingRailTray?.querySelector('[data-view-mode="document"]');
   if (railButton) railButton.hidden = !hasDocument;
+  // Only for a deck that is actually open: attaching a paper to nothing is not a
+  // thing to offer, and the row would sit there on the welcome screen.
+  if (el.attachPdfBtn) el.attachPdfBtn.hidden = hasDocument || !hasActiveDeck();
   // A deck whose document has gone away underneath the open view (offloaded on
   // another device and pulled down) must not leave the reader parked on a
   // surface with no tab to leave by.
