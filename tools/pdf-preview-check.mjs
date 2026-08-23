@@ -2732,6 +2732,28 @@ try {
     const rowBefore = document.getElementById("attachPdfBtn")?.hidden;
     const tabBefore = document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden;
 
+    // ── ...and the panel that offers it ───────────────────────────────────
+    //
+    // "The attach pdf needs to be inside the panels itself." The drawer row
+    // above is a route you have to be told about; the Document tab is on every
+    // deck now, and on one with no paper it opens to the offer of a paper. So:
+    // press the tab the way a reader does, and read what is in the panel.
+    document.querySelector('#viewModeToggle [data-view-mode="document"]')?.click();
+    await settle(350);
+    const panelView = api.state.viewMode;
+    const panel = document.querySelector("#documentView .pdf-missing");
+    const panelHeading = panel?.querySelector("h2")?.textContent || "";
+    const panelPicks = Boolean(panel?.querySelector('.pdf-missing-pick input[type="file"]'));
+    // The document's own controls have nothing to act on here, and four inert
+    // buttons over an attach panel is the same fault as a table of contents over
+    // a paper — see styles/37-document-chrome.css.
+    const inertShown = ["documentTocBtn", "documentDarkBtn", "documentRegionBtn", "documentMoreBtn"]
+      .filter((id) => {
+        const node = document.getElementById(id);
+        return node && getComputedStyle(node).display !== "none";
+      });
+    const pagerShown = getComputedStyle(document.getElementById("documentPager")).display !== "none";
+
     const file = new File([new Uint8Array(bytes)], name, { type: "application/pdf" });
     const ok = await api.attachPdfToOpenDeck(file);
     await settle(700);
@@ -2742,6 +2764,7 @@ try {
     return {
       ok, twice,
       rowBefore, tabBefore,
+      panelView, panelHeading, panelPicks, inertShown, pagerShown,
       rowAfter: document.getElementById("attachPdfBtn")?.hidden,
       tabAfter: document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden,
       title: api.state.deckTitle,
@@ -2757,6 +2780,14 @@ try {
 
   check("a deck created without a PDF offers a way to attach one", attached.rowBefore === false,
     `row hidden=${attached.rowBefore}, Document tab hidden=${attached.tabBefore}`);
+  check("...including a Document tab, on a deck that has no document",
+    attached.tabBefore === false, `tab hidden=${attached.tabBefore}`);
+  check("...which opens to the offer of one, inside the panel",
+    attached.panelView === "document" && attached.panelPicks && /attach/i.test(attached.panelHeading),
+    `view=${attached.panelView} · “${attached.panelHeading}” · picker=${attached.panelPicks}`);
+  check("...with no document controls hanging over it",
+    attached.inertShown.length === 0 && attached.pagerShown === false,
+    attached.inertShown.length ? `still shown: ${attached.inertShown.join(", ")}` : `pager=${attached.pagerShown}`);
   check("...and attaching one gives that deck a Document tab", attached.ok && attached.tabAfter === false,
     `attached=${attached.ok}, tab hidden=${attached.tabAfter}, view=${attached.viewMode}`);
   check("...with the file's pages and hash on the deck", attached.pages > 0 && attached.sha === 64,
