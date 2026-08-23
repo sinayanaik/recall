@@ -149,7 +149,7 @@ export function tocRailHtml(depths, index, depth) {
 //
 // `tail` is an optional node appended inside the link after the text — the page
 // number on a document row, and nothing at all on a notes row.
-export function tocRowFor({ index, depth, depths, level, text, id, href, branch, tail }) {
+export function tocRowFor({ index, depth, depths, level, text, href, branch, tail }) {
   const li = document.createElement("li");
   li.className = TOC_ROW_CLASS;
   // The twisty is positioned against the row, at this row's own indent, so the
@@ -187,7 +187,6 @@ export function tocRowFor({ index, depth, depths, level, text, id, href, branch,
     twisty.innerHTML = '<span class="notes-toc-twisty-glyph" aria-hidden="true">▸</span>';
     li.appendChild(twisty);
   }
-  if (id) li.dataset.tocKey = id;
   return { li, link };
 }
 

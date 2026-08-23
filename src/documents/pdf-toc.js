@@ -10,9 +10,10 @@
 // the hamburger and see nothing" is as true of an empty list as of a drawer that
 // never came on screen (it was both — see the CSS note in styles/36-document.css).
 //
-// The information IS on the page: a heading is set in larger or bolder type than
-// the paragraph under it, and in a numbered paper it is announced outright
-// ("3.1 Method"). That is what this reads.
+// The information IS on the page: a heading is set in larger type than the
+// paragraph under it, and in a numbered paper it is announced outright
+// ("3.1 Method"). That is what this reads. (Bolder type would be the third
+// signal and is not available — see the note on it below.)
 //
 // ── What it is careful about ───────────────────────────────────────────────
 //
@@ -81,10 +82,27 @@ export const PDF_TOC_HEADING_RATIO = 1.12;
 // 260px drawer column, roughly — past it the row stops being scannable anyway.
 export const PDF_TOC_TITLE_MAX_CHARS = 120;
 
-// ...and a bold line at BODY size has to be shorter still to be a heading. Bold
-// mid-paragraph is emphasis, and emphasis is usually a phrase; a run-in heading
-// is a few words.
-export const PDF_TOC_BOLD_MAX_CHARS = 80;
+// A "Chapter 4" / "Appendix B" line at body size has to be short to be a
+// heading rather than a sentence that happens to start with the word.
+export const PDF_TOC_SHORT_MAX_CHARS = 80;
+
+// ── The rule that is NOT here, and why ────────────────────────────────────
+//
+// The obvious third signal is WEIGHT: a subsection head set bold at body size,
+// which is how a great many papers do it. It is not read here because pdf.js
+// does not hand it over. A text item's `fontName` is a generated id
+// ("g_d0_f1"), and the styles map it indexes carries
+// `{ fontFamily, ascent, descent, vertical }` where fontFamily is the FALLBACK
+// name the worker computed — "serif", "sans-serif" or "monospace", nothing
+// more (pdf.js 3.11, Font#fallbackName). Testing any of that for /bold/ is
+// code that reads as if it works and can never fire once, which is worse than
+// not having it: the next person to touch this would trust it.
+//
+// What is left is size, numbering and the named forms below, all of which are
+// asserted against a real document in tools/pdf-preview-check.mjs. A paper
+// whose only cue is boldness gets its top-level headings (those are set larger
+// too, essentially always) and not its subsections, which is the honest
+// outcome and is still a contents where there was none.
 
 // Two text items are on the same line when their baselines are within this
 // fraction of the taller one's height. A superscript, a footnote marker and an
@@ -105,8 +123,6 @@ export const PDF_TOC_RUNNING_MIN_PAGES = 3;
 // furniture. Page numbers, journal names, DOIs and "Preprint. Under review."
 // all live here.
 export const PDF_TOC_EDGE_BAND = 0.06;
-
-export const PDF_TOC_BOLD_RE = /bold|black|heavy|semibold|demibold|-bd\b/i;
 
 // "3", "3.1", "3.1.2" — optionally followed by a dot or a bracket — then real
 // words. The trailing `\S` is what stops "2011." (a bare year at the top of a
@@ -166,7 +182,7 @@ export function pdfItemSize(item) {
 
 // A page's text items, grouped into lines in reading order.
 //
-// Each line is { text, size, bold, y, page } — `y` being the baseline in PDF
+// Each line is { text, size, y, page } — `y` being the baseline in PDF
 // user space, where a LARGER y is higher up the page.
 //
 // The join is textItemGap(), which is the same function buildTextLayer uses to
@@ -185,19 +201,18 @@ export function pdfTocLinesFrom(items, pageNumber) {
     const sameLine = current
       && Math.abs(current.y - y) <= Math.max(1, Math.max(size, current.size) * PDF_TOC_BASELINE_RATIO);
     if (!sameLine) {
-      current = { text: "", size, bold: false, chars: 0, y, page: pageNumber };
+      current = { text: "", size, chars: 0, y, page: pageNumber };
       lines.push(current);
       previous = null;
     }
     current.text += textItemGap(previous, item) + item.str;
-    // The size and the font of the line are whichever covers the most
-    // characters: a heading with a footnote marker on it is still a heading, and
-    // a paragraph opening with a bold run-in is still a paragraph.
+    // The line's size is whichever covers the most CHARACTERS: a heading with a
+    // footnote marker on it is still a heading, and a paragraph whose first
+    // three words are set large is still a paragraph.
     const chars = item.str.length;
     if (chars > current.chars) {
       current.chars = chars;
       current.size = size;
-      current.bold = PDF_TOC_BOLD_RE.test(item.fontName || "");
     }
     current.y = Math.max(current.y, y);
     previous = item;
@@ -244,11 +259,8 @@ export function pdfTocLineKind(line, bodySize) {
   if (big) return { kind: "size", size: Math.round(line.size * 2) / 2 };
   const numbered = PDF_TOC_NUMBERED_RE.exec(text);
   if (numbered) return { kind: "numbered", size: Math.round(line.size * 2) / 2, number: numbered[1] };
-  if (PDF_TOC_NAMED_RE.test(text) && text.length <= PDF_TOC_BOLD_MAX_CHARS) {
+  if (PDF_TOC_NAMED_RE.test(text) && text.length <= PDF_TOC_SHORT_MAX_CHARS) {
     return { kind: "named", size: Math.round(line.size * 2) / 2 };
-  }
-  if (line.bold && text.length <= PDF_TOC_BOLD_MAX_CHARS) {
-    return { kind: "bold", size: Math.round(line.size * 2) / 2 };
   }
   return null;
 }

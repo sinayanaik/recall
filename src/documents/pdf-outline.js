@@ -191,8 +191,17 @@ export async function buildDocumentOutline(doc) {
 
 // ── The list ───────────────────────────────────────────────────────────────
 
-function outlineKeyFor(entry, index) {
-  return `${entry.depth}:${entry.page}:${entry.title}:${index}`;
+// A row's identity, for carrying folds across a rebuild.
+//
+// Deliberately NOT including the row's index. A derived contents is rendered
+// AS IT IS SCANNED — every sixteen pages, with more rows each time — so an
+// index-keyed fold would move one row further down the tree on every pass, and
+// a reader folding a branch while the scan ran would watch it walk away from
+// them. Two rows with the same words on the same page at the same depth share a
+// fold state, which is a fair price and is a shape a real document essentially
+// never produces (pdfTocEntriesFrom drops consecutive repeats).
+function outlineKeyFor(entry) {
+  return `${entry.depth}:${entry.page}:${entry.title}`;
 }
 
 function paintOutlineDerivedNote() {
@@ -200,7 +209,11 @@ function paintOutlineDerivedNote() {
   const scroll = list?.parentElement;
   if (!scroll) return;
   let note = scroll.querySelector(".document-toc-derived");
-  if (!outlineDerived || !outlineEntries.length) {
+  // While the scan is running the note is the ONLY thing in the drawer — the
+  // list is empty and the "no contents" message is being held back because the
+  // answer is not in yet. Without this the first few seconds of a big book were
+  // a blank panel.
+  if (!outlineDerived || (!outlineEntries.length && !outlineScanning)) {
     note?.remove();
     return;
   }
@@ -227,6 +240,7 @@ export function renderDocumentOutline() {
   if (el.documentOutlineEmpty) el.documentOutlineEmpty.hidden = has || outlineScanning;
   paintOutlineDerivedNote();
   if (!has) return;
+
 
   outlineDepths = tocDepthsFromLevels(outlineEntries.map((entry) => entry.depth));
   outlineParents = tocParentsFromDepths(outlineDepths);
@@ -259,7 +273,6 @@ export function renderDocumentOutline() {
       // here is the same kind of thing as an h1 there.
       level: outlineDepths[index] + 1,
       text: entry.title,
-      id: outlineKeys[index],
       branch: outlineBranches[index],
       tail
     });

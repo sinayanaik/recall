@@ -481,7 +481,6 @@ export function buildNotesToc() {
       depths,
       level: heading.level,
       text: heading.text,
-      id: heading.id,
       href: `#${heading.id}`,
       branch: notesTocBranch[index]
     });
