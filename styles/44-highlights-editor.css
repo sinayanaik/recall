@@ -228,22 +228,38 @@
   display: none;
 }
 
-.hl-note-edit {
-  display: block;
-  width: 100%;
-  min-height: 72px;
-  margin-top: 0.25em;
-  padding: 0.35em 0.5em;
+/* ── The editor, in the flow of the entry ──────────────────────────────────
+   This was a lone <textarea> and is now the same kit the note popup builds
+   (src/notes/note-editor-kit.js): Write/Preview, the full formatting strip, the
+   syntax-highlight mirror, an undo ring, the image grips, and a floating
+   selection pill over all of it. The rules the kit brings with it live in
+   styles/27-highlight-notes.css; what is here is only what differs about being
+   INSIDE a list rather than inside a window.
+   Marked out from the entry around it, since it is a mode: an accent hairline
+   and a panel tint, so a reader can see at a glance which of forty notes they
+   are writing in. */
+.hl-note-editor {
+  margin-top: 0.45em;
+  padding: 0.5em;
   border: 1px solid var(--accent-strong);
   border-radius: 8px;
   background: var(--panel-2, var(--panel));
-  color: var(--text);
-  font: inherit;
-  line-height: inherit;
-  /* Grown to its content by the module (a textarea cannot size itself in CSS),
-     so a long note is never written through a slot. */
-  resize: vertical;
-  overflow: hidden;
+}
+
+/* The wrapper is what carries the height — .edit-textarea and its backdrop are
+   both `height: 100% !important` so the two can never disagree about a metric
+   (styles/10-editor.css). openNoteEditor measures and writes it; this is the
+   floor under a note with one line in it. */
+.hl-note-editor .highlight-textarea-wrapper {
+  min-height: 96px;
+}
+
+/* The preview grows to its content here. In the popup it is the part that
+   stretches and scrolls; a note in a list that scrolled inside its own box
+   would be a second scroller inside a scroller. */
+.hl-note-editor .note-editor-rendered {
+  max-height: none;
+  overflow: visible;
 }
 
 /* ── Images, in a list rather than in the reading column ───────────────────

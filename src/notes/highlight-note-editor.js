@@ -31,12 +31,9 @@
 // corner, and remembers both — a reader who parks it on the right-hand margin
 // gets it there for every highlight afterwards.
 
-import { createToolbarHtml } from "../editor/toolbars.js?v=__BUILD__";
-import { enableSyntaxHighlighting, refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
-import { installMarkdownKeys, installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
+import { installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
 import { clearHighlightNoteAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
-import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
-import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { createNoteEditorKit } from "./note-editor-kit.js?v=__BUILD__";
 import { renderNotesViewPinned } from "./notes-view.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 
@@ -54,17 +51,6 @@ let openMarkIndex = null;
 // than a question. Every way out of the popup flushes, so this only ever
 // governs saves made WHILE typing — nothing depends on the timer having fired.
 export const NOTE_AUTOSAVE_MS = 700;
-
-// How many steps back this popup's own undo goes. A note is a sentence or two,
-// not a document — twenty is far more than anyone walks back through, and the
-// whole ring is a few kilobytes of strings.
-export const NOTE_UNDO_DEPTH = 20;
-
-// Emptied per open, like every other piece of per-session bookkeeping below:
-// stepping back out of THIS note into the last one you looked at would be a
-// worse answer than not stepping back at all. Assigned by
-// ensureHighlightNoteEditor, which is where the rings live.
-let clearNoteUndoHistory = () => {};
 
 let saveTimer = 0;
 // The text last written to state.notes for the open mark. An unchanged value is
@@ -121,55 +107,29 @@ function ensureHighlightNoteEditor() {
   closeBtn.textContent = "×";
   header.append(title, closeBtn);
 
-  const modeRow = document.createElement("div");
-  modeRow.className = "highlight-note-editor-modes";
-  const writeBtn = document.createElement("button");
-  writeBtn.type = "button";
-  writeBtn.className = "highlight-note-editor-mode is-active";
-  writeBtn.textContent = "Write";
-  writeBtn.title = "Write in Markdown (Ctrl+E)";
-  const previewBtn = document.createElement("button");
-  previewBtn.type = "button";
-  previewBtn.className = "highlight-note-editor-mode";
-  previewBtn.textContent = "Preview";
-  previewBtn.title = "See it rendered (Ctrl+E)";
-  modeRow.append(writeBtn, previewBtn);
-
-  // Full formatting toolbar — bold/italic/lists/image-upload/etc, the same
-  // one the main notes editor and All Cards use (createToolbarHtml). This
-  // surface isn't in SELECTION_TARGETS (the floating format pill only covers
-  // notes/question/answer), so unlike those it needs the toolbar's OWN full
-  // strip rather than the line-tools-only variant. Clicks are handled by the
-  // existing global delegated listener (handleToolbarClick in
-  // src/editor/toolbar-actions.js) — it resolves the target textarea via
-  // `.highlight-note-editor` + `[data-note-edit-value]`, the same
-  // dynamic-container idiom the All Cards editor uses for its own textareas.
-  const toolbarWrap = document.createElement("div");
-  toolbarWrap.className = "highlight-note-editor-toolbar-wrap";
-  const toolbar = document.createElement("div");
-  toolbar.className = "edit-toolbar";
-  toolbar.innerHTML = createToolbarHtml();
-  toolbarWrap.appendChild(toolbar);
-
-  const textarea = document.createElement("textarea");
-  // edit-textarea: required by enableSyntaxHighlighting (makes the textarea's
-  // own text transparent so the styled backdrop mirror underneath is what's
-  // actually seen — see editor/highlight-mirror.js).
-  textarea.className = "highlight-note-editor-input edit-textarea";
-  textarea.placeholder = "Write a note about this highlight… (Markdown supported — images, lists, bold, etc.)";
-  textarea.spellcheck = true;
-  textarea.dataset.noteEditValue = "";
-
-  const rendered = document.createElement("div");
-  rendered.className = "highlight-note-editor-rendered rendered";
-  rendered.hidden = true;
-  // Focusable, so that switching to Preview leaves the focus INSIDE the window.
-  // Two things need that. A keyboard reader who pressed Preview would otherwise
-  // be dropped back to the top of the page; and Ctrl+E is bound to the window
-  // (installModeKeys), so a focus that has fallen out of it takes the key that
-  // gets you back out of the preview with it. -1, not 0: it is a destination,
-  // not a stop on the way through.
-  rendered.tabIndex = -1;
+  // ── The editor itself ───────────────────────────────────────────────────
+  //
+  // Write/Preview, the full formatting strip, the syntax-highlight mirror, the
+  // undo ring, the image and diagram grips, and the registration that makes the
+  // floating selection pill work over a note — all of it is
+  // src/notes/note-editor-kit.js, because the Highlights tab writes the same
+  // note with the same tools and the two used to be one implementation and one
+  // bare textarea.
+  //
+  // What is left here is what makes this a WINDOW: a header you drag it by, a
+  // footer that says whether the text is safe, a grip you resize it from, and
+  // the box it remembers.
+  const kit = createNoteEditorKit({
+    onInput: () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(flushNoteSave, NOTE_AUTOSAVE_MS);
+    },
+    // Switching to Preview must show what is SAVED, and what is saved is
+    // whatever is in the textarea — so flush first and let the preview read the
+    // same string the section now holds.
+    onModeChange: (mode) => { if (mode === "preview") flushNoteSave(); }
+  });
+  const { textarea, rendered, setMode } = kit;
 
   const footer = document.createElement("div");
   footer.className = "highlight-note-editor-foot";
@@ -197,107 +157,8 @@ function ensureHighlightNoteEditor() {
   grip.className = "highlight-note-editor-grip";
   grip.setAttribute("aria-hidden", "true");
 
-  root.append(header, modeRow, toolbarWrap, textarea, rendered, footer, grip);
+  root.append(header, kit.root, footer, grip);
   document.body.appendChild(root);
-
-  // enableSyntaxHighlighting reparents `textarea` into its own wrapper/backdrop
-  // in place, so it has to run AFTER the textarea is already positioned in the
-  // document (root.append above) — its insertBefore relies on a real parent.
-  // It always wraps unconditionally, so textarea.parentNode is that wrapper
-  // from here on — captured once rather than re-queried by setMode below.
-  enableSyntaxHighlighting(textarea);
-  const textareaWrapper = textarea.parentElement;
-
-  // ── Undo, which this surface has to bring itself ─────────────────────────
-  //
-  // applyFormatToTextarea snapshots for el.notesEdit and nothing else, on the
-  // stated ground that "notes textareas already get native per-keystroke undo
-  // from the browser". A card face does. This does not, and neither did the
-  // notes editor: a programmatic `textarea.value = …` DISCARDS the element's
-  // undo transaction, and every toolbar button, every colour and every
-  // highlight here is one. So from the first time a reader used any control in
-  // this popup, Ctrl+Z could not step back past it — and could not step back
-  // over their typing either, because the same write threw that away too.
-  //
-  // A ring rather than a stack with no bottom: this is one note, not a
-  // document, and holding every state of it for a session that can run all
-  // afternoon is memory spent on steps nobody takes.
-  const undoRing = [];
-  const redoRing = [];
-  const pushUndoSnapshot = () => {
-    const snapshot = { value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd };
-    // An unchanged value is not a step. Two buttons pressed in a row with
-    // nothing in between would otherwise cost two presses of Ctrl+Z to get past.
-    if (undoRing.length && undoRing[undoRing.length - 1].value === snapshot.value) return;
-    undoRing.push(snapshot);
-    if (undoRing.length > NOTE_UNDO_DEPTH) undoRing.shift();
-    // A new edit is a new future: whatever was ahead of the caret is gone, the
-    // same rule every undo stack in this app follows.
-    redoRing.length = 0;
-  };
-  const restore = (from, to) => {
-    const snapshot = from.pop();
-    if (!snapshot) return;
-    to.push({ value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd });
-    textarea.value = snapshot.value;
-    textarea.setSelectionRange(snapshot.start, snapshot.end);
-    refreshHighlightBackdrop(textarea);
-    // Through the editor's own input path, so the autosave and the growing
-    // textarea see it exactly as they would see typing.
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  };
-
-  // Capture, so it runs before the delegated toolbar handler in
-  // src/editor/toolbar-actions.js gets the press and rewrites the value. That
-  // ordering is the whole reason this is a listener and not a call inside the
-  // handler: the handler serves four surfaces and only this one keeps its own
-  // history.
-  toolbarWrap.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button")) pushUndoSnapshot();
-  }, true);
-
-  // Toolbar dropdowns (font/colour/highlight) aren't covered by the global
-  // closeAllEditToolbarDropdowns — that's scoped to the three fixed editor
-  // toolbars only (see editor/toolbars.js:editToolbars) — so this popup closes
-  // its own on any click elsewhere inside it, and always on close.
-  root.addEventListener("click", (event) => {
-    if (event.target.closest(".toolbar-dropdown")) return;
-    toolbar.querySelectorAll(".toolbar-dropdown.is-open").forEach((d) => d.classList.remove("is-open"));
-  });
-
-  // Corner-drag resize/delete for an image or diagram in the note, same as
-  // the main notes editor — enhanceSurfaceImageControls/
-  // enhanceSurfaceDiagramControls (src/images/surface-controls.js) don't
-  // care which of the app's fixed surfaces they're pointed at; they only
-  // need something shaped like a render target (view + getSource/setSource/
-  // rerender), so this popup gets its own rather than needing to be one of
-  // the 3 hardcoded names (notes/question/answer). A resize/delete commits
-  // through setSource into THIS note's own textarea, not state.notes.
-  const noteSurface = {
-    view: rendered,
-    getSource: () => textarea.value,
-    setSource: (v) => {
-      textarea.value = v;
-      // A programmatic .value write fires no "input" event, which the
-      // syntax-highlight backdrop normally syncs itself from.
-      refreshHighlightBackdrop(textarea);
-    },
-    rerender: () => renderPreview()
-  };
-
-  function renderPreview() {
-    // Unhidden BEFORE rendering, not after: a mermaid diagram inside the note
-    // needs real layout to size against, which a `hidden` (display:none)
-    // container has none of — see renderMarkdown/enhanceRenderedMarkdown.
-    // Same full pipeline the Highlights panel now uses (not the bare
-    // markdownToSafeHtml pass) so LaTeX and images in a note actually render
-    // instead of showing raw "$…$" or a broken image icon — and so the
-    // resize/delete grips below have real <img>/diagram elements to attach to.
-    return renderMarkdown(rendered, textarea.value).then(() => {
-      enhanceSurfaceImageControls(noteSurface);
-      enhanceSurfaceDiagramControls(noteSurface);
-    });
-  }
 
   // ── Saving ───────────────────────────────────────────────────────────────
   //
@@ -343,29 +204,6 @@ function ensureHighlightNoteEditor() {
     savedFadeTimer = setTimeout(() => status.classList.remove("is-visible"), 1800);
   }
 
-  textarea.addEventListener("input", () => {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(flushNoteSave, NOTE_AUTOSAVE_MS);
-  });
-
-  const setMode = (mode) => {
-    const write = mode === "write";
-    // Switching to Preview must show what is SAVED, and what is saved is
-    // whatever is in the textarea — so flush first and let renderPreview read
-    // the same string the section now holds.
-    if (!write) flushNoteSave();
-    writeBtn.classList.toggle("is-active", write);
-    previewBtn.classList.toggle("is-active", !write);
-    toolbarWrap.hidden = !write;
-    textareaWrapper.hidden = !write;
-    rendered.hidden = write;
-    if (!write) renderPreview();
-    if (write) textarea.focus();
-    else rendered.focus();
-  };
-  writeBtn.addEventListener("click", () => setMode("write"));
-  previewBtn.addEventListener("click", () => setMode("preview"));
-
   closeBtn.addEventListener("click", () => closeHighlightNoteEditor());
   deleteBtn.addEventListener("click", () => {
     if (openMarkIndex == null) return closeHighlightNoteEditor();
@@ -394,14 +232,8 @@ function ensureHighlightNoteEditor() {
   // Preview hides the textarea and moves the focus, so a mode key bound to it
   // could get you into the preview and not back out.
   installModeKeys(root, {
-    toggleMode: () => setMode(writeBtn.classList.contains("is-active") ? "preview" : "write"),
+    toggleMode: kit.toggleMode,
     done: () => closeHighlightNoteEditor()
-  });
-  installMarkdownKeys(textarea, {
-    scope: root,
-    undo: () => restore(undoRing, redoRing),
-    redo: () => restore(redoRing, undoRing),
-    beforeFormat: pushUndoSnapshot
   });
   // The tab going away is the one exit that never reaches closeHighlightNote
   // Editor — a phone backgrounding the browser mid-sentence, or the tab being
@@ -413,9 +245,7 @@ function ensureHighlightNoteEditor() {
 
   installNoteWindowGestures(root, header, grip);
 
-  clearNoteUndoHistory = () => { undoRing.length = 0; redoRing.length = 0; };
-
-  els = { root, textarea, rendered, writeBtn, previewBtn, deleteBtn, status, setMode, flushNoteSave };
+  els = { root, kit, textarea, rendered, deleteBtn, status, setMode, flushNoteSave };
   return els;
 }
 
@@ -526,6 +356,9 @@ export function closeHighlightNoteEditor() {
   // a view change — so this is the one place that has to make the text safe.
   els.flushNoteSave();
   els.root.hidden = true;
+  // A registration outliving its textarea would leave the pill formatting
+  // against a note nobody has open.
+  els.kit.detach();
   openMarkIndex = null;
   // The single repaint the autosave deferred. It is what puts the edited note
   // back in front of the reader when the inline mode is on, and what refreshes
@@ -574,10 +407,15 @@ export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkd
   // Highlights panel, a page-note badge) so no fourth one can forget. It is a
   // no-op when nothing is open, and flushing an unchanged note writes nothing.
   closeHighlightNoteEditor();
-  const { root, textarea, deleteBtn, status, setMode } = ensureHighlightNoteEditor();
+  const { root, kit, textarea, deleteBtn, status, setMode } = ensureHighlightNoteEditor();
   noteHandlers = destination || NOTES_NOTE_HANDLERS;
   openMarkIndex = markIndex;
-  textarea.value = existingNoteMarkdown || "";
+  // setValue, not a bare `.value =`: a programmatic write fires no "input"
+  // event, which is what the syntax-highlight backdrop syncs itself from —
+  // without it the backdrop shows whatever the PREVIOUS note left behind while
+  // the actual textarea text (invisible — see enableSyntaxHighlighting) shows
+  // the real value underneath.
+  kit.setValue(existingNoteMarkdown || "");
   // The session's bookkeeping, reset per open. `savedText` starts as what is
   // already stored, so opening a note and closing it without typing writes
   // nothing; `undoPushed` starts false, so the first real edit takes one
@@ -585,17 +423,18 @@ export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkd
   savedText = textarea.value;
   undoPushed = false;
   dirtySinceOpen = false;
-  clearNoteUndoHistory();
+  // Emptied per open: stepping back out of THIS note into the last one you
+  // looked at would be a worse answer than not stepping back at all.
+  els.kit.clearHistory();
   status.textContent = "";
   status.classList.remove("is-visible");
-  // A programmatic .value write fires no "input" event, which is what the
-  // syntax-highlight backdrop normally syncs itself from — without this the
-  // backdrop shows whatever the PREVIOUS note left behind (or nothing) while
-  // the actual textarea text (invisible — see enableSyntaxHighlighting)
-  // shows the real value underneath it.
-  refreshHighlightBackdrop(textarea);
   deleteBtn.hidden = !existingNoteMarkdown;
   root.hidden = false;
+  // The pill acts on this editor from here until it closes — see the header of
+  // src/notes/note-editor-kit.js. After `root.hidden = false`, because
+  // `isActive()` on the registered target reads whether the editor is really on
+  // screen.
+  kit.attach();
   // An existing note opens rendered — same as the rest of the app's notes,
   // which you normally see rendered, not raw — so an image inside it (and
   // its resize handle) is visible immediately instead of hiding behind a

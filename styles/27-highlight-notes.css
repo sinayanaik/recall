@@ -125,13 +125,36 @@
   padding: 2px 6px;
 }
 
-.highlight-note-editor-modes {
+/* ── The editor a note is written in, wherever it is written ───────────────
+   Everything from here to the footer rules is src/notes/note-editor-kit.js: the
+   Write/Preview switch, the formatting strip, the textarea and the preview. It
+   was the popup's alone, and the Highlights tab's in-place editor was a bare
+   <textarea> beside it — the same note, with a quarter of the tools. One
+   editor now, so these are named for the KIT and not for one of its two homes;
+   what is genuinely the popup's (that it is a window, and how tall its parts
+   are inside one) stays scoped to .highlight-note-editor. */
+.note-editor-kit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Inside the window it is the part that stretches, and `min-height: 0` is what
+   lets the preview inside it scroll instead of pushing the footer off the
+   bottom. */
+.highlight-note-editor .note-editor-kit {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.note-editor-modes {
   display: flex;
   gap: 6px;
   flex: 0 0 auto;
 }
 
-.highlight-note-editor-mode {
+.note-editor-mode {
   flex: 1 1 auto;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -143,7 +166,7 @@
   cursor: pointer;
 }
 
-.highlight-note-editor-mode.is-active {
+.note-editor-mode.is-active {
   background: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
   color: var(--accent-contrast, #fff);
@@ -153,17 +176,17 @@
    highlight-note-editor.js) scrolls sideways rather than wrapping, matching
    the notes header's own edit-toolbar treatment: a popup 460px wide has no
    room for the full strip's natural width. */
-.highlight-note-editor-toolbar-wrap {
+.note-editor-toolbar-wrap {
   flex: 0 0 auto;
   overflow-x: auto;
   scrollbar-width: none;
 }
 
-.highlight-note-editor-toolbar-wrap::-webkit-scrollbar {
+.note-editor-toolbar-wrap::-webkit-scrollbar {
   display: none;
 }
 
-.highlight-note-editor-toolbar-wrap .edit-toolbar {
+.note-editor-toolbar-wrap .edit-toolbar {
   width: max-content;
 }
 
@@ -174,19 +197,27 @@
    this popup still needs to set itself, since the base rule's 100px reads as
    cramped in a 75vh popup that has real room to give it. */
 .highlight-note-editor .highlight-textarea-wrapper {
+  flex: 1 1 auto;
   min-height: 160px;
 }
 
-.highlight-note-editor-rendered {
-  flex: 1 1 auto;
-  min-height: 140px;
-  overflow-y: auto;
+.note-editor-rendered {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 0.88rem;
   line-height: 1.4;
   color: var(--text);
+}
+
+/* In the window, the preview takes whatever room is left and scrolls. In the
+   Highlights tab it sits in the flow of the entry and grows to its content —
+   a note in a list that scrolled inside its own 140px box would be a second
+   scroller inside a scroller. */
+.highlight-note-editor .note-editor-rendered {
+  flex: 1 1 auto;
+  min-height: 140px;
+  overflow-y: auto;
 }
 
 /* Same fix as the Highlights panel rows (26-highlights-panel-rows.css): the
@@ -196,11 +227,11 @@
  * every rendered <img> is wrapped in a .diagram-shell (the zoom-button
  * affordance), whose "!important" width rule (06-rendered.css) beats any
  * non-!important rule outright — only a more specific !important wins. */
-.highlight-note-editor-rendered img {
+.note-editor-rendered img {
   max-width: 220px;
 }
 
-.highlight-note-editor-rendered .diagram-shell img {
+.note-editor-rendered .diagram-shell img {
   width: 220px !important;
   max-width: 220px !important;
 }
@@ -211,9 +242,9 @@
  * over the flat 220px default above: same "more specific !important beats
  * !important" shape as #notesView's own img.has-custom-size rule
  * (06-rendered.css), scoped here to this popup instead of a fixed view id. */
-.highlight-note-editor-rendered .diagram-shell img.has-custom-size,
-.highlight-note-editor-rendered .diagram-shell .mermaid.has-custom-size,
-.highlight-note-editor-rendered .diagram-shell .nomnoml-diagram.has-custom-size {
+.note-editor-rendered .diagram-shell img.has-custom-size,
+.note-editor-rendered .diagram-shell .mermaid.has-custom-size,
+.note-editor-rendered .diagram-shell .nomnoml-diagram.has-custom-size {
   width: var(--notes-img-w) !important;
   max-width: var(--notes-img-w) !important;
 }
@@ -221,7 +252,7 @@
 /* The resize grip sits bottom-right of the shell, same spot the Zoom pill
  * defaults to — move the pill aside wherever a grip is present, matching
  * the main notes' own treatment. */
-.highlight-note-editor-rendered .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
+.note-editor-rendered .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
   float: left;
   left: 0;
   right: auto;

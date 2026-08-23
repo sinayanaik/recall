@@ -47,6 +47,8 @@ const API_SRC = `async () => {
   const paths = [
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/notes/highlight-note-editor.js?v=__BUILD__",
+    "/src/notes/selection.js?v=__BUILD__",
+    "/src/format/selection-tools.js?v=__BUILD__",
     "/src/panels/highlights-editor.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
     "/src/format/highlight-notes.js?v=__BUILD__",
@@ -154,7 +156,7 @@ try {
     const root = document.querySelector(".highlight-note-editor");
     const area = root.querySelector("[data-note-edit-value]");
     // An existing note opens rendered; Write is where the textarea is.
-    root.querySelectorAll(".highlight-note-editor-mode")[0].click();
+    root.querySelectorAll(".note-editor-mode")[0].click();
     await settle(200);
     area.focus();
     area.setSelectionRange(0, "What I wrote".length);
@@ -163,7 +165,7 @@ try {
       value: area.value,
       viewMode: api.state.viewMode,
       editing: api.isNotesEditing(),
-      writeActive: root.querySelectorAll(".highlight-note-editor-mode")[0].classList.contains("is-active")
+      writeActive: root.querySelectorAll(".note-editor-mode")[0].classList.contains("is-active")
     };
   }`);
   check("the note popup opens on the highlight's own note",
@@ -203,12 +205,12 @@ try {
   const flipped = await page.evaluate(`() => {
     const { api } = window.__recall;
     const root = document.querySelector(".highlight-note-editor");
-    const modes = root.querySelectorAll(".highlight-note-editor-mode");
+    const modes = root.querySelectorAll(".note-editor-mode");
     return {
       viewMode: api.state.viewMode,
       editing: api.isNotesEditing(),
       previewActive: modes[1].classList.contains("is-active"),
-      renderedShown: !root.querySelector(".highlight-note-editor-rendered").hidden
+      renderedShown: !root.querySelector(".note-editor-rendered").hidden
     };
   }`);
   check("Ctrl+E flips the POPUP between Write and Preview",
@@ -221,7 +223,7 @@ try {
   await press("e");
   const back = await page.evaluate(`() => {
     const root = document.querySelector(".highlight-note-editor");
-    return root.querySelectorAll(".highlight-note-editor-mode")[0].classList.contains("is-active");
+    return root.querySelectorAll(".note-editor-mode")[0].classList.contains("is-active");
   }`);
   check("...and again flips it back", back);
 
@@ -236,7 +238,7 @@ try {
     const article = list.querySelector(".hl-note");
     article.querySelector(".hl-note-body").click();
     await settle(200);
-    const area = article.querySelector(".hl-note-edit");
+    const area = article.querySelector(".hl-note-editor .note-editor-input");
     if (!area) return { error: "pressing a note body opened no textarea" };
     area.focus();
     // Located, not assumed: the popup cases above have already reformatted this
@@ -251,7 +253,7 @@ try {
     await press("b");
     const inPlaceBold = await page.evaluate(`() => {
       const { api } = window.__recall;
-      const area = document.querySelector("#highlightsList .hl-note-edit");
+      const area = document.querySelector("#highlightsList .hl-note-editor .note-editor-input");
       return { value: area ? area.value : null, viewMode: api.state.viewMode };
     }`);
     check("...and Ctrl+B works there too, on the same terms",
@@ -265,7 +267,7 @@ try {
       const { api } = window.__recall;
       const list = document.getElementById("highlightsList");
       return {
-        stillEditing: Boolean(list.querySelector(".hl-note-edit")),
+        stillEditing: Boolean(list.querySelector(".hl-note-editor .note-editor-input")),
         stored: api.readHighlightNotes(api.state.notes || "").get("hn-aaaa") || "",
         viewMode: api.state.viewMode
       };
@@ -274,6 +276,152 @@ try {
       !committed.stillEditing && committed.stored === inPlace.value.replace("about it", "**about it**") && committed.viewMode === "highlights",
       `editing=${committed.stillEditing} stored=${JSON.stringify(committed.stored)} view=${committed.viewMode}`);
   }
+
+// ── The floating pill, over the note editors ────────────────────────────────
+//
+// "Both in the popup and in the dedicated highlights panel the texts are not
+// having all the features that we've implemented for raw and rendered nodes in
+// notes selection."
+//
+// The pill is that feature set — bold, colour, highlight, erase, copy, share,
+// web search — and neither editor raised it: selecting a phrase in a note about
+// a highlight did nothing at all. Both surfaces register as selection targets
+// now (src/notes/note-editor-kit.js), so the assertions below are the same
+// question asked of each: does the bar appear, does it offer the right
+// buttons, and does pressing one actually change the note.
+const pillPopup = await page.evaluate(`async () => {
+  const { api, settle } = window.__recall;
+  api.setViewMode("notes");
+  await settle(300);
+  api.openHighlightNoteEditor(0, { top: 100, left: 100, bottom: 120, right: 200 }, "A sentence to format.");
+  await settle(400);
+  // A note that already has text opens in Preview — see openHighlightNoteEditor.
+  // The textarea case has to ask for Write, or it would be selecting inside a
+  // hidden element and proving nothing.
+  document.querySelectorAll(".note-editor-mode")[0].click();
+  await settle(250);
+  const area = document.querySelector(".note-editor-kit .note-editor-input");
+  area.focus();
+  const at = area.value.indexOf("to format");
+  area.setSelectionRange(at, at + "to format".length);
+  api.positionNotesSelectionButton();
+  await settle(120);
+  const pill = document.getElementById("selectionFloat");
+  const shown = {
+    visible: !pill.hidden,
+    target: pill.dataset.renderTarget || "",
+    format: !document.getElementById("selectionFloatFormat").hidden,
+    highlight: !document.getElementById("highlightSelectionBtn").hidden,
+    // Neither of these has a home in a note ABOUT a highlight: a cloze here
+    // would be listed by the Cloze panel as one of the note's own, and
+    // "extract into its own note" is a notes-only verb.
+    cloze: !document.getElementById("makeClozeFromSelectionBtn").hidden,
+    extract: !document.getElementById("extractNoteFromSelectionBtn").hidden
+  };
+  // ...and it acts on the note, not on the note behind it.
+  const notesBefore = api.state.notes || "";
+  api.applyPillHighlight("green");
+  await settle(200);
+  const after = document.querySelector(".note-editor-kit .note-editor-input");
+  return {
+    shown,
+    value: after ? after.value : "",
+    notesUntouched: (api.state.notes || "") === notesBefore
+  };
+}`);
+
+check("the pill appears over the note popup's textarea",
+  pillPopup.shown.visible && pillPopup.shown.target === "highlight-note",
+  `visible=${pillPopup.shown.visible} target=${pillPopup.shown.target}`);
+check("...offering formatting and highlight, but not cloze or split-out",
+  pillPopup.shown.format && pillPopup.shown.highlight
+    && !pillPopup.shown.cloze && !pillPopup.shown.extract,
+  `format=${pillPopup.shown.format} highlight=${pillPopup.shown.highlight} cloze=${pillPopup.shown.cloze} extract=${pillPopup.shown.extract}`);
+check("...and its Highlight marks up the NOTE, not the note behind it",
+  /<mark[^>]*>to format<\/mark>/.test(pillPopup.value) && pillPopup.notesUntouched,
+  JSON.stringify(pillPopup.value));
+
+const pillPreview = await page.evaluate(`async () => {
+  const { api, settle } = window.__recall;
+  // Preview mode: the same pill, resolved through the RENDERED half of the same
+  // surface, which is the path applyRenderFormat takes to match a selection back
+  // into the markdown.
+  document.querySelectorAll(".note-editor-mode")[1].click();
+  await settle(400);
+  const rendered = document.querySelector(".note-editor-kit .note-editor-rendered");
+  const walker = document.createTreeWalker(rendered, NodeFilter.SHOW_TEXT);
+  let node = null;
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.includes("sentence")) { node = walker.currentNode; break; }
+  }
+  if (!node) return { error: "no rendered text to select" };
+  const at = node.nodeValue.indexOf("sentence");
+  const range = document.createRange();
+  range.setStart(node, at);
+  range.setEnd(node, at + "sentence".length);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  api.positionNotesSelectionButton();
+  await settle(150);
+  const pill = document.getElementById("selectionFloat");
+  const visible = !pill.hidden && pill.dataset.renderTarget === "highlight-note";
+  api.applyPillHighlight("blue");
+  await settle(300);
+  api.closeHighlightNoteEditor();
+  await settle(300);
+  return { visible, stored: api.readHighlightNotes(api.state.notes || "").get("hn-aaaa") || "" };
+}`);
+
+check("the pill appears over the popup's PREVIEW too", !pillPreview.error && pillPreview.visible,
+  pillPreview.error || String(pillPreview.visible));
+check("...and formatting there is spliced into the note's markdown",
+  /<mark[^>]*>sentence<\/mark>/.test(pillPreview.stored || ""),
+  JSON.stringify((pillPreview.stored || "").slice(0, 80)));
+
+const pillPanel = await page.evaluate(`async () => {
+  const { api, settle } = window.__recall;
+  api.setViewMode("highlights");
+  await settle(700);
+  const list = document.getElementById("highlightsList");
+  const article = list.querySelector(".hl-note");
+  article.querySelector(".hl-note-body").click();
+  await settle(300);
+  const kit = article.querySelector(".hl-note-editor");
+  if (!kit) return { error: "pressing a note body opened no editor" };
+  const toolbar = kit.querySelector(".edit-toolbar");
+  const area = kit.querySelector(".note-editor-input");
+  area.focus();
+  const at = area.value.indexOf("sentence");
+  area.setSelectionRange(at, at + "sentence".length);
+  api.positionNotesSelectionButton();
+  await settle(150);
+  const pill = document.getElementById("selectionFloat");
+  const result = {
+    // The in-place editor is the whole kit now, not a lone textarea.
+    toolbar: Boolean(toolbar && toolbar.querySelectorAll("button").length > 5),
+    modes: kit.querySelectorAll(".note-editor-mode").length,
+    mirror: Boolean(kit.querySelector(".highlight-textarea-backdrop")),
+    visible: !pill.hidden && pill.dataset.renderTarget === "highlight-note"
+  };
+  api.applyPillHighlight("pink");
+  await settle(250);
+  result.value = kit.querySelector(".note-editor-input")?.value || "";
+  api.commitOpenNote();
+  await settle(300);
+  result.stored = api.readHighlightNotes(api.state.notes || "").get("hn-aaaa") || "";
+  return result;
+}`);
+
+check("the Highlights tab's editor carries the popup's whole kit",
+  !pillPanel.error && pillPanel.toolbar && pillPanel.modes === 2 && pillPanel.mirror,
+  pillPanel.error || `toolbar=${pillPanel.toolbar} modes=${pillPanel.modes} mirror=${pillPanel.mirror}`);
+check("...and the pill appears over it as well",
+  Boolean(pillPanel.visible), String(pillPanel.visible));
+check("...writing through to the same note the popup writes to",
+  /<mark[^>]*>sentence<\/mark>/.test(pillPanel.stored || ""),
+  JSON.stringify((pillPanel.stored || "").slice(0, 80)));
+
 } finally {
   await client.close?.();
   launched.proc?.kill();

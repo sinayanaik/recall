@@ -1604,15 +1604,18 @@ try {
     const id = key.replace(/^doc:/, "");
     target.querySelector(".hl-note-body").click();
     await settle(150);
-    const area = target.querySelector(".hl-note-edit");
+    const area = target.querySelector(".hl-note-editor .note-editor-input");
     const focused = document.activeElement === area;
     const popupOpen = Boolean(document.querySelector(".highlight-note-editor:not([hidden])"));
     area.value = "Typed straight into the highlights tab.";
     area.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(120);
     // Still typing: nothing may have been rebuilt under the reader yet.
-    const stillOpen = target.querySelector(".hl-note-edit") === area;
-    area.dispatchEvent(new Event("blur"));
+    const stillOpen = target.querySelector(".hl-note-editor .note-editor-input") === area;
+    // A REAL blur, not a synthetic one: the in-place editor commits when the
+    // focus leaves the whole editor (a toolbar press must not tear it down),
+    // which is a focusout and not a non-bubbling blur Event.
+    area.blur();
     await settle(400);
     const stored = api.readHighlightNotes(api.state.notes || "").get(id) || "";
     const rendered = list.querySelector('.hl-note[data-highlight-key="' + key + '"] .hl-note-body');

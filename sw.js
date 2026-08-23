@@ -404,6 +404,7 @@ const APP_SHELL = [
   `./src/notes/reading-position.js?v=${STAMP}`,
   `./src/notes/scroll-anchor.js?v=${STAMP}`,
   `./src/notes/selection.js?v=${STAMP}`,
+  `./src/notes/note-editor-kit.js?v=${STAMP}`,
   `./src/notes/toc.js?v=${STAMP}`,
   `./src/notes/toc-tree.js?v=${STAMP}`,
   `./src/notes/touch-selection.js?v=${STAMP}`,
