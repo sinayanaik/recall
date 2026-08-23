@@ -32,7 +32,7 @@
 // ordinary blocks with no boundary between one note and the next.
 //
 // The other obvious answer — build the section and append it into #notesView
-// alongside the rendered blocks — is the one src/notes/inline-highlight-notes.js
+// alongside the rendered blocks — is the one src/notes/highlight-badges.js
 // opens by warning about: placeNotesChunks compares a chunk's children against
 // the block list it planned, an unplanned top-level sibling breaks that
 // comparison for good, and the sweep after it deletes the node anyway.

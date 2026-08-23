@@ -99,6 +99,7 @@
     <link rel="stylesheet" href="styles/39-document-export.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/40-image-controls.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/41-image-compress.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/42-highlight-badge.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -212,7 +213,7 @@
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-note-editor.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/inline-highlight-notes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/highlight-badges.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/link-picker.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/mark-menu.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/note-links.js?v=__BUILD__">
@@ -749,27 +750,6 @@
                    Where the Fullscreen API is missing (iOS Safari) this
                    degrades to focus mode and says so in its title. -->
               <button class="edit-card-btn immersive-mode-btn" id="immersiveModeBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Toggle full screen"><span class="nhm-ico" aria-hidden="true">&#9974;</span><span class="nhm-label">Full screen<span class="nhm-hint">Hide the browser too · Ctrl+Q</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
-              <!-- Every highlight's note, printed where it belongs, numbered in
-                   reading order. Off by default and remembered: a note read
-                   with its annotations in it is a different document from the
-                   one you write in, and which you want depends on what you are
-                   doing rather than on which note is open.
-
-                   † rather than the ✎ the mark menu uses for the same feature:
-                   that button EDITS one note and this one PRINTS all of them,
-                   and the dagger is already the mark that means "there is a
-                   note about this, set out below". It is also monochrome,
-                   which ✎ at this size in a colour font is not.
-
-                   It shipped as that dagger and nothing else — no word, no
-                   state, in a row of nine other glyphs — so it read as neither
-                   "what does this do" nor "is it on". The switch says which of
-                   the two states it is in without being pressed, the sentence
-                   under it says what the mode does, and paintInlineNotesButton
-                   fills in how many notes this note actually HAS: pressing a
-                   toggle and watching nothing happen is the same puzzle again,
-                   and with no annotated highlights there is nothing to show. -->
-              <button class="edit-card-btn inline-notes-btn" id="inlineNotesBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Show every highlight's note in the text, numbered where it belongs" aria-label="Toggle highlight notes in the text"><span class="nhm-ico" aria-hidden="true">&#8224;</span><span class="nhm-label">Notes in the text<span class="nhm-hint">Print each highlight's note where it belongs</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
               <!-- Every low-frequency button above moves INTO the menu below —
                    the cloze trio, make-card, pin, the two bookmark controls,
                    focus, full screen and the highlight-notes toggle: ten at
@@ -1091,7 +1071,6 @@
           <button class="reading-rail-btn" type="button" data-rail-scope="document" data-rail-action="region" aria-pressed="false" title="Select a region — drag a box around a figure, a table or an equation" aria-label="Select a region"><span class="rr-ico" aria-hidden="true">&#9635;</span><span class="rr-label">Select a region</span></button>
           <span class="reading-rail-sep" aria-hidden="true"></span>
           <!-- ── The rest of what the folded row was holding ────────────-->
-          <button class="reading-rail-btn" data-rail-scope="notes" type="button" data-rail-action="inline-notes" aria-pressed="false" title="Print every highlight's note in the text it annotates" aria-label="Notes in the text"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes in the text</span></button>
           <button class="reading-rail-btn" type="button" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
           <button class="reading-rail-btn" type="button" data-rail-action="sync" title="Sync all decks with the cloud now" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
           <span class="reading-rail-sep" aria-hidden="true"></span>

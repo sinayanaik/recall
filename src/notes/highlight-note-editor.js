@@ -247,8 +247,8 @@ function ensureHighlightNoteEditor() {
     // Notes" section at the END of the document, not in the paragraph the
     // reader is looking at, so there is nothing on screen to repaint and
     // renderNotesViewPinned on a book between keystrokes is not a thing to do.
-    // The one repaint happens on close, where it also picks up the inline copy
-    // (src/notes/inline-highlight-notes.js).
+    // The one repaint happens on close, where it also picks up the badge on
+    // the mark itself (src/notes/highlight-badges.js).
     //
     // { undo: !undoPushed } — one Ctrl+Z step for the whole editing session,
     // the same shape applyFormatToTextarea uses for a formatting run. A stack
@@ -305,8 +305,8 @@ function ensureHighlightNoteEditor() {
     saveTimer = 0;
     noteHandlers.remove(openMarkIndex, { undo: !undoPushed });
     savedText = "";
-    // Deleted, then closed — the note IS gone from the section, and the
-    // paragraph it was printed into still shows the old copy until a repaint.
+    // Deleted, then closed — the note IS gone from the section, and the mark
+    // it was written on still wears its number until a repaint.
     dirtySinceOpen = true;
     closeHighlightNoteEditor();
   });

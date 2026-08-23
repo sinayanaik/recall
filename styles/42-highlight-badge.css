@@ -1,0 +1,107 @@
+/* The number on a highlight that has something written about it
+ *
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * styles/27-highlight-notes.css styles the places you go to READ a note — the
+ * mark menu's pencil, the Highlights panel, the popup editor. This file is what
+ * says a note is THERE, on the highlight itself, in the text you are reading.
+ * See src/notes/highlight-badges.js for what puts it there.
+ *
+ * ── The one rule everything on a <mark> obeys ────────────────────────────
+ *
+ * Nothing painted on a highlight may advance the text by a pixel.
+ * styles/23-highlight-marks.css exists entirely because `padding: 0 1px` on a
+ * mark widened its own text — and wrapAcrossBlocks emits one mark per line, list
+ * item and table cell, so a ten-bullet highlight moved its text by 20px and
+ * could re-wrap the block it is in. A rewrap AFTER renderNotesViewPinned has
+ * measured its anchor is the "severe shivering when I highlight" report.
+ *
+ * The badge keeps that rule by being OUT OF FLOW: `position: absolute` inside a
+ * mark that is already `position: relative`. An absolutely positioned box
+ * contributes nothing to the line box, so it can carry a background, a ring and
+ * two digits of padding and still move no glyph. That is also the difference
+ * from the ::after this replaces — a pseudo-element could not be pressed or
+ * focused, and a click on one is a click on the mark, which opens the mark menu
+ * instead of the note.
+ */
+
+/* ── Layer 1: this highlight has something to say ─────────────────────────
+   A dotted underline in the accent, which reads as "annotated" rather than as
+   a link (solid) or a spelling error (red, wavy) — and which the mark's own
+   background tint sits behind rather than fights with. */
+#notesView mark.has-note {
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  text-underline-offset: 2.5px;
+  /* The containing block for the badge, and nothing else: an inline element
+     that is `position: relative` with no offsets is laid out exactly where it
+     was. Only on annotated marks, so the other 99% of highlights in a book are
+     not made into containing blocks for no reason. */
+  position: relative;
+}
+
+/* ── Layer 2: the number ──────────────────────────────────────────────────
+   At the END of the mark: a highlight can be a single word or half a page, and
+   its start is where the eye already is when it reaches one — the end is where
+   it is looking for what comes next.
+
+   ── Why an opaque chip rather than coloured digits ──────────────────────
+   This was `color: var(--accent-strong)` painted straight onto the mark, and it
+   disappeared. A <mark>'s tint is a colour-mix over whatever the theme's surface
+   is (styles/12-notes.css), so there is no background a text colour can be
+   guaranteed to read against: yellow over a light theme and pink over an amoled
+   one are not the same problem and no single ink solves both. An opaque chip
+   hides the tint underneath it entirely, and the contrast question stops being
+   conditional on the theme AND the highlight colour at once.
+
+   --accent-contrast is the one pair in the token set that already carries a
+   contrast guarantee — it is defined in every one of the ten themes as the ink
+   that reads on --accent-strong (white on the light themes, near-black on the
+   dark ones). Deriving it by eye here would be re-deriving something the theme
+   file has already been made to answer. */
+.hl-note-badge {
+  position: absolute;
+  top: -0.62em;
+  right: -0.24em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.05em;
+  height: 1.05em;
+  padding: 0 0.28em;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-size: 0.56em;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: 0;
+  cursor: pointer;
+  /* A hairline in the page's own ground, so the chip is still a separate object
+     on the themes where the accent and a highlight colour are neighbours — a
+     blue tint under a navy theme, a green one under emerald. */
+  box-shadow: 0 0 0 1.5px var(--panel);
+  /* Never part of a selection, and never part of what the source matcher reads.
+     This is belt to the braces of the two JS skips (see cleanedSelectionFragment
+     and emitTextWithLineBreaks in src/notes/selection.js): even where those are
+     bypassed — a native double-click extending a selection through it, say —
+     the browser will not carry this digit into the range. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.hl-note-badge:hover,
+.hl-note-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The Document surface's page badge is the same feature on the other surface and
+   is fixed the same way, but in the file that DEFINES it (styles/37-document-
+   chrome.css) rather than overridden from here: two files setting one rule is a
+   cascade question nobody should have to answer twice. */

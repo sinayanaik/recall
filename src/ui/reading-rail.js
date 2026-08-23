@@ -52,7 +52,6 @@ import { hasStudyTextSelection, isFocusModeActive, setFocusMode, toggleImmersive
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { bookmarkCurrentSpot, goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
-import { toggleInlineHighlightNotes } from "../notes/inline-highlight-notes.js?v=__BUILD__";
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
@@ -163,7 +162,7 @@ export function refreshReadingRailRows() {
 // The rail's modes and one of its labels, read back off the controls that own
 // them.
 //
-// Dark page, region select, inline notes, full screen and focus mode each
+// Dark page, region select, full screen and focus mode each
 // already publish their state as aria-pressed on their own button
 // (togglePdfInvert, toggleRegionSelect, paintInlineNotesButton,
 // paintImmersiveButton, applyChromeCollapse), and the
@@ -183,7 +182,6 @@ export function refreshReadingRailModes() {
   };
   mirrorMode("dark-page", el.documentDarkBtn);
   mirrorMode("region", el.documentRegionBtn);
-  mirrorMode("inline-notes", el.inlineNotesBtn);
   mirrorMode("immersive", el.immersiveModeBtn);
   mirrorMode("focus", el.focusModeBtn);
   const setRow = row("bookmark-set");
@@ -252,7 +250,6 @@ export function initReadingRail() {
     else if (action === "contents") toggleContents();
     else if (action === "bookmark-set") bookmarkCurrentSpot();
     else if (action === "bookmark-go") goToBookmark();
-    else if (action === "inline-notes") toggleInlineHighlightNotes();
     else if (action === "style") openStylePanel();
     else if (action === "sync") reconcileAllDecks({ explicit: true });
     else if (action === "immersive") toggleImmersiveMode();

@@ -51,13 +51,15 @@ import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
+import { setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
+import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
 import { bookmarkCurrentSpot, goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
-import { INLINE_HIGHLIGHT_NOTES_KEY, applyInlineHighlightNotes, setInlineHighlightNotesFlag, toggleInlineHighlightNotes } from "./notes/inline-highlight-notes.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setDocumentNotesRenderer, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
@@ -353,16 +355,6 @@ try {
   setChromeFocusPinned(false);
 }
 
-// Same shape, same reason: whether highlight notes are printed in the text is
-// a way of reading rather than a property of one note, so it is remembered.
-// Only the FLAG is seeded here — applyInlineHighlightNotes() runs alongside
-// applyChromeCollapse() below, once the body class it sets can be seen.
-try {
-  setInlineHighlightNotesFlag(localStorage.getItem(INLINE_HIGHLIGHT_NOTES_KEY) === "1");
-} catch (_) {
-  setInlineHighlightNotesFlag(false);
-}
-
 // ...and the Document surface's counterpart. Its own key, deliberately: whether
 // a reader wants a paper's annotations printed under its pages is a different
 // question from whether they want a note's printed in its paragraphs, and one
@@ -438,8 +430,6 @@ el.focusModeBtn?.addEventListener("click", () => setFocusMode(!isFocusModeActive
 el.immersiveModeBtn?.addEventListener("click", () => toggleImmersiveMode());
 initImmersiveMode();
 
-el.inlineNotesBtn?.addEventListener("click", () => toggleInlineHighlightNotes());
-
 // Rotating to landscape (or resizing a desktop window down) crosses the mobile
 // breakpoint, which turns the scroll-driven half on or off; re-evaluate.
 chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
@@ -448,10 +438,6 @@ chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
 // transitions a frame later — otherwise every launch in focus mode would open
 // with the header up and visibly fold it away.
 applyChromeCollapse();
-// The body class and the button's pressed state, from the preference seeded
-// above. Its own refresh is a no-op here (there is no note open yet) and the
-// real one runs on the first renderNotesView.
-applyInlineHighlightNotes();
 requestAnimationFrame(() => document.body.classList.add("chrome-ready"));
 
 
@@ -931,6 +917,21 @@ onDomReady(() => {
 // that makes one without closing an import cycle it documents at length. Same
 // registration idiom as the two hooks above.
 onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
+// Pressing the number on an annotated highlight opens that note.
+//
+// Registered rather than imported for the reason setHighlightBadgeHandler's own
+// comment gives: the badge module runs inside the render pipeline, and both
+// halves of this call — the mark-ordinal lookup in notes/anchors.js and the
+// popup in notes/highlight-note-editor.js — reach back into that pipeline. This
+// file already knows both ends, which is what makes it the place to join them.
+//
+// The ordinal, not the DOM position: on a note built lazily chunk by chunk the
+// two are different numbers, and sourceMarkIndexFor is what maps between them.
+onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
+  const index = sourceMarkIndexFor(el.notesView, mark);
+  if (index < 0) return;
+  openHighlightNoteEditor(index, rect, noteText);
+}));
 // A PDF deck's Notes tab is its highlight notes, built by the document module
 // rather than rendered from markdown — see the note on setDocumentNotesRenderer
 // for why that surface is taken over rather than rendered into. Same

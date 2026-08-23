@@ -220,15 +220,12 @@ const POST_SPLIT = {
     "Also the immersive-mode button's own pressed state, and the background " +
     "the root element paints in fullscreen.",
   "34-inline-highlight-notes.css":
-    "A highlight that carries a note, said in the note itself. Two layers: a " +
-    "permanent zero-advance mark on any annotated highlight, and an opt-in " +
-    "mode that numbers them and prints each note where it belongs — merged " +
-    "into its own paragraph in brackets when it is one line, as a tinted " +
-    "callout after it when it is more. Every indicator over a <mark> is drawn " +
-    "with position/text-decoration and never with inline content, because a " +
-    "mark that widens its own text re-wraps the block and makes the note " +
-    "shiver — see 23-highlight-marks.css for the whole of that story. " +
-    "See src/notes/inline-highlight-notes.js.",
+    "A document deck's Notes tab: every highlight in reading order, grouped by " +
+    "page, its note under it and editable in place. It carried the numbered " +
+    "superscript and an opt-in mode that printed every note into the paragraph " +
+    "it annotated; the printed mode is gone and the number moved to " +
+    "42-highlight-badge.css as a real element. See src/documents/" +
+    "pdf-notes-view.js.",
   "35-notes-menu.css":
     "The notes \u22ef menu as ten sentences rather than ten glyphs. It shipped " +
     "as a tray of icon buttons \u2014 two of them the same bookmark drawing, " +
@@ -301,6 +298,14 @@ const POST_SPLIT = {
     "borrowed from .category-choice-modal (08-panels.css) \u2014 the app's one " +
     "modal shape; what is here is the level row, the folded Advanced sliders, " +
     "and the per-file before/after list.",
+  "42-highlight-badge.css":
+    "The number on a highlight that has a note, and the dotted underline that " +
+    "says one is there. It was a ::after tinted --accent-strong, which a " +
+    "pseudo-element makes unpressable and unfocusable, and which vanished over " +
+    "a yellow or pink tint on the dark themes — a colour-mixed background is " +
+    "not something a single ink can be guaranteed to read on. It is an opaque " +
+    "chip in --accent-contrast now, and a real <button>, kept out of flow so " +
+    "it still moves the text by zero pixels. See src/notes/highlight-badges.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

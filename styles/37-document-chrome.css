@@ -511,7 +511,12 @@
   border: 0;
   border-radius: 999px;
   background: var(--accent-strong);
-  color: #fff;
+  /* Not #fff. --accent-strong is a LIGHT colour in seven of the ten themes, so
+     white-on-accent was white on pale green — the same legibility bug the note
+     badge in styles/42-highlight-badge.css was fixed for, one surface along.
+     --accent-contrast is defined per theme as the ink that reads on the accent,
+     which is the only place that question has already been answered. */
+  color: var(--accent-contrast);
   font: inherit;
   font-size: 0.62rem;
   font-weight: 800;

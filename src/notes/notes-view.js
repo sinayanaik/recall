@@ -16,7 +16,7 @@ import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { refreshBookmarkButtonUI } from "./bookmark.js?v=__BUILD__";
 import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
-import { refreshInlineHighlightNotes } from "./inline-highlight-notes.js?v=__BUILD__";
+import { refreshHighlightBadges } from "./highlight-badges.js?v=__BUILD__";
 // notes-history.js imports renderNotesViewPinned from here — a cycle whose only
 // crossing bindings are hoisted function declarations. See the note there.
 import { clearNotesHistory, syncNotesHistoryBaseline } from "./notes-history.js?v=__BUILD__";
@@ -121,7 +121,7 @@ export function clearProgrammaticNotesSelection() {
 // That block used to be real markdown — a "## Highlight Notes" heading and a
 // "### [id]" per note — so the rendered view printed the reader's own notes
 // twice, once where they belong and once in a heap at the foot of the document,
-// and inline-highlight-notes.js had to walk the rendered blocks BACKWARDS to
+// and the note-badge pass had to walk the rendered blocks BACKWARDS to
 // find that heading and hide it again. It is a fenced block of HTML comments
 // now (src/format/notes-fence.js) and it simply is not rendered.
 //
@@ -192,8 +192,8 @@ export function renderNotesView({ sameNote = false } = {}) {
     // (the mark menu, the note popup, an undo, a raw edit, a sync pull) because
     // every one of them repaints through this function. It costs a pointer
     // compare and a string compare when nothing about the notes changed, which
-    // is every repaint but the ones that did — see refreshInlineHighlightNotes.
-    .then(() => refreshInlineHighlightNotes())
+    // is every repaint but the ones that did — see refreshHighlightBadges.
+    .then(() => refreshHighlightBadges())
     // Also the one reliable place to keep the bookmark button in step with
     // state.meta?.bookmark: renderMarkdown's own cache-hit fast path (same
     // source, nothing to redo) returns before finalizeRenderedSurface ever
