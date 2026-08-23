@@ -2588,14 +2588,31 @@ try {
   // 25 annotated highlights and 312ms at 300, which is what "rendering and
   // scrolling became hella slow" was made of.
   //
-  // Asserted as a RATIO rather than a millisecond budget, so it means the same
-  // thing on a fast laptop and a loaded CI box: twelve times the highlights must
-  // not cost anything like twelve times squared. Linear measures about 4x here
-  // (the constant per-page DOM work dominates); the quadratic version measured
-  // 80x. The bound sits well clear of both.
+  // ── Why a ratio, and why the bound is where it is ──────────────────────
+  //
+  // A millisecond budget would mean different things on a fast laptop and a
+  // loaded CI box, so this asks how the cost GROWS: twelve times the highlights
+  // must not cost anything like twelve times squared. Linear is ~12x plus
+  // whatever constant per-page DOM work there is; quadratic is ~144x, and the
+  // version this replaced measured 80x. 45 sits clear of both — high enough that
+  // a slow machine cannot trip it, low enough that the regression cannot hide
+  // under it. A guard that fails on noise trains the eye to ignore a red line.
+  //
+  // Both ends are measured over enough repetitions to be well above timer
+  // resolution, and the pages are confirmed rendered first: paintPageNoteBadges
+  // returns immediately for a page that has no text layer yet, so measuring
+  // before they are up times an early return and proves nothing.
   const scaling = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     const before = { notes: api.state.notes, meta: api.state.meta };
+    for (let p = 1; p <= 4; p += 1) {
+      api.scrollToDocumentPage(p, 0, { smooth: false });
+      await api.whenDocumentPageReady(p);
+    }
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(200);
+    const live = [1, 2, 3, 4].filter((p) => document.querySelector('.pdf-page[data-page-number="' + p + '"] .pdf-text-layer'));
+
     const build = (k) => {
       const records = [];
       let notes = "";
@@ -2611,17 +2628,19 @@ try {
       }
       return { records, notes };
     };
+    const REPS = 30;
     const measure = async (k) => {
       const { records, notes } = build(k);
       api.state.meta = { ...api.state.meta, pdfHighlights: records };
       api.state.notes = notes;
       await settle(50);
-      // Warm, then measure — the first pass pays for laying out a badge layer
-      // that every later pass reuses.
-      for (let p = 1; p <= 4; p += 1) api.paintPageNoteBadges(p);
+      // Warm, then measure: the first pass pays for a badge layer every later
+      // pass reuses, and that one-off would land entirely on whichever end of
+      // the comparison ran first.
+      for (const p of live) api.paintPageNoteBadges(p);
       const started = performance.now();
-      for (let r = 0; r < 3; r += 1) for (let p = 1; p <= 4; p += 1) api.paintPageNoteBadges(p);
-      return (performance.now() - started) / 3;
+      for (let r = 0; r < REPS; r += 1) for (const p of live) api.paintPageNoteBadges(p);
+      return (performance.now() - started) / REPS;
     };
     const small = await measure(25);
     const large = await measure(300);
@@ -2629,12 +2648,20 @@ try {
     api.state.meta = before.meta;
     api.repaintPdfPageNotes();
     await settle(100);
-    return { small: +small.toFixed(1), large: +large.toFixed(1), ratio: +(large / Math.max(small, 0.05)).toFixed(1) };
+    return {
+      pages: live.length,
+      small: +small.toFixed(2),
+      large: +large.toFixed(2),
+      ratio: +(large / Math.max(small, 0.001)).toFixed(1)
+    };
   }`);
 
+  check("the scaling measurement actually has pages to paint on",
+    scaling.pages > 0 && scaling.small > 0,
+    `${scaling.pages} rendered page(s), ${scaling.small}ms per pass at 25 highlights`);
   check("painting a page's note badges scales with the highlights, not their square",
-    scaling.ratio < 25,
-    `12x the highlights cost ${scaling.ratio}x the time (${scaling.small}ms → ${scaling.large}ms per 4 pages)`);
+    scaling.ratio < 45,
+    `12x the highlights cost ${scaling.ratio}x the time (${scaling.small}ms → ${scaling.large}ms per pass over ${scaling.pages} page(s))`);
 
   // ── Attaching a paper to a deck that already exists ──────────────────────
   //
