@@ -2577,6 +2577,92 @@ try {
       `${derived.afterReload.length} entr(y/ies) back in ${derived.reloadMs}ms`);
   }
 
+  // ── How a heavily annotated paper scales ─────────────────────────────────
+  //
+  // Every surface that lists a paper's highlights has to resolve each one's note
+  // out of the fenced block at the end of state.notes, and reading that block
+  // means walking all of it. Ask per record and the cost is quadratic in how
+  // many highlights the paper has — and paintPageNoteBadges asks from the
+  // page-painted hook, so the reader pays it again for every page they scroll
+  // past. Measured before this was fixed: 3.9ms to paint four pages' badges at
+  // 25 annotated highlights and 312ms at 300, which is what "rendering and
+  // scrolling became hella slow" was made of.
+  //
+  // ── Why a ratio, and why the bound is where it is ──────────────────────
+  //
+  // A millisecond budget would mean different things on a fast laptop and a
+  // loaded CI box, so this asks how the cost GROWS: twelve times the highlights
+  // must not cost anything like twelve times squared. Linear is ~12x plus
+  // whatever constant per-page DOM work there is; quadratic is ~144x, and the
+  // version this replaced measured 80x. 45 sits clear of both — high enough that
+  // a slow machine cannot trip it, low enough that the regression cannot hide
+  // under it. A guard that fails on noise trains the eye to ignore a red line.
+  //
+  // Both ends are measured over enough repetitions to be well above timer
+  // resolution, and the pages are confirmed rendered first: paintPageNoteBadges
+  // returns immediately for a page that has no text layer yet, so measuring
+  // before they are up times an early return and proves nothing.
+  const scaling = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const before = { notes: api.state.notes, meta: api.state.meta };
+    for (let p = 1; p <= 4; p += 1) {
+      api.scrollToDocumentPage(p, 0, { smooth: false });
+      await api.whenDocumentPageReady(p);
+    }
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(200);
+    const live = [1, 2, 3, 4].filter((p) => document.querySelector('.pdf-page[data-page-number="' + p + '"] .pdf-text-layer'));
+
+    const build = (k) => {
+      const records = [];
+      let notes = "";
+      for (let i = 0; i < k; i += 1) {
+        const id = "hn-" + (100000 + i).toString(36);
+        const page = (i % 4) + 1;
+        records.push({ id, color: "yellow", page, kind: "text",
+          text: "some highlighted words number " + i,
+          quads: [{ page, rect: [72, 700 - (i % 30) * 18, 300, 712 - (i % 30) * 18] }],
+          anchor: { page, item: 0, ch: 0 }, focus: { page, item: 0, ch: 0 },
+          qv: 1, at: 1, noteAt: 1 });
+        notes = api.setHighlightNoteInSource(notes, id, "A note of a few words about highlight " + i + ".", "“words " + i + "”");
+      }
+      return { records, notes };
+    };
+    const REPS = 30;
+    const measure = async (k) => {
+      const { records, notes } = build(k);
+      api.state.meta = { ...api.state.meta, pdfHighlights: records };
+      api.state.notes = notes;
+      await settle(50);
+      // Warm, then measure: the first pass pays for a badge layer every later
+      // pass reuses, and that one-off would land entirely on whichever end of
+      // the comparison ran first.
+      for (const p of live) api.paintPageNoteBadges(p);
+      const started = performance.now();
+      for (let r = 0; r < REPS; r += 1) for (const p of live) api.paintPageNoteBadges(p);
+      return (performance.now() - started) / REPS;
+    };
+    const small = await measure(25);
+    const large = await measure(300);
+    api.state.notes = before.notes;
+    api.state.meta = before.meta;
+    api.repaintPdfPageNotes();
+    await settle(100);
+    return {
+      pages: live.length,
+      small: +small.toFixed(2),
+      large: +large.toFixed(2),
+      ratio: +(large / Math.max(small, 0.001)).toFixed(1)
+    };
+  }`);
+
+  check("the scaling measurement actually has pages to paint on",
+    scaling.pages > 0 && scaling.small > 0,
+    `${scaling.pages} rendered page(s), ${scaling.small}ms per pass at 25 highlights`);
+  check("painting a page's note badges scales with the highlights, not their square",
+    scaling.ratio < 45,
+    `12x the highlights cost ${scaling.ratio}x the time (${scaling.small}ms → ${scaling.large}ms per pass over ${scaling.pages} page(s))`);
+
   // ── Attaching a paper to a deck that already exists ──────────────────────
   //
   // "Once a deck has been created without a PDF there is no option to attach one

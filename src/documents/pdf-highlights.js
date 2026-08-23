@@ -266,6 +266,15 @@ export function repairDocumentHighlightText(pageNumber) {
   const records = documentHighlights();
   if (!records.length) return false;
   let notes = state.notes || "";
+  // One parse for the sweep, not one per record. Reading it inside the map made
+  // this the third place that re-read the whole fenced block per highlight, and
+  // this one runs from the page-painted hook — see annotatedDocumentHighlights
+  // for what that costs on a heavily annotated paper.
+  //
+  // Still correct after the writes below: setHighlightNoteInSource only rewrites
+  // an entry's quoted LABEL here, never its text, so what this map holds stays
+  // true for the whole sweep.
+  const noteTextById = readHighlightNotes(notes);
   let changed = false;
   const next = records.map((record) => {
     // A region is named by where it is, not by what it says (see
@@ -280,7 +289,7 @@ export function repairDocumentHighlightText(pageNumber) {
     if (!derived || derived === stored) return record;
     if (squashWhitespace(derived) !== squashWhitespace(stored)) return record;
     changed = true;
-    const note = readHighlightNotes(notes).get(record.id) || "";
+    const note = noteTextById.get(record.id) || "";
     // Only when there IS a note: setHighlightNoteInSource treats an empty text
     // as "remove this entry", so writing a label for a highlight that has no
     // note would be a no-op on a good day and a removal on a bad one.
