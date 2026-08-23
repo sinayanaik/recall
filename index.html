@@ -1054,11 +1054,16 @@
            four views and the way back to My Decks with them. Leaving focus mode
            to change tab and re-entering it is not a mode, it is a chore.
 
-           So this is what stays: a grip on the edge of the screen, ~8px wide,
-           that expands into the seven things focus mode took away. It exists
-           ONLY while body.chrome-collapsed — outside focus mode every one of
-           these is already on screen in the row above, and a second copy of a
-           visible control is a second thing to keep in step.
+           So this is what stays: a ☰ on the right edge that expands into the
+           things focus mode took away, and puts itself away afterwards.
+
+           It used to exist ONLY while body.chrome-collapsed, on the argument
+           that outside focus mode every one of these is already on screen in the
+           row above. True, and it left the rail unable to be the way IN — so on
+           a landscape phone, where the header is worth the most, the only route
+           into focus mode was a row buried in the notes ⋯ menu. It is on screen
+           whenever a deck is open now, quiet while the chrome is up and full
+           strength once it folds.
 
            Its buttons are new nodes rather than moved ones, unlike the notes
            and document controls: those are moved because they carry handlers,
@@ -1069,53 +1074,80 @@
              this one span and its two pseudo-elements (styles/38-reading-rail
              .css) rather than from three nodes, so #readingRailGrip stays
              exactly the element dom.js and reading-rail.js already reach for. -->
-        <button class="reading-rail-grip" id="readingRailGrip" type="button" aria-expanded="false" aria-controls="readingRailTray" aria-label="Reading controls" title="Reading controls — the views and My Decks"><span aria-hidden="true"></span></button>
+        <button class="reading-rail-grip" id="readingRailGrip" type="button" aria-expanded="false" aria-controls="readingRailTray" aria-label="Reading controls" title="Reading controls — the views, focus mode and full screen"><span aria-hidden="true"></span></button>
         <!-- Every row is named. The glyph is what the eye lands on; the label is
              what makes the tray legible the first time it is opened, which is
              the only time it matters. The glyph moved into its own .rr-ico span
              so the two can be sized apart — nothing here reads textContent, and
-             setViewMode / refreshDocumentTab both address these by attribute. -->
+             setViewMode / refreshDocumentTab both address these by attribute.
+
+             ── Grouped, because sixteen rows is a list to search ──────────
+             Each row names its group in data-rail-group and initReadingRail
+             inserts one heading per run of them (the same trick
+             notes-head-overflow.js plays with data-nhm-group), so a new row
+             joins a group by naming it and there is no list in the JS that has
+             to be edited in step. A heading whose every row is hidden for the
+             current view hides with them.
+
+             The `.reading-rail-sep` spans this replaced are gone: a heading
+             already separates, and two devices of separation stacked on each
+             other is just noise. -->
         <div class="reading-rail-tray" id="readingRailTray" role="toolbar" aria-label="Reading controls">
-          <button class="reading-rail-btn" type="button" data-rail-action="decks" title="My Decks" aria-label="My Decks"><span class="rr-ico" aria-hidden="true">&#128218;</span><span class="rr-label">My Decks</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-action="contents" title="Contents" aria-label="Contents"><span class="rr-ico" aria-hidden="true">&#9776;</span><span class="rr-label">Contents</span></button>
-          <span class="reading-rail-sep" aria-hidden="true"></span>
-          <button class="reading-rail-btn" type="button" data-view-mode="cards" title="Cards" aria-label="Cards"><span class="rr-ico" aria-hidden="true">&#9634;</span><span class="rr-label">Cards</span></button>
-          <button class="reading-rail-btn" type="button" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes</span></button>
-          <button class="reading-rail-btn" type="button" data-view-mode="document" hidden title="Document" aria-label="Document"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">Document</span></button>
-          <button class="reading-rail-btn" type="button" data-view-mode="highlights" title="Highlights" aria-label="Highlights"><span class="rr-ico" aria-hidden="true">&#128308;</span><span class="rr-label">Highlights</span></button>
-          <span class="reading-rail-sep" data-rail-scope="notes" aria-hidden="true"></span>
+          <!-- Says where the reader is, and offers the way out. The tray used to
+               have neither: it closed itself after RAIL_IDLE_MS whether or not
+               anyone was still reading it, which is a tray that vanishes while
+               you decide. -->
+          <div class="rr-head">
+            <span class="rr-head-title" id="readingRailViewName">Reading</span>
+            <button class="rr-close" id="readingRailCloseBtn" type="button" aria-label="Close reading controls" title="Close">&times;</button>
+          </div>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="cards" title="Cards" aria-label="Cards"><span class="rr-ico" aria-hidden="true">&#9634;</span><span class="rr-label">Cards</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="document" hidden title="Document" aria-label="Document"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">Document</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="highlights" title="Highlights" aria-label="Highlights"><span class="rr-ico" aria-hidden="true">&#128308;</span><span class="rr-label">Highlights</span></button>
+          <!-- ── What you can do to what is on screen ───────────────────-->
+          <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-action="contents" title="Contents" aria-label="Contents"><span class="rr-ico" aria-hidden="true">&#9776;</span><span class="rr-label">Contents</span></button>
+          <!-- The ✎|👁 pill is in the row focus mode folds away, so the one thing
+               a reader most often wants mid-note — fix the typo they just read —
+               meant leaving the mode to do it. The editor itself lives in
+               .notes-stage, which is NOT folded, so toggling it from here works
+               exactly as pressing the pill does. -->
+          <button class="reading-rail-btn" data-rail-group="This page" data-rail-scope="notes" type="button" data-rail-action="edit-notes" aria-pressed="false" title="Edit notes" aria-label="Edit notes"><span class="rr-ico" aria-hidden="true">&#9998;</span><span class="rr-label">Edit notes</span></button>
           <!-- ── The place you are keeping ──────────────────────────────
                The two bookmark controls live in the notes ⋯ menu, which is in
                the row focus mode folds away — so the one mode you would most
                want to drop a bookmark from was the one mode you could not. -->
-          <button class="reading-rail-btn" data-rail-scope="notes" type="button" data-rail-action="bookmark-set" title="Bookmark this spot" aria-label="Bookmark this spot"><span class="rr-ico" aria-hidden="true">&#128278;</span><span class="rr-label">Bookmark here</span></button>
-          <button class="reading-rail-btn" data-rail-scope="notes" type="button" data-rail-action="bookmark-go" title="Go to the bookmark" aria-label="Go to the bookmark"><span class="rr-ico" aria-hidden="true">&#8617;</span><span class="rr-label">Go to bookmark</span></button>
+          <button class="reading-rail-btn" data-rail-group="This page" data-rail-scope="notes" type="button" data-rail-action="bookmark-set" title="Bookmark this spot" aria-label="Bookmark this spot"><span class="rr-ico" aria-hidden="true">&#128278;</span><span class="rr-label">Bookmark here</span></button>
+          <button class="reading-rail-btn" data-rail-group="This page" data-rail-scope="notes" type="button" data-rail-action="bookmark-go" title="Go to the bookmark" aria-label="Go to the bookmark"><span class="rr-ico" aria-hidden="true">&#8617;</span><span class="rr-label">Go to bookmark</span></button>
           <!-- ── The document's own three ───────────────────────────────
-               Hidden outside Document view by refreshRailScope, exactly as the
-               Document tab above is hidden on a deck with no PDF. "Fit to
+               Hidden outside Document view by refreshReadingRailRows. "Fit to
                width" is not a convenience here: styles/37-document-chrome.css
                drops the pager's zoom AND fit buttons below 560px, so on a phone
                a pinch used to be a one-way door. -->
-          <span class="reading-rail-sep" data-rail-scope="document" aria-hidden="true"></span>
-          <button class="reading-rail-btn" type="button" data-rail-scope="document" data-rail-action="fit-width" title="Fit the page to the window width" aria-label="Fit to width"><span class="rr-ico" aria-hidden="true">&#8596;</span><span class="rr-label">Fit to width</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-scope="document" data-rail-action="dark-page" aria-pressed="false" title="Dark page — invert the paper for a dark theme" aria-label="Dark page"><span class="rr-ico" aria-hidden="true">&#9681;</span><span class="rr-label">Dark page</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-scope="document" data-rail-action="region" aria-pressed="false" title="Select a region — drag a box around a figure, a table or an equation" aria-label="Select a region"><span class="rr-ico" aria-hidden="true">&#9635;</span><span class="rr-label">Select a region</span></button>
-          <span class="reading-rail-sep" aria-hidden="true"></span>
+          <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-scope="document" data-rail-action="fit-width" title="Fit the page to the window width" aria-label="Fit to width"><span class="rr-ico" aria-hidden="true">&#8596;</span><span class="rr-label">Fit to width</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-scope="document" data-rail-action="dark-page" aria-pressed="false" title="Dark page — invert the paper for a dark theme" aria-label="Dark page"><span class="rr-ico" aria-hidden="true">&#9681;</span><span class="rr-label">Dark page</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-scope="document" data-rail-action="region" aria-pressed="false" title="Select a region — drag a box around a figure, a table or an equation" aria-label="Select a region"><span class="rr-ico" aria-hidden="true">&#9635;</span><span class="rr-label">Select a region</span></button>
           <!-- ── The rest of what the folded row was holding ────────────-->
-          <button class="reading-rail-btn" type="button" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-action="sync" title="Sync all decks with the cloud now" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
-          <span class="reading-rail-sep" aria-hidden="true"></span>
-          <!-- The two reading modes, as two toggles that say which way each is
-               set. This used to be one toggle (Full screen) whose pressed state
-               no stylesheet painted, plus a one-way "Leave focus" — so the rail
-               could turn focus mode off and could never say it was on, and the
-               real focus toggle (#focusModeBtn) is inside the row that focus
-               mode folds away, i.e. unreachable exactly when it applies.
-               Pressing Focus mode here still leaves focus mode, because that is
-               what a toggle that is on does; the difference is that it now
-               looks like something that is on. -->
-          <button class="reading-rail-btn" type="button" data-rail-action="focus" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Focus mode"><span class="rr-ico" aria-hidden="true">&#10530;</span><span class="rr-label">Focus mode</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-action="immersive" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Full screen"><span class="rr-ico" aria-hidden="true">&#9974;</span><span class="rr-label">Full screen</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="decks" title="My Decks" aria-label="My Decks"><span class="rr-ico" aria-hidden="true">&#128218;</span><span class="rr-label">My Decks</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="sync" title="Sync all decks with the cloud now" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
+          <!-- ── The two reading modes, pinned ──────────────────────────
+               They are two toggles that say which way each is set. This used to
+               be one toggle (Full screen) whose pressed state no stylesheet
+               painted, plus a one-way "Leave focus" — so the rail could turn
+               focus mode off and could never say it was on.
+
+               They are in a STICKY footer rather than simply last in the list,
+               and that is the fix for "there is no reliable full/focus button in
+               landscape". A landscape phone is ~390px tall; the tray scrolls at
+               its own max-height, so as the last two of sixteen rows these two
+               sat below the fold on exactly the device where the app's own
+               header is worth the most. Pinned, they are always the bottom of
+               the tray, whatever is above them and wherever it is scrolled. -->
+          <div class="rr-modes">
+            <button class="reading-rail-btn" type="button" data-rail-action="focus" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Focus mode"><span class="rr-ico" aria-hidden="true">&#10530;</span><span class="rr-label">Focus mode</span></button>
+            <button class="reading-rail-btn" type="button" data-rail-action="immersive" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Full screen"><span class="rr-ico" aria-hidden="true">&#9974;</span><span class="rr-label">Full screen</span></button>
+          </div>
         </div>
       </div>
     </main>
