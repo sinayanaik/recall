@@ -255,6 +255,23 @@ export function mergeDocumentAnnotations({
 // normaliser pulls in the whole cloud/board subtree, and this module is
 // string-and-object work by design so tools/document-sync-check.mjs can drive it
 // straight from Node with no browser. The shapes are named beside each rule.
+// Key-sorted, because the only thing this is ever used for is "did anything
+// actually move" — and a plain JSON.stringify answers that with the KEY ORDER as
+// well as the content. The two bags being compared come from different places (a
+// JSONB column parsed out of a network response, and a snapshot read back from
+// IndexedDB) and the merge rebuilds one of them by spreading, so identical
+// content in a different order is the ordinary case, not the exotic one. Getting
+// it wrong means `changed` is true on every sync and every deck's snapshot is
+// rewritten for nothing — pure quota churn on the device where quota is already
+// the binding constraint.
+function stableJson(value) {
+  return JSON.stringify(value, (_key, val) => (
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(Object.keys(val).sort().map((k) => [k, val[k]]))
+      : val
+  ));
+}
+
 export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   const cloud = cloudMeta && typeof cloudMeta === "object" ? cloudMeta : {};
   const local = localMeta && typeof localMeta === "object" ? localMeta : {};
@@ -393,8 +410,10 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck) {
     // rewriting every deck's snapshot on every sync is pure quota churn on the
     // device where quota is already the binding constraint — the same rule
     // reconcileCardsBeforePush follows. Compared over the WHOLE bag now, not
-    // three of its keys, because the merge above can move any of them.
+    // three of its keys, because the merge above can move any of them — and
+    // key-sorted, or the spread that rebuilt the bag would report every deck as
+    // changed on every sync purely for reordering its own keys.
     changed: notes !== String(snapshot.notes || "")
-      || JSON.stringify(nextMeta) !== JSON.stringify(localMeta)
+      || stableJson(nextMeta) !== stableJson(localMeta)
   };
 }

@@ -492,14 +492,23 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   // learning to avoid. The BODY only, for the same reason the pull asks about the
   // body: the fenced highlight-note block is merged entry by entry above, so it is
   // never replaced and there is nothing there to rescue.
-  let notesStashed = false;
+  //
+  // DECIDED here, WRITTEN below — because the decision is synchronous and the
+  // write is not. Everything from the `readDeckSnapshot` at the top of this
+  // function down to the two writeDeckSnapshot calls is deliberately free of
+  // `await`, which is what makes that read-modify-write atomic under JS's single
+  // thread and is why this function does not take the deck lock (see the note on
+  // the re-read further down). Awaiting the stash here would open that window,
+  // and a save landing in it would be overwritten by the stale `snapshot` on the
+  // very next line. The stash lives under a different key, so it is just as
+  // correct a moment later.
+  let notesToStash = null;
   if (documentPush && cloudDeck) {
     const cloudBody = splitHighlightNotesTail(String(cloudDeck.notes || "")).body;
     const pushedBody = splitHighlightNotesTail(String(documentPush.notes || "")).body;
     const cloudMovedSinceWeSynced = tsMs(cloudDeck.updated_at) > tsMs(localMeta.lastSyncedAt);
     if (cloudBody.trim() && cloudMovedSinceWeSynced && syncTextChanged(cloudBody, pushedBody)) {
-      await stashLosingNotes(localMeta.id, cloudDeck.title || snapshot.deckTitle || "", String(cloudDeck.notes || ""));
-      notesStashed = true;
+      notesToStash = String(cloudDeck.notes || "");
     }
   }
   if (documentPush) {
@@ -508,6 +517,13 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     documentTombstonesBeingPruned = documentPush.tombstonesBeingPruned;
     // Same quota rule as the cards above: only when something actually moved.
     if (documentPush.changed) writeDeckSnapshot(localMeta.id, snapshot);
+  }
+  // Out of the critical section, and before the network write rather than after
+  // it: a push that fails partway must still leave the copy it was going to
+  // replace recoverable.
+  const notesStashed = Boolean(notesToStash);
+  if (notesToStash !== null) {
+    await stashLosingNotes(localMeta.id, cloudDeck.title || snapshot.deckTitle || "", notesToStash);
   }
 
   // What we're about to put in the cloud, captured before the await so the

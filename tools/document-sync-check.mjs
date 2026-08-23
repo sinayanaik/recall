@@ -461,6 +461,19 @@ try {
       if ((merged.quickNoteCategories || []).length !== 2) lost.push("quickNoteCategories");
       return !lost.length || `lost on the pull: ${lost.join(", ")}`;
     });
+    must("...and identical meta in a different key order is not a change", () => {
+      // `changed` is what decides whether every deck's snapshot gets rewritten on
+      // every sync, and the merge rebuilds the bag by spreading — so comparing it
+      // with a plain JSON.stringify compares the KEY ORDER too. The two sides come
+      // from different places (a JSONB column off the network, a snapshot out of
+      // IndexedDB), so identical content in a different order is the ordinary
+      // case. Getting this wrong is pure quota churn on the device with the least
+      // of it.
+      const r = docSync.reconcileDeckBeforePush(
+        { notes: "# plain", meta: { linkIds: ["a"], readingPosition: { at: 1, offset: 2 } } },
+        { notes: "# plain", meta: { readingPosition: { offset: 2, at: 1 }, linkIds: ["a"] } });
+      return r?.changed === false || `changed=${r?.changed}, meta ${JSON.stringify(r?.meta)}`;
+    });
     must("...and a row with no notes column is still refused outright", () => {
       // The slim index row. Merging against a column it has never seen would
       // delete that column; the caller must skip the deck rather than push.
