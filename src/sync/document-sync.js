@@ -202,6 +202,142 @@ export function mergeDocumentAnnotations({
   };
 }
 
+// ── The rest of the meta bag ────────────────────────────────────────────────
+//
+// decks.meta is ONE JSONB column shared by six unrelated features, and
+// pushDeckRowsToCloud sends it whole. So a push overwrites every key in it with
+// whatever this device happens to hold — and this device pushes precisely
+// BECAUSE its updated_at is newer, which is the case where it may not have
+// pulled the others' work yet.
+//
+// The app already knows this is dangerous and already works around it in the two
+// places it noticed: pushBookmarkNow (src/sync/bookmark-cloud.js) and
+// serialiseQuickNoteMetaWrite (src/quick-notes/anchors.js) are both narrow
+// read-merge-writes of exactly one key, written that way so a bookmark or a
+// category cannot clobber its neighbours. A whole-column deck push then undoes
+// the careful thing both of them did.
+//
+// What that costs, key by key, on the ordinary "two devices, one deck" story:
+//
+//   • pdf        — attach a paper on the laptop, and the next push from the
+//                  phone deletes meta.pdf from the cloud. The HIGHLIGHTS survive,
+//                  because those are merged; the document they are positions in
+//                  does not, so every device that pulls afterwards has a paper's
+//                  worth of annotations and no paper. This is the worst of them.
+//   • bookmark   — the place you kept, replaced by the place this device kept.
+//   • quickNoteCategories, noteAnchors — a subject renamed or a note pinned on
+//                  the other device, gone.
+//   • linkIds    — the pull UNIONS these (see noteLinkAliasesFor in
+//                  src/sync/reconcile.js); the push sends this device's alone, so
+//                  the cloud's union shrinks and [[links]] written elsewhere stop
+//                  resolving.
+//   • readingPosition — settled by whoever pushed last rather than by its own
+//                  `at`, which is the stamp it carries for exactly this purpose.
+//
+// The full cloud row is already in hand on both sides — fetchCloudDeckRows does
+// select("*") and both pullCloudDeckIntoLibraryLocked and pushLibraryDeckToCloud
+// are handed the result — so this costs no extra request.
+//
+// `prefer` is the side that wins a key nobody has a rule for, and it is the ONLY
+// thing that differs between the two callers: "local" on the push (this device
+// is the one sending), "cloud" on the pull (the cloud row is the newer one).
+// Keeping the default that way preserves each direction's existing behaviour for
+// every key not named below; the rules ARE the exceptions, where "whoever synced
+// last" is the wrong answer.
+//
+// The pull needs it as much as the push does. Its meta was `{ ...cloudMeta }`
+// with linkIds unioned back on — so a bookmark set on this device while offline,
+// or a paper attached here and not yet pushed, was destroyed by the next pull
+// exactly as the push destroyed the other device's.
+//
+// Deliberately implemented here rather than by importing the canonical helpers:
+// noteLinkAliasesFor pulls in src/notes/link-picker.js and the category
+// normaliser pulls in the whole cloud/board subtree, and this module is
+// string-and-object work by design so tools/document-sync-check.mjs can drive it
+// straight from Node with no browser. The shapes are named beside each rule.
+// Key-sorted, because the only thing this is ever used for is "did anything
+// actually move" — and a plain JSON.stringify answers that with the KEY ORDER as
+// well as the content. The two bags being compared come from different places (a
+// JSONB column parsed out of a network response, and a snapshot read back from
+// IndexedDB) and the merge rebuilds one of them by spreading, so identical
+// content in a different order is the ordinary case, not the exotic one. Getting
+// it wrong means `changed` is true on every sync and every deck's snapshot is
+// rewritten for nothing — pure quota churn on the device where quota is already
+// the binding constraint.
+function stableJson(value) {
+  return JSON.stringify(value, (_key, val) => (
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(Object.keys(val).sort().map((k) => [k, val[k]]))
+      : val
+  ));
+}
+
+export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
+  const cloud = cloudMeta && typeof cloudMeta === "object" ? cloudMeta : {};
+  const local = localMeta && typeof localMeta === "object" ? localMeta : {};
+  const winner = prefer === "cloud" ? cloud : local;
+  const loser = prefer === "cloud" ? local : cloud;
+  const next = { ...loser, ...winner };
+
+  // meta.pdf — only ever written, never deleted: "Remove from cloud" sets
+  // offloaded:true and leaves the record (see offloadCurrentDocument), because
+  // the highlights are coordinates into that exact file and the deck has to keep
+  // knowing which file. So a side that has one always beats a side that has
+  // none, and the preferred side wins when both do.
+  if (!winner.pdf && loser.pdf) next.pdf = loser.pdf;
+
+  // meta.bookmark and meta.readingPosition — { offset, source, text, at }. Both
+  // carry their own `at` precisely so cross-device ordering is settled by when
+  // the reader was there, not by which device synced first. Same rule
+  // pushBookmarkNow already applies against the cloud's copy, and the same rule
+  // betterReadingPosition applies between the meta and the local store: a record
+  // with no stamp reads as older than one that has one.
+  for (const key of ["bookmark", "readingPosition"]) {
+    const a = cloud[key];
+    const b = local[key];
+    if (a && b) next[key] = (Number(b.at) || 0) >= (Number(a.at) || 0) ? b : a;
+    else next[key] = b || a || undefined;
+    if (!next[key]) delete next[key];
+  }
+
+  // meta.linkIds — a sorted array of the ids this deck answers to, one minted per
+  // device. Every device holds a piece of the truth, so a union is the only
+  // correct answer, exactly as the pull side takes one. Not capped here:
+  // noteLinkAliasesFor caps it on the way back in, and duplicating its limit is a
+  // constant to keep in step for no gain.
+  const linkIds = [...new Set([
+    ...(Array.isArray(cloud.linkIds) ? cloud.linkIds : []),
+    ...(Array.isArray(local.linkIds) ? local.linkIds : [])
+  ].map((id) => String(id || "").trim()).filter(Boolean))].sort();
+  if (linkIds.length) next.linkIds = linkIds;
+
+  // meta.quickNoteCategories — [{ id, name, color }]. Union by id, with the
+  // preferred side winning a genuine conflict, which is what
+  // applyCategoryOpsToList arrives at for the same pair. A category ADDED on the
+  // other device is the case that was being lost; a rename on both is a coin
+  // toss either way.
+  if (Array.isArray(cloud.quickNoteCategories) || Array.isArray(local.quickNoteCategories)) {
+    const byId = new Map();
+    for (const entry of Array.isArray(loser.quickNoteCategories) ? loser.quickNoteCategories : []) {
+      if (entry?.id) byId.set(String(entry.id), entry);
+    }
+    for (const entry of Array.isArray(winner.quickNoteCategories) ? winner.quickNoteCategories : []) {
+      if (entry?.id) byId.set(String(entry.id), entry);
+    }
+    next.quickNoteCategories = [...byId.values()];
+  }
+
+  // meta.noteAnchors — { [cardId]: anchor }, one entry per pinned note. A plain
+  // key union: the anchors are per-card and two devices pinning different notes
+  // is the ordinary case, not a conflict.
+  if ((cloud.noteAnchors && typeof cloud.noteAnchors === "object")
+      || (local.noteAnchors && typeof local.noteAnchors === "object")) {
+    next.noteAnchors = { ...(loser.noteAnchors || {}), ...(winner.noteAnchors || {}) };
+  }
+
+  return next;
+}
+
 // ── The push side ───────────────────────────────────────────────────────────
 //
 // The half that closes the window rather than repairing after it, and the exact
@@ -215,10 +351,12 @@ export function mergeDocumentAnnotations({
 // it the newest, so the next sync takes the push branch again and it stays
 // behind forever while the cloud is correct.
 //
-// Returns null when there is nothing document-shaped on either side, so an
-// ordinary deck's push is untouched — the cost of this on a deck with no
-// highlights and no fenced block is one hasOwnProperty and two string checks.
-export function reconcileDocumentBeforePush(snapshot, cloudDeck) {
+// It used to return null for a deck with nothing document-shaped on either side,
+// which meant an ordinary deck's `meta` went up whole and unmerged — see
+// mergeDeckMeta for what that costs. It runs for every deck now and
+// returns null only when the cloud row cannot be read from, in which case the
+// caller must not push the column at all.
+export function reconcileDeckBeforePush(snapshot, cloudDeck) {
   if (!snapshot || !cloudDeck) return null;
   // A row that arrived without a notes column tells us nothing about the cloud's
   // annotations, and merging against "" would delete every one of them. Same
@@ -229,42 +367,53 @@ export function reconcileDocumentBeforePush(snapshot, cloudDeck) {
   const hasAnnotations = Array.isArray(cloudMeta.pdfHighlights) || Array.isArray(localMeta.pdfHighlights)
     || splitHighlightNotesTail(String(cloudDeck.notes || "")).tail
     || splitHighlightNotesTail(String(snapshot.notes || "")).tail;
-  if (!hasAnnotations) return null;
 
-  const merged = mergeDocumentAnnotations({
-    cloudNotes: String(cloudDeck.notes || ""),
-    cloudMeta,
-    localNotes: String(snapshot.notes || ""),
-    localMeta,
-    body: "local"
-  });
+  // Every key the two sides both have an opinion about, settled key by key.
+  // Runs whether or not this is a paper: linkIds, the bookmark and the quick-note
+  // categories belong to ordinary decks and were being lost on ordinary syncs.
+  const nextMeta = mergeDeckMeta(cloudMeta, localMeta, { prefer: "local" });
 
-  const nextMeta = { ...localMeta };
-  if (merged.pdfHighlights) nextMeta.pdfHighlights = merged.pdfHighlights;
-  if (Object.keys(merged.deletedHighlightIds).length) nextMeta.deletedHighlightIds = merged.deletedHighlightIds;
-  else delete nextMeta.deletedHighlightIds;
+  const merged = hasAnnotations
+    ? mergeDocumentAnnotations({
+      cloudNotes: String(cloudDeck.notes || ""),
+      cloudMeta,
+      localNotes: String(snapshot.notes || ""),
+      localMeta,
+      body: "local"
+    })
+    : null;
+
+  if (merged?.pdfHighlights) nextMeta.pdfHighlights = merged.pdfHighlights;
+  if (merged && Object.keys(merged.deletedHighlightIds).length) nextMeta.deletedHighlightIds = merged.deletedHighlightIds;
+  else if (merged) delete nextMeta.deletedHighlightIds;
 
   // Ids this push is about to remove from the cloud on a tombstone's say-so.
   // Once it lands they have served their purpose and are retired — off the
   // RE-READ snapshot, one id at a time, so a highlight deleted while the push
   // was in flight keeps its own fresh tombstone.
   const cloudIds = new Set((cloudMeta.pdfHighlights || []).map((record) => String(record?.id)));
-  const tombstonesBeingPruned = Object.keys(merged.deletedHighlightIds).filter((id) => cloudIds.has(id));
+  const tombstonesBeingPruned = merged
+    ? Object.keys(merged.deletedHighlightIds).filter((id) => cloudIds.has(id))
+    : [];
+
+  const notes = merged ? merged.notes : String(snapshot.notes || "");
 
   return {
-    notes: merged.notes,
+    notes,
     meta: nextMeta,
     tombstonesBeingPruned,
-    highlightsAdopted: merged.highlightsAdopted,
-    highlightsRemoved: merged.highlightsRemoved,
-    highlightNotesMerged: merged.highlightNotesMerged,
-    highlightNotesAdopted: merged.highlightNotesAdopted,
+    highlightsAdopted: merged?.highlightsAdopted || 0,
+    highlightsRemoved: merged?.highlightsRemoved || 0,
+    highlightNotesMerged: merged?.highlightNotesMerged || 0,
+    highlightNotesAdopted: merged?.highlightNotesAdopted || 0,
     // Only when something actually moved. Most syncs change nothing here, and
     // rewriting every deck's snapshot on every sync is pure quota churn on the
     // device where quota is already the binding constraint — the same rule
-    // reconcileCardsBeforePush follows.
-    changed: merged.notes !== String(snapshot.notes || "")
-      || JSON.stringify(nextMeta.pdfHighlights || null) !== JSON.stringify(localMeta.pdfHighlights || null)
-      || JSON.stringify(nextMeta.deletedHighlightIds || null) !== JSON.stringify(localMeta.deletedHighlightIds || null)
+    // reconcileCardsBeforePush follows. Compared over the WHOLE bag now, not
+    // three of its keys, because the merge above can move any of them — and
+    // key-sorted, or the spread that rebuilt the bag would report every deck as
+    // changed on every sync purely for reordering its own keys.
+    changed: notes !== String(snapshot.notes || "")
+      || stableJson(nextMeta) !== stableJson(localMeta)
   };
 }

@@ -18,24 +18,36 @@
  * right edge is where a scrollbar already trains the eye to reach, and where
  * neither of those two is listening.
  *
- * ── Why it is display:none outside focus mode ───────────────────────────
+ * ── Why it is no longer display:none outside focus mode ─────────────────
  *
- * Every one of these controls is already on screen in the row above when the
- * chrome is expanded. A second, permanently visible copy of a visible control is
- * a second thing to keep in step and a second thing to explain.
+ * It was, on the argument that every one of these controls is already on screen
+ * in the row above when the chrome is expanded, so a second permanently visible
+ * copy is a second thing to keep in step and a second thing to explain.
+ *
+ * That is true of the tray's CONTENTS and false of the rail itself, because it
+ * left the rail unable to be the way IN. The routes into focus mode on a phone
+ * were: scroll down (portrait only, until CHROME_MOBILE_QUERY was widened),
+ * Ctrl+. (no keyboard), and the ⤢ row inside the notes ⋯ menu. So on a landscape
+ * phone — the shape where the app's own header costs the largest share of the
+ * screen — focus mode and full screen were three presses deep inside a menu.
+ *
+ * So the rail is on screen whenever a deck is open. What body.chrome-collapsed
+ * decides now is how LOUD it is: a quiet outline while the chrome is up (the
+ * controls really are all on screen above, so it only has to be findable), full
+ * strength once the chrome folds (it is the only furniture left).
  */
 
 .reading-rail {
   display: none;
 }
 
-/* Two facts, both already published by the app, both reached with :has() from
-   <body> — the chrome is folded, and a deck is actually open (#viewModeToggle
-   is what says so; updateCardControls hides it when there is none). The
-   #mainToolbar guard is the same one body.chrome-collapsed's own rules carry:
-   the ☰ drawer un-collapses the appbar while it is open, and a rail floating
-   over an open drawer is furniture on top of furniture. */
-body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:not([hidden])) .reading-rail:not([hidden]) {
+/* One fact, already published by the app and reached with :has() from <body>:
+   a deck is actually open (#viewModeToggle is what says so; updateCardControls
+   hides it when there is none). The #mainToolbar guard is the same one
+   body.chrome-collapsed's own rules carry: the ☰ drawer un-collapses the appbar
+   while it is open, and a rail floating over an open drawer is furniture on top
+   of furniture. */
+body:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:not([hidden])) .reading-rail:not([hidden]) {
   position: fixed;
   /* Not flush. --app-width is 100vw, so right:0 is exactly where
      #documentView's native scrollbar is, and a control sitting on a scrollbar
@@ -44,15 +56,42 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:no
   /* Near the top rather than dead centre: the middle of the screen is where the
      text is and where the touch-selection handles work, and it is the one band
      the eye does not sweep when something disappears from the header. */
-  top: clamp(64px, 16vh, 180px);
+  top: clamp(56px, 14vh, 160px);
+  /* ── ...and a BOTTOM, which is what makes the tray fit ─────────────────
+     The box used to be only as tall as its content, so the tray was bounded by
+     a guess (`min(82vh, 560px)`) that knows nothing about where the box starts.
+     On a 390px-tall landscape phone that guess is 320px measured from a top of
+     64px, i.e. 384 of 390 — the last rows sat on the home indicator, and the
+     two mode toggles at the end of the list were past it.
+
+     With both edges pinned the box IS the space available, `max-height: 100%`
+     on the tray is exact rather than a guess, and the sticky footer below has
+     something real to stick to. align-items:flex-start keeps the grip up at the
+     top where it was, rather than centring it in a now-full-height box. */
+  bottom: max(8px, env(safe-area-inset-bottom, 0px));
   z-index: 62;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-end;
   /* No pointer events on the box itself — only on the grip and the tray. The
-     box is as tall as the tray it may be about to show, and an invisible strip
-     down the side of a paper that swallows presses is worse than no rail. */
+     box is the full height of the tray it may be about to show, and an invisible
+     strip down the side of a paper that swallows presses is worse than no rail. */
   pointer-events: none;
+}
+
+/* Quiet while the chrome is up: the tabs, the contents and the ⋯ menu are all on
+   screen a few pixels away, so the rail only has to be FINDABLE, not present.
+   Full strength the moment the chrome folds, because then it is the only thing
+   left. Not `display` — an appearing control cannot be reached for, and half the
+   point of the rail being permanent is that a reader learns where it is while
+   the chrome is still up. */
+body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-grip {
+  opacity: 0.5;
+}
+
+body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-grip:hover,
+body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-grip:focus-visible {
+  opacity: 1;
 }
 
 /* ── The grip, which is now a hamburger ───────────────────────────────────
@@ -168,14 +207,23 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:no
      ragged edge on both sides. */
   align-items: stretch;
   gap: 3px;
-  /* Taller than it was: the tray carries the bookmarks, the document's own
-     controls, the style panel and sync now as well as the four views, and a
-     420px cap put half of them behind a scroll on a phone. It still scrolls
-     past this — a short landscape phone has to be able to reach the last row —
-     but on an upright phone the whole tray is now one glance. */
-  max-height: min(82vh, 560px);
+  /* Bounded by the box, which is now pinned top AND bottom — so this is the
+     space that actually exists rather than a fraction of the viewport that
+     knows nothing about where the tray starts. 560px is still the cap on a tall
+     screen, where a tray running the whole height would be absurd. */
+  max-height: min(100%, 560px);
   overflow-y: auto;
+  /* overscroll-contain: the tray sits over a scroller (the note, the paper), and
+     without this a flick that reaches the end of the tray carries on into the
+     page underneath — so dismissing the tray and losing your place were the
+     same gesture. */
+  overscroll-behavior: contain;
   padding: 6px 5px;
+  /* The notch is beside the tray in landscape, not above it — the same reason
+     .toolbar carries --safe-left. Added to the right padding rather than to the
+     box's `right`, so the tray's edge still meets the screen edge and it is the
+     ROWS that clear the sensor housing. */
+  padding-right: calc(5px + env(safe-area-inset-right, 0px));
   border: 1px solid var(--line);
   border-right: 0;
   border-radius: 10px 0 0 10px;
@@ -183,6 +231,100 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:no
   backdrop-filter: blur(8px);
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.34);
   pointer-events: auto;
+}
+
+/* ── The head: where you are, and the way out ──────────────────────────────
+   Sticky, so scrolling the rows never leaves the ✕ off the top of the tray.
+   Its background is opaque against the tray's own so rows pass UNDER it rather
+   than through it — the tray is translucent over a paper, and two translucent
+   layers over an arbitrary PDF page is a smear. */
+.rr-head {
+  position: sticky;
+  top: -6px;                       /* cancels the tray's own top padding */
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -6px -5px 2px;
+  padding: 7px 9px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: var(--panel);
+}
+
+.rr-head-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rr-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rr-close:hover,
+.rr-close:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent);
+}
+
+/* ── Group headings ────────────────────────────────────────────────────────
+   Sixteen labelled rows in a column is a list to search rather than a menu to
+   read. These are the drawer's own .drawer-section-label idiom at the tray's
+   scale — same weight, same tracking, same all-caps — so the two menus in this
+   app read as one design. Built by initReadingRail from each row's
+   data-rail-group; hidden when every row under one is hidden for this view. */
+.rr-group {
+  padding: 8px 10px 3px;
+  color: color-mix(in srgb, var(--muted) 60%, transparent);
+  font-size: 0.55rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.rr-group[hidden] {
+  display: none;
+}
+
+/* ── The two modes, pinned to the bottom ───────────────────────────────────
+   This is the fix for "there should be some dedicated reliable button for full /
+   focus screen in even mobile screen landscape mode". They were simply the last
+   two rows of the list, and the tray scrolls — so on a ~390px-tall landscape
+   phone the two controls that give that screen its height back were themselves
+   below the fold. Sticky to the bottom of the scroller, they are always the last
+   thing in the tray no matter how much is above them or where it is scrolled. */
+.rr-modes {
+  position: sticky;
+  bottom: -6px;                    /* cancels the tray's own bottom padding */
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px -5px -6px;
+  padding: 5px 5px 6px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: var(--panel);
 }
 
 /* ── The rows ──────────────────────────────────────────────────────────────
@@ -261,21 +403,10 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:no
   color: var(--accent);
 }
 
-.reading-rail-sep {
-  width: auto;
-  height: 1px;
-  margin: 3px 6px;
-  background: var(--line);
-}
-
-/* The separator above the document's own three rows goes with them. It sets no
-   `display` of its own, so the UA's [hidden] rule already covers this — stated
-   anyway, because the button rule twenty lines up had to be stated for exactly
-   the opposite reason and a reader comparing the two should not have to work
-   out why only one of them is here. */
-.reading-rail-sep[hidden] {
-  display: none;
-}
+/* `.reading-rail-sep` used to be here: a hairline between each run of rows. The
+   runs carry .rr-group headings now, and a heading already separates — two
+   devices of separation stacked on each other read as a rule that failed to
+   render. Nothing emits the class any more, so the rules went with it. */
 
 @media (prefers-reduced-motion: reduce) {
   .reading-rail-grip {

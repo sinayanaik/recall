@@ -42,6 +42,19 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // Declarations that are ALLOWED to differ, and why. Keep this short — every
 // entry is a place where the "pure movement" guarantee was deliberately spent.
 const ACCEPTED = {
+  // ── A phone is a phone on its side too ──────────────────────────────────
+  CHROME_MOBILE_QUERY:
+    "Was `(max-width: 720px)`, which is a portrait-only reading of a phone: " +
+    "turn one over and the viewport is about 844x390, wider than the " +
+    "breakpoint, so isMobileChrome() answered false on the exact device the " +
+    "scroll-driven collapse was written for. A landscape phone could not enter " +
+    "focus mode by reading at all, and applyChromeCollapse ANDed the scroll " +
+    "lock with the same query — so rotating a phone that was already in focus " +
+    "mode dropped the mode and took the reading rail with it. The second clause " +
+    "is the same device the other way up, gated on `pointer: coarse` so a short " +
+    "desktop window is untouched. Covered by the landscape section of " +
+    "tools/pdf-preview-check.mjs.",
+
   // ── Staying signed in ───────────────────────────────────────────────────
   // The app asked for the password on almost every launch. Not because the
   // session had gone: because every way of FAILING to confirm one — a refresh

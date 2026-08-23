@@ -22,12 +22,30 @@
 // now, it sits near the top, and refreshReadingRail lights it for a beat as the
 // header folds so it is seen at the moment it is wanted.
 //
-// ── Three rules it follows ─────────────────────────────────────────────────
+// ── It is the way IN as well as the way out ────────────────────────────────
 //
-//   • It exists ONLY while the chrome is collapsed. Outside focus mode every one
-//     of these controls is already on screen in the row above, and a second
-//     permanently-visible copy of a visible control is a second thing to keep in
-//     step and a second thing to explain.
+// It used to exist ONLY while the chrome was collapsed, on the argument that
+// outside focus mode every one of these controls is already on screen in the row
+// above, so a second permanently-visible copy is a second thing to keep in step
+// and a second thing to explain.
+//
+// That argument holds for the CONTENTS of the tray and does not hold for the
+// tray itself, because it leaves the rail unable to be the way in. On a phone
+// the routes into focus mode were: scroll down (portrait only — see
+// CHROME_MOBILE_QUERY), Ctrl+. (no keyboard), or the ⤢ row inside the notes ⋯
+// menu. So on a landscape phone, which is the shape where the app's own header
+// costs the largest fraction of the screen, focus mode was three presses deep
+// inside a menu and full screen was beside it. "There should be some dedicated
+// reliable button for full / focus screen in even mobile screen landscape mode"
+// is exactly that.
+//
+// So the rail is on screen whenever a deck is open — quiet while the chrome is
+// up, full strength once it folds (styles/38-reading-rail.css) — and the two
+// mode rows are pinned to the bottom of the tray so they never fall below a
+// scroll on a short screen.
+//
+// ── Two rules it still follows ─────────────────────────────────────────────
+//
 //   • Its buttons are NEW nodes, not moved ones. The notes and document controls
 //     are moved into the view-mode row precisely because they carry handlers
 //     (see notes-head-overflow.js); these carry none — every one calls a
@@ -58,13 +76,6 @@ import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 
-// How long an expanded rail waits before folding itself back up after a touch.
-// There is no pointerleave on a finger, so something has to end it — and long
-// enough that reading the icons and deciding is not a race.
-export const RAIL_IDLE_MS = 3200;
-
-let idleTimer = 0;
-
 export function isReadingRailExpanded() {
   return el.readingRail?.dataset.expanded === "true";
 }
@@ -74,22 +85,26 @@ export function setReadingRailExpanded(open) {
   if (!rail) return;
   rail.dataset.expanded = open ? "true" : "false";
   el.readingRailGrip?.setAttribute("aria-expanded", open ? "true" : "false");
-  clearTimeout(idleTimer);
-  idleTimer = 0;
 }
 
-function expandWithIdleTimeout() {
+// ── Why there is no idle timer here any more ───────────────────────────────
+//
+// There was one: RAIL_IDLE_MS, 3200ms, armed on every touch-open, on the
+// argument that a finger has no pointerleave so something has to end it. What
+// actually ends it is already covered three ways — pressing a row, pressing
+// anywhere else on the page (the capture-phase pointerdown below), and now the ✕
+// in the tray's own head. The timer only ever added a fourth way that fires
+// while the reader is still looking at the tray, deciding: sixteen labelled rows
+// is more than 3.2 seconds of reading, so the common outcome was the menu
+// closing itself mid-decision and having to be opened again. That is the
+// "not seamlessly changing the modes" half of the report.
+function expandRail() {
   setReadingRailExpanded(true);
   // Which rows apply, and which way each mode is set — read at the moment the
   // tray is opened rather than when one of its own rows is pressed, since dark
   // page and region select can equally have been flipped from the document
   // controls before focus mode folded them away.
   refreshReadingRailRows();
-  // Only for a coarse pointer. A mouse has pointerleave, which is a better
-  // answer than a timer — a rail that folds away while the pointer is still on
-  // it reads as a glitch.
-  if (!window.matchMedia?.("(pointer: coarse)")?.matches) return;
-  idleTimer = setTimeout(() => setReadingRailExpanded(false), RAIL_IDLE_MS);
 }
 
 // How long the grip stays lit after focus mode is entered. Long enough to be
@@ -100,25 +115,38 @@ export const RAIL_HINT_MS = 1500;
 
 let hintTimer = 0;
 
-// WHETHER the rail is on screen is decided in CSS, from two facts the app
-// already publishes: body.chrome-collapsed, and whether #viewModeToggle is
-// hidden (updateCardControls hides it when no deck is loaded, and a rail of
-// view tabs and "contents" means nothing without one). Both are reached with
-// :has() from <body>, the same way styles/33-reading-chrome.css reaches the
-// appbar from the quiz panel — so there is no second opinion here that could go
-// stale, and no import edge from the modules that own those two facts.
+// WHETHER the rail is on screen is decided in CSS, from one fact the app already
+// publishes: whether #viewModeToggle is hidden (updateCardControls hides it when
+// no deck is loaded, and a rail of view tabs and "contents" means nothing
+// without one). It is reached with :has() from <body>, the same way
+// styles/33-reading-chrome.css reaches the appbar from the quiz panel — so there
+// is no second opinion here that could go stale, and no import edge from the
+// module that owns that fact.
 //
-// Two things are left for JavaScript.
+// body.chrome-collapsed no longer decides whether the rail EXISTS, only how loud
+// it is. See the note at the top of this file.
 //
-//   • Put the tray away. A rail left expanded when the chrome comes back is a
-//     column of icons that reappears already open the next time focus mode is
-//     entered.
-//   • Say it is there. The grip is deliberately quiet, and a quiet control on a
-//     screen edge is findable only by someone who already knows about it —
-//     which was the whole of the report that produced the ☰ redesign. So
-//     entering focus mode brightens it for RAIL_HINT_MS. applyChromeCollapse
-//     calls this in the same breath as it toggles the class, so the hint lands
-//     on exactly the frame the header folds away on and never on any other.
+// One thing is left for JavaScript: say the rail is there. The grip is
+// deliberately quiet, and a quiet control on a screen edge is findable only by
+// someone who already knows about it — which was the whole of the report that
+// produced the ☰ redesign. So entering focus mode brightens it for
+// RAIL_HINT_MS. applyChromeCollapse calls this in the same breath as it toggles
+// the class, so the hint lands on exactly the frame the header folds away on and
+// never on any other.
+//
+// ── It no longer closes the tray ──────────────────────────────────────────
+//
+// It used to, whenever the chrome came back: a tray left expanded was a column
+// of icons that would reappear already open the next time focus mode was
+// entered. That was true while the rail vanished with the chrome, and it is the
+// wrong behaviour now — because the tray is where focus mode is turned OFF, and
+// this ran as a consequence of turning it off. Press Focus mode, watch the thing
+// you pressed it in disappear, and the switch you were looking at is gone before
+// it has finished moving. For the two rows this redesign is about that is the
+// difference between a switch and a trapdoor.
+//
+// The tray still closes three ways, all of them the reader's: the ✕ in its head,
+// a press anywhere else on the page, and pressing a row that goes somewhere.
 export function refreshReadingRail() {
   const rail = el.readingRail;
   if (!rail) return;
@@ -126,7 +154,6 @@ export function refreshReadingRail() {
   hintTimer = 0;
   if (!document.body.classList.contains("chrome-collapsed")) {
     rail.classList.remove("is-hinting");
-    setReadingRailExpanded(false);
     return;
   }
   rail.classList.add("is-hinting");
@@ -150,14 +177,53 @@ export function refreshReadingRail() {
 export function refreshReadingRailRows() {
   const tray = el.readingRailTray;
   if (!tray) return;
+  // The Document view is now reachable on a deck with no PDF, where it shows the
+  // offer of one — so "the Document view is on screen" stopped being the same
+  // question as "there is a document". Fit to width, dark page and select a
+  // region all act on pages that do not exist there.
+  const hasDocument = Boolean(state.meta?.pdf);
   tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
-    node.hidden = node.dataset.railScope !== state.viewMode;
+    const scope = node.dataset.railScope;
+    node.hidden = scope !== state.viewMode || (scope === "document" && !hasDocument);
   });
+  // Contents belongs to both reading surfaces, so it carries no scope — but on
+  // the Document view with nothing attached it would open the PDF outline drawer
+  // to "No contents in this PDF", which is a true sentence about a file that is
+  // not there.
+  const contentsRow = tray.querySelector('[data-rail-action="contents"]');
+  if (contentsRow) contentsRow.hidden = state.viewMode === "document" && !hasDocument;
   // "Go to bookmark" only once there is one to go to, exactly as
   // refreshBookmarkButtonUI hides the button this row stands in for.
   const goRow = tray.querySelector('[data-rail-action="bookmark-go"]');
   if (goRow && !goRow.hidden) goRow.hidden = Boolean(el.bookmarkGoBtn?.hidden);
+  // Says where the reader is, at the top of the tray. The tray is a list of
+  // places to go and things to do TO SOMETHING, and naming the something is what
+  // makes "Contents" and "Bookmark here" unambiguous when three of the four
+  // views could plausibly own them.
+  if (el.readingRailViewName) el.readingRailViewName.textContent = VIEW_NAMES[state.viewMode] || "Reading";
+  refreshRailGroupHeadings();
   refreshReadingRailModes();
+}
+
+const VIEW_NAMES = {
+  cards: "Cards",
+  notes: "Notes",
+  document: "Document",
+  highlights: "Highlights"
+};
+
+// A heading with nothing under it is worse than no heading — "This page" over an
+// empty gap is a row that failed to render as far as the reader is concerned.
+// Every heading knows its own group name, so this is a walk of the headings
+// rather than of the rows.
+function refreshRailGroupHeadings() {
+  const tray = el.readingRailTray;
+  if (!tray) return;
+  tray.querySelectorAll(".rr-group").forEach((heading) => {
+    const name = heading.dataset.railGroup || "";
+    const rows = tray.querySelectorAll(`.reading-rail-btn[data-rail-group="${CSS.escape(name)}"]`);
+    heading.hidden = ![...rows].some((row) => !row.hidden);
+  });
 }
 
 // The rail's modes and one of its labels, read back off the controls that own
@@ -185,6 +251,21 @@ export function refreshReadingRailModes() {
   mirrorMode("region", el.documentRegionBtn);
   mirrorMode("immersive", el.immersiveModeBtn);
   mirrorMode("focus", el.focusModeBtn);
+  // The edit pill says which way it is set with a CLASS, not aria-pressed
+  // (enterNotesEditing/resetNotesEditingUI toggle `is-editing` on it), so this
+  // one cannot go through mirrorMode. Same principle though: the answer is read
+  // off the control that owns it, never derived a second time. Its label follows
+  // too — the pill's title is already the sentence for whichever way it is set.
+  const editRow = row("edit-notes");
+  if (editRow) {
+    const editing = Boolean(el.editNotesBtn?.classList.contains("is-editing"));
+    editRow.setAttribute("aria-pressed", editing ? "true" : "false");
+    const editLabel = editRow.querySelector(".rr-label");
+    if (editLabel) editLabel.textContent = editing ? "Back to preview" : "Edit notes";
+    const editIcon = editRow.querySelector(".rr-ico");
+    if (editIcon) editIcon.textContent = editing ? "\u{1F441}" : "✎";
+    if (el.editNotesBtn?.title) editRow.title = el.editNotesBtn.title;
+  }
   const setRow = row("bookmark-set");
   const setLabel = el.bookmarkSetBtn?.querySelector(".nhm-label")?.textContent?.trim();
   const rowLabel = setRow?.querySelector(".rr-label");
@@ -206,13 +287,40 @@ function toggleContents() {
   toggleNotesToc();
 }
 
+// One heading per run of rows carrying the same data-rail-group, inserted
+// before the first of them. Exactly the shape moveButtonsIntoMenu uses for the
+// notes ⋯ menu's data-nhm-group: the markup names the group and nothing in here
+// holds a list that has to be edited when a row is added.
+//
+// The heading carries the group name back on its own dataset so
+// refreshRailGroupHeadings can hide it when every row under it is hidden.
+function buildRailGroupHeadings(tray) {
+  let group = null;
+  [...tray.querySelectorAll(".reading-rail-btn[data-rail-group]")].forEach((node) => {
+    const name = node.dataset.railGroup || "";
+    if (!name || name === group) {
+      group = name;
+      return;
+    }
+    group = name;
+    const heading = document.createElement("div");
+    heading.className = "rr-group";
+    heading.dataset.railGroup = name;
+    heading.setAttribute("role", "presentation");
+    heading.textContent = name;
+    node.parentNode.insertBefore(heading, node);
+  });
+}
+
 export function initReadingRail() {
   const rail = el.readingRail;
   if (!rail) return;
 
+  if (el.readingRailTray) buildRailGroupHeadings(el.readingRailTray);
+
   el.readingRailGrip?.addEventListener("click", () => {
     if (isReadingRailExpanded()) setReadingRailExpanded(false);
-    else expandWithIdleTimeout();
+    else expandRail();
   });
 
   // Hover opens it on a pointer, which is what makes the grip cost one gesture
@@ -235,6 +343,13 @@ export function initReadingRail() {
   });
 
   rail.addEventListener("click", (event) => {
+    // The tray's own ✕, checked before anything else so it can never be read as
+    // a row. Its whole job is to be the way out that a finger can find — the
+    // idle timer this replaced was the way out that found the reader instead.
+    if (event.target.closest("#readingRailCloseBtn")) {
+      setReadingRailExpanded(false);
+      return;
+    }
     const view = event.target.closest("[data-view-mode]");
     if (view) {
       setViewMode(view.dataset.viewMode, { deferRender: true });
@@ -254,17 +369,32 @@ export function initReadingRail() {
     else if (action === "fit-width") fitDocumentToWidth();
     else if (action === "dark-page") togglePdfInvert();
     else if (action === "region") toggleRegionSelect();
-    // A toggle, not the one-way "Leave focus" this replaced. In the rail it is
-    // always on when it is reachable — the rail only exists while the chrome is
-    // collapsed — so pressing it does leave focus mode, which is what the old
-    // row did. What is different is that the row now SAYS it is on, which is
-    // the whole reason it changed: a control that only ever offers to undo
-    // itself never tells you what state you are in.
+    // The pill's own click, not a copy of what it does. Everything else in this
+    // tray calls an exported function; the edit toggle's behaviour lives in an
+    // anonymous listener in src/main.js and has no name to import, and giving it
+    // one here would mean two readings of "is the editor open" that could drift.
+    // A programmatic click reaches the button even though the row it sits in is
+    // pointer-events:none while the chrome is folded — click() dispatches at the
+    // element, it does not hit-test.
+    else if (action === "edit-notes") el.editNotesBtn?.click();
+    // A toggle, not the one-way "Leave focus" this replaced — and now genuinely
+    // two-way, because the rail is on screen whether or not focus mode is on. It
+    // says which way it is set, which is the whole reason it changed: a control
+    // that only ever offers to undo itself never tells you what state you are in.
     else if (action === "focus") setFocusMode(!isFocusModeActive());
-    setReadingRailExpanded(false);
-    // The three modes among these say which way they are set, and the functions
-    // that own that state paint their ORIGINAL buttons — which are in the folded
-    // row, not here. So the rail reads the answer back off them.
+    // ── The mode rows leave the tray open; everything else closes it ────────
+    //
+    // Every row here used to close the tray, which is right for the ones that GO
+    // somewhere (a view, My Decks, the contents) and wrong for a toggle: pressing
+    // Focus mode made the thing you pressed it in disappear, so you could not see
+    // the switch move and could not press it again without re-opening the tray.
+    // For the two rows this whole redesign is about — "some dedicated reliable
+    // button for full / focus screen" — that is the difference between a switch
+    // and a trapdoor.
+    if (action !== "focus" && action !== "immersive") setReadingRailExpanded(false);
+    // The modes among these say which way they are set, and the functions that
+    // own that state paint their ORIGINAL buttons — which are in the folded row,
+    // not here. So the rail reads the answer back off them.
     refreshReadingRailModes();
   });
 

@@ -168,12 +168,26 @@ let onPagePainted = () => {};
 
 let onDocumentOpened = () => {};
 
+// ...and a third, for the same reason and registered the same way. The Document
+// tab now opens to an "Attach a PDF" panel on a deck that has none
+// (renderAttachDocumentPrompt), and the function that does the attaching is
+// attachPdfToOpenDeck in src/import/pdf.js — which already imports
+// openDocumentView from HERE, at line 36. Importing it back would close that
+// cycle and pull the whole import subtree (epub, my-decks-render, local-library)
+// in ahead of a module that view-mode.js evaluates early. main.js imports both
+// ends already and is the one file that should.
+let onAttachDocument = async () => false;
+
 export function setDocumentPagePaintedHook(fn) {
   onPagePainted = typeof fn === "function" ? fn : () => {};
 }
 
 export function setDocumentOpenedHook(fn) {
   onDocumentOpened = typeof fn === "function" ? fn : () => {};
+}
+
+export function setDocumentAttachHandler(fn) {
+  onAttachDocument = typeof fn === "function" ? fn : async () => false;
 }
 
 // ── The open document ───────────────────────────────────────────────────────
@@ -249,48 +263,90 @@ export function tearDownDocumentView() {
   if (el.documentPageIndicator) el.documentPageIndicator.textContent = "";
 }
 
+// ── One panel, three things to say ──────────────────────────────────────────
+//
+// The Document surface has to ask for a file in three situations, and they are
+// genuinely different questions: the file was offloaded, the file has not
+// downloaded here yet, or this deck has never had one. What they share is the
+// whole of the mechanism — a heading, a sentence, a picker, a footnote — so this
+// builds that and the callers below supply the words and what to do with the
+// file. It replaces two copies that had already started to drift.
+function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", note = "", onFile }) {
+  const view = el.documentView;
+  if (!view) return;
+  view.innerHTML = "";
+  const panel = document.createElement("div");
+  panel.className = "pdf-missing";
+  const head = document.createElement("h2");
+  head.textContent = heading;
+  const text = document.createElement("p");
+  text.textContent = body;
+  const label = document.createElement("label");
+  label.className = "pdf-missing-pick";
+  label.textContent = pick;
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".pdf,application/pdf";
+  input.hidden = true;
+  label.appendChild(input);
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    await onFile(file);
+  });
+  panel.append(head, text, label);
+  if (note) {
+    const footnote = document.createElement("p");
+    footnote.className = "pdf-missing-note";
+    footnote.textContent = note;
+    panel.appendChild(footnote);
+  }
+  view.appendChild(panel);
+}
+
 // Shown instead of the pages when the file itself is not here: offloaded from
 // the cloud and never downloaded on this device, or downloaded once and since
 // cleared. Everything else about the deck — highlights, notes, cards — is
 // intact, which is exactly what the message has to say, or "re-attach" reads
 // as "start again".
 function renderMissingDocumentPrompt(pdfMeta) {
-  const view = el.documentView;
-  if (!view) return;
-  view.innerHTML = "";
-  const panel = document.createElement("div");
-  panel.className = "pdf-missing";
-  const heading = document.createElement("h2");
-  heading.textContent = "Re-attach the PDF to read it";
-  const body = document.createElement("p");
-  body.textContent = pdfMeta?.offloaded
-    ? `“${pdfMeta.name || "This document"}” was removed from the cloud to save space, and this device doesn't have a copy. Your highlights, notes and cards are all still here — pick the same file to read it again.`
-    : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and it can't be downloaded right now. Your highlights, notes and cards are all still here.`;
-  const pick = document.createElement("label");
-  pick.className = "pdf-missing-pick";
-  pick.textContent = "Choose the PDF…";
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".pdf,application/pdf";
-  input.hidden = true;
-  pick.appendChild(input);
-  const note = document.createElement("p");
-  note.className = "pdf-missing-note";
-  // Not a formality. A highlight is a coordinate into one exact file; painted
-  // over a different edition of the same paper it would sit over the wrong
-  // words, silently. Refusing a mismatch is the only honest option.
-  note.textContent = pdfMeta?.sha256
-    ? "It has to be the same file — the highlights are positions in it, and a different copy would put them over the wrong words."
-    : "";
-  input.addEventListener("change", async () => {
-    const file = input.files?.[0];
-    input.value = "";
-    if (!file) return;
-    await reattachDocument(file, pdfMeta);
+  renderDocumentPickPrompt({
+    heading: "Re-attach the PDF to read it",
+    body: pdfMeta?.offloaded
+      ? `“${pdfMeta.name || "This document"}” was removed from the cloud to save space, and this device doesn't have a copy. Your highlights, notes and cards are all still here — pick the same file to read it again.`
+      : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and it can't be downloaded right now. Your highlights, notes and cards are all still here.`,
+    // Not a formality. A highlight is a coordinate into one exact file; painted
+    // over a different edition of the same paper it would sit over the wrong
+    // words, silently. Refusing a mismatch is the only honest option.
+    note: pdfMeta?.sha256
+      ? "It has to be the same file — the highlights are positions in it, and a different copy would put them over the wrong words."
+      : "",
+    onFile: (file) => reattachDocument(file, pdfMeta)
   });
-  panel.append(heading, body, pick);
-  if (note.textContent) panel.appendChild(note);
-  view.appendChild(panel);
+}
+
+// ── ...and the deck that has never had a document ───────────────────────────
+//
+// "The attach pdf needs to be inside the panels itself." It was not: attaching a
+// paper to an existing deck lived only as a row in the ☰ drawer, because the
+// Document surface did not exist until meta.pdf did, so there was no panel to
+// put it in. That is a route you have to be told about — the reader is looking
+// at the deck they want the paper beside, and the answer is in a drawer behind a
+// hamburger, under "Decks", between Import and Sync Now.
+//
+// So the Document tab is now on every open deck (see refreshDocumentTab) and
+// this is what it opens to when there is nothing to read yet. Same panel, same
+// picker, and it hands the file to attachPdfToOpenDeck — the identical function
+// the drawer row calls, so the two routes cannot drift.
+function renderAttachDocumentPrompt() {
+  renderDocumentPickPrompt({
+    heading: "Attach a PDF to read it here",
+    body: "This deck has no document yet. Pick a PDF and it becomes this deck's Document tab — read it, highlight it and make cards from it, with any highlights already in the file imported along with it.",
+    pick: "Choose a PDF…",
+    note: "Your cards, notes and title are left exactly as they are — this adds a document to the deck, it does not import over it.",
+    onFile: (file) => onAttachDocument(file)
+  });
 }
 
 // Take a picked file as this deck's document again, if it really is the same
@@ -336,7 +392,24 @@ let documentOpensInFlight = 0;
 async function openDocumentViewBody({ force = false } = {}) {
   const view = el.documentView;
   const pdfMeta = state.meta?.pdf;
-  if (!view || !pdfMeta) return false;
+  if (!view) return false;
+  // ── A deck with no document opens to the offer of one ────────────────────
+  //
+  // This used to `return false` here, because the Document tab did not exist
+  // without meta.pdf so nothing could reach this line — and that is precisely
+  // what left "attach a PDF to the deck I am looking at" with no home except a
+  // row in the ☰ drawer. The tab is on every open deck now (refreshDocumentTab)
+  // and this is what it opens to.
+  //
+  // Torn down first: the reader can arrive here from a PDF deck (a deck swap,
+  // "Remove from cloud" on a deck whose meta.pdf then went away), and leaving
+  // the previous paper's pages under an attach panel would be a picture of a
+  // document this deck does not have.
+  if (!pdfMeta) {
+    tearDownDocumentView();
+    renderAttachDocumentPrompt();
+    return false;
+  }
 
   const deckKey = currentDeckKey();
   if (!force && openPdf && openPdf.deckKey === deckKey) {

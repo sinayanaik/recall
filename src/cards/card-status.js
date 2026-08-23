@@ -92,39 +92,56 @@ export function updateMeta() {
   if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
 }
 
-// The Document tab exists only for a deck that HAS a document. Shown from
-// meta.pdf and nothing else — a tab that is present on every deck and empty on
-// all but a handful is a worse answer than a tab that appears when it means
-// something.
+// The Document tab, on every deck that is open.
+//
+// It used to be shown from meta.pdf and nothing else, on the argument that a tab
+// present on every deck and empty on all but a handful is a worse answer than a
+// tab that appears when it means something. The argument was sound and its cost
+// turned out to be the thing readers actually hit: the Document surface owns
+// every route to a PDF — Re-attach, and now Attach — so a deck WITHOUT one had
+// no panel in which to be offered one, and "attach a paper to this deck" ended
+// up as a row in the ☰ drawer, under Decks, between Import and Sync Now. You
+// have to be told it is there.
+//
+// So the tab is always on a deck, and an empty one is not an empty surface: it
+// opens to the offer (renderAttachDocumentPrompt in src/documents/pdf-view.js).
+// A tab that says "you could read a paper alongside this" is worth its place in
+// a way that a blank one would not be.
 //
 // Called from updateMeta, which every deck load, import and swap already runs,
 // so there is no second place that has to remember to keep this in step.
 //
-// ── ...and the way IN, for a deck that has none ──────────────────────────
+// ── The drawer row is still here, and still the inverse ──────────────────
 //
-// The same rule, inverted, decides the drawer's "Attach a PDF" row. That
-// question — "once a deck has been created without a PDF there is no option to
-// attach one again" — was exactly right: importing a PDF makes a NEW deck, and
-// "Re-attach the PDF…" lives inside the Document surface, which does not exist
-// until meta.pdf does. So a deck with no document had no route to one at all,
-// and a deck WITH one has a better route than this (Re-attach checks the hash;
-// this cannot, having nothing to check against). One flag, two controls, and
-// they are never both offered.
+// It is a second route to the same function now rather than the only one, and
+// that is fine — it is where someone who learned it will look. It stays hidden
+// on a deck that already HAS a document, because there Re-attach is the right
+// control: it checks the file's hash against the highlights measured on it, and
+// attach cannot, having nothing to check against.
 export function refreshDocumentTab() {
   const button = el.viewModeToggle?.querySelector('[data-view-mode="document"]');
   if (!button) return;
   const hasDocument = Boolean(state.meta?.pdf);
-  button.hidden = !hasDocument;
+  const showTab = hasActiveDeck();
+  button.hidden = !showTab;
   // The reading rail's own Document icon, in the same pass. Two controls saying
   // the same thing have to be hidden by the same line, or the one nobody
-  // remembered opens an empty surface on a deck that has no document.
+  // remembered opens a surface the other one says is not there.
   const railButton = el.readingRailTray?.querySelector('[data-view-mode="document"]');
-  if (railButton) railButton.hidden = !hasDocument;
+  if (railButton) railButton.hidden = !showTab;
+  // Published on the stage so CSS can stand the document's own controls down on
+  // a deck that has none — ☰ contents, ◐ dark page, ▣ region and ⋯ are lifted
+  // into the view-mode row for the whole session and shown from "is the Document
+  // stage visible", which is now true for a deck with nothing to read. Four inert
+  // controls over an "Attach a PDF" panel is exactly the fault
+  // styles/37-document-chrome.css opens by describing, the other way round.
+  el.documentStage?.classList.toggle("has-no-document", !hasDocument);
   // Only for a deck that is actually open: attaching a paper to nothing is not a
   // thing to offer, and the row would sit there on the welcome screen.
-  if (el.attachPdfBtn) el.attachPdfBtn.hidden = hasDocument || !hasActiveDeck();
-  // A deck whose document has gone away underneath the open view (offloaded on
-  // another device and pulled down) must not leave the reader parked on a
-  // surface with no tab to leave by.
-  if (!hasDocument && state.viewMode === "document") setViewMode("notes");
+  if (el.attachPdfBtn) el.attachPdfBtn.hidden = hasDocument || !showTab;
+  // Closing the deck must still take the reader off the surface — there is no
+  // tab to leave by once the toggle itself is hidden. A deck whose document went
+  // away underneath the open view (offloaded on another device and pulled down)
+  // no longer needs this: it lands on the attach panel, which explains itself.
+  if (!showTab && state.viewMode === "document") setViewMode("notes");
 }

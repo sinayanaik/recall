@@ -137,9 +137,28 @@ CREATE TABLE IF NOT EXISTS decks (
   category TEXT NOT NULL DEFAULT 'Uncategorized',
   -- The deck's freeform markdown study notes.
   notes TEXT NOT NULL DEFAULT '',
-  -- Small deck-level JSON bag. The special quick_notes deck keeps its managed
-  -- subject set under "quickNoteCategories" and its pinned-from source
-  -- positions under "noteAnchors".
+  -- Deck-level JSON bag: nine keys belonging to six unrelated features. It is
+  -- not the quick_notes-only column this comment used to describe, and the
+  -- difference matters to anyone reasoning about a sync — the whole column is
+  -- sent on every deck push, so every writer has to merge rather than replace
+  -- (src/sync/document-sync.js, mergeDeckMeta). What lives in here:
+  --
+  --   pdf                  the attached PDF's name, size, page count, sha256
+  --                        and storage path — a deck with this key has a
+  --                        Document tab, and it is only ever written, never
+  --                        removed ("Remove from cloud" sets offloaded: true)
+  --   pdfHighlights        one record per highlight on that PDF: page, colour,
+  --                        quads, and two independent stamps (at, noteAt)
+  --   deletedHighlightIds  { id: iso } tombstones, so a deleted highlight
+  --                        stays deleted across devices
+  --   pdfToc               a contents read out of the pages, cached so
+  --                        re-opening the deck does not scan them again
+  --   readingPosition      where the reader got to, with its own `at`
+  --   bookmark             the one spot they marked, with its own `at`
+  --   linkIds              every id this deck answers to for [[links]] —
+  --                        a union across devices, never one device's list
+  --   quickNoteCategories  the quick_notes board's managed subject set
+  --   noteAnchors          { cardId: anchor }, where each pinned note came from
   meta JSONB NOT NULL DEFAULT '{}'::jsonb,
   current_card_index INT DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -466,6 +485,26 @@ UPDATE storage.buckets SET public = false WHERE id IN ('images', 'documents');
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('documents', 'documents', false)
 ON CONFLICT (id) DO NOTHING;
+
+-- ── ...and how large a paper it will take ───────────────────────────────────
+--
+-- The app refuses a PDF over 100MB before it reads a byte of it
+-- (MAX_DOCUMENT_BYTES, src/documents/pdf-store.js) and this bucket declared no
+-- limit at all, which does NOT mean "no limit" — it means the project-wide
+-- default applies, and on a new Supabase project that is 50MB. So a 60MB paper
+-- passed the app's own check, imported, rendered, and then failed at the upload:
+-- the deck is left readable on that one device with "it's on this device, but
+-- not in the cloud", which is the honest message for a network failure and a
+-- confusing one for a file that will never fit however many times you retry.
+--
+-- Stated here so the two agree. A separate UPDATE rather than a column on the
+-- INSERT above, so a project that already has the bucket picks it up too, and
+-- re-running the file is a no-op either way.
+--
+-- NOTE: a bucket cannot exceed the project's own upload limit, which lives in
+-- the dashboard under Settings → Storage. If yours is still at 50MB, raise it
+-- there as well or this line has no effect beyond documenting the intent.
+UPDATE storage.buckets SET file_size_limit = 104857600 WHERE id = 'documents';
 
 -- Dropped and recreated by name, exactly like the table policies in section 6 —
 -- NOT skipped when already present. An earlier version of this section guarded

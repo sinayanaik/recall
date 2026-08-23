@@ -1,6 +1,14 @@
 // Switching between the cards view and the notes view.
 
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
+// The one definition of "is a deck open", rather than a second reading of the
+// three state fields it is made of. card-status.js imports setViewMode back, so
+// this is a cycle — an EXISTING one: view-mode → card-view → card-status →
+// view-mode has been in the graph since the split. It is safe for the same
+// reason that one is: both sides export nothing but function declarations, which
+// are hoisted and initialised before any module body runs, and card-status.js
+// has no top-level statements at all. Do not add one.
+import { hasActiveDeck } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -26,11 +34,16 @@ import { measureChromeHeights, resetChromeAutoHide } from "./chrome.js?v=__BUILD
 export function setViewMode(mode, options = {}) {
   const next = mode === "notes" ? "notes"
     : mode === "highlights" ? "highlights"
-      // Only a PDF deck HAS a document to show. Asking for one on any other
-      // deck — a stale nav-history entry, a jump built before the deck was
-      // swapped — falls back to cards rather than opening an empty surface with
-      // no tab to leave it by.
-      : mode === "document" ? (state.meta?.pdf ? "document" : "cards")
+      // The Document surface is on every open deck now (refreshDocumentTab), and
+      // on one with no PDF it opens to the offer of attaching one. This used to
+      // fall back to "cards" unless state.meta.pdf was set, which was right while
+      // there was no tab and nothing behind it — and would now bounce the reader
+      // straight back out of the tab they just pressed.
+      //
+      // The guard that remains is the one that always mattered: no deck, no
+      // surface. A stale nav-history entry replayed against a closed deck must
+      // not open a document panel with no toggle to leave it by.
+      : mode === "document" ? (hasActiveDeck() ? "document" : "cards")
         : "cards";
   if (!el.notesStage || !el.viewModeToggle) {
     state.viewMode = next;

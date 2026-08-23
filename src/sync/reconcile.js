@@ -35,7 +35,7 @@ import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWork
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
 import { calculateSyncDiff, syncTextChanged } from "./diff.js?v=__BUILD__";
-import { mergeDocumentAnnotations, reconcileDocumentBeforePush } from "./document-sync.js?v=__BUILD__";
+import { mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
@@ -43,6 +43,36 @@ import { describeSyncStats, emptySyncStats, isNoOpStats, quickNoteCategoriesDiff
 import { commitEditIfActive } from "../ui/edit-mode.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setStyleStatus } from "../ui/style-settings.js?v=__BUILD__";
+
+// ── Rescuing a notes body that is about to be replaced ──────────────────────
+//
+// One stash slot per deck, at `localId + NOTES_CONFLICT_SUFFIX`, and it is only
+// ever added to. Writing straight over it would mean a second conflict arriving
+// before the first was answered silently destroys the copy the first one
+// rescued, which is the one thing this whole mechanism exists to prevent — so an
+// unanswered stash is kept and the new losing copy goes above it.
+//
+// `previous` is the caller's already-read copy where it has one; otherwise this
+// reads the slot itself. A stash can outlive its flag (the resolver that accepts
+// the synced copy clears one without deleting the other), so the read is not
+// optional — it is just worth skipping when the answer is already in hand.
+//
+// Shared by both directions since the push grew a stash of its own. It had none:
+// the pull rescued the body it was about to overwrite and the push overwrote the
+// CLOUD's body with nothing kept anywhere, which is the same loss with the
+// devices the other way round.
+async function stashLosingNotes(localId, deckTitle, losing, previous = null) {
+  const prior = previous || await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
+  const carried = prior && String(prior.notes || "").trim() ? String(prior.notes) : "";
+  const when = prior?.savedAt ? new Date(prior.savedAt).toLocaleString() : "an earlier sync";
+  writeDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX, {
+    savedAt: new Date().toISOString(),
+    deckTitle: deckTitle || "",
+    notes: carried && carried.trim() !== losing.trim()
+      ? `${losing}\n\n---\n\n## Also replaced, on ${when}\n\n${carried}\n`
+      : losing
+  });
+}
 
 // Pulls one cloud deck (metadata already in hand) plus its cards into the local
 // library, WITHOUT disturbing the active in-memory deck. Stamps the local copy
@@ -114,20 +144,20 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   const cloudMeta = cloudCarriesBody
     ? (cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {})
     : (oldSnapshot?.meta && typeof oldSnapshot.meta === "object" ? oldSnapshot.meta : {});
-  // The meta bag is otherwise cloud-wins, and stays that way — but linkIds is the
-  // one key where every device holds a piece of the truth, and the cloud copy is
-  // only ever "what the last device to push happened to know". Taking it whole
-  // would drop the ids THIS device has minted for this deck, breaking the links
-  // written here on every other device — the exact bug this key exists to fix.
-  // Union instead, plus the localId being resolved right now, and let
-  // noteLinkAliasesFor sort and cap it so all devices converge on one array.
-  const incomingMeta = {
-    ...cloudMeta,
-    linkIds: noteLinkAliasesFor(
-      { linkIds: [...(Array.isArray(cloudMeta.linkIds) ? cloudMeta.linkIds : []), ...(Array.isArray(oldSnapshot?.meta?.linkIds) ? oldSnapshot.meta.linkIds : [])] },
-      localId
-    )
-  };
+  // The meta bag stays cloud-wins for any key without a rule of its own — the
+  // cloud row is the newer one, which is why we are pulling it. What it is NOT
+  // is authoritative about the keys where every device holds a piece of the
+  // truth, and taking those whole destroyed this device's copy exactly as the
+  // push destroyed the other device's. linkIds was the one key that had been
+  // noticed; mergeDeckMeta settles the rest of them (the paper, the bookmark, the
+  // reader's place, the quick-note categories and anchors) on the same terms as
+  // the push, with the preference the other way round.
+  //
+  // linkIds still goes through noteLinkAliasesFor afterwards, because the merge
+  // cannot do the half that matters most here: adding the localId being resolved
+  // right now, and sorting and capping so all devices converge on one array.
+  const incomingMeta = mergeDeckMeta(cloudMeta, oldSnapshot?.meta, { prefer: "cloud" });
+  incomingMeta.linkIds = noteLinkAliasesFor(incomingMeta, localId);
   // ── The document's annotations ──────────────────────────────────────────
   //
   // The second place where every device holds part of the truth. Highlighting a
@@ -244,17 +274,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       // without deleting the other), and writing over one unseen is the single
       // thing this whole mechanism exists to prevent. So look again here, where
       // the extra read is worth it and rare.
-      const previous = stashed || await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
-      const carried = previous && String(previous.notes || "").trim() ? String(previous.notes) : "";
-      const losing = String(oldSnapshot.notes || "");
-      const when = previous?.savedAt ? new Date(previous.savedAt).toLocaleString() : "an earlier sync";
-      writeDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX, {
-        savedAt: new Date().toISOString(),
-        deckTitle: oldSnapshot.deckTitle || "",
-        notes: carried && carried.trim() !== losing.trim()
-          ? `${losing}\n\n---\n\n## Also replaced, on ${when}\n\n${carried}\n`
-          : losing
-      });
+      await stashLosingNotes(localId, oldSnapshot.deckTitle || "", String(oldSnapshot.notes || ""), stashed);
     }
   } else if (stashed && !syncTextChanged(splitHighlightNotesTail(String(stashed.notes || "")).body, newBody)) {
     // ── The repair ────────────────────────────────────────────────────────
@@ -420,24 +440,90 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     }
   }
 
-  // ── And the same for the document ───────────────────────────────────────
+  // ── And the same for `notes` and `meta` ─────────────────────────────────
   //
-  // The half that was missing. `meta` and `notes` were sent WHOLE, so a device
-  // that pushed without having pulled overwrote the cloud's highlights and every
-  // word written about them — which, because the pull gate is a timestamp
-  // comparison, is exactly what a device with any local edit at all does.
+  // The half that was missing. Both columns were sent WHOLE, so a device that
+  // pushed without having pulled overwrote the cloud's highlights, every word
+  // written about them, and every other key in the shared meta bag — which,
+  // because the pull gate is a timestamp comparison, is exactly what a device
+  // with any local edit at all does. See reconcileDeckBeforePush and
+  // mergeDeckMeta.
   //
   // The merged result is written back into the snapshot too, not just sent: a
   // device that only ever pushes would otherwise never hold the other's work,
   // since its own push makes it the newest and the next sync pushes again.
-  const documentPush = cloudExists ? reconcileDocumentBeforePush(snapshot, cloudDeck) : null;
+  const documentPush = cloudExists ? reconcileDeckBeforePush(snapshot, cloudDeck) : null;
+  // ── A cloud row we cannot read from is not a cloud row we may write over ──
+  //
+  // reconcileDeckBeforePush returns null for a `cloudDeck` with no `notes` key,
+  // which is the slim index row (DECK_SYNC_INDEX_COLUMNS carries neither notes
+  // nor meta) that the push loop falls back to when fetchCloudDeckRows had no
+  // body for this deck. It refuses correctly — merging against a column it has
+  // never seen would delete it — and the push then sent both columns whole
+  // anyway, which is the exact outcome the refusal exists to prevent.
+  //
+  // The pull side has answered this since fetchCloudDeckRows was chunked: a deck
+  // whose body is missing is SKIPPED rather than written from what we do not
+  // know (see the `No cloud body for deck` warning below). This is the same
+  // answer on the same terms. Nothing is lost — the local copy is untouched and
+  // still stamped as needing a push, so the next sync carries it.
+  if (cloudExists && !documentPush) {
+    throw new Error("No cloud body for this deck — skipping the push rather than sending notes and meta blind");
+  }
   let documentTombstonesBeingPruned = [];
+  // ── The push's own stash ────────────────────────────────────────────────
+  //
+  // The pull has rescued a notes body it was about to replace since the day the
+  // stash existed; the push had no equivalent, and it needed one for the same
+  // reason with the devices the other way round.
+  //
+  // A push happens because this device's updatedAt is NEWER than the cloud row's.
+  // That does not mean the cloud row is stale — it means both sides were edited
+  // and this one was edited last. The notes body is free prose and stays
+  // last-write-wins (merging two people's writing is a different problem, and
+  // src/sync/notes-conflict.js is the answer to it), so this push is about to
+  // replace whatever the other device wrote with whatever this one wrote, and
+  // nothing anywhere kept a copy.
+  //
+  // Gated on the cloud row having moved since this device last confirmed a sync.
+  // Without that gate every push of a deck whose body this device had legitimately
+  // edited would stash the copy it is correctly superseding — a conflict raised on
+  // every ordinary edit, which is the failure the pull side spent three rounds
+  // learning to avoid. The BODY only, for the same reason the pull asks about the
+  // body: the fenced highlight-note block is merged entry by entry above, so it is
+  // never replaced and there is nothing there to rescue.
+  //
+  // DECIDED here, WRITTEN below — because the decision is synchronous and the
+  // write is not. Everything from the `readDeckSnapshot` at the top of this
+  // function down to the two writeDeckSnapshot calls is deliberately free of
+  // `await`, which is what makes that read-modify-write atomic under JS's single
+  // thread and is why this function does not take the deck lock (see the note on
+  // the re-read further down). Awaiting the stash here would open that window,
+  // and a save landing in it would be overwritten by the stale `snapshot` on the
+  // very next line. The stash lives under a different key, so it is just as
+  // correct a moment later.
+  let notesToStash = null;
+  if (documentPush && cloudDeck) {
+    const cloudBody = splitHighlightNotesTail(String(cloudDeck.notes || "")).body;
+    const pushedBody = splitHighlightNotesTail(String(documentPush.notes || "")).body;
+    const cloudMovedSinceWeSynced = tsMs(cloudDeck.updated_at) > tsMs(localMeta.lastSyncedAt);
+    if (cloudBody.trim() && cloudMovedSinceWeSynced && syncTextChanged(cloudBody, pushedBody)) {
+      notesToStash = String(cloudDeck.notes || "");
+    }
+  }
   if (documentPush) {
     snapshot.notes = documentPush.notes;
     snapshot.meta = documentPush.meta;
     documentTombstonesBeingPruned = documentPush.tombstonesBeingPruned;
     // Same quota rule as the cards above: only when something actually moved.
     if (documentPush.changed) writeDeckSnapshot(localMeta.id, snapshot);
+  }
+  // Out of the critical section, and before the network write rather than after
+  // it: a push that fails partway must still leave the copy it was going to
+  // replace recoverable.
+  const notesStashed = Boolean(notesToStash);
+  if (notesToStash !== null) {
+    await stashLosingNotes(localMeta.id, cloudDeck.title || snapshot.deckTitle || "", notesToStash);
   }
 
   // What we're about to put in the cloud, captured before the await so the
@@ -526,6 +612,13 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     // "Synced" pill and the My Decks table still reflect it the next time
     // this deck is opened or listed, long after the toast is gone.
     entry.notesSyncFailed = pushStats.notesSyncFailed || false;
+    // ...and the same for a body this push replaced in the cloud. The flag is
+    // what src/sync/notes-conflict.js reads to offer the copy back, and it is
+    // what makes the pull's `stashed` read above happen at all — a stash written
+    // here with the flag left false would sit in the slot unmentioned and
+    // unreachable. Only ever set, never cleared here: the pull recomputes it
+    // authoritatively and the resolver clears it when the reader answers.
+    if (notesStashed) entry.notesConflicted = true;
     // The push wrote every card in the snapshot, so the count is authoritative
     // — and a quick note pinned into a stub deck would otherwise keep the 0 it
     // was created with.
@@ -548,6 +641,11 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   stats.highlightsMerged = documentPush?.highlightsAdopted || 0;
   stats.highlightsRemovedHere = documentPush?.highlightsRemoved || 0;
   stats.highlightNotesMerged = (documentPush?.highlightNotesMerged || 0) + (documentPush?.highlightNotesAdopted || 0);
+  // A body this push replaced in the cloud, kept in the stash. Reported by the
+  // same line the pull's is (describeSyncStats), and with the same offer to put
+  // it back — the reader has just overwritten something another device wrote,
+  // which is worth being told about whichever direction the sync was going.
+  stats.notesConflicted = notesStashed;
   if (isNewDeck) {
     stats.notesChanged = Boolean(splitHighlightNotesTail(String(snapshot.notes || "")).body.trim());
     stats.readingPositionSynced = Boolean(snapshot.meta?.readingPosition);
@@ -1353,14 +1451,34 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     let pushDone = 0;
     await mapWithConcurrency(toPush, 3, async ({ localMeta, cloud }) => {
       try {
+        // The full row, and ONLY the full row — the same rule, and the same
+        // reason, as the pull loop above. This used to fall back to the slim
+        // index row (`|| cloud`), and DECK_SYNC_INDEX_COLUMNS selects neither
+        // `notes` nor `meta`: the pre-push merge cannot run against a row that
+        // carries neither, so it correctly refused, and the push then sent both
+        // columns whole — overwriting the cloud's highlights, the words written
+        // about them and every other key in the shared meta bag with whatever
+        // this device happened to hold. Skipping is the only safe reading of a
+        // missing body: nothing is sent, the local copy is untouched and still
+        // stamped as needing a push, and the deck goes up on the next sync.
+        const cloudBody = cloud ? pushBodyById.get(String(localMeta.deckId)) : null;
+        if (cloud && !cloudBody) {
+          console.warn(`No cloud body for deck ${localMeta.deckId} — skipping the push rather than sending its notes and meta blind.`);
+          pushDone++;
+          progress(`Uploading decks… (${pushDone} of ${toPush.length})`, "Uploading decks");
+          return;
+        }
         const res = await pushLibraryDeckToCloud(localMeta, {
           cloudExists: Boolean(cloud),
-          cloudDeck: pushBodyById.get(String(localMeta.deckId)) || cloud,
+          cloudDeck: cloudBody,
           webCards: cloud ? (pushCardsByDeck.get(String(localMeta.deckId)) || []) : null
         });
         if (!isNoOpStats(res.stats)) {
           pushed++;
-          deckLog.push({ title: localMeta.title || "Untitled deck", direction: "pushed", ...res.stats });
+          // localId rides along for the same reason it does on the pull rows: a
+          // push can stash a cloud body it replaced now, and the report's
+          // "Restore my notes" button needs to know whose stash to put back.
+          deckLog.push({ title: localMeta.title || "Untitled deck", direction: "pushed", localId: res.localId, ...res.stats });
         } else {
           alreadyMatched.push(localMeta.title || "Untitled deck");
         }

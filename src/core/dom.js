@@ -261,6 +261,8 @@ export const el = {
   readingRail: document.querySelector("#readingRail"),
   readingRailGrip: document.querySelector("#readingRailGrip"),
   readingRailTray: document.querySelector("#readingRailTray"),
+  readingRailCloseBtn: document.querySelector("#readingRailCloseBtn"),
+  readingRailViewName: document.querySelector("#readingRailViewName"),
   myDecksImportPdfInput: document.querySelector("#myDecksImportPdfInput"),
   // The drawer's "Attach a PDF" row, for a deck that was created without one.
   // Hidden by refreshDocumentTab whenever the open deck already has a document.

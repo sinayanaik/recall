@@ -108,7 +108,7 @@ import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode }
 import { initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
@@ -1421,6 +1421,15 @@ el.attachPdfInput?.addEventListener("change", async (event) => {
   closeMainMenu();
   await attachPdfToOpenDeck(file).catch(reportPdfImportCrash);
 });
+
+// ...and the same function again, for the Document panel's own attach card —
+// which is now the route a reader is most likely to find, the drawer row above
+// being the one you have to be told about. Registered rather than imported,
+// because src/import/pdf.js already imports openDocumentView from
+// src/documents/pdf-view.js and the reverse edge would close that cycle; this
+// file is the one that knows both ends. Same crash reporter, so a malformed PDF
+// says the same thing whichever route picked it.
+setDocumentAttachHandler((file) => attachPdfToOpenDeck(file).catch(reportPdfImportCrash));
 
 // View switcher (Grid / Folder / Tree) — pure presentation, repaint from cache.
 el.myDecksViewSwitch?.addEventListener("click", (e) => {

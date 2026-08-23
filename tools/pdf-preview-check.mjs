@@ -1877,12 +1877,19 @@ try {
   //
   // Focus mode folds the appbar and the view-mode row away, which is the point
   // of it and also takes the contents, the four views and the way back to My
-  // Decks with them. The rail is what stays behind — so the assertions are the
-  // two halves of that bargain: it is NOT on screen when the chrome is expanded
-  // (a second copy of a visible control), and it IS when the chrome is folded.
+  // Decks with them. The rail is what stays behind.
   //
-  // Read through getComputedStyle rather than the hidden attribute, because both
-  // facts are decided by a :has() rule from <body> and an element that is merely
+  // It used to be asserted OFF screen while the chrome was expanded — a second
+  // copy of a visible control. That is no longer the contract, and the reason is
+  // the report this section now covers: the rail could never be the way IN. On a
+  // landscape phone the routes into focus mode were a scroll (portrait-gated
+  // until CHROME_MOBILE_QUERY was widened), Ctrl+. (no keyboard) and a row three
+  // presses deep in the notes ⋯ menu. So the rail is on screen whenever a deck
+  // is open, and what body.chrome-collapsed decides is how LOUD it is: the two
+  // assertions are now "always there" and "louder once the chrome folds".
+  //
+  // Read through getComputedStyle rather than the hidden attribute, because the
+  // fact is decided by a :has() rule from <body> and an element that is merely
   // present in the markup would pass a naive check.
   const rail = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
@@ -1890,15 +1897,21 @@ try {
       const node = document.getElementById("readingRail");
       return Boolean(node) && getComputedStyle(node).display !== "none";
     };
+    const gripAlpha = () => {
+      const node = document.getElementById("readingRailGrip");
+      return node ? Number(getComputedStyle(node).opacity) : -1;
+    };
     api.setFocusMode(false);
     await settle(150);
     const beforeFocus = shown();
+    const quietAlpha = gripAlpha();
     api.setFocusMode(true);
     // The fold is a 220ms CSS transition (styles/16-mobile-reading.css:331), so
     // the row's height is only honest once it has finished — 150ms here caught
     // it mid-collapse and read as a rail that had not appeared.
     await settle(450);
     const inFocus = shown();
+    const loudAlpha = gripAlpha();
     const rowFolded = document.getElementById("viewModeRow").getBoundingClientRect().height < 2;
     // The grip itself, before it is pressed. "I am not seeing anything in focus
     // mode" was a report about a control that WAS on screen and rendering — a
@@ -1917,7 +1930,27 @@ try {
     const expanded = getComputedStyle(tray).display !== "none";
     const visible = () => Array.from(tray.querySelectorAll("button")).filter((b) => !b.hidden);
     const buttons = visible().length;
-    const labelled = visible().every((b) => (b.querySelector(".rr-label")?.textContent || "").trim().length > 0);
+    // The ROWS, not every button in the tray: the head's ✕ is a button too and
+    // is deliberately a glyph with no label, the same as every other close
+    // control in the app.
+    const rows = () => visible().filter((b) => b.classList.contains("reading-rail-btn"));
+    const labelled = rows().every((b) => (b.querySelector(".rr-label")?.textContent || "").trim().length > 0);
+    // Sixteen rows in a column is a list to search rather than a menu to read,
+    // so each run of rows carries a heading built from its data-rail-group.
+    const groups = Array.from(document.querySelectorAll("#readingRailTray .rr-group"))
+      .filter((g) => !g.hidden)
+      .map((g) => g.textContent.trim());
+    // ...and the two mode toggles are pinned to the bottom of the scroller
+    // rather than being simply the last rows of it. On a landscape phone the
+    // tray scrolls, and "the last two rows of sixteen" put focus mode and full
+    // screen below the fold on the one screen shape that needs them most.
+    const modesStick = getComputedStyle(document.querySelector("#readingRailTray .rr-modes")).position === "sticky";
+    const modesInView = (() => {
+      const box = document.querySelector("#readingRailTray .rr-modes")?.getBoundingClientRect();
+      const tray = document.getElementById("readingRailTray")?.getBoundingClientRect();
+      if (!box || !tray) return false;
+      return box.bottom <= tray.bottom + 1 && box.top >= tray.top - 1 && box.height > 0;
+    })();
     // What it OFFERS, by name, rather than how many rows it happens to have.
     // A count is a test that fails every time a control is added and passes
     // every time the wrong one is removed; these are the things focus mode
@@ -1985,15 +2018,15 @@ try {
     const afterFocus = shown();
     api.setViewMode("document");
     await settle(200);
-    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, gripBox, gripIsHit, modesAnnounce, modesPaint, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, notesRowsInDocument, notesRowsInNotes };
+    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, groups, modesStick, modesInView, quietAlpha, loudAlpha, gripBox, gripIsHit, modesAnnounce, modesPaint, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, notesRowsInDocument, notesRowsInNotes };
   }`);
 
-  check("the rail stays off screen while the chrome is expanded",
-    rail.beforeFocus === false && rail.afterFocus === false,
-    `before=${rail.beforeFocus} after=${rail.afterFocus}`);
-  check("...and appears when focus mode folds the row away",
-    rail.inFocus === true && rail.rowFolded,
-    `rail=${rail.inFocus} rowFolded=${rail.rowFolded}`);
+  check("the rail is on screen whether or not focus mode is on",
+    rail.beforeFocus === true && rail.inFocus === true && rail.afterFocus === true,
+    `before=${rail.beforeFocus} in=${rail.inFocus} after=${rail.afterFocus}`);
+  check("...quiet while the chrome is up, full strength once it folds",
+    rail.quietAlpha < rail.loudAlpha && rail.quietAlpha > 0 && rail.rowFolded,
+    `opacity ${rail.quietAlpha} → ${rail.loudAlpha}, rowFolded=${rail.rowFolded}`);
   check("...as a hamburger big enough to find, and hittable",
     rail.gripBox.w >= 24 && rail.gripBox.h >= 24 && rail.gripIsHit,
     `${rail.gripBox.w}×${rail.gripBox.h}px · hit=${rail.gripIsHit}`);
@@ -2006,6 +2039,11 @@ try {
     rail.modesPaint, `the aria-pressed rule paints = ${rail.modesPaint}`);
   check("...every one of them named, not just drawn",
     rail.labelled, `labels=${rail.labelled}`);
+  check("...gathered under headings rather than run together as one list",
+    rail.groups.length >= 3, rail.groups.join(" · ") || "no headings");
+  check("...and the two modes pinned to the bottom, never below the fold",
+    rail.modesStick && rail.modesInView,
+    `sticky=${rail.modesStick} inView=${rail.modesInView}`);
   check("...with the document's own controls in the document view, and only there",
     rail.documentRowsInDocument.length === 0 && rail.documentRowsOutside.length === 0,
     rail.documentRowsInDocument.length
@@ -2694,6 +2732,28 @@ try {
     const rowBefore = document.getElementById("attachPdfBtn")?.hidden;
     const tabBefore = document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden;
 
+    // ── ...and the panel that offers it ───────────────────────────────────
+    //
+    // "The attach pdf needs to be inside the panels itself." The drawer row
+    // above is a route you have to be told about; the Document tab is on every
+    // deck now, and on one with no paper it opens to the offer of a paper. So:
+    // press the tab the way a reader does, and read what is in the panel.
+    document.querySelector('#viewModeToggle [data-view-mode="document"]')?.click();
+    await settle(350);
+    const panelView = api.state.viewMode;
+    const panel = document.querySelector("#documentView .pdf-missing");
+    const panelHeading = panel?.querySelector("h2")?.textContent || "";
+    const panelPicks = Boolean(panel?.querySelector('.pdf-missing-pick input[type="file"]'));
+    // The document's own controls have nothing to act on here, and four inert
+    // buttons over an attach panel is the same fault as a table of contents over
+    // a paper — see styles/37-document-chrome.css.
+    const inertShown = ["documentTocBtn", "documentDarkBtn", "documentRegionBtn", "documentMoreBtn"]
+      .filter((id) => {
+        const node = document.getElementById(id);
+        return node && getComputedStyle(node).display !== "none";
+      });
+    const pagerShown = getComputedStyle(document.getElementById("documentPager")).display !== "none";
+
     const file = new File([new Uint8Array(bytes)], name, { type: "application/pdf" });
     const ok = await api.attachPdfToOpenDeck(file);
     await settle(700);
@@ -2704,6 +2764,7 @@ try {
     return {
       ok, twice,
       rowBefore, tabBefore,
+      panelView, panelHeading, panelPicks, inertShown, pagerShown,
       rowAfter: document.getElementById("attachPdfBtn")?.hidden,
       tabAfter: document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden,
       title: api.state.deckTitle,
@@ -2719,6 +2780,14 @@ try {
 
   check("a deck created without a PDF offers a way to attach one", attached.rowBefore === false,
     `row hidden=${attached.rowBefore}, Document tab hidden=${attached.tabBefore}`);
+  check("...including a Document tab, on a deck that has no document",
+    attached.tabBefore === false, `tab hidden=${attached.tabBefore}`);
+  check("...which opens to the offer of one, inside the panel",
+    attached.panelView === "document" && attached.panelPicks && /attach/i.test(attached.panelHeading),
+    `view=${attached.panelView} · “${attached.panelHeading}” · picker=${attached.panelPicks}`);
+  check("...with no document controls hanging over it",
+    attached.inertShown.length === 0 && attached.pagerShown === false,
+    attached.inertShown.length ? `still shown: ${attached.inertShown.join(", ")}` : `pager=${attached.pagerShown}`);
   check("...and attaching one gives that deck a Document tab", attached.ok && attached.tabAfter === false,
     `attached=${attached.ok}, tab hidden=${attached.tabAfter}, view=${attached.viewMode}`);
   check("...with the file's pages and hash on the deck", attached.pages > 0 && attached.sha === 64,
@@ -2732,6 +2801,124 @@ try {
     `${attached.highlights} record(s)`);
   check("the row goes away once the deck has a document", attached.rowAfter === true && attached.twice === false,
     `row hidden=${attached.rowAfter}, second attach refused=${attached.twice === false}`);
+
+  // ── A phone on its side ──────────────────────────────────────────────────
+  //
+  // "In mobile view the hamburger in full screen / focus mode is not there, and
+  // it's not seamlessly changing the modes. There should be some dedicated
+  // reliable button for full / focus screen in even mobile screen landscape
+  // mode."
+  //
+  // Every rail assertion above ran at a desktop-shaped viewport, and the two
+  // faults were both about the OTHER shape:
+  //
+  //   * CHROME_MOBILE_QUERY was `(max-width: 720px)` alone. A phone in landscape
+  //     is ~844x390 — wider than that — so isMobileChrome() answered false on
+  //     the exact device the whole scroll-driven collapse was written for. The
+  //     scroll listener in src/main.js bails on it, so a landscape phone could
+  //     not enter focus mode by reading at all;
+  //   * applyChromeCollapse ANDed the scroll LOCK with the same query, so
+  //     rotating a phone that was already in focus mode dropped the mode
+  //     mid-sentence — the header came back, and the rail (display:none unless
+  //     the chrome was folded) went with it. That is the missing hamburger.
+  //
+  // The rotation is a real one: the metrics change, and whether a `change` event
+  // fires on chromeMobileMedia is up to the browser evaluating the query. The
+  // point of the widened query is that it does NOT fire, because both shapes of
+  // the same phone match it.
+  await emulatePhone(page, { width: 390, height: 844 });
+  const landscape = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setFocusMode(false);
+    await settle(200);
+    const portraitIsMobile = api.isMobileChrome();
+    // Into focus mode by READING, not by pressing the button — the pin has always
+    // survived a rotation and the lock is the half that did not. trackChromeScroll
+    // is what the document-level scroll listener calls once per frame; two calls
+    // are an anchor and a downward scroll past CHROME_HIDE_DELTA.
+    const scroller = document.getElementById("documentView");
+    scroller.scrollTop = 0;
+    api.trackChromeScroll(scroller);
+    scroller.scrollTop = 400;
+    api.trackChromeScroll(scroller);
+    await settle(400);
+    const lockedInPortrait = document.body.classList.contains("chrome-collapsed");
+    return { portraitIsMobile, lockedInPortrait };
+  }`);
+
+  await emulatePhone(page, { width: 844, height: 390 });
+  const rotated = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // Long enough for a matchMedia change listener to have fired if the query
+    // flipped, and for the 220ms fold transition either way.
+    await settle(500);
+    const stillLocked = document.body.classList.contains("chrome-collapsed");
+    const landscapeIsMobile = api.isMobileChrome();
+    const railBox = document.getElementById("readingRail").getBoundingClientRect();
+    const grip = document.getElementById("readingRailGrip");
+    const gripRect = grip.getBoundingClientRect();
+    const gripOnScreen = getComputedStyle(document.getElementById("readingRail")).display !== "none"
+      && gripRect.width >= 24 && gripRect.height >= 24
+      && gripRect.top >= 0 && gripRect.bottom <= window.innerHeight
+      && gripRect.right <= window.innerWidth + 1;
+    const hit = document.elementFromPoint(gripRect.left + gripRect.width / 2, gripRect.top + gripRect.height / 2);
+    const gripIsHit = Boolean(hit) && (hit === grip || grip.contains(hit));
+    grip.click();
+    await settle(200);
+    const tray = document.getElementById("readingRailTray");
+    const trayRect = tray.getBoundingClientRect();
+    // The tray has to fit the screen it is on, not overhang it — the box is
+    // pinned top and bottom now precisely so its max-height of 100% is the real
+    // remaining height rather than a fraction of the viewport.
+    const trayFits = trayRect.top >= 0 && trayRect.bottom <= window.innerHeight + 1;
+    // ...and the two mode rows have to be reachable WITHOUT scrolling the tray,
+    // which is the whole of "a dedicated reliable button for full / focus
+    // screen". Measured from the unscrolled tray, as a reader finds it.
+    const modes = tray.querySelector(".rr-modes").getBoundingClientRect();
+    const modesReachable = modes.height > 0
+      && modes.bottom <= trayRect.bottom + 1 && modes.top >= trayRect.top - 1;
+    const focusRow = tray.querySelector('[data-rail-action="focus"]');
+    const immersiveRow = tray.querySelector('[data-rail-action="immersive"]');
+    const focusSaysOn = focusRow.getAttribute("aria-pressed") === "true";
+    // Pressing it leaves focus mode AND leaves the tray open, so the switch can
+    // be seen to move and pressed again. It used to close the tray on every row.
+    focusRow.click();
+    await settle(450);
+    const leftFocus = !document.body.classList.contains("chrome-collapsed");
+    const trayStayedOpen = document.getElementById("readingRail").dataset.expanded === "true";
+    const focusSaysOff = focusRow.getAttribute("aria-pressed") === "false";
+    // ...and back in from the same row, at the same landscape size, with the
+    // chrome up: the rail is the way IN now, not only the way out.
+    focusRow.click();
+    await settle(450);
+    const backIn = document.body.classList.contains("chrome-collapsed");
+    document.getElementById("readingRail").dataset.expanded = "false";
+    api.setFocusMode(false);
+    await settle(300);
+    return { stillLocked, landscapeIsMobile, gripOnScreen, gripIsHit, trayFits, modesReachable, focusSaysOn, leftFocus, trayStayedOpen, focusSaysOff, backIn, railW: Math.round(railBox.width) };
+  }`);
+
+  check("a phone counts as a phone in portrait", landscape.portraitIsMobile, `isMobileChrome=${landscape.portraitIsMobile}`);
+  check("...and scrolling down a paper locks the chrome away", landscape.lockedInPortrait,
+    `chrome-collapsed=${landscape.lockedInPortrait}`);
+  check("...and it is still a phone once it is turned on its side",
+    rotated.landscapeIsMobile, `isMobileChrome=${rotated.landscapeIsMobile} at 844x390`);
+  check("...so rotating does not throw focus mode away", rotated.stillLocked,
+    `chrome-collapsed after rotate=${rotated.stillLocked}`);
+  check("...and the hamburger is on the landscape screen, hittable",
+    rotated.gripOnScreen && rotated.gripIsHit,
+    `onScreen=${rotated.gripOnScreen} hit=${rotated.gripIsHit}`);
+  check("...with a tray that fits the short screen",
+    rotated.trayFits, `fits=${rotated.trayFits}`);
+  check("...and focus / full screen reachable in it without scrolling",
+    rotated.modesReachable, `reachable=${rotated.modesReachable}`);
+  check("...saying focus mode is on, and turning it off when pressed",
+    rotated.focusSaysOn && rotated.leftFocus && rotated.focusSaysOff,
+    `on=${rotated.focusSaysOn} left=${rotated.leftFocus} nowOff=${rotated.focusSaysOff}`);
+  check("...leaving the tray open, so the switch can be pressed again",
+    rotated.trayStayedOpen, `trayOpen=${rotated.trayStayedOpen}`);
+  check("...and the same row takes a landscape phone back INTO focus mode",
+    rotated.backIn, `chrome-collapsed=${rotated.backIn}`);
 
   if (SHOT) {
     if (SHOT_PAGES) await emulatePhone(page, { width: 390, height: 780 });

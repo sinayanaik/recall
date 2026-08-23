@@ -277,8 +277,27 @@ export function mergeHighlightNoteTails(cloudSource, localSource, { stamps = {},
     // A deletion only wins over text it is actually newer than. A note written
     // AFTER the delete on the other device is a new note, not a resurrection.
     if (buried && buried >= cloudAt && buried >= localAt) return null;
-    if (!cloudText) return localEntry ? { ...localEntry } : null;
-    if (!localText) return cloudEntry ? { ...cloudEntry } : null;
+    // ── An empty side is two different facts, and only one of them is "adopt" ──
+    //
+    // These two branches used to return the other side's text unconditionally,
+    // and that is right for the case they were written for: this device has
+    // never seen this note, so the entry is simply missing here and the other
+    // side's copy is the whole of the truth.
+    //
+    // It is wrong for the other case, and the other case is a thing readers do:
+    // clearing a note. clearDocumentHighlightNote writes "" through
+    // setDocumentHighlightNote, which drops the entry from this device's tail and
+    // stamps noteAt — so an empty side WITH the newer stamp is a deletion, and
+    // returning the cloud's copy restored it. On the next sync, and the one after
+    // that: a note you cleared came back for ever, and the only way to be rid of
+    // it was to delete the highlight it hung off.
+    //
+    // The stamp is what tells the two apart, and it is already there. Never
+    // having had the note means no noteAt at all, which reads as older — the same
+    // rule mergePdfHighlights and betterReadingPosition use for the same reason.
+    if (!cloudText && !localText) return null;
+    if (!cloudText) return cloudAt > localAt ? null : (localEntry ? { ...localEntry } : null);
+    if (!localText) return localAt > cloudAt ? null : (cloudEntry ? { ...cloudEntry } : null);
     if (sameHighlightNoteText(cloudText, localText)) return { ...cloudEntry };
     mergedCount += 1;
     if (cloudAt !== localAt) {

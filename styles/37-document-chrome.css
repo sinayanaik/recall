@@ -104,6 +104,26 @@
   min-height: 26px;
 }
 
+/* ── ...unless there is no document to control ─────────────────────────────
+   The Document tab is on every open deck now (refreshDocumentTab), because it
+   is the only surface that can offer to ATTACH a paper and a deck without one
+   therefore had nowhere to be offered it. So the stage can be visible with
+   nothing in it but the attach panel, and the four rules above — which ask only
+   "is the stage visible" — would put a table of contents, a dark-page toggle, a
+   region select and a ⋯ of document actions on screen for a document that does
+   not exist. Every one of them inert, which is fault (2) at the top of this file
+   with the two views swapped over.
+
+   `.has-no-document` is written by refreshDocumentTab in the same pass as the
+   tab itself, so there is no second opinion about whether meta.pdf is set. The
+   pager goes with them: a page number and a zoom over a panel with no pages. */
+.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-toggle,
+.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-more-btn,
+.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > #documentTocBtn,
+#documentStage.has-no-document .document-pager {
+  display: none;
+}
+
 /* The menu is absolute against .view-mode-row now (which is already
    position:relative — styles/16-mobile-reading.css:59), not against the
    .document-more wrapper it used to sit in. Same box, same shadow, new parent:

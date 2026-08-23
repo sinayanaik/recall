@@ -13,7 +13,26 @@ import { isNotesStreamBusy } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { FOCUS_MODE_KEY } from "./view-mode.js?v=__BUILD__";
 
-export const CHROME_MOBILE_QUERY = "(max-width: 720px)";
+// ── What counts as "a phone" for the scroll-driven half ────────────────────
+//
+// This was `(max-width: 720px)` alone, and that is a portrait-only reading of a
+// phone. Rotate one and the viewport is about 844x390 — WIDER than the
+// breakpoint — so `isMobileChrome()` answered false on the exact device the
+// scroll-driven collapse was written for. Two things followed, and both were
+// reported as "the focus button does nothing in landscape":
+//
+//   • the scroll listener in src/main.js bails on !isMobileChrome(), so a
+//     landscape phone could not enter focus mode by reading at all;
+//   • applyChromeCollapse used to AND the lock with this query, so rotating a
+//     phone that was already in focus mode dropped it mid-sentence — the header
+//     came back, and the reading rail (which exists while the chrome is folded)
+//     went with it.
+//
+// The second clause is the same device the other way up: a short viewport with a
+// coarse pointer. `pointer: coarse` is what keeps it off a desktop window that
+// happens to be short — a mouse flicking the header in and out reads as a bug on
+// a big screen, which is the whole reason this half is gated in the first place.
+export const CHROME_MOBILE_QUERY = "(max-width: 720px), ((max-height: 560px) and (pointer: coarse))";
 
 export const CHROME_HIDE_DELTA = 10;
 
@@ -79,6 +98,11 @@ export function setChromeFocusPinned(value) {
 // reader pressed the focus button", and it decides what the app starts up in;
 // one scroll in one note should not be the reason a deck opens with no header
 // three days later. This lasts as long as the reading does.
+//
+// "As long as the reading does" includes turning the phone over — see
+// applyChromeCollapse. Rotating used to clear this by the side door, because the
+// collapse ANDed it with the phone breakpoint and a landscape phone is not
+// inside it.
 export let chromeFocusLocked = false;
 
 export let chromeAnchorEl = null;
@@ -239,10 +263,22 @@ export function scheduleChromeRefit() {
 export let focusBtnShowsPinned = null;
 
 export function applyChromeCollapse() {
-  // The pin applies at any width; only the scroll-driven half is phone-gated,
-  // so resizing a window up past the breakpoint restores an auto-hidden header
-  // without disturbing a deliberate pin.
-  const collapsed = chromeFocusPinned || (isMobileChrome() && chromeFocusLocked);
+  // ── Neither half is width-gated any more ─────────────────────────────────
+  //
+  // This used to be `chromeFocusPinned || (isMobileChrome() && chromeFocusLocked)`
+  // — the lock only counted while the viewport was still phone-shaped. Which
+  // means a mode the reader was in went away because they turned the phone
+  // sideways: chromeMobileMedia's `change` listener (src/main.js) calls straight
+  // in here on the rotation, `isMobileChrome()` flips, and the header the reader
+  // had scrolled away comes back over the paper. That is not a mode, and a
+  // control that unpresses itself is not a control.
+  //
+  // Only the way IN stays phone-gated — the isMobileChrome() test in main.js's
+  // scroll listener — which is all the gate was ever for: a mouse wheel must not
+  // fold the header on a desktop. Once a reader is in focus mode, by whichever
+  // route, they stay in it until they leave it. Exactly what the note above
+  // chromeFocusLocked says the lock means.
+  const collapsed = chromeFocusPinned || chromeFocusLocked;
   const changed = document.body.classList.contains("chrome-collapsed") !== collapsed;
   // Measured while still expanded — after the class flip the guard in
   // measureChromeHeights (correctly) refuses to read anything.

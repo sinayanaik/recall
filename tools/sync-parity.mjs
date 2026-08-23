@@ -387,20 +387,64 @@ const INVARIANTS = String.raw`(api) => {
       notes: tailOf([{ id: "hn-b", label: "", text: "mine" }]),
       meta: { pdfHighlights: [{ id: "h2", at: 2 }] }
     };
-    const r = api.reconcileDocumentBeforePush(snapshot, cloudDeck);
+    const r = api.reconcileDeckBeforePush(snapshot, cloudDeck);
     const ids = r.meta.pdfHighlights.map((x) => x.id).sort().join(",");
     return (ids === "h1,h2" && noteAt(r.notes, "hn-a") === "theirs" && noteAt(r.notes, "hn-b") === "mine")
       || ("about to push " + ids + " / " + JSON.stringify(r.notes));
   });
   must("a push against a row with no notes column reconciles nothing", () => {
-    const r = api.reconcileDocumentBeforePush(
+    const r = api.reconcileDeckBeforePush(
       { notes: tailOf([{ id: "hn-b", label: "", text: "mine" }]), meta: { pdfHighlights: [{ id: "h2", at: 2 }] } },
       { meta: {} });
     return r === null || ("merged against a row that carried no body: " + JSON.stringify(r));
   });
-  must("an ordinary deck's push is not touched by any of this", () => {
-    const r = api.reconcileDocumentBeforePush({ notes: "# plain", meta: {} }, { notes: "# plain", meta: {} });
-    return r === null || ("returned " + JSON.stringify(r));
+  must("an ordinary deck's push moves nothing it did not have to", () => {
+    // It used to return null here and the deck's whole meta then went up
+    // unmerged — see mergeDeckMeta for what that cost a deck with a
+    // bookmark, a link id or a quick-note category on it. It runs for every deck
+    // now; what has to stay true is that a deck with nothing to reconcile still
+    // reports changed:false, so the snapshot is not rewritten on every sync.
+    const r = api.reconcileDeckBeforePush({ notes: "# plain", meta: {} }, { notes: "# plain", meta: {} });
+    return (r && r.changed === false && r.notes === "# plain") || ("returned " + JSON.stringify(r));
+  });
+  must("...and a bookmark, a link id and a category survive an ordinary push", () => {
+    // The bug this is about: decks.meta is one JSONB column shared by six
+    // features and pushDeckRowsToCloud sends it whole, so the pushing device
+    // overwrote every key it happened not to have. pushBookmarkNow and
+    // serialiseQuickNoteMetaWrite both go to lengths to avoid exactly this, and
+    // a whole-column deck push undid both of them.
+    const r = api.reconcileDeckBeforePush(
+      { notes: "# plain", meta: { linkIds: ["ld_phone"], readingPosition: { offset: 10, at: 100 } } },
+      {
+        notes: "# plain",
+        meta: {
+          pdf: { name: "paper.pdf", pages: 12 },
+          bookmark: { offset: 4, at: 200 },
+          linkIds: ["ld_laptop"],
+          readingPosition: { offset: 90, at: 300 },
+          quickNoteCategories: [{ id: "qc_1", name: "Optics", color: "#fff" }],
+          noteAnchors: { c1: { text: "somewhere" } }
+        }
+      });
+    const lost = [];
+    if (r?.meta?.pdf?.name !== "paper.pdf") lost.push("pdf");
+    if (r?.meta?.bookmark?.at !== 200) lost.push("bookmark");
+    if ((r?.meta?.linkIds || []).join(",") !== "ld_laptop,ld_phone") lost.push("linkIds=" + (r?.meta?.linkIds || []).join(","));
+    // The cloud copy is newer by its own at stamp, which it carries so the
+    // answer does not depend on which device synced first.
+    if (r?.meta?.readingPosition?.offset !== 90) lost.push("readingPosition");
+    if ((r?.meta?.quickNoteCategories || []).length !== 1) lost.push("quickNoteCategories");
+    if (!r?.meta?.noteAnchors?.c1) lost.push("noteAnchors");
+    return !lost.length || ("clobbered: " + lost.join(", "));
+  });
+  must("...and a paper attached on the other device is not deleted by this one's push", () => {
+    // The worst of them: the highlights are merged, so they survive — and the
+    // document they are coordinates INTO did not, leaving every device that
+    // pulled afterwards with a paper's worth of annotations and no paper.
+    const r = api.reconcileDeckBeforePush(
+      { notes: "", meta: { pdfHighlights: [{ id: "h2", at: 2 }] } },
+      { notes: "", meta: { pdf: { name: "paper.pdf", sha256: "abc" }, pdfHighlights: [{ id: "h1", at: 1 }] } });
+    return r?.meta?.pdf?.sha256 === "abc" || ("meta.pdf is " + JSON.stringify(r?.meta?.pdf));
   });
 
   // 3. A deletion stays deleted.
