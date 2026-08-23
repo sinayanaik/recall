@@ -541,16 +541,16 @@ const PROBE = `(api) => {
   // and pressing ✎ opened an empty editor over a note that was really there.
   check("a listed highlight carries the note that is written on it", () => {
     api.state.notes = NOTED;
-    const rows = api.collectNoteHighlightRows();
-    const notes = rows.map((row) => row.marks.map((m) => m.note || "").join("")).filter(Boolean);
-    if (notes.length !== 2) return notes.length + " of the rows carry a note, expected 2";
+    const entries = api.collectHighlightEntries();
+    if (entries.length !== 4) return entries.length + " entries, expected one per highlight";
+    const notes = entries.map((entry) => entry.note || "").filter(Boolean);
+    if (notes.length !== 2) return notes.length + " of the entries carry a note, expected 2";
     if (notes[0] !== "One line of commentary.") return "the first note reads " + JSON.stringify(notes[0]);
     if (!notes[1].startsWith("First line of a longer note.")) return "the second note reads " + JSON.stringify(notes[1]);
-    // ...and a mark whose section entry was deleted by hand still reports none.
-    const dangling = api.collectNoteHighlightRows()
-      .flatMap((row) => row.marks)
-      .filter((m) => m.note).length;
-    if (dangling !== 2) return dangling + " marks claim a note";
+    // ...and a mark whose section entry was deleted by hand still reports none,
+    // which is the same test that keeps a badge off it.
+    const dangling = entries.find((entry) => entry.text === "a dangling id");
+    if (dangling && dangling.note) return "an id with no note behind it reported one";
     return true;
   });
 

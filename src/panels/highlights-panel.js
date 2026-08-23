@@ -1,21 +1,26 @@
-// Every highlight in the deck, grouped and shown with its sentence.
+// Every highlight in the deck, as the shapes its three readers need.
+//
+// One scan of the source, three shapes taken off it: the entries the Highlights
+// tab renders as a continuous editor (collectHighlightEntries, driving
+// src/panels/highlights-editor.js), the entries the two contents drawers list
+// as jump targets (src/panels/highlight-index.js, which calls the scan here),
+// and the entries the exports build from (collectDeckHighlightsForExport, with
+// its own opt-in context lines). They differ in what they keep, never in how a
+// highlight is FOUND — which is what stops a jump from one surface landing
+// somewhere a jump from another would not.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
-import { highlightNoteResolver, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
+import { highlightNoteResolver } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
-import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
-import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
-import { notesAnchorPlainText, scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
-import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
-import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { renderHighlightsEditor } from "./highlights-editor.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentExcerptLabel, documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck, sameDocumentLine, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
@@ -206,21 +211,28 @@ export function scanHighlightGroups(source, noteSource = source) {
   return { source, raw, groups, units };
 }
 
-// ── A PDF deck's highlights, as the same rows ───────────────────────────────
+// ── A PDF deck's highlights, in the same shapes ─────────────────────────────
 //
-// The panel, the exports and the highlights view all consume ONE row shape, and
-// they consume it from this function — so a document highlight becomes a row
-// here rather than becoming a second panel. Every one of those consumers then
-// works untouched.
+// There were three row collectors here — collectDocumentHighlightRows,
+// collectNoteHighlightRows and a collectDeckHighlights that concatenated them —
+// and they built a shape nothing renders any more. The Highlights tab is a
+// continuous editor keyed on ENTRIES (collectHighlightEntries, below) because
+// two highlights that each need their own note field cannot share a row; the
+// drawers take a smaller shape again (src/panels/highlight-index.js); and the
+// exports have always had their own collector.
 //
-// The differences from the markdown branch are the two that are real: there is
-// no source unit to slice (a PDF has no markdown, so `span` is null and
-// `markdown` is the highlight's own captured text), and the mark is addressed
-// by id rather than by ordinal.
+// Their same-line merge went with them, and that is the deliberate part: it
+// existed so one line of a paper carrying three highlights was not previewed
+// three times with three "Go to" buttons that all scrolled to the same place.
+// An editor cannot do that — merging two annotations under one line offers one
+// box for two notes — so each highlight is its own entry now, and the
+// duplication merging avoided is instead avoided by the entry being the
+// highlighted line rather than a preview of it.
+//
 // The picture for one region row, appended synchronously as a placeholder and
 // filled in when the render resolves. Asynchronous by necessity — rasterising a
-// page is a promise — and deliberately not awaited by the panel: forty rows
-// would otherwise appear one page-render at a time.
+// page is a promise — and deliberately not awaited: forty entries would
+// otherwise appear one page-render at a time.
 //
 // The label is not a loading state; it is the ANSWER whenever there is no open
 // document to render from, and it is replaced only if a picture actually
@@ -230,8 +242,8 @@ export function addRegionPreview(body, record) {
   const label = document.createElement("span");
   label.className = "highlight-region-label";
   // Always "Region · page N", never the record's text: whatever words the box
-  // happened to cover are already the row's own preview directly below this, and
-  // saying them twice makes the row read as two highlights.
+  // happened to cover are already the entry's own quote directly below this, and
+  // saying them twice makes it read as two highlights.
   // The same glyph the region-select button in the control row wears, and from
   // the same Unicode block as the Cards tab's ▢ — a dotted-square character
   // would have read better and is not reliably drawn.
@@ -246,191 +258,6 @@ export function addRegionPreview(body, record) {
     img.alt = `Region highlighted on page ${record.page}`;
     label.replaceWith(img);
   }).catch(() => { /* the label stays, which is a correct answer on its own */ });
-}
-
-export function collectDocumentHighlightRows() {
-  const rows = [];
-  documentHighlightsInReadingOrder().forEach((record) => {
-    const row = documentRowFor(record);
-    // ── One line, one row, one "Go to" ──────────────────────────────────────
-    //
-    // Every PDF record used to become its own row, because the merge test below
-    // (in collectNoteHighlightRows) requires a markdown `span` on both rows and
-    // a document highlight has none. So three highlights on one line of a paper
-    // were three rows, three previews of overlapping fragments and three "Go
-    // to" buttons that all scrolled to the same place — which is what "if there
-    // are multiple highlights in a single line then one goto is sufficient"
-    // was about.
-    //
-    // Merged on the geometry the file already carries (sameDocumentLine), so a
-    // "line" here means a line of the paper rather than anything this panel had
-    // to guess. Deliberately a LINE and not a paragraph: a paragraph of a
-    // two-column paper is a dozen lines and half a screen, and collapsing that
-    // far would hide which of them was actually marked.
-    //
-    // Unconditional, unlike the markdown path, which splits a merged row again
-    // the moment either highlight has a note. That rule exists there because
-    // its rows label notes positionally ("Note on highlight 2") and two notes
-    // under one line are then ambiguous. These rows label each note with its
-    // own excerpt instead, so there is nothing to be ambiguous about and no
-    // reason to duplicate the line.
-    const previous = rows[rows.length - 1];
-    if (previous?.lineRecord && sameDocumentLine(previous.lineRecord, record)) {
-      previous.marks.push(row.marks[0]);
-      // The row's own text grows to cover the line's whole marked run, so the
-      // preview is not just the first highlight's words with two more "Go to"s
-      // beside it.
-      if (row.markdown && !previous.markdown.includes(row.markdown)) {
-        previous.markdown = `${previous.markdown} … ${row.markdown}`;
-      }
-      // A region keeps its picture even when it shares a line with a text
-      // highlight — the thumbnail is the row's most useful content.
-      if (!previous.region && row.region) previous.region = row.region;
-      return;
-    }
-    rows.push(row);
-  });
-  return rows;
-}
-
-// One row for one record, before any same-line merging.
-function documentRowFor(record) {
-  {
-    // A region drawn round a photograph has no words in it at all, and a blank
-    // row in a list of highlights is indistinguishable from a bug — so it is
-    // named by where it is. (A region round a boxed equation or a table usually
-    // DOES pick up text, and is then listed by that text like anything else.)
-    const text = String(record.text || "").trim() || documentHighlightLabel(record);
-    return {
-      region: record.kind === "area" ? record : null,
-      // Rendered as plain text: it came out of a PDF, so there is no markdown
-      // in it to interpret, and a paper containing "*" or "_" must not turn
-      // half a sentence italic in the panel.
-      markdown: text.replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
-      span: null,
-      page: record.page,
-      // The record this row's line band is measured from, so the caller can ask
-      // whether the next highlight shares its line. Not read anywhere else.
-      lineRecord: record,
-      marks: [{
-        // The panel keys a row's actions on `markIndex`; for a document
-        // highlight the id IS the key, and every consumer that acts on it goes
-        // through the handler sets in src/documents/pdf-highlights.js.
-        markIndex: record.id,
-        highlightId: record.id,
-        markCount: 0,
-        page: record.page,
-        color: record.color,
-        note: documentHighlightNote(record.id) || null,
-        // What to CALL this highlight when its note is listed under a row that
-        // holds several. A positional "Note on highlight 2" renumbers whenever
-        // a neighbour is added or deleted, and on a merged row it is the only
-        // thing saying which highlight a note belongs to — so it is the words
-        // themselves, which cannot drift.
-        excerpt: documentExcerptLabel(text),
-        anchor: {
-          pdf: record.anchor || { page: record.page, item: 0, ch: 0 },
-          quads: record.quads,
-          page: record.page,
-          text,
-          deckId: state.deckId,
-          deckTitle: state.deckTitle
-        }
-      }]
-    };
-  }
-}
-
-export function collectDeckHighlights() {
-  // A PDF deck's highlights are coordinates in the file, not <mark>s in the
-  // note — but its Notes tab is still an ordinary note the reader may have
-  // highlighted too, so both sources are collected rather than one replacing
-  // the other.
-  if (isPdfDeck()) {
-    return [...collectDocumentHighlightRows(), ...collectNoteHighlightRows()];
-  }
-  return collectNoteHighlightRows();
-}
-
-// ── The panel reads the same string the reader is looking at ──────────────
-//
-// readerNotesBody, not state.notes. The rendered notes view is fed
-// readerNotesBody(state.notes) — the note with its `<!--recall:highlight-notes-->`
-// tail sliced off (src/notes/notes-view.js, src/format/notes-fence.js) — and
-// this panel scanned the whole string, tail included. That was fine for exactly
-// as long as the tail could not contain a `<mark>`, and it can: the highlight
-// note popup ships the full formatting toolbar, whose Highlight dropdown writes
-// a literal <mark> into whatever the reader is typing.
-//
-// One highlighted word inside one note and the panel goes wrong in three ways
-// at once. The mark in the tail becomes a row of its own — a highlight of a
-// highlight's note, listed as if it were in the document. `markCount`
-// (raw.length) exceeds the number of <mark>s the rendered view actually has,
-// which is the exact equality revealNoteMark tests before it will use the fast
-// path, so "Go to →" silently degrades to a fuzzy text search for EVERY row in
-// the panel, not just the phantom one. And pressing ✎ on the phantom row
-// rewrites a <mark> inside the tail, which is how a note ends up attached to
-// something that is not a highlight at all.
-//
-// This is a regression rather than an oversight: the commit that introduced the
-// fence moved the rendered view and the raw editor onto readerNotesBody and
-// left this file reading state.notes.
-export function collectNoteHighlightRows() {
-  const notes = state.notes || "";
-  const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
-  const rows = [];
-  groups.forEach((group) => {
-    const span = highlightUnitSpan(units, source, group);
-    // Fallback only: no line unit covers this highlight. Marks are reapplied
-    // (not just the bare inner text) so a highlight's own colour still shows
-    // here, and each piece's list marker is restored so a highlighted list
-    // still LOOKS like a list rather than several plain-text lines.
-    const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
-      const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
-      const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
-      if (i === 0) return rendered;
-      return acc + (piece.marker ? "\n" : "\n\n") + rendered;
-    }, "");
-    // The needle is the FIRST piece's own inner text, not the preview markdown:
-    // the preview carries <mark> tags and a restored list marker, neither of
-    // which appears in the rendered notes, so an anchor built from it could
-    // never be found again (that was the "Go to takes me somewhere else" bug —
-    // every match failed and the retry loop's proportional estimate is what the
-    // reader saw). The first piece is also the right place to land for a
-    // highlight that spans several blocks.
-    const text = notesAnchorPlainText(group.pieces[0].inner);
-    if (!text) return;
-    const mark = {
-      markIndex: group.pieces[0].markIndex,
-      markCount: raw.length,
-      note: group.pieces[0].note,
-      anchor: trimNoteAnchor({ offset: group.offset, source: group.pieces[0].inner, text, deckId: state.deckId, deckTitle: state.deckTitle })
-    };
-    const prevRow = rows[rows.length - 1];
-    // Same source unit as the row just built (both resolved to a real unit,
-    // and it's the SAME one) → this is a second highlight on a line already
-    // shown; its <mark> is already part of `markdown` (the unit slice
-    // includes every mark inside it), so only the jump target is new.
-    //
-    // ...UNLESS either highlight carries a note. Merging was only ever about
-    // not showing the same bare line twice for no reason — once one of them
-    // has its own commentary attached, showing it under a shared "which
-    // highlight is this about?" row would be ambiguous, and collapsing two
-    // notes under one line reads as one. So a noted highlight always gets its
-    // own row (the line renders again, once per instance — duplicated text,
-    // but no longer duplicated NOTHING, which is what merging exists to
-    // avoid). A highlight without a note still merges into a neighbour that
-    // does, since it's the row identity that needs to split, not any
-    // particular highlight's content.
-    const merges = span && prevRow?.span && prevRow.span.first === span.first && prevRow.span.last === span.last;
-    const eitherHasNote = mark.note || prevRow?.marks?.some((m) => m.note);
-    if (merges && !eitherHasNote) {
-      prevRow.marks.push(mark);
-      return;
-    }
-    rows.push({ markdown, span, marks: [mark] });
-  });
-  return rows;
 }
 
 // Like highlightContextUnit, but collects up to `count` units stepping

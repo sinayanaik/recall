@@ -127,6 +127,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-region.js?v=__BUILD__",
     "/src/documents/pdf-page-notes.js?v=__BUILD__",
     "/src/panels/highlights-editor.js?v=__BUILD__",
+    "/src/panels/drawer-highlights.js?v=__BUILD__",
     "/src/notes/notes-edit-split.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
@@ -689,7 +690,7 @@ try {
     return {
       record: record ? { quads: record.quads, color: record.color, anchor: record.anchor } : null,
       painted,
-      rows: api.collectDeckHighlights().length
+      rows: api.collectHighlightEntries().length
     };
   }`, madeOn, made.record.id);
 
@@ -739,12 +740,12 @@ try {
     //
     // A <mark> inside a highlight's own note. The pill's Highlight button
     // writes exactly this, so it is not a contrived string.
-    const rowsBefore = api.collectDeckHighlights().length;
+    const rowsBefore = api.collectHighlightEntries().length;
     const notesBefore = api.state.notes;
     const ids = api.documentHighlightsInReadingOrder().map((r) => r.id);
     api.state.notes = api.setHighlightNoteInSource(
       notesBefore || "", ids[0], 'A note with a <mark data-color="green">highlighted phrase</mark> in it.', "note");
-    out.rowsWithMarkInNote = api.collectDeckHighlights().length;
+    out.rowsWithMarkInNote = api.collectHighlightEntries().length;
     out.rowsBefore = rowsBefore;
     api.state.notes = notesBefore;
 
@@ -789,11 +790,6 @@ try {
       out.sameLine = api.sameDocumentLine(left, right);
       const order = api.documentHighlightsInReadingOrder().map((r) => r.id);
       out.leftComesFirst = order.indexOf(madeIds[1]) < order.indexOf(madeIds[0]);
-      const rows = api.collectDocumentHighlightRows();
-      const shared = rows.find((r) => r.marks.length > 1);
-      out.mergedRow = Boolean(shared);
-      out.marksInMergedRow = shared ? shared.marks.length : 0;
-
       // ── ✕ over a selection that spans the whole line ────────────────────
       //
       // The old hit test read the selection's BOUNDING rect at its left edge,
@@ -840,9 +836,12 @@ try {
     `${pipeline.madeOnOneLine} made of 2 · sameLine=${pipeline.sameLine} · ${pipeline.spans} span(s) "${pipeline.lineText}"`);
   check("...and read left to right, whichever was made first",
     pipeline.leftComesFirst === true, `leftComesFirst=${pipeline.leftComesFirst}`);
-  check("...and share one row, so one Go to is enough",
-    pipeline.mergedRow === true && pipeline.marksInMergedRow === 2,
-    `${pipeline.marksInMergedRow} mark(s) in the merged row`);
+  // There used to be a case here asserting that two highlights on one line
+  // shared a ROW, so one "Go to" was enough for both. That merge is gone with
+  // the rows: the Highlights tab is an editor now, and two annotations under one
+  // line would be offered a single box to write both notes in. sameDocumentLine
+  // — the geometry the merge was built on — is still asserted directly above,
+  // because reading order still depends on it.
   check("a selection over the line finds the highlights under it",
     pipeline.foundUnderSelection === 2 && pipeline.foundUnderOverlay === 2,
     `${pipeline.foundUnderSelection} found over ${pipeline.rectCount} rect(s), ${pipeline.foundUnderOverlay} with something on top`);
@@ -1458,6 +1457,63 @@ try {
     `highlights in notes=${docNotes.notesHasHighlights} fence in editor=${docNotes.editorHasFence} round-trips=${docNotes.roundTrip}`);
   check("...and being empty, it opens its editor rather than sitting blank",
     docNotes.editorOpen, `raw editor open=${docNotes.editorOpen}`);
+
+  // ── 8e. The document panel's own list of what was marked on it ──────────
+  //
+  // The Highlights TAB lists a paper's highlights and its deck note's together,
+  // which is right for the place you go to read them and wrong for the place you
+  // go to find one. The Document panel's contents drawer carries its own
+  // Highlights section so a reader does not have to leave the page they are on.
+  const drawer = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(400);
+    // Through the button, not the module: the drawer is built on the way open,
+    // and a check that calls the builder directly would not notice if nothing
+    // called it.
+    document.getElementById("documentTocBtn").click();
+    await settle(400);
+    const el = document.getElementById("documentOutlineDrawer");
+    const tabs = Array.from(el.querySelectorAll("[data-drawer-tab]")).map((t) => t.textContent);
+    api.setDrawerSection(el, "highlights");
+    await settle(300);
+    const rows = Array.from(el.querySelectorAll(".drawer-highlight-jump")).map((row) => ({
+      text: row.querySelector(".drawer-highlight-text").textContent,
+      colour: row.querySelector(".drawer-highlight-chip").dataset.color,
+      where: row.querySelector(".drawer-highlight-where")?.textContent || "",
+      noted: Boolean(row.querySelector(".drawer-highlight-noted"))
+    }));
+    const records = api.documentHighlightsInReadingOrder();
+    const contentsHidden = el.querySelector('[data-drawer-section="contents"]').hidden;
+    // A row goes to its highlight. Not merely "the page scrolled": the flash is
+    // painted on that record's own quads, which is what says the jump was exact.
+    const before = api.currentDocumentPage();
+    const onPage = rows.findIndex((r) => r.where && r.where !== "p. " + before);
+    const index = onPage === -1 ? 0 : onPage;
+    el.querySelectorAll(".drawer-highlight-jump")[index].click();
+    await settle(1400);
+    const wanted = Number(String(rows[index].where).replace(/[^0-9]/g, "")) || 0;
+    return {
+      tabs, rows, contentsHidden,
+      records: records.length,
+      landedOn: api.currentDocumentPage(),
+      wanted
+    };
+  }`);
+
+  check("the Document panel's drawer carries a Highlights section",
+    drawer.tabs.join("/") === "Contents/Highlights" && drawer.contentsHidden,
+    drawer.tabs.join(" / ") || "no tabs");
+  check("...listing this document's own highlights, with their pages",
+    drawer.rows.length === drawer.records && drawer.rows.length > 0
+      && drawer.rows.every((r) => /^p\. \d+$/.test(r.where)),
+    `${drawer.rows.length} row(s) for ${drawer.records} highlight(s) · ${drawer.rows.map((r) => r.where).join(", ")}`);
+  check("...saying which of them carry a note",
+    drawer.rows.some((r) => r.noted),
+    drawer.rows.map((r) => (r.noted ? "✎" : "–")).join(""));
+  check("...and a row goes to the page its highlight is on",
+    drawer.wanted === 0 || drawer.landedOn === drawer.wanted,
+    `wanted page ${drawer.wanted}, landed on ${drawer.landedOn}`);
 
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //

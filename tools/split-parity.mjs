@@ -1396,6 +1396,19 @@ function replaceCall(text, fn, build) {
 // (the old name) and in the ADDED list (the new one), which is the honest way
 // to show it — the tool matches by name and cannot know the two are related.
 const REMOVED = {
+  // ── The Highlights tab stopped being a list of rows ─────────────────────
+  collectDeckHighlights:
+    "Built the row shape the Highlights tab rendered: a highlight widened to " +
+    "the line it sits in, with same-line highlights merged so one line was not " +
+    "previewed twice with two Go-to buttons that scrolled to the same place. " +
+    "The tab is a continuous editor now (src/panels/highlights-editor.js), and " +
+    "merging is the one thing it cannot do — two annotations under one line " +
+    "would be offered a single box to write both notes in. collectHighlight" +
+    "Entries replaces it, one entry per highlight, off the same scan; and the " +
+    "duplication the merge avoided is avoided instead by an entry BEING the " +
+    "highlighted line rather than a preview of it. Its two halves " +
+    "(collectDocumentHighlightRows, collectNoteHighlightRows) went with it and " +
+    "were added after the split, so they are not named here.",
   // ── The image controls stopped being bound by token index ───────────────
   // The eleven entries below were one scheme: find an image by walking
   // marked's top-level tokens, remember WHICH token it was, and commit a
