@@ -56,6 +56,25 @@ body.has-touch-select .card-face .rendered {
   -webkit-touch-callout: none;
 }
 
+/* ── ...and the PDF's text layer, which is a reading surface too ───────────
+   The Document surface kept the native gesture, so a paper was the one thing in
+   this app where selecting a sentence still meant Android's 3-4 second press
+   and its two handles drawn off a stale layout snapshot. It is worse there than
+   in a note, not better: the text layer is hundreds of absolutely-positioned
+   transparent spans over a canvas, and a page rendering mid-gesture is exactly
+   the layout change that slides a native highlight off the words it covers.
+
+   (0,2,0), matching the notes rule and enough to clear `.pdf-text-layer span`
+   at (0,1,1) in styles/36-document.css. The spans are what the value has to
+   reach: `user-select` inherits, and nothing on them declares their own. */
+body.has-touch-select .pdf-text-layer,
+body.has-touch-select .pdf-text-layer span {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* The raw editors are deliberately untouched. A <textarea> has its own native
    selection with its own handles, the pill's editing branch reads
    selectionStart/selectionEnd rather than a Range, and none of the bugs in the
@@ -80,6 +99,17 @@ body.has-touch-select .card-face .rendered {
    (styles/12-notes.css). */
 ::highlight(recall-touch-selection) {
   background-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+/* ...except over a PDF, where the same blue the native selection used stays.
+   styles/36-document.css sets out why (--pdf-selection): a selection over a
+   canvas has no visible text of its own to tint, so the selection colour IS the
+   feedback, and a reader has to be able to tell a live selection apart from a
+   highlight they have already made — which on this surface is a themed accent
+   tint of exactly this kind. A highlight pseudo-element takes an originating
+   selector, so this is the one rule that has to name the layer. */
+.pdf-text-layer span::highlight(recall-touch-selection) {
+  background-color: var(--pdf-selection);
 }
 
 /* ── 3. Hold the surface still under a live gesture ────────────────────────
@@ -110,7 +140,8 @@ body.has-touch-select .card-face .rendered {
    scrolling down to read on is the ordinary thing to do. Only the drag itself
    locks anything — beginDrag() adds this, endDrag() takes it away. */
 body.is-touch-dragging .notes-rendered,
-body.is-touch-dragging .card-face .rendered {
+body.is-touch-dragging .card-face .rendered,
+body.is-touch-dragging .pdf-text-layer {
   touch-action: none;
 }
 

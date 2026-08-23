@@ -137,6 +137,9 @@ const API_SRC = `async () => {
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
+    // Last, so nothing here can shadow a name one of the modules above owns —
+    // the flatten keeps the FIRST module to export a key.
+    "/src/notes/touch-selection.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -1303,6 +1306,156 @@ try {
     }`);
     notesFit.push({ width, ...one });
   }
+
+  // ── 9c-2. Selecting text on the paper, with a finger ─────────────────────
+  //
+  // The Document surface was the one reading surface in this app still using
+  // the browser's own touch selection. src/notes/touch-selection.js opens with
+  // why that is not good enough — a press gated behind the main thread, handles
+  // drawn off a layout snapshot that every render invalidates, a hit-test that
+  // resolves into padding at a block's edge — and every one of those is worse
+  // over a PDF: the text layer is hundreds of absolutely-positioned transparent
+  // spans over a canvas that repaints as the reader moves.
+  //
+  // Driven as real touch input through Input.dispatchTouchEvent, exactly as
+  // tools/touch-selection-check.mjs drives it over a note, because a controller
+  // the app implements is one a harness can actually drive.
+  const touchStart = (x, y) => page.call("Input.dispatchTouchEvent", {
+    type: "touchStart", touchPoints: [{ x, y, radiusX: 12, radiusY: 12, force: 1, id: 1 }]
+  });
+  const touchMove = (x, y) => page.call("Input.dispatchTouchEvent", {
+    type: "touchMove", touchPoints: [{ x, y, radiusX: 12, radiusY: 12, force: 1, id: 1 }]
+  });
+  const touchEnd = () => page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const armed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await api.whenDocumentPageReady(1);
+    // Put page 1 on screen before measuring anything off it. The section above
+    // scrolls the document around, and a span whose rect is off the top of the
+    // viewport gives coordinates that Input.dispatchTouchEvent delivers to
+    // nothing at all.
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(400);
+    // ...and pick a span the point actually LANDS on: the text layer is
+    // absolutely-positioned transparent boxes, and the first one on the page can
+    // be a stray under the pager or clipped by the scroller's edge.
+    const spans = Array.from(document.querySelectorAll('.pdf-page[data-page-number="1"] .pdf-text-layer [data-item-index]'));
+    const scroller = document.getElementById("documentView").getBoundingClientRect();
+    let picked = null;
+    for (const span of spans) {
+      const box = span.getBoundingClientRect();
+      if (box.width < 80 || box.height < 6) continue;
+      if (box.top < scroller.top + 40 || box.bottom > scroller.bottom - 80) continue;
+      const x = Math.round(box.left + Math.min(60, box.width / 3));
+      const y = Math.round(box.top + box.height / 2);
+      if (document.elementFromPoint(x, y) !== span) continue;
+      picked = { span, box, x, y };
+      break;
+    }
+    if (!picked) return { error: "no reachable text layer span on page 1" };
+    return {
+      hasClass: document.body.classList.contains("has-touch-select"),
+      userSelect: getComputedStyle(picked.span).userSelect,
+      overlay: Boolean(document.querySelector(".touch-select-layer")),
+      word: picked.span.textContent.trim().slice(0, 20),
+      x: picked.x,
+      y: picked.y,
+      right: Math.round(picked.box.right),
+      lineHeight: Math.round(picked.box.height)
+    };
+  }`);
+  if (armed.error) throw new Error(armed.error);
+
+  check("the app owns touch selection over a PDF too",
+    armed.hasClass && armed.userSelect === "none" && armed.overlay,
+    `has-touch-select=${armed.hasClass} user-select=${armed.userSelect} overlay=${armed.overlay}`);
+
+  let pdfTouch = { error: "not run" };
+  if (armed.hasClass) {
+    await touchStart(armed.x, armed.y);
+    await pause(420);            // LONG_PRESS_MS is 240
+    const pressed = await page.evaluate(`() => {
+      const sel = window.getSelection();
+      const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+      return {
+        // Range.toString(), never Selection.toString(): over user-select:none
+        // content the second answers "" and the first is correct, which is the
+        // measurement the whole takeover rests on.
+        text: range ? range.toString() : "",
+        painted: Boolean(window.CSS && CSS.highlights && CSS.highlights.has("recall-touch-selection")),
+        handles: Array.from(document.querySelectorAll(".touch-select-handle"))
+          .filter((h) => !h.classList.contains("is-hidden")).length
+      };
+    }`);
+    // Extend along the line, which is the gesture that used to hand the page
+    // back to the browser mid-drag.
+    for (let i = 1; i <= 6; i += 1) {
+      await touchMove(armed.x + ((armed.right - 8 - armed.x) * i) / 6, armed.y);
+      await pause(28);
+    }
+    await pause(120);
+    const dragged = await page.evaluate(`() => {
+      const sel = window.getSelection();
+      const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+      return { text: range ? range.toString() : "" };
+    }`);
+    await touchEnd();
+    await pause(250);
+    pdfTouch = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      await settle(150);
+      // The capture the floating pill's Highlight button acts on. Asking for it
+      // is the whole chain under test: our Range, mirrored into the real
+      // Selection, read back as PDF-space anchors and quads.
+      const capture = api.captureDocumentSelection();
+      if (!capture) return { capture: null };
+      const before = (api.state.meta?.pdfHighlights || []).length;
+      const record = api.addDocumentHighlight(capture, "green");
+      await settle(200);
+      return {
+        capture: { text: capture.text, page: capture.page, quads: capture.quads.length, anchor: capture.anchor },
+        added: (api.state.meta?.pdfHighlights || []).length - before,
+        colour: record?.color,
+        painted: document.querySelectorAll('.pdf-mark[data-highlight-id="' + record?.id + '"]').length
+      };
+    }`);
+    pdfTouch.pressed = pressed;
+    pdfTouch.dragged = dragged;
+  }
+
+  if (pdfTouch.pressed) {
+    check("...a press selects a word off the page",
+      pdfTouch.pressed.text.trim().length > 0 && pdfTouch.pressed.painted,
+      `"${pdfTouch.pressed.text.trim().slice(0, 30)}" painted=${pdfTouch.pressed.painted}`);
+    check("...with our own handles on it, not the platform's",
+      pdfTouch.pressed.handles === 2, `${pdfTouch.pressed.handles} handle(s)`);
+    check("...and sliding the finger extends it",
+      pdfTouch.dragged.text.length > pdfTouch.pressed.text.length,
+      `${pdfTouch.pressed.text.trim().length} → ${pdfTouch.dragged.text.trim().length} chars`);
+    check("...which the pill can still turn into a highlight",
+      Boolean(pdfTouch.capture) && pdfTouch.capture.quads > 0
+        && Number.isFinite(pdfTouch.capture.anchor?.item) && pdfTouch.added === 1,
+      pdfTouch.capture
+        ? `page ${pdfTouch.capture.page}, ${pdfTouch.capture.quads} quad(s), item ${pdfTouch.capture.anchor?.item}`
+        : "no capture");
+    check("...and it paints on the page like any other",
+      pdfTouch.colour === "green" && pdfTouch.painted > 0,
+      `${pdfTouch.colour} · ${pdfTouch.painted} mark div(s)`);
+  }
+
+  await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // Taken back out: everything after this counts the paper's highlights, and
+    // a green one made by a finger would be an extra row in all of it.
+    const records = api.state.meta?.pdfHighlights || [];
+    const mine = records.filter((r) => r.color === "green").map((r) => r.id);
+    mine.forEach((id) => api.removeDocumentHighlight(id));
+    window.getSelection()?.removeAllRanges();
+    await settle(200);
+  }`);
 
   await page.call("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 });
   await page.call("Emulation.setDeviceMetricsOverride", {
