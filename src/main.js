@@ -101,7 +101,7 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
-import { initDocumentMarkMenu, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { closeDocumentNoteEditor, initDocumentNotesEditing, renderDocumentNotes } from "./documents/pdf-notes-view.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
@@ -951,8 +951,15 @@ onDomReady(() => {
   // comment) — so the badge, and everything else that names a highlight, is
   // built from the corrected text rather than showing the welded version for one
   // frame and then changing under the reader.
+  //
+  // repairDocumentHighlightQuads is the same idea about the highlight's
+  // GEOMETRY: a quad captured before the text layer knew about font ascents
+  // sits a fifth of an em above the words it marks. It repaints the page's
+  // marks itself, so it has to run before the badges below, which are pinned to
+  // the corner of a quad and would otherwise be placed against the old one.
   setDocumentPagePaintedHook((pageNumber) => {
     repairDocumentHighlightText(pageNumber);
+    repairDocumentHighlightQuads(pageNumber);
     paintPageNoteBadges(pageNumber);
   });
   setDocumentOpenedHook(refreshPdfPageNotes);

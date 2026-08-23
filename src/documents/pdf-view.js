@@ -1252,6 +1252,49 @@ function trimRenderedPages() {
 
 // ── The text layer ──────────────────────────────────────────────────────────
 //
+// pdf.js's own fallback when a font reports no usable metrics — and ours, for
+// the same reason: it is close enough that a box built on it still encloses the
+// glyphs, and a wrong ascent is what put the highlight band above them.
+export const PDF_DEFAULT_FONT_ASCENT = 0.8;
+
+// How much of a text item's BOX sits above the baseline.
+//
+// Not the font's ascent. The box is exactly one em tall (`font-size` is the em
+// size and `.pdf-text-layer` sets `line-height: 1`), while a font's ascender
+// and descender together come to rather more than one em — around 1.12 for the
+// families a paper is typically set in. So there is no split that contains both
+// outright, and the question is where to spend the shortfall.
+//
+// pdf.js answers it by normalising: ascent / (ascent + |descent|), which puts
+// the baseline at the same fraction of the box that it sits at in the font. A
+// paragraph's ascenders and descenders then overhang by a fraction of a pixel
+// each rather than one of them being cut off wholesale — which is what the old
+// "the ascent is a whole em" did to every descender on the page.
+//
+// The metrics come from the PDF's own font (page.getTextContent() reports them
+// per fontName) rather than from measuring the substituted DOM font as pdf.js
+// does. The reason is that nothing visible here depends on the DOM font: the
+// span's text is transparent, and the two things that ARE seen — the selection
+// the browser paints, and the quads captureDocumentSelection takes off
+// range.getClientRects() — are both the BOX. The box has to cover the glyphs
+// painted on the canvas underneath it, and those were drawn with the file's
+// font, so the file's metrics are the ones that describe them.
+export function fontAscentRatio(style) {
+  const ascent = Number(style?.ascent);
+  // A descent is reported as a negative fraction of the em; a font that gives
+  // both is the common case and the one worth normalising.
+  const descent = Number(style?.descent);
+  if (Number.isFinite(ascent) && ascent > 0 && Number.isFinite(descent) && descent < 0) {
+    const ratio = ascent / (ascent - descent);
+    if (ratio > 0 && ratio < 1) return ratio;
+  }
+  // Only one of the two. Either alone still says where the baseline sits
+  // relative to a one-em box, just with nothing to normalise against.
+  if (Number.isFinite(ascent) && ascent > 0 && ascent < 1) return ascent;
+  if (Number.isFinite(descent) && descent < 0 && descent > -1) return 1 + descent;
+  return PDF_DEFAULT_FONT_ASCENT;
+}
+
 // Built by hand rather than through pdf.js's own renderTextLayer, for one
 // reason: every span has to carry the INDEX of the text item it came from.
 // That index is half of a highlight's anchor (see pdf-selection.js), so it has
@@ -1309,11 +1352,43 @@ export async function buildTextLayer(page, viewport) {
     // selection over it selects the words that are actually painted there.
     const tx = window.pdfjsLib.Util.transform(viewport.transform, item.transform);
     const fontHeight = Math.hypot(tx[2], tx[3]);
-    const angle = Math.atan2(tx[1], tx[0]);
-    span.style.left = `${tx[4]}px`;
-    span.style.top = `${tx[5] - fontHeight}px`;
+    // What the file says about the font this run was set in — its metrics, its
+    // family and whether it runs down the page instead of across it. Read once:
+    // the placement below, the CSS family and the rotation all have to be
+    // talking about the same font or they describe a box no glyph is in.
+    const style = content.styles?.[item.fontName];
+    // A vertically-set run (CJK) is turned a further quarter turn, which is what
+    // makes the offset below run along its own up-direction rather than the
+    // page's. pdf.js's text layer does the same, and this loop used to ignore it
+    // — so a vertical column's boxes were placed sideways from its glyphs.
+    const angle = Math.atan2(tx[1], tx[0]) + (style?.vertical ? Math.PI / 2 : 0);
+    // ── Where the top of the box goes, and why it is not the baseline minus an em
+    //
+    // tx[4]/tx[5] are the glyph run's BASELINE origin. A box whose top is
+    // `baseline - fontHeight` treats the font's ascent as a full em, which no
+    // font has: the box then starts about a fifth of an em above the tallest
+    // glyph and STOPS AT THE BASELINE, leaving every descender outside it.
+    //
+    // That is invisible until something measures the box, and two things do.
+    // The browser paints the selection on it — so a drag over a line of the
+    // paper highlights a band sitting high, clipping the tails off g, y and p.
+    // And captureDocumentSelection (src/documents/pdf-selection.js) takes
+    // range.getClientRects() off these very boxes, converts them to quads and
+    // stores them: so the highlight PAINTED back onto the page afterwards is
+    // high by the same amount, forever. This is the "the highlighted ribbon is
+    // not properly enclosing the text but rendering at an offset" report, and
+    // it was never a painting bug — the quads were captured that way.
+    //
+    // pdf.js's own text layer has always put the ascent here rather than a whole
+    // em; see fontAscentRatio for where the number comes from and why the
+    // shortfall is split the way it is.
+    const ascentPx = fontHeight * fontAscentRatio(style);
+    // Rotated text needs the offset taken along the run's own up-direction
+    // rather than straight up the page — the same decomposition pdf.js uses.
+    span.style.left = `${angle ? tx[4] + ascentPx * Math.sin(angle) : tx[4]}px`;
+    span.style.top = `${angle ? tx[5] - ascentPx * Math.cos(angle) : tx[5] - ascentPx}px`;
     span.style.fontSize = `${fontHeight}px`;
-    span.style.fontFamily = content.styles?.[item.fontName]?.fontFamily || "sans-serif";
+    span.style.fontFamily = style?.fontFamily || "sans-serif";
     // Horizontal scale, so the invisible text is exactly as wide as the visible
     // glyphs. Without it a selection highlight drifts further from the words the
     // further along the line it goes — which is the difference between "this

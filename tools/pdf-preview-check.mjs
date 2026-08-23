@@ -36,7 +36,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
-import { buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
+import { FONT_SIZE, buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -473,6 +473,105 @@ try {
       `got [${got.map((n) => Math.round(n))}] · line starts at x=${x0}, baseline y=${baseline}`);
     check("...and is narrower than the page it sits on",
       got[2] > got[0] && got[2] < 612, `x1 = ${Math.round(got[2])}`);
+    // ── Does the band actually ENCLOSE the line? ────────────────────────────
+    //
+    // The check above allows a band anywhere in a 10pt window around the
+    // baseline, which is what let the real bug through: the text layer placed
+    // every span from `baseline - 1em` down to the baseline EXACTLY, so a
+    // highlight covered the ascenders and left every descender outside it — the
+    // band rode high over its own words.
+    //
+    // The fixture is the oracle here, not the DOM: it DREW this line, so the
+    // baseline is known in advance and this cannot be satisfied by two copies of
+    // the same mistake agreeing with each other. In PDF user space y runs UP, so
+    // rect[1] is the BOTTOM of the band and has to sit below the baseline for a
+    // descender to be inside it.
+    check("...and encloses the line rather than riding above it",
+      got[1] < baseline - 1 && got[3] > baseline + FONT_SIZE * 0.5,
+      `band ${Math.round(got[1])}..${Math.round(got[3])} around baseline ${baseline}, ${FONT_SIZE}pt text`);
+  }
+
+  // ── 4a. Highlights stored under the old geometry are repaired ────────────
+  //
+  // Every quad captured before the text layer knew about font ascents is a fifth
+  // of an em too high, and fixing the capture cannot reach a highlight somebody
+  // already made. repairDocumentHighlightQuads snaps those bands back onto the
+  // glyphs as each page paints; this drives it against a record deliberately put
+  // back into the old shape.
+  if (made.record?.quads?.length) {
+    const repaired = await page.evaluate(`async (args) => {
+      const { api, settle } = window.__recall;
+      const id = args.id;
+      const pageNumber = args.page;
+      const before = (api.state.meta.pdfHighlights || []).find((r) => r.id === id);
+      const lift = (before.quads[0].rect[3] - before.quads[0].rect[1]) * 0.2;
+      // A COPY of the real highlight, not the highlight itself: the reload
+      // round-trip further down compares the stored quads against the ones the
+      // capture produced, and a repair applied to that record would make this
+      // check quietly rewrite the evidence another one depends on.
+      const staleId = "hn-stale0";
+      const stale = {
+        ...before,
+        id: staleId,
+        // The old geometry, exactly: the whole band shifted up by the ascent
+        // that used to be missing, and no stamp saying it has been looked at.
+        quads: before.quads.map((q) => ({ ...q, rect: [q.rect[0], q.rect[1] + lift, q.rect[2], q.rect[3] + lift] }))
+      };
+      // ...and no stamp. addDocumentHighlight marks every record it makes as
+      // current, so a copy of one is current too — which is the whole thing this
+      // case has to undo to have anything to repair.
+      delete stale.qv;
+      api.state.meta.pdfHighlights = [...(api.state.meta.pdfHighlights || []), stale];
+      // A region alongside it, also unstamped: a box dragged round a figure was
+      // never measured off the text layer and must not be moved.
+      const areaRect = [72, 300, 300, 400];
+      api.state.meta.pdfHighlights = [...api.state.meta.pdfHighlights, {
+        id: "hn-areat0", color: "blue", page: pageNumber, kind: "area",
+        anchor: { page: pageNumber, item: 0, ch: 0 },
+        quads: [{ page: pageNumber, rect: areaRect.slice() }], text: "", at: 1
+      }];
+      const staleAt = (api.state.meta.pdfHighlights || []).find((r) => r.id === staleId).at;
+      const ran = api.repairDocumentHighlightQuads(pageNumber);
+      await settle(80);
+      const after = (api.state.meta.pdfHighlights || []).find((r) => r.id === staleId);
+      // Twice, to prove it settles: the stamp is what stops a page repairing the
+      // same record on every paint for the rest of the deck's life.
+      const again = api.repairDocumentHighlightQuads(pageNumber);
+      const settled = (api.state.meta.pdfHighlights || []).find((r) => r.id === staleId);
+      const area = (api.state.meta.pdfHighlights || []).find((r) => r.id === "hn-areat0");
+      const painted = document.querySelectorAll('.pdf-page[data-page-number="' + pageNumber + '"] .pdf-mark[data-highlight-id="' + staleId + '"]').length;
+      return {
+        ran, again, lift, painted,
+        staleBottom: before.quads[0].rect[1] + lift,
+        repairedBottom: after.quads[0].rect[1],
+        originalBottom: before.quads[0].rect[1],
+        qv: after.qv,
+        atHeld: after.at === staleAt,
+        settledSame: JSON.stringify(settled.quads) === JSON.stringify(after.quads),
+        areaMoved: JSON.stringify(area.quads[0].rect) !== JSON.stringify(areaRect),
+        areaStamped: area.qv,
+        // Both scratch records go back out again. Everything after this — the
+        // reload round-trip, the exports, the panel counts — counts highlights,
+        // and two planted ones would fail those checks for the wrong reason.
+        left: (api.state.meta.pdfHighlights = (api.state.meta.pdfHighlights || [])
+          .filter((r) => r.id !== staleId && r.id !== "hn-areat0")).length
+      };
+    }`, { id: made.record.id, page: madeOn });
+
+    const tenth = (n) => Math.round(n * 10) / 10;
+    check("a quad stored under the old geometry is snapped back onto its line",
+      repaired.ran && Math.abs(repaired.repairedBottom - repaired.originalBottom) < 1.5,
+      `${tenth(repaired.staleBottom)} → ${tenth(repaired.repairedBottom)} (captured at ${tenth(repaired.originalBottom)}, lifted by ${tenth(repaired.lift)})`);
+    check("...and stamped, so the next paint of the page leaves it alone",
+      repaired.qv === 2 && repaired.again === false && repaired.settledSame,
+      `qv=${repaired.qv} secondRun=${repaired.again} unchanged=${repaired.settledSame}`);
+    check("...without moving `at`, which would out-rank a real edit made elsewhere",
+      repaired.atHeld, String(repaired.atHeld));
+    check("...and a region is stamped but never moved",
+      repaired.areaStamped === 2 && !repaired.areaMoved,
+      `qv=${repaired.areaStamped} moved=${repaired.areaMoved}`);
+    check("...with the page's marks repainted against the corrected quads",
+      repaired.painted > 0, `${repaired.painted} mark div(s)`);
   }
 
   // ── 4b. A selection that spans more than one text item ───────────────────
