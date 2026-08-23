@@ -179,6 +179,20 @@ export function combineHighlightNoteTexts(a, b, whenIso = "") {
   return `${top}\n\n${marker}\n\n${bottom}`;
 }
 
+// Is this the same note text, allowing for the whitespace a hand-edit or a
+// round trip through the legacy heading form can leave behind?
+//
+// Byte equality is the wrong test and its failure mode is loud: two texts that
+// differ by one trailing space read as a genuine conflict, and with no stamp to
+// settle it the keep-both rule then prints the note twice. Deliberately a local
+// two-line normalisation rather than normalizeSyncText from src/sync/diff.js —
+// that would make this module import the sync tree, and importing nothing but
+// notes-fence.js is the whole reason it exists.
+function sameHighlightNoteText(a, b) {
+  const flatten = (text) => String(text || "").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+  return flatten(a) === flatten(b);
+}
+
 function isoDay(ms) {
   if (!ms) return "";
   const date = new Date(ms);
@@ -235,7 +249,7 @@ export function mergeHighlightNoteTails(cloudSource, localSource, { stamps = {},
     if (buried && buried >= cloudAt && buried >= localAt) return null;
     if (!cloudText) return localEntry ? { ...localEntry } : null;
     if (!localText) return cloudEntry ? { ...cloudEntry } : null;
-    if (cloudText === localText) return { ...cloudEntry };
+    if (sameHighlightNoteText(cloudText, localText)) return { ...cloudEntry };
     mergedCount += 1;
     if (cloudAt !== localAt) {
       return cloudAt > localAt ? { ...cloudEntry } : { ...localEntry };
