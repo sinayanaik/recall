@@ -175,6 +175,7 @@
     <link rel="modulepreload" href="src/format/cloze.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-colors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-edit.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/highlight-notes-merge.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-notes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/notes-fence.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight.js?v=__BUILD__">
@@ -267,6 +268,7 @@
     <link rel="modulepreload" href="src/sync/bookmark-cloud.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/cards.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/diff.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/document-sync.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/indicator.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/notes-conflict.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/push.js?v=__BUILD__">
@@ -468,6 +470,21 @@
           <button class="tool-button" id="newDeckBtn" type="button">&#43; New Deck</button>
           <button class="tool-button" id="importBtn" type="button" title="Import a file, pasted Markdown, or a link — as notes, as cards, or both">&#8679; Import</button>
           <button class="tool-button" id="myDecksBtn" type="button" title="All your decks — saved on this device and synced to the cloud automatically">&#128218; My Decks</button>
+          <!-- Attaching a paper to a deck that already exists.
+               "Once a deck has been created without a PDF there is no option to
+               attach one again" — and there was not: importing a PDF makes a NEW
+               deck, and the Document surface, which owns "Re-attach the PDF…",
+               only exists once meta.pdf does. A deck whose import failed, or one
+               whose notes were typed up before the file was to hand, had no way
+               in at all.
+               Shown only for an open deck that has no document yet (see
+               refreshDocumentTab) — a row offering to attach a second PDF to a
+               paper would be the wrong control, and Re-attach, which checks the
+               hash, is the right one there. -->
+          <label class="tool-button file-pick" id="attachPdfBtn" title="Attach a PDF to this deck — read it, highlight it and make cards from it, with your notes and cards kept exactly as they are" hidden>
+            <input id="attachPdfInput" type="file" accept=".pdf,application/pdf" hidden>
+            <span>&#128196; Attach a PDF&#8230;</span>
+          </label>
           <button class="tool-button" id="syncNowBtn" type="button" title="Sync all decks with the cloud now (two-way, keeps the newest of each)">&#8635; Sync Now</button>
           <div class="autosync-field" title="Automatically run Sync Now on a timer, so you don't have to click it">
             <label class="autosync-label" for="autoSyncSelect">&#8635; Auto-sync</label>
@@ -1567,6 +1584,7 @@
           <section class="help-section">
             <h3 class="help-section-title">Documents 📄 — read the PDF, not a translation of it</h3>
             <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Decks → ⋯ → Import PDF</strong>) and you get one deck per paper, opening on a third tab: <strong>Document</strong>, beside Notes and Cards. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
+            <p><strong>Already have the deck, and the paper turned up later?</strong> Open it and take <strong>☰ → 📄 Attach a PDF…</strong>. The file becomes that deck's Document tab — with any highlights already in it imported, exactly as an import would — and the deck's title, cards and notes are left as they are. The row only appears for a deck that has no document yet; a deck that already has one uses <strong>Document ⋯ → Re-attach the PDF…</strong> instead, which checks the file really is the same one first.</p>
             <ul class="help-list">
               <li><strong>Select text on the page → the same selection bar you already know</strong> — <strong>Highlight</strong> in any of the four colours, <strong>Add note</strong>, or <strong>+ Make card</strong>. The card remembers the page and the exact passage, so "Go to notes" on that card brings you back to it. On a phone the press-and-slide is the app's own, the same one your notes use: it starts the moment you feel it rather than a second or two later, and the two grips stay on the words they mark however the page moves</li>
               <li><strong>Highlights already in the file are imported</strong> — a paper you have been annotating in Zotero, Preview or Okular arrives with those highlights in place, and any comment on one becomes a note on it</li>
@@ -1578,6 +1596,7 @@
               <li><strong>...and what you marked on it, in the same drawer</strong> — the <strong>Highlights</strong> half lists every highlight on this paper with its page and the first of whatever you wrote about it, so finding one does not mean leaving the page you are on</li>
               <li><strong>Zoom and dark page</strong> — the page number and <strong>+ − ↔</strong> float over the bottom corner of the page, out of the way until you reach for them; <strong>◐</strong> inverts the page for a dark theme, off by default because a paper full of photographs looks wrong inverted (your highlights keep their own colours either way)</li>
               <li><strong>Finish a paper, then let go of it</strong> — <strong>⋯ → Save a copy</strong> downloads the original file, and <strong>⋯ → Remove from cloud</strong> frees the storage it was using. Your highlights, notes and cards all stay, and so does the copy on this device; another device asks you to re-attach the file, and checks it really is the same one before painting a single highlight on it</li>
+              <li><strong>Read it on two devices at once</strong> — a highlight and the note written on it merge the way your cards do: each carries its own timestamp, both sides are merged rather than one replacing the other, and a highlight you delete stays deleted everywhere. Mark up page 3 on a laptop and page 40 on a phone and you end with both, on both, with no "your notes were replaced" to answer. If two devices genuinely write different text on the <em>same</em> note and nothing can say which came last, both texts are kept — one under the other — rather than either being dropped</li>
               <li><strong>A scanned PDF with no text layer</strong> reads perfectly well, and there is no text in it to select — so no text highlights and no make-card-from-text, and there is no OCR. <strong>▣</strong> still works on every page of it, which is the one way to mark up a scan</li>
             </ul>
           </section>

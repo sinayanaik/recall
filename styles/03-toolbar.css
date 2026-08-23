@@ -148,6 +148,12 @@
   transform: translateY(0);
 }
 
+/* The drawer's "Attach a PDF" row is a <label> wrapping a hidden file input, the
+   same shape the library menu's importers use. .file-pick positions that input
+   absolutely, so the label has to be the box it is positioned against — without
+   this it escapes to the page and can land under a finger somewhere else. */
+.tool-button.file-pick { position: relative; }
+
 .tool-button {
   flex: 0 0 auto;
   background:

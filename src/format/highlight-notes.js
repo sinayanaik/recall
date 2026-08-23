@@ -73,6 +73,15 @@ import {
   joinHighlightNotesTail,
   splitHighlightNotesTail
 } from "./notes-fence.js?v=__BUILD__";
+import {
+  HIGHLIGHT_NOTES_HEADING,
+  highlightNoteBlockPreamble,
+  legacyHighlightNotesStart,
+  parseFencedHighlightNoteEntries,
+  parseHighlightNoteEntries,
+  parseLegacyHighlightNoteEntries,
+  writeHighlightNoteEntries
+} from "./highlight-notes-merge.js?v=__BUILD__";
 import { HIGHLIGHT_SCAN_RE, MARK_CLOSE_TAG, markGroupSpanAt, markOpenTag, markSpanAt } from "./highlight.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "./highlight-edit.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
@@ -90,15 +99,13 @@ import { showToast } from "../ui/feedback.js?v=__BUILD__";
 // header. Re-exported here so "where do highlight notes live" still has one
 // answer to read.
 export { HIGHLIGHT_NOTES_CLOSE, HIGHLIGHT_NOTES_OPEN, joinHighlightNotesTail, splitHighlightNotesTail };
-const ENTRY_MARKER_RE = /^<!--hn:(hn-[a-z0-9]+)(?:[ \t]+([^]*?))?-->[ \t]*$/;
+// The entry markers, the two legacy forms, the parser and the writer all live in
+// src/format/highlight-notes-merge.js now, alongside the merge that has to agree
+// with them byte for byte — see that file's header for why the sync path could
+// not import THIS one. Re-exported here so "where do highlight notes live" still
+// has one answer to read.
+export { HIGHLIGHT_NOTES_HEADING };
 const NOTE_ID_RE = /^hn-[a-z0-9]+$/;
-
-// The heading form this replaced. Still parsed (an older deck, a note restored
-// from a backup, a .md someone hand-wrote) and still EMITTED by the exporters,
-// so the format stays something a person can read outside this app.
-export const HIGHLIGHT_NOTES_HEADING = "Highlight Notes";
-const SECTION_HEADING_RE = /^##[ \t]+Highlight Notes[ \t]*$/gm;
-const ENTRY_HEADING_RE = /^###[ \t]+\[(hn-[a-z0-9]+)\][ \t]*(.*)$/;
 
 // btoa/atob only handle Latin1, so the note's UTF-8 bytes are routed through
 // them one byte at a time rather than the raw string — an emoji or accented
@@ -173,69 +180,18 @@ function commentSafe(text) {
 }
 
 // ── Reading the block ─────────────────────────────────────────────────────
-
-// The legacy heading section, for a note written before the fence existed.
-function legacySectionStartIn(source) {
-  SECTION_HEADING_RE.lastIndex = 0;
-  let start = -1;
-  let m;
-  while ((m = SECTION_HEADING_RE.exec(source))) start = m.index;
-  return start;
-}
-
-// { start, end } of every entry inside a span, in document order. `end` is where
-// the next entry (or the span) ends, so a body keeps whatever blank lines the
-// reader put in it. `markerRe` is what tells the two formats apart; everything
-// else about the walk is identical, which is the point of passing it in.
-function parseEntriesBetween(source, bodyStart, bodyEnd, markerRe) {
-  const entries = [];
-  const lineRe = /^.*$/gm;
-  lineRe.lastIndex = bodyStart;
-  let line;
-  while ((line = lineRe.exec(source)) && line.index < bodyEnd) {
-    const match = markerRe.exec(line[0]);
-    if (match) {
-      if (entries.length) entries[entries.length - 1].end = line.index;
-      entries.push({
-        id: match[1],
-        label: (match[2] || "").trim(),
-        start: line.index,
-        textStart: line.index + line[0].length,
-        end: bodyEnd
-      });
-    }
-    if (lineRe.lastIndex === line.index) lineRe.lastIndex += 1; // zero-length match on a blank line
-  }
-  entries.forEach((entry) => { entry.text = source.slice(entry.textStart, entry.end).trim(); });
-  return entries;
-}
-
-function parseEntries(source, span) {
-  if (!span) return [];
-  return parseEntriesBetween(source, span.bodyStart, span.end, ENTRY_MARKER_RE);
-}
-
-function parseLegacyEntries(source, sectionStart) {
-  if (sectionStart < 0) return [];
-  const headEnd = source.indexOf("\n", sectionStart);
-  const bodyStart = headEnd === -1 ? source.length : headEnd + 1;
-  return parseEntriesBetween(source, bodyStart, source.length, ENTRY_HEADING_RE);
-}
-
-// Every entry in `source`, whichever form it is in. The fence wins when both are
-// present, which is what a half-finished migration looks like.
-function allEntries(source) {
-  const span = highlightNotesBlockSpan(source);
-  if (span) return parseEntries(source, span);
-  return parseLegacyEntries(source, legacySectionStartIn(source));
-}
+//
+// parseHighlightNoteEntries (both forms), parseFencedHighlightNoteEntries and
+// legacyHighlightNotesStart are imported from highlight-notes-merge.js: the sync
+// merge has to read exactly the entries this file writes, and two parsers that
+// have to agree are one parser.
 
 // Every note in `source`, keyed by id. Cheap enough to call per read (one
 // regex scan of the tail), and always derived from the text rather than
 // cached, so a hand-edit in the raw editor takes effect immediately.
 export function readHighlightNotes(source) {
   const map = new Map();
-  allEntries(source).forEach((entry) => {
+  parseHighlightNoteEntries(source).forEach((entry) => {
     if (entry.text) map.set(entry.id, entry.text);
   });
   return map;
@@ -245,7 +201,7 @@ export function readHighlightNotes(source) {
 // the exporters, so a note taken out of this app still reads as prose in any
 // editor. Returns "" when there is nothing to say.
 export function highlightNotesSectionMarkdown(source) {
-  const entries = allEntries(source).filter((entry) => entry.text.trim());
+  const entries = parseHighlightNoteEntries(source).filter((entry) => entry.text.trim());
   if (!entries.length) return "";
   const body = entries
     .map((entry) => `${entry.label ? `### [${entry.id}] ${entry.label}` : `### [${entry.id}]`}\n\n${entry.text.trim()}\n`)
@@ -286,40 +242,6 @@ export function highlightNoteTextAt(markIndex) {
 
 // ── Writing the block ─────────────────────────────────────────────────────
 
-function entryBlock(id, label, text) {
-  const marker = label ? `<!--hn:${id} ${label}-->` : `<!--hn:${id}-->`;
-  return `${marker}\n\n${text.trim()}\n`;
-}
-
-// Anything the reader wrote inside the block but before the first entry (a note
-// to themselves about the block, say) is carried through rather than rewritten
-// away — writeEntries rebuilds the whole thing from `entries`, so text that
-// isn't in one has to be preserved explicitly.
-function blockPreamble(source, span, entries) {
-  if (!span) return "";
-  const stop = entries.length ? entries[0].start : span.end;
-  return source.slice(span.bodyStart, stop).trim();
-}
-
-// Rebuilds the block from `entries`. `span` is where the existing one is, or
-// null to append a new one at the end of `source`.
-//
-// When nothing is left to write the block goes entirely — heading, fence and
-// the `---` rule above it — rather than leaving an empty container behind in a
-// note that no longer has any highlight notes at all.
-function writeEntries(source, span, entries, preamble = "") {
-  const head = span ? source.slice(0, span.start) : source;
-  const kept = entries.filter((entry) => entry.text.trim());
-  if (!kept.length) {
-    if (!span) return source;
-    return head.replace(/\s+$/, "").replace(/\n*(?:^|\n)-{3,}[ \t]*$/, "");
-  }
-  const body = kept.map((entry) => entryBlock(entry.id, entry.label, entry.text)).join("\n");
-  const block = `${HIGHLIGHT_NOTES_OPEN}\n${preamble ? `${preamble}\n\n` : "\n"}${body}${HIGHLIGHT_NOTES_CLOSE}\n`;
-  if (span) return `${head}${block}${source.slice(span.after).replace(/^[ \t]*\n/, "")}`;
-  return joinHighlightNotesTail(source, block.replace(/\n$/, ""));
-}
-
 // Upserts one note, keeping every other entry (and any hand-editing done to
 // it) byte-for-byte. An empty text removes the entry.
 //
@@ -330,7 +252,7 @@ function writeEntries(source, span, entries, preamble = "") {
 export function setHighlightNoteInSource(source, id, text, label) {
   const upgraded = fenceLegacySection(String(source || ""));
   const span = highlightNotesBlockSpan(upgraded);
-  const entries = parseEntries(upgraded, span);
+  const entries = parseFencedHighlightNoteEntries(upgraded, span);
   const existing = entries.find((entry) => entry.id === id);
   if (existing) {
     existing.text = String(text || "").trim();
@@ -340,7 +262,7 @@ export function setHighlightNoteInSource(source, id, text, label) {
   } else if (String(text || "").trim()) {
     entries.push({ id, label: label || "", text: String(text).trim() });
   }
-  return writeEntries(upgraded, span, entries, blockPreamble(upgraded, span, entries));
+  return writeHighlightNoteEntries(upgraded, span, entries, highlightNoteBlockPreamble(upgraded, span, entries));
 }
 
 // A `## Highlight Notes` section rewritten as a fence, in place. Returns the
@@ -348,16 +270,16 @@ export function setHighlightNoteInSource(source, id, text, label) {
 // written since — so this is free to call on any write path.
 export function fenceLegacySection(source) {
   if (!source || highlightNotesBlockSpan(source)) return source;
-  const sectionStart = legacySectionStartIn(source);
+  const sectionStart = legacyHighlightNotesStart(source);
   if (sectionStart < 0) return source;
-  const entries = parseLegacyEntries(source, sectionStart);
+  const entries = parseLegacyHighlightNoteEntries(source, sectionStart);
   // A heading with no `### [hn-…]` under it is a heading the READER wrote, not
   // this app's section. Leave it exactly where it is.
   if (!entries.length) return source;
   const headEnd = source.indexOf("\n", sectionStart);
   const preamble = headEnd === -1 ? "" : source.slice(headEnd + 1, entries[0].start).trim();
   const head = source.slice(0, sectionStart).replace(/\s+$/, "").replace(/\n*(?:^|\n)-{3,}[ \t]*$/, "");
-  return writeEntries(head, null, entries, preamble);
+  return writeHighlightNoteEntries(head, null, entries, preamble);
 }
 
 // Entries whose highlight is gone (the mark was removed, or its text deleted
@@ -393,10 +315,10 @@ export function pruneOrphanHighlightNotes(source) {
       if (isHighlightNoteId(record?.id)) live.add(record.id);
     });
   }
-  const entries = parseEntries(upgraded, span);
+  const entries = parseFencedHighlightNoteEntries(upgraded, span);
   if (entries.every((entry) => live.has(entry.id))) return upgraded;
-  const preamble = blockPreamble(upgraded, span, entries);
-  return writeEntries(upgraded, span, entries.filter((entry) => live.has(entry.id)), preamble);
+  const preamble = highlightNoteBlockPreamble(upgraded, span, entries);
+  return writeHighlightNoteEntries(upgraded, span, entries.filter((entry) => live.has(entry.id)), preamble);
 }
 
 // Rewrites ONLY the group's first <mark> open tag — every other piece (if

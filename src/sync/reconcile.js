@@ -18,6 +18,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus, slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { flushPendingImageUploads } from "../images/outbox.js?v=__BUILD__";
+import { splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { beginIndexBatch, deleteDeckFromLibrary, endIndexBatch, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrary, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
@@ -28,12 +29,13 @@ import { flushPendingQuickNoteAnchors } from "../quick-notes/anchors.js?v=__BUIL
 import { flushPendingQuickNoteCategories } from "../quick-notes/categories.js?v=__BUILD__";
 import { QUICK_NOTES_DECK_TITLE } from "../quick-notes/palette.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
-import { deckStoreUnreadable, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { deckStoreUnreadable, deleteDeckSnapshot, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, MISSING_DECK_MIN_AGE_MS, MISSING_DECK_MIN_SIGHTINGS, NOTES_CONFLICT_SUFFIX, clearBackgroundSyncProblem, clearMissingDeckWatch, readMissingDeckWatch, reportBackgroundSyncProblem, writeMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
-import { calculateSyncDiff, mergePdfHighlights, syncTextChanged } from "./diff.js?v=__BUILD__";
+import { calculateSyncDiff, syncTextChanged } from "./diff.js?v=__BUILD__";
+import { mergeDocumentAnnotations, reconcileDocumentBeforePush } from "./document-sync.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
@@ -108,7 +110,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   if (!cloudCarriesBody) {
     console.warn(`Deck ${cloud.id} arrived without a notes column — keeping this device's notes and meta instead of blanking them.`);
   }
-  const incomingNotes = cloudCarriesBody ? String(cloud.notes || "") : String(oldSnapshot?.notes || "");
+  const cloudNotes = cloudCarriesBody ? String(cloud.notes || "") : String(oldSnapshot?.notes || "");
   const cloudMeta = cloudCarriesBody
     ? (cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {})
     : (oldSnapshot?.meta && typeof oldSnapshot.meta === "object" ? oldSnapshot.meta : {});
@@ -126,20 +128,45 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       localId
     )
   };
-  // The second key where every device holds part of the truth. Highlighting a
-  // paper on a phone in the morning and on a laptop in the afternoon writes two
-  // different arrays, and cloud-wins would silently throw one of them away —
-  // an afternoon of reading, gone with no error and no way to tell.
+  // ── The document's annotations ──────────────────────────────────────────
   //
-  // Merged by id, newest `at` winning per id: an id is minted once and never
-  // reused, so a union is exactly right for adds, and the per-record timestamp
-  // (bumped on every recolour and every note, see
-  // src/documents/pdf-highlights.js) is what settles a genuine conflict on the
-  // same highlight. A record deleted on one device does come back from the
-  // other until that device pushes — the same shape of tradeoff the deck's own
-  // notes already make, and losing a highlight is the worse failure.
-  const mergedPdfHighlights = mergePdfHighlights(cloudMeta.pdfHighlights, oldSnapshot?.meta?.pdfHighlights);
-  if (mergedPdfHighlights) incomingMeta.pdfHighlights = mergedPdfHighlights;
+  // The second place where every device holds part of the truth. Highlighting a
+  // paper on a phone in the morning and on a laptop in the afternoon writes two
+  // different sets, and cloud-wins would silently throw one of them away — an
+  // afternoon of reading, gone with no error and no way to tell.
+  //
+  // Both halves are merged, not just the records: a highlight is a record in
+  // meta.pdfHighlights, but its NOTE is an entry in the fenced block at the end
+  // of `notes`, and merging one without the other is what left every reader with
+  // their highlights intact and the words they wrote about them replaced. See
+  // src/sync/document-sync.js.
+  //
+  // The reader's own prose — the body above the block — is untouched by this and
+  // stays cloud-wins, with the stash below catching whatever it replaces.
+  //
+  // The stash is read only for a deck that is actually advertising a conflict. The flag is
+  // recomputed and written on every pull, so it is a reliable index of "there is
+  // a stash worth looking at" — and an unconditional read here would be one more
+  // IndexedDB round trip per deck per sync, on a library that can be hundreds.
+  const stashed = existing?.notesConflicted ? await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX) : null;
+  const documentMerge = mergeDocumentAnnotations({
+    cloudNotes,
+    cloudMeta,
+    localNotes: String(oldSnapshot?.notes || ""),
+    localMeta: oldSnapshot?.meta,
+    body: "cloud",
+    // Repair, not just prevention. A device that has been diverging since before
+    // this existed has annotations stranded in its conflict stash; folding the
+    // stash in as one more source is what brings them back. The stash itself is
+    // only cleared below, and only when its BODY turns out to match — a stash
+    // holding genuinely different prose is left exactly as it is, for its
+    // existing resolver in src/sync/notes-conflict.js.
+    extraTails: stashed?.notes ? [splitHighlightNotesTail(String(stashed.notes)).tail] : []
+  });
+  const incomingNotes = documentMerge.notes;
+  if (documentMerge.pdfHighlights) incomingMeta.pdfHighlights = documentMerge.pdfHighlights;
+  if (Object.keys(documentMerge.deletedHighlightIds).length) incomingMeta.deletedHighlightIds = documentMerge.deletedHighlightIds;
+  else delete incomingMeta.deletedHighlightIds;
 
   const cloudIso = cloud.updated_at || new Date().toISOString();
   // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this
@@ -175,16 +202,36 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   // what this whole change exists to stop: if this device changed the notes
   // since its last confirmed sync and the cloud's copy differs, keep the losing
   // text under a sibling key so it's recoverable, and flag it in the report.
+  //
+  // ── Asked of the BODY only ──────────────────────────────────────────────
+  //
+  // A note's string is two things joined: what the reader wrote, and the fenced
+  // block of highlight notes at the end of it (src/format/notes-fence.js). The
+  // block is merged entry by entry above, so it is never "replaced" and there is
+  // nothing to rescue — but it IS a difference, and testing the whole string
+  // meant a sync whose only news was "your annotations merged" stashed a copy
+  // and raised a conflict. On a PDF deck, whose body is empty because the paper
+  // is the document, that is EVERY sync between two devices being read on: the
+  // reported bug, exactly. So the question is put to the body.
+  //
+  // Through splitHighlightNotesTail rather than readerNotesBody, which is the
+  // same answer by a different route: readerNotesBody memoizes ONE input, and
+  // that memo belongs to the render path, where two surfaces use the returned
+  // string's IDENTITY to decide "is this the same document I last painted?" on
+  // every repaint of a book-sized note. A sync walking hundreds of decks through
+  // it would evict that entry on every one of them.
+  const oldBody = splitHighlightNotesTail(String(oldSnapshot?.notes || "")).body;
+  const newBody = splitHighlightNotesTail(snapshot.notes).body;
   let notesConflicted = false;
-  if (oldSnapshot && syncTextChanged(oldSnapshot.notes || "", snapshot.notes)) {
+  if (oldSnapshot && syncTextChanged(oldBody, newBody)) {
     const localNotesEdited = tsMs(existing?.updatedAt) > tsMs(existing?.lastSyncedAt);
     // Notes going from "something" to "nothing" is the destructive case, and it
     // used to be stashed only when this device had unsynced edits — so the
     // ordinary path (notes fully synced, then wiped by a bad pull) left no copy
     // at all. Whatever emptied them, a deck's entire notes body disappearing is
     // worth one recoverable copy.
-    const notesBeingEmptied = String(oldSnapshot.notes || "").trim() && !snapshot.notes.trim();
-    if ((localNotesEdited || notesBeingEmptied) && String(oldSnapshot.notes || "").trim()) {
+    const notesBeingEmptied = oldBody.trim() && !newBody.trim();
+    if ((localNotesEdited || notesBeingEmptied) && oldBody.trim()) {
       notesConflicted = true;
       // There is one stash slot per deck, and this used to write straight over
       // it — so a second conflict arriving before the first was answered
@@ -192,7 +239,12 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       // thing this whole mechanism exists to prevent. An unanswered stash is
       // kept and the new losing copy appended below it, so the slot only ever
       // grows until the reader resolves it.
-      const previous = await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
+      // `stashed` above is only read when the flag was already set; a stash can
+      // outlive its flag (the resolver that accepts the synced copy clears one
+      // without deleting the other), and writing over one unseen is the single
+      // thing this whole mechanism exists to prevent. So look again here, where
+      // the extra read is worth it and rare.
+      const previous = stashed || await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
       const carried = previous && String(previous.notes || "").trim() ? String(previous.notes) : "";
       const losing = String(oldSnapshot.notes || "");
       const when = previous?.savedAt ? new Date(previous.savedAt).toLocaleString() : "an earlier sync";
@@ -204,6 +256,17 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
           : losing
       });
     }
+  } else if (stashed && !syncTextChanged(splitHighlightNotesTail(String(stashed.notes || "")).body, newBody)) {
+    // ── The repair ────────────────────────────────────────────────────────
+    //
+    // A stash whose BODY matches what this device now holds was never a conflict
+    // about prose — it is annotations, stranded by the last-write-wins this
+    // change removes, and they have just been folded back in above (see
+    // extraTails). So the slot is emptied and the flag cleared, which is what
+    // takes a deck that has been raising a conflict on every single sync back to
+    // a clean one. A stash whose body genuinely differs falls into neither
+    // branch and is left exactly where it is.
+    deleteDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
   }
 
   // Diff the merged result against whatever was on this device before, for the
@@ -233,7 +296,14 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       statusChanges: diff.statusChanges,
       categoryChanges: diff.categoryChanges,
       cardsKeptLocal: keptLocal,
-      notesChanged: syncTextChanged(oldSnapshot.notes || "", snapshot.notes),
+      // The BODY, separately from the annotations below it. "Your notes were
+      // replaced" and "your highlights merged" are not the same news, and
+      // reporting them as one line meant a sync that only moved annotations read
+      // as an edit to the reader's own writing.
+      notesChanged: syncTextChanged(oldBody, newBody),
+      highlightsMerged: documentMerge.highlightsAdopted,
+      highlightsRemovedHere: documentMerge.highlightsRemoved,
+      highlightNotesMerged: documentMerge.highlightNotesMerged + documentMerge.highlightNotesAdopted,
       notesConflicted,
       titleChanged: syncTextChanged(oldSnapshot.deckTitle || "", snapshot.deckTitle || ""),
       deckCategoryChanged: normalizeDeckCategory(oldSnapshot.deckCategory) !== normalizeDeckCategory(snapshot.deckCategory),
@@ -250,7 +320,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
         && snapshot.meta.readingPosition.offset !== oldSnapshot.meta?.readingPosition?.offset
     };
   } else {
-    stats = { ...emptySyncStats(), cardsAdded: snapshot.cards.length, notesChanged: Boolean(snapshot.notes.trim()) };
+    stats = { ...emptySyncStats(), cardsAdded: snapshot.cards.length, notesChanged: Boolean(newBody.trim()) };
   }
 
   writeDeckSnapshot(localId, snapshot);
@@ -350,6 +420,26 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     }
   }
 
+  // ── And the same for the document ───────────────────────────────────────
+  //
+  // The half that was missing. `meta` and `notes` were sent WHOLE, so a device
+  // that pushed without having pulled overwrote the cloud's highlights and every
+  // word written about them — which, because the pull gate is a timestamp
+  // comparison, is exactly what a device with any local edit at all does.
+  //
+  // The merged result is written back into the snapshot too, not just sent: a
+  // device that only ever pushes would otherwise never hold the other's work,
+  // since its own push makes it the newest and the next sync pushes again.
+  const documentPush = cloudExists ? reconcileDocumentBeforePush(snapshot, cloudDeck) : null;
+  let documentTombstonesBeingPruned = [];
+  if (documentPush) {
+    snapshot.notes = documentPush.notes;
+    snapshot.meta = documentPush.meta;
+    documentTombstonesBeingPruned = documentPush.tombstonesBeingPruned;
+    // Same quota rule as the cards above: only when something actually moved.
+    if (documentPush.changed) writeDeckSnapshot(localMeta.id, snapshot);
+  }
+
   // What we're about to put in the cloud, captured before the await so the
   // write-back below can tell "still the same card" from "edited during the
   // push" without trusting the snapshot object we're holding.
@@ -410,6 +500,14 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     for (const id of tombstonesBeingPruned) delete liveSnapshot.deletedCardIds[id];
     if (!Object.keys(liveSnapshot.deletedCardIds).length) delete liveSnapshot.deletedCardIds;
   }
+  // The document's tombstones, retired on exactly the same terms: the meta bag
+  // this push sent no longer carries those highlights, so the ids that asked for
+  // it are spent. One at a time, off the re-read snapshot, so a highlight deleted
+  // while the push was in flight keeps its own fresh tombstone.
+  if (documentTombstonesBeingPruned.length && liveSnapshot.meta?.deletedHighlightIds) {
+    for (const id of documentTombstonesBeingPruned) delete liveSnapshot.meta.deletedHighlightIds[id];
+    if (!Object.keys(liveSnapshot.meta.deletedHighlightIds).length) delete liveSnapshot.meta.deletedHighlightIds;
+  }
   writeDeckSnapshot(localMeta.id, liveSnapshot);
 
   const index = readLocalDeckIndex();
@@ -444,11 +542,20 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   // cloud — a deletion or an addition made on another device, landing here.
   stats.cardsRemovedHere = cardsRemovedHere;
   stats.cardsAdoptedHere = cardsAdoptedHere;
+  // What the pre-push document merge picked up from the cloud — annotations made
+  // on another device that this device did not have, and would have deleted by
+  // sending its own copy whole.
+  stats.highlightsMerged = documentPush?.highlightsAdopted || 0;
+  stats.highlightsRemovedHere = documentPush?.highlightsRemoved || 0;
+  stats.highlightNotesMerged = (documentPush?.highlightNotesMerged || 0) + (documentPush?.highlightNotesAdopted || 0);
   if (isNewDeck) {
-    stats.notesChanged = Boolean(String(snapshot.notes || "").trim());
+    stats.notesChanged = Boolean(splitHighlightNotesTail(String(snapshot.notes || "")).body.trim());
     stats.readingPositionSynced = Boolean(snapshot.meta?.readingPosition);
   } else {
-    stats.notesChanged = syncTextChanged(snapshot.notes, cloudDeck?.notes || "");
+    // The reader's own body, not the fenced highlight-note block below it — the
+    // block is merged rather than replaced, and counting it here made every sync
+    // of a paper being read on two devices claim the notes had been edited.
+    stats.notesChanged = syncTextChanged(splitHighlightNotesTail(snapshot.notes).body, splitHighlightNotesTail(String(cloudDeck?.notes || "")).body);
     stats.titleChanged = syncTextChanged(title, cloudDeck?.title || "");
     stats.deckCategoryChanged = normalizeDeckCategory(cloudDeck?.category) !== deckCategory;
     // The reader's place moved — a change no card/notes diff above would ever

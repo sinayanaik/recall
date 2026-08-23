@@ -48,6 +48,13 @@
 //                   earlier attempt in this area was reverted over corruption
 //                   found by a fuzzer, with nothing left in git to read — this
 //                   is the standing answer to that warning
+//   document-sync   do a paper's highlights and the notes written on them
+//                   actually reach the other device — and stop claiming a
+//                   conflict every time? Two simulated devices and one in-memory
+//                   cloud row driven through the real merge, in the order the
+//                   reconcile calls it. Pure Node: the merge is string-and-object
+//                   work by design, so this needs neither a browser nor the
+//                   pre-modular tag the sync checks below rest on
 //   image-controls  does every image the renderer renders get a resize grip and
 //                   a delete button — including the ones in a table cell, a
 //                   link, or an HTML block that had none for as long as they
@@ -171,6 +178,12 @@ const checks = [
   // find, and whether using one rewrites that image's slice and nothing else
   // in the note.
   ["image-controls", ["node", ["tools/image-controls-check.mjs"], ROOT]],
+  // And again: a paper's highlights and the notes written on them, merged
+  // between two devices. The merge is deliberately pure string-and-object work
+  // (src/format/highlight-notes-merge.js, src/sync/document-sync.js) precisely
+  // so this can drive it with no browser and no baseline tag — the sync checks
+  // below need both, and a check that can only skip verifies nothing.
+  ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],

@@ -674,6 +674,20 @@ try {
   // ── 5. Reload from IndexedDB, and repaint ────────────────────────────────
   const reloaded = await page.evaluate(`async (pageNumber, id) => {
     const { api, settle } = window.__recall;
+    // A note on this highlight, for the stamp the sync merge decides by. \`at\`
+    // dates the highlight and \`noteAt\` dates its note, and they are resolved
+    // independently (see mergePdfHighlights) precisely so a recolour on one
+    // device cannot out-rank a note written on another — which only works if
+    // noteAt is actually written to disk and read back.
+    api.setDocumentHighlightNote(id, "Stamped, for the sync merge.");
+    const noteAtBefore = (api.state.meta?.pdfHighlights || []).find((r) => r.id === id)?.noteAt || 0;
+    // Long enough to cover the 400ms autosave debounce and the async save it
+    // starts. The \`api.deckAutosaveTimer\` loop below cannot be relied on for
+    // this on its own: \`api\` is a flattened copy of the module namespaces, so
+    // that field is the value the binding had when the harness was built and not
+    // the live one. The cases before this one only ever waited it out by
+    // accident, through the settles their own steps happened to need.
+    await settle(900);
     // The autosave is debounced, so the highlight is in memory and not yet on
     // disk. Waited out rather than forced with a direct save: what this case is
     // actually testing is that the ORDINARY path persists a PDF deck, which is
@@ -699,7 +713,9 @@ try {
     const painted = Array.from(document.querySelectorAll('.pdf-mark[data-highlight-id="' + id + '"]'))
       .map((el) => [Math.round(el.offsetLeft), Math.round(el.offsetTop), Math.round(el.offsetWidth), Math.round(el.offsetHeight)]);
     return {
-      record: record ? { quads: record.quads, color: record.color, anchor: record.anchor } : null,
+      record: record ? { quads: record.quads, color: record.color, anchor: record.anchor, noteAt: record.noteAt } : null,
+      noteAtBefore,
+      noteText: (api.state.notes || "").indexOf("Stamped, for the sync merge.") !== -1,
       painted,
       rows: api.collectHighlightEntries().length
     };
@@ -714,6 +730,9 @@ try {
     JSON.stringify(reloaded.painted[0] || null));
   check("the Highlights panel lists it",
     reloaded.rows >= (fixture.annotation ? 2 : 1), `${reloaded.rows} row(s)`);
+  check("...and so does its note, with the noteAt stamp the merge decides by",
+    reloaded.noteText && reloaded.record?.noteAt === reloaded.noteAtBefore && reloaded.noteAtBefore > 0,
+    `noteAt ${reloaded.noteAtBefore} → ${reloaded.record?.noteAt}, note text ${reloaded.noteText ? "kept" : "LOST"}`);
 
   // ── 5b. The highlight/note pipeline ──────────────────────────────────────
   //
@@ -2557,6 +2576,76 @@ try {
         && derived.stillDerived,
       `${derived.afterReload.length} entr(y/ies) back in ${derived.reloadMs}ms`);
   }
+
+  // ── Attaching a paper to a deck that already exists ──────────────────────
+  //
+  // "Once a deck has been created without a PDF there is no option to attach one
+  // again." Every route into the Document surface used to start with an IMPORT,
+  // which makes a new deck, and "Re-attach the PDF…" lives inside a surface that
+  // does not exist until meta.pdf does — so a deck whose import failed, or one
+  // whose notes were written before the file was to hand, had no way in at all.
+  const attached = await page.evaluate(`async (bytes, name) => {
+    const { api, settle } = window.__recall;
+    api.closeMyDecksPanel();
+    // A perfectly ordinary deck: notes, no document, nothing PDF-shaped anywhere
+    // near it.
+    api.state.deckId = null;
+    api.state.localDeckId = null;
+    api.state.deckTitle = "A deck that had no paper";
+    api.state.deckCategory = "";
+    api.state.notes = "# Written before the paper turned up\\n\\nSome notes.";
+    api.state.masterCards = [];
+    api.state.cards = [];
+    api.state.meta = {};
+    api.setViewMode("notes");
+    await api.saveDeckToLibrary({ silent: true });
+    // Through the ordinary open path, so the chrome is painted from this deck
+    // rather than from whatever the previous case left on screen —
+    // refreshDocumentTab is what hides the Document tab and shows the attach
+    // row, and it runs from updateMeta, which loading is what triggers.
+    await api.loadDeckFromLibrary(api.state.localDeckId);
+    await settle(300);
+    const rowBefore = document.getElementById("attachPdfBtn")?.hidden;
+    const tabBefore = document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden;
+
+    const file = new File([new Uint8Array(bytes)], name, { type: "application/pdf" });
+    const ok = await api.attachPdfToOpenDeck(file);
+    await settle(700);
+    // Refused a second time, so the two controls are never both on offer.
+    const twice = await api.attachPdfToOpenDeck(file);
+    await settle(200);
+
+    return {
+      ok, twice,
+      rowBefore, tabBefore,
+      rowAfter: document.getElementById("attachPdfBtn")?.hidden,
+      tabAfter: document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden,
+      title: api.state.deckTitle,
+      notesKept: (api.state.notes || "").indexOf("Written before the paper turned up") !== -1,
+      pages: api.state.meta?.pdf?.pages || 0,
+      sha: (api.state.meta?.pdf?.sha256 || "").length,
+      highlights: (api.state.meta?.pdfHighlights || []).length,
+      viewMode: api.state.viewMode,
+      stored: Boolean(await api.readDocument(api.state.localDeckId).then((e) => e?.blob).catch(() => null)),
+      painted: document.querySelectorAll(".pdf-page").length
+    };
+  }`, Array.from(fixture.bytes), "attached.pdf");
+
+  check("a deck created without a PDF offers a way to attach one", attached.rowBefore === false,
+    `row hidden=${attached.rowBefore}, Document tab hidden=${attached.tabBefore}`);
+  check("...and attaching one gives that deck a Document tab", attached.ok && attached.tabAfter === false,
+    `attached=${attached.ok}, tab hidden=${attached.tabAfter}, view=${attached.viewMode}`);
+  check("...with the file's pages and hash on the deck", attached.pages > 0 && attached.sha === 64,
+    `${attached.pages} page(s), sha256 ${attached.sha} chars`);
+  check("...and the bytes on this device, so it reads offline", attached.stored && attached.painted > 0,
+    `stored=${attached.stored}, ${attached.painted} page(s) painted`);
+  check("...leaving the deck's own title and notes exactly as they were",
+    attached.title === "A deck that had no paper" && attached.notesKept,
+    `title "${attached.title}", notes ${attached.notesKept ? "kept" : "LOST"}`);
+  check("...and highlights already in the file imported with it", attached.highlights >= (fixture.annotation ? 1 : 0),
+    `${attached.highlights} record(s)`);
+  check("the row goes away once the deck has a document", attached.rowAfter === true && attached.twice === false,
+    `row hidden=${attached.rowAfter}, second attach refused=${attached.twice === false}`);
 
   if (SHOT) {
     if (SHOT_PAGES) await emulatePhone(page, { width: 390, height: 780 });

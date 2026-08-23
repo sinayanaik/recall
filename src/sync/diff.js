@@ -101,26 +101,61 @@ export function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy
   return changes;
 }
 
-// Union of two pdfHighlights arrays, keyed by id, newest `at` winning.
+// Union of two pdfHighlights arrays, keyed by id — the document's answer to
+// mergeCloudCardsIntoSnapshot, and the same reasoning: an id is minted once and
+// never reused, so a union is exactly right for adds, and a per-record timestamp
+// is what settles a genuine conflict on the same record.
 //
 // Returns null when NEITHER side has any — so a deck that is not a PDF deck
 // never grows an empty key in its meta bag, and the ordinary cloud-wins
 // behaviour of every other key is untouched.
-export function mergePdfHighlights(cloudList, localList) {
+//
+// ── Two stamps, resolved independently ────────────────────────────────────
+//
+// This used to keep whichever WHOLE record had the newer `at`, and `at` was
+// bumped by every edit — including writing the note. So one field dated two
+// unrelated things: a highlight recoloured on a phone and a note written on it
+// from a laptop each bumped the same number, and whichever landed second took
+// the other's work with it.
+//
+// A note now stamps `noteAt` and nothing else (see setDocumentHighlightNote),
+// and the two are resolved separately: the visual record — colour, page, quads,
+// kind — comes from whichever side has the newer `at`, and `noteAt` is simply
+// the later of the two, because it dates text that does not live in this record
+// at all (it is in the fenced block at the end of `notes`, merged by
+// mergeHighlightNoteTails, which reads exactly this stamp).
+//
+// `tombstones` is { [id]: ms } — see src/sync/document-sync.js. A record whose
+// deletion is newer than its own `at` is dropped rather than resurrected: the
+// only thing that used to make a deleted highlight stay deleted was the
+// whole-column last-write-wins that a merge, by existing, removes.
+export function mergePdfHighlights(cloudList, localList, { tombstones = null } = {}) {
   const cloud = Array.isArray(cloudList) ? cloudList : null;
   const local = Array.isArray(localList) ? localList : null;
   if (!cloud && !local) return null;
+  const buried = tombstones && typeof tombstones === "object" ? tombstones : {};
   const byId = new Map();
   const take = (record) => {
     if (!record?.id) return;
     const existing = byId.get(record.id);
+    if (!existing) {
+      byId.set(record.id, record);
+      return;
+    }
     // A record with no timestamp at all (written by a build from before this
     // existed) is treated as older than one that has one — the same rule
     // betterReadingPosition uses for the same reason.
-    if (existing && (existing.at || 0) >= (record.at || 0)) return;
-    byId.set(record.id, record);
+    const primary = (existing.at || 0) >= (record.at || 0) ? existing : record;
+    const noteAt = Math.max(existing.noteAt || 0, record.noteAt || 0);
+    byId.set(record.id, noteAt ? { ...primary, noteAt } : { ...primary });
   };
   (cloud || []).forEach(take);
   (local || []).forEach(take);
-  return [...byId.values()];
+  return [...byId.values()].filter((record) => {
+    const deletedAt = Number(buried[record.id] || 0);
+    // "Newer than the record" and not merely "present": a highlight re-made over
+    // the same words after a delete is a new annotation, not a resurrection, and
+    // it carries a later `at` to say so.
+    return !(deletedAt && deletedAt >= (record.at || 0) && deletedAt >= (record.noteAt || 0));
+  });
 }
