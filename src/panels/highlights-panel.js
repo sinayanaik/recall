@@ -13,14 +13,14 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
-import { highlightNoteResolver } from "../format/highlight-notes.js?v=__BUILD__";
+import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { renderHighlightsEditor } from "./highlights-editor.js?v=__BUILD__";
-import { documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
@@ -308,8 +308,12 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
   // paper has to say to be useful at all. Every export builder reads the same
   // entry shape, so `page` is simply a field they can print.
   if (isPdfDeck()) {
+    // One parse for the whole export, for the reason collectHighlightEntries
+    // gives: reading a note per record makes this quadratic in how many
+    // highlights the paper has.
+    const documentNotes = readHighlightNotes(notes);
     documentHighlightsInReadingOrder().forEach((record) => {
-      const note = documentHighlightNote(record.id) || null;
+      const note = documentNotes.get(record.id) || null;
       if (annotatedOnly && !note) return;
       items.push({
         // documentHighlightLabel, so a region round a figure exports as
@@ -369,6 +373,12 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
 export function collectHighlightEntries() {
   const entries = [];
   if (isPdfDeck()) {
+    // Parsed ONCE for the whole list. documentHighlightNote(id) re-reads the
+    // fenced block out of state.notes on every call, so asking it per record
+    // makes listing a paper's highlights quadratic in how many there are —
+    // measured at 4ms for 50 highlights and 60ms for 400, which is the shape of
+    // a cost that has no ceiling on a heavily annotated paper.
+    const notes = readHighlightNotes(state.notes || "");
     documentHighlightsInReadingOrder().forEach((record) => {
       const text = String(record.text || "").trim() || documentHighlightLabel(record);
       entries.push({
@@ -381,7 +391,7 @@ export function collectHighlightEntries() {
         // half a sentence italic here.
         markdown: text.replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
         span: null,
-        note: documentHighlightNote(record.id) || "",
+        note: notes.get(record.id) || "",
         anchor: {
           pdf: record.anchor || { page: record.page, item: 0, ch: 0 },
           quads: record.quads,

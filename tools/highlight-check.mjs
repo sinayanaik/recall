@@ -539,6 +539,64 @@ const PROBE = `(api) => {
   // found nothing, so the panel reported every markdown highlight as having no
   // note: the reader's own writing was invisible in the one place that lists it,
   // and pressing ✎ opened an empty editor over a note that was really there.
+  // ── What the Highlights tab costs to scroll ─────────────────────────────
+  //
+  // The tab is a document of every highlight AND every note, each one a rendered
+  // markdown fragment, and how much DOM that comes to depends on the content
+  // rather than the count: 300 highlights of prose are about 7,700 nodes and 300
+  // whose lines carry inline maths are 21,000, because one $x$ is a KaTeX tree
+  // on its own. Above a threshold the entries are given content-visibility so
+  // the engine can skip the ones off screen; below it they are not, because
+  // containment costs a layout every time an entry crosses the edge and on a
+  // small surface that is the more expensive half. Measured at 6x CPU throttle:
+  //
+  //     7,700 nodes    24ms per frame plain,  30ms contained
+  //    21,000 nodes    53ms per frame plain,  31ms contained
+  //
+  // Neither number is assertable here — this file has no throttled scroll — but
+  // the DECISION is, and it is the part that silently rots: a threshold nothing
+  // checks is a threshold that gets moved.
+  check("a small highlights surface is left uncontained", () => {
+    api.state.notes = NOTED;
+    api.renderHighlightsPanel();
+    const list = api.el.highlightsList;
+    const root = list.querySelector(".hl-notes");
+    if (!root) return "the panel rendered nothing";
+    if (root.classList.contains("is-contained")) {
+      return "four highlights were given containment they cannot pay for";
+    }
+    // ...and every entry still carries the estimate the containment would need,
+    // so turning it on is a class and not a rebuild.
+    const missing = [...list.querySelectorAll(".hl-note")].filter((a) => !Number(a.dataset.estimate));
+    if (missing.length) return missing.length + " entries carry no size estimate";
+    return true;
+  });
+
+  check("...and the threshold is a real number, applied to the real count", () => {
+    // The gate reads what was built, not how many entries there are — the two
+    // are not the same question, which is the whole reason it is counted.
+    if (!Number.isFinite(api.HL_CONTAIN_MIN_NODES) || api.HL_CONTAIN_MIN_NODES < 1000) {
+      return "the threshold is " + api.HL_CONTAIN_MIN_NODES;
+    }
+    const list = api.el.highlightsList;
+    const root = list.querySelector(".hl-notes");
+    if (!root) return "the panel rendered nothing";
+    // Force the count over the line with filler the gate has to notice, and
+    // re-run the decision the way the build does.
+    const filler = document.createElement("div");
+    filler.hidden = true;
+    for (let i = 0; i < api.HL_CONTAIN_MIN_NODES; i += 1) filler.appendChild(document.createElement("span"));
+    list.appendChild(filler);
+    try {
+      api.applyContainmentForCheck([...list.querySelectorAll(".hl-note")], []);
+      if (!root.classList.contains("is-contained")) return "a surface over the threshold was left uncontained";
+      return true;
+    } finally {
+      filler.remove();
+      api.applyContainmentForCheck([...list.querySelectorAll(".hl-note")], []);
+    }
+  });
+
   check("a listed highlight carries the note that is written on it", () => {
     api.state.notes = NOTED;
     const entries = api.collectHighlightEntries();
@@ -772,6 +830,7 @@ const API_SRC = `async () => {
     import("/src/notes/selection.js?v=__BUILD__"),
     import("/src/editor/text-transforms.js?v=__BUILD__"),
     import("/src/panels/highlights-panel.js?v=__BUILD__"),
+    import("/src/panels/highlights-editor.js?v=__BUILD__"),
     import("/src/format/highlight-edit.js?v=__BUILD__"),
     import("/src/format/highlight-notes.js?v=__BUILD__"),
     import("/src/notes/chapters.js?v=__BUILD__"),
