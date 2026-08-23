@@ -176,11 +176,41 @@ function paintQuote(quote, entry) {
   });
 }
 
+// Roughly how tall an entry will turn out, before anything has been rendered
+// into it.
+//
+// Not accuracy — `contain-intrinsic-size: auto` replaces this with the real
+// height the first time the entry is on screen, and keeps it. What this has to
+// be is CLOSE ENOUGH that three hundred unpainted entries are spread down a
+// scroller of roughly the right length, because that is what makes "which of
+// them are near the viewport" a real question instead of "all of them, they are
+// all at zero".
+//
+// Characters over a line's worth of them, plus the head, plus the note's own
+// box. Cheap: it is a length, on a string this function already has.
+export const HL_ENTRY_LINE_CHARS = 68;
+
+export const HL_ENTRY_LINE_PX = 28;
+
+export function estimateEntryHeight(entry) {
+  const quoteLines = Math.max(1, Math.ceil((entry.markdown || "").length / HL_ENTRY_LINE_CHARS));
+  const noteLines = entry.note ? Math.max(1, Math.ceil(entry.note.length / HL_ENTRY_LINE_CHARS)) : 1;
+  return 40 + (quoteLines + noteLines) * HL_ENTRY_LINE_PX;
+}
+
 function articleFor(entry) {
   const article = document.createElement("article");
   article.className = HL_NOTE_CLASS;
   article.dataset.highlightKey = entryKey(entry);
   article.dataset.color = entry.color || "";
+  // The estimate the containment above uses until this entry has been seen
+  // once. Written inline rather than left to the stylesheet's flat 180px,
+  // because a one-line highlight and a highlight with four paragraphs of notes
+  // on it are not the same shape and a scroller built on one figure for both
+  // jumps under the reader as it corrects itself.
+  const guess = estimateEntryHeight(entry);
+  article.dataset.estimate = String(guess);
+  article.style.containIntrinsicSize = `auto ${guess}px`;
 
   // The way back to the highlight, in a row of its own above the words.
   //
@@ -270,6 +300,10 @@ function openNoteEditor(article, entry) {
   const key = entryKey(entry);
   if (editingKey === key) return;
   commitOpenNote();
+  // On screen and pressed, so it has been rendered — unless the reader got here
+  // by keyboard through a still-deferred entry, which is exactly the case a
+  // "it will have been painted by now" assumption gets wrong.
+  paintEntry(article);
   const body = article.querySelector(`.${HL_NOTE_CLASS}-body`);
   if (!body) return;
   const area = document.createElement("textarea");
@@ -332,6 +366,140 @@ function groupHead(label) {
   return head;
 }
 
+// One entry's two rendered halves, run when it comes near the viewport.
+//
+// Idempotent by the flag: the observer can hand the same node back (a scroll up
+// and down again), and re-rendering an entry the reader may be typing into would
+// be worse than wasteful.
+function paintEntry(article) {
+  if (article.dataset.painted === "true") return Promise.resolve();
+  const entry = lastEntries.find((one) => entryKey(one) === article.dataset.highlightKey);
+  if (!entry) return Promise.resolve();
+  article.dataset.painted = "true";
+  return Promise.all([
+    paintQuote(article.querySelector(".hl-note-quote"), entry),
+    paintNoteBody(article, entry)
+  ]);
+}
+
+// ── Whether this surface is big enough to be worth containing ─────────────
+//
+// `content-visibility: auto` per entry is not free and not always a win.
+// Skipping an off-screen entry saves painting it; it costs a layout every time
+// one crosses the viewport edge. Which way that trade falls depends on how much
+// DOM there actually is, and that depends on the CONTENT — 300 highlights of
+// prose come to about 7,700 nodes, and 300 whose lines carry inline maths come
+// to 21,000, because one $x$ is a KaTeX tree on its own.
+//
+// Measured at 6x CPU throttle, scrolled after the surface had finished building:
+//
+//     7,700 nodes    24ms per frame plain,  30ms contained   — containment LOSES
+//    21,000 nodes    53ms per frame plain,  31ms contained   — containment WINS
+//
+// So it is counted rather than guessed, once, after the build — the same gate
+// NOTES_CHUNK_MIN_BLOCKS puts on the chunk wrappers next door, and for the same
+// reason: an ordinary surface should keep exactly the DOM it always had.
+//
+// The threshold sits between the two measurements and nearer the losing end,
+// because the cost of getting it wrong is not symmetric: below it the surface is
+// small and a few milliseconds either way is nothing, while above it the
+// unconstrained version degrades without limit.
+export const HL_CONTAIN_MIN_NODES = 12000;
+
+// Exported under a name that says what it is for: tools/highlight-check.mjs
+// drives the decision directly, because a threshold nothing checks is a
+// threshold that gets moved.
+export function applyContainmentForCheck(articles, samples) {
+  return applyContainment(articles, samples);
+}
+
+function applyContainment(articles, samples) {
+  const list = el.highlightsList;
+  const root = list?.querySelector(`:scope > .${HL_NOTES_CLASS}`);
+  if (!root) return;
+  // One query, once, at the end of the build. querySelectorAll("*") over a
+  // surface this size is a few milliseconds and it is the only honest answer —
+  // an entry count cannot tell prose from a page of equations.
+  const contain = list.querySelectorAll("*").length >= HL_CONTAIN_MIN_NODES;
+  root.classList.toggle("is-contained", contain);
+  // The estimates only matter once something is being skipped: they are what an
+  // unreached entry contributes to the scroll height. Calibrating them costs a
+  // layout of the whole surface, so it is not paid on a surface that will never
+  // skip anything.
+  if (contain) calibrateEntryEstimates(articles, samples);
+}
+
+// ── ...and the estimate, measured rather than guessed ─────────────────────
+//
+// estimateEntryHeight is a guess off a character count, and a guess is what the
+// scroll height of the whole tab is built from: an entry the reader has not
+// reached yet contributes its estimate and nothing else. Measured, that guess
+// was about a third too tall — and being wrong is not a cosmetic problem. Every
+// entry that comes into view swaps its estimate for its real height, which
+// changes the height of everything below it, which is a layout. Fifty-one of
+// them over one scroll, at ~26ms each on a throttled phone, and THAT is what was
+// left of the jank once the paint was contained.
+//
+// So the first few are measured while they are unambiguously on screen — the
+// tab has just been built and is scrolled to the top — and the ratio between
+// what they really are and what they were guessed to be is applied to the rest.
+// The same move measureNotesBlockEstimate makes next door, for the same reason:
+// one number taken from the actual thing beats a constant taken from a fixture.
+export const HL_ESTIMATE_SAMPLE = 8;
+
+// Below this the guess was close enough that rewriting 300 inline styles — a
+// layout of the whole surface — costs more than it saves.
+export const HL_ESTIMATE_TOLERANCE = 0.12;
+
+function calibrateEntryEstimates(articles, samples) {
+  if (samples.length < 2) return;
+  const ratios = samples.map(([real, guess]) => real / guess).sort((a, b) => a - b);
+  // The median, not the mean: one entry carrying an image is not evidence about
+  // the other 299.
+  const ratio = ratios[Math.floor(ratios.length / 2)];
+  if (!Number.isFinite(ratio) || ratio <= 0) return;
+  if (Math.abs(ratio - 1) < HL_ESTIMATE_TOLERANCE) return;
+  articles.forEach((article) => {
+    const guess = Number(article.dataset.estimate) || 0;
+    if (!guess) return;
+    article.style.containIntrinsicSize = `auto ${Math.round(guess * ratio)}px`;
+  });
+}
+
+// Every entry, then the one measurement that decides whether this surface is
+// contained and what an unreached entry is worth.
+//
+// Deliberately NOT paced across frames and NOT driven by the viewport, and both
+// were tried. Painting entries as they are scrolled to (runNearViewportAndDefer,
+// which is what the notes view does for its tables and diagrams) puts a markdown
+// parse and a KaTeX pass ON the scroll, and its drain runs on an idle callback
+// whose 250ms backstop is what actually fires while a reader keeps scrolling:
+// measured at 6x CPU throttle, 31ms per frame painting everything up front
+// against 71ms rendering it as it was reached. Work done ahead of the reader is
+// free; the same work done under them is not.
+function paintEntries(articles) {
+  return Promise.all(articles.map((article) => paintEntry(article))).then(() => {
+    // After a frame, so the heights being read are the laid-out ones.
+    requestAnimationFrame(() => measureAndContain(articles));
+  });
+}
+
+// The sample is taken from the entries at the TOP, which are the ones on screen
+// when a tab that has just been opened is still scrolled to the beginning — and
+// an entry the engine is allowed to skip reports its ESTIMATE as its height,
+// which would make this measure its own guess.
+function measureAndContain(articles) {
+  const samples = [];
+  for (const article of articles) {
+    if (samples.length >= HL_ESTIMATE_SAMPLE) break;
+    if (article.getBoundingClientRect().top > window.innerHeight) break;
+    const guess = Number(article.dataset.estimate) || 0;
+    const real = article.offsetHeight;
+    if (guess > 0 && real > 0) samples.push([real, guess]);
+  }
+  applyContainment(articles, samples);
+}
+
 // Rendered into el.highlightsList. `entries` is one flat list in reading order,
 // each carrying the group it belongs to — a page for a document highlight, a
 // chapter for a <mark> — so the grouping is a single pass rather than two
@@ -371,13 +539,10 @@ export function renderHighlightsEditor(entries) {
   if (existing) existing.replaceWith(root);
   else list.replaceChildren(root);
   list.scrollTop = scrollTop;
-  // Bodies are rendered AFTER the whole surface is in the document, not inline
-  // as each is built: a mermaid diagram inside a note needs real layout to size
-  // itself against, which a still-detached node does not have.
-  return Promise.all(painted.flatMap(([article, entry]) => [
-    paintQuote(article.querySelector(".hl-note-quote"), entry),
-    paintNoteBody(article, entry)
-  ]));
+  // Painted AFTER the surface is in the document, not inline as each article is
+  // built: a mermaid diagram inside a note needs real layout to size itself
+  // against, which a still-detached node does not have.
+  return paintEntries(painted.map(([article]) => article));
 }
 
 // One delegated listener for the whole surface, installed once. A listener per

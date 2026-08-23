@@ -34,11 +34,12 @@
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
+import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scanHighlightGroups } from "./highlights-panel.js?v=__BUILD__";
-import { documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { documentHighlightLabel, documentHighlightsInReadingOrder } from "../documents/pdf-highlights.js?v=__BUILD__";
 
 // The note's own <mark>s, in reading order.
 //
@@ -96,6 +97,11 @@ export function noteHighlightEntries() {
 // drawer row is one line of text with one colour chip, so the same three read
 // as three things you marked, which is what they are.
 export function documentHighlightEntries() {
+  // One parse for the whole list, not one per record — see the same note in
+  // collectHighlightEntries. documentHighlightNote() re-reads the fenced block
+  // out of state.notes each time it is called, which turns listing a paper's
+  // highlights into quadratic work in how many there are.
+  const notes = readHighlightNotes(state.notes || "");
   return documentHighlightsInReadingOrder().map((record) => ({
     key: `doc-${record.id}`,
     // documentHighlightLabel, so a region drawn round a figure is listed as
@@ -103,7 +109,7 @@ export function documentHighlightEntries() {
     // indistinguishable from a bug.
     text: documentHighlightLabel(record),
     color: record.color,
-    note: Boolean(documentHighlightNote(record.id)),
+    note: Boolean(notes.get(record.id)),
     where: record.page ? `p. ${record.page}` : "",
     anchor: {
       pdf: record.anchor || { page: record.page, item: 0, ch: 0 },

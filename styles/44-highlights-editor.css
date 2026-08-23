@@ -46,11 +46,61 @@
 /* One highlight and its note. The colour rail is the highlight's own colour, so
    a reader who colour-codes as they read can find a note by the colour they
    filed it under — the same four tokens a <mark> and a PDF highlight use
-   (src/format/highlight-colors.js). */
+   (src/format/highlight-colors.js).
+   ── ...and the unit this surface is contained by ────────────────────────
+   Every entry is a rendered markdown fragment, and a marked-up book's worth of
+   them is a lot of DOM: 300 highlights whose lines carry inline maths came to
+   21,000 nodes, because one $x$ is a KaTeX tree on its own. With nothing
+   containing them the engine paints and composites all of it on every scroll
+   frame — measured at 6x CPU throttle, 62ms per frame against the notes view's
+   17ms on the very same text, which is 16fps and is what "the Highlights panel
+   scrolls very slowly" was.
+   The notes view learned this already (`content-visibility: auto` per block in
+   styles/12-notes.css, grouped in styles/19-notes-chunks.css) and this surface
+   never did — it did not need to while it was a list of one-line rows, and it
+   does now that it is a document of every highlight AND every note.
+   An ENTRY is the right unit: one box per highlight rather than one per
+   rendered node, which is the same 300-vs-21,000 the chunk wrappers next door
+   were introduced for. `auto` in contain-intrinsic-size makes the engine
+   remember each entry's real height once it has been on screen, so the
+   scrollbar settles instead of jumping as the reader goes down; the 180px is
+   the first guess before that.
+   Deliberately NOT on .hl-notes-group: the group head is sticky, and a sticky
+   element inside a skipped subtree has nothing to stick to. */
 .hl-note {
   margin-bottom: 1.1em;
   padding-left: 0.8em;
   border-left: 3px solid var(--line);
+}
+
+/* ── ...and, on a big enough surface, the unit it is contained by ──────────
+   Only under .is-contained, which src/panels/highlights-editor.js adds after
+   counting what it actually built. Containment is not free and it is not always
+   a win: skipping an off-screen entry saves paint, and costs a layout every
+   time one crosses the edge. Measured at 6x CPU throttle over 300 highlights,
+   scrolled after the surface had finished building:
+     7,700 nodes    24ms per frame plain, 30ms contained   — containment LOSES
+     21,000 nodes   53ms per frame plain, 31ms contained   — containment WINS
+   The same shape as the chunk wrappers next door, which are likewise gated
+   (NOTES_CHUNK_MIN_BLOCKS): an ordinary surface keeps exactly the DOM it always
+   had, and only one big enough for the old behaviour to be the bigger problem
+   pays for the machinery.
+   The fallback size only. The module writes a per-entry estimate inline
+   (estimateEntryHeight, then calibrated against the real thing) — a one-line
+   highlight and one with four paragraphs of notes on it are not the same shape,
+   and a scroller built on one figure for both jumps under the reader as it
+   corrects itself. */
+.hl-notes.is-contained > .hl-notes-group > .hl-note {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
+}
+
+/* ...except the one being written in. A textarea inside a subtree the engine is
+   allowed to skip is a textarea whose height cannot be measured — and this
+   editor sizes it to its content on every keystroke (see openNoteEditor's fit).
+   The entry is on screen by definition while it is being typed into. */
+.hl-notes.is-contained > .hl-notes-group > .hl-note.is-editing {
+  content-visibility: visible;
 }
 
 /* The same four hexes .pdf-mark[data-kind="area"] draws a region outline with
