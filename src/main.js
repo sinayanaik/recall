@@ -60,7 +60,7 @@ import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
-import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setDocumentNotesRenderer, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -71,6 +71,7 @@ import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
+import { initHighlightsEditor } from "./panels/highlights-editor.js?v=__BUILD__";
 import { markDrawerHighlightsDirty, refreshDrawerOnOpen } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
@@ -105,7 +106,6 @@ import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD_
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 import { initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
-import { closeDocumentNoteEditor, initDocumentNotesEditing, renderDocumentNotes } from "./documents/pdf-notes-view.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
@@ -933,15 +933,9 @@ onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
   if (index < 0) return;
   openHighlightNoteEditor(index, rect, noteText);
 }));
-// A PDF deck's Notes tab is its highlight notes, built by the document module
-// rather than rendered from markdown — see the note on setDocumentNotesRenderer
-// for why that surface is taken over rather than rendered into. Same
-// registration idiom, same reason: notes-view.js must not import the document
-// subtree.
-onDomReady(() => {
-  setDocumentNotesRenderer(renderDocumentNotes);
-  initDocumentNotesEditing();
-});
+// The Highlights tab writes its notes in place — one delegated listener for the
+// whole surface, installed once.
+onDomReady(() => initHighlightsEditor());
 // The badges are painted with each page as it renders, and the printed notes are
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
 // why these are registered rather than imported.

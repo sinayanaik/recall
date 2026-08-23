@@ -1,70 +1,19 @@
-/* The Highlights tab: no pre/post context line any more (just the
- * highlighted line — see collectDeckHighlights/highlightUnitSpan in
- * src/panels/highlights-panel.js; the old .highlight-ctx rules in
- * 12-notes.css are dead now but harmless, left in place rather than
- * hand-edited out of a slice), and a row that merged several same-line
- * highlights (see the same file) needs more than one "Go to" button.
- */
-.highlight-jumps {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-}
-
-/* .rendered img (06-rendered.css) caps width at --visual-max-width — a Style
- * setting meant for the full-width notes reading column (50% of it, by
- * default). A highlight row is a compact list item, not that column, so the
- * SAME percentage against the row's much wider containing block rendered a
- * plain (never resized) image far larger here than the same image looks in
- * the actual notes — the "images render huge in the Highlights panel"
- * report. A flat pixel cap fixes the absolute size regardless of container
- * width; it only tightens max-width, so an image the reader deliberately
- * resized SMALLER in the notes (an inline width, set by the resize grip —
- * see src/images/surface-controls.js) is unaffected, and larger than 220px
- * only shrinks to fit here, exactly like it already does at 100% width on a
- * narrow phone screen.
+/* What is left of the Highlights tab's old row layout
  *
- * The real reason a plain max-width rule alone did nothing: every rendered
- * <img> — not just an actual diagram — gets wrapped in a .diagram-shell by
- * addDiagramZoomControl (the zoom-button affordance, see
- * src/render/enhance.js / src/render/diagram-zoom.js), and
- * ".diagram-shell img" (06-rendered.css) sets `width: var(--visual-max-width,
- * 100%) !important; max-width: none !important;` — an !important rule beats
- * ANY non-!important rule regardless of source order or specificity. Only a
- * more specific !important rule can win, hence both below.
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * This file was the row: a .highlight-jumps column of "Go to →" and ✎ buttons
+ * beside a preview, plus the image caps that preview needed. The tab is a
+ * continuous editor now (styles/44-highlights-editor.css) with no rows and no
+ * per-row ✎, so all of that is gone and the caps moved with the surface they
+ * cap.
+ *
+ * The stage itself — .highlights-stage, .highlights-list, .highlights-empty —
+ * is styled in styles/12-notes.css, which is a frozen slice. The one rule left
+ * here is the one that file cannot be given: the list is a scrolling document
+ * now rather than a stack of cards, so it needs its own padding.
  */
-.highlight-preview img,
-.highlight-note-body img {
-  max-width: 220px;
-}
-
-.highlight-preview .diagram-shell img,
-.highlight-note-body .diagram-shell img {
-  width: 220px !important;
-  max-width: 220px !important;
-}
-
-/* Both a highlight's own line (item.markdown, a real slice of state.notes)
- * AND an attached note's body (mark.note, the same text the note-over-
- * highlight popup edits) are genuine editable surfaces here — see
- * renderRowPreviewWithImageResize / renderNoteBodyWithImageResize in
- * highlights-panel.js — and get the same corner-drag resize grip the main
- * notes editor gives one. A resized (.has-custom-size) image must win over
- * the flat 220px default above — same "more specific !important beats
- * !important" shape #notesView's own img.has-custom-size rule uses
- * (06-rendered.css), scoped here instead of a fixed view id.
- */
-.highlight-preview .diagram-shell img.has-custom-size,
-.highlight-note-body .diagram-shell img.has-custom-size {
-  width: var(--notes-img-w) !important;
-  max-width: var(--notes-img-w) !important;
-}
-
-.highlight-preview .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom,
-.highlight-note-body .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
-  float: left;
-  left: 0;
-  right: auto;
+.highlights-list {
+  padding: 12px 14px 24px;
 }

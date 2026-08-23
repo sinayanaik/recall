@@ -150,11 +150,11 @@ const POST_SPLIT = {
     "zero net advance) and adds box-decoration-break so a mark broken across a " +
     "wrap or a column break keeps its radius on both fragments.",
   "26-highlights-panel-rows.css":
-    "The Highlights tab dropped its pre/post context line (just the " +
-    "highlighted line is shown now — see collectDeckHighlights/" +
-    "highlightUnitSpan in src/panels/highlights-panel.js) and gained the " +
-    "ability to merge several same-line highlights into one row, which needs " +
-    "more than one 'Go to' button per row.",
+    "What is left of the Highlights tab's old row layout — the per-row Go to / " +
+    "note buttons and the image caps the preview needed. The tab is a " +
+    "continuous editor now (44-highlights-editor.css), so the file is down to " +
+    "the padding the frozen .highlights-list slice in 12-notes.css cannot be " +
+    "given.",
   "27-highlight-notes.css":
     "Note-over-highlight: the mark-menu's Note button, the Highlights panel's " +
     "per-mark note button and rendered note block, and the popup editor " +
@@ -219,13 +219,6 @@ const POST_SPLIT = {
     "the two edit pencils wait for a pointer, and the tabs lose their frame. " +
     "Also the immersive-mode button's own pressed state, and the background " +
     "the root element paints in fullscreen.",
-  "34-inline-highlight-notes.css":
-    "A document deck's Notes tab: every highlight in reading order, grouped by " +
-    "page, its note under it and editable in place. It carried the numbered " +
-    "superscript and an opt-in mode that printed every note into the paragraph " +
-    "it annotated; the printed mode is gone and the number moved to " +
-    "42-highlight-badge.css as a real element. See src/documents/" +
-    "pdf-notes-view.js.",
   "35-notes-menu.css":
     "The notes \u22ef menu as ten sentences rather than ten glyphs. It shipped " +
     "as a tray of icon buttons \u2014 two of them the same bookmark drawing, " +
@@ -314,6 +307,14 @@ const POST_SPLIT = {
     "row under the drawer head and a second scroll pane beside the contents " +
     "list; the drawer itself is a frozen slice and is not touched. See " +
     "src/panels/drawer-highlights.js.",
+  "44-highlights-editor.css":
+    "The Highlights tab as an editor: every highlight in reading order, grouped " +
+    "by page or by chapter, its note under it and editable where it sits. " +
+    "Arrived as the .doc-note* rules in 34-inline-highlight-notes.css, which " +
+    "styled a PDF deck's Notes tab — the right surface at the wrong address, " +
+    "since that tab is where the reader's own writing belongs. Renamed with the " +
+    "move; a rule called .doc-note on a surface that is mostly not a document " +
+    "reads as a leftover. See src/panels/highlights-editor.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

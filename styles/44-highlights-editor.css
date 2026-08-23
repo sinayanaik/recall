@@ -1,0 +1,205 @@
+/* The Highlights tab, as an editor
+ *
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * Almost all of this arrived as the .doc-note* rules in
+ * styles/34-inline-highlight-notes.css, which styled a PDF deck's Notes tab —
+ * every highlight grouped by page, its note under it, editable in place. That
+ * surface was right and its address was wrong: the Notes tab is where the
+ * reader's own writing belongs, so it moved to the Highlights tab and grew a
+ * second kind of entry (a <mark> in a markdown note, grouped by chapter rather
+ * than by page). Renamed with it — a rule called .doc-note on a surface that is
+ * mostly not a document reads as a leftover.
+ *
+ * Typography is inherited, deliberately: the reader's own Notes font, size,
+ * weight and line height (Style → Notes) apply, because these ARE their notes.
+ * Everything sized here is sized in em against that.
+ */
+.hl-notes {
+  max-width: var(--notes-max-width);
+  margin-inline: auto;
+}
+
+.hl-notes-group + .hl-notes-group {
+  margin-top: 1.5em;
+}
+
+/* Where a run of highlights came from — a page of the paper, or a chapter of
+   the note. Sticky, because on a heavily marked document one group is several
+   screenfuls and the only thing saying which part you are reading about would
+   otherwise be off the top of it. */
+.hl-notes-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 0.6em;
+  padding: 0.3em 0;
+  background: var(--panel);
+  font-size: 0.72em;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* One highlight and its note. The colour rail is the highlight's own colour, so
+   a reader who colour-codes as they read can find a note by the colour they
+   filed it under — the same four tokens a <mark> and a PDF highlight use
+   (src/format/highlight-colors.js). */
+.hl-note {
+  margin-bottom: 1.1em;
+  padding-left: 0.8em;
+  border-left: 3px solid var(--line);
+}
+
+/* The same four hexes .pdf-mark[data-kind="area"] draws a region outline with
+   (styles/37-document-chrome.css) and MARK_HIGHLIGHT_HEX names in
+   src/format/highlight-colors.js. Literal, like those, rather than a tint: a
+   3px rail has no surface behind it worth mixing into, and this is an index —
+   the rail's job is to be recognisable at a glance. */
+.hl-note[data-color="yellow"] { border-left-color: #e0b400; }
+.hl-note[data-color="green"]  { border-left-color: #22c55e; }
+.hl-note[data-color="blue"]   { border-left-color: #3b82f6; }
+.hl-note[data-color="pink"]   { border-left-color: #ec4899; }
+
+/* The way back to the highlight, in a row of its own above the words.
+   Right-aligned and quiet: it is navigation, not the content of the entry, and
+   an entry that led with a button would read as a control rather than as a
+   passage you marked. */
+.hl-note-head {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 1.2em;
+}
+
+.hl-note-goto {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72em;
+  font-weight: 700;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+/* Shown when the entry is reached for, always shown to the keyboard. A row of
+   Go-to buttons down a page the reader is trying to READ is chrome competing
+   with the text; one that appears under the pointer is a control. */
+.hl-note:hover .hl-note-goto,
+.hl-note:focus-within .hl-note-goto,
+.hl-note-goto:focus-visible {
+  opacity: 1;
+}
+
+.hl-note-goto:hover,
+.hl-note-goto:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  color: var(--accent-strong);
+}
+
+/* The highlighted line itself, rendered — so a highlighted bullet is still a
+   bullet, a highlighted formula is still a formula, and the <mark> keeps its
+   own colour. This is the passage; everything else in the entry is about it. */
+.hl-note-quote > :first-child { margin-top: 0; }
+.hl-note-quote > :last-child { margin-bottom: 0; }
+
+/* A picture from a region highlight, and the label it falls back to when the
+   document is not open to render one. */
+.hl-note-quote .highlight-region-label {
+  display: block;
+  margin-bottom: 0.3em;
+}
+
+/* The note itself. Padded and rounded so the hit region for "press to edit" is
+   the whole note and not just its words — a one-line note with no affordance
+   around it is a link you have to guess at. */
+.hl-note-body {
+  margin-top: 0.4em;
+  padding: 0.35em 0.5em;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: text;
+}
+
+.hl-note-body:hover,
+.hl-note-body:focus-visible {
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.hl-note-body > :first-child { margin-top: 0; }
+.hl-note-body > :last-child { margin-bottom: 0; }
+
+.hl-note-placeholder {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* While the note is being typed, the rendered copy stands down rather than
+   sitting above the textarea saying the same thing twice. */
+.hl-note.is-editing > .hl-note-body {
+  display: none;
+}
+
+.hl-note-edit {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  margin-top: 0.25em;
+  padding: 0.35em 0.5em;
+  border: 1px solid var(--accent-strong);
+  border-radius: 8px;
+  background: var(--panel-2, var(--panel));
+  color: var(--text);
+  font: inherit;
+  line-height: inherit;
+  /* Grown to its content by the module (a textarea cannot size itself in CSS),
+     so a long note is never written through a slot. */
+  resize: vertical;
+  overflow: hidden;
+}
+
+/* ── Images, in a list rather than in the reading column ───────────────────
+ *
+ * `.rendered img` (06-rendered.css) caps width at --visual-max-width, a Style
+ * setting meant for the full-width notes column. An entry here is a list item,
+ * not that column, so the same percentage against a much wider containing block
+ * rendered a plain image far larger here than the same image looks in the notes
+ * — the "images render huge in the Highlights panel" report, which this surface
+ * inherits along with everything else.
+ *
+ * The reason a plain max-width rule alone does nothing: every rendered <img>
+ * gets wrapped in a .diagram-shell by addDiagramZoomControl, and
+ * ".diagram-shell img" sets `width: … !important; max-width: none !important`.
+ * Only a more specific !important rule beats that, hence both below.
+ */
+.hl-note-quote img,
+.hl-note-body img {
+  max-width: 220px;
+}
+
+.hl-note-quote .diagram-shell img,
+.hl-note-body .diagram-shell img {
+  width: 220px !important;
+  max-width: 220px !important;
+}
+
+/* ...unless the reader resized this one themselves. Same shape as #notesView's
+   own img.has-custom-size rule, scoped here instead of to a fixed view id. */
+.hl-note-quote .diagram-shell img.has-custom-size,
+.hl-note-body .diagram-shell img.has-custom-size {
+  width: var(--notes-img-w) !important;
+  max-width: var(--notes-img-w) !important;
+}
+
+.hl-note-quote .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom,
+.hl-note-body .diagram-shell:has(.notes-img-resize-handle) .diagram-zoom {
+  float: left;
+  left: 0;
+  right: auto;
+}

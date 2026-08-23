@@ -14,6 +14,7 @@ import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__B
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { renderHighlightsEditor } from "./highlights-editor.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, documentExcerptLabel, documentHighlightLabel, documentHighlightNote, documentHighlightsInReadingOrder, isPdfDeck, sameDocumentLine, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
@@ -521,244 +522,99 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
   return items;
 }
 
-// Redraws the Highlights tab from scratch — cheap enough to just always
-// rebuild (same choice collectDeckClozes/renderClozePanel already make)
-// rather than diffing, and it only runs when that tab is actually opened.
-// Each row renders its markdown fragment through the FULL pipeline
-// (renderMarkdown), not the bare marked+DOMPurify pass markdownToSafeHtml
-// gives you — bold/links/lists round-trip through either, but LaTeX and
-// images do not: KaTeX rendering and swapping a queued-offline image's
-// recall-img: placeholder for a loadable blob: URL both happen in
-// enhanceRenderedMarkdown/hydrateLocalImages, which markdownToSafeHtml never
-// runs (it's only the marked+DOMPurify half renderMarkdown itself is BUILT
-// on, not the whole pipeline — a highlight containing math or a
-// still-uploading image rendered as a raw "$…$" or a broken image icon
-// without this). renderMarkdown is async and every non-notes/card container
-// it's given (this one included) is treated as uncached — see
-// isCachedRenderSurface — so this is the same call the Quick Notes board and
-// the paste preview already make for exactly this reason.
-// No pre/post context line any more — see collectDeckHighlights/
-// highlightUnitSpan: the highlighted line is enough, and export (with its own
-// opt-in context-size setting) is where surrounding lines belong now.
+// ── The Highlights tab's own entries ────────────────────────────────────────
+//
+// One entry per HIGHLIGHT, never merged — which is the one place this differs
+// from collectDeckHighlights' rows, and it differs because the tab is an editor
+// now (src/panels/highlights-editor.js). Rows merge two highlights that landed
+// on one line so that line is not shown twice; two highlights that each need
+// their own note field cannot share a row at all, and a merged one would offer
+// a single box for two annotations.
+//
+// Everything else is the row collection's own machinery, reused rather than
+// re-derived: the same scan, the same line-widening, the same anchors, so a
+// jump from this tab lands exactly where a jump from anywhere else does.
+//
+// `group` is what the surface puts a sticky heading on: the page for a
+// document highlight, the chapter for a <mark>. A note with no headings in it
+// yields "" and the entries simply run on, which is correct — there is nothing
+// to group by.
+export function collectHighlightEntries() {
+  const entries = [];
+  if (isPdfDeck()) {
+    documentHighlightsInReadingOrder().forEach((record) => {
+      const text = String(record.text || "").trim() || documentHighlightLabel(record);
+      entries.push({
+        highlightId: record.id,
+        color: record.color,
+        group: record.page ? `Page ${record.page}` : "The document",
+        region: record.kind === "area" ? record : null,
+        // Rendered as plain text: it came out of a PDF, so there is no markdown
+        // in it to interpret, and a paper containing "*" or "_" must not turn
+        // half a sentence italic here.
+        markdown: text.replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
+        span: null,
+        note: documentHighlightNote(record.id) || "",
+        anchor: {
+          pdf: record.anchor || { page: record.page, item: 0, ch: 0 },
+          quads: record.quads,
+          page: record.page,
+          text,
+          deckId: state.deckId,
+          deckTitle: state.deckTitle
+        },
+        locator: { highlightId: record.id }
+      });
+    });
+  }
+  const notes = state.notes || "";
+  const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
+  const headings = headingIndexFor(source);
+  groups.forEach((group) => {
+    const span = highlightUnitSpan(units, source, group);
+    const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
+      const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
+      const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
+      if (i === 0) return rendered;
+      return acc + (piece.marker ? "\n" : "\n\n") + rendered;
+    }, "");
+    const text = notesAnchorPlainText(group.pieces[0].inner);
+    if (!text) return;
+    const heading = headingForOffset(headings, group.offset);
+    entries.push({
+      markIndex: group.pieces[0].markIndex,
+      color: group.color,
+      group: heading?.title || "",
+      region: null,
+      markdown,
+      span,
+      note: group.pieces[0].note || "",
+      anchor: trimNoteAnchor({ offset: group.offset, source: group.pieces[0].inner, text, deckId: state.deckId, deckTitle: state.deckTitle }),
+      locator: { markIndex: group.pieces[0].markIndex, markCount: raw.length }
+    });
+  });
+  return entries;
+}
+
+// Redraws the Highlights tab.
+//
+// It used to be a list of rows, each with a "Go to →" and a ✎ that opened a
+// popup — so every note took a window to read and a second one to write, and a
+// reader working down a paper they had annotated opened and closed forty of
+// them. It is a continuous editor now: the highlighted line, then its note
+// under it, editable where it sits, grouped by page or by chapter. See
+// src/panels/highlights-editor.js, which is src/documents/pdf-notes-view.js
+// generalised — that module had already solved this and had put the answer in
+// the Notes tab, which is where the reader's own writing belongs.
+//
+// Cheap enough to just always rebuild (the same choice renderClozePanel makes)
+// rather than diffing, and it only runs when this tab is actually open — but
+// the editor's own signature guard stops a rebuild that would change nothing,
+// which matters now that a note being typed HERE is what triggers the rebuild.
 export function renderHighlightsPanel() {
   const list = el.highlightsList;
   if (!list) return;
-  list.innerHTML = "";
-  const rows = collectDeckHighlights();
-  if (el.highlightsEmpty) el.highlightsEmpty.hidden = rows.length > 0;
-  // Every preview/note body is rendered AFTER the whole list is in the
-  // document (below), not inline as each row is built — a mermaid diagram
-  // inside a highlight needs real layout to size itself against, which a
-  // still-detached node doesn't have.
-  const toRender = [];
-  rows.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "highlight-row";
-    const body = document.createElement("div");
-    body.className = "highlight-body";
-    const preview = document.createElement("div");
-    preview.className = "highlight-preview rendered";
-    // A page number, for a document highlight. A note's highlights are found by
-    // their words; a paper's are found by their page, and a list of forty
-    // passages with no page on any of them is a list you cannot navigate.
-    if (item.page) {
-      const page = document.createElement("span");
-      page.className = "highlight-page";
-      page.textContent = `p. ${item.page}`;
-      body.appendChild(page);
-    }
-    // A region highlight is a picture, so it is listed as one. Rendered from the
-    // open document and never stored (see renderRegionThumbnail) — which is also
-    // why there is a label to fall back on: a deck whose PDF has been offloaded,
-    // or simply not opened this session, still has the record and has nothing to
-    // draw it from.
-    if (item.region) addRegionPreview(body, item.region);
-    body.appendChild(preview);
-    toRender.push([preview, item, "preview"]);
-    // Any attached note (see format/highlight-notes.js) renders under the
-    // highlight, distinguished as commentary rather than the highlighted
-    // text itself — labelled with an ordinal only when the row holds more
-    // than one highlight (see the same-line merge in collectDeckHighlights).
-    item.marks.forEach((mark, i) => {
-      if (!mark.note) return;
-      const noteBlock = document.createElement("div");
-      noteBlock.className = "highlight-note";
-      if (item.marks.length > 1) {
-        const label = document.createElement("div");
-        label.className = "highlight-note-label";
-        // The highlight's own words where it has them, and only a number as a
-        // last resort. "Note on highlight 2" is a position in a list that
-        // renumbers whenever a neighbour is added or removed — and on a row
-        // that merged several highlights of one line it was the ONLY thing
-        // saying which highlight a note belonged to. Which is what "in
-        // highlighted notes I'm seeing a random note from another highlight
-        // area" looks like from the reading side: the note was right and its
-        // label had drifted.
-        label.textContent = mark.excerpt ? `Note on ${mark.excerpt}` : `Note on highlight ${i + 1}`;
-        noteBlock.appendChild(label);
-      }
-      const noteBody = document.createElement("div");
-      noteBody.className = "highlight-note-body rendered";
-      noteBlock.appendChild(noteBody);
-      body.appendChild(noteBlock);
-      toRender.push([noteBody, mark, "note"]);
-    });
-    // Usually one mark, one pair of buttons. A row that merged several
-    // same-line highlights (see collectDeckHighlights) gets one "Go to" +
-    // "Note" pair per mark so each is still individually reachable.
-    const jumps = document.createElement("div");
-    jumps.className = "highlight-jumps";
-    // ── One "Go to" for a row whose highlights share a line ─────────────────
-    //
-    // A row holds several marks for two different reasons, and they want
-    // opposite things. The markdown path merges highlights that resolved to the
-    // same source unit, and each of those can be a separate <mark> somewhere
-    // else in a long note — so each keeps its own numbered jump. The document
-    // path merges highlights that are on the same LINE of the same page, and
-    // every one of those scrolls to the same place: three buttons, one
-    // destination, which is the "one goto is sufficient" in the report.
-    //
-    // `highlightId` is what tells them apart, and it is also what makes the
-    // single jump exact rather than approximate — scheduleNoteJump flashes that
-    // record's own quads, so the reader still sees which of the line's
-    // highlights they arrived at.
-    const oneJump = item.marks.length > 1 && item.marks.every((m) => m.highlightId);
-    item.marks.forEach((mark, i) => {
-      const actions = document.createElement("div");
-      actions.className = "highlight-mark-actions";
-      // The jump, on the first mark only when they all land in the same place.
-      // The ✎ stays on EVERY mark either way: collapsing the jumps is about not
-      // offering three buttons for one destination, and it must not cost the
-      // reader the ability to write a note on the second highlight of a line.
-      if (!oneJump || i === 0) {
-        const jumpBtn = document.createElement("button");
-        jumpBtn.type = "button";
-        jumpBtn.className = "highlight-jump-btn";
-        const many = !oneJump && item.marks.length > 1;
-        const jumpLabel = oneJump
-          ? `Go to this line ${item.page ? `on page ${item.page}` : "in the document"}`
-          : many ? `Go to highlight ${i + 1} of ${item.marks.length} in the notes`
-            : "Go to this highlight in the notes";
-        jumpBtn.title = jumpLabel;
-        jumpBtn.setAttribute("aria-label", jumpLabel);
-        jumpBtn.textContent = many ? `Go to → (${i + 1})` : "Go to →";
-        // The locator is the exact-target shortcut: a <mark>'s ordinal in the
-        // note, or a document highlight's id. scheduleNoteJump's document branch
-        // reads the second and flashes the quads it paints.
-        jumpBtn.addEventListener("click", () =>
-          scheduleNoteJump(mark.anchor, { patient: true }, mark.highlightId
-            ? { highlightId: mark.highlightId }
-            : { markIndex: mark.markIndex, markCount: mark.markCount })
-        );
-        actions.appendChild(jumpBtn);
-      }
-      const noteBtn = document.createElement("button");
-      noteBtn.type = "button";
-      noteBtn.className = "highlight-note-btn";
-      noteBtn.classList.toggle("has-note", Boolean(mark.note));
-      const noteLabel = `${mark.note ? "Edit the note on" : "Add a note to"} ${mark.excerpt || "this highlight"}`;
-      noteBtn.title = noteLabel;
-      noteBtn.setAttribute("aria-label", noteLabel);
-      noteBtn.innerHTML = "&#9998;";
-      noteBtn.addEventListener("click", () =>
-        openHighlightNoteEditor(
-          mark.markIndex,
-          noteBtn.getBoundingClientRect(),
-          mark.note,
-          mark.highlightId ? DOCUMENT_NOTE_HANDLERS : undefined
-        )
-      );
-      actions.appendChild(noteBtn);
-      jumps.appendChild(actions);
-    });
-    row.append(body, jumps);
-    list.appendChild(row);
-  });
-  toRender.forEach(([container, payload, kind]) => {
-    if (kind === "preview") renderRowPreviewWithImageResize(container, payload);
-    else if (kind === "note") renderNoteBodyWithImageResize(container, payload);
-    else renderMarkdown(container, payload);
-  });
-}
-
-// A highlight preview's image is a real image in state.notes (item.markdown
-// is a literal slice of it — see highlightUnitSpan), so it gets the same
-// corner-drag resize/delete grip the main notes editor gives one, committing
-// straight back into state.notes at the slice's own [rawStart, rawEnd) — not
-// just a read-only summary. Only when the row resolved to a real line/unit
-// (item.span, which carries rawStart/rawEnd): the no-line-unit fallback
-// markdown (see collectDeckHighlights) isn't a literal source slice, so
-// there is nowhere well-defined to write a resize back to and the row is
-// left as a plain (Zoom-only) preview.
-//
-// enhanceSurfaceImageControls/enhanceSurfaceDiagramControls only need
-// something shaped like a render target — view + getSource/setSource/
-// rerender — not one of the app's three hardcoded surfaces (see the same
-// pattern in notes/highlight-note-editor.js). Scoping BOTH the surface's
-// view (this row's own preview container, holding only its own image(s))
-// AND its source (item.markdown, not the whole note) to the same slice is
-// what makes the shell↔markdown matching inside enhanceSurfaceImageControls
-// valid: a control it attaches here writes back through THIS surface's
-// setSource, so its `view` and its `getSource()` have to describe the same
-// document — which a lone row's container and the FULL state.notes would not.
-function renderRowPreviewWithImageResize(preview, item) {
-  if (!item.span) {
-    renderMarkdown(preview, item.markdown);
-    return;
-  }
-  const notesConfig = renderTargetConfig("notes");
-  const rowSurface = {
-    view: preview,
-    getSource: () => item.markdown,
-    setSource: (newSlice) => {
-      const notes = state.notes || "";
-      const updated = notes.slice(0, item.span.rawStart) + newSlice + notes.slice(item.span.rawEnd);
-      notesConfig.setSource(updated); // pushNotesUndo + state.notes write + raw-editor/history sync
-      item.span.rawEnd = item.span.rawStart + newSlice.length;
-      item.markdown = newSlice;
-    },
-    rerender: () => {
-      notesConfig.rerender(); // keeps the actual Notes tab in sync even while it's off-screen
-      renderRowPreviewWithImageResize(preview, item);
-    }
-  };
-  renderMarkdown(preview, item.markdown).then(() => {
-    enhanceSurfaceImageControls(rowSurface);
-    enhanceSurfaceDiagramControls(rowSurface);
-  });
-}
-
-// The note-over-highlight popup already gets this (src/notes/
-// highlight-note-editor.js) — this is the SAME resize/delete for the exact
-// same note text, just reached from its read-only-looking summary in the
-// panel instead of opening the popup first. `mark.note` is this note's own
-// self-contained markdown (not a slice of anything else), so — same
-// reasoning as renderRowPreviewWithImageResize — scoping the surface's view
-// to just this noteBody and its source to just this note text keeps
-// enhanceSurfaceImageControls' shell↔markdown matching valid.
-//
-// setSource commits through setHighlightNoteAt, which (like any highlight
-// edit) calls notifyHighlightsChanged() and rebuilds the WHOLE panel — so by
-// the time replaceSourceImage's own rerender() call would run, this
-// noteBody has already been discarded in favour of a freshly rendered one.
-// rerender is therefore a deliberate no-op here; the real refresh already
-// happened.
-function renderNoteBodyWithImageResize(noteBody, mark) {
-  const noteSurface = {
-    view: noteBody,
-    getSource: () => mark.note || "",
-    setSource: (newText) => {
-      // Same edit, different destination — a document highlight's note is
-      // written by id into the section rather than by <mark> ordinal. Both end
-      // up as the same entry in the same "## Highlight Notes" section.
-      if (mark.highlightId) setDocumentHighlightNote(mark.highlightId, newText);
-      else setHighlightNoteAt(mark.markIndex, newText);
-      mark.note = newText;
-    },
-    rerender: () => {}
-  };
-  renderMarkdown(noteBody, mark.note).then(() => {
-    enhanceSurfaceImageControls(noteSurface);
-    enhanceSurfaceDiagramControls(noteSurface);
-  });
+  const entries = collectHighlightEntries();
+  if (el.highlightsEmpty) el.highlightsEmpty.hidden = entries.length > 0;
+  renderHighlightsEditor(entries);
 }

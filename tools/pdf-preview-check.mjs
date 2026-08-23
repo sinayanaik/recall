@@ -49,8 +49,8 @@ const SHOT_MENU = args.includes("--shot-menu");
 // two things that only meet there are a page fitted edge to edge and the sheet
 // of notes under it, and neither is visible in the desktop shot above.
 const SHOT_PAGES = args.includes("--shot-pages");
-// --shot-notes takes it on the Notes tab instead, which on a document deck is
-// the highlight notes (src/documents/pdf-notes-view.js).
+// --shot-notes takes it on the Highlights tab instead, which is where a paper's
+// notes are written (src/panels/highlights-editor.js).
 const SHOT_NOTES = args.includes("--shot-notes");
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
@@ -126,8 +126,9 @@ const API_SRC = `async () => {
     "/src/storage/deck-store.js?v=__BUILD__",
     "/src/documents/pdf-region.js?v=__BUILD__",
     "/src/documents/pdf-page-notes.js?v=__BUILD__",
-    "/src/documents/pdf-notes-view.js?v=__BUILD__",
+    "/src/panels/highlights-editor.js?v=__BUILD__",
     "/src/notes/notes-edit-split.js?v=__BUILD__",
+    "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
@@ -1363,46 +1364,62 @@ try {
       && fence.exportOfLegacy.includes("The note that was taken on it."),
     `fenced=${fence.exportOfFenced.split("## Highlight Notes").length - 1}× legacy=${fence.exportOfLegacy.split("## Highlight Notes").length - 1}×`);
 
-  // ── 8d. The Notes tab of a document deck ────────────────────────────────
+  // ── 8d. Where a paper's notes are written ───────────────────────────────
   //
   // "The highlighted notes are not visible anywhere as continuous, easily
-  // editable text. They're on the Highlights panel, but that's not a good place
-  // to edit — I want this in the notes panel itself, as notes."
+  // editable text" was answered by building them into the NOTES tab, which put
+  // a paper's annotations in the one tab that should hold the reader's own
+  // writing. The answer is the same surface at a different address now: the
+  // Highlights tab is that continuous editor, and the Notes tab is a note.
   //
-  // Both surfaces that could have shown them sliced the fenced block off, and on
-  // a PDF deck the body is empty, so both were blank. The Notes tab is built
-  // from the highlights themselves now, and the raw editor gets the whole source
-  // — the one deck where the block IS the reader's writing.
+  // Both halves are asserted here, because shipping either without the other is
+  // a visible regression — an editor nobody can reach, or a Notes tab that is
+  // blank AND will not open its editor.
   const docNotes = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    api.setViewMode("notes");
-    await settle(400);
-    const view = document.getElementById("notesView");
-    const section = view.querySelector(":scope > .doc-notes");
-    const articles = Array.from(view.querySelectorAll(".doc-note[data-highlight-id]"));
+    api.setViewMode("highlights");
+    await settle(600);
+    const list = document.getElementById("highlightsList");
+    const section = list.querySelector(":scope > .hl-notes");
+    const articles = Array.from(list.querySelectorAll(".hl-note[data-highlight-key]"));
     const records = api.documentHighlightsInReadingOrder();
     // Every highlight, not only the annotated ones: this is where a note is
     // WRITTEN, so one with nothing on it yet is a blank waiting for a note.
-    const withNotes = articles.filter((a) => !a.querySelector(".doc-note-body").classList.contains("is-empty"));
-    // Press one and type into it, which is the whole request.
-    const target = articles.find((a) => a.querySelector(".doc-note-body").classList.contains("is-empty")) || articles[0];
-    const id = target.dataset.highlightId;
-    target.querySelector(".doc-note-body").click();
-    await settle(120);
-    const area = target.querySelector(".doc-note-edit");
+    const withNotes = articles.filter((a) => !a.querySelector(".hl-note-body").classList.contains("is-empty"));
+    // Grouped by the page they are on, which is what makes a list of forty
+    // passages from a paper navigable at all.
+    const groups = Array.from(list.querySelectorAll(".hl-notes-group-head")).map((h) => h.textContent);
+    // Press one and type into it. No popup may open: writing note after note
+    // without a window per note is the whole of the request.
+    const target = articles.find((a) => a.querySelector(".hl-note-body").classList.contains("is-empty")) || articles[0];
+    const key = target.dataset.highlightKey;
+    const id = key.replace(/^doc:/, "");
+    target.querySelector(".hl-note-body").click();
+    await settle(150);
+    const area = target.querySelector(".hl-note-edit");
     const focused = document.activeElement === area;
-    area.value = "Typed straight into the notes panel.";
+    const popupOpen = Boolean(document.querySelector(".highlight-note-editor:not([hidden])"));
+    area.value = "Typed straight into the highlights tab.";
     area.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(120);
     // Still typing: nothing may have been rebuilt under the reader yet.
-    const stillOpen = target.querySelector(".doc-note-edit") === area;
+    const stillOpen = target.querySelector(".hl-note-edit") === area;
     area.dispatchEvent(new Event("blur"));
-    await settle(250);
+    await settle(400);
     const stored = api.readHighlightNotes(api.state.notes || "").get(id) || "";
-    const rendered = view.querySelector('.doc-note[data-highlight-id="' + id + '"] .doc-note-body');
-    // ...and the raw editor, which is the "all of it at once" half.
+    const rendered = list.querySelector('.hl-note[data-highlight-key="' + key + '"] .hl-note-body');
+    // ...and the Notes tab, which is now the reader's own writing and nothing
+    // else: no highlights built into it, and a raw editor with the machine-
+    // managed block sliced off exactly as on any other deck.
+    api.setViewMode("notes");
+    await settle(400);
+    const view = document.getElementById("notesView");
+    const notesHasHighlights = Boolean(view.querySelector(".hl-notes"));
     const editorSees = api.rawEditorValueFor(api.state.notes || "");
     const roundTrip = api.sourceFromRawEditor(editorSees) === api.state.notes;
+    // An empty note opens its editor rather than sitting there blank — the
+    // regression that testing state.notes (which holds the block) would cause.
+    const editorOpen = api.isNotesEditing();
     // Put it back so nothing downstream sees a note this check invented.
     api.setDocumentHighlightNote(id, "");
     await settle(150);
@@ -1413,27 +1430,34 @@ try {
       articles: articles.length,
       records: records.length,
       annotated: withNotes.length,
-      focused,
-      stillOpen,
-      stored,
+      groups,
+      focused, popupOpen, stillOpen, stored,
       renderedText: rendered ? rendered.textContent.trim() : "",
+      notesHasHighlights,
       editorHasFence: editorSees.includes("<!--recall:highlight-notes-->"),
+      editorOpen,
       roundTrip
     };
   }`);
 
-  check("a document deck's Notes tab is its highlight notes",
+  check("the Highlights tab lists every highlight in the paper, with its note",
     docNotes.hasSection && docNotes.articles === docNotes.records && docNotes.records > 0,
-    `${docNotes.articles} note(s) for ${docNotes.records} highlight(s), ${docNotes.annotated} written on`);
-  check("...pressing one opens a textarea in the flow, focused",
-    docNotes.focused && docNotes.stillOpen);
+    `${docNotes.articles} entry(s) for ${docNotes.records} highlight(s), ${docNotes.annotated} written on`);
+  check("...grouped by the page they are on",
+    docNotes.groups.length > 0 && docNotes.groups.every((g) => /^Page \d+$/.test(g)),
+    docNotes.groups.join(", ") || "no group headings");
+  check("...and pressing one opens a textarea in the flow, focused, with no popup",
+    docNotes.focused && docNotes.stillOpen && !docNotes.popupOpen,
+    `focused=${docNotes.focused} open=${docNotes.stillOpen} popup=${docNotes.popupOpen}`);
   check("...and what is typed there is the highlight's note",
-    docNotes.stored === "Typed straight into the notes panel."
-      && docNotes.renderedText === "Typed straight into the notes panel.",
+    docNotes.stored === "Typed straight into the highlights tab."
+      && docNotes.renderedText === "Typed straight into the highlights tab.",
     `stored "${docNotes.stored}" · shown "${docNotes.renderedText}"`);
-  check("...with the raw editor handed the whole source, block and all",
-    docNotes.editorHasFence && docNotes.roundTrip,
-    `fence in editor=${docNotes.editorHasFence}, editor round-trips=${docNotes.roundTrip}`);
+  check("the Notes tab is the reader's own writing, not the paper's annotations",
+    !docNotes.notesHasHighlights && !docNotes.editorHasFence && docNotes.roundTrip,
+    `highlights in notes=${docNotes.notesHasHighlights} fence in editor=${docNotes.editorHasFence} round-trips=${docNotes.roundTrip}`);
+  check("...and being empty, it opens its editor rather than sitting blank",
+    docNotes.editorOpen, `raw editor open=${docNotes.editorOpen}`);
 
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //
@@ -2165,8 +2189,8 @@ try {
         await settle(500);
       }
       if (SHOT_NOTES) {
-        api.setViewMode("notes");
-        await settle(400);
+        api.setViewMode("highlights");
+        await settle(600);
       }
       await settle(60);
     }`.replace("SHOT_MENU", String(SHOT_MENU))
