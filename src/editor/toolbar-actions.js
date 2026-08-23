@@ -95,11 +95,14 @@ export function handleToolbarClick(event) {
     if (container) {
       textarea = container.querySelector("[data-all-edit-value]");
     } else {
-      // The note-over-highlight popup editor (src/notes/highlight-note-editor.js)
-      // — same "dynamic container, textarea marked by a data attribute" idiom
-      // as the All Cards editor above, since it's likewise outside the three
-      // fixed editing surfaces.
-      const noteEditor = toolbar.closest(".highlight-note-editor");
+      // A highlight's note editor (src/notes/note-editor-kit.js) — same
+      // "dynamic container, textarea marked by a data attribute" idiom as the
+      // All Cards editor above, since it is likewise outside the three fixed
+      // editing surfaces. The KIT is what is matched, not the popup: the same
+      // editor is now built inline in the Highlights tab as well, and a
+      // selector naming one of its two homes would give the other a toolbar
+      // whose buttons resolved to nothing.
+      const noteEditor = toolbar.closest(".note-editor-kit");
       if (noteEditor) textarea = noteEditor.querySelector("[data-note-edit-value]");
     }
   }

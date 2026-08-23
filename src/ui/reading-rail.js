@@ -46,7 +46,7 @@
 // those two is listening.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { refreshDrawerOnOpen } from "../panels/drawer-highlights.js?v=__BUILD__";
+import { toggleDocumentToc } from "../documents/pdf-outline.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { hasStudyTextSelection, isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
@@ -198,15 +198,11 @@ export function refreshReadingRailModes() {
 // one thing to a reader and the fact that a markdown TOC and a PDF outline are
 // built by different modules is not their problem.
 function toggleContents() {
-  if (state.viewMode === "document") {
-    const drawer = el.documentOutlineDrawer;
-    if (!drawer) return;
-    const open = drawer.hidden;
-    drawer.hidden = !open;
-    el.documentTocBtn?.setAttribute("aria-expanded", String(open));
-    if (open) refreshDrawerOnOpen(drawer);
-    return;
-  }
+  // Each surface's own opener, and neither is a `hidden` flip: both drawers are
+  // revealed by an `.is-open` class (styles/12-notes.css:801). This row used to
+  // flip `hidden` on the document drawer itself and got a fully transparent
+  // panel parked off the left edge for its trouble — see openDocumentToc.
+  if (state.viewMode === "document") return toggleDocumentToc();
   toggleNotesToc();
 }
 

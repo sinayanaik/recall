@@ -25,10 +25,18 @@
 // ── What a row costs ──────────────────────────────────────────────────────
 //
 // Nothing is rendered. A row is the highlighted words as plain text, a colour
-// chip, where it is, and a badge if a note hangs off it — see
-// panels/highlight-index.js for why that is a different shape from the panel's
-// rows. A book with five hundred highlights would otherwise be five hundred
-// marked+DOMPurify passes for a list being scanned rather than read.
+// chip, where it is, and — clipped to DRAWER_NOTE_CHARS by
+// panels/highlight-index.js — whatever was written about it. A book with five
+// hundred highlights would otherwise be five hundred marked+DOMPurify passes
+// for a list being scanned rather than read.
+//
+// ── ...and how many rows there are ────────────────────────────────────────
+//
+// A closely-read book runs to thousands of highlights, and a drawer is not an
+// index: the list is capped at DRAWER_ROW_LIMIT with one row at the bottom that
+// lifts the cap. The cap is per OPEN, so a reader who wanted the whole list
+// gets it and does not have to ask twice while the drawer stays open, and a
+// reader who did not never pays to build it.
 //
 // The list is built when the drawer opens and only if it is stale, the same
 // discipline notesTocDirty/ensureNotesTocBuilt already enforces on the contents
@@ -37,6 +45,11 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { documentHighlightEntries, noteHighlightEntries } from "./highlight-index.js?v=__BUILD__";
+
+// How many rows are built before the list offers to show the rest. Comfortably
+// more than a drawer's worth of scrolling, and far short of the thousands a
+// marked-up textbook carries.
+export const DRAWER_ROW_LIMIT = 300;
 
 export const DRAWER_SECTION_ATTR = "data-drawer-section";
 
@@ -54,6 +67,11 @@ const drawerShowing = new WeakMap();
 // is what tools/module-symbols.mjs is for.)
 const drawerDirty = new WeakMap();
 
+// Whether this drawer has been asked to show past DRAWER_ROW_LIMIT. Reset when
+// the list is next rebuilt from scratch — a different deck's highlights are a
+// different question.
+const drawerShowAll = new WeakMap();
+
 export function drawerSection(drawer) {
   return drawer ? (drawerShowing.get(drawer) || "contents") : "contents";
 }
@@ -63,7 +81,12 @@ export function drawerSection(drawer) {
 // main.js registers, and neither of them knows which drawer is open.
 export function markDrawerHighlightsDirty() {
   [el.notesTocDrawer, el.documentOutlineDrawer].forEach((drawer) => {
-    if (drawer) drawerDirty.set(drawer, true);
+    if (!drawer) return;
+    drawerDirty.set(drawer, true);
+    // A highlight made or deleted is a new list, and the reader's "show me all
+    // of them" belonged to the old one. Kept only for as long as the list it
+    // was asked of.
+    drawerShowAll.delete(drawer);
   });
 }
 
@@ -174,10 +197,6 @@ function drawerRowFor(drawer, entry) {
   text.textContent = entry.text;
 
   jump.append(chip, text);
-  // A note is said, not shown. The drawer is a way back to the highlight; the
-  // note itself is read in the Highlights tab or by pressing the number on the
-  // mark, and a drawer row that unfolded into a paragraph would stop being a
-  // list you can scan.
   if (entry.note) {
     const noted = document.createElement("span");
     noted.className = "drawer-highlight-noted";
@@ -185,13 +204,28 @@ function drawerRowFor(drawer, entry) {
     noted.title = "This highlight has a note on it";
     jump.appendChild(noted);
   }
-  // Last, so the page numbers line up as a column whether or not the row beside
-  // them carries a note.
+  // Last of the first line, so the page numbers line up as a column whether or
+  // not the row beside them carries a note.
   if (entry.where) {
     const where = document.createElement("span");
     where.className = "drawer-highlight-where";
     where.textContent = entry.where;
     jump.appendChild(where);
+  }
+  // ...and the note itself, under the words it is about.
+  //
+  // This used to be the ✎ and nothing else, on the argument that a drawer says
+  // a note is THERE and the note is read somewhere else. On a paper that falls
+  // down: the note is in a different TAB from the page being read, and "which
+  // of these did I write something about, and what" is the whole question the
+  // drawer is open to answer. It arrives already clipped (clipDrawerNote), and
+  // the CSS clamps what is left to two lines, so a row can grow by a line or
+  // two and never into a paragraph.
+  if (entry.noteText) {
+    const note = document.createElement("span");
+    note.className = "drawer-highlight-note";
+    note.textContent = entry.noteText;
+    jump.appendChild(note);
   }
 
   jump.addEventListener("click", () => {
@@ -199,10 +233,13 @@ function drawerRowFor(drawer, entry) {
     // takes the identical exact-target path: a <mark>'s ordinal in the note, or
     // a document highlight's id, with the anchor's text as the fallback search.
     scheduleNoteJump(entry.anchor, { patient: true }, entry.locator);
-    // On a phone the drawer covers the text it is about to scroll, so it gets
-    // out of the way — the same thing a contents row does. Where the drawer
-    // pushes instead of covering, it stays: the reader can walk down the list.
-    if (!tocPushesDrawer()) closeDrawerForJump(drawer);
+    // The drawer gets out of the way when it is COVERING what the jump is about
+    // to show. Above 720px the notes stage makes room for its drawer and the
+    // reader can walk down the list; the Document surface never does — a page is
+    // fit to the width of its scroller, so narrowing it would re-rasterise every
+    // page in the render window for as long as the drawer was open — so there it
+    // always closes.
+    if (drawer === el.documentOutlineDrawer || !tocPushesDrawer()) closeDrawerForJump(drawer);
   });
   item.appendChild(jump);
   return item;
@@ -234,7 +271,22 @@ export function renderDrawerHighlights(drawer) {
   const entries = drawerEntriesFor(drawer);
   list.innerHTML = "";
   const frag = document.createDocumentFragment();
-  entries.forEach((entry) => frag.appendChild(drawerRowFor(drawer, entry)));
+  const limit = drawerShowAll.get(drawer) ? entries.length : DRAWER_ROW_LIMIT;
+  entries.slice(0, limit).forEach((entry) => frag.appendChild(drawerRowFor(drawer, entry)));
+  if (entries.length > limit) {
+    const more = document.createElement("li");
+    more.className = "drawer-highlight drawer-highlight-more";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "drawer-highlight-jump drawer-highlight-more-btn";
+    button.textContent = `Show all ${entries.length}`;
+    button.addEventListener("click", () => {
+      drawerShowAll.set(drawer, true);
+      renderDrawerHighlights(drawer);
+    });
+    more.appendChild(button);
+    frag.appendChild(more);
+  }
   list.appendChild(frag);
   if (empty) {
     empty.hidden = entries.length > 0;

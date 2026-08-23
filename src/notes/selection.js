@@ -41,6 +41,36 @@ export const SELECTION_TARGETS = [
   { name: "answer", view: el.answerView, edit: el.answerEdit, isActive: () => state.viewMode === "cards" },
 ];
 
+// ── ...and a fourth that comes and goes ───────────────────────────────────
+//
+// A note written on a highlight is a markdown surface like any other — the note
+// popup and the Highlights tab's inline editor are the same textarea and the
+// same rendered preview — but it exists only while one note is open, and it is
+// a different pair of elements each time. So it is REGISTERED by whichever
+// editor is showing (src/notes/note-editor-kit.js) rather than declared above.
+//
+// Everything downstream then works unchanged: activeEditingTarget and
+// activeRenderedTarget find it, the pill's buttons resolve it by name through
+// renderTargetConfig, and applyRenderFormat splices its source exactly as it
+// splices the note's. Which is the point — until now, selecting a phrase in a
+// note about a highlight raised no pill at all.
+export const NOTE_EDITOR_TARGET = "highlight-note";
+
+let noteEditorTarget = null;
+
+export function setNoteEditorSelectionTarget(target) {
+  noteEditorTarget = target || null;
+}
+
+export function noteEditorSelectionTarget() {
+  return noteEditorTarget;
+}
+
+// THE list, for everything that resolves a selection to a surface.
+export function selectionTargets() {
+  return noteEditorTarget ? [...SELECTION_TARGETS, noteEditorTarget] : SELECTION_TARGETS;
+}
+
 export function isTargetEditing(target) {
   return Boolean(target.edit && !target.edit.hidden);
 }
@@ -49,7 +79,7 @@ export function isTargetEditing(target) {
 // non-collapsed selection in its textarea.
 export function activeEditingTarget() {
   return (
-    SELECTION_TARGETS.find((t) => {
+    selectionTargets().find((t) => {
       if (!t.isActive() || !isTargetEditing(t)) return false;
       const { selectionStart, selectionEnd } = t.edit;
       return selectionStart !== selectionEnd;
@@ -62,7 +92,7 @@ export function activeRenderedTarget() {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
   return (
-    SELECTION_TARGETS.find(
+    selectionTargets().find(
       (t) =>
         t.isActive() &&
         !isTargetEditing(t) &&
@@ -72,6 +102,22 @@ export function activeRenderedTarget() {
         t.view.contains(selection.focusNode)
     ) || null
   );
+}
+
+// Is the open note editor the thing holding the selection right now? Asked
+// before the Document branch below, which would otherwise claim every selection
+// made while a PDF is on screen — including one made in a note popup floating
+// over it, where it answers "not in #documentView" and hides the pill outright.
+export function noteEditorHoldsSelection() {
+  if (!noteEditorTarget) return false;
+  if (isTargetEditing(noteEditorTarget)) {
+    const { selectionStart, selectionEnd } = noteEditorTarget.edit;
+    return selectionStart !== selectionEnd;
+  }
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  const view = noteEditorTarget.view;
+  return Boolean(view && view.contains(selection.anchorNode) && view.contains(selection.focusNode));
 }
 
 export let notesSelectionTimer = null;
@@ -1300,7 +1346,7 @@ let pillCaptureTimer = null;
 // the release that showed the bar.
 export function ensurePillSelectionCapture() {
   if (!pillSelectionCapture?.pending) return pillSelectionCapture;
-  const target = SELECTION_TARGETS.find((t) => t.name === pillSelectionCapture.targetName);
+  const target = selectionTargets().find((t) => t.name === pillSelectionCapture.targetName);
   const range = target ? notesSelectionRange(target) : null;
   if (!range) {
     // The selection went away before we could describe it. Leave `pending` set
@@ -1510,7 +1556,8 @@ export function positionNotesSelectionButton() {
   // subtree in ahead of them for the sake of one boolean is exactly the kind of
   // reordering those notes exist to warn about. The two predicates agree on
   // everything the pill cares about.
-  if (state.viewMode === "document" && el.documentView && !el.documentView.hidden) {
+  if (state.viewMode === "document" && el.documentView && !el.documentView.hidden
+      && !noteEditorHoldsSelection()) {
     const documentRange = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
     const documentText = documentRange ? documentRange.toString().trim() : "";
     if (!documentText || !el.documentView?.contains(documentRange.startContainer)) {
@@ -1589,6 +1636,13 @@ export function positionNotesSelectionButton() {
     // face would end up with a link on it that you cannot follow while
     // studying, so the button is simply not offered there.
     if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = editingTarget.name !== "notes";
+    // A cloze written in a note ABOUT a highlight would be listed by the Cloze
+    // panel as one of the note's own (collectDeckClozes reads state.notes
+    // whole, fence and all), and studied as a blank in a sentence the reader
+    // never wrote in their notes. The one surface it is not offered on.
+    if (el.makeClozeFromSelectionBtn && editingTarget.name === NOTE_EDITOR_TARGET) {
+      el.makeClozeFromSelectionBtn.hidden = true;
+    }
     button.hidden = false;
     if (mobile) return pinSelectionButtonToBottom(button);
     // Track the actual selection (same approach as the rendered-view branch
@@ -1679,6 +1733,10 @@ export function positionNotesSelectionButton() {
   if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
   if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
   if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = renderedTarget.name !== "notes";
+  // ...and the same on the rendered half — see the editing branch above.
+  if (el.makeClozeFromSelectionBtn && renderedTarget.name === NOTE_EDITOR_TARGET) {
+    el.makeClozeFromSelectionBtn.hidden = true;
+  }
   button.hidden = false;
   if (mobile) return pinSelectionButtonToBottom(button);
   placeSelectionPillNearRange(button, range);

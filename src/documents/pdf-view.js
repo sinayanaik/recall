@@ -31,7 +31,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
-import { buildDocumentOutline, clearDocumentOutline } from "./pdf-outline.js?v=__BUILD__";
+import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
 import { scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -1463,8 +1463,15 @@ export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true } = 
 }
 
 export function updatePageIndicator() {
-  if (!el.documentPageIndicator || !openPdf) return;
-  el.documentPageIndicator.textContent = `${currentDocumentPage()} / ${openPdf.pageCount}`;
+  if (!openPdf) return;
+  const page = currentDocumentPage();
+  if (el.documentPageIndicator) el.documentPageIndicator.textContent = `${page} / ${openPdf.pageCount}`;
+  // The contents drawer's scroll-spy rides on this rather than on a scroll
+  // listener of its own: this already runs on every scroll settle and on every
+  // page render, and two answers to "which page is the reader on" is exactly the
+  // kind of second opinion that goes stale. The call is a compare on a number
+  // when the page has not changed.
+  setDocumentOutlinePage(page);
 }
 
 // Written through exactly the plumbing the notes view uses — same store, same

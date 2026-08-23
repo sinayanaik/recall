@@ -35,11 +35,42 @@ export function setCurrentCardField(side, value) {
   }
 }
 
+// ── Surfaces that are not always there ────────────────────────────────────
+//
+// The three below are fixed furniture: the notes view and the two card faces
+// exist for the whole session and are addressed by name. A note written on a
+// highlight is not — it is a textarea and a preview that exist while one note
+// is open, in the popup (src/notes/highlight-note-editor.js) or inline in the
+// Highlights tab (src/panels/highlights-editor.js) — and it is nonetheless a
+// markdown surface with a source that can be spliced, which is the entire
+// contract this function describes.
+//
+// Without this those surfaces had the toolbar and nothing else: selecting a
+// phrase in a note about a highlight raised no floating pill, so none of bold,
+// colour, highlight, erase, copy, share or web-search reached the one place in
+// the app where a reader writes about what they have just read.
+//
+// A registry rather than a fourth branch, because the surface has to bring its
+// own view, textarea and source verbs — those change per open — and because
+// nothing here should have to know which of the two editors is showing.
+const namedRenderTargets = new Map();
+
+export function registerRenderTarget(name, config) {
+  if (!name || !config) return;
+  namedRenderTargets.set(name, config);
+}
+
+export function clearRenderTarget(name) {
+  namedRenderTargets.delete(name);
+}
+
 // One place that knows, for each rendered surface (card question/answer, notes),
 // its view element, how to read/write its markdown source, how to re-render, and
 // whether it's currently in raw-edit mode. Shared by the header cloze buttons
 // and the rendered-view formatting toolbar so both stay in lock-step.
 export function renderTargetConfig(target) {
+  const registered = namedRenderTargets.get(target);
+  if (registered) return registered;
   if (target === "notes") {
     return {
       view: el.notesView,

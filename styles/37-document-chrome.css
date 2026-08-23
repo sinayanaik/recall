@@ -266,6 +266,77 @@
   white-space: normal;
 }
 
+/* ── ...and the switch beside it, for exactly the same reason ──────────────
+ *
+ * "The show inline note button in the PDF is essentially dead."
+ *
+ * It was not dead — togglePdfPageNotes ran, the mode flipped, the sheets were
+ * printed under the annotated pages. What was missing is everything that says
+ * so. styles/35-notes-menu.css:28 hides .nhm-state outright and turns it back
+ * on only inside `.notes-head-more-menu > .edit-card-btn`, and this menu's rows
+ * are `.md-menu-item` in `.document-more-menu` — so the On/Off word and the
+ * track have never been on screen here. A toggle whose state is invisible, on a
+ * paper whose annotated pages are usually not the page you are looking at, is
+ * indistinguishable from a button that does nothing.
+ *
+ * The hint above was already fixed for this menu and the switch was not, which
+ * is the drift a rule scoped to one menu's class always produces. Both halves
+ * are named here now.
+ */
+.view-mode-row > .document-more-menu .md-menu-item > .nhm-state {
+  display: inline-flex;
+  /* Explicit, because the rule above turns EVERY direct <span> of a row in this
+     menu into a column (it is meant for the label + hint stack) and .nhm-state
+     is one — left to inherit it, the word and the track would sit one above the
+     other instead of side by side. */
+  flex-direction: row;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  padding-left: 4px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* min-width so the track does not shift sideways by the width of one "f" when
+   the word beside it changes. */
+.view-mode-row > .document-more-menu .md-menu-item > .nhm-state::before {
+  content: "Off";
+  min-width: 2.2em;
+  text-align: right;
+}
+
+.view-mode-row > .document-more-menu .md-menu-item[aria-pressed="true"] > .nhm-state {
+  color: var(--accent-strong);
+}
+
+.view-mode-row > .document-more-menu .md-menu-item[aria-pressed="true"] > .nhm-state::before {
+  content: "On";
+}
+
+/* The track itself. .nhm-switch's base rule is unscoped (styles/35-notes-menu.css:236)
+   so the knob already drew here; only the "on" state was scoped to .edit-card-btn,
+   which meant flipping this row moved nothing. */
+.view-mode-row > .document-more-menu .md-menu-item[aria-pressed="true"] .nhm-switch {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, var(--line));
+}
+
+.view-mode-row > .document-more-menu .md-menu-item[aria-pressed="true"] .nhm-switch::after {
+  transform: translateX(13px);
+}
+
+/* Nothing to print, so the row is dimmed rather than disabled: pressing it still
+   works, and the hint under it says why the page did not change. Same treatment
+   the notes menu gives its own empty rows. */
+.view-mode-row > .document-more-menu .md-menu-item.is-empty > span:first-child {
+  opacity: 0.6;
+}
+
 /* .md-menu-item indents any row with no icon by 34px, which is right in the My
    Decks menu where icon rows and format rows sit together. Every row here is a
    format row, so the indent is just a ragged left edge. */

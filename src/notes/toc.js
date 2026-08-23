@@ -5,6 +5,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { drawerSection, refreshDrawerOnOpen } from "../panels/drawer-highlights.js?v=__BUILD__";
+import { TOC_TWISTY_CLASS, tocBranchesFromDepths, tocCarryFolds, tocDepthsFromLevels, tocPaintFoldAll, tocPaintFolding, tocParentsFromDepths, tocRowFor, tocRowIsHidden } from "./toc-tree.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { loadDeckFromLibrary, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
@@ -141,28 +142,6 @@ export function slugifyHeading(text, used) {
   while (used.has(slug)) slug = `toc-${base}-${n++}`;
   used.add(slug);
   return slug;
-}
-
-// Is `depths[i]` the last item among its own sibling group? (No later entry
-// at the same depth before the group is closed by something shallower.)
-export function tocIsLastSibling(depths, i) {
-  const depth = depths[i];
-  for (let j = i + 1; j < depths.length; j++) {
-    if (depths[j] < depth) return true;
-    if (depths[j] === depth) return false;
-  }
-  return true;
-}
-
-// Does the ancestor guide line at `depth` still have a later sibling coming
-// (i.e. should the vertical rail continue straight through this row at that
-// column), or has that branch already closed?
-export function tocGuideContinues(depths, i, depth) {
-  for (let j = i + 1; j < depths.length; j++) {
-    if (depths[j] < depth) return false;
-    if (depths[j] === depth) return true;
-  }
-  return false;
 }
 
 // Give every heading in the rendered note a stable slug id, and hand back the
@@ -361,28 +340,19 @@ export function applyFolderSectionDepths(depths) {
   });
 }
 
-// Is any ancestor of `index` folded? Walks the parent chain rather than
-// consulting a per-row flag, so folding a branch needs no bookkeeping on the
-// rows below it.
+// Is any ancestor of `index` folded? The walk itself is src/notes/toc-tree.js —
+// this is the notes list's own keys handed to it.
 export function isNotesTocRowHidden(index) {
-  for (let p = notesTocParent[index]; p >= 0; p = notesTocParent[p]) {
-    if (notesTocCollapsed.has(notesTocHeadings[p]?.id)) return true;
-  }
-  return false;
+  return tocRowIsHidden(notesTocParent, notesTocHeadings.map((h) => h?.id), notesTocCollapsed, index);
 }
 
 export function applyNotesTocFolding() {
-  notesTocItems.forEach((li, index) => {
-    if (!li) return;
-    li.hidden = isNotesTocRowHidden(index);
-    if (!notesTocBranch[index]) return;
-    const collapsed = notesTocCollapsed.has(notesTocHeadings[index]?.id);
-    li.dataset.tocCollapsed = collapsed ? "true" : "false";
-    const twisty = li.querySelector(".notes-toc-twisty");
-    if (twisty) {
-      twisty.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      twisty.setAttribute("aria-label", `${collapsed ? "Expand" : "Collapse"} ${notesTocHeadings[index]?.text || "section"}`);
-    }
+  tocPaintFolding({
+    items: notesTocItems,
+    keys: notesTocHeadings.map((heading) => heading?.id),
+    parents: notesTocParent,
+    branches: notesTocBranch,
+    collapsed: notesTocCollapsed
   });
   // The row that was lit may have just been folded away, or revealed, so the
   // scroll-spy has to pick again from scratch. Clearing the class from every
@@ -431,19 +401,16 @@ export function updateNotesTocFoldAllButton() {
   // be in it, and keeping them out keeps that file the pre-split one.
   const button = document.getElementById("notesTocFoldAllBtn");
   if (!button) return;
-  const anyBranch = notesTocBranch.some(Boolean);
-  button.hidden = !anyBranch;
-  if (!anyBranch) return;
-  const collapsed = allNotesTocBranchesCollapsed();
-  button.textContent = collapsed ? "⊞" : "⊟";
-  button.title = collapsed ? "Expand all sections" : "Collapse all sections";
-  button.setAttribute("aria-label", button.title);
+  tocPaintFoldAll(button, {
+    anyBranch: notesTocBranch.some(Boolean),
+    allCollapsed: allNotesTocBranchesCollapsed()
+  });
 }
 
 // One delegated listener for the whole list, however many thousand rows it has.
 export function initNotesTocFolding() {
   el.notesTocList?.addEventListener("click", (event) => {
-    const twisty = event.target.closest(".notes-toc-twisty");
+    const twisty = event.target.closest(`.${TOC_TWISTY_CLASS}`);
     if (!twisty) return;
     // Stopped as well as prevented: the row's own click handler (which jumps to
     // the heading) is on the same list, and the twisty sits ON TOP of the <a>.
@@ -482,99 +449,41 @@ export function buildNotesToc() {
 
   // Normalise the shallowest heading level to depth 0 so notes that start at
   // ## still indent from the left edge rather than looking pushed-in.
-  const minLevel = notesTocHeadings.reduce((min, h) => Math.min(min, h.level), 6);
-  const depths = notesTocHeadings.map((h) => Math.min(h.level - minLevel, 4));
+  const depths = tocDepthsFromLevels(notesTocHeadings.map((h) => h.level));
   applyFolderSectionDepths(depths);
 
-  // The relation the flat list does not carry. A heading's parent is the
-  // nearest earlier heading shallower than it; a heading is a branch when the
-  // very next one is deeper, which is the only way a child can begin.
-  const openAtDepth = [];
-  notesTocParent = depths.map((depth, index) => {
-    openAtDepth.length = depth;
-    // Walks DOWN for the nearest open ancestor rather than reading depth-1
-    // directly: depths are not guaranteed contiguous — a note that goes from #
-    // straight to ###, or a folder section whose decks nest differently from
-    // one another, leaves a hole, and a hole read as "no parent" would make a
-    // heading unfoldable from the section above it.
-    let parent = -1;
-    for (let d = depth - 1; d >= 0; d -= 1) {
-      if (openAtDepth[d] !== undefined) { parent = openAtDepth[d]; break; }
-    }
-    openAtDepth[depth] = index;
-    return parent;
-  });
-  notesTocBranch = depths.map((depth, index) => index + 1 < depths.length && depths[index + 1] > depth);
+  // The relation the flat list does not carry — see src/notes/toc-tree.js,
+  // which the document contents builds its own tree with too.
+  notesTocParent = tocParentsFromDepths(depths);
+  notesTocBranch = tocBranchesFromDepths(depths);
 
   // Fold state, carried over by slug. Anything not seen before is folded, so a
   // note opens as its top-level outline; pruning to the current note's slugs is
   // what makes a different note start folded again.
-  const nextKnown = new Set();
-  const nextCollapsed = new Set();
-  notesTocHeadings.forEach((heading, index) => {
-    if (!notesTocBranch[index]) return;
-    nextKnown.add(heading.id);
-    if (!notesTocKnownBranches.has(heading.id) || notesTocCollapsed.has(heading.id)) nextCollapsed.add(heading.id);
+  const carried = tocCarryFolds({
+    keys: notesTocHeadings.map((heading) => heading.id),
+    branches: notesTocBranch,
+    known: notesTocKnownBranches,
+    collapsed: notesTocCollapsed
   });
-  notesTocKnownBranches = nextKnown;
-  notesTocCollapsed = nextCollapsed;
+  notesTocKnownBranches = carried.known;
+  notesTocCollapsed = carried.collapsed;
 
   notesTocHeadings.forEach((heading, index) => {
-    // Ids are already assigned by ensureNotesHeadingIds above.
-    const level = heading.level;
-    const depth = depths[index];
-
-    const li = document.createElement("li");
-    li.className = "notes-toc-item";
-    // The twisty is positioned against the row, at this row's own indent, so
-    // the depth has to be readable from the <li> as well as from the link.
-    li.style.setProperty("--toc-depth", String(depth));
-    const link = document.createElement("a");
-    link.className = "notes-toc-link";
-    link.href = `#${heading.id}`;
-    link.dataset.tocIndex = String(index);
-    link.style.setProperty("--toc-depth", String(depth));
-
-    // Tree rail: one column per ancestor level, plus an elbow connecting up
-    // to the parent chain and across to this item's dot — the last column
-    // is a "├" (more siblings follow) or "└" (last child) elbow, columns
-    // before it are plain vertical guides that only continue if that
-    // ancestor branch still has more siblings coming later in the list.
-    let rail = "";
-    for (let d = 0; d < depth; d++) {
-      if (d === depth - 1) {
-        rail += `<span class="notes-toc-elbow" data-last="${tocIsLastSibling(depths, index)}"></span>`;
-      } else {
-        // Column d represents the ancestor ONE level below it (d+1) — e.g.
-        // column 0 for a depth-3 item is its grandparent's level (depth 1),
-        // not the root's (depth 0); the root gets no column of its own since
-        // depth-0 headings never get a rail at all.
-        rail += `<span class="notes-toc-guide" data-state="${tocGuideContinues(depths, index, d + 1) ? "line" : "blank"}"></span>`;
-      }
-    }
-
-    link.innerHTML =
-      (rail ? `<span class="notes-toc-rail" aria-hidden="true">${rail}</span>` : "") +
-      `<span class="notes-toc-dot" data-level="${level}"></span>` +
-      `<span class="notes-toc-text"></span>`;
-    link.querySelector(".notes-toc-text").textContent = heading.text;
-    li.appendChild(link);
-
-    // A <button> cannot live inside the <a> — nesting interactive content is
-    // invalid and browsers reparent it out of the link, which in a list built
-    // with innerHTML lands it somewhere unpredictable. It is a SIBLING of the
-    // link, laid over the dot cell, and the row keeps working as one big target
-    // everywhere the twisty is not.
-    if (notesTocBranch[index]) {
-      li.classList.add("is-branch");
-      const twisty = document.createElement("button");
-      twisty.type = "button";
-      twisty.className = "notes-toc-twisty";
-      twisty.dataset.tocIndex = String(index);
-      twisty.innerHTML = '<span class="notes-toc-twisty-glyph" aria-hidden="true">▸</span>';
-      li.appendChild(twisty);
-    }
-
+    // Ids are already assigned by ensureNotesHeadingIds above. The row itself —
+    // rail, dot, text, twisty — is src/notes/toc-tree.js, so this list and the
+    // document's cannot drift apart. `href` is what makes these <a>s: a heading
+    // in a note has a real anchor to be middle-clicked to, where a PDF page has
+    // none.
+    const { li, link } = tocRowFor({
+      index,
+      depth: depths[index],
+      depths,
+      level: heading.level,
+      text: heading.text,
+      href: `#${heading.id}`,
+      branch: notesTocBranch[index]
+    });
     el.notesTocList.appendChild(li);
     notesTocLinks.push(link);
     notesTocItems.push(li);

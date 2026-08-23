@@ -40,8 +40,9 @@ import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__
 import { highlightNoteTextAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
-import { installMarkdownKeys } from "../editor/markdown-keys.js?v=__BUILD__";
+import { installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
 import { NOTE_AUTOSAVE_MS } from "../notes/highlight-note-editor.js?v=__BUILD__";
+import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { addRegionPreview } from "./highlights-panel.js?v=__BUILD__";
@@ -61,6 +62,18 @@ let editingKey = null;
 let noteSaveTimer = 0;
 
 let noteSavedText = "";
+
+// The editor currently open in the flow, and the entry it belongs to. Held here
+// rather than found by querying the DOM on commit: the panel can be rebuilt
+// from under a blur, and a stale index into a fresh array is how a note ends up
+// written onto a different highlight.
+let openNoteKit = null;
+
+let openNoteEntry = null;
+
+// The shortest an in-place editor is, in pixels. Tall enough that a one-line
+// note still reads as a box you are writing in rather than as a field.
+export const HL_NOTE_EDIT_MIN_PX = 96;
 
 // ── Where a note is written ─────────────────────────────────────────────────
 //
@@ -192,10 +205,18 @@ export const HL_ENTRY_LINE_CHARS = 68;
 
 export const HL_ENTRY_LINE_PX = 28;
 
+// The head, the card's own padding and borders, and the rule between the quote
+// and the note — everything in an entry that is not a line of text. It went up
+// when an entry became a bounded card rather than a paragraph with a rail
+// (styles/44-highlights-editor.css): the estimate is what three hundred
+// unpainted entries are spread down the scroller by, and one that is short by
+// 24px per entry puts the scrollbar out by a screenful over a marked-up book.
+export const HL_ENTRY_CHROME_PX = 64;
+
 export function estimateEntryHeight(entry) {
   const quoteLines = Math.max(1, Math.ceil((entry.markdown || "").length / HL_ENTRY_LINE_CHARS));
   const noteLines = entry.note ? Math.max(1, Math.ceil(entry.note.length / HL_ENTRY_LINE_CHARS)) : 1;
-  return 40 + (quoteLines + noteLines) * HL_ENTRY_LINE_PX;
+  return HL_ENTRY_CHROME_PX + (quoteLines + noteLines) * HL_ENTRY_LINE_PX;
 }
 
 function articleFor(entry) {
@@ -259,13 +280,19 @@ export function commitOpenNote({ repaint = true } = {}) {
   noteSaveTimer = 0;
   const key = editingKey;
   if (!key) return;
-  const list = el.highlightsList;
-  const area = list?.querySelector(`.${HL_NOTE_CLASS}[data-highlight-key="${CSS.escape(key)}"] .hl-note-edit`);
-  const article = area?.closest(`.${HL_NOTE_CLASS}`);
-  const entry = area?.__hlEntry || null;
-  const text = area ? area.value : null;
+  const kit = openNoteKit;
+  const article = kit?.root?.closest(`.${HL_NOTE_CLASS}`) || null;
+  const entry = openNoteEntry;
+  const text = kit ? kit.textarea.value : null;
   editingKey = null;
-  if (area) area.remove();
+  openNoteKit = null;
+  openNoteEntry = null;
+  if (kit) {
+    // Before the node goes: a registration outliving its textarea would leave
+    // the floating pill formatting against a note nobody has open.
+    kit.detach();
+    kit.root.remove();
+  }
   // Written BEFORE the note is painted back, not after: paintNoteBody reads the
   // note off the entry, so repainting first would show the text the reader has
   // just replaced.
@@ -296,6 +323,15 @@ function restampSignature() {
   if (root) root.dataset.signature = editorSignature(lastEntries);
 }
 
+// ── Editing, with the same tools the popup has ──────────────────────────────
+//
+// This was a bare <textarea> with Ctrl+B bound to it, beside a popup carrying
+// the full formatting strip, the syntax-highlight mirror, an undo ring,
+// Write/Preview and the in-note image grips — the same note, in the same
+// markdown, with a quarter of the tools depending on which way you opened it.
+// Both build src/notes/note-editor-kit.js now, so there is nothing left to
+// diverge, and selecting a phrase in here raises the floating pill exactly as
+// selecting one in the note does.
 function openNoteEditor(article, entry) {
   const key = entryKey(entry);
   if (editingKey === key) return;
@@ -306,55 +342,82 @@ function openNoteEditor(article, entry) {
   paintEntry(article);
   const body = article.querySelector(`.${HL_NOTE_CLASS}-body`);
   if (!body) return;
-  const area = document.createElement("textarea");
-  area.className = "hl-note-edit";
-  area.spellcheck = false;
-  area.value = entry.note || "";
-  // The entry is hung on the node rather than looked up again on commit: the
-  // panel can be rebuilt from under a blur, and a stale index into a fresh
-  // array is how a note ends up written onto a different highlight.
-  area.__hlEntry = entry;
-  noteSavedText = area.value;
-  editingKey = key;
+
   let noteUndoTaken = false;
-  article.classList.add("is-editing");
-  body.after(area);
-  // Sized to what is in it, so a long note is never written through a slot.
-  // Re-run on input rather than by CSS, which has no way to measure a textarea.
-  const fit = () => {
-    area.style.height = "auto";
-    area.style.height = `${Math.max(72, area.scrollHeight)}px`;
-  };
-  area.addEventListener("input", () => {
-    fit();
-    clearTimeout(noteSaveTimer);
-    noteSaveTimer = setTimeout(() => {
-      noteSaveTimer = 0;
-      if (area.value === noteSavedText) return;
-      noteVerbsFor(entry).write(area.value, { rerender: false, undo: !noteUndoTaken });
-      noteUndoTaken = true;
-      noteSavedText = area.value;
-      entry.note = area.value;
-    }, NOTE_AUTOSAVE_MS);
+  const kit = createNoteEditorKit({
+    onInput: () => {
+      fit();
+      clearTimeout(noteSaveTimer);
+      noteSaveTimer = setTimeout(() => {
+        noteSaveTimer = 0;
+        if (kit.textarea.value === noteSavedText) return;
+        noteVerbsFor(entry).write(kit.textarea.value, { rerender: false, undo: !noteUndoTaken });
+        noteUndoTaken = true;
+        noteSavedText = kit.textarea.value;
+        entry.note = kit.textarea.value;
+      }, NOTE_AUTOSAVE_MS);
+    },
+    onModeChange: () => fit()
   });
-  area.addEventListener("blur", () => commitOpenNote());
-  area.addEventListener("keydown", (event) => {
+  kit.root.classList.add("hl-note-editor");
+  kit.setValue(entry.note || "");
+  noteSavedText = kit.textarea.value;
+  editingKey = key;
+  openNoteKit = kit;
+  openNoteEntry = entry;
+  article.classList.add("is-editing");
+  body.after(kit.root);
+
+  // Sized to what is in it, so a long note is never written through a slot. The
+  // height goes on the WRAPPER, not on the textarea: enableSyntaxHighlighting
+  // pairs the textarea with a backdrop that paints every visible pixel, and
+  // styles/10-editor.css gives both `height: 100% !important` so the two can
+  // never disagree about a metric. Measured from `auto` first, so the box can
+  // shrink again when text is deleted.
+  const fit = () => {
+    const wrapper = kit.textareaWrapper;
+    if (!wrapper || wrapper.hidden) return;
+    wrapper.style.height = "auto";
+    wrapper.style.height = `${Math.max(HL_NOTE_EDIT_MIN_PX, kit.textarea.scrollHeight)}px`;
+  };
+
+  // ── Committing when the reader actually leaves ───────────────────────────
+  //
+  // This used to be `blur` on the textarea, which was right when the textarea
+  // was the whole editor and is wrong now: pressing a toolbar button, opening
+  // the colour menu or switching to Preview all move the focus off it, and each
+  // one would have torn the editor down mid-edit. What ends the session is the
+  // focus leaving the EDITOR, and that is asked one task later — a focusout
+  // reports where the focus is going before it has landed, and for a click on
+  // something unfocusable it reports nothing at all.
+  kit.root.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (editingKey !== key) return;
+      if (kit.root.contains(document.activeElement)) return;
+      // The floating pill is a fixed overlay outside this subtree, and every one
+      // of its buttons is pointerdown + preventDefault precisely so the
+      // selection survives — so a press there never moves the focus and never
+      // reaches here. Anything that does is the reader leaving.
+      commitOpenNote();
+    }, 0);
+  });
+  kit.root.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     event.stopPropagation();
     commitOpenNote();
   });
-  // The same formatting keys the note popup has, on the same terms — this is
-  // the other place a highlight's note gets written, and the two should not
-  // disagree about what Ctrl+B does. Ctrl+E means the same thing it means
-  // everywhere else, "show me the other mode", which here is the rendered note:
-  // committing puts the textarea away and paints it back.
-  installMarkdownKeys(area, {
+  // Ctrl+E means the same thing it means everywhere else, "show me the other
+  // mode" — which in the flow of a list is the rendered note, so committing puts
+  // the editor away and paints it back. Ctrl+Enter is done.
+  installModeKeys(kit.root, {
     toggleMode: () => commitOpenNote(),
     done: () => commitOpenNote()
   });
+  kit.setMode("write");
+  kit.attach();
   fit();
-  area.focus();
-  area.setSelectionRange(area.value.length, area.value.length);
+  kit.textarea.focus();
+  kit.textarea.setSelectionRange(kit.textarea.value.length, kit.textarea.value.length);
 }
 
 // ── The surface ─────────────────────────────────────────────────────────────

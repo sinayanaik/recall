@@ -53,6 +53,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import {
@@ -405,5 +406,41 @@ export function togglePdfPageNotes() {
     /* private mode — the toggle still works for this session */
   }
   applyPdfPageNotes();
+  announcePdfPageNotes();
   return pageNotesOn;
+}
+
+// ── Say what the press did ─────────────────────────────────────────────────
+//
+// "The show inline note button in the PDF is essentially dead."
+//
+// Half of that was the switch on the row being invisible (see the rule for it
+// in styles/37-document-chrome.css); this is the other half. The sheets print
+// under the pages that HAVE an annotated highlight, and on a paper being read
+// from the front those are usually nowhere near the page on screen — so the
+// mode came on, worked perfectly, and changed nothing the reader could see.
+//
+// So it reports, and when there is something to show that is off screen it goes
+// there. Turning the mode OFF says nothing: the sheets vanishing from under the
+// page is its own answer, and a toast for it would be noise on every press.
+export function announcePdfPageNotes() {
+  if (!pageNotesOn) return;
+  const annotated = annotatedDocumentHighlights();
+  if (!annotated.length) {
+    showToast("No highlight in this paper has a note on it yet — write one and it prints under its page");
+    return;
+  }
+  const pages = new Set();
+  annotated.forEach(({ record }) => {
+    const page = Number(record.page || record.quads?.[0]?.page || 0);
+    if (page) pages.add(page);
+  });
+  const count = annotated.length;
+  showToast(`${count} note${count === 1 ? "" : "s"} printed under ${pages.size} page${pages.size === 1 ? "" : "s"}`);
+  // Already looking at one? Then the reader has just watched it appear and
+  // moving them would be the rude thing to do.
+  const here = currentDocumentPage();
+  if (pages.has(here)) return;
+  const nearest = [...pages].sort((a, b) => Math.abs(a - here) - Math.abs(b - here))[0];
+  if (nearest) scrollToDocumentPage(nearest, 0);
 }

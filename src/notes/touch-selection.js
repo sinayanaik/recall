@@ -430,7 +430,52 @@ export const SELECTION_DEFEND_GAP_MS = 16;
 let scrollSettleTimer = 0;
 
 export function touchSelectionRoots() {
-  return [el.notesView, el.questionView, el.answerView].filter(Boolean);
+  return [el.notesView, el.questionView, el.answerView, el.documentView].filter(Boolean);
+}
+
+// ── One controller, two shapes of surface ──────────────────────────────────
+//
+// Everything above this line is about markdown: a "block" is a <p> or an <li>,
+// the chunk wrappers of a long note are stepped through, and a caret that lands
+// in the margin between two paragraphs is repaired against the pair either side
+// of it. None of that is a fact about SELECTION — it is a fact about the notes
+// view — and the Document surface is the same gesture over a different tree:
+//
+//   #documentView > .pdf-pages > .pdf-page > .pdf-text-layer > span[data-item-index]
+//
+// where a "block" is one text item's span and the thing that owns a run of them
+// is the page's text layer.
+//
+// The header of this file explains at length why the native gesture had to be
+// taken over on a touch screen: a main-thread-gated 3-4 second press, handles
+// drawn from a stale layout snapshot, a hit-test that resolves into padding at
+// the edge of a block. Every one of those is WORSE over a PDF, not better — the
+// text layer is hundreds of absolutely-positioned transparent spans over a
+// canvas, and a page rendering mid-gesture is exactly the layout change that
+// desyncs a native handle. So the surface is bound like any other, and the two
+// places that were quietly notes-specific ask which root they are on.
+export const PDF_TEXT_LAYER_CLASS = "pdf-text-layer";
+
+export const PDF_TEXT_ITEM_SELECTOR = "[data-item-index]";
+
+function isDocumentSelectionRoot(root) {
+  return Boolean(root) && root === el.documentView;
+}
+
+// The selector for "the smallest thing a caret repair should search inside".
+function rootBlockSelector(root) {
+  return isDocumentSelectionRoot(root) ? PDF_TEXT_ITEM_SELECTOR : NOTES_BLOCK_SELECTOR;
+}
+
+// Is `node` the container a top-level block of this surface sits directly in?
+//
+// On the document surface this is deliberately the TEXT LAYER and not
+// #documentView: left to isTopLevelBlockParent, topLevelBlockFor would walk all
+// the way up to .pdf-pages — whose parent IS the root — and hand the gap-repair
+// search the entire document's text nodes to sweep, per drag frame.
+function isRootBlockParent(node, root) {
+  if (isDocumentSelectionRoot(root)) return Boolean(node?.classList?.contains(PDF_TEXT_LAYER_CLASS));
+  return isTopLevelBlockParent(node, root);
 }
 
 // The range the reader currently has selected with a finger, or null. Exported
@@ -501,11 +546,10 @@ function contentBox(root) {
 // of text. The nearest block INSIDE it is both the cheaper answer and the one the
 // reader meant; picking it by vertical distance is the same rule closestCaretIn
 // uses one level down.
-function narrowToBlock(hit, y) {
-  if (!hit?.classList?.contains(NOTES_CHUNK_CLASS)) return hit;
+function nearestChildTo(host, y) {
   let best = null;
   let bestDistance = Infinity;
-  for (const child of hit.children) {
+  for (const child of host.children) {
     const rect = child.getBoundingClientRect();
     if (!rect.height && !rect.width) continue;
     const distance = y < rect.top ? rect.top - y : (y > rect.bottom ? y - rect.bottom : 0);
@@ -514,14 +558,33 @@ function narrowToBlock(hit, y) {
       best = child;
     }
   }
-  return best || hit;
+  return best;
+}
+
+function narrowToBlock(hit, y, root) {
+  // The document surface's own version of the same rule. A probe that misses a
+  // glyph box lands on the text layer, on the page, or on the box the pages sit
+  // in — none of which is an anchor, and the last of which is the whole
+  // document. The nearest SPAN inside whichever of those it was is both the
+  // cheaper answer and the one the reader meant.
+  if (isDocumentSelectionRoot(root)) {
+    if (hit?.matches?.(PDF_TEXT_ITEM_SELECTOR)) return hit;
+    const layer = hit?.classList?.contains(PDF_TEXT_LAYER_CLASS)
+      ? hit
+      : hit?.querySelector?.(`.${PDF_TEXT_LAYER_CLASS}`)
+        || nearestChildTo(hit, y)?.querySelector?.(`.${PDF_TEXT_LAYER_CLASS}`);
+    if (!layer) return hit;
+    return nearestChildTo(layer, y) || layer;
+  }
+  if (!hit?.classList?.contains(NOTES_CHUNK_CLASS)) return hit;
+  return nearestChildTo(hit, y) || hit;
 }
 
 function elementNear(x, y, root) {
   for (const dy of [0, -6, 6, -16, 16, -28, 28]) {
     const hit = document.elementFromPoint(x, y + dy);
     if (!hit || !root.contains(hit) || hit === root) continue;
-    return narrowToBlock(hit, y);
+    return narrowToBlock(hit, y, root);
   }
   return null;
 }
@@ -680,8 +743,8 @@ function caretOnNearestLine(block, x, y, root) {
 function topLevelBlockFor(node, root) {
   // `up`, not `el`: this module imports `el` (the DOM handle registry).
   let up = node?.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-  while (up && up !== root && !isTopLevelBlockParent(up.parentNode, root)) up = up.parentElement;
-  return up && up !== root && isTopLevelBlockParent(up.parentNode, root) ? up : null;
+  while (up && up !== root && !isRootBlockParent(up.parentNode, root)) up = up.parentElement;
+  return up && up !== root && isRootBlockParent(up.parentNode, root) ? up : null;
 }
 
 // The block before `block` in reading order, stepping out of a chunk wrapper
@@ -689,6 +752,10 @@ function topLevelBlockFor(node, root) {
 function previousTopLevelBlock(block, root) {
   const before = block.previousElementSibling;
   if (before) return before;
+  // The first span of a page's text layer has no previous sibling and no chunk
+  // to step out of; the page before it is a different page, which the gap
+  // repair has no business reaching into.
+  if (isDocumentSelectionRoot(root)) return null;
   const chunk = block.parentElement;
   if (!chunk || chunk === root || !chunk.classList?.contains(NOTES_CHUNK_CLASS)) return null;
   return chunk.previousElementSibling?.lastElementChild || null;
@@ -811,7 +878,7 @@ export function caretInRoot(x, y, root) {
   // 2. Still an element — the point is in a margin, or on an atomic block. Find
   //    the block it belongs to and take the closest caret inside it.
   const elementHost = (direct && direct.node && direct.node.nodeType === Node.ELEMENT_NODE && root.contains(direct.node))
-    ? narrowToBlock(direct.node, cy)
+    ? narrowToBlock(direct.node, cy, root)
     : elementNear(cx, cy, root);
   if (elementHost) {
     const inside = closestCaretIn(elementHost, x, cy);
@@ -1772,7 +1839,7 @@ export const PRESS_SETTLE_MAX_PX = 64;
 export function driftAnchorAt(x, y, root) {
   const hit = document.elementFromPoint(x, y);
   if (!hit || hit === root || !root.contains(hit)) return null;
-  return hit.closest?.(NOTES_BLOCK_SELECTOR) || hit;
+  return hit.closest?.(rootBlockSelector(root)) || hit;
 }
 
 // ── "Has the page moved under this finger?" ────────────────────────────────
@@ -1946,6 +2013,18 @@ function onRootTouchStart(event) {
   // bare <div>, so it has to be named — the same reason src/cards/swipe.js and
   // src/notes/mark-menu.js name it.
   if (event.target?.closest?.(".notes-img-resize-handle, .notes-img-delete-btn, .notes-img-size-badge, .diagram-zoom")) {
+    cancelPress();
+    dismissPending = false;
+    return;
+  }
+
+  // Region select is a drag of its own: the reader is drawing a box round a
+  // figure, and a press that armed a text selection underneath it would buzz,
+  // select a word and fight the marquee for the same finger. Asked of the DOM
+  // rather than by importing isRegionSelectArmed — this module is reached from
+  // the notes subtree and pulling the whole document subtree in behind it is
+  // the reordering src/notes/selection.js's own document branch warns about.
+  if (isDocumentSelectionRoot(root) && el.documentStage?.classList.contains("is-region-select")) {
     cancelPress();
     dismissPending = false;
     return;
