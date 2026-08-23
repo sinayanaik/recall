@@ -387,7 +387,7 @@ try {
       const pulled = pull(a, cloud);
       const pushed = push(a, cloud);
       // The push used to return null here and the deck's whole meta then went to
-      // the cloud unmerged — see mergeDeckMetaBeforePush. It reconciles every
+      // the cloud unmerged — see mergeDeckMeta. It reconciles every
       // deck now; what must stay true is that a deck with nothing on either side
       // grows no keys and reports `changed: false`, so no snapshot is rewritten.
       return (pulled.pdfHighlights === null && pushed && pushed.changed === false
@@ -443,6 +443,23 @@ try {
       const r = docSync.reconcileDeckBeforePush(
         { notes: "", meta: { pdf: { name: "mine.pdf", sha256: "zzz" } } }, { notes: "", meta: {} });
       return r?.meta?.pdf?.sha256 === "zzz" || `meta.pdf is ${JSON.stringify(r?.meta?.pdf)}`;
+    });
+    must("...and the pull is the same story with the sides swapped", () => {
+      // The pull's meta was `{ ...cloudMeta }` with linkIds unioned back on, so a
+      // bookmark set on this device while offline, or a paper attached here and
+      // not yet pushed, was destroyed by the next pull exactly as the push
+      // destroyed the other device's. Same rules, preference the other way.
+      const merged = docSync.mergeDeckMeta(
+        { bookmark: { offset: 4, at: 100 }, quickNoteCategories: [{ id: "qc_1", name: "Theirs" }] },
+        { pdf: { name: "mine.pdf" }, bookmark: { offset: 9, at: 500 }, quickNoteCategories: [{ id: "qc_2", name: "Mine" }] },
+        { prefer: "cloud" });
+      const lost = [];
+      if (!merged.pdf) lost.push("pdf");
+      // Newer by its own stamp, and this device's — the cloud being the side we
+      // are pulling from does not make it right about when the reader was there.
+      if (merged.bookmark?.offset !== 9) lost.push("bookmark");
+      if ((merged.quickNoteCategories || []).length !== 2) lost.push("quickNoteCategories");
+      return !lost.length || `lost on the pull: ${lost.join(", ")}`;
     });
     must("...and a row with no notes column is still refused outright", () => {
       // The slim index row. Merging against a column it has never seen would

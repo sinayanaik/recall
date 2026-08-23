@@ -400,7 +400,7 @@ const INVARIANTS = String.raw`(api) => {
   });
   must("an ordinary deck's push moves nothing it did not have to", () => {
     // It used to return null here and the deck's whole meta then went up
-    // unmerged — see mergeDeckMetaBeforePush for what that cost a deck with a
+    // unmerged — see mergeDeckMeta for what that cost a deck with a
     // bookmark, a link id or a quick-note category on it. It runs for every deck
     // now; what has to stay true is that a deck with nothing to reconcile still
     // reports changed:false, so the snapshot is not rewritten on every sync.

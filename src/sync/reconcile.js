@@ -35,7 +35,7 @@ import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWork
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
 import { calculateSyncDiff, syncTextChanged } from "./diff.js?v=__BUILD__";
-import { mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
+import { mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
@@ -144,20 +144,20 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   const cloudMeta = cloudCarriesBody
     ? (cloud.meta && typeof cloud.meta === "object" ? cloud.meta : {})
     : (oldSnapshot?.meta && typeof oldSnapshot.meta === "object" ? oldSnapshot.meta : {});
-  // The meta bag is otherwise cloud-wins, and stays that way — but linkIds is the
-  // one key where every device holds a piece of the truth, and the cloud copy is
-  // only ever "what the last device to push happened to know". Taking it whole
-  // would drop the ids THIS device has minted for this deck, breaking the links
-  // written here on every other device — the exact bug this key exists to fix.
-  // Union instead, plus the localId being resolved right now, and let
-  // noteLinkAliasesFor sort and cap it so all devices converge on one array.
-  const incomingMeta = {
-    ...cloudMeta,
-    linkIds: noteLinkAliasesFor(
-      { linkIds: [...(Array.isArray(cloudMeta.linkIds) ? cloudMeta.linkIds : []), ...(Array.isArray(oldSnapshot?.meta?.linkIds) ? oldSnapshot.meta.linkIds : [])] },
-      localId
-    )
-  };
+  // The meta bag stays cloud-wins for any key without a rule of its own — the
+  // cloud row is the newer one, which is why we are pulling it. What it is NOT
+  // is authoritative about the keys where every device holds a piece of the
+  // truth, and taking those whole destroyed this device's copy exactly as the
+  // push destroyed the other device's. linkIds was the one key that had been
+  // noticed; mergeDeckMeta settles the rest of them (the paper, the bookmark, the
+  // reader's place, the quick-note categories and anchors) on the same terms as
+  // the push, with the preference the other way round.
+  //
+  // linkIds still goes through noteLinkAliasesFor afterwards, because the merge
+  // cannot do the half that matters most here: adding the localId being resolved
+  // right now, and sorting and capping so all devices converge on one array.
+  const incomingMeta = mergeDeckMeta(cloudMeta, oldSnapshot?.meta, { prefer: "cloud" });
+  incomingMeta.linkIds = noteLinkAliasesFor(incomingMeta, localId);
   // ── The document's annotations ──────────────────────────────────────────
   //
   // The second place where every device holds part of the truth. Highlighting a
@@ -447,7 +447,7 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   // written about them, and every other key in the shared meta bag — which,
   // because the pull gate is a timestamp comparison, is exactly what a device
   // with any local edit at all does. See reconcileDeckBeforePush and
-  // mergeDeckMetaBeforePush.
+  // mergeDeckMeta.
   //
   // The merged result is written back into the snapshot too, not just sent: a
   // device that only ever pushes would otherwise never hold the other's work,

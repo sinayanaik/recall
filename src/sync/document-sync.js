@@ -234,28 +234,40 @@ export function mergeDocumentAnnotations({
 //   • readingPosition — settled by whoever pushed last rather than by its own
 //                  `at`, which is the stamp it carries for exactly this purpose.
 //
-// The full cloud row is already in hand at push time — fetchCloudDeckRows does
-// select("*") and pushLibraryDeckToCloud is handed the result — so this costs no
-// extra request. Local wins by DEFAULT, which keeps today's behaviour for any key
-// nobody has a rule for; the rules below are the exceptions where "the device
-// that pushed last" is the wrong answer.
+// The full cloud row is already in hand on both sides — fetchCloudDeckRows does
+// select("*") and both pullCloudDeckIntoLibraryLocked and pushLibraryDeckToCloud
+// are handed the result — so this costs no extra request.
+//
+// `prefer` is the side that wins a key nobody has a rule for, and it is the ONLY
+// thing that differs between the two callers: "local" on the push (this device
+// is the one sending), "cloud" on the pull (the cloud row is the newer one).
+// Keeping the default that way preserves each direction's existing behaviour for
+// every key not named below; the rules ARE the exceptions, where "whoever synced
+// last" is the wrong answer.
+//
+// The pull needs it as much as the push does. Its meta was `{ ...cloudMeta }`
+// with linkIds unioned back on — so a bookmark set on this device while offline,
+// or a paper attached here and not yet pushed, was destroyed by the next pull
+// exactly as the push destroyed the other device's.
 //
 // Deliberately implemented here rather than by importing the canonical helpers:
 // noteLinkAliasesFor pulls in src/notes/link-picker.js and the category
 // normaliser pulls in the whole cloud/board subtree, and this module is
 // string-and-object work by design so tools/document-sync-check.mjs can drive it
 // straight from Node with no browser. The shapes are named beside each rule.
-export function mergeDeckMetaBeforePush(cloudMeta, localMeta) {
+export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   const cloud = cloudMeta && typeof cloudMeta === "object" ? cloudMeta : {};
   const local = localMeta && typeof localMeta === "object" ? localMeta : {};
-  const next = { ...cloud, ...local };
+  const winner = prefer === "cloud" ? cloud : local;
+  const loser = prefer === "cloud" ? local : cloud;
+  const next = { ...loser, ...winner };
 
   // meta.pdf — only ever written, never deleted: "Remove from cloud" sets
   // offloaded:true and leaves the record (see offloadCurrentDocument), because
   // the highlights are coordinates into that exact file and the deck has to keep
   // knowing which file. So a side that has one always beats a side that has
-  // none, and local wins when both do.
-  if (!local.pdf && cloud.pdf) next.pdf = cloud.pdf;
+  // none, and the preferred side wins when both do.
+  if (!winner.pdf && loser.pdf) next.pdf = loser.pdf;
 
   // meta.bookmark and meta.readingPosition — { offset, source, text, at }. Both
   // carry their own `at` precisely so cross-device ordering is settled by when
@@ -282,16 +294,17 @@ export function mergeDeckMetaBeforePush(cloudMeta, localMeta) {
   ].map((id) => String(id || "").trim()).filter(Boolean))].sort();
   if (linkIds.length) next.linkIds = linkIds;
 
-  // meta.quickNoteCategories — [{ id, name, color }]. Union by id with local
-  // winning a genuine conflict, which is what applyCategoryOpsToList arrives at
-  // for the same pair. A category ADDED on the other device is the case that was
-  // being lost; a rename on both is a coin toss either way.
+  // meta.quickNoteCategories — [{ id, name, color }]. Union by id, with the
+  // preferred side winning a genuine conflict, which is what
+  // applyCategoryOpsToList arrives at for the same pair. A category ADDED on the
+  // other device is the case that was being lost; a rename on both is a coin
+  // toss either way.
   if (Array.isArray(cloud.quickNoteCategories) || Array.isArray(local.quickNoteCategories)) {
     const byId = new Map();
-    for (const entry of Array.isArray(cloud.quickNoteCategories) ? cloud.quickNoteCategories : []) {
+    for (const entry of Array.isArray(loser.quickNoteCategories) ? loser.quickNoteCategories : []) {
       if (entry?.id) byId.set(String(entry.id), entry);
     }
-    for (const entry of Array.isArray(local.quickNoteCategories) ? local.quickNoteCategories : []) {
+    for (const entry of Array.isArray(winner.quickNoteCategories) ? winner.quickNoteCategories : []) {
       if (entry?.id) byId.set(String(entry.id), entry);
     }
     next.quickNoteCategories = [...byId.values()];
@@ -302,7 +315,7 @@ export function mergeDeckMetaBeforePush(cloudMeta, localMeta) {
   // is the ordinary case, not a conflict.
   if ((cloud.noteAnchors && typeof cloud.noteAnchors === "object")
       || (local.noteAnchors && typeof local.noteAnchors === "object")) {
-    next.noteAnchors = { ...(cloud.noteAnchors || {}), ...(local.noteAnchors || {}) };
+    next.noteAnchors = { ...(loser.noteAnchors || {}), ...(winner.noteAnchors || {}) };
   }
 
   return next;
@@ -323,7 +336,7 @@ export function mergeDeckMetaBeforePush(cloudMeta, localMeta) {
 //
 // It used to return null for a deck with nothing document-shaped on either side,
 // which meant an ordinary deck's `meta` went up whole and unmerged — see
-// mergeDeckMetaBeforePush for what that costs. It runs for every deck now and
+// mergeDeckMeta for what that costs. It runs for every deck now and
 // returns null only when the cloud row cannot be read from, in which case the
 // caller must not push the column at all.
 export function reconcileDeckBeforePush(snapshot, cloudDeck) {
@@ -341,7 +354,7 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck) {
   // Every key the two sides both have an opinion about, settled key by key.
   // Runs whether or not this is a paper: linkIds, the bookmark and the quick-note
   // categories belong to ordinary decks and were being lost on ordinary syncs.
-  const nextMeta = mergeDeckMetaBeforePush(cloudMeta, localMeta);
+  const nextMeta = mergeDeckMeta(cloudMeta, localMeta, { prefer: "local" });
 
   const merged = hasAnnotations
     ? mergeDocumentAnnotations({
