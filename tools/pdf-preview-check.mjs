@@ -674,6 +674,20 @@ try {
   // ── 5. Reload from IndexedDB, and repaint ────────────────────────────────
   const reloaded = await page.evaluate(`async (pageNumber, id) => {
     const { api, settle } = window.__recall;
+    // A note on this highlight, for the stamp the sync merge decides by. \`at\`
+    // dates the highlight and \`noteAt\` dates its note, and they are resolved
+    // independently (see mergePdfHighlights) precisely so a recolour on one
+    // device cannot out-rank a note written on another — which only works if
+    // noteAt is actually written to disk and read back.
+    api.setDocumentHighlightNote(id, "Stamped, for the sync merge.");
+    const noteAtBefore = (api.state.meta?.pdfHighlights || []).find((r) => r.id === id)?.noteAt || 0;
+    // Long enough to cover the 400ms autosave debounce and the async save it
+    // starts. The \`api.deckAutosaveTimer\` loop below cannot be relied on for
+    // this on its own: \`api\` is a flattened copy of the module namespaces, so
+    // that field is the value the binding had when the harness was built and not
+    // the live one. The cases before this one only ever waited it out by
+    // accident, through the settles their own steps happened to need.
+    await settle(900);
     // The autosave is debounced, so the highlight is in memory and not yet on
     // disk. Waited out rather than forced with a direct save: what this case is
     // actually testing is that the ORDINARY path persists a PDF deck, which is
@@ -699,7 +713,9 @@ try {
     const painted = Array.from(document.querySelectorAll('.pdf-mark[data-highlight-id="' + id + '"]'))
       .map((el) => [Math.round(el.offsetLeft), Math.round(el.offsetTop), Math.round(el.offsetWidth), Math.round(el.offsetHeight)]);
     return {
-      record: record ? { quads: record.quads, color: record.color, anchor: record.anchor } : null,
+      record: record ? { quads: record.quads, color: record.color, anchor: record.anchor, noteAt: record.noteAt } : null,
+      noteAtBefore,
+      noteText: (api.state.notes || "").indexOf("Stamped, for the sync merge.") !== -1,
       painted,
       rows: api.collectHighlightEntries().length
     };
@@ -714,6 +730,9 @@ try {
     JSON.stringify(reloaded.painted[0] || null));
   check("the Highlights panel lists it",
     reloaded.rows >= (fixture.annotation ? 2 : 1), `${reloaded.rows} row(s)`);
+  check("...and so does its note, with the noteAt stamp the merge decides by",
+    reloaded.noteText && reloaded.record?.noteAt === reloaded.noteAtBefore && reloaded.noteAtBefore > 0,
+    `noteAt ${reloaded.noteAtBefore} → ${reloaded.record?.noteAt}, note text ${reloaded.noteText ? "kept" : "LOST"}`);
 
   // ── 5b. The highlight/note pipeline ──────────────────────────────────────
   //

@@ -31,6 +31,7 @@ import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__B
 import { closeMarkMenu, openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
+import { dropHighlightTombstonesForLiveIds, recordDeletedHighlightId } from "../sync/document-sync.js?v=__BUILD__";
 
 export const PDF_MARK_CLASS = "pdf-mark";
 
@@ -172,6 +173,13 @@ export function freshDocumentHighlightId() {
 function commitDocumentHighlights(next, { notify = true } = {}) {
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
   state.meta.pdfHighlights = next;
+  // A highlight that is PRESENT is not deleted — the invariant
+  // dropTombstonesForLiveCards keeps for cards, and for the same reason: an id
+  // that comes back (an undo, a re-import of the same annotated file) would
+  // otherwise keep a tombstone that quietly blocks it from ever syncing again.
+  const tombstones = dropHighlightTombstonesForLiveIds(state.meta, next);
+  if (tombstones) state.meta.deletedHighlightIds = tombstones;
+  else delete state.meta.deletedHighlightIds;
   scheduleDeckAutosave();
   if (notify) notifyHighlightsChanged();
 }
@@ -473,6 +481,21 @@ export function removeDocumentHighlight(id) {
   // note as it was.
   pushNotesUndo("remove highlight");
   const next = documentHighlights().filter((entry) => entry.id !== id);
+  // ── The tombstone ────────────────────────────────────────────────────────
+  //
+  // Absence is ambiguous, here exactly as it is for a card: a highlight that is
+  // gone on this device and present in the cloud is either a deletion to push or
+  // an annotation to pull, and nothing in the records themselves says which. Up
+  // to now the only thing that made a deleted highlight stay deleted was the
+  // whole-column last-write-wins that this change removes — so without a
+  // tombstone, taking the union of both sides would resurrect every highlight
+  // anyone ever deleted, on their next sync.
+  //
+  // Same shape and same lifecycle as snapshot.deletedCardIds (see
+  // src/sync/cards.js): { id: iso }, honoured by both the pull merge and the
+  // pre-push reconcile, retired once the push that acts on it has landed, and
+  // aged/capped so the bag cannot grow without limit.
+  const tombstones = recordDeletedHighlightId(state.meta, id);
   // ── Prune BEFORE the commit, not after it ────────────────────────────────
   //
   // The note attached to this highlight would otherwise sit in the fenced
@@ -490,6 +513,7 @@ export function removeDocumentHighlight(id) {
   // committed once, then everything told once.
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
   state.meta.pdfHighlights = next;
+  state.meta.deletedHighlightIds = tombstones;
   const pruned = pruneOrphanHighlightNotes(state.notes || "");
   if (pruned !== state.notes) state.notes = pruned;
   commitDocumentHighlights(next);
@@ -533,10 +557,27 @@ export function setDocumentHighlightNote(id, text, { undo = false, rerender = tr
   // paper was the one kind of note in the app that could not be undone.
   if (undo) pushNotesUndo("highlight note");
   state.notes = setHighlightNoteInSource(state.notes || "", id, text, documentExcerptLabel(documentHighlightLabel(record)));
-  // `at` moves too: a note is an edit to the highlight, and the sync merge
-  // decides by timestamp.
+  // ── noteAt, and why `at` deliberately does NOT move here ─────────────────
+  //
+  // This used to bump `at`, on the reasoning that a note is an edit to the
+  // highlight and the sync merge decides by timestamp. That was right while `at`
+  // was the only stamp there was, and wrong the moment the merge started
+  // resolving a highlight field by field: `at` is also bumped by a RECOLOUR, so
+  // one stamp for two independent edits means whichever happened later silently
+  // takes the other with it — a colour changed on a phone erasing a note written
+  // on a laptop, or the reverse.
+  //
+  // So there are two stamps now, and each one dates exactly one thing: `at` for
+  // the highlight itself (made, recoloured), `noteAt` for its note. Nothing else
+  // writes noteAt. mergePdfHighlights resolves them independently, and
+  // mergeHighlightNoteTails uses noteAt — and only noteAt — to settle two
+  // versions of the same note's text.
+  //
+  // A record written before this existed carries no noteAt at all, which reads
+  // as older than one that has one — the rule mergePdfHighlights and
+  // betterReadingPosition already use for the same reason.
   commitDocumentHighlights(documentHighlights().map((entry) =>
-    entry.id === id ? { ...entry, at: Date.now() } : entry), { notify: rerender });
+    entry.id === id ? { ...entry, noteAt: Date.now() } : entry), { notify: rerender });
   return true;
 }
 

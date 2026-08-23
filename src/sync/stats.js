@@ -32,13 +32,26 @@ export function emptySyncStats() {
     // them). See reconcileCardsBeforePush.
     cardsRemovedHere: 0,
     cardsAdoptedHere: 0,
+    // The document's three, and the reason they are separate from notesChanged:
+    // a paper's highlights and the notes written on them ride in the same deck
+    // as the reader's own prose, but they are merged per record (see
+    // src/sync/document-sync.js) rather than replaced wholesale. Rolling them
+    // into "notes edited" said the wrong thing in both directions — a sync that
+    // only carried annotations claimed the reader's writing had been replaced,
+    // and a sync that genuinely replaced it said nothing about the annotations
+    // that arrived with it.
+    highlightsMerged: 0,        // highlights this device did not have
+    highlightsRemovedHere: 0,   // highlights deleted on another device
+    highlightNotesMerged: 0,    // notes on highlights, arrived or reconciled
     notesChanged: false,
     titleChanged: false,
     deckCategoryChanged: false,
     noteCategoriesChanged: false,  // the deck's category DEFINITIONS (decks.meta)
-    // A pull replaced deck notes this device had also edited. Notes are free
-    // markdown and can't be merged card-wise, so the losing copy is stashed
-    // (see NOTES_CONFLICT_SUFFIX) and flagged here.
+    // A pull replaced the reader's own notes BODY, which this device had also
+    // edited. Free markdown can't be merged card-wise, so the losing copy is
+    // stashed (see NOTES_CONFLICT_SUFFIX) and flagged here. Deliberately asked
+    // of the body alone: the fenced highlight-note block below it is merged
+    // entry by entry, so there is nothing there to rescue and nothing to flag.
     notesConflicted: false,
     // A push's deck-row write failed specifically on the notes column (see
     // isMissingNotesColumnError) — cards may still have gone through, but the
@@ -62,7 +75,7 @@ export function emptySyncStats() {
 
 // The counted stats (summed across decks), as opposed to the deck-level
 // booleans below them, which are counted as "how many decks".
-export const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere"];
+export const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere", "highlightsMerged", "highlightsRemovedHere", "highlightNotesMerged"];
 
 export const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesSyncFailed", "deckRemovedHere", "readingPositionSynced"];
 
@@ -81,6 +94,9 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   if (stats.cardsKeptLocal) parts.push(`${plural(stats.cardsKeptLocal, "card", "cards")} kept from this device (newer than the cloud)`);
   if (stats.cardsRemovedHere) parts.push(`${plural(stats.cardsRemovedHere, "card", "cards")} removed here (deleted on another device)`);
   if (stats.cardsAdoptedHere) parts.push(`${plural(stats.cardsAdoptedHere, "card", "cards")} picked up here (added on another device)`);
+  if (stats.highlightsMerged) parts.push(`${plural(stats.highlightsMerged, "highlight", "highlights")} merged in from another device`);
+  if (stats.highlightsRemovedHere) parts.push(`${plural(stats.highlightsRemovedHere, "highlight", "highlights")} removed here (deleted on another device)`);
+  if (stats.highlightNotesMerged) parts.push(`${plural(stats.highlightNotesMerged, "highlight note", "highlight notes")} merged`);
   const flag = (value, label) => {
     if (!value) return;
     parts.push(asTotals && value > 1 ? `${label} on ${value} decks` : label);

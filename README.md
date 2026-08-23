@@ -960,7 +960,7 @@ node tools/check.mjs --quick   # static checks only, no browser (~5s)
 node tools/check.mjs --full    # ...and drive a real install / offline / update
 ```
 
-Twenty-six checks, each answering a different question, and none of them
+Twenty-nine checks, each answering a different question, and none of them
 subsuming another:
 
 | Check | Question |
@@ -972,7 +972,8 @@ subsuming another:
 | `port-sync` | Do the browser extension's copied functions still match the app's? |
 | `boot-check` | Does the app boot, and reach the same state as the pre-split build? |
 | `behaviour` | Do rendering, math, clozes, card parsing and the text transforms still produce identical output? (150 probes) |
-| `sync` | Do the merge primitives behave identically, **and** still refuse to lose data? (43 scenarios + 15 invariants + 11 storage round-trips + 12 concurrency/batching checks) |
+| `sync` | Do the merge primitives behave identically, **and** still refuse to lose data? (43 scenarios + 25 invariants + 11 storage round-trips + 12 concurrency/batching checks) |
+| `document-sync` | Do a paper's highlights and the notes written on them actually reach the other device — and stop claiming a conflict every time? Two simulated devices and one in-memory cloud row, driven through the real merge in the order the reconcile calls it: both devices annotating without pulling first, a note written on each for a different highlight, two notes on the *same* highlight settled by their own stamps (and kept side by side when nothing can settle them), a recolour on one device against a note on the other, a deletion that has to stay deleted and take its note with it, a genuinely different notes body that must *still* raise a conflict, a stranded conflict stash folded back in, and convergence — run the round twice and the second must change nothing. Pure Node: the merge is string-and-object work by design, so this needs neither a browser nor the `pre-modular` tag |
 | `reconcile` | Does the whole two-way sync behave identically end to end against a stand-in backend? |
 | `ui-smoke` | Does the app still *work*? 35 real actions driven through the DOM on both builds and compared step by step |
 | `selection` | Can you select text in a note without dragging the app's own chrome in with it? 7 real mouse drags. Also that the selection bar offers every one of its tools in one press, grouped by intent — measured at desktop width and again at 390px, which is where a ⋯ disclosure used to hide half of them behind a second tap |
@@ -1011,7 +1012,7 @@ area of the app —
 |---|---|
 | `core/` | Values everything shares: `state`, the `el` DOM map, constants, the build stamp, the on-demand CDN loader, and the one flag that says a finger is mid-gesture on a reading surface. **These import nothing** |
 | `cloud/` | The user's Supabase project: config, auth, deck rows, the network policy every call goes through |
-| `sync/` | Two-way sync — the per-card merge, tombstones, push/pull, and the deletion guards |
+| `sync/` | Two-way sync — the per-card merge, tombstones, push/pull, and the deletion guards. `document-sync.js` is the same four things for a paper's annotations: a per-record timestamp, a merge on the pull, a reconcile against the cloud's real row before the push, and a tombstone for a deleted highlight |
 | `storage/` | The device's own copy: IndexedDB deck store, autosave, quota, the storage panel |
 | `library/` | My Decks: the local index, folders, rows, tiles, drag and drop, and reading a whole folder as one document |
 | `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache that keeps huge notes fast. Past ~2,000 blocks a note is cut into spans at provably safe lexer boundaries and each span is lexed and built only as the reader comes near it, so opening a note costs a screenful rather than a book (`viewport` above is the proof) |
@@ -1019,7 +1020,7 @@ area of the app —
 | `documents/` | The Document surface: a PDF rendered page by page by pdf.js, its highlights (text runs *and* dragged regions, both stored as quads in PDF user space so they survive a zoom and a reload), its contents drawer — the file's own outline where it has one, and a contents read out of the type on its pages where it does not, cached on the deck — the notes printed under each page, and the device/cloud store the file itself lives in |
 | `cards/` | Studying: the card view, swipe, the All Cards panel, deck actions |
 | `editor/` | The raw editor: its highlight mirror, text transforms, toolbars |
-| `format/` | Selection-driven formatting: cloze, highlight, locating a rendered selection in the source |
+| `format/` | Selection-driven formatting: cloze, highlight, locating a rendered selection in the source. The fenced highlight-note block has two leaves nothing else imports — `notes-fence.js` for where it starts and stops, and `highlight-notes-merge.js` for the one parser, the one writer and the merge, so the sync path and a Node check can read the format without dragging in the surfaces that write it |
 | `import/` `export/` | Getting decks in (markdown, zip, EPUB, URL) and out (markdown, PDF, DOCX, HTML, SQL) |
 | `images/` | Upload, the compression level chosen before it, the offline outbox, paste and drag handling, in-place resize and delete |
 | `backup/` | The whole library as one `.zip`, and the additive restore |

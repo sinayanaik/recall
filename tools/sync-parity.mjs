@@ -47,7 +47,11 @@ const ACCEPTED_DIFFS = {
   "stats/empty": "emptySyncStats() gained readingPositionSynced: a push/pull " +
     "whose only real change was the reader's last-seen position (meta.readingPosition) " +
     "used to report as a no-op ('already up to date') because nothing counted it. " +
-    "The pre-modular baseline predates this field entirely."
+    "The pre-modular baseline predates this field entirely. It gained three more " +
+    "for the same reason — highlightsMerged, highlightsRemovedHere and " +
+    "highlightNotesMerged — since a sync whose only news is that a paper's " +
+    "annotations merged is now something the report can name rather than " +
+    "something it had to call 'notes edited'."
 };
 
 const CHROME = [
@@ -321,6 +325,81 @@ const INVARIANTS = String.raw`(api) => {
   });
   must("a deck that is not a PDF deck grows no pdfHighlights key", () => {
     const r = api.mergePdfHighlights(undefined, undefined);
+    return r === null || ("returned " + JSON.stringify(r));
+  });
+
+  // 2c. ...and for the NOTES written on those highlights, which is the half that
+  //     had nothing at all. A highlight's note text lives in the fenced block at
+  //     the end of \`notes\`, and \`notes\` was whole-column last-write-wins on both
+  //     sides: the pull replaced it with the cloud's and the push replaced the
+  //     cloud's with this device's. Nothing merged it, so two devices annotating
+  //     one paper destroyed each other's writing on every sync — and, because a
+  //     PDF deck's body is essentially ONLY that block, raised a notes conflict
+  //     every time as well. See src/sync/document-sync.js.
+  const tailOf = (entries) => api.writeHighlightNoteEntries("", null, entries).replace(/\n$/, "");
+  const noteAt = (source, id) => (api.parseHighlightNoteEntries(source).find((e) => e.id === id) || {}).text || "";
+
+  must("a note written on each device survives the merge", () => {
+    const cloud = tailOf([{ id: "hn-a", label: "", text: "theirs" }]);
+    const local = tailOf([{ id: "hn-b", label: "", text: "mine" }]);
+    const out = api.mergeHighlightNoteTails(cloud, local);
+    return (noteAt(out.tail, "hn-a") === "theirs" && noteAt(out.tail, "hn-b") === "mine")
+      || ("kept " + JSON.stringify(out.tail));
+  });
+  must("the newer noteAt wins two versions of ONE note", () => {
+    const cloud = tailOf([{ id: "hn-a", label: "", text: "theirs" }]);
+    const local = tailOf([{ id: "hn-a", label: "", text: "mine" }]);
+    const out = api.mergeHighlightNoteTails(cloud, local, { stamps: { cloud: { "hn-a": 9 }, local: { "hn-a": 1 } } });
+    return noteAt(out.tail, "hn-a") === "theirs" || ("kept " + noteAt(out.tail, "hn-a"));
+  });
+  must("with nothing to say which is newer, NEITHER text is dropped", () => {
+    const cloud = tailOf([{ id: "hn-a", label: "", text: "theirs" }]);
+    const local = tailOf([{ id: "hn-a", label: "", text: "mine" }]);
+    const text = noteAt(api.mergeHighlightNoteTails(cloud, local).tail, "hn-a");
+    return (text.indexOf("theirs") !== -1 && text.indexOf("mine") !== -1) || ("kept only " + JSON.stringify(text));
+  });
+  must("keeping both is order-independent, so two devices converge", () => {
+    const cloud = tailOf([{ id: "hn-a", label: "", text: "theirs" }]);
+    const local = tailOf([{ id: "hn-a", label: "", text: "mine" }]);
+    const one = api.mergeHighlightNoteTails(cloud, local).tail;
+    const two = api.mergeHighlightNoteTails(local, cloud).tail;
+    return one === two || ("two devices produced different text: " + JSON.stringify([one, two]));
+  });
+  must("a deleted highlight's note goes with it, and stays gone", () => {
+    const cloud = tailOf([{ id: "hn-a", label: "", text: "doomed" }]);
+    const out = api.mergeHighlightNoteTails(cloud, cloud, { tombstones: { "hn-a": 9 } });
+    return noteAt(out.tail, "hn-a") === "" || ("a deleted note came back: " + noteAt(out.tail, "hn-a"));
+  });
+  must("a tombstoned highlight is not resurrected by the other device's copy", () => {
+    const r = api.mergePdfHighlights([{ id: "h", at: 1 }], [{ id: "h", at: 1 }], { tombstones: { h: 9 } });
+    return r.length === 0 || ("kept " + JSON.stringify(r));
+  });
+  must("a recolour on one device and a note on the other both survive", () => {
+    const r = api.mergePdfHighlights([{ id: "h", at: 9, color: "green" }], [{ id: "h", at: 1, color: "yellow", noteAt: 5 }]);
+    return (r[0].color === "green" && r[0].noteAt === 5) || ("merged to " + JSON.stringify(r[0]));
+  });
+  must("a push reconciles the document against the cloud before sending it", () => {
+    const cloudDeck = {
+      notes: tailOf([{ id: "hn-a", label: "", text: "theirs" }]),
+      meta: { pdfHighlights: [{ id: "h1", at: 1 }] }
+    };
+    const snapshot = {
+      notes: tailOf([{ id: "hn-b", label: "", text: "mine" }]),
+      meta: { pdfHighlights: [{ id: "h2", at: 2 }] }
+    };
+    const r = api.reconcileDocumentBeforePush(snapshot, cloudDeck);
+    const ids = r.meta.pdfHighlights.map((x) => x.id).sort().join(",");
+    return (ids === "h1,h2" && noteAt(r.notes, "hn-a") === "theirs" && noteAt(r.notes, "hn-b") === "mine")
+      || ("about to push " + ids + " / " + JSON.stringify(r.notes));
+  });
+  must("a push against a row with no notes column reconciles nothing", () => {
+    const r = api.reconcileDocumentBeforePush(
+      { notes: tailOf([{ id: "hn-b", label: "", text: "mine" }]), meta: { pdfHighlights: [{ id: "h2", at: 2 }] } },
+      { meta: {} });
+    return r === null || ("merged against a row that carried no body: " + JSON.stringify(r));
+  });
+  must("an ordinary deck's push is not touched by any of this", () => {
+    const r = api.reconcileDocumentBeforePush({ notes: "# plain", meta: {} }, { notes: "# plain", meta: {} });
     return r === null || ("returned " + JSON.stringify(r));
   });
 
@@ -752,7 +831,12 @@ try {
       import("/src/sync/diff.js?v=__BUILD__"), import("/src/sync/cards.js?v=__BUILD__"), import("/src/sync/stats.js?v=__BUILD__"),
       import("/src/cloud/web-decks.js?v=__BUILD__"), import("/src/backup/restore.js?v=__BUILD__"),
       import("/src/backup/backup.js?v=__BUILD__"), import("/src/storage/keys.js?v=__BUILD__"),
-      import("/src/export/markdown.js?v=__BUILD__")
+      import("/src/export/markdown.js?v=__BUILD__"),
+      // Current-code-only, for the document invariants: nothing in the
+      // pre-modular baseline has an equivalent, so these never take part in the
+      // parity comparison above.
+      import("/src/sync/document-sync.js?v=__BUILD__"),
+      import("/src/format/highlight-notes-merge.js?v=__BUILD__")
     ]);
     const api = {};
     for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
