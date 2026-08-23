@@ -529,6 +529,43 @@ const PROBE = `(api) => {
     "Second paragraph of it."
   ].join("\\n");
 
+  // ── ...and the panel that lists them can actually read them ────────────
+  //
+  // The note bodies live in a fenced block at the END of state.notes, and every
+  // surface that lists highlights scans readerNotesBody() — the note with that
+  // block sliced off — because a <mark> a reader typed INSIDE a note is not a
+  // highlight of the document and counting it breaks the exact-ordinal jump for
+  // every other row. Resolving a mark's id against that same sliced string
+  // found nothing, so the panel reported every markdown highlight as having no
+  // note: the reader's own writing was invisible in the one place that lists it,
+  // and pressing ✎ opened an empty editor over a note that was really there.
+  check("a listed highlight carries the note that is written on it", () => {
+    api.state.notes = NOTED;
+    const rows = api.collectNoteHighlightRows();
+    const notes = rows.map((row) => row.marks.map((m) => m.note || "").join("")).filter(Boolean);
+    if (notes.length !== 2) return notes.length + " of the rows carry a note, expected 2";
+    if (notes[0] !== "One line of commentary.") return "the first note reads " + JSON.stringify(notes[0]);
+    if (!notes[1].startsWith("First line of a longer note.")) return "the second note reads " + JSON.stringify(notes[1]);
+    // ...and a mark whose section entry was deleted by hand still reports none.
+    const dangling = api.collectNoteHighlightRows()
+      .flatMap((row) => row.marks)
+      .filter((m) => m.note).length;
+    if (dangling !== 2) return dangling + " marks claim a note";
+    return true;
+  });
+
+  check("...and so does an export of them", () => {
+    api.state.notes = NOTED;
+    const items = api.collectDeckHighlightsForExport({ includeNotes: true });
+    const noted = items.filter((item) => item.note).length;
+    if (noted !== 2) return noted + " exported highlights carry their note, expected 2";
+    // annotatedOnly reads the note BEFORE includeNotes is applied, so "the
+    // annotated ones, without their notes" is not silently empty.
+    const only = api.collectDeckHighlightsForExport({ annotatedOnly: true, includeNotes: false });
+    if (only.length !== 2) return "annotatedOnly returned " + only.length + " entries";
+    return true;
+  });
+
   check("note index: numbered in document order, dangling ids skipped", () => {
     const index = api.highlightNoteIndex(NOTED);
     const got = [...index.byAttr.entries()].map(([attr, info]) => attr + "=" + info.n).join(",");

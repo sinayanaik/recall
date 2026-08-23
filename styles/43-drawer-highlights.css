@@ -1,0 +1,160 @@
+/* Highlights, in the drawer of the panel they were made in
+ *
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * The drawer itself is styles/12-notes.css (.notes-toc-drawer and everything
+ * under it), which is a frozen slice and cannot be touched. Everything here is
+ * additive: a switch row under the drawer's head, and a second scroll pane
+ * beside the contents list. See src/panels/drawer-highlights.js.
+ */
+
+/* ── The switch ────────────────────────────────────────────────────────────
+   Its own row rather than a third child of .notes-toc-head: that head is a flex
+   row holding a title and a close button, and anything else in it pushes the ×
+   off the end at drawer width.
+
+   Two equal halves, because they are two answers to one question and neither is
+   the default the other is an exception to. */
+.drawer-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-tab {
+  flex: 1 1 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.drawer-tab:hover {
+  color: var(--accent);
+}
+
+.drawer-tab.is-active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+}
+
+/* ── The list ──────────────────────────────────────────────────────────────
+   The second pane carries .notes-toc-scroll as well as its own class, so it
+   inherits the drawer's scrolling box rather than restating it. Only what
+   differs is written here. */
+.drawer-highlights {
+  list-style: none;
+}
+
+.drawer-highlights-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.drawer-highlight + .drawer-highlight {
+  margin-top: 2px;
+}
+
+/* One row, one press, one destination. A button rather than a link: there is no
+   URL for "the fourth mark in this note", and a link that goes nowhere is a
+   promise the browser cannot keep (a middle-click would open a blank tab). */
+.drawer-highlight-jump {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.drawer-highlight-jump:hover,
+.drawer-highlight-jump:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* The highlight's own colour, so a reader who colour-codes as they read can
+   find one by the colour they filed it under. The same four hexes a <mark> and
+   a .pdf-mark use, literal rather than mixed for the same reason the document
+   deck's note rail states: a 4px chip has no surface behind it worth mixing
+   into, and this is an index — being recognisable at a glance is the job. */
+.drawer-highlight-chip {
+  align-self: center;
+  width: 4px;
+  height: 1.15em;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.drawer-highlight-chip[data-color="yellow"] { background: #e0b400; }
+.drawer-highlight-chip[data-color="green"]  { background: #22c55e; }
+.drawer-highlight-chip[data-color="blue"]   { background: #3b82f6; }
+.drawer-highlight-chip[data-color="pink"]   { background: #ec4899; }
+
+/* Two lines, then an ellipsis. A highlight can be half a page, and a drawer row
+   that grows to hold one stops being a list you can scan — but one line cuts
+   most sentences mid-clause, which is not enough to recognise a passage by. */
+.drawer-highlight-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The page, or the chapter it is under. Right-aligned and quiet: it is how you
+   navigate the list, not what you read in it. */
+.drawer-highlight-where {
+  justify-self: end;
+  max-width: 8em;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* This one has something written about it. Deliberately not the number the mark
+   itself wears (styles/42-highlight-badge.css): in the text that number says
+   WHICH note, because the notes are numbered in reading order and you might be
+   looking for the third; in a list already in reading order it would only be
+   the row's own position said twice. */
+.drawer-highlight-noted {
+  grid-column: 3;
+  align-self: center;
+  color: var(--accent-strong);
+  font-size: 0.75rem;
+}
+
+/* ...and when a row carries both, the page keeps the corner and the pencil sits
+   next to the words, so the column of page numbers stays a column. */
+.drawer-highlight-where + .drawer-highlight-noted {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.drawer-highlights-empty {
+  padding: 10px 8px;
+}

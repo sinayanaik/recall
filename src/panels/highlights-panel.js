@@ -141,10 +141,25 @@ export function highlightContextUnit(units, index, step) {
 // additionally merges groups that land on the same line into one row; export
 // wants every highlight as its own entry, with its own configurable amount of
 // surrounding context).
-export function scanHighlightGroups(source) {
+// `noteSource` is where the NOTES are looked up, and it is a separate argument
+// because it has to be a different string from the one being scanned.
+//
+// Every caller scans readerNotesBody(state.notes) — the note with its
+// `<!--recall:highlight-notes-->` tail sliced off — and it must: a <mark> a
+// reader typed inside a highlight's own note is not a highlight of the document,
+// and counting it breaks the exact-ordinal jump for every other row (see
+// collectNoteHighlightRows). But the tail is also where every note's TEXT lives,
+// so resolving a mark's data-note id against that same sliced string found
+// nothing, every time. `note` came back null for every highlight in a markdown
+// deck: the Highlights panel showed the reader none of their own notes, and its
+// ✎ opened an empty editor over a note that was really there.
+//
+// Defaulting to `source` keeps a caller that has only one string honest — it is
+// asking about a note whose tail is still attached.
+export function scanHighlightGroups(source, noteSource = source) {
   const raw = [];
   // Parsed at most once for the whole scan — see highlightNoteResolver.
-  const noteTextFor = highlightNoteResolver(source);
+  const noteTextFor = highlightNoteResolver(noteSource);
   HIGHLIGHT_SCAN_RE.lastIndex = 0;
   let m;
   while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
@@ -360,7 +375,8 @@ export function collectDeckHighlights() {
 // fence moved the rendered view and the raw editor onto readerNotesBody and
 // left this file reading state.notes.
 export function collectNoteHighlightRows() {
-  const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(state.notes || ""));
+  const notes = state.notes || "";
+  const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
   const rows = [];
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group);
@@ -455,7 +471,8 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
   // <mark> a reader typed into a highlight's own note is not a highlight of the
   // document, and exporting it as one puts a note's fragment in a list of
   // passages from the paper.
-  const { source, groups, units } = scanHighlightGroups(readerNotesBody(state.notes || ""));
+  const notes = state.notes || "";
+  const { source, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
   const headings = includeChapter ? headingIndexFor(source) : null;
   const items = [];
   // A PDF deck's highlights come first, in reading order, and carry their page

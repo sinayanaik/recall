@@ -71,6 +71,7 @@ import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
+import { markDrawerHighlightsDirty, refreshDrawerOnOpen } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
@@ -976,6 +977,11 @@ onDomReady(() => {
 onDomReady(() => setHighlightsChangedHandler(() => {
   renderHighlightsPanel();
   repaintPdfPageNotes();
+  // ...and the two drawers, which are the third consumer. Marked stale rather
+  // than rebuilt: both are closed almost all of the time, and rebuilding a
+  // book's worth of rows for a drawer nobody is looking at is the cost this
+  // whole feature was written to avoid.
+  markDrawerHighlightsDirty();
 }));
 
 
@@ -2828,6 +2834,11 @@ el.documentTocBtn?.addEventListener("click", () => {
   const open = el.documentOutlineDrawer.hidden;
   el.documentOutlineDrawer.hidden = !open;
   el.documentTocBtn.setAttribute("aria-expanded", String(open));
+  // The drawer's second half — this document's own highlights — built on the
+  // way in and only when it is stale. openNotesToc does the same for the notes
+  // drawer, and for the same reason: a drawer that is closed almost all of the
+  // time should not be paying to stay current.
+  if (open) refreshDrawerOnOpen(el.documentOutlineDrawer);
 });
 el.documentTocCloseBtn?.addEventListener("click", () => {
   if (!el.documentOutlineDrawer) return;

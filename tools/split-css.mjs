@@ -306,6 +306,14 @@ const POST_SPLIT = {
     "not something a single ink can be guaranteed to read on. It is an opaque " +
     "chip in --accent-contrast now, and a real <button>, kept out of flow so " +
     "it still moves the text by zero pixels. See src/notes/highlight-badges.js.",
+  "43-drawer-highlights.css":
+    "A Highlights section in each reading panel's contents drawer, so a reader " +
+    "inside the Notes panel or the Document panel can find what they marked on " +
+    "THAT surface without leaving it for the Highlights tab — which on a PDF " +
+    "deck lists the paper's highlights and the deck note's together. A switch " +
+    "row under the drawer head and a second scroll pane beside the contents " +
+    "list; the drawer itself is a frozen slice and is not touched. See " +
+    "src/panels/drawer-highlights.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

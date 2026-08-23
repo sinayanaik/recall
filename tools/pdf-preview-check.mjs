@@ -1603,7 +1603,10 @@ try {
     // unless the notes view is on screen, and "Fit to width" has no page to fit
     // while a markdown note is being read.
     const documentRows = ["fit-width", "dark-page", "region"];
-    const notesRows = ["bookmark-set", "inline-notes"];
+    // "inline-notes" is not here any more: the mode that printed every
+    // highlight's note into the paragraph it annotated is gone, and a note is
+    // read by pressing the number on its highlight.
+    const notesRows = ["bookmark-set"];
     const documentRowsInDocument = documentRows.filter((action) => !offers(action));
     const notesRowsInDocument = notesRows.filter((action) => offers(action));
     const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;

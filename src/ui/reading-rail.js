@@ -46,6 +46,7 @@
 // those two is listening.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { refreshDrawerOnOpen } from "../panels/drawer-highlights.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { hasStudyTextSelection, isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
@@ -203,6 +204,7 @@ function toggleContents() {
     const open = drawer.hidden;
     drawer.hidden = !open;
     el.documentTocBtn?.setAttribute("aria-expanded", String(open));
+    if (open) refreshDrawerOnOpen(drawer);
     return;
   }
   toggleNotesToc();
