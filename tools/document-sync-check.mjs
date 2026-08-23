@@ -155,7 +155,7 @@ try {
   // real row first, write the result back locally, THEN send.
   function push(dev, cloud) {
     const snapshot = { notes: dev.notes, meta: clone(dev.meta) };
-    const reconciled = docSync.reconcileDocumentBeforePush(snapshot, cloud);
+    const reconciled = docSync.reconcileDeckBeforePush(snapshot, cloud);
     if (reconciled) {
       dev.notes = reconciled.notes;
       dev.meta = reconciled.meta;
@@ -383,12 +383,119 @@ try {
   {
     const cloud = { notes: "# A normal note\n\nwith no highlights", meta: {} };
     const a = device("A", "# A normal note\n\nwith no highlights");
-    must("a deck with no annotations grows no keys and needs no reconcile", () => {
+    must("a deck with no annotations grows no keys and moves nothing", () => {
       const pulled = pull(a, cloud);
       const pushed = push(a, cloud);
-      return (pulled.pdfHighlights === null && pushed === null
+      // The push used to return null here and the deck's whole meta then went to
+      // the cloud unmerged — see mergeDeckMetaBeforePush. It reconciles every
+      // deck now; what must stay true is that a deck with nothing on either side
+      // grows no keys and reports `changed: false`, so no snapshot is rewritten.
+      return (pulled.pdfHighlights === null && pushed && pushed.changed === false
         && !("pdfHighlights" in a.meta) && !("deletedHighlightIds" in a.meta))
         || `meta: ${JSON.stringify(a.meta)}, push: ${JSON.stringify(pushed)}`;
+    });
+
+    // ── 9b. The rest of the meta bag ────────────────────────────────────
+    //
+    // decks.meta is ONE JSONB column shared by six unrelated features, and
+    // pushDeckRowsToCloud sends it whole — so a device that pushed without
+    // having pulled overwrote every key in it. The highlights were merged and
+    // nothing else was, which is why the worst case is a paper attached on one
+    // device disappearing on the next push from another: the annotations
+    // survive and the document they are coordinates INTO does not.
+    must("a paper attached on the other device survives this one's push", () => {
+      const cloud = { notes: "", meta: { pdf: { name: "paper.pdf", sha256: "abc", pages: 12 } } };
+      const mine = { notes: "", meta: {} };
+      const r = docSync.reconcileDeckBeforePush(mine, cloud);
+      return r?.meta?.pdf?.sha256 === "abc" || `meta.pdf is ${JSON.stringify(r?.meta?.pdf)}`;
+    });
+    must("...and so do a bookmark, a link id, a category and an anchor", () => {
+      const cloud = {
+        notes: "",
+        meta: {
+          bookmark: { offset: 4, at: 200 },
+          linkIds: ["ld_laptop"],
+          quickNoteCategories: [{ id: "qc_1", name: "Optics", color: "#fff" }],
+          noteAnchors: { c1: { text: "somewhere" } }
+        }
+      };
+      const mine = { notes: "", meta: { linkIds: ["ld_phone"] } };
+      const r = docSync.reconcileDeckBeforePush(mine, cloud);
+      const lost = [];
+      if (r?.meta?.bookmark?.at !== 200) lost.push("bookmark");
+      if ((r?.meta?.linkIds || []).join(",") !== "ld_laptop,ld_phone") lost.push("linkIds");
+      if ((r?.meta?.quickNoteCategories || []).length !== 1) lost.push("quickNoteCategories");
+      if (!r?.meta?.noteAnchors?.c1) lost.push("noteAnchors");
+      return !lost.length || `clobbered: ${lost.join(", ")}`;
+    });
+    must("...and the reader's place is settled by its own stamp, not by who pushed", () => {
+      const cloud = { notes: "", meta: { readingPosition: { offset: 900, at: 300 } } };
+      const mine = { notes: "", meta: { readingPosition: { offset: 10, at: 100 } } };
+      const r = docSync.reconcileDeckBeforePush(mine, cloud);
+      // The cloud's is newer by `at`, so it wins even though this device is the
+      // one doing the pushing. The reverse pair has to go the other way.
+      const back = docSync.reconcileDeckBeforePush(
+        { notes: "", meta: { readingPosition: { offset: 10, at: 400 } } }, cloud);
+      return (r?.meta?.readingPosition?.offset === 900 && back?.meta?.readingPosition?.offset === 10)
+        || `kept ${r?.meta?.readingPosition?.offset} then ${back?.meta?.readingPosition?.offset}`;
+    });
+    must("...while a key only this device knows about still goes up", () => {
+      const r = docSync.reconcileDeckBeforePush(
+        { notes: "", meta: { pdf: { name: "mine.pdf", sha256: "zzz" } } }, { notes: "", meta: {} });
+      return r?.meta?.pdf?.sha256 === "zzz" || `meta.pdf is ${JSON.stringify(r?.meta?.pdf)}`;
+    });
+    must("...and a row with no notes column is still refused outright", () => {
+      // The slim index row. Merging against a column it has never seen would
+      // delete that column; the caller must skip the deck rather than push.
+      const r = docSync.reconcileDeckBeforePush({ notes: "x", meta: {} }, { meta: {} });
+      return r === null || `merged against a row with no body: ${JSON.stringify(r)}`;
+    });
+
+    // ── 9c. Clearing a note has to stick ────────────────────────────────
+    //
+    // An empty side used to mean "adopt the other side's text" unconditionally,
+    // which is right when this device has never seen the note and wrong when it
+    // deleted it — and a note you cleared came back on every sync for ever.
+    must("a note cleared here is not restored by the cloud's copy", () => {
+      const id = "hn-ddd444";
+      const theirs = withNotes("body", [{ id, label: "“x”", text: "the old note" }]);
+      const out = docSync.mergeDocumentAnnotations({
+        cloudNotes: theirs,
+        cloudMeta: { pdfHighlights: [{ id, at: 1, noteAt: 100 }] },
+        localNotes: "body",
+        localMeta: { pdfHighlights: [{ id, at: 1, noteAt: 200 }] },
+        body: "local"
+      });
+      const kept = merge.parseHighlightNoteEntries(out.notes).find((e) => e.id === id);
+      return !kept || `restored ${JSON.stringify(kept.text)}`;
+    });
+    must("...but one this device has never seen is still adopted", () => {
+      const id = "hn-eee555";
+      const theirs = withNotes("body", [{ id, label: "“x”", text: "written there" }]);
+      const out = docSync.mergeDocumentAnnotations({
+        cloudNotes: theirs,
+        cloudMeta: { pdfHighlights: [{ id, at: 1, noteAt: 100 }] },
+        localNotes: "body",
+        // No noteAt at all — this device made the highlight and never wrote on
+        // it, which reads as older than one that has a stamp.
+        localMeta: { pdfHighlights: [{ id, at: 1 }] },
+        body: "local"
+      });
+      const kept = merge.parseHighlightNoteEntries(out.notes).find((e) => e.id === id);
+      return kept?.text === "written there" || `adopted ${JSON.stringify(kept?.text)}`;
+    });
+    must("...and a note written after the clear wins over the clear", () => {
+      const id = "hn-fff666";
+      const theirs = withNotes("body", [{ id, label: "“x”", text: "written after" }]);
+      const out = docSync.mergeDocumentAnnotations({
+        cloudNotes: theirs,
+        cloudMeta: { pdfHighlights: [{ id, at: 1, noteAt: 300 }] },
+        localNotes: "body",
+        localMeta: { pdfHighlights: [{ id, at: 1, noteAt: 200 }] },
+        body: "local"
+      });
+      const kept = merge.parseHighlightNoteEntries(out.notes).find((e) => e.id === id);
+      return kept?.text === "written after" || `kept ${JSON.stringify(kept?.text)}`;
     });
 
     must("a <mark> note with no record anywhere keeps both texts", () => {
