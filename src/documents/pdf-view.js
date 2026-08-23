@@ -1483,7 +1483,7 @@ const PAGE_GEOMETRY_MAX_AGE_MS = 16;
 // with no entry is SKIPPED by the scan this replaces, and "skip" is not
 // something a sorted array of bottoms can express). The caller falls back to the
 // scan for that, so the answer is identical either way.
-function documentPageBottoms() {
+function documentPageGeometry() {
   const now = performance.now();
   if (pageBottoms
       && pageBottomsGeneration === documentLayoutGeneration
@@ -1491,16 +1491,22 @@ function documentPageBottoms() {
     return pageBottoms;
   }
   const count = openPdf.pageCount;
+  const tops = new Float64Array(count);
+  const heights = new Float64Array(count);
   const bottoms = new Float64Array(count);
   for (let n = 1; n <= count; n += 1) {
     const entry = openPdf.pages.get(n);
     if (!entry) return null;
-    bottoms[n - 1] = pageOffsetTop(entry.el) + entry.el.offsetHeight;
+    const top = pageOffsetTop(entry.el);
+    const height = entry.el.offsetHeight;
+    tops[n - 1] = top;
+    heights[n - 1] = height;
+    bottoms[n - 1] = top + height;
   }
-  pageBottoms = bottoms;
+  pageBottoms = { tops, heights, bottoms };
   pageBottomsGeneration = documentLayoutGeneration;
   pageBottomsAt = now;
-  return bottoms;
+  return pageBottoms;
 }
 
 let lastPageTop = -1;
@@ -1518,7 +1524,8 @@ export function currentDocumentPage() {
   if (top === lastPageTop && lastPageAnswer) return lastPageAnswer;
 
   const count = openPdf.pageCount;
-  const bottoms = documentPageBottoms();
+  const geometry = documentPageGeometry();
+  const bottoms = geometry?.bottoms;
   let answer = count;
   if (bottoms) {
     // The first page whose bottom is past the top of the scroller. Bottoms only
@@ -1559,8 +1566,20 @@ export function forgetDocumentPageGuess() {
 // would put someone back at the top of a page they were three quarters through.
 export function currentDocumentRatio() {
   const view = el.documentView;
-  const entry = openPdf?.pages.get(currentDocumentPage());
-  if (!view || !entry?.el.offsetHeight) return 0;
+  if (!view || !openPdf) return 0;
+  const page = currentDocumentPage();
+  // Off the same table currentDocumentPage just used, so asking for the page and
+  // then for the position within it costs ONE reading of the geometry rather
+  // than two. These two are asked together every time — see
+  // scheduleDocumentPositionSave, which is the only caller of this.
+  const geometry = documentPageGeometry();
+  if (geometry) {
+    const height = geometry.heights[page - 1];
+    if (!height) return 0;
+    return Math.min(1, Math.max(0, (view.scrollTop - geometry.tops[page - 1]) / height));
+  }
+  const entry = openPdf.pages.get(page);
+  if (!entry?.el.offsetHeight) return 0;
   return Math.min(1, Math.max(0, (view.scrollTop - pageOffsetTop(entry.el)) / entry.el.offsetHeight));
 }
 
@@ -1579,7 +1598,16 @@ export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true } = 
 export function updatePageIndicator() {
   if (!openPdf) return;
   const page = currentDocumentPage();
-  if (el.documentPageIndicator) el.documentPageIndicator.textContent = `${page} / ${openPdf.pageCount}`;
+  // Only when it actually changed. Assigning textContent replaces the text node
+  // whether or not the string differs, which dirties the control row's layout —
+  // and the control row is a flex sibling of the scroller, so the invalidation
+  // does not stay local to it. This runs once a frame for the whole of a scroll
+  // and the page number changes perhaps once a second, so almost every one of
+  // those writes was for a string that was already there.
+  const label = `${page} / ${openPdf.pageCount}`;
+  if (el.documentPageIndicator && el.documentPageIndicator.textContent !== label) {
+    el.documentPageIndicator.textContent = label;
+  }
   // The contents drawer's scroll-spy rides on this rather than on a scroll
   // listener of its own: this already runs on every scroll settle and on every
   // page render, and two answers to "which page is the reader on" is exactly the
