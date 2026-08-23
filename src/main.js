@@ -2845,16 +2845,26 @@ el.documentOutlineList?.addEventListener("click", (event) => {
   const entry = documentOutlineEntries()[Number(link.dataset.outlineIndex)];
   if (!entry?.page) return;
   scrollToDocumentPage(entry.page, 0);
-  // On a phone the drawer covers the page it is about to scroll to, so it gets
-  // out of the way; where it pushes instead, the reader can walk down the list.
-  if (!tocPushesNotes()) closeDocumentToc();
+  // Always, unlike the notes contents, and the difference is not an oversight.
+  // Above 720px the notes STAGE makes room for its drawer (the
+  // .notes-stage.is-toc-open rules in styles/12-notes.css), so the drawer covers
+  // nothing and a reader can walk down the list. Nothing equivalent exists here
+  // and nothing should: a .pdf-page is fit to the width of its scroller, so
+  // narrowing that scroller would re-rasterise every page in the render window
+  // for the length of a drawer being open. It overlays at every width instead —
+  // and a drawer that stayed open over the page it just took you to would be
+  // hiding the thing it was asked to show.
+  closeDocumentToc();
 });
 
-// Clicking outside the open drawer dismisses it, on the same terms the notes
-// drawer uses: only while it OVERLAYS the page, never while it pushes.
+// Clicking outside the open drawer dismisses it. The notes drawer makes this
+// conditional — it stops dismissing once the stage makes room for it, since
+// clicking into the notes to read is the whole reason you opened the contents —
+// and this one cannot, because it never stops covering the page (see above).
+// The toggle button is excluded so its own click still toggles rather than
+// close-then-reopen.
 document.addEventListener("pointerdown", (event) => {
   if (!isDocumentTocOpen()) return;
-  if (tocPushesNotes()) return;
   if (el.documentOutlineDrawer?.contains(event.target)) return;
   if (el.documentTocBtn?.contains(event.target)) return;
   closeDocumentToc();

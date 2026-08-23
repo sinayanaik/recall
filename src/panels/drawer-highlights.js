@@ -233,10 +233,13 @@ function drawerRowFor(drawer, entry) {
     // takes the identical exact-target path: a <mark>'s ordinal in the note, or
     // a document highlight's id, with the anchor's text as the fallback search.
     scheduleNoteJump(entry.anchor, { patient: true }, entry.locator);
-    // On a phone the drawer covers the text it is about to scroll, so it gets
-    // out of the way — the same thing a contents row does. Where the drawer
-    // pushes instead of covering, it stays: the reader can walk down the list.
-    if (!tocPushesDrawer()) closeDrawerForJump(drawer);
+    // The drawer gets out of the way when it is COVERING what the jump is about
+    // to show. Above 720px the notes stage makes room for its drawer and the
+    // reader can walk down the list; the Document surface never does — a page is
+    // fit to the width of its scroller, so narrowing it would re-rasterise every
+    // page in the render window for as long as the drawer was open — so there it
+    // always closes.
+    if (drawer === el.documentOutlineDrawer || !tocPushesDrawer()) closeDrawerForJump(drawer);
   });
   item.appendChild(jump);
   return item;

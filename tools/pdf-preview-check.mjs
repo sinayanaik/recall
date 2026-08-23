@@ -52,6 +52,14 @@ const SHOT_PAGES = args.includes("--shot-pages");
 // --shot-notes takes it on the Highlights tab instead, which is where a paper's
 // notes are written (src/panels/highlights-editor.js).
 const SHOT_NOTES = args.includes("--shot-notes");
+// --shot-toc opens the contents drawer, on its Highlights half. That drawer was
+// unreachable for its whole life (a missing .is-open class and a --toc-width
+// that did not resolve outside .notes-stage), and every assertion about it
+// passed the entire time, because they all read its DOM. A picture of it is the
+// cheapest guard against the next thing that only fails on the glass.
+const SHOT_TOC = args.includes("--shot-toc");
+// ...and --shot-toc=contents for the other half.
+const SHOT_TOC_SECTION = args.includes("--shot-toc-contents") ? "contents" : "highlights";
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
 //
@@ -2600,9 +2608,17 @@ try {
         api.setViewMode("highlights");
         await settle(600);
       }
+      if (SHOT_TOC) {
+        document.getElementById("documentTocBtn").click();
+        await settle(400);
+        api.setDrawerSection(document.getElementById("documentOutlineDrawer"), "SHOT_TOC_SECTION");
+        await settle(300);
+      }
       await settle(60);
     }`.replace("SHOT_MENU", String(SHOT_MENU))
       .replace("SHOT_PAGES", String(SHOT_PAGES))
+      .replace("SHOT_TOC_SECTION", SHOT_TOC_SECTION)
+      .replace("SHOT_TOC", String(SHOT_TOC))
       .replace("SHOT_NOTES", String(SHOT_NOTES)));
     const shot = await page.call("Page.captureScreenshot", { format: "png" });
     writeFileSync(path.resolve(ROOT, SHOT), Buffer.from(shot.data, "base64"));
