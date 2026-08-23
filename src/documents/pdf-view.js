@@ -243,6 +243,7 @@ export function tearDownDocumentView() {
     openPdf.doc.destroy().catch(() => {});
   }
   openPdf = null;
+  forgetDocumentPageGuess();
   clearDocumentOutline();
   if (el.documentView) el.documentView.innerHTML = "";
   if (el.documentPageIndicator) el.documentPageIndicator.textContent = "";
@@ -680,6 +681,7 @@ function buildPagePlaceholders() {
     page.dataset.pageNumber = String(pageNumber);
     page.style.width = `${Math.round(openPdf.baseWidth * openPdf.scale)}px`;
     page.style.height = `${Math.round(openPdf.baseHeight * openPdf.scale)}px`;
+    bumpDocumentLayout();
     if (pageNumber === 1) publishPageWidth(openPdf.baseWidth * openPdf.scale);
     // A page number that is visible even before the page paints, so scrubbing
     // through a long document never looks like a blank screen.
@@ -754,6 +756,7 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
     const height = (entry.viewport ? entry.viewport.height / (entry.renderScale || 1) : openPdf.baseHeight) * openPdf.scale;
     entry.el.style.width = `${Math.round(width)}px`;
     entry.el.style.height = `${Math.round(height)}px`;
+    bumpDocumentLayout();
     if (pageNumber === 1) publishPageWidth(width);
     if (openPdf.rendered.has(pageNumber)) entry.pendingSize = { width, height };
   });
@@ -966,6 +969,7 @@ async function renderPage(pageNumber) {
     // corrects itself.
     entry.el.style.width = `${Math.round(viewport.width)}px`;
     entry.el.style.height = `${Math.round(viewport.height)}px`;
+    bumpDocumentLayout();
     entry.viewport = viewport;
     entry.renderScale = scale;
 
@@ -1429,15 +1433,125 @@ export async function buildTextLayer(page, viewport) {
 // the top of the scroller. Deliberately not "the most visible page" — on a
 // two-page-tall window the answer flickers between two pages as you scroll,
 // and a page indicator that flickers is worse than one that is slightly eager.
+//
+// ── Why this is not a loop from page 1 any more ───────────────────────────
+//
+// It was, and it was the single most expensive thing the app did while a paper
+// was being scrolled: measured on a 40-page paper under a real wheel scroll,
+// 359ms of a 4.6s scroll, the top JS frame by an order of magnitude with
+// everything else in the noise.
+//
+// The cost is NOT the length of the walk, which was the first guess and was
+// wrong — shortening it to a step or two moved the number by 7%. It is that
+// both terms in the test are LAYOUT reads (pageOffsetTop reads offsetTop,
+// and offsetHeight is offsetHeight), and a layout read taken while the scroller
+// is dirty forces the browser to flush style and layout there and then. One
+// flush costs about the same whether it is followed by one property read or
+// forty, so what matters is how many times per frame something asks — and this
+// is asked four times per scroll event: updatePageIndicator asks,
+// scheduleDocumentPositionSave asks and asks again through currentDocumentRatio,
+// and pdf-page-notes asks twice more.
+//
+// So the geometry is read ONCE into a table and every question after that is
+// answered out of the table with no layout read at all — and the answer for one
+// scroll position is computed once however many callers ask for it.
+//
+// The table is rebuilt when the pages actually move (bumpDocumentLayout, called
+// from the four places that write a page element's box) and, as a net under
+// that, whenever it is more than a frame old. The net is what makes this safe to
+// reason about: a bump that somebody forgets to add later costs one frame of
+// staleness in a page number, not a wrong answer that persists.
+let pageBottoms = null;
+let pageBottomsGeneration = -1;
+let pageBottomsAt = 0;
+let documentLayoutGeneration = 0;
+
+// The pages have moved. Called from every place that writes a .pdf-page's box.
+export function bumpDocumentLayout() {
+  documentLayoutGeneration += 1;
+  lastPageTop = -1;
+  lastPageAnswer = 0;
+}
+
+// How long a geometry table may be trusted without a bump. One frame: long
+// enough that a burst of scroll events shares one flush, short enough that
+// nothing the reader can see is ever a frame behind where the pages are.
+const PAGE_GEOMETRY_MAX_AGE_MS = 16;
+
+// Every page's bottom edge, in scroller coordinates — or null when the document
+// is not fully built, which is the one case the table cannot describe (a page
+// with no entry is SKIPPED by the scan this replaces, and "skip" is not
+// something a sorted array of bottoms can express). The caller falls back to the
+// scan for that, so the answer is identical either way.
+function documentPageBottoms() {
+  const now = performance.now();
+  if (pageBottoms
+      && pageBottomsGeneration === documentLayoutGeneration
+      && now - pageBottomsAt < PAGE_GEOMETRY_MAX_AGE_MS) {
+    return pageBottoms;
+  }
+  const count = openPdf.pageCount;
+  const bottoms = new Float64Array(count);
+  for (let n = 1; n <= count; n += 1) {
+    const entry = openPdf.pages.get(n);
+    if (!entry) return null;
+    bottoms[n - 1] = pageOffsetTop(entry.el) + entry.el.offsetHeight;
+  }
+  pageBottoms = bottoms;
+  pageBottomsGeneration = documentLayoutGeneration;
+  pageBottomsAt = now;
+  return bottoms;
+}
+
+let lastPageTop = -1;
+let lastPageAnswer = 0;
+
 export function currentDocumentPage() {
   const view = el.documentView;
   if (!view || !openPdf) return 1;
+  // scrollTop alone, and deliberately: it is a scroll offset rather than a
+  // geometric one, so reading it forces nothing. An earlier version of this memo
+  // keyed on scrollHeight as well, to notice a relayout — and that read forced
+  // the very flush the memo existed to avoid, on every call, which is why it
+  // bought almost nothing.
   const top = view.scrollTop;
-  for (let pageNumber = 1; pageNumber <= openPdf.pageCount; pageNumber++) {
-    const entry = openPdf.pages.get(pageNumber);
-    if (entry && pageOffsetTop(entry.el) + entry.el.offsetHeight > top + 4) return pageNumber;
+  if (top === lastPageTop && lastPageAnswer) return lastPageAnswer;
+
+  const count = openPdf.pageCount;
+  const bottoms = documentPageBottoms();
+  let answer = count;
+  if (bottoms) {
+    // The first page whose bottom is past the top of the scroller. Bottoms only
+    // increase with the page number, so this is a binary search for the first
+    // true of a monotonic predicate — the same page the scan from 1 returned.
+    let lo = 0;
+    let hi = count - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (bottoms[mid] > top + 4) { answer = mid + 1; hi = mid - 1; } else { lo = mid + 1; }
+    }
+  } else {
+    // A document still being built: fall back to the original scan, which knows
+    // how to step over a page that has no entry yet.
+    answer = count;
+    for (let n = 1; n <= count; n += 1) {
+      const entry = openPdf.pages.get(n);
+      if (entry && pageOffsetTop(entry.el) + entry.el.offsetHeight > top + 4) { answer = n; break; }
+    }
   }
-  return openPdf.pageCount;
+  lastPageTop = top;
+  lastPageAnswer = answer;
+  return answer;
+}
+
+// Dropped when the document is torn down: the next paper's page 1 is not this
+// one's, and the memo would otherwise hand back a page number for a document
+// that is gone.
+export function forgetDocumentPageGuess() {
+  pageBottoms = null;
+  pageBottomsGeneration = -1;
+  lastPageTop = -1;
+  lastPageAnswer = 0;
 }
 
 // How far into the current page the reader is, 0..1 — the second half of a
