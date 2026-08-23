@@ -72,7 +72,7 @@ import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.j
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
 import { initHighlightsEditor } from "./panels/highlights-editor.js?v=__BUILD__";
-import { markDrawerHighlightsDirty, refreshDrawerOnOpen } from "./panels/drawer-highlights.js?v=__BUILD__";
+import { markDrawerHighlightsDirty } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
@@ -106,7 +106,7 @@ import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD_
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 import { initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
-import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
+import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
@@ -2830,30 +2830,34 @@ window.addEventListener("resize", () => {
 // short enough that a rotation looks like it re-fitted immediately.
 const DOCUMENT_REFIT_MS = 150;
 
-el.documentTocBtn?.addEventListener("click", () => {
-  if (!el.documentOutlineDrawer) return;
-  const open = el.documentOutlineDrawer.hidden;
-  el.documentOutlineDrawer.hidden = !open;
-  el.documentTocBtn.setAttribute("aria-expanded", String(open));
-  // The drawer's second half — this document's own highlights — built on the
-  // way in and only when it is stale. openNotesToc does the same for the notes
-  // drawer, and for the same reason: a drawer that is closed almost all of the
-  // time should not be paying to stay current.
-  if (open) refreshDrawerOnOpen(el.documentOutlineDrawer);
-});
-el.documentTocCloseBtn?.addEventListener("click", () => {
-  if (!el.documentOutlineDrawer) return;
-  el.documentOutlineDrawer.hidden = true;
-  el.documentTocBtn?.setAttribute("aria-expanded", "false");
-});
+// Both ways into the drawer go through openDocumentToc/closeDocumentToc
+// (src/documents/pdf-outline.js) — this button and the reading rail's Contents
+// row. They used to be two copies of `drawer.hidden = !open`, and both of them
+// left out the `.is-open` class the drawer is actually revealed by, so the
+// panel was unhidden fully transparent and off the left edge of the screen.
+el.documentTocBtn?.addEventListener("click", toggleDocumentToc);
+el.documentTocCloseBtn?.addEventListener("click", closeDocumentToc);
+initDocumentOutlineFolding();
 el.documentOutlineList?.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-outline-index]");
-  if (!button) return;
-  const entry = documentOutlineEntries()[Number(button.dataset.outlineIndex)];
+  const link = event.target.closest(".notes-toc-link");
+  if (!link) return;
+  event.preventDefault();
+  const entry = documentOutlineEntries()[Number(link.dataset.outlineIndex)];
   if (!entry?.page) return;
   scrollToDocumentPage(entry.page, 0);
-  if (el.documentOutlineDrawer) el.documentOutlineDrawer.hidden = true;
-  el.documentTocBtn?.setAttribute("aria-expanded", "false");
+  // On a phone the drawer covers the page it is about to scroll to, so it gets
+  // out of the way; where it pushes instead, the reader can walk down the list.
+  if (!tocPushesNotes()) closeDocumentToc();
+});
+
+// Clicking outside the open drawer dismisses it, on the same terms the notes
+// drawer uses: only while it OVERLAYS the page, never while it pushes.
+document.addEventListener("pointerdown", (event) => {
+  if (!isDocumentTocOpen()) return;
+  if (tocPushesNotes()) return;
+  if (el.documentOutlineDrawer?.contains(event.target)) return;
+  if (el.documentTocBtn?.contains(event.target)) return;
+  closeDocumentToc();
 });
 
 el.documentMoreBtn?.addEventListener("click", () => {

@@ -389,35 +389,63 @@
  *
  * Rides on .notes-toc-drawer's own chrome — the same panel, the same head, the
  * same close button — because a reader who has used one has used the other.
- * Only what is genuinely different is added here: an indent per outline depth,
- * and a page number per row.
+ * The rows are the notes contents' rows too (styles/17-toc-fold.css and the
+ * .notes-toc-* rules in styles/12-notes.css), built by src/notes/toc-tree.js
+ * for both surfaces. Only what is genuinely different is added here: the width
+ * the drawer takes, and a page number per row.
  */
-.document-toc-item.is-depth-1 { padding-left: 1rem; }
-.document-toc-item.is-depth-2 { padding-left: 2rem; }
-.document-toc-item.is-depth-3 { padding-left: 3rem; }
 
-.document-toc-link {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: 0.9rem;
-  text-align: left;
-  cursor: pointer;
+/* ── The declaration without which this drawer could not be seen at all ────
+ *
+ * .notes-toc-drawer is `width: var(--toc-width)` (styles/12-notes.css:790), and
+ * --toc-width is declared on .notes-stage and nowhere else
+ * (styles/11-chrome.css:1365). #documentOutlineDrawer lives in .document-stage,
+ * which is a SIBLING of that — so the var did not resolve, the declaration was
+ * invalid at computed-value time, and the drawer fell back to `width: auto`:
+ * an absolutely-positioned box shrink-wrapped to its own contents.
+ *
+ * That was only half of "I click the hamburger and see nothing". The other half
+ * is `transform: translateX(-104%); opacity: 0` on the same rule, undone only
+ * by `.is-open` — which the notes drawer is given by openNotesToc() and this one
+ * was never given by anything. openDocumentToc() in src/documents/pdf-outline.js
+ * is the other half of the fix; both are needed, and neither is enough alone.
+ *
+ * The same value as .notes-stage's, deliberately: two reading surfaces whose
+ * contents drawer is a different width is a difference with nothing behind it.
+ */
+.document-stage {
+  --toc-width: min(300px, 82%);
 }
 
-.document-toc-link:hover {
-  background: color-mix(in srgb, var(--accent-strong) 12%, transparent);
+@media (max-width: 720px) {
+  .document-stage {
+    --toc-width: min(320px, 88%);
+  }
+}
+
+/* Where a derived contents says so. A list read out of the file's own outline
+   is the author's; one inferred from the type sizes on the page is ours, and a
+   reader deciding whether to trust a heading that is missing has to be able to
+   tell which they are looking at. */
+.document-toc-derived {
+  margin: 0;
+  padding: 8px 10px 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+/* Still being read out of the pages. The scan runs in the background and the
+   rows land as it goes, so this says the list is not final yet. */
+.document-toc-derived[data-scanning="true"]::after {
+  content: " …";
 }
 
 .document-toc-page {
+  flex: 0 0 auto;
   margin-left: auto;
+  padding-left: 8px;
   font-size: 0.78rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;

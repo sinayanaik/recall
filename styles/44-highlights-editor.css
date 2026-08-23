@@ -22,7 +22,7 @@
 }
 
 .hl-notes-group + .hl-notes-group {
-  margin-top: 1.5em;
+  margin-top: 1.8em;
 }
 
 /* Where a run of highlights came from — a page of the paper, or a chapter of
@@ -67,10 +67,27 @@
    the first guess before that.
    Deliberately NOT on .hl-notes-group: the group head is sticky, and a sticky
    element inside a skipped subtree has nothing to stick to. */
+/* ── One entry, told apart from the next ───────────────────────────────────
+   Reported as "there's no minimal segregation between two rows on highlights or
+   notes, it's making it difficult to read", and the diagnosis is exact: the
+   only thing between two entries was 1.1em of air, while INSIDE one entry the
+   quote and its note were 0.4em apart. The boundary a reader needs (this
+   highlight ends, the next begins) was weaker than the one they do not (this is
+   the passage, this is my note about it), so the page read as one run of
+   alternating paragraphs.
+   So an entry is a bounded card: a hairline all the way round, a panel tint
+   under it, and the colour rail thickened on its left edge rather than standing
+   alone. The gap between two cards is now larger than any gap inside one, which
+   is the actual fix — the border is what makes it legible at a glance.
+   Everything is in em, so it rides the reader's own Notes type scale like the
+   rest of this file. */
 .hl-note {
-  margin-bottom: 1.1em;
-  padding-left: 0.8em;
+  margin-bottom: 1.4em;
+  padding: 0.7em 0.85em 0.75em;
+  border: 1px solid var(--line);
   border-left: 3px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 55%, transparent);
 }
 
 /* ── ...and, on a big enough surface, the unit it is contained by ──────────
@@ -175,18 +192,25 @@
 
 /* The note itself. Padded and rounded so the hit region for "press to edit" is
    the whole note and not just its words — a one-line note with no affordance
-   around it is a link you have to guess at. */
+   around it is a link you have to guess at.
+   The rule above it is the other half of the separation fix: inside one card
+   there are two things, the passage and what the reader wrote about it, and a
+   line between them is what stops the second reading as a continuation of the
+   first. Drawn on the note rather than under the quote so it is absent on the
+   very first paint, before anything has been rendered into either. */
 .hl-note-body {
-  margin-top: 0.4em;
-  padding: 0.35em 0.5em;
+  margin-top: 0.55em;
+  padding: 0.45em 0.5em 0.35em;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 0 0 8px 8px;
   cursor: text;
 }
 
 .hl-note-body:hover,
 .hl-note-body:focus-visible {
   border-color: var(--line);
+  border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 

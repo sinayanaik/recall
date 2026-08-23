@@ -30,11 +30,53 @@ function pdfString(text) {
   return String(text).replace(/([\\()])/g, "\\$1");
 }
 
+// The titles a derived-contents fixture puts at the top of each page. Real
+// words rather than "Section N", and deliberately all different: a line whose
+// words repeat across the pages is a RUNNING HEAD, and src/documents/pdf-toc.js
+// drops those on purpose — a fixture whose headings were formulaic would be
+// testing that rule instead of the one it means to.
+export const FIXTURE_HEADINGS = [
+  "Introduction and motivation",
+  "Method",
+  "Results on the benchmark",
+  "Discussion",
+  "Related work",
+  "Conclusion"
+];
+
+// ...and the numbered subsection under each, distinct for the same reason: a
+// numbered line that says the same thing on every page, modulo its digits, is
+// furniture and pdf-toc.js drops it as such.
+export const FIXTURE_SUBHEADINGS = [
+  "What this paper is for",
+  "How the model is trained",
+  "Accuracy against the baseline",
+  "Threats to validity",
+  "Where this sits in the literature",
+  "What we would do next"
+];
+
 // One page's text, as lines. Each page carries a heading and a numbered run of
 // sentences, so the check can say exactly how many text items it expects and
 // which words are where.
-export function fixturePageLines(pageNumber, linesPerPage) {
-  const lines = [`Section ${pageNumber}: a page of the fixture document`];
+//
+// A line is a string at body size, or { text, size } when it is set larger —
+// which is the only cue a PDF with no outline gives about what its headings
+// are, and therefore the thing the derived contents is read from.
+export function fixturePageLines(pageNumber, linesPerPage, { headingSize = 0 } = {}) {
+  const lines = [];
+  if (headingSize) {
+    lines.push({ text: FIXTURE_HEADINGS[(pageNumber - 1) % FIXTURE_HEADINGS.length], size: headingSize });
+    // A numbered subsection at BODY size, which is how most papers set one and
+    // is the second rule pdf-toc.js reads: "3.1" is one level under "3"
+    // whatever size the producer chose for it.
+    lines.push(`${pageNumber}.1 ${FIXTURE_SUBHEADINGS[(pageNumber - 1) % FIXTURE_SUBHEADINGS.length]}`);
+    for (let i = lines.length; i < linesPerPage; i++) {
+      lines.push(`Page ${pageNumber} line ${i} carries a sentence worth selecting.`);
+    }
+    return lines;
+  }
+  lines.push(`Section ${pageNumber}: a page of the fixture document`);
   for (let i = 1; i < linesPerPage; i++) {
     lines.push(`Page ${pageNumber} line ${i} carries a sentence worth selecting.`);
   }
@@ -45,7 +87,9 @@ export function contentStreamFor(lines) {
   const body = lines
     .map((line, index) => {
       const y = FIRST_BASELINE - index * LINE_HEIGHT;
-      return `BT /F1 ${FONT_SIZE} Tf ${MARGIN_LEFT} ${y} Td (${pdfString(line)}) Tj ET`;
+      const text = typeof line === "string" ? line : line.text;
+      const size = typeof line === "string" ? FONT_SIZE : line.size;
+      return `BT /F1 ${size} Tf ${MARGIN_LEFT} ${y} Td (${pdfString(text)}) Tj ET`;
     })
     .join("\n");
   return body;
@@ -83,7 +127,17 @@ export function lineRect(lineIndex, width = 380) {
 // only pass them for a check that is ABOUT the page's proportions. The one that
 // does is the fit-width case: a 16:9 slide is over twice as wide as a phone,
 // and "does a page fit across" cannot be asked of a document that already fits.
-export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true, width = PAGE_WIDTH, height = PAGE_HEIGHT } = {}) {
+// `outline: false` builds the same document with NO /Outlines at all, which is
+// what a preprint, a scan or anything printed to PDF actually looks like — the
+// case src/documents/pdf-toc.js exists for, and one that a fixture which always
+// carries an outline can never reach.
+// `headingSize` sets the first line of each page in larger type, so there is
+// something for that derivation to find.
+export function buildFixturePdf({
+  pages = 4, linesPerPage = 12, annotate = true,
+  width = PAGE_WIDTH, height = PAGE_HEIGHT,
+  outline = true, headingSize = 0
+} = {}) {
   const objects = [];       // 1-based; objects[i] is object i+1
   const push = (body) => { objects.push(body); return objects.length; };
 
@@ -109,7 +163,7 @@ export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true,
 
   const pageIds = [];
   for (let pageNumber = 1; pageNumber <= pages; pageNumber++) {
-    const stream = contentStreamFor(fixturePageLines(pageNumber, linesPerPage));
+    const stream = contentStreamFor(fixturePageLines(pageNumber, linesPerPage, { headingSize }));
     const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
     const annots = pageNumber === annotatedPage ? ` /Annots [${annotationId} 0 R]` : "";
     pageIds.push(push(
@@ -120,22 +174,25 @@ export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true,
 
   // A two-level outline: one entry per page, so the check can assert both that
   // the titles come back and that each destination resolves to the right page.
-  const outlineId = push("");
-  const outlineItemIds = pageIds.map(() => push(""));
-  outlineItemIds.forEach((id, index) => {
-    const prev = index > 0 ? ` /Prev ${outlineItemIds[index - 1]} 0 R` : "";
-    const next = index < outlineItemIds.length - 1 ? ` /Next ${outlineItemIds[index + 1]} 0 R` : "";
-    objects[id - 1] =
-      `<< /Title (${pdfString(`Section ${index + 1}`)}) /Parent ${outlineId} 0 R${prev}${next} `
-      + `/Dest [${pageIds[index]} 0 R /Fit] >>`;
-  });
-  objects[outlineId - 1] =
-    `<< /Type /Outlines /First ${outlineItemIds[0]} 0 R /Last ${outlineItemIds[outlineItemIds.length - 1]} 0 R `
-    + `/Count ${outlineItemIds.length} >>`;
+  let outlineId = 0;
+  if (outline) {
+    outlineId = push("");
+    const outlineItemIds = pageIds.map(() => push(""));
+    outlineItemIds.forEach((id, index) => {
+      const prev = index > 0 ? ` /Prev ${outlineItemIds[index - 1]} 0 R` : "";
+      const next = index < outlineItemIds.length - 1 ? ` /Next ${outlineItemIds[index + 1]} 0 R` : "";
+      objects[id - 1] =
+        `<< /Title (${pdfString(`Section ${index + 1}`)}) /Parent ${outlineId} 0 R${prev}${next} `
+        + `/Dest [${pageIds[index]} 0 R /Fit] >>`;
+    });
+    objects[outlineId - 1] =
+      `<< /Type /Outlines /First ${outlineItemIds[0]} 0 R /Last ${outlineItemIds[outlineItemIds.length - 1]} 0 R `
+      + `/Count ${outlineItemIds.length} >>`;
+  }
 
   const infoId = push("<< /Title (The Fixture Paper) /Author (Recall Checks) >>");
 
-  objects[catalogId - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R /Outlines ${outlineId} 0 R >>`;
+  objects[catalogId - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R${outline ? ` /Outlines ${outlineId} 0 R` : ""} >>`;
   objects[pagesId - 1] =
     `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`;
 
@@ -160,6 +217,12 @@ export function buildFixturePdf({ pages = 4, linesPerPage = 12, annotate = true,
     pages,
     linesPerPage,
     title: "The Fixture Paper",
+    headings: headingSize
+      ? Array.from({ length: pages }, (_, i) => ({
+        title: FIXTURE_HEADINGS[i % FIXTURE_HEADINGS.length],
+        sub: `${i + 1}.1 ${FIXTURE_SUBHEADINGS[i % FIXTURE_SUBHEADINGS.length]}`
+      }))
+      : null,
     annotation: annotate
       ? { page: annotatedPage, line: annotatedLine, rect, comment: annotationComment }
       : null

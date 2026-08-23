@@ -63,21 +63,37 @@
   padding: 0;
 }
 
+/* ── One row, told apart from the next ─────────────────────────────────────
+   A 2px gap between two rows that can now each be four lines tall (two of
+   highlight, two of note) is not a boundary — the report is "there's no minimal
+   segregation between two rows, it's making it difficult to read", and it is
+   the same complaint the Highlights tab's entries answer with a card
+   (styles/44-highlights-editor.css).
+   A hairline rather than a box, because this is a LIST: a drawer of three
+   hundred bordered cards is heavier than the thing it is indexing. The rule
+   sits between rows and never above the first. */
 .drawer-highlight + .drawer-highlight {
   margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
 }
 
 /* One row, one press, one destination. A button rather than a link: there is no
    URL for "the fourth mark in this note", and a link that goes nowhere is a
    promise the browser cannot keep (a middle-click would open a blank tab). */
-/* Four columns, all on one line: the colour, the words, whether a note hangs off
-   it, and where it is. The pencil had a row of its own — the "where" took the
-   third column and pushed it onto a second — which put a mark under the row it
-   belonged to and read as a bullet for the next one. */
+/* Four columns on the first line — the colour, the words, whether a note hangs
+   off it, and where it is — and the note itself on a second, under the words.
+   The pencil once had a row of its own (the "where" took the third column and
+   pushed it onto a second), which put a mark under the row it belonged to and
+   read as a bullet for the next one; naming every column is what stops that.
+
+   `align-content: start` matters once there are two rows: without it the grid
+   distributes the spare height of a short row between them. */
 .drawer-highlight-jump {
   display: grid;
   grid-template-columns: auto 1fr auto auto;
   align-items: baseline;
+  align-content: start;
   gap: 8px;
   width: 100%;
   padding: 7px 8px;
@@ -120,10 +136,44 @@
    that grows to hold one stops being a list you can scan — but one line cuts
    most sentences mid-clause, which is not enough to recognise a passage by. */
 .drawer-highlight-text {
+  grid-column: 2;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* What was written about it, on the row below the words and in the same column.
+   Quieter and smaller: the highlight is what you are scanning for, the note is
+   what tells you which one it was.
+   Two lines, then an ellipsis — and the string is ALREADY cut to
+   DRAWER_NOTE_CHARS by src/panels/highlight-index.js, so this clamp is trimming
+   a sentence and not a chapter (see the note there on what holding five hundred
+   full notes in a drawer's DOM would cost). */
+.drawer-highlight-note {
+  grid-column: 2 / -1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 2px;
+  padding-left: 0;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  padding-inline-start: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+/* The row that lifts the cap. Centred and quiet — it is the end of the list,
+   not an entry in it. */
+.drawer-highlight-more-btn {
+  display: block;
+  color: var(--accent-strong);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
 }
 
 /* The page, or the chapter it is under. Right-aligned and quiet: it is how you

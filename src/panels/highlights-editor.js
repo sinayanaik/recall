@@ -192,10 +192,18 @@ export const HL_ENTRY_LINE_CHARS = 68;
 
 export const HL_ENTRY_LINE_PX = 28;
 
+// The head, the card's own padding and borders, and the rule between the quote
+// and the note — everything in an entry that is not a line of text. It went up
+// when an entry became a bounded card rather than a paragraph with a rail
+// (styles/44-highlights-editor.css): the estimate is what three hundred
+// unpainted entries are spread down the scroller by, and one that is short by
+// 24px per entry puts the scrollbar out by a screenful over a marked-up book.
+export const HL_ENTRY_CHROME_PX = 64;
+
 export function estimateEntryHeight(entry) {
   const quoteLines = Math.max(1, Math.ceil((entry.markdown || "").length / HL_ENTRY_LINE_CHARS));
   const noteLines = entry.note ? Math.max(1, Math.ceil(entry.note.length / HL_ENTRY_LINE_CHARS)) : 1;
-  return 40 + (quoteLines + noteLines) * HL_ENTRY_LINE_PX;
+  return HL_ENTRY_CHROME_PX + (quoteLines + noteLines) * HL_ENTRY_LINE_PX;
 }
 
 function articleFor(entry) {

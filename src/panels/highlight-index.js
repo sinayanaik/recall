@@ -20,8 +20,8 @@
 //
 //   text     the highlighted words, as plain text
 //   color    the mark's / record's colour token, for the row's colour chip
-//   note     whether something is written about it (not the note itself — a
-//            drawer says a note is THERE and lets you open it)
+//   note     whether something is written about it
+//   noteText ...and the first DRAWER_NOTE_CHARS of it, as plain text
 //   where    the chapter it is under, or the page it is on
 //   anchor   what scheduleNoteJump searches for
 //   locator  the exact-target shortcut scheduleNoteJump prefers over the
@@ -40,6 +40,29 @@ import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scanHighlightGroups } from "./highlights-panel.js?v=__BUILD__";
 import { documentHighlightLabel, documentHighlightsInReadingOrder } from "../documents/pdf-highlights.js?v=__BUILD__";
+
+// ── Why the note is carried, and why only the first of it ─────────────────
+//
+// The drawer used to say a highlight had a note by showing a "✎" and nothing
+// else, on the argument that "a note is said, not shown" — read it in the
+// Highlights tab or by pressing the number on the mark. On a PAPER that
+// argument does not survive contact: the reader is on page 40, the note is in a
+// different tab, and the one question the drawer is being asked is "which of
+// these did I write something about, and what". So the note is shown.
+//
+// Clipped HERE rather than in CSS, and that is the load-bearing half. A book
+// with five hundred annotated highlights would otherwise hold five hundred
+// notes in full in the row DOM — several megabytes of text laid out and
+// line-clamped down to two lines — for a list being scanned rather than read.
+// Two lines of a 300px drawer is about 70 characters; this is twice that, so a
+// clamp still has something to clamp.
+export const DRAWER_NOTE_CHARS = 140;
+
+export function clipDrawerNote(text) {
+  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  return flat.length > DRAWER_NOTE_CHARS ? `${flat.slice(0, DRAWER_NOTE_CHARS).trimEnd()}…` : flat;
+}
 
 // The note's own <mark>s, in reading order.
 //
@@ -70,6 +93,7 @@ export function noteHighlightEntries() {
       text,
       color: group.color,
       note: Boolean(group.pieces[0].note),
+      noteText: clipDrawerNote(group.pieces[0].note),
       where: heading?.title || "",
       anchor: trimNoteAnchor({
         offset: group.offset,
@@ -110,6 +134,7 @@ export function documentHighlightEntries() {
     text: documentHighlightLabel(record),
     color: record.color,
     note: Boolean(notes.get(record.id)),
+    noteText: clipDrawerNote(notes.get(record.id)),
     where: record.page ? `p. ${record.page}` : "",
     anchor: {
       pdf: record.anchor || { page: record.page, item: 0, ch: 0 },

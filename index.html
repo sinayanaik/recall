@@ -150,6 +150,8 @@
     <link rel="modulepreload" href="src/documents/pdf-highlights.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-toc.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/toc-tree.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-region.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-store.js?v=__BUILD__">
@@ -881,14 +883,21 @@
               <button class="tool-button document-zoom" id="documentZoomInBtn" type="button" title="Zoom in" aria-label="Zoom in">&#43;</button>
               <button class="tool-button document-zoom" id="documentFitBtn" type="button" title="Fit the page to the window width" aria-label="Fit to width">&#8596;</button>
             </div>
+            <!-- The same drawer as the notes one, deliberately — same chrome,
+                 same rows (src/notes/toc-tree.js builds both), same fold-all.
+                 A PDF that carries no outline of its own gets one read out of
+                 the type on its pages (src/documents/pdf-toc.js), which is why
+                 the empty message below is now the case where even that found
+                 nothing. -->
             <nav class="notes-toc-drawer document-toc-drawer" id="documentOutlineDrawer" hidden aria-label="Document contents">
               <div class="notes-toc-head">
                 <span class="notes-toc-title">Contents</span>
+                <button class="notes-toc-fold-all" id="documentTocFoldAllBtn" type="button" title="Expand all sections" aria-label="Expand all sections" hidden>&#8862;</button>
                 <button class="notes-toc-close" id="documentTocCloseBtn" type="button" title="Close" aria-label="Close contents">&times;</button>
               </div>
               <div class="notes-toc-scroll">
                 <ol class="notes-toc-list document-toc-list" id="documentOutlineList"></ol>
-                <p class="notes-toc-empty" id="documentOutlineEmpty" hidden>This PDF has no built-in table of contents.</p>
+                <p class="notes-toc-empty" id="documentOutlineEmpty" hidden>No contents in this PDF, and no headings we could find in its pages.</p>
               </div>
             </nav>
           </div>

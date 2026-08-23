@@ -1077,6 +1077,62 @@ try {
       pageNotes.blockIsSibling && pageNotes.heightBefore === pageNotes.heightAfter,
       `sibling=${pageNotes.blockIsSibling} · page ${pageNotes.heightBefore}px → ${pageNotes.heightAfter}px`);
     check("...and goes away when the mode is turned off", pageNotes.removedWhenOff);
+
+    // ── The ROW in the menu, driven as a reader drives it ─────────────────
+    //
+    // Everything above calls api.togglePdfPageNotes() directly, which is why
+    // "the show inline note button in the PDF is essentially dead" was true of
+    // a build where every one of those assertions passed. What was dead was the
+    // feedback: styles/35-notes-menu.css hides .nhm-state and turns it back on
+    // only inside .notes-head-more-menu, so this row's On/Off switch had never
+    // been rendered — a mode toggle that looks identical before and after.
+    const modeRow = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.setPdfPageNotesFlag(false);
+      api.setViewMode("document");
+      await settle(300);
+      document.getElementById("documentMoreBtn").click();
+      await settle(200);
+      const row = document.querySelector('#documentMoreMenu [data-document-action="page-notes"]');
+      const stateEl = row.querySelector(".nhm-state");
+      const knob = row.querySelector(".nhm-switch");
+      const read = () => {
+        const cs = getComputedStyle(stateEl);
+        return {
+          pressed: row.getAttribute("aria-pressed"),
+          display: cs.display,
+          direction: cs.flexDirection,
+          word: getComputedStyle(stateEl, "::before").content,
+          knob: getComputedStyle(knob, "::after").transform,
+          width: Math.round(stateEl.getBoundingClientRect().width)
+        };
+      };
+      const before = read();
+      row.click();
+      await settle(500);
+      const after = read();
+      const printed = document.querySelectorAll(".pdf-page-notes").length;
+      // ...and off again, so the mode does not leak into the shots below.
+      row.click();
+      await settle(300);
+      document.getElementById("documentMoreBtn").click();
+      await settle(100);
+      return { before, after, printed };
+    }`);
+
+    check("the ⋯ menu's 'Notes on the page' row shows a switch at all",
+      modeRow.before.display !== "none" && modeRow.before.width > 20
+        && modeRow.before.direction === "row",
+      `display=${modeRow.before.display} direction=${modeRow.before.direction} ${modeRow.before.width}px`);
+    check("...that says Off before the press and On after it",
+      /off/i.test(modeRow.before.word) && /on/i.test(modeRow.after.word)
+        && modeRow.before.pressed === "false" && modeRow.after.pressed === "true",
+      `${modeRow.before.word} → ${modeRow.after.word}`);
+    check("...with the knob actually moving",
+      modeRow.before.knob !== modeRow.after.knob,
+      `${modeRow.before.knob} → ${modeRow.after.knob}`);
+    check("...and the press printing the notes it promised",
+      modeRow.printed > 0, `${modeRow.printed} sheet(s)`);
     // The packing. One full-width row per note under a 900px page is a line of
     // text nobody wants to read and a page with five notes on it is a wall, so
     // the strip is a multicol flow now — and the three declarations below are
@@ -1474,6 +1530,27 @@ try {
     document.getElementById("documentTocBtn").click();
     await settle(400);
     const el = document.getElementById("documentOutlineDrawer");
+    // ── Is the drawer actually ON SCREEN? ────────────────────────────────
+    //
+    // Everything below reads the drawer's DOM, and the DOM was always right:
+    // rows were built, tabs were installed, jumps worked. What the reader got
+    // was nothing at all, because .notes-toc-drawer is
+    // 'transform: translateX(-104%); opacity: 0' until something adds .is-open
+    // (styles/12-notes.css), and this drawer was only ever un-hidden — and
+    // because 'width: var(--toc-width)' did not resolve outside .notes-stage,
+    // so the box was shrink-wrapped as well as invisible. Two faults, both
+    // invisible to a DOM query, so this is measured off getComputedStyle and
+    // the box the reader would actually see.
+    const box = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    const seen = {
+      open: el.classList.contains("is-open"),
+      opacity: Number(style.opacity),
+      transform: style.transform,
+      width: Math.round(box.width),
+      left: Math.round(box.left),
+      stageWidth: Math.round(document.getElementById("documentStage").getBoundingClientRect().width)
+    };
     const tabs = Array.from(el.querySelectorAll("[data-drawer-tab]")).map((t) => t.textContent);
     api.setDrawerSection(el, "highlights");
     await settle(300);
@@ -1494,12 +1571,24 @@ try {
     await settle(1400);
     const wanted = Number(String(rows[index].where).replace(/[^0-9]/g, "")) || 0;
     return {
-      tabs, rows, contentsHidden,
+      tabs, rows, contentsHidden, seen,
       records: records.length,
       landedOn: api.currentDocumentPage(),
       wanted
     };
   }`);
+
+  // Before anything about its contents: pressing ☰ has to put a panel on the
+  // glass. "I'm clicking the hamburger in the PDF and seeing nothing" was true
+  // of every build that passed every other assertion in this block.
+  check("pressing the document's ☰ actually shows the drawer",
+    drawer.seen.open && drawer.seen.opacity > 0.9
+      && !/matrix\(1, 0, 0, 1, -?[1-9]/.test(drawer.seen.transform),
+    `is-open=${drawer.seen.open} opacity=${drawer.seen.opacity} transform=${drawer.seen.transform}`);
+  check("...at the width a contents drawer is meant to be",
+    drawer.seen.width >= 200 && drawer.seen.width <= drawer.seen.stageWidth
+      && drawer.seen.left >= -1,
+    `${drawer.seen.width}px in a ${drawer.seen.stageWidth}px stage, left=${drawer.seen.left}`);
 
   check("the Document panel's drawer carries a Highlights section",
     drawer.tabs.join("/") === "Contents/Highlights" && drawer.contentsHidden,
@@ -2196,6 +2285,113 @@ try {
     check("...and its Document tab on screen",
       plainResult.viewMode === "document" && plainResult.tabHidden === false,
       `viewMode=${plainResult.viewMode} tabHidden=${plainResult.tabHidden}`);
+  }
+
+  // ── 12. A contents for a PDF that carries none ──────────────────────────
+  //
+  // The outline dictionary is what a well-made book has and what almost no
+  // PAPER does. Every assertion above about the contents drawer runs against a
+  // fixture that HAS one, so none of them could see that the drawer is empty on
+  // most of what people actually read on this surface.
+  //
+  // This imports a paper with no /Outlines at all and headings set only in
+  // larger type — a preprint, in other words — and asks whether the drawer
+  // fills in anyway.
+  if (!OWN_PDF) {
+    const noOutline = buildFixturePdf({ pages: 6, annotate: false, outline: false, headingSize: 18 });
+    const derived = await page.evaluate(`async (bytes) => {
+      const { api, settle } = window.__recall;
+      const before = api.readLocalDeckIndex().map((m) => m.id);
+      const file = new File([new Uint8Array(bytes)], "no-outline.pdf", { type: "application/pdf" });
+      await api.importPdfFile(file, null);
+      await settle(400);
+      const entry = api.readLocalDeckIndex().find((m) => !before.includes(m.id));
+      if (!entry) return { error: "no deck was created for the outline-less PDF" };
+      await api.loadDeckFromLibrary(entry.id);
+      await settle(300);
+      api.closeMyDecksPanel();
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await api.whenDocumentPageReady(1);
+      // The scan runs in the BACKGROUND, off the open path — that is the whole
+      // design — so it is waited for rather than assumed.
+      for (let i = 0; i < 120 && !api.documentOutlineEntries().length; i += 1) await settle(100);
+      await settle(400);
+      const entries = api.documentOutlineEntries().map((e) => ({ title: e.title, page: e.page, depth: e.depth }));
+      document.getElementById("documentTocBtn").click();
+      await settle(400);
+      const drawer = document.getElementById("documentOutlineDrawer");
+      const rows = Array.from(drawer.querySelectorAll(".notes-toc-link")).map((row) => ({
+        text: row.querySelector(".notes-toc-text").textContent,
+        page: row.querySelector(".document-toc-page")?.textContent || "",
+        hidden: Boolean(row.closest(".notes-toc-item").hidden)
+      }));
+      const result = {
+        entries,
+        rows,
+        derivedNote: drawer.querySelector(".document-toc-derived")?.textContent || "",
+        branches: drawer.querySelectorAll(".notes-toc-item.is-branch").length,
+        twisties: drawer.querySelectorAll(".notes-toc-twisty").length,
+        rails: drawer.querySelectorAll(".notes-toc-rail").length,
+        foldAllHidden: document.getElementById("documentTocFoldAllBtn").hidden,
+        cached: JSON.parse(JSON.stringify(api.state.meta?.pdfToc || null)),
+        deckId: entry.id
+      };
+      document.getElementById("documentTocCloseBtn").click();
+      await settle(300);
+      // ...and back off disk, which is the half that says the cache is real: a
+      // second session must not pay for the scan again.
+      for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+      await api.loadDeckFromLibrary(entry.id);
+      await settle(300);
+      api.closeMyDecksPanel();
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await api.whenDocumentPageReady(1);
+      const started = performance.now();
+      for (let i = 0; i < 60 && !api.documentOutlineEntries().length; i += 1) await settle(50);
+      result.reloadMs = Math.round(performance.now() - started);
+      result.afterReload = api.documentOutlineEntries().map((e) => ({ title: e.title, page: e.page, depth: e.depth }));
+      result.stillDerived = api.isDocumentOutlineDerived();
+      return result;
+    }`, Array.from(noOutline.bytes));
+
+    if (derived.error) throw new Error(derived.error);
+    const tops = derived.entries.filter((e) => e.depth === 0);
+    const subs = derived.entries.filter((e) => e.depth === 1);
+    check("a PDF with no outline still gets a contents, read off its pages",
+      derived.entries.length > 0, `${derived.entries.length} entr(y/ies)`);
+    check("...one heading per page, on the right page",
+      tops.length === noOutline.pages
+        && tops.every((e, i) => e.title === noOutline.headings[i].title && e.page === i + 1),
+      tops.map((e) => `${e.title}→${e.page}`).join(" · ").slice(0, 90));
+    check("...with a numbered subsection one level under it",
+      subs.length === noOutline.pages
+        && subs.every((e, i) => e.title === noOutline.headings[i].sub && e.page === i + 1),
+      subs.map((e) => `${e.title}→${e.page}`).join(" · ").slice(0, 90));
+    check("...and nothing else off the page mistaken for a heading",
+      derived.entries.length === tops.length + subs.length,
+      `${derived.entries.length} kept of ${tops.length + subs.length} wanted`);
+    check("...drawn as the SAME tree the notes contents draws",
+      derived.rows.length === derived.entries.length && derived.branches === noOutline.pages
+        && derived.twisties === noOutline.pages && derived.rails > 0 && !derived.foldAllHidden,
+      `${derived.rows.length} row(s), ${derived.branches} branch(es), ${derived.rails} rail(s)`);
+    check("...folded to its top level on open, exactly as a note's contents is",
+      derived.rows.filter((r) => r.hidden).length === subs.length,
+      `${derived.rows.filter((r) => r.hidden).length} of ${derived.rows.length} row(s) folded away`);
+    check("...saying it was inferred rather than read from the file",
+      /found in the text/i.test(derived.derivedNote), derived.derivedNote.slice(0, 70));
+    check("...and each row carrying the page it goes to",
+      derived.rows.every((r) => /^\d+$/.test(r.page)),
+      derived.rows.map((r) => r.page).join(","));
+    check("the derived contents is cached on the deck",
+      derived.cached?.pages === noOutline.pages && derived.cached.entries.length === derived.entries.length,
+      `v${derived.cached?.v} · ${derived.cached?.entries?.length} entr(y/ies) for ${derived.cached?.pages} page(s)`);
+    check("...so re-opening the deck does not scan the pages again",
+      derived.afterReload.length === derived.entries.length
+        && derived.afterReload.every((e, i) => e.title === derived.entries[i].title && e.page === derived.entries[i].page)
+        && derived.stillDerived,
+      `${derived.afterReload.length} entr(y/ies) back in ${derived.reloadMs}ms`);
   }
 
   if (SHOT) {
