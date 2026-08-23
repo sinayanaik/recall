@@ -818,13 +818,13 @@ const ACCEPTED = {
     "For the same reason it is also where highlight notes are refreshed — the " +
     "mark menu, the note popup, an undo, a raw edit and a sync pull can all " +
     "change a note's number or body, and every one of them repaints here. " +
-    "Free when nothing about them changed; see refreshInlineHighlightNotes.",
-  // ── A highlight's note, in the paragraph it is about ────────────────────
-  // src/notes/inline-highlight-notes.js prints a highlight's note where the
-  // highlight is, rather than only in the "## Highlight Notes" section at the
-  // end of the note. Three functions the baseline has had to learn about it.
+    "Free when nothing about them changed; see refreshHighlightBadges.",
+  // ── A highlight that has a note says so, where the highlight is ─────────
+  // src/notes/highlight-badges.js puts a numbered, pressable badge on a mark
+  // whose note has something in it, so an annotation four hundred paragraphs
+  // below the sentence it is about is one press away from that sentence.
   enhanceRenderedMarkdown:
-    "Runs the highlight-note pass over the nodes just built, for #notesView " +
+    "Runs the highlight-badge pass over the nodes just built, for #notesView " +
     "only — a card face and #printRoot have no state.notes to resolve a " +
     "data-note id against. Scoped to `roots` like every other pass here, which " +
     "is what keeps a lazily-built book paying only for the chunks it has made.",
@@ -838,12 +838,12 @@ const ACCEPTED = {
     "Escape themselves to leave fullscreen and the fullscreenchange listener " +
     "does this instead; Firefox dispatches it, and this is that path.",
   cleanedSelectionFragment:
-    "Removes .hl-inline-note along with the buttons and badges. It is a " +
-    "PRINTED COPY of a highlight's note, appended into the paragraph the " +
-    "highlight is in, and its text is nowhere near that paragraph in the raw " +
-    "markdown — left in the clone it would put words into the needle that " +
-    "locateSelectionInSource cannot find, so every highlight, cloze and erase " +
-    "over an annotated paragraph would miss.",
+    "Removes .doc-notes along with the buttons and badges. `button` also " +
+    "covers the number on an annotated highlight, which sits INSIDE the mark " +
+    "and whose digits are nowhere in the markdown — the note it points at " +
+    "lives in the fenced block at the end of the source. Left in the clone, " +
+    "either would put text into the needle that locateSelectionInSource cannot " +
+    "find, so every highlight, cloze and erase over that paragraph would miss.",
   setViewMode:
     "Resets scrollLeft alongside scrollTop when a DIFFERENT note opens: paged " +
     "mode runs sideways, so leaving scrollLeft alone opened the new note " +
@@ -1396,6 +1396,19 @@ function replaceCall(text, fn, build) {
 // (the old name) and in the ADDED list (the new one), which is the honest way
 // to show it — the tool matches by name and cannot know the two are related.
 const REMOVED = {
+  // ── The Highlights tab stopped being a list of rows ─────────────────────
+  collectDeckHighlights:
+    "Built the row shape the Highlights tab rendered: a highlight widened to " +
+    "the line it sits in, with same-line highlights merged so one line was not " +
+    "previewed twice with two Go-to buttons that scrolled to the same place. " +
+    "The tab is a continuous editor now (src/panels/highlights-editor.js), and " +
+    "merging is the one thing it cannot do — two annotations under one line " +
+    "would be offered a single box to write both notes in. collectHighlight" +
+    "Entries replaces it, one entry per highlight, off the same scan; and the " +
+    "duplication the merge avoided is avoided instead by an entry BEING the " +
+    "highlighted line rather than a preview of it. Its two halves " +
+    "(collectDocumentHighlightRows, collectNoteHighlightRows) went with it and " +
+    "were added after the split, so they are not named here.",
   // ── The image controls stopped being bound by token index ───────────────
   // The eleven entries below were one scheme: find an image by walking
   // marked's top-level tokens, remember WHICH token it was, and commit a

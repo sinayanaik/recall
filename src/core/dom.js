@@ -228,7 +228,6 @@ export const el = {
   selectionFloat: document.querySelector("#selectionFloat"),
   selectionFloatFormat: document.querySelector("#selectionFloatFormat"),
   immersiveModeBtn: document.querySelector("#immersiveModeBtn"),
-  inlineNotesBtn: document.querySelector("#inlineNotesBtn"),
   highlightsStage: document.querySelector("#highlightsStage"),
   highlightsList: document.querySelector("#highlightsList"),
   highlightsEmpty: document.querySelector("#highlightsEmpty"),

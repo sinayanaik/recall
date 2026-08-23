@@ -68,7 +68,7 @@ function serveOn(dir) {
 const API_SRC = `async () => {
   const paths = [
     "/src/notes/notes-view.js?v=__BUILD__",
-    "/src/notes/inline-highlight-notes.js?v=__BUILD__",
+    "/src/notes/highlight-badges.js?v=__BUILD__",
     "/src/notes/bookmark.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
@@ -267,7 +267,12 @@ try {
     if (menu.error) return menu.error;
     if (!menu.open) return "the ⋯ menu did not open";
     const shown = menu.rows.filter((r) => !r.hidden);
-    if (shown.length < 9) return `only ${shown.length} rows in the menu`;
+    // Eight, not nine: "Notes in the text" — the opt-in mode that printed every
+    // highlight's note into the paragraph it annotated — is gone. A note is
+    // read by pressing the number on its highlight now, or in the Highlights
+    // tab. The floor is here to catch rows going missing by accident, so it
+    // tracks what the menu is actually meant to hold.
+    if (shown.length < 8) return `only ${shown.length} rows in the menu`;
     const mute = shown.filter((r) => r.label.length < 4).map((r) => r.id);
     if (mute.length) return `no readable label on: ${mute.join(", ")}`;
     // Two rows that say the same thing are the bookmark report in a different
@@ -328,14 +333,17 @@ try {
     const menu = await page.evaluate(READ_MENU);
     if (menu.error) return menu.error;
     const modes = menu.rows.filter((r) => r.pressed !== null && !r.hidden);
-    if (modes.length < 4) return `only ${modes.length} rows carry a pressed state`;
+    // Three, since "Notes in the text" was removed along with the printed mode
+    // it toggled. What this case is really about is that a mode which CAN be
+    // pressed says which way it is set, and that is unchanged.
+    if (modes.length < 3) return `only ${modes.length} rows carry a pressed state`;
     for (const mode of modes) {
       if (!mode.switchDrawn) continue;
       const want = mode.pressed === "true" ? "On" : "Off";
       if (mode.switchWord !== want) return `${mode.id} is ${mode.pressed} but reads "${mode.switchWord}"`;
     }
     const wordy = modes.filter((m) => !m.switchDrawn);
-    if (modes.length - wordy.length < 3) return `only ${modes.length - wordy.length} modes draw a switch`;
+    if (modes.length - wordy.length < 2) return `only ${modes.length - wordy.length} modes draw a switch`;
     for (const mode of wordy) {
       const said = await page.evaluate(`(id) => {
         const button = document.getElementById(id);
@@ -350,25 +358,6 @@ try {
         return `${mode.id} has no switch and still says "${said.before}" after being pressed`;
       }
     }
-    return null;
-  });
-
-  await check("flipping the highlight-notes toggle changes what it says", async () => {
-    await openMenu();
-    const before = await page.evaluate(READ_MENU);
-    const was = before.rows.find((r) => r.id === "inlineNotesBtn");
-    if (!was) return "the highlight-notes toggle is not in the menu";
-    if (was.switchWord !== "Off") return `it starts at "${was.switchWord}", not Off`;
-    await page.evaluate(`() => { document.getElementById("inlineNotesBtn").click(); }`);
-    await new Promise((r) => setTimeout(r, 400));
-    await openMenu();
-    const after = await page.evaluate(READ_MENU);
-    const now = after.rows.find((r) => r.id === "inlineNotesBtn");
-    if (now.switchWord !== "On") return `after pressing it, it still reads "${now.switchWord}"`;
-    if (now.pressed !== "true") return "aria-pressed did not follow the mode";
-    // And it says how many notes there are to print, so pressing it and seeing
-    // nothing happen is never the only way to find out there are none.
-    if (!/\b2\b/.test(now.hint)) return `the row does not say how many notes it prints: "${now.hint}"`;
     return null;
   });
 
@@ -405,75 +394,74 @@ try {
     return null;
   });
 
-  // ── The printed notes ───────────────────────────────────────────────────
+  // ── The number on an annotated highlight ────────────────────────────────
+  //
+  // These three cases used to be about the printed inline notes. The mode is
+  // gone and the badge replaced it, but the QUESTIONS are the same three and
+  // they are the reason the badge was rebuilt: can you see it, can you read it,
+  // and can it leak into a selection.
 
-  await check("a note printed into a paragraph is drawn differently from it", async () => {
+  await check("an annotated highlight wears a number you can actually see", async () => {
     const seen = await page.evaluate(`() => {
-      const notes = [...document.querySelectorAll("#notesView .hl-inline-note")];
-      if (!notes.length) return { error: "no printed notes on screen" };
-      const host = notes[0].closest("p");
-      const paragraph = getComputedStyle(host);
+      const badges = [...document.querySelectorAll("#notesView .hl-note-badge")];
+      if (!badges.length) return { error: "no badges on screen" };
+      const parse = (value) => {
+        const parts = (value.match(/-?[\\d.]+(?:e-?\\d+)?/g) || []).map(Number);
+        const scale = value.startsWith("color(") ? 255 : 1;
+        return { r: (parts[0] || 0) * scale, g: (parts[1] || 0) * scale, b: (parts[2] || 0) * scale, a: parts.length > 3 ? parts[3] : 1 };
+      };
       return {
-        count: notes.length,
-        forms: notes.map((n) => (n.classList.contains("is-merged") ? "merged" : "block")),
-        paragraph: { color: paragraph.color, style: paragraph.fontStyle, size: paragraph.fontSize },
-        drawn: notes.map((n) => {
+        count: badges.length,
+        drawn: badges.map((n) => {
           const css = getComputedStyle(n);
-          const before = getComputedStyle(n, "::before");
+          const mark = n.closest("mark");
+          const markRect = mark.getBoundingClientRect();
+          const box = n.getBoundingClientRect();
           return {
-            background: css.backgroundColor,
-            color: css.color,
-            style: css.fontStyle,
-            size: css.fontSize,
-            marker: before.content === "none" ? "" : before.content,
-            // Transparent is the failure being guarded: an 8%-of-accent tint
-            // over the page is a difference you have to be told about.
-            alpha: Number((css.backgroundColor.match(/[\\d.]+\\)$/) || ["1)"])[0].slice(0, -1))
+            tag: n.tagName,
+            position: css.position,
+            // An opaque chip, not tinted digits. A colour-mixed background is
+            // not something a single ink can be guaranteed to read on, which is
+            // what the ::after this replaced kept discovering per theme.
+            alpha: parse(css.backgroundColor).a,
+            // ...and it has to be ON the highlight it belongs to, not floating
+            // somewhere near it.
+            near: Math.abs(box.right - markRect.right) < 24 && box.top < markRect.top + 4,
+            wide: box.width,
+            tall: box.height
           };
         })
       };
     }`);
     if (seen.error) return seen.error;
-    if (seen.count !== 2) return `${seen.count} printed notes, expected 2`;
-    if (!seen.forms.includes("merged") || !seen.forms.includes("block")) {
-      return `both notes took the same form: ${seen.forms.join(", ")}`;
-    }
-    for (let i = 0; i < seen.drawn.length; i += 1) {
-      const note = seen.drawn[i];
-      if (note.background === "rgba(0, 0, 0, 0)") return `the ${seen.forms[i]} note has no tint at all`;
-      if (note.alpha < 0.08) return `the ${seen.forms[i]} note's tint is ${note.alpha}, which is not a difference`;
-      if (note.color === seen.paragraph.color && note.style === seen.paragraph.style) {
-        return `the ${seen.forms[i]} note is the same colour and style as its paragraph`;
-      }
-      if (!note.marker) return `the ${seen.forms[i]} note carries no marker saying it is a note`;
+    if (seen.count !== 2) return `${seen.count} badges, expected 2`;
+    for (const badge of seen.drawn) {
+      if (badge.tag !== "BUTTON") return `the badge is a ${badge.tag}, which cannot be pressed or focused`;
+      if (badge.position !== "absolute") return `the badge is ${badge.position}, so it is in flow and moves the text`;
+      if (badge.alpha < 0.99) return `the badge's chip is ${badge.alpha} opaque — the tint under it shows through`;
+      if (!badge.near) return "the badge is not drawn on the highlight it belongs to";
+      // Small, but a target you can hit. Below this it is decoration.
+      if (badge.wide < 10 || badge.tall < 10) return `the badge is ${Math.round(badge.wide)}x${Math.round(badge.tall)}px`;
     }
     return null;
   });
 
-  // "Distinct" has to mean distinct in every theme, and the tints here are all
-  // color-mix of the accent over TRANSPARENT — so what a reader actually sees
-  // is that mix composited over whatever the page behind it is. Ten themes, of
-  // which three are light, and a tint tuned by eye on the dark one it was built
-  // against can land as either invisible or unreadable on a light one. Both are
-  // measured: the composited background has to differ from the page, and the
-  // note's own text has to stay readable against it.
-  await check("a printed note is distinct and readable in a light theme", async () => {
+  // "Readable" has to mean readable in every theme, over every highlight
+  // colour. Both halves vary: --accent-strong and --accent-contrast are
+  // redefined per theme, and a <mark>'s tint is a color-mix of one of four
+  // hexes over whatever the page behind it is. This measures the pair that
+  // actually decides it — the badge's own ink on the badge's own chip — plus
+  // the chip against the tint it sits on, in a light theme and a dark one.
+  await check("...and it is readable in every theme, over every highlight colour", async () => {
     const seen = await page.evaluate(`() => {
-      document.documentElement.dataset.theme = "light-paper";
       // Two serialisations, and they are on DIFFERENT scales. A plain colour
       // comes back as "rgb(244, 242, 236)"; anything that went through
-      // color-mix() — which is every tint in this file — comes back as
-      // "color(srgb 0.086 0.474 0.423 / 0.15)", with channels in 0..1. Read
-      // one as the other and every number below is off by 255x.
+      // color-mix() comes back as "color(srgb 0.086 0.474 0.423 / 0.15)", with
+      // channels in 0..1. Read one as the other and every number is off by 255x.
       const parse = (value) => {
         const parts = (value.match(/-?[\\d.]+(?:e-?\\d+)?/g) || []).map(Number);
         const scale = value.startsWith("color(") ? 255 : 1;
-        return {
-          r: (parts[0] || 0) * scale,
-          g: (parts[1] || 0) * scale,
-          b: (parts[2] || 0) * scale,
-          a: parts.length > 3 ? parts[3] : 1
-        };
+        return { r: (parts[0] || 0) * scale, g: (parts[1] || 0) * scale, b: (parts[2] || 0) * scale, a: parts.length > 3 ? parts[3] : 1 };
       };
       const over = (top, bottom) => ({
         r: top.r * top.a + bottom.r * (1 - top.a),
@@ -492,39 +480,51 @@ try {
         const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
         return (hi + 0.05) / (lo + 0.05);
       };
-      const page = parse(getComputedStyle(document.body).backgroundColor);
-      return [...document.querySelectorAll("#notesView .hl-inline-note")].map((node) => {
-        const css = getComputedStyle(node);
-        const back = over(parse(css.backgroundColor), page);
-        return {
-          form: node.classList.contains("is-merged") ? "merged" : "block",
-          fromPage: Math.round(ratio(back, page) * 100) / 100,
-          readable: Math.round(ratio(over(parse(css.color), back), back) * 100) / 100
-        };
-      });
-    }`);
-    try {
-      if (!seen.length) return "no printed notes on screen";
-      for (const note of seen) {
-        // 1.0 is "the same colour as the page". Small, but the eye reads a
-        // filled shape at a lower threshold than it reads text, and the ring
-        // and the ✎ are carrying the rest of it.
-        if (note.fromPage < 1.06) return `the ${note.form} note's tint is ${note.fromPage}:1 against the page — invisible`;
-        if (note.readable < 4.5) return `the ${note.form} note's own text is ${note.readable}:1 on its tint — unreadable`;
+      const was = document.documentElement.dataset.theme;
+      const out = [];
+      const marks = [...document.querySelectorAll("#notesView mark.has-note")];
+      for (const theme of ["light-paper", "dark-amoled-emerald", "dark"]) {
+        document.documentElement.dataset.theme = theme;
+        for (const colour of ["yellow", "green", "blue", "pink"]) {
+          marks.forEach((mark) => { mark.dataset.color = colour; });
+          const badge = marks[0].querySelector(".hl-note-badge");
+          if (!badge) continue;
+          const page = parse(getComputedStyle(document.body).backgroundColor);
+          const tint = over(parse(getComputedStyle(marks[0]).backgroundColor), page);
+          const css = getComputedStyle(badge);
+          const chip = over(parse(css.backgroundColor), tint);
+          out.push({
+            theme, colour,
+            readable: Math.round(ratio(over(parse(css.color), chip), chip) * 100) / 100,
+            fromTint: Math.round(ratio(chip, tint) * 100) / 100
+          });
+        }
       }
-      return null;
-    } finally {
-      await page.evaluate(`() => { document.documentElement.dataset.theme = "dark-amoled-emerald"; }`);
+      marks.forEach((mark) => { delete mark.dataset.color; });
+      document.documentElement.dataset.theme = was;
+      return out;
+    }`);
+    if (!seen.length) return "no annotated highlight to measure";
+    for (const one of seen) {
+      // The digits on their own chip. This is the pair --accent-contrast is
+      // DEFINED as answering, so anything below 4.5 means a theme was added
+      // without it.
+      if (one.readable < 4.5) return `${one.colour} on ${one.theme}: the number is ${one.readable}:1 on its own chip`;
+      // ...and the chip against the highlight under it. A filled shape is read
+      // at a lower threshold than text, and the ring is carrying the rest.
+      if (one.fromTint < 1.35) return `${one.colour} on ${one.theme}: the chip is ${one.fromTint}:1 against the highlight — invisible`;
     }
+    return null;
   });
 
-  await check("nothing printed into a paragraph can be selected out of it", async () => {
-    // The printed copies are not the note's text — the source matcher must
-    // never see them, or every highlight over an annotated paragraph misses.
-    // This is the CSS half of that (the JS half is in selection.js).
-    const bad = await page.evaluate(`() => [...document.querySelectorAll("#notesView .hl-inline-note")]
+  await check("nothing drawn on a highlight can be selected out of it", async () => {
+    // The badge's digits are not the note's text and are nowhere in the
+    // markdown — the source matcher must never see them, or every highlight
+    // over an annotated paragraph misses. This is the CSS half of that (the JS
+    // half is the two skips in selection.js).
+    const bad = await page.evaluate(`() => [...document.querySelectorAll("#notesView .hl-note-badge")]
       .filter((n) => getComputedStyle(n).userSelect !== "none").length`);
-    if (bad) return `${bad} printed note(s) are selectable`;
+    if (bad) return `${bad} badge(s) are selectable`;
     return null;
   });
 

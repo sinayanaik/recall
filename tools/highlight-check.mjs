@@ -498,9 +498,10 @@ const PROBE = `(api) => {
 
   // ── A highlight's note, said where the highlight is ─────────────────────
   //
-  // src/notes/inline-highlight-notes.js. Two layers over the same index: an
-  // always-on mark saying a highlight carries a note, and an opt-in mode that
-  // numbers them and prints each note in the paragraph it belongs to.
+  // src/notes/highlight-badges.js. One numbered, pressable badge per annotated
+  // highlight — numbered from the SOURCE so a note built lazily, chunk by
+  // chunk, cannot renumber itself as the reader scrolls; drawn out of flow so it
+  // moves no glyph; and present only where there is a note to read.
 
   // The note bodies live in a "## Highlight Notes" section at the end (see
   // format/highlight-notes.js); the marks in the body only point at them.
@@ -527,6 +528,43 @@ const PROBE = `(api) => {
     "",
     "Second paragraph of it."
   ].join("\\n");
+
+  // ── ...and the panel that lists them can actually read them ────────────
+  //
+  // The note bodies live in a fenced block at the END of state.notes, and every
+  // surface that lists highlights scans readerNotesBody() — the note with that
+  // block sliced off — because a <mark> a reader typed INSIDE a note is not a
+  // highlight of the document and counting it breaks the exact-ordinal jump for
+  // every other row. Resolving a mark's id against that same sliced string
+  // found nothing, so the panel reported every markdown highlight as having no
+  // note: the reader's own writing was invisible in the one place that lists it,
+  // and pressing ✎ opened an empty editor over a note that was really there.
+  check("a listed highlight carries the note that is written on it", () => {
+    api.state.notes = NOTED;
+    const entries = api.collectHighlightEntries();
+    if (entries.length !== 4) return entries.length + " entries, expected one per highlight";
+    const notes = entries.map((entry) => entry.note || "").filter(Boolean);
+    if (notes.length !== 2) return notes.length + " of the entries carry a note, expected 2";
+    if (notes[0] !== "One line of commentary.") return "the first note reads " + JSON.stringify(notes[0]);
+    if (!notes[1].startsWith("First line of a longer note.")) return "the second note reads " + JSON.stringify(notes[1]);
+    // ...and a mark whose section entry was deleted by hand still reports none,
+    // which is the same test that keeps a badge off it.
+    const dangling = entries.find((entry) => entry.text === "a dangling id");
+    if (dangling && dangling.note) return "an id with no note behind it reported one";
+    return true;
+  });
+
+  check("...and so does an export of them", () => {
+    api.state.notes = NOTED;
+    const items = api.collectDeckHighlightsForExport({ includeNotes: true });
+    const noted = items.filter((item) => item.note).length;
+    if (noted !== 2) return noted + " exported highlights carry their note, expected 2";
+    // annotatedOnly reads the note BEFORE includeNotes is applied, so "the
+    // annotated ones, without their notes" is not silently empty.
+    const only = api.collectDeckHighlightsForExport({ annotatedOnly: true, includeNotes: false });
+    if (only.length !== 2) return "annotatedOnly returned " + only.length + " entries";
+    return true;
+  });
 
   check("note index: numbered in document order, dangling ids skipped", () => {
     const index = api.highlightNoteIndex(NOTED);
@@ -580,82 +618,83 @@ const PROBE = `(api) => {
     return host;
   };
 
-  check("an annotated highlight is marked, a plain one is not", () => {
+  check("a note gives its highlight a numbered badge, a plain highlight none", () => {
     api.state.notes = NOTED;
-    api.setInlineHighlightNotesFlag(false);
     const host = renderNoted();
     try {
-      api.annotateHighlightNotes(host);
+      api.annotateHighlightBadges(host);
       const marks = [...host.querySelectorAll("mark")];
-      const got = marks.map((m) => m.textContent + ":" + (m.classList.contains("has-note") ? "yes" : "no")).join(", ");
+      // firstChild, not textContent: the badge is a real element INSIDE the
+      // mark now, so textContent would read "an annotated span1".
+      const got = marks.map((m) => m.firstChild.textContent + ":" + (m.classList.contains("has-note") ? "yes" : "no")).join(", ");
       const want = "an annotated span:yes, a longer annotation:yes, a dangling id:no, a plain highlight:no";
       if (got !== want) return got;
-      // The mode is off, so nothing is numbered and nothing is printed.
-      if (host.querySelector("mark[data-hn-num]")) return "a number was set with the mode off";
-      if (host.querySelector(".hl-inline-note")) return "a note was printed with the mode off";
+      const badges = [...host.querySelectorAll(".hl-note-badge")];
+      if (badges.length !== 2) return badges.length + " badge(s), expected 2";
+      // Numbered from the SOURCE, in document order — the property that has to
+      // survive a note being built lazily, chunk by chunk.
+      if (badges.map((b) => b.textContent).join(",") !== "1,2") return "numbered " + badges.map((b) => b.textContent).join(",");
+      // Only where there is something to read. An id whose section entry was
+      // deleted by hand is not a note, and must not be offered as one.
+      const dangling = marks.find((m) => m.firstChild.textContent === "a dangling id");
+      if (dangling.querySelector(".hl-note-badge")) return "an id with no note behind it was given a badge";
+      if (marks[3].querySelector(".hl-note-badge")) return "a highlight with no note at all was given a badge";
+      // Pressable and reachable, which is the whole reason it is an element and
+      // not the ::after it used to be.
+      if (badges[0].tagName !== "BUTTON") return "the badge is a " + badges[0].tagName + ", which cannot be pressed or focused";
       return true;
     } finally { host.remove(); }
   });
 
-  check("inline mode: one-line notes merge, longer ones become blocks", () => {
+  check("...and it costs the line it is on not one pixel", () => {
+    // The rule styles/23-highlight-marks.css exists for, asserted rather than
+    // argued. A mark that widens its own text re-wraps the block it is in, and a
+    // rewrap after renderNotesViewPinned has measured its anchor is the "severe
+    // shivering when I highlight" report. An absolutely positioned badge is out
+    // of flow and contributes nothing to the line box; a ::after was too, and
+    // any replacement has to keep that.
     api.state.notes = NOTED;
-    api.setInlineHighlightNotesFlag(true);
     const host = renderNoted();
     try {
-      api.annotateHighlightNotes(host);
-      const printed = [...host.querySelectorAll(".hl-inline-note")];
-      if (printed.length !== 2) return "printed " + printed.length + " notes, expected 2";
-      const [first, second] = printed;
-      if (!first.classList.contains("is-merged")) return "a one-line note did not merge into its paragraph";
-      if (!second.classList.contains("is-block")) return "a multi-paragraph note was merged instead of blocked";
-      // Inside the paragraph the highlight is in — never a sibling of it. A
-      // top-level sibling would break placeNotesChunks' identity comparison
-      // and be swept away on the next render (see the module comment).
-      for (const node of printed) {
-        if (node.parentElement.tagName !== "P") return "printed into a " + node.parentElement.tagName + ", not the paragraph";
-        if (!node.parentElement.querySelector("mark")) return "printed into a paragraph with no highlight in it";
+      const mark = host.querySelector("mark");
+      const bare = mark.getBoundingClientRect();
+      const bareParagraph = mark.closest("p").getBoundingClientRect();
+      api.annotateHighlightBadges(host);
+      if (!mark.querySelector(".hl-note-badge")) return "no badge was added, so this proves nothing";
+      const withBadge = mark.getBoundingClientRect();
+      const withParagraph = mark.closest("p").getBoundingClientRect();
+      if (Math.abs(withBadge.width - bare.width) > 0.01) {
+        return "the mark grew by " + (withBadge.width - bare.width).toFixed(2) + "px";
       }
-      if (!first.textContent.includes("One line of commentary")) return "the merged note lost its text";
-      if (!second.textContent.includes("Second paragraph of it")) return "the block note lost its second paragraph";
-      // The numbers on the marks and on the printed copies have to agree, or
-      // a paragraph with two notes in it cannot be read at all.
-      const nums = [...host.querySelectorAll("mark[data-hn-num]")].map((m) => m.dataset.hnNum).join(",");
-      if (nums !== "1,2") return "marks numbered " + JSON.stringify(nums);
-      if (printed.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "printed copies numbered differently from their marks";
+      if (Math.abs(withParagraph.height - bareParagraph.height) > 0.01) {
+        return "the paragraph re-wrapped: " + bareParagraph.height + " -> " + withParagraph.height;
+      }
       return true;
     } finally { host.remove(); }
   });
 
-  check("inline mode: the section the notes are stored in is hidden", () => {
+  check("...and the source matcher never reads its digits", () => {
+    // The failure this guards is silent and total: a stray "1" in the needle
+    // means locateSelectionInSource cannot find the paragraph in the markdown,
+    // so every highlight, cloze and erase made over an annotated paragraph
+    // misses. cleanedSelectionFragment strips the badge as part of removing
+    // every <button>; emitTextWithLineBreaks walks the LIVE dom and needs the
+    // class named, which is the half that is easy to forget.
     api.state.notes = NOTED;
-    api.setInlineHighlightNotesFlag(true);
     const host = renderNoted();
     try {
-      api.annotateHighlightNotes(host);
-      const heading = [...host.querySelectorAll("h2")].find((h) => h.textContent.trim() === "Highlight Notes");
-      if (!heading) return "the section heading is not in the rendered note";
-      if (!heading.classList.contains("hl-notes-section-block")) return "the heading was not marked hidden";
-      // Everything after it too, or half the section stays on screen.
-      for (let node = heading.nextElementSibling; node; node = node.nextElementSibling) {
-        if (!node.classList.contains("hl-notes-section-block")) {
-          return "a block after the heading was left visible: " + node.tagName;
-        }
-      }
-      // ...and nothing BEFORE it: the body of the note is not the section.
-      if (host.querySelector("p.hl-notes-section-block")) {
-        const first = host.querySelector("p.hl-notes-section-block");
-        if (!heading.compareDocumentPosition(first) || (heading.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_PRECEDING)) {
-          return "a paragraph before the heading was hidden";
-        }
-      }
+      api.annotateHighlightBadges(host);
+      const para = host.querySelector("p");
+      const read = api.textWithLineBreaks(para);
+      if (read !== "First paragraph with an annotated span in it.") return JSON.stringify(read);
       return true;
     } finally { host.remove(); }
   });
 
-  check("inline mode: two notes in one paragraph, and a re-run replaces in place", () => {
+  check("two notes in one paragraph, and a re-run replaces in place", () => {
     // A paragraph with two annotated highlights is where every "just take the
-    // last child" shortcut in this pass falls over — and where a stale copy is
-    // most visible, since the two notes sit side by side.
+    // last child" shortcut in this pass falls over — and where a stale badge is
+    // most visible, since the two sit side by side.
     const two = [
       "One para with <mark data-note=\\"hn-cccc\\">the first span</mark> and <mark data-note=\\"hn-dddd\\">the second</mark>.",
       "",
@@ -670,62 +709,53 @@ const PROBE = `(api) => {
       "Note about the second."
     ].join("\\n");
     api.state.notes = two;
-    api.setInlineHighlightNotesFlag(true);
     // The REAL #notesView, not a container of our own, because the pass under
-    // test here is refreshInlineHighlightNotes — the whole-document one, which
-    // resolves its container from el and which sweeps any printed copy the
-    // pass did not claim. That sweep is what a wrongly-returned node breaks,
-    // and it is invisible to the per-chunk pass every case above uses.
+    // test here is refreshHighlightBadges — the whole-document one, which
+    // resolves its container from el and which sweeps any badge the pass did
+    // not claim. That sweep is what a wrongly-returned node breaks, and it is
+    // invisible to the per-chunk pass every case above uses.
     const host = api.el.notesView;
     const restore = host.innerHTML;
     host.innerHTML = api.markdownToSafeHtml(two);
     try {
-      api.refreshInlineHighlightNotes({ force: true });
+      api.refreshHighlightBadges({ force: true });
       const para = host.querySelector("p");
-      let printed = [...para.querySelectorAll(".hl-inline-note")];
-      if (printed.length !== 2) return "printed " + printed.length + " notes into the paragraph, expected 2";
-      if (printed.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "numbered " + printed.map((n) => n.dataset.hnKey).join(",");
+      let badges = [...para.querySelectorAll(".hl-note-badge")];
+      if (badges.length !== 2) return "put " + badges.length + " badges in the paragraph, expected 2";
+      if (badges.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "numbered " + badges.map((n) => n.dataset.hnKey).join(",");
 
       // Running the pass again must change nothing at all — the enhancement
       // passes re-run on every repaint, and a pass that appends rather than
-      // recognises would double every note on screen.
-      const before = printed.slice();
-      api.refreshInlineHighlightNotes({ force: true });
-      printed = [...para.querySelectorAll(".hl-inline-note")];
-      if (printed.length !== 2) return "a second pass left " + printed.length + " notes";
-      if (printed[0] !== before[0] || printed[1] !== before[1]) return "a second pass rebuilt nodes that had not changed";
+      // recognises would double every badge on screen.
+      const before = badges.slice();
+      api.refreshHighlightBadges({ force: true });
+      badges = [...para.querySelectorAll(".hl-note-badge")];
+      if (badges.length !== 2) return "a second pass left " + badges.length + " badges";
+      if (badges[0] !== before[0] || badges[1] !== before[1]) return "a second pass rebuilt nodes that had not changed";
 
-      // Now edit the FIRST note only. It must be replaced where it stands —
-      // not appended after the second — and the second must be left alone.
+      // Now edit the FIRST note only. Its badge must be replaced where it
+      // stands, and the second must be left alone.
       api.state.notes = two.replace("Note about the first.", "Rewritten note about the first.");
-      api.refreshInlineHighlightNotes({ force: true });
-      printed = [...para.querySelectorAll(".hl-inline-note")];
-      if (printed.length !== 2) return "editing one note left " + printed.length + " on screen";
-      if (printed.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "the replacement landed out of order: " + printed.map((n) => n.dataset.hnKey).join(",");
-      if (!printed[0].textContent.includes("Rewritten")) return "the edited note still shows its old text";
-      if (printed[1] !== before[1]) return "the untouched note was rebuilt too";
+      api.refreshHighlightBadges({ force: true });
+      badges = [...para.querySelectorAll(".hl-note-badge")];
+      if (badges.length !== 2) return "editing one note left " + badges.length + " badges";
+      if (badges.map((n) => n.dataset.hnKey).join(",") !== "1,2") return "the replacement landed out of order: " + badges.map((n) => n.dataset.hnKey).join(",");
+      if (badges[0] === before[0]) return "the edited note's badge was not refreshed";
+      if (!badges[0].title.includes("Rewritten")) return "the refreshed badge still describes the old text";
+      if (badges[1] !== before[1]) return "the untouched note's badge was rebuilt too";
+
+      // ...and deleting both notes takes both badges with them. Nothing else
+      // sweeps them: the block they are in is not rebuilt by an edit to the
+      // section at the end of the document.
+      api.state.notes = "One para with <mark>the first span</mark> and <mark>the second</mark>.";
+      host.innerHTML = api.markdownToSafeHtml(api.state.notes);
+      api.refreshHighlightBadges({ force: true });
+      if (host.querySelector(".hl-note-badge")) return "a badge survived its note being deleted";
+      if (host.querySelector("mark.has-note")) return "a mark still says it is annotated";
       return true;
     } finally {
       host.innerHTML = restore;
-      api.setInlineHighlightNotesFlag(false);
-      api.refreshInlineHighlightNotes({ force: true });
-    }
-  });
-
-  check("inline mode: a note with no section entry prints nothing", () => {
-    api.state.notes = NOTED;
-    api.setInlineHighlightNotesFlag(true);
-    const host = renderNoted();
-    try {
-      api.annotateHighlightNotes(host);
-      const dangling = [...host.querySelectorAll("mark")].find((m) => m.textContent === "a dangling id");
-      if (dangling.dataset.hnNum) return "the dangling id was numbered " + dangling.dataset.hnNum;
-      const para = dangling.closest("p");
-      if (para.querySelector(".hl-inline-note")) return "something was printed for an id with no note";
-      return true;
-    } finally {
-      host.remove();
-      api.setInlineHighlightNotesFlag(false);
+      api.refreshHighlightBadges({ force: true });
     }
   });
 
@@ -737,7 +767,7 @@ const API_SRC = `async () => {
     import("/src/format/highlight.js?v=__BUILD__"),
     import("/src/core/state.js?v=__BUILD__"),
     import("/src/core/dom.js?v=__BUILD__"),
-    import("/src/notes/inline-highlight-notes.js?v=__BUILD__"),
+    import("/src/notes/highlight-badges.js?v=__BUILD__"),
     import("/src/format/locate-selection.js?v=__BUILD__"),
     import("/src/notes/selection.js?v=__BUILD__"),
     import("/src/editor/text-transforms.js?v=__BUILD__"),

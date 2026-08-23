@@ -32,7 +32,7 @@
 //     types by accident needs no such rule.
 //   • It renders. The section was real markdown at the end of the note, so the
 //     rendered view printed an H2 and a run of H3s under everything the reader
-//     wrote, and inline-highlight-notes.js had to walk the rendered blocks
+//     wrote, and the note-badge pass had to walk the rendered blocks
 //     BACKWARDS looking for an H2 whose text was "Highlight Notes" in order to
 //     hide it again. Comments are stripped by DOMPurify (SANITIZE_CONFIG does
 //     not set ALLOW_COMMENTS), so there is nothing to hide.

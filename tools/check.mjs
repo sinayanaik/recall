@@ -77,6 +77,12 @@
 //                   runs wherever there is a Chrome rather than skipping
 //   style           does a Style panel setting reach the element it names?
 //   highlight       does highlighting mark the thing that was SELECTED?
+//   note-editor     can you format a highlight's note with the keyboard — and
+//                   does Ctrl+E flip the popup rather than the view behind it?
+//                   Nothing drove .highlight-note-editor at all before it, which
+//                   is how a key bound to "toggle raw/rendered" came to flip a
+//                   surface the reader was not looking at while they typed into
+//                   one floating over it
 //   paged           can you reach the end of a note in paged reading mode?
 //   ribbon          does the caret band sit where the caret is, and stay still
 //                   when it should?
@@ -181,6 +187,7 @@ const checks = [
     ["notes-menu    ", ["node", ["tools/notes-menu-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
+    ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],

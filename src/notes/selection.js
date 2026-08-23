@@ -295,20 +295,14 @@ export function cleanedSelectionFragment(range) {
   const snapped = snapRangeToAtomicBlocks(range);
   const container = document.createElement("div");
   container.appendChild(snapped.cloneContents());
-  // .hl-inline-note is a PRINTED COPY of a highlight's note, appended into the
-  // paragraph the highlight is in (src/notes/inline-highlight-notes.js). It is
-  // not in the markdown at that point — its text lives in the "Highlight Notes"
-  // section at the end of the note — so leaving it in the clone would put words
-  // into the needle that appear nowhere near this paragraph in the source, and
-  // locateSelectionInSource would miss every highlight, cloze and erase made
-  // over an annotated paragraph.
-  // .doc-notes is the same argument one step further. On a PDF deck the whole
-  // Notes tab is built by src/documents/pdf-notes-view.js from the highlight
-  // notes, so NOTHING on that surface is a slice of the markdown the matcher
-  // searches — the note text is in the fenced block at the end of the source,
-  // and matching a selection from here would splice a <mark> into machine-
-  // managed text.
-  container.querySelectorAll("button, .code-lang-badge, .hl-inline-note, .doc-notes, style, script").forEach((node) => node.remove());
+  // `button` covers the number on an annotated highlight
+  // (src/notes/highlight-badges.js), which sits INSIDE the <mark> and whose
+  // digits are not in the markdown at that point — the note it points at lives
+  // in the "Highlight Notes" section at the end of the note. Leaving it in the
+  // clone would put a stray digit into the needle, and locateSelectionInSource
+  // would miss every highlight, cloze and erase made over an annotated
+  // paragraph.
+  container.querySelectorAll("button, .code-lang-badge, style, script").forEach((node) => node.remove());
   restoreSelectionTables(container, snapped);
   restoreSelectionListItems(container, snapped);
   return container;
@@ -511,16 +505,16 @@ export function emitTextWithLineBreaks(node, sink, stop) {
     // Mermaid inlines a stylesheet into its SVG; reading it as text emits the
     // whole thing as a wall of CSS.
     if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
-    // A highlight's note, printed into the paragraph it annotates. Skipped for
-    // the same reason cleanedSelectionFragment removes it — the words are not
-    // in the source here — and it needs saying TWICE because this walk runs
-    // over the LIVE dom (countRenderedTextBefore, which is where the occurrence
-    // count comes from) and never sees that clone.
-    if (child.classList?.contains("hl-inline-note")) continue;
-    // ...and the document deck's whole notes surface, for the same reason and
-    // with the same need to say it twice: this walk runs over the LIVE dom and
-    // never sees cleanedSelectionFragment's clone.
-    if (child.classList?.contains("doc-notes")) continue;
+    // The number on an annotated highlight (src/notes/highlight-badges.js). Its
+    // digits are not in the markdown — the note it points at lives in the
+    // "Highlight Notes" section at the end of the source — so a needle built
+    // with them in it appears nowhere near this paragraph, and
+    // locateSelectionInSource would miss every highlight, cloze and erase made
+    // over an annotated one. cleanedSelectionFragment strips it as part of
+    // removing every `button`; this walk runs over the LIVE dom
+    // (countRenderedTextBefore, which is where the occurrence count comes from)
+    // and never sees that clone, so it has to be said again here.
+    if (child.classList?.contains("hl-note-badge")) continue;
     const isTight = TIGHT_BLOCK_TAGS.has(child.tagName);
     const isLoose = LOOSE_BLOCK_TAGS.has(child.tagName);
     const isCell = CELL_TAGS.has(child.tagName);

@@ -33,6 +33,7 @@
 
 import { createToolbarHtml } from "../editor/toolbars.js?v=__BUILD__";
 import { enableSyntaxHighlighting, refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
+import { installMarkdownKeys, installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
 import { clearHighlightNoteAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
@@ -53,6 +54,17 @@ let openMarkIndex = null;
 // than a question. Every way out of the popup flushes, so this only ever
 // governs saves made WHILE typing — nothing depends on the timer having fired.
 export const NOTE_AUTOSAVE_MS = 700;
+
+// How many steps back this popup's own undo goes. A note is a sentence or two,
+// not a document — twenty is far more than anyone walks back through, and the
+// whole ring is a few kilobytes of strings.
+export const NOTE_UNDO_DEPTH = 20;
+
+// Emptied per open, like every other piece of per-session bookkeeping below:
+// stepping back out of THIS note into the last one you looked at would be a
+// worse answer than not stepping back at all. Assigned by
+// ensureHighlightNoteEditor, which is where the rings live.
+let clearNoteUndoHistory = () => {};
 
 let saveTimer = 0;
 // The text last written to state.notes for the open mark. An unchanged value is
@@ -115,10 +127,12 @@ function ensureHighlightNoteEditor() {
   writeBtn.type = "button";
   writeBtn.className = "highlight-note-editor-mode is-active";
   writeBtn.textContent = "Write";
+  writeBtn.title = "Write in Markdown (Ctrl+E)";
   const previewBtn = document.createElement("button");
   previewBtn.type = "button";
   previewBtn.className = "highlight-note-editor-mode";
   previewBtn.textContent = "Preview";
+  previewBtn.title = "See it rendered (Ctrl+E)";
   modeRow.append(writeBtn, previewBtn);
 
   // Full formatting toolbar — bold/italic/lists/image-upload/etc, the same
@@ -149,6 +163,13 @@ function ensureHighlightNoteEditor() {
   const rendered = document.createElement("div");
   rendered.className = "highlight-note-editor-rendered rendered";
   rendered.hidden = true;
+  // Focusable, so that switching to Preview leaves the focus INSIDE the window.
+  // Two things need that. A keyboard reader who pressed Preview would otherwise
+  // be dropped back to the top of the page; and Ctrl+E is bound to the window
+  // (installModeKeys), so a focus that has fallen out of it takes the key that
+  // gets you back out of the preview with it. -1, not 0: it is a destination,
+  // not a stop on the way through.
+  rendered.tabIndex = -1;
 
   const footer = document.createElement("div");
   footer.className = "highlight-note-editor-foot";
@@ -186,6 +207,54 @@ function ensureHighlightNoteEditor() {
   // from here on — captured once rather than re-queried by setMode below.
   enableSyntaxHighlighting(textarea);
   const textareaWrapper = textarea.parentElement;
+
+  // ── Undo, which this surface has to bring itself ─────────────────────────
+  //
+  // applyFormatToTextarea snapshots for el.notesEdit and nothing else, on the
+  // stated ground that "notes textareas already get native per-keystroke undo
+  // from the browser". A card face does. This does not, and neither did the
+  // notes editor: a programmatic `textarea.value = …` DISCARDS the element's
+  // undo transaction, and every toolbar button, every colour and every
+  // highlight here is one. So from the first time a reader used any control in
+  // this popup, Ctrl+Z could not step back past it — and could not step back
+  // over their typing either, because the same write threw that away too.
+  //
+  // A ring rather than a stack with no bottom: this is one note, not a
+  // document, and holding every state of it for a session that can run all
+  // afternoon is memory spent on steps nobody takes.
+  const undoRing = [];
+  const redoRing = [];
+  const pushUndoSnapshot = () => {
+    const snapshot = { value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd };
+    // An unchanged value is not a step. Two buttons pressed in a row with
+    // nothing in between would otherwise cost two presses of Ctrl+Z to get past.
+    if (undoRing.length && undoRing[undoRing.length - 1].value === snapshot.value) return;
+    undoRing.push(snapshot);
+    if (undoRing.length > NOTE_UNDO_DEPTH) undoRing.shift();
+    // A new edit is a new future: whatever was ahead of the caret is gone, the
+    // same rule every undo stack in this app follows.
+    redoRing.length = 0;
+  };
+  const restore = (from, to) => {
+    const snapshot = from.pop();
+    if (!snapshot) return;
+    to.push({ value: textarea.value, start: textarea.selectionStart, end: textarea.selectionEnd });
+    textarea.value = snapshot.value;
+    textarea.setSelectionRange(snapshot.start, snapshot.end);
+    refreshHighlightBackdrop(textarea);
+    // Through the editor's own input path, so the autosave and the growing
+    // textarea see it exactly as they would see typing.
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  // Capture, so it runs before the delegated toolbar handler in
+  // src/editor/toolbar-actions.js gets the press and rewrites the value. That
+  // ordering is the whole reason this is a listener and not a call inside the
+  // handler: the handler serves four surfaces and only this one keeps its own
+  // history.
+  toolbarWrap.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button")) pushUndoSnapshot();
+  }, true);
 
   // Toolbar dropdowns (font/colour/highlight) aren't covered by the global
   // closeAllEditToolbarDropdowns — that's scoped to the three fixed editor
@@ -247,8 +316,8 @@ function ensureHighlightNoteEditor() {
     // Notes" section at the END of the document, not in the paragraph the
     // reader is looking at, so there is nothing on screen to repaint and
     // renderNotesViewPinned on a book between keystrokes is not a thing to do.
-    // The one repaint happens on close, where it also picks up the inline copy
-    // (src/notes/inline-highlight-notes.js).
+    // The one repaint happens on close, where it also picks up the badge on
+    // the mark itself (src/notes/highlight-badges.js).
     //
     // { undo: !undoPushed } — one Ctrl+Z step for the whole editing session,
     // the same shape applyFormatToTextarea uses for a formatting run. A stack
@@ -292,6 +361,7 @@ function ensureHighlightNoteEditor() {
     rendered.hidden = write;
     if (!write) renderPreview();
     if (write) textarea.focus();
+    else rendered.focus();
   };
   writeBtn.addEventListener("click", () => setMode("write"));
   previewBtn.addEventListener("click", () => setMode("preview"));
@@ -305,13 +375,33 @@ function ensureHighlightNoteEditor() {
     saveTimer = 0;
     noteHandlers.remove(openMarkIndex, { undo: !undoPushed });
     savedText = "";
-    // Deleted, then closed — the note IS gone from the section, and the
-    // paragraph it was printed into still shows the old copy until a repaint.
+    // Deleted, then closed — the note IS gone from the section, and the mark
+    // it was written on still wears its number until a repaint.
     dirtySinceOpen = true;
     closeHighlightNoteEditor();
   });
+  // Escape still comes off `document`: it can be pressed with focus anywhere in
+  // the popup, including on a button, and it is the same "close the topmost
+  // thing" every overlay in the app answers to.
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !root.hidden) closeHighlightNoteEditor();
+  });
+  // The formatting keys, on the TEXTAREA — see src/editor/markdown-keys.js for
+  // why they cannot live on `document` and why they stop propagating. Ctrl+E is
+  // the one that matters most: it means "show me the other mode", and until now
+  // it flipped the notes view behind this popup instead of this popup.
+  // Ctrl+E and Ctrl+Enter on the WINDOW, not on the textarea: switching to
+  // Preview hides the textarea and moves the focus, so a mode key bound to it
+  // could get you into the preview and not back out.
+  installModeKeys(root, {
+    toggleMode: () => setMode(writeBtn.classList.contains("is-active") ? "preview" : "write"),
+    done: () => closeHighlightNoteEditor()
+  });
+  installMarkdownKeys(textarea, {
+    scope: root,
+    undo: () => restore(undoRing, redoRing),
+    redo: () => restore(redoRing, undoRing),
+    beforeFormat: pushUndoSnapshot
   });
   // The tab going away is the one exit that never reaches closeHighlightNote
   // Editor — a phone backgrounding the browser mid-sentence, or the tab being
@@ -322,6 +412,8 @@ function ensureHighlightNoteEditor() {
   });
 
   installNoteWindowGestures(root, header, grip);
+
+  clearNoteUndoHistory = () => { undoRing.length = 0; redoRing.length = 0; };
 
   els = { root, textarea, rendered, writeBtn, previewBtn, deleteBtn, status, setMode, flushNoteSave };
   return els;
@@ -493,6 +585,7 @@ export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkd
   savedText = textarea.value;
   undoPushed = false;
   dirtySinceOpen = false;
+  clearNoteUndoHistory();
   status.textContent = "";
   status.classList.remove("is-visible");
   // A programmatic .value write fires no "input" event, which is what the

@@ -51,14 +51,16 @@ import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
+import { setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
+import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
 import { bookmarkCurrentSpot, goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
-import { INLINE_HIGHLIGHT_NOTES_KEY, applyInlineHighlightNotes, setInlineHighlightNotesFlag, toggleInlineHighlightNotes } from "./notes/inline-highlight-notes.js?v=__BUILD__";
-import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setDocumentNotesRenderer, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -69,6 +71,8 @@ import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
+import { initHighlightsEditor } from "./panels/highlights-editor.js?v=__BUILD__";
+import { markDrawerHighlightsDirty, refreshDrawerOnOpen } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
@@ -101,8 +105,7 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
-import { initDocumentMarkMenu, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
-import { closeDocumentNoteEditor, initDocumentNotesEditing, renderDocumentNotes } from "./documents/pdf-notes-view.js?v=__BUILD__";
+import { initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { documentOutlineEntries } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
@@ -353,16 +356,6 @@ try {
   setChromeFocusPinned(false);
 }
 
-// Same shape, same reason: whether highlight notes are printed in the text is
-// a way of reading rather than a property of one note, so it is remembered.
-// Only the FLAG is seeded here — applyInlineHighlightNotes() runs alongside
-// applyChromeCollapse() below, once the body class it sets can be seen.
-try {
-  setInlineHighlightNotesFlag(localStorage.getItem(INLINE_HIGHLIGHT_NOTES_KEY) === "1");
-} catch (_) {
-  setInlineHighlightNotesFlag(false);
-}
-
 // ...and the Document surface's counterpart. Its own key, deliberately: whether
 // a reader wants a paper's annotations printed under its pages is a different
 // question from whether they want a note's printed in its paragraphs, and one
@@ -438,8 +431,6 @@ el.focusModeBtn?.addEventListener("click", () => setFocusMode(!isFocusModeActive
 el.immersiveModeBtn?.addEventListener("click", () => toggleImmersiveMode());
 initImmersiveMode();
 
-el.inlineNotesBtn?.addEventListener("click", () => toggleInlineHighlightNotes());
-
 // Rotating to landscape (or resizing a desktop window down) crosses the mobile
 // breakpoint, which turns the scroll-driven half on or off; re-evaluate.
 chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
@@ -448,10 +439,6 @@ chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
 // transitions a frame later — otherwise every launch in focus mode would open
 // with the header up and visibly fold it away.
 applyChromeCollapse();
-// The body class and the button's pressed state, from the preference seeded
-// above. Its own refresh is a no-op here (there is no note open yet) and the
-// real one runs on the first renderNotesView.
-applyInlineHighlightNotes();
 requestAnimationFrame(() => document.body.classList.add("chrome-ready"));
 
 
@@ -931,15 +918,24 @@ onDomReady(() => {
 // that makes one without closing an import cycle it documents at length. Same
 // registration idiom as the two hooks above.
 onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
-// A PDF deck's Notes tab is its highlight notes, built by the document module
-// rather than rendered from markdown — see the note on setDocumentNotesRenderer
-// for why that surface is taken over rather than rendered into. Same
-// registration idiom, same reason: notes-view.js must not import the document
-// subtree.
-onDomReady(() => {
-  setDocumentNotesRenderer(renderDocumentNotes);
-  initDocumentNotesEditing();
-});
+// Pressing the number on an annotated highlight opens that note.
+//
+// Registered rather than imported for the reason setHighlightBadgeHandler's own
+// comment gives: the badge module runs inside the render pipeline, and both
+// halves of this call — the mark-ordinal lookup in notes/anchors.js and the
+// popup in notes/highlight-note-editor.js — reach back into that pipeline. This
+// file already knows both ends, which is what makes it the place to join them.
+//
+// The ordinal, not the DOM position: on a note built lazily chunk by chunk the
+// two are different numbers, and sourceMarkIndexFor is what maps between them.
+onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
+  const index = sourceMarkIndexFor(el.notesView, mark);
+  if (index < 0) return;
+  openHighlightNoteEditor(index, rect, noteText);
+}));
+// The Highlights tab writes its notes in place — one delegated listener for the
+// whole surface, installed once.
+onDomReady(() => initHighlightsEditor());
 // The badges are painted with each page as it renders, and the printed notes are
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
 // why these are registered rather than imported.
@@ -951,8 +947,15 @@ onDomReady(() => {
   // comment) — so the badge, and everything else that names a highlight, is
   // built from the corrected text rather than showing the welded version for one
   // frame and then changing under the reader.
+  //
+  // repairDocumentHighlightQuads is the same idea about the highlight's
+  // GEOMETRY: a quad captured before the text layer knew about font ascents
+  // sits a fifth of an em above the words it marks. It repaints the page's
+  // marks itself, so it has to run before the badges below, which are pinned to
+  // the corner of a quad and would otherwise be placed against the old one.
   setDocumentPagePaintedHook((pageNumber) => {
     repairDocumentHighlightText(pageNumber);
+    repairDocumentHighlightQuads(pageNumber);
     paintPageNoteBadges(pageNumber);
   });
   setDocumentOpenedHook(refreshPdfPageNotes);
@@ -968,6 +971,11 @@ onDomReady(() => {
 onDomReady(() => setHighlightsChangedHandler(() => {
   renderHighlightsPanel();
   repaintPdfPageNotes();
+  // ...and the two drawers, which are the third consumer. Marked stale rather
+  // than rebuilt: both are closed almost all of the time, and rebuilding a
+  // book's worth of rows for a drawer nobody is looking at is the cost this
+  // whole feature was written to avoid.
+  markDrawerHighlightsDirty();
 }));
 
 
@@ -1983,6 +1991,13 @@ el.card.addEventListener("touchend", handleTouchEnd);
 el.card.addEventListener("touchcancel", handleTouchCancel);
 
 document.addEventListener("keydown", (event) => {
+  // An editor that owns a key stops the event on its own element, so nothing
+  // below should ever see one — installMarkdownKeys does exactly that for the
+  // note popup and the Highlights tab's in-place editor. This is the guard
+  // against the next surface someone adds and forgets: the handler below
+  // catches Ctrl+E wherever it lands, deliberately, which is how it came to
+  // flip the notes view behind a popup somebody was typing into.
+  if (event.target.closest?.(".highlight-note-editor, .hl-note")) return;
   // Ctrl/Cmd+E toggles raw/rendered view — checked first so it still fires
   // while focus is inside the question/answer/notes edit textareas.
   if ((event.ctrlKey || event.metaKey) && (event.key === "e" || event.key === "E")) {
@@ -2820,6 +2835,11 @@ el.documentTocBtn?.addEventListener("click", () => {
   const open = el.documentOutlineDrawer.hidden;
   el.documentOutlineDrawer.hidden = !open;
   el.documentTocBtn.setAttribute("aria-expanded", String(open));
+  // The drawer's second half — this document's own highlights — built on the
+  // way in and only when it is stale. openNotesToc does the same for the notes
+  // drawer, and for the same reason: a drawer that is closed almost all of the
+  // time should not be paying to stay current.
+  if (open) refreshDrawerOnOpen(el.documentOutlineDrawer);
 });
 el.documentTocCloseBtn?.addEventListener("click", () => {
   if (!el.documentOutlineDrawer) return;

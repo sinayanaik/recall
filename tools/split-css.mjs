@@ -150,11 +150,11 @@ const POST_SPLIT = {
     "zero net advance) and adds box-decoration-break so a mark broken across a " +
     "wrap or a column break keeps its radius on both fragments.",
   "26-highlights-panel-rows.css":
-    "The Highlights tab dropped its pre/post context line (just the " +
-    "highlighted line is shown now — see collectDeckHighlights/" +
-    "highlightUnitSpan in src/panels/highlights-panel.js) and gained the " +
-    "ability to merge several same-line highlights into one row, which needs " +
-    "more than one 'Go to' button per row.",
+    "What is left of the Highlights tab's old row layout — the per-row Go to / " +
+    "note buttons and the image caps the preview needed. The tab is a " +
+    "continuous editor now (44-highlights-editor.css), so the file is down to " +
+    "the padding the frozen .highlights-list slice in 12-notes.css cannot be " +
+    "given.",
   "27-highlight-notes.css":
     "Note-over-highlight: the mark-menu's Note button, the Highlights panel's " +
     "per-mark note button and rendered note block, and the popup editor " +
@@ -219,16 +219,6 @@ const POST_SPLIT = {
     "the two edit pencils wait for a pointer, and the tabs lose their frame. " +
     "Also the immersive-mode button's own pressed state, and the background " +
     "the root element paints in fullscreen.",
-  "34-inline-highlight-notes.css":
-    "A highlight that carries a note, said in the note itself. Two layers: a " +
-    "permanent zero-advance mark on any annotated highlight, and an opt-in " +
-    "mode that numbers them and prints each note where it belongs — merged " +
-    "into its own paragraph in brackets when it is one line, as a tinted " +
-    "callout after it when it is more. Every indicator over a <mark> is drawn " +
-    "with position/text-decoration and never with inline content, because a " +
-    "mark that widens its own text re-wraps the block and makes the note " +
-    "shiver — see 23-highlight-marks.css for the whole of that story. " +
-    "See src/notes/inline-highlight-notes.js.",
   "35-notes-menu.css":
     "The notes \u22ef menu as ten sentences rather than ten glyphs. It shipped " +
     "as a tray of icon buttons \u2014 two of them the same bookmark drawing, " +
@@ -301,6 +291,30 @@ const POST_SPLIT = {
     "borrowed from .category-choice-modal (08-panels.css) \u2014 the app's one " +
     "modal shape; what is here is the level row, the folded Advanced sliders, " +
     "and the per-file before/after list.",
+  "42-highlight-badge.css":
+    "The number on a highlight that has a note, and the dotted underline that " +
+    "says one is there. It was a ::after tinted --accent-strong, which a " +
+    "pseudo-element makes unpressable and unfocusable, and which vanished over " +
+    "a yellow or pink tint on the dark themes — a colour-mixed background is " +
+    "not something a single ink can be guaranteed to read on. It is an opaque " +
+    "chip in --accent-contrast now, and a real <button>, kept out of flow so " +
+    "it still moves the text by zero pixels. See src/notes/highlight-badges.js.",
+  "43-drawer-highlights.css":
+    "A Highlights section in each reading panel's contents drawer, so a reader " +
+    "inside the Notes panel or the Document panel can find what they marked on " +
+    "THAT surface without leaving it for the Highlights tab — which on a PDF " +
+    "deck lists the paper's highlights and the deck note's together. A switch " +
+    "row under the drawer head and a second scroll pane beside the contents " +
+    "list; the drawer itself is a frozen slice and is not touched. See " +
+    "src/panels/drawer-highlights.js.",
+  "44-highlights-editor.css":
+    "The Highlights tab as an editor: every highlight in reading order, grouped " +
+    "by page or by chapter, its note under it and editable where it sits. " +
+    "Arrived as the .doc-note* rules in 34-inline-highlight-notes.css, which " +
+    "styled a PDF deck's Notes tab — the right surface at the wrong address, " +
+    "since that tab is where the reader's own writing belongs. Renamed with the " +
+    "move; a rule called .doc-note on a surface that is mostly not a document " +
+    "reads as a leftover. See src/panels/highlights-editor.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

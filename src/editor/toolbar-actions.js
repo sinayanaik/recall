@@ -11,6 +11,68 @@ import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection }
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 
+// ── What a control MEANS, apart from which control it was ──────────────────
+//
+// Lifted out of handleToolbarClick so a keystroke can ask for the same
+// transform a button does. It was a chain of `button.dataset.…` tests, which
+// made "bold" a property of a DOM node rather than a thing the editor can do —
+// and Ctrl+B had nowhere to look it up.
+//
+// The setRenderDefault calls stay INSIDE it, because remembering the colour you
+// just chose is part of what choosing it means, whichever way you chose it.
+//
+// Returns null for anything that is not a formatting action (quick-note,
+// make-card, insert-image — see their early returns above), which is what every
+// caller treats as "not mine".
+export function toolbarFormatFn({ action, font, color, highlight } = {}) {
+  let formatFn = null;
+
+  // Toggle actions look at text just outside the selection too (see
+  // toggleWrapPair), so they take the full value + range and may return an
+  // extended range that swallows adjacent markers. Everything else only
+  // touches the selected substring and keeps the original [start, end) range.
+  if (action === "bold") {
+    formatFn = (val, s, e) => toggleWrap(val, s, e, "**");
+  } else if (action === "italic") {
+    formatFn = (val, s, e) => toggleWrap(val, s, e, "*");
+  } else if (action === "underline") {
+    formatFn = (val, s, e) => toggleUnderline(val, s, e);
+  } else if (action === "strikethrough") {
+    formatFn = (val, s, e) => toggleStrikethrough(val, s, e);
+  } else if (action === "code") {
+    formatFn = (val, s, e) => toggleCode(val, s, e);
+  } else if (action === "cloze") {
+    formatFn = (val, s, e) => toggleCloze(val, s, e);
+  } else if (action === "kbd") {
+    formatFn = (val, s, e) => toggleKbd(val, s, e);
+  } else if (action === "bullet") {
+    formatFn = (val, s, e) => toggleBulletPoints(val.slice(s, e));
+  } else if (action === "clear-all") {
+    formatFn = (val, s, e) => clearFormatting(val.slice(s, e));
+  } else if (font) {
+    const font = font;
+    formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "font-family", font);
+  } else if (color) {
+    const color = color;
+    // Same choice, same shared default. Without this the raw editor and the
+    // rendered view kept two different opinions about "the current colour":
+    // pick Green here and the floating pill's swatch (and its one-tap apply)
+    // still said yellow. setRenderDefault ignores "clear", which is an action.
+    setRenderDefault("color", color);
+    if (color === "clear") {
+      formatFn = (val, s, e) => clearInlineStyleProperty(val.slice(s, e), "color");
+    } else {
+      formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "color", color);
+    }
+  } else if (highlight) {
+    const highlight = highlight;
+    setRenderDefault("highlight", highlight);
+    formatFn = (val, s, e) => toggleMarkColorInText(val.slice(s, e), highlight);
+  }
+
+  return formatFn;
+}
+
 // Handle toolbar actions
 export function handleToolbarClick(event) {
   const button = event.target.closest("button");
@@ -82,50 +144,7 @@ export function handleToolbarClick(event) {
     return;
   }
 
-  let formatFn = null;
-
-  // Toggle actions look at text just outside the selection too (see
-  // toggleWrapPair), so they take the full value + range and may return an
-  // extended range that swallows adjacent markers. Everything else only
-  // touches the selected substring and keeps the original [start, end) range.
-  if (button.dataset.action === "bold") {
-    formatFn = (val, s, e) => toggleWrap(val, s, e, "**");
-  } else if (button.dataset.action === "italic") {
-    formatFn = (val, s, e) => toggleWrap(val, s, e, "*");
-  } else if (button.dataset.action === "underline") {
-    formatFn = (val, s, e) => toggleUnderline(val, s, e);
-  } else if (button.dataset.action === "strikethrough") {
-    formatFn = (val, s, e) => toggleStrikethrough(val, s, e);
-  } else if (button.dataset.action === "code") {
-    formatFn = (val, s, e) => toggleCode(val, s, e);
-  } else if (button.dataset.action === "cloze") {
-    formatFn = (val, s, e) => toggleCloze(val, s, e);
-  } else if (button.dataset.action === "kbd") {
-    formatFn = (val, s, e) => toggleKbd(val, s, e);
-  } else if (button.dataset.action === "bullet") {
-    formatFn = (val, s, e) => toggleBulletPoints(val.slice(s, e));
-  } else if (button.dataset.action === "clear-all") {
-    formatFn = (val, s, e) => clearFormatting(val.slice(s, e));
-  } else if (button.dataset.font) {
-    const font = button.dataset.font;
-    formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "font-family", font);
-  } else if (button.dataset.color) {
-    const color = button.dataset.color;
-    // Same choice, same shared default. Without this the raw editor and the
-    // rendered view kept two different opinions about "the current colour":
-    // pick Green here and the floating pill's swatch (and its one-tap apply)
-    // still said yellow. setRenderDefault ignores "clear", which is an action.
-    setRenderDefault("color", color);
-    if (color === "clear") {
-      formatFn = (val, s, e) => clearInlineStyleProperty(val.slice(s, e), "color");
-    } else {
-      formatFn = (val, s, e) => applyInlineStyleProperty(val.slice(s, e), "color", color);
-    }
-  } else if (button.dataset.highlight) {
-    const highlight = button.dataset.highlight;
-    setRenderDefault("highlight", highlight);
-    formatFn = (val, s, e) => toggleMarkColorInText(val.slice(s, e), highlight);
-  }
+  const formatFn = toolbarFormatFn(button.dataset);
 
   if (!formatFn) return;
 

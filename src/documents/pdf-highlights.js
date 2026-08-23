@@ -22,7 +22,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { quadToPageBox, textForAnchorRange } from "./pdf-selection.js?v=__BUILD__";
+import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
 import { pdfMarkLayer, pdfPageTextItems } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
@@ -290,6 +290,135 @@ export function repairDocumentHighlightText(pageNumber) {
   return true;
 }
 
+// ── The band a highlight is painted in ──────────────────────────────────────
+//
+// Every quad stored before the text layer learned about font ascents
+// (src/documents/pdf-view.js, buildTextLayer) is a fifth of an em too high: its
+// box ran from the top of the em to the BASELINE, so it sat above the words and
+// left their descenders outside it. Fixing the capture fixes every highlight
+// made from now on and not one that already exists — and a reader's existing
+// highlights are the ones they were complaining about.
+//
+// So they are repaired, once, on the page they are on, against the only thing
+// on that page that knows where the glyphs really are: the text items pdf.js
+// handed over when the layer was built. `textItemBox` is the same conversion
+// the importer already uses to decide which items an annotation covers, and it
+// reports the box a glyph run actually occupies — baseline minus the descender,
+// up through the ascender.
+//
+// A snap to real glyph boxes rather than an arithmetic shift by "about 0.2em"
+// is what makes this safe to run over data whose provenance is not knowable: a
+// quad that is already right lands on the same band and is left alone, and a
+// quad with no text under it at all (a region, a scanned page) is declined.
+export const QUAD_GEOMETRY_VERSION = 2;
+
+// How much of an item's own height has to fall inside the quad before that item
+// is taken as "the line this highlight is on". Generous, because the whole
+// point is that the quad is currently offset — but not so generous that the
+// line ABOVE, which a high quad can just touch, can win.
+export const QUAD_SNAP_MIN_OVERLAP = 0.35;
+
+// The line band under one quad, in PDF user space, or null when nothing is
+// there to snap to.
+//
+// Horizontal overlap is required as well as vertical: a two-column paper has a
+// second column at exactly the same height, and a band unioned across both
+// would paint a highlight over the gutter and the neighbouring text.
+export function lineBandForQuad(items, quad) {
+  const [x0, y0, x1, y1] = quad.rect;
+  let best = null;
+  const boxes = [];
+  items.forEach((item) => {
+    if (!item?.str) return;
+    const box = textItemBox(item);
+    const height = box.y1 - box.y0;
+    if (!(height > 0)) return;
+    if (box.x1 <= x0 || box.x0 >= x1) return;
+    const overlap = Math.min(box.y1, y1) - Math.max(box.y0, y0);
+    if (overlap <= 0 || overlap < height * QUAD_SNAP_MIN_OVERLAP) return;
+    boxes.push(box);
+    if (!best || overlap > best.overlap) best = { box, overlap };
+  });
+  if (!best) return null;
+  // The best-overlapping item names the line; everything else joins it only if
+  // its own middle sits inside that line. Two lines can both clear the overlap
+  // test above on a tightly-leaded page, and unioning them would double the
+  // height of the band.
+  let top = best.box.y1;
+  let bottom = best.box.y0;
+  boxes.forEach((box) => {
+    const middle = (box.y0 + box.y1) / 2;
+    if (middle < best.box.y0 || middle > best.box.y1) return;
+    top = Math.max(top, box.y1);
+    bottom = Math.min(bottom, box.y0);
+  });
+  return { y0: bottom, y1: top };
+}
+
+// Below this, in PDF points, the stored band and the glyph band are the same
+// band and the record is only stamped. A tenth of a point is not a highlight
+// that looks wrong; it is two ways of rounding the same number.
+export const QUAD_SNAP_EPSILON = 0.1;
+
+export function repairDocumentHighlightQuads(pageNumber) {
+  const items = pdfPageTextItems(pageNumber);
+  if (!items?.length) return false;
+  const records = documentHighlights();
+  if (!records.length) return false;
+  let changed = false;
+  const next = records.map((record) => {
+    if (record.qv >= QUAD_GEOMETRY_VERSION) return record;
+    const quads = record.quads || [];
+    // Only when the WHOLE record is on this page. A highlight running across a
+    // page break gets both halves right when the second page paints, and
+    // stamping it after seeing only the first would leave that half high
+    // forever. Tested before the kind, so a region is stamped on the page it is
+    // actually on rather than by whichever page happened to paint first.
+    if (!quads.length || quads.some((quad) => quad.page !== pageNumber)) return record;
+    // A region is a box the reader drew round a figure. It was never measured
+    // off the text layer, so there is nothing about it to correct — but it is
+    // still STAMPED, so that "has this been looked at?" stays one comparison
+    // instead of a kind test on every record on every page paint forever.
+    if (record.kind === "area") {
+      changed = true;
+      return { ...record, qv: QUAD_GEOMETRY_VERSION };
+    }
+    let moved = false;
+    const snapped = quads.map((quad) => {
+      const band = lineBandForQuad(items, quad);
+      if (!band) return quad;
+      if (Math.abs(band.y0 - quad.rect[1]) < QUAD_SNAP_EPSILON
+          && Math.abs(band.y1 - quad.rect[3]) < QUAD_SNAP_EPSILON) return quad;
+      moved = true;
+      return { ...quad, rect: [quad.rect[0], band.y0, quad.rect[2], band.y1] };
+    });
+    changed = true;
+    // Stamped whether or not anything moved: the question "has this record been
+    // through the repair?" has to be answerable without re-deriving it, or a
+    // highlight already in the right place is re-measured on every page paint
+    // for the rest of the deck's life.
+    //
+    // `at` deliberately does NOT move, for the reason repairDocumentHighlight
+    // Text gives: this is a deterministic repair each device makes for itself,
+    // not an edit, and a bumped timestamp would let it out-rank a recolour
+    // somebody actually made somewhere else.
+    return { ...record, quads: moved ? snapped : quads, qv: QUAD_GEOMETRY_VERSION };
+  });
+  if (!changed) return false;
+  commitDocumentHighlights(next, { notify: false });
+  // Repainted here rather than left to the caller. buildPageLayers paints the
+  // marks BEFORE it calls the page-painted hook this repair runs from, so the
+  // bands already on screen are the ones just corrected — without this the page
+  // keeps the old geometry until something else happens to repaint it, which on
+  // a page nobody touches again is never.
+  //
+  // No notify: the Highlights panel and the printed page notes list a
+  // highlight's words and its note, neither of which a quad has anything to say
+  // about, and this runs once per page as a document is read through.
+  paintDocumentHighlights(pageNumber);
+  return true;
+}
+
 // ── Create / recolour / remove ──────────────────────────────────────────────
 
 export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
@@ -310,6 +439,12 @@ export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
     // reads it as an optional field, so a record written before this existed is
     // a text highlight, which it was.
     kind: capture.kind === "area" ? "area" : "text",
+    // Which geometry these quads were measured with — see repairDocument
+    // HighlightQuads. Stamped at birth so a highlight made TODAY is never
+    // re-measured against the page it was made on: the repair exists for quads
+    // captured before the text layer knew about font ascents, and a record
+    // carrying the current version says it is not one of them.
+    qv: QUAD_GEOMETRY_VERSION,
     // Per-record, and per-EDIT: the sync merge is a union by id with newest
     // winning, so a recolour made on a phone has to be able to out-rank the
     // original made on a laptop. A whole-deck last-write-wins would simply drop

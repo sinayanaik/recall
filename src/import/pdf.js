@@ -18,7 +18,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { annotationQuads, nearestHighlightColor } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { QUAD_GEOMETRY_VERSION, annotationQuads, nearestHighlightColor } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { textForQuads } from "../documents/pdf-selection.js?v=__BUILD__";
 import { MAX_DOCUMENT_BYTES, putDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
@@ -131,6 +131,12 @@ export async function readExistingHighlights(doc, progress) {
         text,
         quads,
         imported: true,
+        // These quads came out of the FILE — the rects the annotation itself
+        // carries — not off our text layer, so they were never subject to the
+        // ascent bug repairDocumentHighlightQuads exists to undo. Stamped as
+        // current so that repair leaves an author's own highlights exactly
+        // where the author put them.
+        qv: QUAD_GEOMETRY_VERSION,
         at: Date.now()
       });
       const comment = String(annotation.contentsObj?.str || annotation.contents || "").trim();

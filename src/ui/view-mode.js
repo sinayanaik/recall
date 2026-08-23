@@ -4,7 +4,7 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { closeDocumentNoteEditor } from "../documents/pdf-notes-view.js?v=__BUILD__";
+import { closeHighlightsEditor } from "../panels/highlights-editor.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
@@ -37,10 +37,10 @@ export function setViewMode(mode, options = {}) {
     return;
   }
   if (next === "cards") resetNotesEditingUI();
-  // A note being typed into the Notes tab of a document deck commits on the way
-  // out, exactly as the note popup flushes in closeHighlightNoteEditor: leaving
-  // a view is not a reason to lose a sentence. A no-op when nothing is open.
-  closeDocumentNoteEditor();
+  // A note being typed into the Highlights tab commits on the way out, exactly
+  // as the note popup flushes in closeHighlightNoteEditor: leaving a view is not
+  // a reason to lose a sentence. A no-op when nothing is open.
+  closeHighlightsEditor();
   const changed = state.viewMode !== next;
   state.viewMode = next;
   const notesActive = next === "notes";
@@ -122,7 +122,12 @@ export function setViewMode(mode, options = {}) {
       // After the render, so the columns are laid out against the note that is
       // actually on screen — and so the page indicator can count its pages.
       applyNotesPagedLayout();
-      if (!state.notes.trim()) enterNotesEditing();
+      // rawEditorValueFor, not state.notes: on a PDF deck the note is the
+      // highlight-notes block and nothing else, so the raw string is not empty
+      // while the surface the reader is looking at is. Testing the wrong one
+      // leaves that deck with a blank Notes tab that will not open its editor —
+      // a panel you cannot write in and cannot see why.
+      if (!rawEditorValueFor(state.notes).trim()) enterNotesEditing();
     } else if (highlightsActive) {
       renderHighlightsPanel();
     } else if (documentActive) {

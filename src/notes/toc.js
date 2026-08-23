@@ -4,6 +4,7 @@
 // headings and slugifying them all on every render is wasted work.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { drawerSection, refreshDrawerOnOpen } from "../panels/drawer-highlights.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { loadDeckFromLibrary, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
@@ -686,6 +687,12 @@ export function isNotesTocOpen() {
 }
 
 export function updateNotesTocActive() {
+  // Nothing to track while the drawer is showing its highlights instead of its
+  // contents. This runs on every scroll frame of the notes — its own comments
+  // below are about how carefully that has to be paid for — and scroll-spying a
+  // heading list nobody can see is the whole of that cost for none of the
+  // benefit.
+  if (drawerSection(el.notesTocDrawer) !== "contents") return;
   if (!el.notesTocList) return;
   // Closed drawer: nothing to show, so nothing to compute. openNotesToc() calls
   // this on the way open, so it still lands on the right entry.
@@ -835,6 +842,10 @@ export function openNotesToc() {
   // Built here rather than on every render — see notesTocDirty. Before the
   // drawer is revealed, so it never opens on a list belonging to another note.
   ensureNotesTocBuilt();
+  // The drawer's other half: this note's own highlights, on the same terms —
+  // built on the way in, and only when a highlight has changed since it was
+  // last built. Installs the Contents/Highlights switch on first use.
+  refreshDrawerOnOpen(el.notesTocDrawer);
   el.notesTocDrawer.hidden = false;
   // Force reflow so the open transition runs from the hidden state.
   void el.notesTocDrawer.offsetWidth;

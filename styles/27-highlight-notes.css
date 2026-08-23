@@ -17,65 +17,13 @@
   color: var(--accent);
 }
 
-/* ── highlights-panel.js: per-mark actions + the rendered note block ───── */
-.highlight-mark-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.highlight-note-btn {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel-2);
-  color: var(--text);
-  opacity: 0.75;
-  cursor: pointer;
-  font-size: 0.95rem;
-}
-
-.highlight-note-btn.has-note {
-  opacity: 1;
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
-  color: var(--accent);
-}
-
-.highlight-note {
-  margin-top: 4px;
-  padding: 6px 10px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 60%, var(--line));
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-  border-radius: 0 8px 8px 0;
-}
-
-.highlight-note-label {
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-  margin-bottom: 2px;
-}
-
-.highlight-note-body {
-  font-size: 0.88rem;
-  line-height: 1.4;
-  color: var(--text);
-}
-
-.highlight-note-body > :first-child {
-  margin-top: 0;
-}
-
-.highlight-note-body > :last-child {
-  margin-bottom: 0;
-}
+/* ── The Highlights tab's per-row controls are gone ──────────────────────
+   They were a ✎ per row that opened the popup below, plus the rendered note
+   block under it. The tab writes its notes in place now
+   (styles/44-highlights-editor.css), so there is no row and nothing to open per
+   row. The popup itself stays: it is what the mark menu and the number on an
+   annotated highlight open, which is how a note is written while READING rather
+   than while reviewing. */
 
 /* ── The popup editor itself ────────────────────────────────────────────
    Desktop: a floating popover, positioned in JS (openHighlightNoteEditor)

@@ -985,7 +985,8 @@ subsuming another:
 | `large-select` | The touch-selection gesture again, on a note long enough to be built AS IT IS READ — a press taken while the note is still settling, a drag across a span boundary, how many pixels the note travels after a highlight, and that a drag through unread chapters promotes no span while the finger is down and every one it queued the moment that finger lifts. Its fixture used to stop one threshold short by accident: paragraph-then-list all the way down has exactly one safe lexer cut, so a 284KB note took the eager path and this file had never once driven the code a real book runs on |
 | `notes-menu` | Can you tell what the notes ⋯ menu's controls do, and which way its modes are set, without pressing one to find out? Eleven cases over ten rows, read the way a reader reads them — the label the CSS actually shows, the switch's own word against `aria-pressed`, the two bookmark drawings compared against each other — at desktop width and again at 390px, plus whether a note printed into a paragraph is drawn any differently from the paragraph it landed in, measured as contrast against the page in a light theme as well as a dark one. Also that no row is laid out outside the box that is supposed to hold it, which is how the last one of them once disappeared |
 | `style` | Do the style-panel settings still reach the CSS variables they name? |
-| `highlight` | Does a highlight land on the copy of the text you actually selected, in both views? And does a highlight that carries a note say so — numbered in reading order from the SOURCE rather than from whatever the lazy renderer has built, printed into the paragraph it annotates rather than beside it, and never for an id whose note was deleted by hand |
+| `highlight` | Does a highlight land on the copy of the text you actually selected, in both views? And does a highlight that carries a note say so — a numbered, pressable badge, numbered in reading order from the SOURCE rather than from whatever the lazy renderer has built, never shown for an id whose note was deleted by hand, and costing the line it is on exactly zero pixels |
+| `note-editor` | Can you format a highlight's note with the keyboard, and does Ctrl+E flip the popup rather than the view behind it? Nothing drove the note popup at all before this file — which is how a key bound to "toggle raw/rendered" came to flip a surface the reader was not looking at while they typed into one floating over it. Runs the same battery against the Highlights tab's in-place editor, because the two must not disagree about what a key does |
 | `paged` | Can you reach the end of a note in paged reading mode, at every note length? |
 | `ribbon` | Does the chapter ribbon agree with where the reader is? |
 | `precache` | Is every module, stylesheet and vendored file the app needs actually in the worker's precache — and preloaded? |
@@ -1014,7 +1015,7 @@ area of the app —
 | `storage/` | The device's own copy: IndexedDB deck store, autosave, quota, the storage panel |
 | `library/` | My Decks: the local index, folders, rows, tiles, drag and drop, and reading a whole folder as one document |
 | `render/` | Markdown → HTML: math, clozes, note links, diagrams, tables, and the block cache that keeps huge notes fast. Past ~2,000 blocks a note is cut into spans at provably safe lexer boundaries and each span is lexed and built only as the reader comes near it, so opening a note costs a screenful rather than a book (`viewport` above is the proof) |
-| `notes/` | The notes view: editing, the caret, scroll anchoring, the foldable TOC, paged reading, selection, links, and the notes attached to highlights — the popup that writes one and the opt-in mode that prints them all in the text |
+| `notes/` | The notes view: editing, the caret, scroll anchoring, the foldable TOC and its Highlights section, paged reading, selection, links, and the notes attached to highlights — the popup that writes one and the numbered badge that opens it |
 | `documents/` | The Document surface: a PDF rendered page by page by pdf.js, its highlights (text runs *and* dragged regions, both stored as quads in PDF user space so they survive a zoom and a reload), its outline drawer, the notes printed under each page, and the device/cloud store the file itself lives in |
 | `cards/` | Studying: the card view, swipe, the All Cards panel, deck actions |
 | `editor/` | The raw editor: its highlight mirror, text transforms, toolbars |
@@ -1023,7 +1024,7 @@ area of the app —
 | `images/` | Upload, the compression level chosen before it, the offline outbox, paste and drag handling, in-place resize and delete |
 | `backup/` | The whole library as one `.zip`, and the additive restore |
 | `quick-notes/` | The Quick Notes deck and its board |
-| `ui/` `panels/` `pwa/` | Chrome, overlays, navigation, themes; the cloze and highlight panels; the service-worker client and App Info |
+| `ui/` `panels/` `pwa/` | Chrome, overlays, navigation, themes; the cloze panel and the Highlights tab — which is a continuous editor of every highlight and its note, plus the Highlights section each reading panel's own drawer carries; the service-worker client and App Info |
 
 **The one rule that matters:** `core/` imports nothing from the rest of the app.
 Modules elsewhere import each other freely — that is safe, because what crosses

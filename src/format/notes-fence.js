@@ -12,7 +12,7 @@
 //
 //   • the RENDERED view, which used to print the whole "## Highlight Notes"
 //     section under everything the reader wrote (and needed a backwards DOM walk
-//     to hide it again when the inline-notes mode was on);
+//     to hide it again while a highlight's note was being read in the text);
 //   • the RAW EDITOR, where — on a PDF deck, whose body is empty because the PDF
 //     is the document — opening the editor showed nothing BUT highlight notes,
 //     with no separation from the reader's own writing because there was none to

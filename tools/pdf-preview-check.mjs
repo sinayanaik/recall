@@ -36,7 +36,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
-import { buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
+import { FONT_SIZE, buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -49,8 +49,8 @@ const SHOT_MENU = args.includes("--shot-menu");
 // two things that only meet there are a page fitted edge to edge and the sheet
 // of notes under it, and neither is visible in the desktop shot above.
 const SHOT_PAGES = args.includes("--shot-pages");
-// --shot-notes takes it on the Notes tab instead, which on a document deck is
-// the highlight notes (src/documents/pdf-notes-view.js).
+// --shot-notes takes it on the Highlights tab instead, which is where a paper's
+// notes are written (src/panels/highlights-editor.js).
 const SHOT_NOTES = args.includes("--shot-notes");
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
@@ -126,8 +126,10 @@ const API_SRC = `async () => {
     "/src/storage/deck-store.js?v=__BUILD__",
     "/src/documents/pdf-region.js?v=__BUILD__",
     "/src/documents/pdf-page-notes.js?v=__BUILD__",
-    "/src/documents/pdf-notes-view.js?v=__BUILD__",
+    "/src/panels/highlights-editor.js?v=__BUILD__",
+    "/src/panels/drawer-highlights.js?v=__BUILD__",
     "/src/notes/notes-edit-split.js?v=__BUILD__",
+    "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
@@ -473,6 +475,105 @@ try {
       `got [${got.map((n) => Math.round(n))}] · line starts at x=${x0}, baseline y=${baseline}`);
     check("...and is narrower than the page it sits on",
       got[2] > got[0] && got[2] < 612, `x1 = ${Math.round(got[2])}`);
+    // ── Does the band actually ENCLOSE the line? ────────────────────────────
+    //
+    // The check above allows a band anywhere in a 10pt window around the
+    // baseline, which is what let the real bug through: the text layer placed
+    // every span from `baseline - 1em` down to the baseline EXACTLY, so a
+    // highlight covered the ascenders and left every descender outside it — the
+    // band rode high over its own words.
+    //
+    // The fixture is the oracle here, not the DOM: it DREW this line, so the
+    // baseline is known in advance and this cannot be satisfied by two copies of
+    // the same mistake agreeing with each other. In PDF user space y runs UP, so
+    // rect[1] is the BOTTOM of the band and has to sit below the baseline for a
+    // descender to be inside it.
+    check("...and encloses the line rather than riding above it",
+      got[1] < baseline - 1 && got[3] > baseline + FONT_SIZE * 0.5,
+      `band ${Math.round(got[1])}..${Math.round(got[3])} around baseline ${baseline}, ${FONT_SIZE}pt text`);
+  }
+
+  // ── 4a. Highlights stored under the old geometry are repaired ────────────
+  //
+  // Every quad captured before the text layer knew about font ascents is a fifth
+  // of an em too high, and fixing the capture cannot reach a highlight somebody
+  // already made. repairDocumentHighlightQuads snaps those bands back onto the
+  // glyphs as each page paints; this drives it against a record deliberately put
+  // back into the old shape.
+  if (made.record?.quads?.length) {
+    const repaired = await page.evaluate(`async (args) => {
+      const { api, settle } = window.__recall;
+      const id = args.id;
+      const pageNumber = args.page;
+      const before = (api.state.meta.pdfHighlights || []).find((r) => r.id === id);
+      const lift = (before.quads[0].rect[3] - before.quads[0].rect[1]) * 0.2;
+      // A COPY of the real highlight, not the highlight itself: the reload
+      // round-trip further down compares the stored quads against the ones the
+      // capture produced, and a repair applied to that record would make this
+      // check quietly rewrite the evidence another one depends on.
+      const staleId = "hn-stale0";
+      const stale = {
+        ...before,
+        id: staleId,
+        // The old geometry, exactly: the whole band shifted up by the ascent
+        // that used to be missing, and no stamp saying it has been looked at.
+        quads: before.quads.map((q) => ({ ...q, rect: [q.rect[0], q.rect[1] + lift, q.rect[2], q.rect[3] + lift] }))
+      };
+      // ...and no stamp. addDocumentHighlight marks every record it makes as
+      // current, so a copy of one is current too — which is the whole thing this
+      // case has to undo to have anything to repair.
+      delete stale.qv;
+      api.state.meta.pdfHighlights = [...(api.state.meta.pdfHighlights || []), stale];
+      // A region alongside it, also unstamped: a box dragged round a figure was
+      // never measured off the text layer and must not be moved.
+      const areaRect = [72, 300, 300, 400];
+      api.state.meta.pdfHighlights = [...api.state.meta.pdfHighlights, {
+        id: "hn-areat0", color: "blue", page: pageNumber, kind: "area",
+        anchor: { page: pageNumber, item: 0, ch: 0 },
+        quads: [{ page: pageNumber, rect: areaRect.slice() }], text: "", at: 1
+      }];
+      const staleAt = (api.state.meta.pdfHighlights || []).find((r) => r.id === staleId).at;
+      const ran = api.repairDocumentHighlightQuads(pageNumber);
+      await settle(80);
+      const after = (api.state.meta.pdfHighlights || []).find((r) => r.id === staleId);
+      // Twice, to prove it settles: the stamp is what stops a page repairing the
+      // same record on every paint for the rest of the deck's life.
+      const again = api.repairDocumentHighlightQuads(pageNumber);
+      const settled = (api.state.meta.pdfHighlights || []).find((r) => r.id === staleId);
+      const area = (api.state.meta.pdfHighlights || []).find((r) => r.id === "hn-areat0");
+      const painted = document.querySelectorAll('.pdf-page[data-page-number="' + pageNumber + '"] .pdf-mark[data-highlight-id="' + staleId + '"]').length;
+      return {
+        ran, again, lift, painted,
+        staleBottom: before.quads[0].rect[1] + lift,
+        repairedBottom: after.quads[0].rect[1],
+        originalBottom: before.quads[0].rect[1],
+        qv: after.qv,
+        atHeld: after.at === staleAt,
+        settledSame: JSON.stringify(settled.quads) === JSON.stringify(after.quads),
+        areaMoved: JSON.stringify(area.quads[0].rect) !== JSON.stringify(areaRect),
+        areaStamped: area.qv,
+        // Both scratch records go back out again. Everything after this — the
+        // reload round-trip, the exports, the panel counts — counts highlights,
+        // and two planted ones would fail those checks for the wrong reason.
+        left: (api.state.meta.pdfHighlights = (api.state.meta.pdfHighlights || [])
+          .filter((r) => r.id !== staleId && r.id !== "hn-areat0")).length
+      };
+    }`, { id: made.record.id, page: madeOn });
+
+    const tenth = (n) => Math.round(n * 10) / 10;
+    check("a quad stored under the old geometry is snapped back onto its line",
+      repaired.ran && Math.abs(repaired.repairedBottom - repaired.originalBottom) < 1.5,
+      `${tenth(repaired.staleBottom)} → ${tenth(repaired.repairedBottom)} (captured at ${tenth(repaired.originalBottom)}, lifted by ${tenth(repaired.lift)})`);
+    check("...and stamped, so the next paint of the page leaves it alone",
+      repaired.qv === 2 && repaired.again === false && repaired.settledSame,
+      `qv=${repaired.qv} secondRun=${repaired.again} unchanged=${repaired.settledSame}`);
+    check("...without moving `at`, which would out-rank a real edit made elsewhere",
+      repaired.atHeld, String(repaired.atHeld));
+    check("...and a region is stamped but never moved",
+      repaired.areaStamped === 2 && !repaired.areaMoved,
+      `qv=${repaired.areaStamped} moved=${repaired.areaMoved}`);
+    check("...with the page's marks repainted against the corrected quads",
+      repaired.painted > 0, `${repaired.painted} mark div(s)`);
   }
 
   // ── 4b. A selection that spans more than one text item ───────────────────
@@ -589,7 +690,7 @@ try {
     return {
       record: record ? { quads: record.quads, color: record.color, anchor: record.anchor } : null,
       painted,
-      rows: api.collectDeckHighlights().length
+      rows: api.collectHighlightEntries().length
     };
   }`, madeOn, made.record.id);
 
@@ -639,12 +740,12 @@ try {
     //
     // A <mark> inside a highlight's own note. The pill's Highlight button
     // writes exactly this, so it is not a contrived string.
-    const rowsBefore = api.collectDeckHighlights().length;
+    const rowsBefore = api.collectHighlightEntries().length;
     const notesBefore = api.state.notes;
     const ids = api.documentHighlightsInReadingOrder().map((r) => r.id);
     api.state.notes = api.setHighlightNoteInSource(
       notesBefore || "", ids[0], 'A note with a <mark data-color="green">highlighted phrase</mark> in it.', "note");
-    out.rowsWithMarkInNote = api.collectDeckHighlights().length;
+    out.rowsWithMarkInNote = api.collectHighlightEntries().length;
     out.rowsBefore = rowsBefore;
     api.state.notes = notesBefore;
 
@@ -689,11 +790,6 @@ try {
       out.sameLine = api.sameDocumentLine(left, right);
       const order = api.documentHighlightsInReadingOrder().map((r) => r.id);
       out.leftComesFirst = order.indexOf(madeIds[1]) < order.indexOf(madeIds[0]);
-      const rows = api.collectDocumentHighlightRows();
-      const shared = rows.find((r) => r.marks.length > 1);
-      out.mergedRow = Boolean(shared);
-      out.marksInMergedRow = shared ? shared.marks.length : 0;
-
       // ── ✕ over a selection that spans the whole line ────────────────────
       //
       // The old hit test read the selection's BOUNDING rect at its left edge,
@@ -740,9 +836,12 @@ try {
     `${pipeline.madeOnOneLine} made of 2 · sameLine=${pipeline.sameLine} · ${pipeline.spans} span(s) "${pipeline.lineText}"`);
   check("...and read left to right, whichever was made first",
     pipeline.leftComesFirst === true, `leftComesFirst=${pipeline.leftComesFirst}`);
-  check("...and share one row, so one Go to is enough",
-    pipeline.mergedRow === true && pipeline.marksInMergedRow === 2,
-    `${pipeline.marksInMergedRow} mark(s) in the merged row`);
+  // There used to be a case here asserting that two highlights on one line
+  // shared a ROW, so one "Go to" was enough for both. That merge is gone with
+  // the rows: the Highlights tab is an editor now, and two annotations under one
+  // line would be offered a single box to write both notes in. sameDocumentLine
+  // — the geometry the merge was built on — is still asserted directly above,
+  // because reading order still depends on it.
   check("a selection over the line finds the highlights under it",
     pipeline.foundUnderSelection === 2 && pipeline.foundUnderOverlay === 2,
     `${pipeline.foundUnderSelection} found over ${pipeline.rectCount} rect(s), ${pipeline.foundUnderOverlay} with something on top`);
@@ -1264,46 +1363,62 @@ try {
       && fence.exportOfLegacy.includes("The note that was taken on it."),
     `fenced=${fence.exportOfFenced.split("## Highlight Notes").length - 1}× legacy=${fence.exportOfLegacy.split("## Highlight Notes").length - 1}×`);
 
-  // ── 8d. The Notes tab of a document deck ────────────────────────────────
+  // ── 8d. Where a paper's notes are written ───────────────────────────────
   //
   // "The highlighted notes are not visible anywhere as continuous, easily
-  // editable text. They're on the Highlights panel, but that's not a good place
-  // to edit — I want this in the notes panel itself, as notes."
+  // editable text" was answered by building them into the NOTES tab, which put
+  // a paper's annotations in the one tab that should hold the reader's own
+  // writing. The answer is the same surface at a different address now: the
+  // Highlights tab is that continuous editor, and the Notes tab is a note.
   //
-  // Both surfaces that could have shown them sliced the fenced block off, and on
-  // a PDF deck the body is empty, so both were blank. The Notes tab is built
-  // from the highlights themselves now, and the raw editor gets the whole source
-  // — the one deck where the block IS the reader's writing.
+  // Both halves are asserted here, because shipping either without the other is
+  // a visible regression — an editor nobody can reach, or a Notes tab that is
+  // blank AND will not open its editor.
   const docNotes = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    api.setViewMode("notes");
-    await settle(400);
-    const view = document.getElementById("notesView");
-    const section = view.querySelector(":scope > .doc-notes");
-    const articles = Array.from(view.querySelectorAll(".doc-note[data-highlight-id]"));
+    api.setViewMode("highlights");
+    await settle(600);
+    const list = document.getElementById("highlightsList");
+    const section = list.querySelector(":scope > .hl-notes");
+    const articles = Array.from(list.querySelectorAll(".hl-note[data-highlight-key]"));
     const records = api.documentHighlightsInReadingOrder();
     // Every highlight, not only the annotated ones: this is where a note is
     // WRITTEN, so one with nothing on it yet is a blank waiting for a note.
-    const withNotes = articles.filter((a) => !a.querySelector(".doc-note-body").classList.contains("is-empty"));
-    // Press one and type into it, which is the whole request.
-    const target = articles.find((a) => a.querySelector(".doc-note-body").classList.contains("is-empty")) || articles[0];
-    const id = target.dataset.highlightId;
-    target.querySelector(".doc-note-body").click();
-    await settle(120);
-    const area = target.querySelector(".doc-note-edit");
+    const withNotes = articles.filter((a) => !a.querySelector(".hl-note-body").classList.contains("is-empty"));
+    // Grouped by the page they are on, which is what makes a list of forty
+    // passages from a paper navigable at all.
+    const groups = Array.from(list.querySelectorAll(".hl-notes-group-head")).map((h) => h.textContent);
+    // Press one and type into it. No popup may open: writing note after note
+    // without a window per note is the whole of the request.
+    const target = articles.find((a) => a.querySelector(".hl-note-body").classList.contains("is-empty")) || articles[0];
+    const key = target.dataset.highlightKey;
+    const id = key.replace(/^doc:/, "");
+    target.querySelector(".hl-note-body").click();
+    await settle(150);
+    const area = target.querySelector(".hl-note-edit");
     const focused = document.activeElement === area;
-    area.value = "Typed straight into the notes panel.";
+    const popupOpen = Boolean(document.querySelector(".highlight-note-editor:not([hidden])"));
+    area.value = "Typed straight into the highlights tab.";
     area.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(120);
     // Still typing: nothing may have been rebuilt under the reader yet.
-    const stillOpen = target.querySelector(".doc-note-edit") === area;
+    const stillOpen = target.querySelector(".hl-note-edit") === area;
     area.dispatchEvent(new Event("blur"));
-    await settle(250);
+    await settle(400);
     const stored = api.readHighlightNotes(api.state.notes || "").get(id) || "";
-    const rendered = view.querySelector('.doc-note[data-highlight-id="' + id + '"] .doc-note-body');
-    // ...and the raw editor, which is the "all of it at once" half.
+    const rendered = list.querySelector('.hl-note[data-highlight-key="' + key + '"] .hl-note-body');
+    // ...and the Notes tab, which is now the reader's own writing and nothing
+    // else: no highlights built into it, and a raw editor with the machine-
+    // managed block sliced off exactly as on any other deck.
+    api.setViewMode("notes");
+    await settle(400);
+    const view = document.getElementById("notesView");
+    const notesHasHighlights = Boolean(view.querySelector(".hl-notes"));
     const editorSees = api.rawEditorValueFor(api.state.notes || "");
     const roundTrip = api.sourceFromRawEditor(editorSees) === api.state.notes;
+    // An empty note opens its editor rather than sitting there blank — the
+    // regression that testing state.notes (which holds the block) would cause.
+    const editorOpen = api.isNotesEditing();
     // Put it back so nothing downstream sees a note this check invented.
     api.setDocumentHighlightNote(id, "");
     await settle(150);
@@ -1314,27 +1429,91 @@ try {
       articles: articles.length,
       records: records.length,
       annotated: withNotes.length,
-      focused,
-      stillOpen,
-      stored,
+      groups,
+      focused, popupOpen, stillOpen, stored,
       renderedText: rendered ? rendered.textContent.trim() : "",
+      notesHasHighlights,
       editorHasFence: editorSees.includes("<!--recall:highlight-notes-->"),
+      editorOpen,
       roundTrip
     };
   }`);
 
-  check("a document deck's Notes tab is its highlight notes",
+  check("the Highlights tab lists every highlight in the paper, with its note",
     docNotes.hasSection && docNotes.articles === docNotes.records && docNotes.records > 0,
-    `${docNotes.articles} note(s) for ${docNotes.records} highlight(s), ${docNotes.annotated} written on`);
-  check("...pressing one opens a textarea in the flow, focused",
-    docNotes.focused && docNotes.stillOpen);
+    `${docNotes.articles} entry(s) for ${docNotes.records} highlight(s), ${docNotes.annotated} written on`);
+  check("...grouped by the page they are on",
+    docNotes.groups.length > 0 && docNotes.groups.every((g) => /^Page \d+$/.test(g)),
+    docNotes.groups.join(", ") || "no group headings");
+  check("...and pressing one opens a textarea in the flow, focused, with no popup",
+    docNotes.focused && docNotes.stillOpen && !docNotes.popupOpen,
+    `focused=${docNotes.focused} open=${docNotes.stillOpen} popup=${docNotes.popupOpen}`);
   check("...and what is typed there is the highlight's note",
-    docNotes.stored === "Typed straight into the notes panel."
-      && docNotes.renderedText === "Typed straight into the notes panel.",
+    docNotes.stored === "Typed straight into the highlights tab."
+      && docNotes.renderedText === "Typed straight into the highlights tab.",
     `stored "${docNotes.stored}" · shown "${docNotes.renderedText}"`);
-  check("...with the raw editor handed the whole source, block and all",
-    docNotes.editorHasFence && docNotes.roundTrip,
-    `fence in editor=${docNotes.editorHasFence}, editor round-trips=${docNotes.roundTrip}`);
+  check("the Notes tab is the reader's own writing, not the paper's annotations",
+    !docNotes.notesHasHighlights && !docNotes.editorHasFence && docNotes.roundTrip,
+    `highlights in notes=${docNotes.notesHasHighlights} fence in editor=${docNotes.editorHasFence} round-trips=${docNotes.roundTrip}`);
+  check("...and being empty, it opens its editor rather than sitting blank",
+    docNotes.editorOpen, `raw editor open=${docNotes.editorOpen}`);
+
+  // ── 8e. The document panel's own list of what was marked on it ──────────
+  //
+  // The Highlights TAB lists a paper's highlights and its deck note's together,
+  // which is right for the place you go to read them and wrong for the place you
+  // go to find one. The Document panel's contents drawer carries its own
+  // Highlights section so a reader does not have to leave the page they are on.
+  const drawer = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(400);
+    // Through the button, not the module: the drawer is built on the way open,
+    // and a check that calls the builder directly would not notice if nothing
+    // called it.
+    document.getElementById("documentTocBtn").click();
+    await settle(400);
+    const el = document.getElementById("documentOutlineDrawer");
+    const tabs = Array.from(el.querySelectorAll("[data-drawer-tab]")).map((t) => t.textContent);
+    api.setDrawerSection(el, "highlights");
+    await settle(300);
+    const rows = Array.from(el.querySelectorAll(".drawer-highlight-jump")).map((row) => ({
+      text: row.querySelector(".drawer-highlight-text").textContent,
+      colour: row.querySelector(".drawer-highlight-chip").dataset.color,
+      where: row.querySelector(".drawer-highlight-where")?.textContent || "",
+      noted: Boolean(row.querySelector(".drawer-highlight-noted"))
+    }));
+    const records = api.documentHighlightsInReadingOrder();
+    const contentsHidden = el.querySelector('[data-drawer-section="contents"]').hidden;
+    // A row goes to its highlight. Not merely "the page scrolled": the flash is
+    // painted on that record's own quads, which is what says the jump was exact.
+    const before = api.currentDocumentPage();
+    const onPage = rows.findIndex((r) => r.where && r.where !== "p. " + before);
+    const index = onPage === -1 ? 0 : onPage;
+    el.querySelectorAll(".drawer-highlight-jump")[index].click();
+    await settle(1400);
+    const wanted = Number(String(rows[index].where).replace(/[^0-9]/g, "")) || 0;
+    return {
+      tabs, rows, contentsHidden,
+      records: records.length,
+      landedOn: api.currentDocumentPage(),
+      wanted
+    };
+  }`);
+
+  check("the Document panel's drawer carries a Highlights section",
+    drawer.tabs.join("/") === "Contents/Highlights" && drawer.contentsHidden,
+    drawer.tabs.join(" / ") || "no tabs");
+  check("...listing this document's own highlights, with their pages",
+    drawer.rows.length === drawer.records && drawer.rows.length > 0
+      && drawer.rows.every((r) => /^p\. \d+$/.test(r.where)),
+    `${drawer.rows.length} row(s) for ${drawer.records} highlight(s) · ${drawer.rows.map((r) => r.where).join(", ")}`);
+  check("...saying which of them carry a note",
+    drawer.rows.some((r) => r.noted),
+    drawer.rows.map((r) => (r.noted ? "✎" : "–")).join(""));
+  check("...and a row goes to the page its highlight is on",
+    drawer.wanted === 0 || drawer.landedOn === drawer.wanted,
+    `wanted page ${drawer.wanted}, landed on ${drawer.landedOn}`);
 
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //
@@ -1504,7 +1683,10 @@ try {
     // unless the notes view is on screen, and "Fit to width" has no page to fit
     // while a markdown note is being read.
     const documentRows = ["fit-width", "dark-page", "region"];
-    const notesRows = ["bookmark-set", "inline-notes"];
+    // "inline-notes" is not here any more: the mode that printed every
+    // highlight's note into the paragraph it annotated is gone, and a note is
+    // read by pressing the number on its highlight.
+    const notesRows = ["bookmark-set"];
     const documentRowsInDocument = documentRows.filter((action) => !offers(action));
     const notesRowsInDocument = notesRows.filter((action) => offers(action));
     const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;
@@ -2063,8 +2245,8 @@ try {
         await settle(500);
       }
       if (SHOT_NOTES) {
-        api.setViewMode("notes");
-        await settle(400);
+        api.setViewMode("highlights");
+        await settle(600);
       }
       await settle(60);
     }`.replace("SHOT_MENU", String(SHOT_MENU))

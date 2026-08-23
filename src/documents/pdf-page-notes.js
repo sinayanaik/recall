@@ -1,12 +1,20 @@
 // A note attached to a PDF highlight, said on the page.
 //
-// The notes view already answers this question — src/notes/inline-highlight-notes
-// .js prints every highlight's note where it belongs, numbered, behind an opt-in
-// toggle — and it opens with the reason: the annotation for a sentence on page 3
-// sits four hundred paragraphs below the sentence, and until you tap the
-// highlight there is nothing on screen to say the note exists at all.
+// The notes view answers half of this question — src/notes/highlight-badges.js
+// puts a numbered badge on every annotated highlight, which says a note is there
+// and opens it when pressed — and it opens with the reason: the annotation for a
+// sentence on page 3 sits four hundred paragraphs below the sentence, and until
+// you touch the highlight there is nothing on screen to say the note exists at
+// all.
 //
-// That is worse on a paper, not better. A PDF highlight's note lives in the same
+// This is the other half, and the case for it is stronger on a paper than in a
+// note. A badge tells you a note is there; it does not let you READ a page's
+// worth of them without pressing each one in turn. That is exactly what someone
+// re-reading a paper they annotated last week wants, and it is why this mode
+// survived the printed-notes mode being taken out of the notes view: it prints
+// under a PAGE, not into the text, so it interrupts nothing.
+//
+// The distance is worse on a paper, not better. A PDF highlight's note lives in the same
 // "## Highlight Notes" section of the deck's markdown (see pdf-highlights.js),
 // which is a different TAB from the one the reader is looking at.
 //
@@ -34,7 +42,7 @@
 //
 // ── Why the numbers come from the records ─────────────────────────────────
 //
-// Same rule inline-highlight-notes.js states for the same reason: numbering has
+// Same rule highlight-badges.js states for the same reason: numbering has
 // to come from the source, never from DOM order. The document view is
 // virtualized — only pages near the viewport carry a canvas at all — so a
 // counter that walked what happens to be rendered would hand out 1, 2, 3 for
@@ -80,9 +88,8 @@ export function isPdfPageNotesOn() {
   return pageNotesOn;
 }
 
-// Seeded by main.js at startup, the same shape as FOCUS_MODE_KEY and
-// INLINE_HIGHLIGHT_NOTES_KEY: an imported binding is read-only, so the flag
-// needs a setter of its own.
+// Seeded by main.js at startup, the same shape as FOCUS_MODE_KEY: an imported
+// binding is read-only, so the flag needs a setter of its own.
 export function setPdfPageNotesFlag(value) {
   pageNotesOn = Boolean(value);
 }
@@ -378,11 +385,10 @@ export function paintPdfPageNotesButton() {
 // One path for both ways in, so the button, the stored preference and the DOM
 // can never disagree about what "on" means.
 //
-// The reading position is captured and put back around the rebuild for the same
-// reason applyInlineHighlightNotes wraps its refresh in
-// preserveNotesReadingPosition: printing a block under every annotated page
-// moves everything below it, and a reader who pressed a toggle should still be
-// looking at the page they were looking at.
+// The reading position is captured and put back around the rebuild for the
+// obvious reason: printing a block under every annotated page moves everything
+// below it, and a reader who pressed a toggle should still be looking at the
+// page they were looking at.
 export function applyPdfPageNotes() {
   paintPdfPageNotesButton();
   // The reading-position correction that used to be spelled out here lives

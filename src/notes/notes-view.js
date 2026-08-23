@@ -16,7 +16,7 @@ import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { scrollRenderedNotesToRawOffset } from "./anchors.js?v=__BUILD__";
 import { refreshBookmarkButtonUI } from "./bookmark.js?v=__BUILD__";
 import { hideNotesCaretLine, revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
-import { refreshInlineHighlightNotes } from "./inline-highlight-notes.js?v=__BUILD__";
+import { refreshHighlightBadges } from "./highlight-badges.js?v=__BUILD__";
 // notes-history.js imports renderNotesViewPinned from here — a cycle whose only
 // crossing bindings are hoisted function declarations. See the note there.
 import { clearNotesHistory, syncNotesHistoryBaseline } from "./notes-history.js?v=__BUILD__";
@@ -121,32 +121,13 @@ export function clearProgrammaticNotesSelection() {
 // That block used to be real markdown — a "## Highlight Notes" heading and a
 // "### [id]" per note — so the rendered view printed the reader's own notes
 // twice, once where they belong and once in a heap at the foot of the document,
-// and inline-highlight-notes.js had to walk the rendered blocks BACKWARDS to
+// and the note-badge pass had to walk the rendered blocks BACKWARDS to
 // find that heading and hide it again. It is a fenced block of HTML comments
 // now (src/format/notes-fence.js) and it simply is not rendered.
 //
 // The SAME string has to reach renderMarkdown and both source trackers, or the
 // block cache's estimate misses on every pass and re-measures a book-sized note
 // for nothing.
-// ── The document surface's own Notes tab, registered rather than imported ──
-//
-// A PDF deck's body is empty (the paper is the document) and its highlight notes
-// are sliced off every markdown surface by src/format/notes-fence.js — so this
-// view had nothing to show and the Highlights panel was the only place a note
-// taken on a paper could be read or changed. src/documents/pdf-notes-view.js is
-// what shows them, and it takes this surface over outright for such a deck: a
-// note has an id and a boundary, and rendered markdown blocks have neither.
-//
-// Registered, not imported, for the reason this file's other hooks are: it sits
-// inside three import cycles already, and pulling the whole document subtree in
-// ahead of them is exactly the reordering those notes warn about. src/main.js
-// knows both ends.
-let renderDocumentNotesInstead = () => null;
-
-export function setDocumentNotesRenderer(fn) {
-  renderDocumentNotesInstead = typeof fn === "function" ? fn : () => null;
-}
-
 export function renderNotesView({ sameNote = false } = {}) {
   if (!el.notesView) return Promise.resolve();
   const source = readerNotesBody(state.notes);
@@ -175,25 +156,26 @@ export function renderNotesView({ sameNote = false } = {}) {
     setNotesScrolledSource(source);
     syncNotesBlockEstimateSource();
   }
-  // A document deck's notes are built by pdf-notes-view.js instead of rendered
-  // from markdown. Everything after it is unchanged and still worth running: the
-  // cloze button, the paged layout and the inline highlight notes all no-op on a
-  // surface with no rendered blocks in it, and the bookmark button is per-deck.
-  return (renderDocumentNotesInstead() || renderMarkdown(el.notesView, source, true))
+  // Every deck, including a PDF one. That surface used to be handed over to
+  // src/documents/pdf-notes-view.js, which rendered the paper's highlights and
+  // their notes here — so the Notes tab held the reader's annotations instead of
+  // the reader's own writing. Those live in the Highlights tab now, which is a
+  // continuous editor of them, and this tab is a note like any other note.
+  return renderMarkdown(el.notesView, source, true)
     .then(() => resetClozeButton(el.clozeToggleNotesBtn))
     // Every repaint of the rendered notes comes through here, so this is the
     // one place paged mode has to re-count its pages — the note may have grown
     // a paragraph, lost a block, or be a different note entirely. No-op when
     // the reader is on continuous mode.
     .then(() => applyNotesPagedLayout())
-    // Highlight notes: the "this highlight is annotated" marking, and — when
-    // the reader has that mode on — the numbered notes printed in the text.
+    // Highlight badges: the "this highlight is annotated" underline and the
+    // number that opens its note.
     // Here rather than at each of the half-dozen callers that can change one
     // (the mark menu, the note popup, an undo, a raw edit, a sync pull) because
     // every one of them repaints through this function. It costs a pointer
     // compare and a string compare when nothing about the notes changed, which
-    // is every repaint but the ones that did — see refreshInlineHighlightNotes.
-    .then(() => refreshInlineHighlightNotes())
+    // is every repaint but the ones that did — see refreshHighlightBadges.
+    .then(() => refreshHighlightBadges())
     // Also the one reliable place to keep the bookmark button in step with
     // state.meta?.bookmark: renderMarkdown's own cache-hit fast path (same
     // source, nothing to redo) returns before finalizeRenderedSurface ever
