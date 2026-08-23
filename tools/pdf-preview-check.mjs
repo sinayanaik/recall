@@ -2577,6 +2577,65 @@ try {
       `${derived.afterReload.length} entr(y/ies) back in ${derived.reloadMs}ms`);
   }
 
+  // ── How a heavily annotated paper scales ─────────────────────────────────
+  //
+  // Every surface that lists a paper's highlights has to resolve each one's note
+  // out of the fenced block at the end of state.notes, and reading that block
+  // means walking all of it. Ask per record and the cost is quadratic in how
+  // many highlights the paper has — and paintPageNoteBadges asks from the
+  // page-painted hook, so the reader pays it again for every page they scroll
+  // past. Measured before this was fixed: 3.9ms to paint four pages' badges at
+  // 25 annotated highlights and 312ms at 300, which is what "rendering and
+  // scrolling became hella slow" was made of.
+  //
+  // Asserted as a RATIO rather than a millisecond budget, so it means the same
+  // thing on a fast laptop and a loaded CI box: twelve times the highlights must
+  // not cost anything like twelve times squared. Linear measures about 4x here
+  // (the constant per-page DOM work dominates); the quadratic version measured
+  // 80x. The bound sits well clear of both.
+  const scaling = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const before = { notes: api.state.notes, meta: api.state.meta };
+    const build = (k) => {
+      const records = [];
+      let notes = "";
+      for (let i = 0; i < k; i += 1) {
+        const id = "hn-" + (100000 + i).toString(36);
+        const page = (i % 4) + 1;
+        records.push({ id, color: "yellow", page, kind: "text",
+          text: "some highlighted words number " + i,
+          quads: [{ page, rect: [72, 700 - (i % 30) * 18, 300, 712 - (i % 30) * 18] }],
+          anchor: { page, item: 0, ch: 0 }, focus: { page, item: 0, ch: 0 },
+          qv: 1, at: 1, noteAt: 1 });
+        notes = api.setHighlightNoteInSource(notes, id, "A note of a few words about highlight " + i + ".", "“words " + i + "”");
+      }
+      return { records, notes };
+    };
+    const measure = async (k) => {
+      const { records, notes } = build(k);
+      api.state.meta = { ...api.state.meta, pdfHighlights: records };
+      api.state.notes = notes;
+      await settle(50);
+      // Warm, then measure — the first pass pays for laying out a badge layer
+      // that every later pass reuses.
+      for (let p = 1; p <= 4; p += 1) api.paintPageNoteBadges(p);
+      const started = performance.now();
+      for (let r = 0; r < 3; r += 1) for (let p = 1; p <= 4; p += 1) api.paintPageNoteBadges(p);
+      return (performance.now() - started) / 3;
+    };
+    const small = await measure(25);
+    const large = await measure(300);
+    api.state.notes = before.notes;
+    api.state.meta = before.meta;
+    api.repaintPdfPageNotes();
+    await settle(100);
+    return { small: +small.toFixed(1), large: +large.toFixed(1), ratio: +(large / Math.max(small, 0.05)).toFixed(1) };
+  }`);
+
+  check("painting a page's note badges scales with the highlights, not their square",
+    scaling.ratio < 25,
+    `12x the highlights cost ${scaling.ratio}x the time (${scaling.small}ms → ${scaling.large}ms per 4 pages)`);
+
   // ── Attaching a paper to a deck that already exists ──────────────────────
   //
   // "Once a deck has been created without a PDF there is no option to attach one

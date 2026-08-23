@@ -104,11 +104,41 @@ export function parseLegacyHighlightNoteEntries(source, sectionStart) {
 
 // Every entry in `source`, whichever form it is in. The fence wins when both are
 // present, which is what a half-finished migration looks like.
+//
+// ── Memoized on its last input, one entry deep ────────────────────────────
+//
+// The same memo, for the same reason, as readerNotesBody in notes-fence.js: a
+// caller that asks about MANY highlights against ONE unchanged note would
+// otherwise pay a full regex walk of the whole fenced block per question, and
+// the block grows with the number of highlights — so the cost is quadratic in
+// how heavily a paper has been annotated. Measured on a 4-page paper: 3.9ms to
+// paint one page's note badges at 25 annotated highlights, 312ms at 300. That
+// runs from the page-painted hook, on every page, as the reader scrolls.
+//
+// The callers are expected to hoist a single parse where they can (see
+// annotatedDocumentHighlights, collectHighlightEntries and
+// documentHighlightEntries, which all do) — this is the floor under the ones
+// that cannot, and under the next one somebody forgets.
+//
+// Safe to share because nothing mutates what this returns: the two writers that
+// DO edit entries in place (setHighlightNoteInSource, pruneOrphanHighlightNotes)
+// go through parseFencedHighlightNoteEntries, which is deliberately not cached,
+// and mergeHighlightNoteTails copies every entry it keeps before returning it.
+// Keep it that way — a caller that edits one of these objects would corrupt
+// every later read of the same note.
+let lastNoteEntriesSource = null;
+let lastNoteEntries = [];
+
 export function parseHighlightNoteEntries(source) {
   const text = String(source || "");
+  if (text === lastNoteEntriesSource) return lastNoteEntries;
   const span = highlightNotesBlockSpan(text);
-  if (span) return parseFencedHighlightNoteEntries(text, span);
-  return parseLegacyHighlightNoteEntries(text, legacyHighlightNotesStart(text));
+  const entries = span
+    ? parseFencedHighlightNoteEntries(text, span)
+    : parseLegacyHighlightNoteEntries(text, legacyHighlightNotesStart(text));
+  lastNoteEntriesSource = text;
+  lastNoteEntries = entries;
+  return entries;
 }
 
 // ── Writing the block ─────────────────────────────────────────────────────
