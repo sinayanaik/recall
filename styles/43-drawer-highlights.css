@@ -70,9 +70,13 @@
 /* One row, one press, one destination. A button rather than a link: there is no
    URL for "the fourth mark in this note", and a link that goes nowhere is a
    promise the browser cannot keep (a middle-click would open a blank tab). */
+/* Four columns, all on one line: the colour, the words, whether a note hangs off
+   it, and where it is. The pencil had a row of its own — the "where" took the
+   third column and pushed it onto a second — which put a mark under the row it
+   belonged to and read as a bullet for the next one. */
 .drawer-highlight-jump {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr auto auto;
   align-items: baseline;
   gap: 8px;
   width: 100%;
@@ -125,6 +129,7 @@
 /* The page, or the chapter it is under. Right-aligned and quiet: it is how you
    navigate the list, not what you read in it. */
 .drawer-highlight-where {
+  grid-column: 4;
   justify-self: end;
   max-width: 8em;
   overflow: hidden;
@@ -141,18 +146,12 @@
    WHICH note, because the notes are numbered in reading order and you might be
    looking for the third; in a list already in reading order it would only be
    the row's own position said twice. */
+/* On the FIRST line of a row whose words wrap to two, beside the page number
+   rather than floating between the lines — align-items: baseline on the grid
+   already puts it there, and `center` was overriding that. */
 .drawer-highlight-noted {
-  grid-column: 3;
-  align-self: center;
   color: var(--accent-strong);
   font-size: 0.75rem;
-}
-
-/* ...and when a row carries both, the page keeps the corner and the pencil sits
-   next to the words, so the column of page numbers stays a column. */
-.drawer-highlight-where + .drawer-highlight-noted {
-  grid-column: 3;
-  grid-row: 2;
 }
 
 .drawer-highlights-empty {

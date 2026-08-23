@@ -104,7 +104,15 @@
 
 /* The highlighted line itself, rendered — so a highlighted bullet is still a
    bullet, a highlighted formula is still a formula, and the <mark> keeps its
-   own colour. This is the passage; everything else in the entry is about it. */
+   own colour.
+   Quieter than the note under it, and that way round on purpose: this is the
+   passage being quoted, and the note is the reader's own writing about it. The
+   highlight's own tint is what carries the eye to the words that were marked,
+   so the ink around them does not have to. */
+.hl-note-quote {
+  color: color-mix(in srgb, var(--text) 74%, transparent);
+}
+
 .hl-note-quote > :first-child { margin-top: 0; }
 .hl-note-quote > :last-child { margin-bottom: 0; }
 

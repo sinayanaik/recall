@@ -95,10 +95,15 @@ export function installDrawerSections(drawer) {
   const tabs = document.createElement("div");
   tabs.className = "drawer-tabs";
   tabs.setAttribute("role", "tablist");
-  const contentsTab = drawerSectionButton(drawer === el.documentOutlineDrawer ? "Contents" : "On this page", "contents");
-  const highlightsTab = drawerSectionButton("Highlights", "highlights");
-  tabs.append(contentsTab, highlightsTab);
+  tabs.append(drawerSectionButton("Contents", "contents"), drawerSectionButton("Highlights", "highlights"));
   head.after(tabs);
+
+  // The head said "On this page" / "Contents", which is what the first tab now
+  // says one line below it — the same words twice, with a switch in between
+  // implying they were different things. It names the DRAWER instead: what you
+  // are looking into, rather than which half of it is showing.
+  const title = head.querySelector(".notes-toc-title");
+  if (title) title.textContent = drawer === el.documentOutlineDrawer ? "In this document" : "In this note";
 
   const section = document.createElement("div");
   section.className = `${DRAWER_HIGHLIGHTS_CLASS} notes-toc-scroll`;
@@ -169,12 +174,6 @@ function drawerRowFor(drawer, entry) {
   text.textContent = entry.text;
 
   jump.append(chip, text);
-  if (entry.where) {
-    const where = document.createElement("span");
-    where.className = "drawer-highlight-where";
-    where.textContent = entry.where;
-    jump.appendChild(where);
-  }
   // A note is said, not shown. The drawer is a way back to the highlight; the
   // note itself is read in the Highlights tab or by pressing the number on the
   // mark, and a drawer row that unfolded into a paragraph would stop being a
@@ -185,6 +184,14 @@ function drawerRowFor(drawer, entry) {
     noted.textContent = "✎";
     noted.title = "This highlight has a note on it";
     jump.appendChild(noted);
+  }
+  // Last, so the page numbers line up as a column whether or not the row beside
+  // them carries a note.
+  if (entry.where) {
+    const where = document.createElement("span");
+    where.className = "drawer-highlight-where";
+    where.textContent = entry.where;
+    jump.appendChild(where);
   }
 
   jump.addEventListener("click", () => {

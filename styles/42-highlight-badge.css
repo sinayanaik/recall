@@ -63,20 +63,30 @@
    file has already been made to answer. */
 .hl-note-badge {
   position: absolute;
-  top: -0.62em;
+  /* High enough to read as a superscript, low enough to stay inside the block it
+     is in: a chip that clears the paragraph's own box is clipped by the
+     scrolling notes surface on the first line of a note, and painted over by
+     whatever sits above it everywhere else. */
+  top: -0.5em;
   right: -0.24em;
+  /* Over the line above it rather than under it, on the rare line where the two
+     meet — a half-covered number is worse than one that slightly overlaps. */
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.05em;
-  height: 1.05em;
-  padding: 0 0.28em;
+  /* Sized for the digit rather than the other way round. At 1.05em the glyph
+     filled the chip corner to corner and touched the ring, which reads as a
+     number that has been cut off rather than one sitting in a badge. */
+  min-width: 1.4em;
+  height: 1.4em;
+  padding: 0 0.22em;
   border: 0;
   border-radius: 999px;
   background: var(--accent-strong);
   color: var(--accent-contrast);
   font: inherit;
-  font-size: 0.56em;
+  font-size: 0.5em;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   line-height: 1;
