@@ -315,6 +315,33 @@ const POST_SPLIT = {
     "since that tab is where the reader's own writing belongs. Renamed with the " +
     "move; a rule called .doc-note on a surface that is mostly not a document " +
     "reads as a leftover. See src/panels/highlights-editor.js.",
+  "45-toc-rows.css":
+    "One row class, two elements, and only one of them was ever styled. " +
+    "src/notes/toc-tree.js builds a note's heading as an <a href> and a PDF's " +
+    "page as a <button> (a page has no URL to link to), and .notes-toc-link in " +
+    "the frozen 12-notes.css resets none of the user-agent button styling it " +
+    "sits on top of \u2014 so a document's contents rendered as a stack of " +
+    "ButtonFace-grey pills, each shrink-wrapped to its own title, text centred, " +
+    "and the page numbers (margin-left:auto, in a box with no spare width) " +
+    "never forming a column. The reset, the type ladder and the states, applied " +
+    "to both drawers. Also re-centres the fold twisty, which 17-toc-fold.css " +
+    "positions against the row's padding alone and so misses the border and the " +
+    "flex gap between that padding and the dot it stands in for.",
+  "46-highlight-cycle.css":
+    "Side by side: the reading surface and the highlights made on it, in one " +
+    "panel. \"The highlights view section, the numbering \u2014 visually they " +
+    "are far detached from each other; one has to click the numbers then only " +
+    "be able to see it.\" A highlight lived on the page and its note lived in " +
+    "the Highlights tab, and a tab is somewhere you go INSTEAD of the page. " +
+    ".quiz-panel is already a grid holding the four surfaces as siblings, so " +
+    "this is a second and third track on that grid rather than a new container " +
+    "\u2014 nothing is reparented, which matters because .pdf-page's " +
+    "offsetParent is .document-stage and every highlight on a paper is " +
+    "positioned against it. The tracks are `fr` and not per cent: a percentage " +
+    "would divide the whole panel rather than the part being split, which came " +
+    "out at 65:35 and made a drag drift away from the finger. Two columns above " +
+    "720px, two rows below it \u2014 390px halved is two thumbnails. " +
+    "See src/panels/highlight-cycle.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

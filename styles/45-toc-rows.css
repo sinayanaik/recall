@@ -1,0 +1,191 @@
+/* The contents drawer's rows, in both panels
+ *
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ * The rules it composes with are frozen slices: .notes-toc-* in
+ * styles/12-notes.css, the twisty in styles/17-toc-fold.css, and
+ * .document-toc-page in styles/36-document.css. Nothing here restates them;
+ * this file loads last and only corrects what those three could not know.
+ *
+ * ── What was actually wrong ────────────────────────────────────────────────
+ *
+ * One row class, two elements. src/notes/toc-tree.js builds a heading in a note
+ * as an <a href="#slug"> — it has a real anchor and should be middle-clickable
+ * — and a page in a PDF as a <button>, because "page 47 of this file" has no
+ * URL and a link that goes nowhere is a promise the browser cannot keep.
+ *
+ * .notes-toc-link was written for the <a>. It sets colour, padding, radius and
+ * a transparent left border, and resets nothing — so on the <button> half the
+ * user-agent styling came through underneath it: ButtonFace grey behind every
+ * row, `width: fit-content` so each row shrink-wrapped its own title into a
+ * pill of its own width, `text-align: center` so a two-line chapter title sat
+ * centred inside it, and the UA font in place of the drawer's. The page number
+ * has `margin-left: auto` (36-document.css) which does nothing at all in a box
+ * that is only as wide as its text, so the numbers never formed a column.
+ *
+ * That is the whole of "the styling of the TOC is utterly ugly": the document's
+ * contents was never styled, it was a stack of default buttons wearing four of
+ * the notes contents' declarations. The reset below is the fix; the rest of the
+ * file is the ladder and the states, applied to BOTH drawers so the two surfaces
+ * keep looking like one control — which is the promise src/notes/toc-tree.js is
+ * there to keep.
+ */
+
+/* ── One row, whichever element it is ──────────────────────────────────────
+   `appearance: none` and an explicit background/font/alignment, so a <button>
+   row and an <a> row differ in nothing a reader can see.
+
+   The border is written as four sides rather than as `border: 0`: the frozen
+   rule's `border-left: 2px solid transparent` is what the active row turns
+   accent, and a blanket reset here would take that away and then have to put it
+   back. The active colour is re-asserted below regardless — this file wins on
+   source order at equal specificity, so leaving it implicit would be a rule
+   that only works by accident. */
+.notes-toc-link {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border: 0 solid transparent;
+  border-left-width: 2px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  /* A row is a jump target on a touch screen, and the twisty beside it is a
+     different one. Without this a press that drifts by a pixel selects the
+     title instead of following it. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── The type ladder ───────────────────────────────────────────────────────
+   Depth already draws itself twice — the rail indents the row and the dot
+   shrinks a size per level — so this is deliberately small: enough that a
+   chapter reads as heavier than a section at a glance, not so much that a
+   third-level heading looks like a footnote. The frozen file bolds depth 0
+   already; these carry the ladder on from there. */
+.notes-toc-link[style*="--toc-depth: 0"] {
+  font-size: 0.845rem;
+}
+
+.notes-toc-link[style*="--toc-depth: 1"] .notes-toc-text {
+  font-weight: 600;
+}
+
+.notes-toc-link[style*="--toc-depth: 2"],
+.notes-toc-link[style*="--toc-depth: 3"],
+.notes-toc-link[style*="--toc-depth: 4"] {
+  font-size: 0.8rem;
+}
+
+.notes-toc-link[style*="--toc-depth: 3"] .notes-toc-text,
+.notes-toc-link[style*="--toc-depth: 4"] .notes-toc-text {
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+}
+
+/* A top-level entry begins a section of the list. Space rather than a rule:
+   twenty chapters with a hairline between each is a table, and the thing being
+   grouped is already told apart by the indent under it. */
+.notes-toc-list > .notes-toc-item[style*="--toc-depth: 0"]:not(:first-child) {
+  margin-top: 3px;
+}
+
+/* ── Where you are, and where the pointer is ───────────────────────────────
+   Hover keeps the row's own ink and only washes the background: turning every
+   title accent-coloured under the pointer made the list flicker as the mouse
+   crossed it, and said the same thing the wash already says. Being ON a section
+   is the state worth spending colour on, so that one keeps the accent text, the
+   bar and a stronger wash. */
+.notes-toc-link:hover {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: var(--text);
+}
+
+.notes-toc-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.notes-toc-link.is-active,
+.notes-toc-link.is-active:hover {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-strong, var(--accent));
+}
+
+/* ── The page number, as a column ──────────────────────────────────────────
+   It only becomes a column once the row is full width (above), and only stays
+   one if it cannot be squeezed by a long title — `min-width` is the half that
+   `flex: 0 0 auto` in styles/36-document.css cannot supply on its own, since
+   "don't grow, don't shrink" still sizes to the content.
+
+   `align-self: flex-start` is for the mobile branch of styles/12-notes.css,
+   which switches the row to `align-items: flex-start` so a wrapped title starts
+   at the top: without it the number would ride down beside the last line of a
+   three-line chapter title instead of sitting on the first. */
+.document-toc-page {
+  min-width: 2.4em;
+  align-self: flex-start;
+  text-align: right;
+  line-height: inherit;
+}
+
+.notes-toc-link.is-active .document-toc-page {
+  color: inherit;
+}
+
+/* An outline entry whose destination the file does not actually define. It used
+   to render as a row with no number that did nothing when pressed, which is
+   indistinguishable from a bug — see resolveOutlineEntryPage in
+   src/documents/pdf-outline.js, which is what discovers this and marks it. */
+.notes-toc-item[data-toc-unresolved="true"] .notes-toc-text {
+  color: var(--muted);
+}
+
+.notes-toc-item[data-toc-unresolved="true"] .notes-toc-link::after {
+  content: "—";
+  margin-left: auto;
+  padding-left: 8px;
+  min-width: 2.4em;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: right;
+}
+
+/* ── The twisty, over the dot it replaces ──────────────────────────────────
+   styles/17-toc-fold.css puts it at `6px + depth * 14px`, which was measured
+   against the row's padding alone and misses the 2px border and the 6px flex
+   gap that sit between that padding and the dot. A branch row hides its dot and
+   shows this glyph in its place, so being five pixels off at the top level is
+   visible as a column of glyphs that does not line up with the column of dots
+   below it.
+
+   Where the dot actually is: 2px border + 8px padding, then one 14px rail
+   column per level, then the 6px gap — except at depth 0, which has no rail
+   element and therefore no gap either. Both cases are centred on a 24px target,
+   which stays 24px because a phone has to be able to hit it. */
+.notes-toc-twisty {
+  left: calc(7px + var(--toc-depth, 0) * 14px);
+}
+
+.notes-toc-item[style*="--toc-depth: 0"] .notes-toc-twisty {
+  left: 1px;
+}
+
+@media (max-width: 720px) {
+  /* The wrapped branch of styles/12-notes.css puts the row's title on two or
+     three lines; these are the two things that branch cannot set from where it
+     is — the title needs room to breathe between those lines, and the row needs
+     to stop being 34px tall the moment it holds more than one of them. */
+  .notes-toc-text {
+    line-height: 1.4;
+  }
+
+  .notes-toc-link {
+    padding-right: 6px;
+  }
+}

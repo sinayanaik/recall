@@ -231,6 +231,17 @@ export const el = {
   highlightsStage: document.querySelector("#highlightsStage"),
   highlightsList: document.querySelector("#highlightsList"),
   highlightsEmpty: document.querySelector("#highlightsEmpty"),
+  // Side by side — the reading surface keeps its own place in the panel's grid
+  // and these take the column (or, on a phone, the row) beside it. See
+  // src/panels/highlight-cycle.js.
+  splitDivider: document.querySelector("#splitDivider"),
+  highlightCycle: document.querySelector("#highlightCycle"),
+  highlightCycleBody: document.querySelector("#highlightCycleBody"),
+  highlightCycleEmpty: document.querySelector("#highlightCycleEmpty"),
+  highlightCycleCount: document.querySelector("#highlightCycleCount"),
+  highlightCyclePrevBtn: document.querySelector("#highlightCyclePrevBtn"),
+  highlightCycleNextBtn: document.querySelector("#highlightCycleNextBtn"),
+  highlightCycleCloseBtn: document.querySelector("#highlightCycleCloseBtn"),
   // The Document surface — the PDF itself, for a deck with meta.pdf. See
   // src/documents/pdf-view.js; #documentView is the scroller that holds one
   // .pdf-page per page.

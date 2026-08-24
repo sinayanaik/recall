@@ -101,6 +101,8 @@
     <link rel="stylesheet" href="styles/42-highlight-badge.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/43-drawer-highlights.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/44-highlights-editor.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/45-toc-rows.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/46-highlight-cycle.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -238,6 +240,7 @@
     <link rel="modulepreload" href="src/panels/highlight-index.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/drawer-highlights.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlights-editor.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/panels/highlight-cycle.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/app-info.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/online.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/release-info.js?v=__BUILD__">
@@ -919,6 +922,40 @@
               </div>
             </nav>
           </div>
+          <!-- ── Side by side: the page, and what you wrote on it ─────────
+               A reader working through what they marked had two places to be
+               and could only be in one: the paper (or the note) on one tab, and
+               the highlights with their notes on another. "Visually they are far
+               detached from each other — one has to click the numbers then only
+               be able to see it."
+
+               So the panel splits. The reading surface keeps its own place in
+               this grid, untouched — .pdf-page's offsetParent is .document-stage
+               and pageOffsetTop() is measured against it, so moving that stage
+               into a wrapper would put every highlight on a paper in the wrong
+               place — and these two boxes take a second and third column beside
+               it (a second and third ROW on a phone, where two 190px columns
+               would be neither). See src/panels/highlight-cycle.js and
+               styles/46-highlight-cycle.css.
+
+               The divider is a real <div role="separator">, not a CSS resize
+               grip: it has to be draggable in one axis at one width and the
+               other axis at another, and to be reachable by keyboard. -->
+          <div class="split-divider" id="splitDivider" hidden role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize the panes" title="Drag to resize — double-press to go back to 3:2"><span aria-hidden="true"></span></div>
+          <aside class="highlight-cycle" id="highlightCycle" hidden aria-label="Highlights, beside what they are on">
+            <div class="hc-head">
+              <button class="hc-step" id="highlightCyclePrevBtn" type="button" title="The highlight before this one" aria-label="Previous highlight">&#9664;</button>
+              <span class="hc-count" id="highlightCycleCount" aria-live="polite">0 / 0</span>
+              <button class="hc-step" id="highlightCycleNextBtn" type="button" title="The next highlight" aria-label="Next highlight">&#9654;</button>
+              <button class="hc-close" id="highlightCycleCloseBtn" type="button" title="Close side by side" aria-label="Close side by side">&times;</button>
+            </div>
+            <!-- The Highlights tab's own surface, rendered into this box
+                 instead: every highlight of THIS reading surface in reading
+                 order, its note under it, editable where it sits. One editor,
+                 two containers — see renderHighlightsEditor's `list`. -->
+            <div class="hc-body" id="highlightCycleBody"></div>
+            <p class="hc-empty" id="highlightCycleEmpty" hidden>Nothing highlighted here yet.</p>
+          </aside>
           <!-- ── The selection bar, in five groups ────────────────────────
                Everything here is one press away, at every width. It used to be
                twelve controls in a run, with the formatting half folded behind
@@ -1608,6 +1645,7 @@
               <li><strong>Name a note that doesn't exist yet</strong> — type any name after <code>[[</code> and take <em>Create…</em>. You choose which folder it goes in, and you stay exactly where you were writing. Clicking a greyed-out link offers the same thing</li>
               <li><strong>Split a note that got too long</strong> — select the part that has outgrown its home and tap <strong>↪</strong> in the selection strip. It moves into a note of its own and leaves a link in its place</li>
               <li><strong>See what points here</strong> — open the <strong>☰ On this page</strong> drawer in the notes header; under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
+              <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
               <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
               <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the deck title bar and Cards/Notes toggle fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
             </ul>
@@ -1626,6 +1664,7 @@
               <li><strong>Read every note on the page it belongs to</strong> — a highlight with a note on it wears a small numbered badge; press it to open the note. <strong>⋯ → Notes on the page</strong> is a switch: flip it on and all of them print, numbered, in the gap under each page, so a paper you have read closely reads back as a paper plus its margins rather than a paper plus another tab. It says how many it printed and takes you to a page carrying one, since the notes are wherever you made them and not necessarily where you are now</li>
               <li><strong>Contents, even for a paper that has none</strong> — <strong>☰</strong> opens the same drawer the notes view has, with the same foldable tree. Most books carry a table of contents in the file and it is used as-is; most papers, preprints and printed-to-PDF chapters do not, so one is read out of the type on their pages instead — the headings, set larger or numbered — and the drawer says when what you are looking at was found that way rather than written by the author. It is worked out once and kept, so it is there instantly every time afterwards</li>
               <li><strong>...and what you marked on it, in the same drawer</strong> — the <strong>Highlights</strong> half lists every highlight on this paper with its page and the first of whatever you wrote about it, so finding one does not mean leaving the page you are on</li>
+              <li><strong>Side by side</strong> — the button at the top of that Highlights half splits the panel in two: the paper on the left, and every highlight on it with its note underneath on the right, written where it sits exactly as in the Highlights tab. <strong>◀ ▶</strong> walks through them and the page follows along, so working through a paper you have annotated is one press per highlight instead of a tab each way. Drag the divider between the two to resize them — they start at 3:2, and it remembers where you put it. On a phone they stack instead, the page above and the highlights below, because half of a phone is not a page. The Notes panel's own drawer does the same thing for the note's highlights</li>
               <li><strong>Zoom and dark page</strong> — the page number and <strong>+ − ↔</strong> float over the bottom corner of the page, out of the way until you reach for them; <strong>◐</strong> inverts the page for a dark theme, off by default because a paper full of photographs looks wrong inverted (your highlights keep their own colours either way)</li>
               <li><strong>Finish a paper, then let go of it</strong> — <strong>⋯ → Save a copy</strong> downloads the original file, and <strong>⋯ → Remove from cloud</strong> frees the storage it was using. Your highlights, notes and cards all stay, and so does the copy on this device; another device asks you to re-attach the file, and checks it really is the same one before painting a single highlight on it</li>
               <li><strong>Read it on two devices at once</strong> — a highlight and the note written on it merge the way your cards do: each carries its own timestamp, both sides are merged rather than one replacing the other, and a highlight you delete stays deleted everywhere. Mark up page 3 on a laptop and page 40 on a phone and you end with both, on both, with no "your notes were replaced" to answer. If two devices genuinely write different text on the <em>same</em> note and nothing can say which came last, both texts are kept — one under the other — rather than either being dropped</li>

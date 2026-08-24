@@ -285,6 +285,8 @@ const APP_SHELL = [
   `./styles/42-highlight-badge.css?v=${STAMP}`,
   `./styles/43-drawer-highlights.css?v=${STAMP}`,
   `./styles/44-highlights-editor.css?v=${STAMP}`,
+  `./styles/45-toc-rows.css?v=${STAMP}`,
+  `./styles/46-highlight-cycle.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -414,6 +416,7 @@ const APP_SHELL = [
   `./src/panels/highlight-index.js?v=${STAMP}`,
   `./src/panels/drawer-highlights.js?v=${STAMP}`,
   `./src/panels/highlights-editor.js?v=${STAMP}`,
+  `./src/panels/highlight-cycle.js?v=${STAMP}`,
   `./src/pwa/app-info.js?v=${STAMP}`,
   `./src/pwa/online.js?v=${STAMP}`,
   `./src/pwa/release-info.js?v=${STAMP}`,
