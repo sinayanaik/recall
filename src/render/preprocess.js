@@ -101,6 +101,276 @@ export function scanFences(source) {
   return found;
 }
 
+// ── ...and everything else the renderer will not read as markdown ──────────
+//
+// scanFences answers the question the RENDERER asks: where are the fenced
+// blocks, so preprocessSpecialBlocks can re-emit one verbatim and lift the
+// diagram ones out. findSourceImages asks a bigger one — where is text a reader
+// will never see as a picture — and fences are only part of that answer. marked
+// treats five more shapes as code or as raw HTML, and an `![](…)` inside any of
+// them renders as TEXT:
+//
+//   • an indented code block (four spaces or a tab);
+//   • a fence inside a blockquote, whose opener carries a "> " prefix;
+//   • a fence inside a list item, indented past the three spaces a top-level
+//     fence may have;
+//   • a closed HTML comment, which DOMPurify removes outright;
+//   • a <pre>/<script>/<style>/<textarea> block, emitted verbatim.
+//
+// The scan reported an image for every one of those. A phantom is not harmless:
+// it shares its URL with the real picture whenever a note quotes its own
+// markdown, which inflates that URL's copy count — enough on a lazily built
+// note to skip the real picture's controls altogether — and on a whole note it
+// can bind the grip to the slice inside the code block, so a resize rewrites
+// text nobody can see. That is exactly the failure src/render/inline.js's header
+// promises never to make.
+//
+// Every rule below leans one way on purpose. Calling real prose "code" would
+// take a picture's controls away, which is the bug being fixed, so anything
+// ambiguous is left as prose — a phantom is the tolerable error here and a
+// missing grip is not. tools/image-controls-check.mjs holds marked up as the
+// oracle for both directions.
+
+// A blockquote's marker run, which a fence inside one sits behind.
+export const QUOTE_PREFIX_SOURCE = "^[^\\S\\n]{0,3}(?:>[^\\S\\n]?)+";
+
+// A list item's own opener. Only used to know whether a list is OPEN, because
+// while one is, an indented line is its continuation rather than a code block
+// and a fence may be indented as far as the item's content column.
+export const LIST_ITEM_SOURCE = "^[^\\S\\n]{0,3}(?:[-+*]|\\d{1,9}[.)])(?:[^\\S\\n]|$)";
+
+// CommonMark's type-1 HTML block: everything to the closing tag is verbatim.
+export const HTML_VERBATIM_TAGS = ["pre", "script", "style", "textarea"];
+
+// One line of `text`, as [start, end) of its content and the index the next line
+// starts at.
+function lineAt(text, start) {
+  const newline = text.indexOf("\n", start);
+  const end = newline === -1 ? text.length : newline;
+  return { end, next: newline === -1 ? text.length : newline + 1 };
+}
+
+// A fence opener on `line`, or null. `maxIndent` is how far in it may sit: three
+// spaces at the top level, and as far as you like inside a list item, whose own
+// content column this scan does not track exactly.
+function fenceOpenOn(line, maxIndent) {
+  const match = line.match(/^([^\S\n]*)(`{3,}|~{3,})[^\S\n]*(.*)$/);
+  if (!match) return null;
+  if (match[1].length > maxIndent) return null;
+  // "```js`" is not a fence — same rule scanFences applies, and for the same
+  // reason: it is what stops an inline code span opening one.
+  if (match[2][0] === "`" && match[3].includes("`")) return null;
+  return { indent: match[1], marker: match[2] };
+}
+
+function isFenceCloseOn(line, marker) {
+  // Assembled rather than written as one template literal: tools/js-scan.mjs
+  // reads this file as TEXT (see tools/image-controls-check.mjs), and a "$"
+  // sitting immediately in front of the closing backtick reads to its scanner
+  // as the start of an interpolation.
+  const run = marker[0] + "{" + marker.length + ",}";
+  return new RegExp("^[^\\S\\n]*" + run + "[^\\S\\n]*" + "$").test(line);
+}
+
+// Merged, sorted, non-overlapping. The callers walk this the way they walked
+// scanFences, so an overlap (an HTML comment inside a fence) has to become one
+// region rather than two that interleave.
+export function mergeRanges(ranges) {
+  const sorted = ranges.filter((range) => range.end > range.start).sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const range of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ start: range.start, end: range.end });
+  }
+  return merged;
+}
+
+// Every CLOSED `<!-- … -->` between `from` and `to`. Scanned as text rather
+// than line by line, because a comment is as legal in the middle of a paragraph
+// as it is on its own line, and DOMPurify strips it either way.
+//
+// Two bounds, both of them there to stop this hiding real pictures rather than
+// to tidy it up:
+//
+//   • `from`/`to` are the gaps BETWEEN the code regions the line walk already
+//     found. A `<!--` written inside a fenced block is text — a note ABOUT HTML
+//     has one — and reading it as a comment would carry the region out past the
+//     fence and over the prose after it;
+//   • an UNCLOSED `<!--` ends the walk of its gap. CommonMark runs its HTML
+//     block to the end of the document, so following that rule would make every
+//     picture in the rest of the note invisible to the scan on the strength of
+//     one stray marker — the same shape of failure a stray ``` used to cause
+//     (see the header on scanFences), and the reason that one was rewritten.
+//     Nothing after it in the gap is claimed either, because the next `-->` in
+//     the note belongs to some LATER comment and pairing with it would take the
+//     region across everything in between. Both cost a phantom at worst.
+export function scanHtmlComments(text, from = 0, to = text.length) {
+  const found = [];
+  let at = text.indexOf("<!--", from);
+  while (at !== -1 && at < to) {
+    const close = text.indexOf("-->", at + 4);
+    if (close === -1 || close + 3 > to) break;
+    found.push({ start: at, end: close + 3 });
+    at = text.indexOf("<!--", close + 3);
+  }
+  return found;
+}
+
+export function scanCodeRegions(source) {
+  const text = String(source || "");
+  const regions = [];
+  const quotePrefix = new RegExp(QUOTE_PREFIX_SOURCE);
+  const listItem = new RegExp(LIST_ITEM_SOURCE);
+  const verbatimOpen = new RegExp(`^[^\\S\\n]{0,3}<(${HTML_VERBATIM_TAGS.join("|")})\\b`, "i");
+
+  let at = 0;
+  let listOpen = false;
+  // The document starts where a block can start, so a first line that is
+  // indented four spaces is a code block just as one after a blank line is.
+  let afterBlank = true;
+
+  // A block starting hard against the left margin ends whatever list was open,
+  // the same way a paragraph there does. Every branch below has to say this for
+  // itself, because each one continues past the tracking at the foot of the
+  // loop — and a list left open forever makes every later indented chunk look
+  // like a continuation rather than the code it is.
+  const closeListAt = (line) => { if (afterBlank && !/^[^\S\n]/.test(line)) listOpen = false; };
+
+  while (at < text.length) {
+    const { end, next } = lineAt(text, at);
+    const line = text.slice(at, end);
+    const blank = !line.trim();
+
+    if (blank) {
+      // A blank line does not close a list — an item's second paragraph is
+      // still the item's.
+      afterBlank = true;
+      at = next;
+      continue;
+    }
+
+    const quoted = line.match(quotePrefix);
+    if (quoted) {
+      const opener = fenceOpenOn(line.slice(quoted[0].length), Infinity);
+      if (opener) {
+        // Bounded by the blockquote itself: the region ends at the closing
+        // fence, or at the first line that has left the quote, whichever comes
+        // first. Without that bound one stray "> ```" would swallow the rest of
+        // the note and take every picture's controls with it.
+        let cursor = next;
+        let regionEnd = end;
+        while (cursor < text.length) {
+          const step = lineAt(text, cursor);
+          const inner = text.slice(cursor, step.end);
+          const innerQuote = inner.match(quotePrefix);
+          if (!innerQuote) break;
+          regionEnd = step.end;
+          cursor = step.next;
+          if (isFenceCloseOn(inner.slice(innerQuote[0].length), opener.marker)) break;
+        }
+        regions.push({ start: at, end: regionEnd });
+        at = cursor;
+        closeListAt(line);
+        afterBlank = false;
+        continue;
+      }
+      closeListAt(line);
+      afterBlank = false;
+      at = next;
+      continue;
+    }
+
+    const opener = fenceOpenOn(line, listOpen ? Infinity : 3);
+    if (opener) {
+      let cursor = next;
+      let regionEnd = text.length;
+      let closed = false;
+      while (cursor < text.length) {
+        const step = lineAt(text, cursor);
+        const inner = text.slice(cursor, step.end);
+        if (isFenceCloseOn(inner, opener.marker)) {
+          regionEnd = step.end;
+          cursor = step.next;
+          closed = true;
+          break;
+        }
+        // A fence opened INSIDE a list item is only trusted as far as that
+        // list: the first unindented line ends it. An unclosed top-level fence
+        // still runs to the end of the note, which is what CommonMark says and
+        // what scanFences already does.
+        if (opener.indent.length >= 4 && inner.trim() && !/^[^\S\n]/.test(inner)) {
+          regionEnd = cursor;
+          break;
+        }
+        cursor = step.next;
+      }
+      if (!closed && cursor >= text.length) regionEnd = text.length;
+      regions.push({ start: at, end: regionEnd });
+      at = Math.max(next, cursor);
+      closeListAt(line);
+      afterBlank = false;
+      continue;
+    }
+
+    if (verbatimOpen.test(line)) {
+      const tag = line.match(verbatimOpen)[1].toLowerCase();
+      const close = new RegExp(`</${tag}\\s*>`, "i");
+      let cursor = at;
+      let regionEnd = text.length;
+      while (cursor < text.length) {
+        const step = lineAt(text, cursor);
+        const hit = close.test(text.slice(cursor, step.end));
+        cursor = step.next;
+        if (hit) { regionEnd = step.end; break; }
+      }
+      regions.push({ start: at, end: regionEnd });
+      at = Math.max(next, cursor);
+      closeListAt(line);
+      afterBlank = false;
+      continue;
+    }
+
+    // An indented chunk is a code block only where a block can start and only
+    // outside a list — inside one the same indentation is the item's own
+    // continuation, and reading that as code is how a real picture in a bullet
+    // would lose its grip.
+    if (afterBlank && !listOpen && /^(?: {4}|\t)/.test(line)) {
+      let cursor = next;
+      let regionEnd = end;
+      while (cursor < text.length) {
+        const step = lineAt(text, cursor);
+        const inner = text.slice(cursor, step.end);
+        if (inner.trim() && !/^(?: {4}|\t)/.test(inner)) break;
+        // Trailing blank lines belong to whatever comes next, not to the block.
+        if (inner.trim()) regionEnd = step.end;
+        cursor = step.next;
+      }
+      regions.push({ start: at, end: regionEnd });
+      at = cursor;
+      afterBlank = false;
+      continue;
+    }
+
+    if (listItem.test(line)) listOpen = true;
+    else closeListAt(line);
+    afterBlank = false;
+    at = next;
+  }
+
+  // Comments last, and only in what the walk left as prose — see
+  // scanHtmlComments for why that bound matters.
+  const blocks = mergeRanges(regions);
+  const comments = [];
+  let gap = 0;
+  for (const block of blocks) {
+    comments.push(...scanHtmlComments(text, gap, block.start));
+    gap = Math.max(gap, block.end);
+  }
+  comments.push(...scanHtmlComments(text, gap, text.length));
+  return mergeRanges(blocks.concat(comments));
+}
+
 export function parseDiagramWidth(info) {
   const match = String(info || "").match(/\b(?:w|width)\s*=\s*(\d{2,4})\b/i);
   if (!match) return null;

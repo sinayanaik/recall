@@ -14,7 +14,7 @@ import { CANONICAL_SRC_ATTR } from "../cloud/storage-urls.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME } from "./outbox.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 import { IMG_ALT_SOURCE, IMG_DEST_SOURCE, IMG_TOKEN_SOURCE, imageDestinationUrl } from "../render/inline.js?v=__BUILD__";
-import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, normalizeImageUrl, parseDiagramWidth, scanFences } from "../render/preprocess.js?v=__BUILD__";
+import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, normalizeImageUrl, parseDiagramWidth, scanCodeRegions, scanFences } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -161,16 +161,28 @@ export function sourceImagePattern() {
   return new RegExp(`${IMG_TOKEN_SOURCE}|!${IMG_ALT_SOURCE}\\[[^\\]]*\\]`, "gi");
 }
 
+// Is the character at `offset` escaped? `\![alt](url)` is a literal "!" in front
+// of a link to marked, not a picture, and a control offered over one would
+// rewrite text that renders as itself. An EVEN number of backslashes in front is
+// escaped backslashes and leaves the character itself live.
+export function isEscapedOffset(text, offset) {
+  let slashes = 0;
+  while (offset - slashes - 1 >= 0 && text[offset - slashes - 1] === "\\") slashes += 1;
+  return slashes % 2 === 1;
+}
+
 // Every image in a note's SOURCE, in document order, as
 // { start, end, raw, url, alt, widthPx }.
 //
-// Fenced code is skipped — an `![](…)` inside a ``` block is text, and
-// treating it as a picture would let a control rewrite something that never
-// rendered — and so is one wrapped tightly in backticks, which is the same
-// thing written inline. (A code span written with a doubled or spaced
-// delimiter is still found; nothing renders for it, so no shell ever matches
-// it, and the only cost is that a real image sharing that URL is treated as
-// having a duplicate.)
+// Code is skipped — an `![](…)` the reader sees as TEXT is not a picture, and
+// treating it as one would let a control rewrite something that never rendered.
+// scanCodeRegions is the authority on where that text is (fences, indented
+// blocks, blockquoted and list-indented fences, HTML comments, verbatim HTML
+// blocks); a tightly backticked image is the same thing written inline and is
+// skipped here, as is one whose "!" has been escaped. (A code span written with
+// a doubled or spaced delimiter is still found; nothing renders for it, so no
+// shell ever matches it, and the only cost is that a real image sharing that URL
+// is treated as having a duplicate.)
 export function findSourceImages(source) {
   const text = String(source || "");
   if (!sourceMayHaveImages(text)) return [];
@@ -186,6 +198,7 @@ export function findSourceImages(source) {
       const start = from + hit.index;
       const end = start + raw.length;
       if (text[start - 1] === "`" && text[end] === "`") continue;
+      if (isEscapedOffset(text, start)) continue;
       const info = raw.startsWith("<") ? parseImgTagAttrs(raw)
         : raw.includes("](") ? parseMarkdownImage(raw)
         : parseReferenceImage(raw, definitions);
@@ -194,9 +207,12 @@ export function findSourceImages(source) {
     }
   };
   let at = 0;
-  for (const fence of scanFences(text)) {
-    scanGap(at, fence.start);
-    at = fence.end;
+  // scanCodeRegions, not scanFences: a fence is only part of what the renderer
+  // reads as code or as raw HTML, and an image the reader never sees is not an
+  // image a control may act on. See the header on scanCodeRegions.
+  for (const region of scanCodeRegions(text)) {
+    scanGap(at, region.start);
+    at = Math.max(at, region.end);
   }
   scanGap(at, text.length);
   return found;
@@ -256,6 +272,46 @@ export function sourceUrlForImage(img) {
   return img.getAttribute(CANONICAL_SRC_ATTR) || img.getAttribute("src") || "";
 }
 
+// ── One key both sides of the pairing can agree on ─────────────────────────
+//
+// enhanceSurfaceImageControls pairs a rendered shell with the markdown slice it
+// came from by URL, and the two are not the same string. marked runs its own
+// cleanUrl over an image destination before writing the `src`, so a URL holding
+// a space, a non-ASCII character, or any of [ ] | { } ^ ` renders percent-
+// encoded while the markdown still holds it as written:
+//
+//   ![a](https://x.test/Über.png)      -> src="https://x.test/%C3%9Cber.png"
+//   ![a](<https://x.test/u v.png>)     -> src="https://x.test/u%20v.png"
+//
+// Compared raw, those miss — and a miss is silent: the picture keeps its Zoom
+// pill and loses its resize grip and its delete button, on every render,
+// forever. That is the report this is the fix for, and it lands hardest on
+// clipped articles and pasted GIFs, whose URLs come from the web as written
+// rather than from an upload path that slugs the filename.
+//
+// So both sides are put through marked's own transform rather than a guess at
+// it: encodeURI, then the `%25` fixup that keeps an already-encoded URL from
+// being encoded twice. It is idempotent, which is what lets the same function
+// run over the source URL and over the `src` read back off the element.
+export function markedImageUrl(url) {
+  const text = String(url ?? "");
+  try {
+    return encodeURI(text).replace(/%25/g, "%");
+  } catch (_) {
+    // encodeURI throws only on a lone surrogate. marked's own cleanUrl gives
+    // up there too (it returns null and the image renders with no src at all),
+    // so matching raw is the best answer left rather than an exception on the
+    // tail of every render.
+    return text;
+  }
+}
+
+// ...and the Drive rewrite on top, so a share link and a thumbnail link are one
+// image here the same way they are one image to the renderer.
+export function imageMatchKey(url) {
+  return normalizeImageUrl(markedImageUrl(String(url ?? "").trim()));
+}
+
 // Sizing is stored as an absolute pixel width (not a percentage of whatever
 // happens to contain it), so it's stable regardless of viewport width changes.
 export function imgTagHtml({ url, alt = "", widthPx = null }) {
@@ -278,8 +334,12 @@ export function imgTagHtml({ url, alt = "", widthPx = null }) {
 // The Nth image with this URL, or null. A single occurrence is unambiguous
 // whatever `nth` says — the note has been edited underneath the control and
 // this is still the only copy of that image in it.
+//
+// imageMatchKey, not normalizeImageUrl: `ref.url` is the key the shell was
+// paired on, so resolving a commit any other way would let attach and commit
+// disagree about which image the reader is dragging.
 export function sourceImageAt(images, ref) {
-  const matches = images.filter((image) => normalizeImageUrl(image.url) === ref.url);
+  const matches = images.filter((image) => imageMatchKey(image.url) === ref.url);
   if (!matches.length) return null;
   return matches[ref.nth] || (matches.length === 1 ? matches[0] : null);
 }
@@ -580,6 +640,70 @@ export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, ref
   }
 }
 
+// ── Which copy of a repeated image is this one? ────────────────────────────
+//
+// An image is identified by its URL, which is enough for the overwhelming
+// majority of them: an upload gets its own storage path, so one URL is one
+// picture. The exception is a note that uses the SAME image twice, and it is
+// the exception that has been costing readers their controls.
+//
+// The old rule was "if a URL repeats and the note is only partly built, skip
+// it, and pick the copies up on the pass that runs when the last span lands".
+// NOTES_LAZY_MIN_CHARS is 200,000 characters, so every imported book is built
+// span by span and notesLazyPending stays true until the reader has scrolled
+// the whole book end to end. That pass does not run in practice, so a figure a
+// book shows twice had a Zoom pill and nothing else, permanently.
+//
+// Three answers now, in order, and only the last one gives up:
+//
+//   • one copy in the source — unambiguous whatever is on screen;
+//   • as many shells for this URL in the DOM as there are slices in the source
+//     — then the nth on screen IS the nth in the note, partial or not;
+//   • `built` says which slices are in the DOM right now (block-cache derives
+//     it from the lazy span plan), so the visible copies can be counted off
+//     against the shells even when the rest of the book is still folded away.
+//
+// The give-up case is a WHOLE note holding more slices than shells, which means
+// some of those slices render nothing — an image inside code the scan still
+// reports (see scanCodeRegions). There the nth on screen names no particular
+// slice, and no control is offered: a missing grip is recoverable, a resize
+// that rewrites the wrong text is not.
+export function resolveShellCopy(copies, nth, { built = null, domCount = null } = {}) {
+  if (copies.length === 1) return copies[0];
+  if (domCount === copies.length) return copies[nth] || null;
+  if (built) {
+    const visible = copies.filter((copy) => built[copy.index] !== false);
+    if (visible.length === domCount) return visible[nth] || null;
+  }
+  return null;
+}
+
+// `builtImages` — what block-cache knows about a lazily built note: one entry
+// per image in the DOCUMENT it rendered, in order, each saying whether its span
+// is currently in the DOM. Turned into a flag per image of THIS surface's own
+// scan, or null when the two cannot be shown to describe the same images.
+// Handed over as a function and called only for a note that repeats an image,
+// because deriving it is a whole-note scan and this runs on the tail of every
+// render.
+//
+// The two lists are not always the same length, and legitimately so: the notes
+// view renders the note's body while getSource() answers with the whole of
+// state.notes, whose tail carries the machine-managed highlight-notes block
+// (src/format/notes-fence.js). An image written into a highlight's note is in
+// the source and not in the reading surface, so the rendered list is a PREFIX
+// of the scanned one — verified key by key here, because a prefix that does not
+// actually match is a mapping that would name the wrong slice.
+export function alignBuiltImages(images, builtImages) {
+  if (!Array.isArray(builtImages) || !builtImages.length) return null;
+  if (builtImages.length > images.length) return null;
+  const flags = new Array(images.length).fill(false);
+  for (let i = 0; i < builtImages.length; i += 1) {
+    if (builtImages[i]?.key !== imageMatchKey(images[i].url || "")) return null;
+    flags[i] = Boolean(builtImages[i].built);
+  }
+  return flags;
+}
+
 // Re-attaches the resize grip / delete button after every render of an editable
 // surface (the notes view or either card face).
 //
@@ -587,25 +711,30 @@ export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, ref
 // findSourceImages finds EVERY image in the markdown, so the two lists are
 // finally the same list — whatever encloses the image. Pairing is by URL, read
 // through sourceUrlForImage (so a signed or blob:-hydrated src still matches
-// the href the markdown holds) and compared through normalizeImageUrl (so a
-// rewritten Drive link does too).
+// the href the markdown holds) and compared through imageMatchKey (so a
+// rewritten Drive link does too, and so marked's own percent-encoding of a URL
+// carrying a space or a non-ASCII character cannot make the two miss).
 //
 // No ordering is assumed, which is the point: an upload gets its own storage
 // path, so a URL identifies one image outright, and a note that is only half
-// built (see `partial`) binds its built half correctly instead of going
-// without controls entirely until the reader reaches the end of the book.
+// built binds its built half correctly instead of going without controls
+// entirely until the reader reaches the end of the book.
 //
-// `partial` — the surface is a lazily built note with spans still missing.
-// Only the ambiguous case cares: with the SAME image used more than once in
-// one note, the nth copy on screen is the nth copy in the source only when the
-// whole note is there. Those keep their Zoom pill and pick up their grips on
-// the pass that runs when the last span lands (see finishNotesLazySpan).
+// There is no `partial` flag any more, and its absence is the point. It used to
+// mean "a repeated image gets nothing until the whole note is here", which on a
+// book meant "gets nothing". What a half-built note actually needs is not a
+// flag but an answer, and `builtImages` is that answer.
+//
+// `builtImages` — which of the note's images are in the DOM right now, from
+// block-cache's span plan. What makes a repeated image resolvable while the
+// rest of the book is still folded away. See resolveShellCopy.
 //
 // `scope` — the nodes a span build just added, so a book being read gets each
 // span's grips as that span lands rather than re-walking every shell built so
-// far on every one. Safe with `partial` for the same reason: the images it
-// skips are exactly the ones a scoped count could get wrong.
-export function enhanceSurfaceImageControls(surface, { partial = false, scope = null } = {}) {
+// far on every one. Ordinals are still counted over the WHOLE view: the second
+// copy of an image is the second copy of it in the NOTE, not the second in
+// whichever span happens to be building.
+export function enhanceSurfaceImageControls(surface, { scope = null, builtImages = null } = {}) {
   const view = surface?.view;
   if (!view) return;
   // Cheapest test first — see sourceMayHaveImages. This runs on the tail of
@@ -613,33 +742,56 @@ export function enhanceSurfaceImageControls(surface, { partial = false, scope = 
   const images = surfaceSourceImages(surface);
   if (!images.length) return;
 
-  const byUrl = new Map();
-  images.forEach((image) => {
-    const url = normalizeImageUrl(image.url || "");
-    const copies = byUrl.get(url);
-    if (copies) copies.push(image);
-    else byUrl.set(url, [image]);
+  const byKey = new Map();
+  images.forEach((image, index) => {
+    const key = imageMatchKey(image.url || "");
+    const copies = byKey.get(key);
+    const copy = { image, index, nth: copies ? copies.length : 0 };
+    if (copies) copies.push(copy);
+    else byKey.set(key, [copy]);
   });
 
-  const seen = new Map();
+  // Everything below this line exists only for a note that uses one image more
+  // than once — the only case a URL alone cannot answer. A whole-view walk and
+  // a whole-note scan per pass would otherwise be paid by every book on every
+  // span build, for nothing.
+  let repeated = false;
+  byKey.forEach((copies) => { if (copies.length > 1) repeated = true; });
+  const built = repeated
+    ? alignBuiltImages(images, typeof builtImages === "function" ? builtImages() : builtImages)
+    : null;
+  const ordinals = new Map();
+  const domCounts = new Map();
+  if (repeated) {
+    view.querySelectorAll(".diagram-shell").forEach((node) => {
+      const image = node.querySelector("img");
+      if (!image) return;
+      const key = imageMatchKey(sourceUrlForImage(image));
+      const at = domCounts.get(key) || 0;
+      domCounts.set(key, at + 1);
+      ordinals.set(node, at);
+    });
+  }
+
   const shells = scope ? scopedQueryAll(scope, ".diagram-shell") : Array.from(view.querySelectorAll(".diagram-shell"));
   shells.forEach((shell) => {
     const img = shell.querySelector("img");
     if (!img) return;
-    const url = normalizeImageUrl(sourceUrlForImage(img));
-    const copies = byUrl.get(url);
+    const key = imageMatchKey(sourceUrlForImage(img));
+    const copies = byKey.get(key);
     // A shell whose image is in no markdown this surface owns: an export root's
     // clone, a preview, something a plugin put there. Zoom pill only.
     if (!copies?.length) return;
-    const nth = seen.get(url) || 0;
-    seen.set(url, nth + 1);
-    if (copies.length > 1 && partial) return;
-    const image = copies[nth] || (copies.length === 1 ? copies[0] : null);
-    if (!image) return;
+    const copy = resolveShellCopy(copies, repeated ? (ordinals.get(shell) || 0) : 0, {
+      built,
+      domCount: repeated ? (domCounts.get(key) || 0) : 1
+    });
+    if (!copy) return;
+    const image = copy.image;
 
     img.draggable = false;
-    shell.dataset.imageUrl = url;
-    shell.dataset.imageNth = String(nth);
+    shell.dataset.imageUrl = key;
+    shell.dataset.imageNth = String(copy.nth);
     if (image.widthPx) {
       img.style.setProperty("--notes-img-w", `${image.widthPx}px`);
       img.classList.add("has-custom-size");
@@ -647,7 +799,7 @@ export function enhanceSurfaceImageControls(surface, { partial = false, scope = 
       img.classList.remove("has-custom-size");
     }
 
-    const ref = { url, nth };
+    const ref = { url: key, nth: copy.nth };
     attachNotesImageResizeHandle(shell, img,
       (px) => commitSourceImageWidth(surface, ref, px),
       () => removeSourceImage(surface, ref),
@@ -662,22 +814,17 @@ export function enhanceSurfaceImageControls(surface, { partial = false, scope = 
 // written back into the fence's info string (```mermaid w=520 — see
 // parseDiagramWidth) instead of onto a tag.
 //
-// The DOM→source mapping is by ordinal position, which is exact here in a way it
-// isn't for images: preprocessSpecialBlocks turns every diagram fence into
-// exactly one .mermaid/.nomnoml-diagram element, in source order, wherever the
-// fence sits. Walking the shared scanFences() keeps the two lists in lockstep;
-// if the counts ever disagree, no grip is attached rather than a grip that would
-// resize the wrong diagram.
+// The mapping used to be by ordinal position alone, on the reasoning that
+// preprocessSpecialBlocks turns every diagram fence into exactly one
+// .mermaid/.nomnoml-diagram element in source order. That is true of a WHOLE
+// note and false of one built as it is read, where the spans in the DOM are
+// whichever ones the reader has been near — so the pass was skipped outright
+// while any span was missing, and on a book it was skipped for good.
 //
-// "Disagree" used to mean `diagrams.length !== fences.length`, which is a
-// stronger test than the mapping needs and made one late diagram cost every
-// diagram in the note its grip. A diagram is drawn deferred (.is-diagram-pending,
-// see render/deferred-work.js), so a note read from the top routinely has fewer
-// elements in the DOM than fences in the source for as long as the reader has
-// not scrolled to the last one. The elements that ARE there are still the first
-// N fences in order, so the pairing is exact for them: only a DOM holding MORE
-// diagrams than the source has fences means the two lists have genuinely lost
-// each other, and that is the case that still refuses to attach anything.
+// A drawing carries the fence's own body in data-diagram, so it can be found by
+// what it draws instead: content, not position, exactly as an image is found by
+// its URL. See enhanceSurfaceDiagramControls.
+
 export function findDiagramFences(source) {
   return scanFences(source)
     .filter((fence) => /\b(?:mermaid|nomnoml)\b/i.test(fence.info))
@@ -687,6 +834,9 @@ export function findDiagramFences(source) {
       indent: fence.indent,
       marker: fence.marker,
       info: fence.info,
+      // The drawing on screen carries this same text in data-diagram, which is
+      // how a diagram is paired with its fence without counting positions.
+      body: fence.body,
       widthPx: parseDiagramWidth(fence.info)
     }));
 }
@@ -706,7 +856,34 @@ export function commitDiagramWidth(surface, fenceIndex, px) {
   scheduleDeckAutosave();
 }
 
-export function enhanceSurfaceDiagramControls(surface) {
+// The body a drawing was made from, read back off the element. Written there by
+// preprocessSpecialBlocks as data-diagram and only ever READ afterwards (see
+// renderDiagramNodes), so it survives the drawing being deferred, drawn, and
+// re-drawn on a theme flip.
+export function diagramBodyOf(node) {
+  const encoded = node?.dataset?.diagram;
+  if (!encoded) return "";
+  try {
+    return decodeURIComponent(encoded).trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+// `partial` — the note is lazily built and spans are still missing. It used to
+// mean "attach nothing at all": finalizeRenderedSurface skipped this whole pass
+// while any span was unbuilt, and on a note over NOTES_LAZY_MIN_CHARS that is
+// until the reader has scrolled the book end to end. Every diagram in every
+// imported book therefore had a Zoom pill, no resize grip and no delete button,
+// every time — not sometimes.
+//
+// It is only the POSITIONAL walk that a half-built DOM breaks, and a diagram
+// does not have to be found by position: preprocessSpecialBlocks writes the
+// fence's own body onto the element, so a drawing can be paired with its fence
+// by what it draws, exactly the way an image is paired by its URL. Position is
+// the fallback for a drawing that carries no body, and stays gated on a whole
+// note as it always was.
+export function enhanceSurfaceDiagramControls(surface, { partial = false } = {}) {
   const view = surface?.view;
   if (!view) return;
   // Before the fence walk, not after it. The `diagrams.length` test below is
@@ -716,12 +893,52 @@ export function enhanceSurfaceDiagramControls(surface) {
   if (!sourceMayHaveDiagrams(surface.getSource?.() || "")) return;
   const fences = findDiagramFences(surface.getSource());
   const diagrams = Array.from(view.querySelectorAll(".mermaid, .nomnoml-diagram"));
-  if (!diagrams.length || diagrams.length > fences.length) return;
+  if (!diagrams.length || !fences.length) return;
 
-  diagrams.forEach((node, index) => {
+  const byBody = new Map();
+  fences.forEach((fence, index) => {
+    const key = String(fence.body || "").trim();
+    const found = byBody.get(key);
+    if (found) found.push(index);
+    else byBody.set(key, [index]);
+  });
+  // How many drawings on screen came from each fence body — the same count
+  // resolveShellCopy uses to know whether an ordinal among duplicates is
+  // trustworthy on a half-built note.
+  const domCounts = new Map();
+  diagrams.forEach((node) => {
+    const key = diagramBodyOf(node);
+    domCounts.set(key, (domCounts.get(key) || 0) + 1);
+  });
+
+  // The positional fallback. "Disagree" is deliberately not
+  // `diagrams.length !== fences.length`: a diagram is drawn deferred
+  // (.is-diagram-pending, see render/deferred-work.js), so a note read from the
+  // top routinely has fewer elements in the DOM than fences in the source. Only
+  // a DOM holding MORE diagrams than the source has fences means the two lists
+  // have genuinely lost each other.
+  const positional = !partial && diagrams.length <= fences.length;
+
+  const seen = new Map();
+  diagrams.forEach((node, position) => {
     const shell = node.parentElement;
     if (!shell?.classList.contains("diagram-shell")) return;
-    if (index >= fences.length) return;
+    const body = diagramBodyOf(node);
+    const matches = body ? byBody.get(body) : null;
+    let index = -1;
+    if (matches?.length === 1) {
+      index = matches[0];
+    } else if (matches?.length > 1 && domCounts.get(body) === matches.length) {
+      // Two fences drawing the same thing, and every one of them is on screen:
+      // the nth drawing IS the nth fence.
+      const at = seen.get(body) || 0;
+      seen.set(body, at + 1);
+      index = matches[at] ?? -1;
+    } else if (positional) {
+      index = position;
+    }
+    if (index < 0 || index >= fences.length) return;
+
     const widthPx = fences[index].widthPx;
     if (widthPx) {
       node.style.setProperty("--notes-img-w", `${widthPx}px`);
