@@ -8,7 +8,7 @@
 // whole import.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
+import { ensureJsZip, ensureTurndown } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { formatStorageBytes } from "../core/text.js?v=__BUILD__";
 import { compressImageToPreset, normalizeImageCompressionChoice, readImageCompressionChoice, writeImageCompressionChoice } from "../images/compress.js?v=__BUILD__";
@@ -262,8 +262,18 @@ export function normalizeEpubTitleCandidate(text) {
 // skip past it instead of rendering the same title twice in a row. Anything
 // that reads as a *different* label (a distinct sub-heading, a subtitle) is
 // left alone — only a same-text heading is a duplicate, not real content.
+// localName, lower-cased, NOT tagName: a chapter that is well-formed XHTML —
+// which is most of EPUB3 — is parsed as XML by epubParseChapterDoc, and an XML
+// document reports tagName exactly as it was authored. Every such heading is
+// `h2`, so a test for `H2` matched nothing at all and this returned false for
+// every chapter in every valid book; the skip only ever fired for the loosely
+// authored ones that failed the XHTML parse and fell back to text/html, where
+// the parser upper-cases. The visible symptom is the one this function was
+// added to remove: the chapter's title rendered as a heading directly under
+// the chapter's title.
 export function isEpubDuplicateHeadingNode(node, title) {
-  if (!node || node.nodeType !== 1 || !/^H[1-6]$/.test(node.tagName)) return false;
+  if (!node || node.nodeType !== 1) return false;
+  if (!/^h[1-6]$/.test(String(node.localName || node.tagName || "").toLowerCase())) return false;
   const nodeText = normalizeEpubTitleCandidate(node.textContent).toLowerCase();
   const titleText = normalizeEpubTitleCandidate(title).toLowerCase();
   return !!nodeText && nodeText === titleText;
@@ -738,7 +748,7 @@ export async function hydrateEpubPreviewImages(imgs, zip, cache) {
     if (!path) continue;
     if (cache.urls.has(path)) { img.src = cache.urls.get(path); continue; }
     try {
-      const entry = zip.file(path);
+      const entry = epubZipFile(zip, path, cache.raw?.get(path) || "");
       if (!entry) { img.remove(); continue; }
       const blob = await entry.async("blob");
       const url = URL.createObjectURL(blob);
@@ -875,9 +885,15 @@ export async function convertEpubChapters(zip, spine, markers, imageUrlMap, prog
 // How many decks already sit in the folder this book would import into.
 // Importing always creates fresh decks, so a second import of the same book
 // silently doubles every chapter — worth warning about before it happens.
-export function epubTargetFolderDeckCount(bookTitle) {
+// `parentFolder` is where the book is actually going — an explicit destination
+// from a folder's own "Import here" button, or null for wherever My Decks
+// happens to be looking. Resolved exactly as runEpubImport resolves it: reading
+// currentMyDecksFolder() unconditionally counted the folder ON SCREEN, so an
+// "Import here" into a different one warned about decks that were not in its
+// way and stayed silent about the ones that were.
+export function epubTargetFolderDeckCount(bookTitle, parentFolder = null) {
   const sanitized = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
-  const parent = currentMyDecksFolder();
+  const parent = parentFolder != null ? parentFolder : currentMyDecksFolder();
   const folderPath = normalizeDeckCategory(parent ? `${parent}${FOLDER_SEP}${sanitized}` : sanitized);
   return decksUnderFolder(folderPath).length;
 }
@@ -887,7 +903,15 @@ export function epubTargetFolderDeckCount(bookTitle) {
 // conversion starts, so the user sees book title/author/counts almost
 // instantly instead of a silent wait. Resolves { mode: "chapters" | "book" }
 // (Import) or null (Cancel).
-export function showEpubPreview({ title, author, chapterCount, imageCount, existingDeckCount = 0, chaptersPromise, previewChaptersPromise, zip }) {
+// `imageEntries` rather than a bare count: the compression estimate below reads
+// the entries themselves, and passing only their number is exactly how this
+// modal came to reference an `imageEntries` it had never been given — a
+// ReferenceError thrown out of the executor below, BEFORE the modal reaches the
+// DOM, on every book carrying so much as one figure. Nothing appeared, and the
+// only thing on screen was "Could not import this EPUB — imageEntries is not
+// defined". The count is derived here so the two cannot drift again.
+export function showEpubPreview({ title, author, chapterCount, imageEntries = [], existingDeckCount = 0, chaptersPromise, previewChaptersPromise, zip }) {
+  const imageCount = imageEntries.length;
   return new Promise((resolve) => {
     const modal = document.createElement("section");
     modal.className = "category-choice-modal epub-preview-modal";
@@ -948,7 +972,16 @@ export function showEpubPreview({ title, author, chapterCount, imageCount, exist
     // Every object URL created to show a preview image is tracked here and
     // revoked in cleanup(), so nothing is committed to the notes and no
     // blob: handle leaks whether the user confirms or cancels.
-    const cache = { urls: new Map(), created: [] };
+    // `raw` is each figure's undecoded zip entry name, kept beside the decoded
+    // one the markers carry: an archive whose entries are themselves
+    // percent-encoded answers to only that spelling, and looking a figure up
+    // under the decoded name alone dropped it from the preview while the real
+    // import — which goes through epubZipFile — kept it. See resolveEpubPath.
+    const cache = {
+      urls: new Map(),
+      created: [],
+      raw: new Map(imageEntries.map((entry) => [entry.path, entry.rawPath]))
+    };
     const tocLoading = shell.querySelector(".epub-preview-toc-loading");
     const tocList = shell.querySelector(".epub-preview-toc-list");
 
@@ -1227,10 +1260,17 @@ export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, 
     // single-deck-at-a-time editor flow (createNewDeck etc.) — save/restore the
     // in-memory working deck around the save(s) so this doesn't clobber
     // whatever deck the user had open before starting the import.
+    // meta belongs in here as much as the rest: the save loop below stamps
+    // state.meta = {} for every chapter deck it writes, so leaving it out meant
+    // the reader's own open deck came back from an import with an EMPTY meta
+    // bag — its bookmark, reading position, attached PDF and that paper's
+    // highlights all gone the next time anything saved it. src/import/pdf.js
+    // saves meta and cites this function as the pattern it follows; it was the
+    // copy, not the original, that had it right.
     savedState = {
       deckId: state.deckId, localDeckId: state.localDeckId, deckTitle: state.deckTitle,
       deckCategory: state.deckCategory, notes: state.notes, masterCards: state.masterCards,
-      sourceTitle: state.sourceTitle
+      sourceTitle: state.sourceTitle, meta: state.meta
     };
 
     const sanitizedTitle = bookTitle.replace(/\//g, "-").trim() || "Imported Book";
@@ -1393,6 +1433,20 @@ export async function importEpubFile(file, folderPath = null) {
     setStatus("Zip support did not load — cannot read EPUB files.", "error");
     return;
   }
+  // Waited on here for the same reason ensureJsZip is, and for the same reason
+  // both PDF paths wait on ensurePdfJs: every chapter of this book becomes
+  // markdown through htmlToMarkdown, which is SYNCHRONOUS by contract and
+  // returns "" when Turndown has not arrived. Turndown is warmed at idle a
+  // couple of seconds after boot, so an import started before that — or on a
+  // device where the warm failed — converted every chapter to nothing and then
+  // reported "Could not extract any chapter content from this EPUB", which
+  // blames the book for a library that was never there. The preview said the
+  // same thing in its own words: "No previewable content found."
+  if (!(await ensureTurndown())) {
+    setStatus("The chapter converter did not load — reconnect once and try again.", "error");
+    showToast("The chapter converter did not load — reconnect once and try again", "error");
+    return;
+  }
 
   setStatus(`Reading ${file.name}…`);
   let zip, pkg;
@@ -1439,8 +1493,8 @@ export async function importEpubFile(file, folderPath = null) {
     title: bookTitle,
     author: pkg.author,
     chapterCount: markers.length,
-    imageCount: imageEntries.length,
-    existingDeckCount: epubTargetFolderDeckCount(bookTitle),
+    imageEntries,
+    existingDeckCount: epubTargetFolderDeckCount(bookTitle, folderPath),
     chaptersPromise: tocPreviewPromise,
     previewChaptersPromise,
     zip

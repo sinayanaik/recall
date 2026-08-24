@@ -1305,13 +1305,36 @@ const ACCEPTED = {
     "of hundreds of figures and must not ask per figure — or in a second " +
     "dialog. The line under them is sampled from the largest few images and " +
     "marked with a \u2248 (estimateEpubImageCompression). Resolves " +
-    "{ mode, compression } rather than { mode }.",
+    "{ mode, compression } rather than { mode }. Takes the image ENTRIES the " +
+    "estimate reads rather than a count of them: it was handed only the count " +
+    "and referenced the entries anyway, so the executor threw a ReferenceError " +
+    "before the modal reached the DOM and every book with a figure in it " +
+    "failed at \"Could not import this EPUB\". The count is derived here now, " +
+    "so the two cannot drift apart again.",
+  hydrateEpubPreviewImages:
+    "Looks a figure up with epubZipFile — the decoded path AND the raw one — " +
+    "rather than zip.file(path) alone. An archive whose entry names are " +
+    "themselves percent-encoded answers to only the raw spelling, so those " +
+    "figures were dropped from the preview while the real import, which has " +
+    "always gone through epubZipFile, kept them.",
+  epubTargetFolderDeckCount:
+    "Takes the destination folder instead of always reading " +
+    "currentMyDecksFolder(). The \"that folder already holds N decks\" warning " +
+    "is the only thing between a second import and a silently doubled book, " +
+    "and an \"Import here\" into a folder other than the one on screen counted " +
+    "the wrong one — warning about decks that were not in its way and staying " +
+    "silent about the ones that were.",
   uploadEpubImages:
     "Takes the level chosen in the preview and calls compressImageToPreset " +
     "instead of the fixed optimizeImage. Everything else in the loop — the " +
     "retries, the storage names, the cancellation — is untouched.",
   importEpubFile:
-    "Passes the preview's compression answer through to runEpubImport.",
+    "Passes the preview's compression answer through to runEpubImport. Also " +
+    "waits for ensureTurndown() beside ensureJsZip(): every chapter becomes " +
+    "markdown through htmlToMarkdown, which is synchronous by contract and " +
+    "returns \"\" when Turndown has not arrived — so an import started before " +
+    "the idle warm-up converted the whole book to nothing and then blamed the " +
+    "book for it.",
   attachNotesImageResizeHandle:
     "Marks its shell is-tiny-image (markTinyImageShell) so a thumbnail's grip, " +
     "delete button and Zoom pill stop being painted on top of each other and " +
