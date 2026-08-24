@@ -49,8 +49,8 @@ const marked = require("../vendor/marked-14.1.2/marked.min.js");
 
 const WANTED = [
   ["src/core/text.js", ["escapeHtml"]],
-  ["src/render/inline.js", ["IMG_TOKEN_SOURCE"]],
-  ["src/render/preprocess.js", ["FENCE_PATTERN_SOURCE", "fencePattern", "normalizeImageUrl"]],
+  ["src/render/inline.js", ["IMG_ALT_SOURCE", "IMG_DEST_SOURCE", "IMG_TOKEN_SOURCE", "imageDestinationUrl"]],
+  ["src/render/preprocess.js", ["FENCE_OPEN_SOURCE", "fenceOpenPattern", "scanFences", "normalizeImageUrl"]],
   ["src/images/surface-controls.js", [
     "IMAGE_RESIZE_MIN_PX", "IMAGE_RESIZE_MAX_PX",
     "decodeMarkupEntities", "parseImgTagAttrs", "parseMarkdownImage",
@@ -123,6 +123,22 @@ const SHAPES = {
   sameImageTwice: "![dup](https://img.test/15.png)\n\nmiddle\n\n![dup](https://img.test/15.png)\n",
   fencedCode: "```\n![hidden](https://img.test/no-1.png)\n```\n\n![real](https://img.test/16.png)\n",
   inlineCode: "Write `![hidden](https://img.test/no-2.png)` then ![real](https://img.test/17.png)\n",
+  // ── The six the old scanner got wrong ────────────────────────────────────
+  // Each of these renders images that had no resize grip and no delete button,
+  // or offered a control over text that is not a picture at all. The first two
+  // are a truncating token; the last four are a fence scanner that paired ```
+  // markers by count wherever they sat.
+  parenUrl: "![](https://img.test/Foo_(bar)_19.png)\n",
+  bracketAlt: "![see [1]](https://img.test/20.png)\n",
+  titledImage: "![alt](https://img.test/21.png \"a title\")\n",
+  tildeFence: "~~~\n![hidden](https://img.test/no-4.png)\n~~~\n\n![real](https://img.test/22.png)\n",
+  // A bare ``` written inside a sentence, which is how a note ABOUT code talks
+  // about fences. It used to open one, and everything to the next marker — the
+  // first image included — was read as code.
+  strayInlineFence: "Wrap it in ``` fences.\n\n![](https://img.test/23a.png)\n\nOr in ``` these.\n\n![](https://img.test/23b.png)\n",
+  unclosedFence: "```js\nconst s = 1;\n\n![hidden](https://img.test/no-5.png)\n",
+  quadFence: "````\n```\n![hidden](https://img.test/no-6.png)\n```\n````\n\n![real](https://img.test/24.png)\n",
+  indentedFence: "- item\n\n  ```js\n  ![hidden](https://img.test/no-7.png)\n  ```\n\n![real](https://img.test/25.png)\n",
   mixedBook: [
     "# Chapter\n",
     "\n",

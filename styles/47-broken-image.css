@@ -1,0 +1,105 @@
+/* A picture that did not load, and the controls that have to fit beside it.
+
+   A separate file rather than more rules inside 06-rendered.css: the original
+   thirteen stylesheets still have to reassemble byte-for-byte into the
+   pre-modular styles.css (see tools/split-css.mjs and the css-parity check),
+   so anything written since the split lives in its own numbered file.
+
+   ── What this answers ────────────────────────────────────────────────────
+   Every upload path writes `![](url)` with an EMPTY alt, and
+   `#notesView .diagram-shell img:not(.has-custom-size)` forces `width: auto`.
+   An <img> whose source cannot be fetched therefore paints NOTHING — measured
+   in Chrome at 393px against these very stylesheets, the element computes to
+   0x0 and its shell collapses to 82x50: an empty rounded box holding only the
+   "Zoom" pill, which is exactly what "the image is not visible" looks like.
+   And inside a box that small the three controls are painted on top of each
+   other — the grip at (60,28), the delete button at (56,4) and the pill at
+   (11,11), all overlapping.
+
+   Everything below is drawn on the SHELL rather than on the image, for two
+   reasons: `.diagram-shell img` carries `!important` widths from a frozen
+   slice, which a later file can only out-specify per view id rather than once;
+   and the shell is what needs the size anyway, so that the grip and the delete
+   button have somewhere to be. The image is left at 0x0 underneath. */
+
+.diagram-shell.has-broken-image {
+  /* A floor, so the delete button (top right) and the grip (bottom right) have
+     room to sit apart from each other and from the label between them. The
+     label below is in FLOW, so a longer name grows the box past this rather
+     than being squeezed inside it. */
+  min-width: 176px;
+  min-height: 124px;
+  border-style: dashed;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+}
+
+/* The image itself is left in the DOM — every control acts on it, and it is
+   what a retry would load into — but it is not shown. A broken <img> with alt
+   text is not empty: the browser paints its own placeholder glyph and the alt
+   string at whatever size that comes to, which lands directly on top of this
+   label and, in the corner, on the delete button. (With an EMPTY alt it paints
+   nothing at all, which is the 0x0 collapse this whole file exists to answer —
+   the two halves of the same problem.) The alt text is not lost: it IS the
+   label, see brokenImageLabel in src/images/broken.js. */
+.diagram-shell.has-broken-image img {
+  display: none !important;
+}
+
+/* The label. `attr()` is the only way a stylesheet can say WHICH picture this
+   was, and the name is put on the shell by applyBrokenImageState
+   (src/images/broken.js) precisely so it can be said here. */
+.diagram-shell.has-broken-image::after {
+  content: "⚠ Image didn't load\A" attr(data-broken-label);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 96px;
+  max-width: 260px;
+  /* Wide enough at the sides to clear the two round controls in the corners. */
+  padding: 16px 34px;
+  margin: 0 auto;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  text-align: center;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* Nothing to open full screen, and the pill would otherwise sit inside the
+   label. The delete button and the grip stay: removing the reference is the
+   one useful thing left to do with a dead image, and resizing it keeps the
+   width the note already committed. */
+.diagram-shell.has-broken-image .diagram-zoom {
+  display: none;
+}
+
+/* The label is decoration; the controls are not. */
+.diagram-shell.has-broken-image .notes-img-resize-handle,
+.diagram-shell.has-broken-image .notes-img-delete-btn {
+  z-index: 34;
+}
+
+/* ── One rule per control, not one per surface ─────────────────────────────
+   "Move the Zoom pill aside when there is a resize grip in the corner" is
+   written three times in this stylesheet directory — for #notesView /
+   #questionView / #answerView (06-rendered.css), for .note-editor-rendered
+   (27-highlight-notes.css) and for .hl-note-body / .hl-note-quote
+   (44-highlights-editor.css) — because it was scoped to whichever surface
+   existed when it was written. Every editable surface added since has had to
+   remember to bring its own copy, and forgetting is how "the image controls
+   are missing on <surface>" keeps coming back.
+
+   `is-editable-image` is put on the shell by attachNotesImageResizeHandle, so
+   it is true of exactly the shells that have a grip, on every surface there
+   will ever be. Additive: the three copies above still apply and still win
+   where they are more specific, so this changes nothing that already worked
+   and covers everything that did not. */
+.diagram-shell.is-editable-image .diagram-zoom {
+  float: left;
+  left: 0;
+  right: auto;
+}

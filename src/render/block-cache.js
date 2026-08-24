@@ -10,6 +10,7 @@ import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { onTouchGestureRelease, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { markBrokenImages } from "../images/broken.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
@@ -421,7 +422,7 @@ export function definitionPrelude(links) {
 // the incremental splitter proves itself by comparing one window lex against
 // another, so a filter that drifted between the copies would produce block
 // arrays that disagree in a way its own guard is blind to. Same reasoning as
-// FENCE_PATTERN_SOURCE in render/preprocess.js.
+// scanFences in render/preprocess.js.
 export function isBlockToken(token) {
   if (!token || token.type === "space") return false;
   return typeof token.raw === "string" && Boolean(token.raw.trim());
@@ -605,8 +606,8 @@ export async function splitPreparedBlocksChunked(prepared, sequenceOk = () => tr
 //   • promoteNotesHeadings (render/enhance.js) computes the shallowest heading
 //     level in the whole note and restripes EVERY heading by that amount, so
 //     typing one "# " can rewrite headings a thousand blocks away.
-//   • fencePattern() in render/preprocess.js pairs ``` delimiters greedily left
-//     to right, so one unmatched fence re-pairs every fence after it.
+//   • scanFences() in render/preprocess.js walks fences left to right, so an
+//     opener typed above them re-reads every fence after it.
 //   • protectInline / protectMath (render/inline.js, render/math.js) scan an
 //     entire inter-fence segment left to right, so an unbalanced backtick or
 //     "{{" shifts every decision after it in that segment.
@@ -2393,6 +2394,9 @@ export function finishNotesLazySpan(container, index) {
     // tools/large-note-selection-check.mjs case 2 exists to catch. Swapping an
     // image src is not urgent; holding the text still is.
     .then(() => resolveStorageImages(flat))
+    // Both swaps are done, so a picture that still will not load is answering
+    // for itself rather than waiting on one of them — see src/images/broken.js.
+    .then(() => markBrokenImages(flat))
     // ── Each span pays for its own grips ───────────────────────────────────
     //
     // The images this span just built get their resize/delete controls now,
@@ -2912,6 +2916,7 @@ export function rebuildNotesLazySpan(container, plan, index, blocks) {
       .then(() => hydrateLocalImages(fresh))
       .then(() => { markNotesLazyChunkContainment(chunk); })
       .then(() => resolveStorageImages(fresh))
+      .then(() => markBrokenImages(fresh))
       .catch((error) => console.warn("Note span re-render failed", error));
   }
 }
@@ -3262,6 +3267,11 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
   // src/cloud/storage-urls.js). Awaited alongside the line above so the swap
   // lands before the surface is handed to the image controls below.
   await resolveStorageImages(roots || container);
+  // ...and only now can a picture that will not load be called broken: both of
+  // the swaps above start from a source no browser can fetch, so judging one
+  // before them would flash the placeholder over every image in every note.
+  // See src/images/broken.js.
+  await markBrokenImages(roots || container);
   if (renderSequence.get(container) !== sequence) return; // a newer render owns the view now
   // Notes AND both card faces are editable surfaces, so all three get the
   // resize/delete grips. Every other caller of renderMarkdown (All Cards, the

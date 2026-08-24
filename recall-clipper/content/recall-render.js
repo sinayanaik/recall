@@ -311,11 +311,29 @@
   }
 
   // ── Side-by-side image rows (`![](a) | ![](b)`) ───────────────────────────
-  const IMG_TOKEN_SOURCE = "!\\[[^\\]]*\\]\\([^)]*\\)|<img\\b[^>]*>";
+  // Balanced runs, not "everything up to the first ] or )": a URL carrying a
+  // paren (`Foo_(bar).png`) or alt text carrying a bracket (`![see [1]](…)`)
+  // is ordinary in clipped prose, and the old pattern truncated both.
+  const IMG_ALT_SOURCE = "\\[(?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*\\]";
+  const IMG_DEST_SOURCE = "\\((?:[^()\\\\]|\\\\.|\\((?:[^()\\\\]|\\\\.)*\\))*\\)";
+  const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|<img\\b[^>]*>`;
+  function imageDestinationUrl(inner) {
+    const text = String(inner || "").trim();
+    const bracketed = text.match(/^<([^>]*)>/);
+    if (bracketed) return bracketed[1].trim();
+    return (text.split(/\s+(?=["'(])/)[0] ?? "").trim();
+  }
   function imageMarkupToTag(token) {
-    const md = token.trim().match(/^!\[([^\]]*)\]\(([^)]*)\)$/);
-    if (md) return `<img src="${escapeHtml(md[2].trim())}" alt="${escapeHtml(md[1])}">`;
-    if (/^<img\b[^>]*>$/i.test(token.trim())) return token.trim();
+    const raw = token.trim();
+    const md = raw.match(new RegExp(`^!(${IMG_ALT_SOURCE})(${IMG_DEST_SOURCE})$`));
+    if (md) {
+      // The title is dropped, the same way a resize commit drops it: a raw <img>
+      // has nowhere to carry one. It used to be kept as part of the src, so
+      // `![a](b.png "c")` in a side-by-side row rendered as a broken image.
+      const url = imageDestinationUrl(md[2].slice(1, -1));
+      return `<img src="${escapeHtml(url)}" alt="${escapeHtml(md[1].slice(1, -1))}">`;
+    }
+    if (/^<img\b[^>]*>$/i.test(raw)) return raw;
     return "";
   }
   function renderImageRows(segment) {
@@ -379,22 +397,54 @@
   function normalizeMarkdown(text) {
     return String(text || "").replace(/\r\n?/g, "\n").replace(/ /g, " ");
   }
+  // CommonMark's own fence rules, mirroring scanFences in the app's
+  // src/render/preprocess.js. Pairing ``` markers by count wherever they sat
+  // meant one bare ``` written inside a sentence opened a fence, and every
+  // cloze, formula and image between it and the next marker was emitted raw.
+  function scanFences(source) {
+    const text = String(source || "");
+    const found = [];
+    if (!text.includes("```") && !text.includes("~~~")) return found;
+    const openers = /^([^\S\n]{0,3})(`{3,}|~{3,})[^\S\n]*([^\n]*)$/gm;
+    let opener;
+    while ((opener = openers.exec(text))) {
+      const [line, indent, marker, info] = opener;
+      if (marker[0] === "`" && info.includes("`")) {
+        openers.lastIndex = opener.index + line.length;
+        continue;
+      }
+      const start = opener.index;
+      const headEnd = start + line.length;
+      const newline = text.indexOf("\n", headEnd);
+      if (newline === -1) {
+        found.push({ start, end: text.length, headEnd, bodyStart: text.length, bodyEnd: text.length, indent, marker, info, body: "" });
+        break;
+      }
+      const bodyStart = newline + 1;
+      const closer = new RegExp(`^[^\\S\\n]{0,3}${marker[0]}{${marker.length},}[^\\S\\n]*$`, "m");
+      const rest = text.slice(bodyStart);
+      const hit = closer.exec(rest);
+      const bodyEnd = hit ? bodyStart + hit.index : text.length;
+      const end = hit ? bodyEnd + hit[0].length : text.length;
+      found.push({ start, end, headEnd, bodyStart, bodyEnd, indent, marker, info, body: text.slice(bodyStart, bodyEnd) });
+      openers.lastIndex = end;
+    }
+    return found;
+  }
   function preprocessSpecialBlocks(markdown) {
     const source = normalizeMarkdown(markdown || "");
-    const fencePattern = /```[ \t]*([^\n]*)\n([\s\S]*?)```/g;
     let output = "";
     let lastIndex = 0;
-    let match;
-    while ((match = fencePattern.exec(source))) {
-      output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex, match.index))));
-      if (/\bmermaid\b/i.test(match[1])) {
-        output += `${diagramOpenTag("mermaid", match[1])} data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
-      } else if (/\bnomnoml\b/i.test(match[1])) {
-        output += `${diagramOpenTag("nomnoml-diagram", match[1])} data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
+    for (const fence of scanFences(source)) {
+      output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex, fence.start))));
+      if (/\bmermaid\b/i.test(fence.info)) {
+        output += `${diagramOpenTag("mermaid", fence.info)} data-diagram="${encodeAttribute(fence.body.trim())}"></div>`;
+      } else if (/\bnomnoml\b/i.test(fence.info)) {
+        output += `${diagramOpenTag("nomnoml-diagram", fence.info)} data-diagram="${encodeAttribute(fence.body.trim())}"></div>`;
       } else {
-        output += match[0];
+        output += source.slice(fence.start, fence.end);
       }
-      lastIndex = fencePattern.lastIndex;
+      lastIndex = fence.end;
     }
     output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex))));
     return output;

@@ -92,7 +92,39 @@ export function protectInline(segment) {
 // untouched. The line becomes a `<div class="notes-img-row">` block, the same
 // wrapper the resize grips understand, so each image stays individually
 // resizable.
-export const IMG_TOKEN_SOURCE = "!\\[[^\\]]*\\]\\([^)]*\\)|<img\\b[^>]*>";
+
+// ── What one image is written as ───────────────────────────────────────────
+//
+// The alt text and the destination are matched as BALANCED runs rather than as
+// "everything up to the first ] or )". `[^)]*` stopped a URL at its first
+// closing paren, so `![](…/Foo_(bar).png)` was read as `…/Foo_(bar` — a URL
+// that matches no rendered image, so the picture lost its resize grip and its
+// delete button, and a source slice that ends mid-URL, so committing a width
+// would have spliced into the middle of one. `[^\]]*` did the same to alt text
+// holding a bracket (a clipped `![see [1]](…)`), which was not found at all.
+// Both shapes are ordinary in pasted, clipped and imported notes.
+//
+// One level of nesting, which is what marked itself resolves. Anything deeper
+// fails to match rather than matching wrongly, so the worst case stays "this
+// image has no controls" and never becomes "a control that rewrites the wrong
+// text".
+export const IMG_ALT_SOURCE = "\\[(?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*\\]";
+
+export const IMG_DEST_SOURCE = "\\((?:[^()\\\\]|\\\\.|\\((?:[^()\\\\]|\\\\.)*\\))*\\)";
+
+export const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|<img\\b[^>]*>`;
+
+// The URL out of an image destination's inner text — everything between the
+// parentheses, which may be `<bracketed>` and may carry a "title" after it.
+// One definition, shared by the renderer's pipe-row path and by the control
+// layer's parseMarkdownImage, because the two disagreeing about where a URL
+// ends is how a grip comes to point at something the reader cannot see.
+export function imageDestinationUrl(inner) {
+  const text = String(inner || "").trim();
+  const bracketed = text.match(/^<([^>]*)>/);
+  if (bracketed) return bracketed[1].trim();
+  return (text.split(/\s+(?=["'(])/)[0] ?? "").trim();
+}
 
 export function renderImageRows(segment) {
   const lineRe = new RegExp(
@@ -109,9 +141,16 @@ export function renderImageRows(segment) {
 
 // Normalizes a single image token (markdown or raw <img>) to an <img> tag.
 export function imageMarkupToTag(token) {
-  const md = token.trim().match(/^!\[([^\]]*)\]\(([^)]*)\)$/);
-  if (md) return `<img src="${escapeHtml(md[2].trim())}" alt="${escapeHtml(md[1])}">`;
-  if (/^<img\b[^>]*>$/i.test(token.trim())) return token.trim();
+  const raw = token.trim();
+  const md = raw.match(new RegExp(`^!(${IMG_ALT_SOURCE})(${IMG_DEST_SOURCE})$`));
+  if (md) {
+    // The title is dropped, the same way a resize commit drops it: a raw <img>
+    // has nowhere to carry one. It used to be kept as part of the src, so
+    // `![a](b.png "c")` in a side-by-side row rendered as a broken image.
+    const url = imageDestinationUrl(md[2].slice(1, -1));
+    return `<img src="${escapeHtml(url)}" alt="${escapeHtml(md[1].slice(1, -1))}">`;
+  }
+  if (/^<img\b[^>]*>$/i.test(raw)) return raw;
   return "";
 }
 

@@ -342,6 +342,22 @@ const POST_SPLIT = {
     "out at 65:35 and made a drag drift away from the finger. Two columns above " +
     "720px, two rows below it \u2014 390px halved is two thumbnails. " +
     "See src/panels/highlight-cycle.js.",
+  "47-broken-image.css":
+    "\"The image is not visible.\" Every upload path writes ![](url) with an " +
+    "EMPTY alt and #notesView .diagram-shell img:not(.has-custom-size) forces " +
+    "width:auto, so an <img> whose source cannot be fetched paints NOTHING \u2014 " +
+    "measured in Chrome at 393px against these stylesheets, the element " +
+    "computes to 0x0 and its shell collapses to 82x50: an empty rounded box " +
+    "holding only the Zoom pill. And inside a box that small the three " +
+    "controls overlap each other (grip at 60,28; delete at 56,4; pill at " +
+    "11,11). A failed image now gets a floor, a dashed box and a label naming " +
+    "which picture it was, drawn on the SHELL because .diagram-shell img's " +
+    "!important widths in the frozen 06-rendered.css can only be out-specified " +
+    "per view id. Also carries the surface-agnostic .is-editable-image rule " +
+    "that replaces three copies of \"move the Zoom pill aside when there is a " +
+    "grip\" \u2014 written once per view in 06-rendered.css, 27-highlight-notes.css " +
+    "and 44-highlights-editor.css, which is how a new editable surface kept " +
+    "shipping without image controls. See src/images/broken.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline
