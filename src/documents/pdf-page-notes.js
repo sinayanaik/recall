@@ -50,6 +50,7 @@
 // documentHighlightsInReadingOrder() is already page-then-down-the-page order,
 // which is exactly the order a reader would number them in.
 
+import { PDF_BADGE_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
@@ -73,7 +74,11 @@ import {
 
 export const PDF_PAGE_NOTES_KEY = "recall:pdfPageNotes";
 
-export const BADGE_LAYER_CLASS = "pdf-badge-layer";
+// Re-exported rather than declared, so "what is the badge layer called" still
+// has one answer to read here, beside the painter that builds it. It lives in
+// core/constants.js because pdf-view.js has to drop this layer on a relayout
+// and cannot import this module back — see the note on stalePageForRelayout.
+export const BADGE_LAYER_CLASS = PDF_BADGE_LAYER_CLASS;
 
 export const NOTE_BADGE_CLASS = "pdf-note-badge";
 
@@ -168,6 +173,11 @@ function openNoteFor(record, anchorEl) {
 // goes in a layer of its own, which is also `pointer-events: none` except for
 // the badges themselves: ~16px per annotated highlight is the entire cost to
 // selection on the page.
+//
+// "Above the text layer" is said in the stylesheet with a z-index and not left
+// to DOM order, and the note there gives the two ways that went wrong. This
+// function's part of it is only to make sure the layer is a child of the page
+// and to keep it as the last one.
 export function paintPageNoteBadges(pageNumber) {
   const pageEl = pdfPageElement(pageNumber);
   if (!pageEl) return;
@@ -185,21 +195,35 @@ export function paintPageNoteBadges(pageNumber) {
     layer?.remove();
     return;
   }
+  // ...and the viewport itself, asked for rather than inferred from the text
+  // layer being there. Without it every quadToPageBox below returns null and the
+  // loop appends nothing — but the signature would already have been stamped on
+  // the layer, so the next pass at the same scale would take "nothing has
+  // changed" at its word and leave the page bare. A guard that can mark a
+  // failure as done is how a surface stops coming back at all.
+  const viewport = pdfPageViewport(pageNumber);
+  if (!viewport) {
+    layer?.remove();
+    return;
+  }
   // The SCALE is part of the signature, and it has to be. A badge is placed by
   // quadToPageBox, which converts through the live viewport — so every badge on
-  // the page belongs to the zoom it was painted at. stalePageForRelayout drops
-  // the mark and text layers on a zoom precisely because their coordinates are
-  // in the old scale; the badge layer is not its to drop (that constant lives
-  // here, and pdf-view.js importing this module back would close a cycle), so
-  // the layer survives a relayout and the guard would happily skip repainting it
-  // at the new one. Naming the scale is what makes "nothing has changed" true.
-  const signature = `${pdfPageViewport(pageNumber)?.scale || 0}#${pageNotesSignature(annotated)}`;
+  // the page belongs to the zoom it was painted at, and a guard that did not
+  // name the scale would skip repainting them at a new one.
+  const signature = `${viewport.scale || 0}#${pageNotesSignature(annotated)}`;
   if (layer && layer.dataset.signature === signature) return;
   if (!layer) {
     layer = document.createElement("div");
     layer.className = BADGE_LAYER_CLASS;
-    pageEl.appendChild(layer);
   }
+  // Appended on every repaint, not only on the first. A no-op when the layer is
+  // already the page's last child, which it is on the ordinary path — and the
+  // correction when it is not. stalePageForRelayout drops this layer now, so
+  // there is no longer a path that leaves it stranded above the canvas; this is
+  // the belt to that brace, because the failure it prevents is silent (see the
+  // z-index note in styles/37-document-chrome.css) and the cost is one DOM move
+  // per page per repaint.
+  pageEl.appendChild(layer);
   layer.dataset.signature = signature;
   layer.innerHTML = "";
   const frag = document.createDocumentFragment();

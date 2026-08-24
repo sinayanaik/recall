@@ -30,3 +30,15 @@ export const deckBookmarkPromptsKey = "swipe-notes-bookmark-prompts-v1";
 export const themeStorageKey = "swipe-notes-theme";
 
 export const defaultDeckCategory = "Uncategorized";
+
+// The layer a PDF page's numbered note badges are painted into.
+//
+// Here, and not beside the painter that owns it (src/documents/pdf-page-notes.js),
+// because two modules have to name it and they cannot import each other:
+// pdf-page-notes.js reaches pdf-view.js for the page element and the viewport,
+// and pdf-view.js has to DROP this layer on a relayout — the badges are placed
+// by converting through the live viewport, so at a new scale they are in the
+// wrong place, which is the same reason it already drops the mark and text
+// layers. A constant in this file, which imports nothing, is how the two say
+// the same word without closing a cycle through the document surface.
+export const PDF_BADGE_LAYER_CLASS = "pdf-badge-layer";

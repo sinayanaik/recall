@@ -227,7 +227,25 @@ export function refreshHighlightBadges({ force = false } = {}) {
   const container = el.notesView;
   if (!container) return;
   const index = highlightNoteIndex(state.notes || "");
-  if (!force && index.signature === appliedSignature) return;
+  // ── The guard describes the NOTE; the badges live in the DOM ─────────────
+  //
+  // appliedSignature is derived from state.notes alone, so it says "the numbers
+  // and the texts have not changed" and nothing whatever about whether the
+  // badges are still on screen. Anything that rebuilds the rendered body without
+  // touching the source — and that is most repaints — left this function, whose
+  // whole job is to put missing badges back, returning on its first line. A
+  // recovery path that cannot recover is not a guard, it is a dead end.
+  //
+  // So an annotated note with no badge in it at all is never skipped. One
+  // querySelector that stops at the first hit, on a class the sweep below
+  // already calls rare enough not to be on a hot path.
+  //
+  // This catches the case that matters — every badge gone. A note that lost
+  // SOME of them is still the per-chunk pass's business (annotateHighlightBadges
+  // runs as each chunk is built, which is how a lazily-rendered book gets them
+  // in the first place), and it is not claimed here.
+  const missing = index.byAttr.size > 0 && !container.querySelector(`.${MARK_BADGE_CLASS}`);
+  if (!force && !missing && index.signature === appliedSignature) return;
   appliedSignature = index.signature;
 
   // Opening a note with no annotations at all, or deleting the last one: sweep

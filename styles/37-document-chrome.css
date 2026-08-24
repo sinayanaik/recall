@@ -589,6 +589,27 @@
   inset: 0;
   overflow: visible;
   pointer-events: none;
+  /* ── Above the page, whatever order the page's children are in ───────────
+     The other three children of .pdf-page carry no z-index and do not need
+     one: the canvas is appended by the render and the mark and text layers by
+     the layer build after it, always in that order, so DOM order says what is
+     on top. This layer is the one that outlives a render — it is painted from
+     a hook rather than built with the page — and a badge that ends up under
+     the text layer is a badge that cannot be pressed, which is the whole of
+     what it is for.
+
+     `filter` is why DOM order is not enough on its own. Dark page puts
+     `invert(1)` on .pdf-canvas (styles/36-document.css), and a filtered element
+     paints as a z-index:0 stacking context — in TREE ORDER with its positioned
+     siblings rather than behind them. An opaque canvas after this layer in the
+     document therefore paints over it and the numbers simply disappear. A
+     positive z-index is painted later than every one of those, so the question
+     stops depending on which order the page was last rebuilt in.
+
+     3 leaves room under it for the two layers that may one day want to say the
+     same thing, and stays below .pdf-region-marquee's 5 — a marquee being
+     dragged is over everything by intent. */
+  z-index: 3;
 }
 
 .pdf-note-badge {

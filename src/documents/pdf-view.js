@@ -27,6 +27,7 @@
 // torn back down to its placeholder. Opening a 300-page thesis is therefore one
 // screenful of work, not three hundred.
 
+import { PDF_BADGE_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -1271,6 +1272,32 @@ export async function whenDocumentPageReady(pageNumber) {
 // scale, so a stretched text layer would put the selectable boxes off the
 // glyphs and a stretched mark layer would paint highlights over the wrong
 // words. Missing for a few frames is right; wrong is not.
+//
+// ── ...and the badge layer is one of them, which it was not ───────────────
+//
+// Every numbered badge is pinned to a corner of a quad by quadToPageBox, which
+// converts through the LIVE viewport — so a badge belongs to the scale it was
+// painted at exactly as a mark does. This function used to leave the layer
+// standing, and src/documents/pdf-page-notes.js said why: the class name lived
+// over there and importing that module back would close a cycle through the
+// document surface. The name lives in core/constants.js now, so there is no
+// cycle and no reason to treat this layer differently from the two beside it.
+//
+// Two things were wrong while it stayed. The badges sat at the old scale's
+// coordinates over the stretched canvas until the re-render landed — visibly
+// misplaced rather than briefly missing. And, worse, the layer was left as the
+// page's FIRST child: renderPage drops the stale canvas and appends a fresh
+// one, and the layer build appends the mark and text layers after that, so a
+// layer that survived came out underneath all three. Under the text layer it
+// stops receiving the press that opens its note; and under a canvas wearing
+// `filter: invert(1)` (dark page, styles/36-document.css) it stops being VISIBLE
+// at all, because a filtered element paints as a z-index:0 stacking context —
+// in tree order with its positioned siblings — and that canvas is opaque.
+// That is "the numbered indicators are gone as soon as I go to side by side":
+// opening the split re-fits the paper, and the re-fit is a relayout.
+//
+// The layer is rebuilt with the page, by the same call that built it the first
+// time (buildPageLayers → onPagePainted → paintPageNoteBadges).
 function stalePageForRelayout(pageNumber, width, height) {
   const entry = openPdf?.pages.get(pageNumber);
   if (!entry) return;
@@ -1283,6 +1310,7 @@ function stalePageForRelayout(pageNumber, width, height) {
   openPdf.rendered.delete(pageNumber);
   entry.markLayer?.remove();
   entry.textLayer?.remove();
+  entry.el.querySelector(`.${PDF_BADGE_LAYER_CLASS}`)?.remove();
   entry.markLayer = null;
   entry.textLayer = null;
   canvas.classList.add("is-stale");

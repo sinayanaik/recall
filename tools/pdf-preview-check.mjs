@@ -1888,6 +1888,205 @@ try {
   check("...and with no pane open, it still opens the window it always did",
     Boolean(badgePress.popupWithoutPane), String(badgePress.popupWithoutPane));
 
+  // ── 8d-v. The badges after the paper has been laid out again ────────────
+  //
+  // "As soon as I go to Highlights → Side by side the numbered indicators are
+  // gone." Every assertion above this one presses a badge on a page that has
+  // been painted once and never re-laid-out, and that is the whole reason they
+  // all passed while the reported bug was live.
+  //
+  // What a relayout did: stalePageForRelayout dropped the mark and text layers
+  // and left the badge layer standing, then the re-render appended a fresh
+  // canvas and the layer build appended two more layers after it — leaving the
+  // badges as the page's FIRST child, under all three. Under the text layer
+  // they stop taking the press. Under a canvas wearing `filter: invert(1)`
+  // (dark page) they stop being visible at all, because a filtered element
+  // paints in tree order with its positioned siblings and that canvas is
+  // opaque. Highlights kept showing throughout, which is exactly the picture in
+  // the report.
+  //
+  // So this drives the reader's own route — the drawer's Side by side button,
+  // dark page on — and waits PAST the 160ms debounce that re-fits the paper,
+  // which is the relayout in question. Three things are asserted and each one
+  // fails on its own against the old code: where the layer is, that the badges
+  // are still there, and that a badge is what is actually on top at its own
+  // centre. The last is the only one of the three that reads the glass rather
+  // than the DOM, and it is the one the bug was.
+  const badgesAfterRelayout = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // loadDeckFromLibrary earlier in this file leaves the My Decks panel over
+    // the page, and elementFromPoint answers about what is on screen — see the
+    // same call in the region case above.
+    api.closeMyDecksPanel();
+    const records = api.documentHighlightsInReadingOrder();
+    const was = records.map((record) => [record.id, api.documentHighlightNote(record.id)]);
+    const target = records[0];
+    if (!target) return { error: "the fixture has no highlights" };
+    api.setViewMode("document");
+    await settle(300);
+    records.forEach((record) => api.setDocumentHighlightNote(record.id, ""));
+    api.setDocumentHighlightNote(target.id, "A note to hang a number on.");
+    await settle(300);
+    const pageNumber = target.page || 1;
+    api.scrollToDocumentPage(pageNumber, 0, { smooth: false });
+    await api.whenDocumentPageReady(pageNumber);
+    await settle(300);
+    const inverted = document.getElementById("documentStage").classList.contains("is-pdf-inverted");
+    if (!inverted) api.togglePdfInvert();
+    await settle(300);
+    // The reader's route in, not openHighlightSplit: the button is what they
+    // press, and a check that skips it is a check about a different thing.
+    const drawer = document.getElementById("documentOutlineDrawer");
+    api.setDrawerSection(drawer, "highlights");
+    api.refreshDrawerOnOpen(drawer);
+    await settle(300);
+    const button = drawer.querySelector(".drawer-side-by-side");
+    if (!button) return { error: "no Side by side button in the document drawer" };
+    button.click();
+    // Past SPLIT_RELAYOUT_MS (160) and the re-render behind it. Everything this
+    // case is about happens in that window.
+    await settle(1800);
+    api.scrollToDocumentPage(pageNumber, 0, { smooth: false });
+    await settle(600);
+    const pageEl = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+    if (!pageEl) return { error: "the page did not come back after the relayout" };
+    const order = [...pageEl.children].map((node) => node.className.split(" ")[0]).join(",");
+    const badge = pageEl.querySelector('.pdf-note-badge[data-highlight-id="' + target.id + '"]');
+    let hit = "";
+    if (badge) {
+      // Brought into the scroller by hand: scrollIntoView can scroll any
+      // scrollable ancestor, which is the hazard the app-shell already carries a
+      // note about.
+      const scroller = document.querySelector(".document-scroll");
+      const before = badge.getBoundingClientRect();
+      const box = scroller.getBoundingClientRect();
+      scroller.scrollTop += (before.top - box.top) - 200;
+      await settle(200);
+      const rect = badge.getBoundingClientRect();
+      const top = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      hit = top === badge ? "badge" : (top ? (String(top.className) || top.tagName) : "none");
+    }
+    const result = {
+      order,
+      last: pageEl.lastElementChild?.classList.contains("pdf-badge-layer") === true,
+      badges: pageEl.querySelectorAll(".pdf-note-badge").length,
+      number: badge ? badge.textContent : "",
+      hit,
+      marks: pageEl.querySelectorAll(".pdf-mark").length
+    };
+    if (!inverted) api.togglePdfInvert();
+    api.closeHighlightSplit();
+    was.forEach(([id, note]) => api.setDocumentHighlightNote(id, note));
+    await settle(300);
+    return result;
+  }`);
+
+  check("the badge layer is still on top of the page after a re-fit",
+    !badgesAfterRelayout.error && badgesAfterRelayout.last,
+    badgesAfterRelayout.error || `children: ${badgesAfterRelayout.order}`);
+  check("...with its numbers still painted, as the highlights under them are",
+    !badgesAfterRelayout.error && badgesAfterRelayout.badges > 0 && badgesAfterRelayout.marks > 0,
+    badgesAfterRelayout.error || `${badgesAfterRelayout.badges} badge(s) “${badgesAfterRelayout.number}”, ${badgesAfterRelayout.marks} mark(s)`);
+  // On the GLASS. Dark page puts a filter on the canvas, and a filtered canvas
+  // painted after this layer covers it completely while every DOM assertion
+  // above still passes.
+  check("...and a badge is what is on top at its own centre, on a dark page",
+    !badgesAfterRelayout.error && badgesAfterRelayout.hit === "badge",
+    badgesAfterRelayout.error || `topmost = ${badgesAfterRelayout.hit}`);
+
+  // ── 8d-vi. The tint that says which highlight the pane is on ────────────
+  //
+  // paintDocumentHighlights rebuilds the whole mark layer with innerHTML = "",
+  // so the class the pane paints on the current highlight's quads goes with the
+  // elements that carried it. Nothing asked for it back: paintLink ran only on a
+  // move through the list, so a zoom — or scrolling back to a page that had been
+  // trimmed — left the pane saying one thing and the paper marked with another.
+  //
+  // The second half is the scroll spy, which moved the counter and the lit card
+  // down the list and left the paper's tint where it was.
+  const linkAfterRelayout = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.closeMyDecksPanel();
+    api.setViewMode("document");
+    await settle(300);
+    api.openHighlightSplit("document");
+    await settle(900);
+    const list = document.getElementById("highlightCycleBody");
+    if (list.querySelectorAll(".hl-note").length < 2) return { error: "the pane lists fewer than two highlights" };
+    api.cycleHighlightBy(1);
+    await settle(500);
+    const idOf = () => document.querySelector(".pdf-mark.is-linked")?.dataset.highlightId || "";
+    const before = idOf();
+    api.zoomDocument(1.25);
+    await settle(1800);
+    const afterZoom = idOf();
+    // ...and the spy: scroll the list to the end and see whether the paper
+    // follows the card the counter has moved to.
+    list.scrollTop = list.scrollHeight;
+    list.dispatchEvent(new Event("scroll"));
+    await settle(500);
+    const current = document.querySelector("#highlightCycleBody .hl-note.is-current")?.dataset.highlightKey || "";
+    const afterScroll = idOf();
+    api.fitDocumentToWidth();
+    api.closeHighlightSplit();
+    await settle(500);
+    return { before, afterZoom, current, afterScroll };
+  }`);
+
+  check("the highlight the pane is on stays marked on the paper across a zoom",
+    !linkAfterRelayout.error && Boolean(linkAfterRelayout.before)
+      && linkAfterRelayout.afterZoom === linkAfterRelayout.before,
+    linkAfterRelayout.error || `“${linkAfterRelayout.before}” -> “${linkAfterRelayout.afterZoom}”`);
+  check("...and follows the pane's own scrollbar, not only its ◀ ▶",
+    !linkAfterRelayout.error && Boolean(linkAfterRelayout.afterScroll)
+      && linkAfterRelayout.current === `doc:${linkAfterRelayout.afterScroll}`,
+    linkAfterRelayout.error || `current card ${linkAfterRelayout.current}, tinted mark ${linkAfterRelayout.afterScroll || "none"}`);
+
+  // ── 8d-vii. The note's own badges, when they have gone missing ──────────
+  //
+  // The notes surface's counterpart, asserted here rather than in
+  // tools/highlight-check.mjs because that check needs puppeteer and skips
+  // itself outright without it — which is the case in this checkout, so a case
+  // written there would prove nothing.
+  //
+  // refreshHighlightBadges guards on a signature taken from state.notes, which
+  // says the numbers and the texts have not moved and nothing at all about
+  // whether the badges are still on screen. So the one function whose job is to
+  // put missing badges back returned on its first line whenever they went
+  // missing without the note changing.
+  const badgeRecovery = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const badges = await import("/src/notes/highlight-badges.js?v=__BUILD__");
+    api.closeMyDecksPanel();
+    const was = api.state.notes;
+    let source = 'A <mark data-note="hn-aaaa">one</mark> B <mark data-note="hn-bbbb">two</mark>.';
+    source = api.setHighlightNoteInSource(source, "hn-aaaa", "the first note", "one");
+    source = api.setHighlightNoteInSource(source, "hn-bbbb", "the second note", "two");
+    api.state.notes = source;
+    api.setViewMode("notes");
+    await settle(300);
+    await api.renderNotesView();
+    await settle(700);
+    const count = () => document.querySelectorAll("#notesView .hl-note-badge").length;
+    const painted = count();
+    // Taken out without touching state.notes — which is what a repaint that
+    // rebuilds the body does, and the state the guard could not see.
+    document.querySelectorAll("#notesView .hl-note-badge").forEach((node) => node.remove());
+    badges.refreshHighlightBadges();
+    await settle(300);
+    const recovered = count();
+    api.state.notes = was;
+    await api.renderNotesView();
+    await settle(300);
+    return { painted, recovered };
+  }`);
+
+  check("a note's annotated marks wear numbered badges",
+    badgeRecovery.painted === 2, `${badgeRecovery.painted} badge(s)`);
+  check("...and the sweep puts them back when they have gone, note unchanged",
+    badgeRecovery.recovered === badgeRecovery.painted,
+    `${badgeRecovery.painted} -> removed -> ${badgeRecovery.recovered}`);
+
   // ── 8d-iv. Typing, then stepping away ───────────────────────────────────
   //
   // End to end through the pane: sit on a highlight, write on it, press ▶. What
