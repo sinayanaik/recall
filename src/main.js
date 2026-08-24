@@ -71,7 +71,7 @@ import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { markDrawerHighlightsDirty, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
-import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, refreshHighlightSplitSpace, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
+import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, refreshHighlightSplitSpace, repaintHighlightLink, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
@@ -997,6 +997,11 @@ onDomReady(() => {
     repairDocumentHighlightText(pageNumber);
     repairDocumentHighlightQuads(pageNumber);
     paintPageNoteBadges(pageNumber);
+    // ...and the tint that says which of these marks the pane is currently on.
+    // The mark layer was rebuilt from scratch a moment ago — paintDocument
+    // Highlights empties it — so the class went with the elements that carried
+    // it, and only the pane knows which ones should have it back.
+    repaintHighlightLink();
   });
   setDocumentOpenedHook(refreshPdfPageNotes);
 });

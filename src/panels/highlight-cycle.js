@@ -524,6 +524,29 @@ function paintLink(entry) {
   linkedNodes.forEach((node) => node.classList.add(LINKED_CLASS));
 }
 
+// ...and put it back on a page that has just been repainted.
+//
+// The tint is a class on the painted quads, and paintDocumentHighlights rebuilds
+// the whole mark layer with `layer.innerHTML = ""` — so every relayout, every
+// zoom, and every scroll back to a page that had been trimmed destroys it. The
+// note beside linkedNodes already says the nodes can go; what was missing was
+// anybody asking for them again. paintLink only ran on a move through the list,
+// so the highlight the pane says you are on simply stopped being marked on the
+// paper, and stayed unmarked until the reader stepped somewhere else.
+//
+// Free when nothing moved: paintLink compares the nodes it would light against
+// the ones it lit, so a repaint that produced the same elements returns without
+// touching the DOM. A rebuilt layer is different elements, which is exactly the
+// case this exists for.
+//
+// Called from the page-painted hook in src/main.js, beside paintPageNoteBadges —
+// the same arrangement and the same reason: this module reaches pdf-view.js, so
+// pdf-view.js cannot reach back here.
+export function repaintHighlightLink() {
+  if (!splitSurface) return;
+  paintLink(cycleEntries[cycleIndex]);
+}
+
 // The other direction: a mark in the note, pointed at, lights its card.
 //
 // The notes surface only. A paper's marks sit in a layer carrying
@@ -589,6 +612,12 @@ function cycleScrollSpy() {
   paintCycleCount();
   body.querySelectorAll(`.${HL_NOTE_CLASS}.is-current`).forEach((node) => node.classList.remove("is-current"));
   cardFor(at)?.classList.add("is-current");
+  // ...and the words on the paper, which paintCurrentCard has always moved with
+  // the other three and this did not. Scrolling the list therefore walked the
+  // counter and the lit card down it while the highlight tinted on the page
+  // stayed on whichever one the reader last STEPPED to — the one thing on
+  // screen still answering the old question.
+  paintLink(cycleEntries[at]);
 }
 
 // ── The divider ─────────────────────────────────────────────────────────────
