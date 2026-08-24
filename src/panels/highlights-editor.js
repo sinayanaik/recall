@@ -119,9 +119,14 @@ const entryKey = highlightEntryKey;
 // one of them was edited is the churn this guard exists to stop, and it is the
 // same guard pdf-notes-view.js and pdf-page-notes.js each keep for the same
 // reason.
+//
+// The badge NUMBER is part of it, and has to be: a note added on page 2
+// renumbers every annotated highlight after it, and a surface whose signature
+// did not cover that would keep showing the old numbers beside a page already
+// showing the new ones. The same reason pageNotesSignature carries `n`.
 export function editorSignature(entries) {
   return entries
-    .map((entry) => `${entryKey(entry)}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}`)
+    .map((entry) => `${entryKey(entry)}:${entry.n || 0}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}`)
     .join("|");
 }
 
@@ -256,6 +261,42 @@ function articleFor(entry) {
   // selected from.
   const head = document.createElement("div");
   head.className = "hl-note-head";
+
+  // ── The number, and it is the badge's number ────────────────────────────
+  //
+  // "There should be a visually apparent identifier saying which note relates
+  // to which highlight." There was none: the card's only tie to the page was
+  // that both existed, and the pane's own "12 / 87" counter is a different
+  // sequence entirely — position among ALL highlights, annotated or not.
+  //
+  // This is the number the highlight already wears on the page: the badge
+  // pinned to it, and the note printed under its page, both show it. It comes
+  // from the one function that decides it (annotatedDocumentHighlightNumbers /
+  // highlightNoteIndex, asked in collectHighlightEntries) so the three can never
+  // drift apart.
+  //
+  // Absent, not zero, on a highlight with nothing written about it yet — which
+  // is exactly what the page shows there too. A number that promised something
+  // to read and delivered a blank would be worse than the silence it replaced.
+  if (entry.n) {
+    const number = document.createElement("span");
+    number.className = "hl-note-n";
+    number.textContent = String(entry.n);
+    number.title = `Note ${entry.n} — the number this highlight is marked with`;
+    head.appendChild(number);
+  }
+
+  // ...and where it is. The group heading above already says this, but a card
+  // read on its own — scrolled to by ◀ ▶, revealed by a press on its badge, or
+  // simply reached after the sticky heading has scrolled past — was the one
+  // thing on screen that could not say which page it came from.
+  if (entry.group) {
+    const where = document.createElement("span");
+    where.className = "hl-note-where";
+    where.textContent = entry.group;
+    head.appendChild(where);
+  }
+
   const goto = document.createElement("button");
   goto.type = "button";
   goto.className = "hl-note-goto";

@@ -906,7 +906,7 @@ try {
       const { settle } = window.__recall;
       await settle(150);
       const rowEl = document.getElementById("viewModeRow");
-      const tab = document.querySelector('[data-view-mode="highlights"]');
+      const tab = document.querySelector('[data-view-mode="document"]');
       const hidden = (sel) => {
         const node = document.querySelector(sel);
         return !node || getComputedStyle(node).display === "none";
@@ -928,7 +928,10 @@ try {
       };
     }`);
     const oneLine = new Set(row.tabTops).size === 1;
-    check(`the four tabs sit on one line (${label})`, oneLine && row.tabTops.length === 4,
+    // Three, not four: the Highlights tab is gone. Its cards are the
+    // side-by-side pane's, which is not a view mode — see
+    // src/panels/highlight-cycle.js.
+    check(`the three tabs sit on one line (${label})`, oneLine && row.tabTops.length === 3,
       `${row.tabTops.length} tab(s) at y = ${[...new Set(row.tabTops)].join(", ")}`);
     check(`...and the row is one tab tall (${label})`,
       row.tabHeight > 0 && row.rowHeight < row.tabHeight * 1.8,
@@ -1606,16 +1609,19 @@ try {
   // editable text" was answered by building them into the NOTES tab, which put
   // a paper's annotations in the one tab that should hold the reader's own
   // writing. The answer is the same surface at a different address now: the
-  // Highlights tab is that continuous editor, and the Notes tab is a note.
+  // side-by-side pane is that continuous editor, beside the paper rather than
+  // instead of it, and the Notes tab is a note.
   //
   // Both halves are asserted here, because shipping either without the other is
   // a visible regression — an editor nobody can reach, or a Notes tab that is
   // blank AND will not open its editor.
   const docNotes = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    api.setViewMode("highlights");
+    api.setViewMode("document");
+    await settle(400);
+    api.openHighlightSplit("document");
     await settle(600);
-    const list = document.getElementById("highlightsList");
+    const list = document.getElementById("highlightCycleBody");
     const section = list.querySelector(":scope > .hl-notes");
     const articles = Array.from(list.querySelectorAll(".hl-note[data-highlight-key]"));
     const records = api.documentHighlightsInReadingOrder();
@@ -1630,12 +1636,12 @@ try {
     const target = articles.find((a) => a.querySelector(".hl-note-body").classList.contains("is-empty")) || articles[0];
     const key = target.dataset.highlightKey;
     const id = key.replace(/^doc:/, "");
-    target.querySelector(".hl-note-body").click();
+    target.querySelector(".hl-note-edit").click();
     await settle(150);
     const area = target.querySelector(".hl-note-editor .note-editor-input");
     const focused = document.activeElement === area;
     const popupOpen = Boolean(document.querySelector(".highlight-note-editor:not([hidden])"));
-    area.value = "Typed straight into the highlights tab.";
+    area.value = "Typed straight into the pane.";
     area.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(120);
     // Still typing: nothing may have been rebuilt under the reader yet.
@@ -1679,7 +1685,7 @@ try {
     };
   }`);
 
-  check("the Highlights tab lists every highlight in the paper, with its note",
+  check("the pane lists every highlight in the paper, with its note",
     docNotes.hasSection && docNotes.articles === docNotes.records && docNotes.records > 0,
     `${docNotes.articles} entry(s) for ${docNotes.records} highlight(s), ${docNotes.annotated} written on`);
   check("...grouped by the page they are on",
@@ -1689,8 +1695,8 @@ try {
     docNotes.focused && docNotes.stillOpen && !docNotes.popupOpen,
     `focused=${docNotes.focused} open=${docNotes.stillOpen} popup=${docNotes.popupOpen}`);
   check("...and what is typed there is the highlight's note",
-    docNotes.stored === "Typed straight into the highlights tab."
-      && docNotes.renderedText === "Typed straight into the highlights tab.",
+    docNotes.stored === "Typed straight into the pane."
+      && docNotes.renderedText === "Typed straight into the pane.",
     `stored "${docNotes.stored}" · shown "${docNotes.renderedText}"`);
   check("the Notes tab is the reader's own writing, not the paper's annotations",
     !docNotes.notesHasHighlights && !docNotes.editorHasFence && docNotes.roundTrip,
@@ -1698,12 +1704,69 @@ try {
   check("...and being empty, it opens its editor rather than sitting blank",
     docNotes.editorOpen, `raw editor open=${docNotes.editorOpen}`);
 
+  // ── 8d-ii. The number on the card is the number on the page ─────────────
+  //
+  // "There should be a visually apparent identifier saying which note relates to
+  // which highlight." The badge pinned to a highlight and the note printed under
+  // its page have carried a number for a while; the card did not, and the pane's
+  // own "12 / 87" counter is a DIFFERENT sequence — position among all
+  // highlights, annotated or not. Two numbers claiming to name the same
+  // highlight is worse than one of them being absent, so this asserts they are
+  // one sequence, taken from one function (annotatedDocumentHighlightNumbers).
+  const numbering = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(300);
+    const records = api.documentHighlightsInReadingOrder();
+    // Put back afterwards, exactly as found: the stages below this one need the
+    // fixture's own annotations, and a check that quietly eats them makes the
+    // next four failures look like the feature's fault.
+    const was = records.map((record) => [record.id, api.documentHighlightNote(record.id)]);
+    // One annotated and, deliberately, one left bare: the sequence must skip the
+    // bare one rather than count it.
+    api.setDocumentHighlightNote(records[0].id, "The first note.");
+    api.setDocumentHighlightNote(records[1].id, "");
+    await settle(200);
+    api.openHighlightSplit("document");
+    await settle(700);
+    await api.whenDocumentPageReady(records[0].page || 1);
+    await settle(400);
+    const list = document.getElementById("highlightCycleBody");
+    const cardNumber = (id) => {
+      const card = list.querySelector('.hl-note[data-highlight-key="doc:' + id + '"]');
+      return card?.querySelector(".hl-note-n")?.textContent || "";
+    };
+    const badgeNumber = (id) =>
+      document.querySelector('.pdf-note-badge[data-highlight-id="' + id + '"]')?.textContent || "";
+    const result = {
+      annotatedCard: cardNumber(records[0].id),
+      annotatedBadge: badgeNumber(records[0].id),
+      bareCard: cardNumber(records[1].id),
+      bareBadge: badgeNumber(records[1].id),
+      // ...and the place label, so a card scrolled away from its group heading
+      // still says which page it came from.
+      where: list.querySelector('.hl-note[data-highlight-key="doc:' + records[0].id + '"] .hl-note-where')?.textContent || ""
+    };
+    was.forEach(([id, note]) => api.setDocumentHighlightNote(id, note));
+    await settle(250);
+    return result;
+  }`);
+
+  check("a card carries the same number its highlight wears on the page",
+    numbering.annotatedCard !== "" && numbering.annotatedCard === numbering.annotatedBadge,
+    `card "${numbering.annotatedCard}" vs badge "${numbering.annotatedBadge}"`);
+  check("...and a highlight with nothing written on it is numbered in neither",
+    numbering.bareCard === "" && numbering.bareBadge === "",
+    `card "${numbering.bareCard}" badge "${numbering.bareBadge}"`);
+  check("...and the card says which page it came from",
+    /^Page \d+$/.test(numbering.where), numbering.where || "no place label");
+
   // ── 8e. The document panel's own list of what was marked on it ──────────
   //
-  // The Highlights TAB lists a paper's highlights and its deck note's together,
-  // which is right for the place you go to read them and wrong for the place you
-  // go to find one. The Document panel's contents drawer carries its own
-  // Highlights section so a reader does not have to leave the page they are on.
+  // The pane lists a paper's highlights and its deck note's separately, by the
+  // surface they are on. The Document panel's contents drawer carries its own
+  // Highlights section too, so a reader looking for one does not have to leave
+  // the page they are on.
   const drawer = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     api.setViewMode("document");
@@ -2081,25 +2144,23 @@ try {
   const splitClosed = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     await settle(300);
-    // Leaving for a view that is not a reading surface closes it; the Highlights
-    // tab is where the same cards live full width.
-    api.setViewMode("highlights");
+    // Leaving for a view that is not a reading surface closes it. There is
+    // nowhere else for these cards to be — the Highlights tab that used to hold
+    // them is gone — so the pane going away is the whole of the answer.
+    api.setViewMode("cards");
     await settle(500);
     const closed = {
       isSplit: document.querySelector(".quiz-panel").classList.contains("is-split"),
-      paneHidden: document.getElementById("highlightCycle").hidden,
-      tabCards: document.querySelectorAll("#highlightsList .hl-note").length
+      paneHidden: document.getElementById("highlightCycle").hidden
     };
     api.setViewMode("document");
     await settle(400);
     return closed;
   }`);
 
-  check("leaving for the Highlights tab puts the split away",
+  check("leaving for a view with nothing to be beside puts the split away",
     !splitClosed.isSplit && splitClosed.paneHidden,
     `is-split=${splitClosed.isSplit}, pane hidden=${splitClosed.paneHidden}`);
-  check("...and the tab still lists them, from the same editor",
-    splitClosed.tabCards > 0, `${splitClosed.tabCards} card(s) in the tab`);
 
   // The Notes panel's own drawer does the same thing, and must list a DIFFERENT
   // set: a PDF deck's Notes tab is an ordinary note the reader may well have
@@ -2359,7 +2420,7 @@ try {
     const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;
     const activeMatches = tray.querySelector('[data-view-mode="document"]').classList.contains("is-active");
     // The tray's own view buttons have to actually switch view.
-    tray.querySelector('[data-view-mode="highlights"]').click();
+    tray.querySelector('[data-view-mode="notes"]').click();
     await settle(250);
     const switched = api.state.viewMode;
     const collapsedAfterUse = getComputedStyle(tray).display === "none";
@@ -2424,7 +2485,7 @@ try {
     rail.documentIconShown && rail.activeMatches,
     `shown=${rail.documentIconShown} active=${rail.activeMatches}`);
   check("...and its view buttons switch view, then put the tray away",
-    rail.switched === "highlights" && rail.collapsedAfterUse,
+    rail.switched === "notes" && rail.collapsedAfterUse,
     `viewMode=${rail.switched} collapsed=${rail.collapsedAfterUse}`);
 
   // ── 9b. A phone, an amoled theme, dark page, focus mode ──────────────────
@@ -3329,7 +3390,7 @@ try {
         await settle(500);
       }
       if (SHOT_NOTES) {
-        api.setViewMode("highlights");
+        api.openHighlightSplit("document");
         await settle(600);
       }
       if (SHOT_TOC) {

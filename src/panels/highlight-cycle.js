@@ -40,7 +40,8 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { currentDocumentPage, isDocumentFitWidth, relayoutDocument } from "../documents/pdf-view.js?v=__BUILD__";
-import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { documentHighlightMarks } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { noteMarkNode, scheduleNoteJump, sourceMarkIndexFor } from "../notes/anchors.js?v=__BUILD__";
 import { quizPanel } from "../notes/notes-view.js?v=__BUILD__";
 import { applyNotesPagedLayout, isNotesPaged } from "../notes/paged-view.js?v=__BUILD__";
 import {
@@ -242,6 +243,8 @@ export function closeHighlightSplit() {
   // A note being typed in the pane commits on the way out, exactly as leaving
   // the Highlights tab commits one being typed there.
   closeHighlightsEditor();
+  // Nothing on the reading surface should stay tinted for a pane that is gone.
+  paintLink(null);
   splitSurface = null;
   cycleEntries = [];
   cycleIndex = -1;
@@ -397,7 +400,68 @@ function paintCurrentCard() {
   const card = cardFor(cycleIndex);
   if (!card) return;
   card.classList.add("is-current");
+  paintLink(cycleEntries[cycleIndex]);
   revealCard(card);
+}
+
+// ── Which mark this card is about ───────────────────────────────────────────
+//
+// The number in a card's head says which highlight it belongs to, and that is
+// the answer for a highlight you can already see. This is the answer for one you
+// cannot: point at a card and the words it is about light up on the page or in
+// the note, and point at a mark in the note and its card lights up over here.
+//
+// Held as a list of NODES rather than as a key to look up again. A highlight is
+// several painted quads on a paper (a phrase across three lines is three boxes),
+// and the nodes can go — a relayout repaints the mark layer, a rebuild replaces
+// the card — so what was lit is remembered directly and cleared directly.
+let linkedNodes = [];
+
+function surfaceNodesFor(entry) {
+  if (!entry) return [];
+  if (entry.highlightId) return documentHighlightMarks(entry.highlightId);
+  // build: false — see noteMarkNode. Tinting something the reader cannot see is
+  // not worth building a span of a book for.
+  const node = noteMarkNode(entry.locator, { build: false });
+  return node ? [node] : [];
+}
+
+export const LINKED_CLASS = "is-linked";
+
+function entryForKey(key) {
+  return key ? cycleEntries.find((entry) => highlightEntryKey(entry) === key) || null : null;
+}
+
+function paintLink(entry) {
+  const next = surfaceNodesFor(entry);
+  if (next.length === linkedNodes.length && next.every((node, i) => node === linkedNodes[i])) return;
+  linkedNodes.forEach((node) => node.classList.remove(LINKED_CLASS));
+  linkedNodes = next;
+  linkedNodes.forEach((node) => node.classList.add(LINKED_CLASS));
+}
+
+// The other direction: a mark in the note, pointed at, lights its card.
+//
+// The notes surface only. A paper's marks sit in a layer carrying
+// `pointer-events: none` and must keep it — the text layer is above them and
+// every pointer event has to reach that or selection stops working over a
+// highlight — so they cannot be hovered at all. What answers there is the
+// numbered badge, which IS pressable: see the reveal hook in src/main.js.
+//
+// The mark is resolved to its SOURCE ordinal (sourceMarkIndexFor), which is what
+// an entry is keyed on. Comparing DOM nodes instead would mean resolving every
+// entry's node to find the one that matched — a walk of the whole list, on the
+// pointer's path, that on a lazily-built note cannot even answer for most of it.
+function paintCardLinkFor(mark) {
+  const body = el.highlightCycleBody;
+  if (!body) return;
+  body.querySelectorAll(`.${HL_NOTE_CLASS}.${LINKED_CLASS}`).forEach((node) => node.classList.remove(LINKED_CLASS));
+  if (!mark) return;
+  const index = sourceMarkIndexFor(el.notesView, mark);
+  if (index < 0) return;
+  const at = cycleEntries.findIndex((entry) => !entry.highlightId && entry.markIndex === index);
+  if (at < 0) return;
+  cardFor(at)?.classList.add(LINKED_CLASS);
 }
 
 // Scrolled by hand rather than with scrollIntoView, for two reasons: that call
@@ -560,6 +624,30 @@ export function initHighlightCycle() {
     cycleKey = key;
     paintCycleCount();
     paintCurrentCard();
+  });
+
+  // Point at a card, light its highlight; take the pointer off the list, and the
+  // current card's own highlight is what stays lit. pointerover/pointerout
+  // rather than mouseenter on each card: one pair of listeners on the container
+  // survives every rebuild, and a card is rebuilt often.
+  el.highlightCycleBody?.addEventListener("pointerover", (event) => {
+    const card = event.target.closest?.(`.${HL_NOTE_CLASS}`);
+    if (!card || !el.highlightCycleBody.contains(card)) return;
+    paintLink(entryForKey(card.dataset.highlightKey || ""));
+  });
+  el.highlightCycleBody?.addEventListener("pointerleave", () => {
+    paintLink(cycleEntries[cycleIndex]);
+  });
+
+  // ...and the way back. A <mark> in the note is an ordinary element that takes
+  // pointer events, so hovering one lights its card over here.
+  el.notesView?.addEventListener("pointerover", (event) => {
+    if (!splitSurface || splitSurface !== "notes") return;
+    paintCardLinkFor(event.target.closest?.("mark") || null);
+  });
+  el.notesView?.addEventListener("pointerleave", () => {
+    if (!splitSurface) return;
+    paintCardLinkFor(null);
   });
 
   el.highlightCycleBody?.addEventListener("scroll", () => {

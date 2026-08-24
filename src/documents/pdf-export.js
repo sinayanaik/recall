@@ -40,8 +40,7 @@ import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
-import { documentHighlightLabel } from "./pdf-highlights.js?v=__BUILD__";
-import { annotatedDocumentHighlights } from "./pdf-page-notes.js?v=__BUILD__";
+import { annotatedDocumentHighlights, documentHighlightLabel } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at

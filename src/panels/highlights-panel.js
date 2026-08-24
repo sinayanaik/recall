@@ -1,8 +1,8 @@
 // Every highlight in the deck, as the shapes its three readers need.
 //
-// One scan of the source, three shapes taken off it: the entries the Highlights
-// tab renders as a continuous editor (collectHighlightEntries, driving
-// src/panels/highlights-editor.js), the entries the two contents drawers list
+// One scan of the source, three shapes taken off it: the entries the
+// side-by-side pane renders as a continuous editor (collectHighlightEntries,
+// driving src/panels/highlights-editor.js), the entries the two contents drawers list
 // as jump targets (src/panels/highlight-index.js, which calls the scan here),
 // and the entries the exports build from (collectDeckHighlightsForExport, with
 // its own opt-in context lines). They differ in what they keep, never in how a
@@ -16,9 +16,10 @@ import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-n
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
+import { highlightNoteIndex } from "../notes/highlight-badges.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
-import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { annotatedDocumentHighlightNumbers, documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
@@ -30,7 +31,7 @@ import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view
 // stored list: collectDeckHighlights, like collectDeckClozes above, is fully
 // derived from state.notes on every call, so an edit made in the raw editor
 // (typing <mark> by hand, or deleting one) can never drift out of sync with
-// what the Highlights tab shows.
+// what the pane shows.
 // data-color (see MARK_HIGHLIGHT_COLORS) makes the open tag's length variable,
 // so the offset below is measured off the actual match rather than a fixed
 // "<mark>".length constant — a coloured highlight would otherwise report an
@@ -186,6 +187,11 @@ export function scanHighlightGroups(source, noteSource = source) {
       // own "Highlight Notes" section (or, for an old annotation, inline
       // base64) — so it is looked up here rather than read as text.
       note: noteRef ? noteTextFor(noteRef) || null : null,
+      // ...and the reference itself, carried rather than discarded, because it
+      // is the key the badge index is built on (highlightNoteIndex, in
+      // src/notes/highlight-badges.js). A card that wants to show the number
+      // its highlight wears on the page has to ask that index, not recount.
+      noteRef,
       marker: precedingListMarker(source, start)
     });
   }
@@ -377,12 +383,20 @@ export function collectHighlightEntries() {
     // measured at 4ms for 50 highlights and 60ms for 400, which is the shape of
     // a cost that has no ceiling on a heavily annotated paper.
     const notes = readHighlightNotes(state.notes || "");
+    // The number each highlight wears on the page, asked of the one function
+    // that decides it (annotatedDocumentHighlightNumbers, beside the records in
+    // pdf-highlights.js) rather than recounted here. A card showing "3" beside a
+    // badge showing "5" is worse than a card showing nothing.
+    const numbers = annotatedDocumentHighlightNumbers();
     documentHighlightsInReadingOrder().forEach((record) => {
       const text = String(record.text || "").trim() || documentHighlightLabel(record);
       entries.push({
         highlightId: record.id,
         color: record.color,
         group: record.page ? `Page ${record.page}` : "The document",
+        // 0 for a highlight with nothing written about it, which is the same
+        // "no number" the page shows.
+        n: numbers.get(record.id) || 0,
         region: record.kind === "area" ? record : null,
         // Rendered as plain text: it came out of a PDF, so there is no markdown
         // in it to interpret, and a paper containing "*" or "_" must not turn
@@ -405,6 +419,10 @@ export function collectHighlightEntries() {
   const notes = state.notes || "";
   const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
   const headings = headingIndexFor(source);
+  // ...and the note's own badge numbers, from the index the badges themselves
+  // are painted out of. Keyed on the <mark>'s data-note reference, which is why
+  // scanHighlightGroups carries it.
+  const noteNumbers = highlightNoteIndex(notes).byAttr;
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group);
     const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
@@ -420,6 +438,7 @@ export function collectHighlightEntries() {
       markIndex: group.pieces[0].markIndex,
       color: group.color,
       group: heading?.title || "",
+      n: noteNumbers.get(group.pieces[0].noteRef)?.n || 0,
       region: null,
       markdown,
       span,

@@ -190,8 +190,8 @@
 }
 
 /* ── The list ──────────────────────────────────────────────────────────────
-   Rendered by src/panels/highlights-editor.js, exactly as the Highlights tab
-   is — so everything under this box is styled by 44-highlights-editor.css and
+   Rendered by src/panels/highlights-editor.js, which is the one builder of these
+   cards — so everything under this box is styled by 44-highlights-editor.css and
    there is nothing to restate. Only the box is here. */
 .hc-body {
   flex: 1 1 auto;
@@ -336,3 +336,35 @@
     transition: none;
   }
 }
+
+/* ── Which highlight this card is about ────────────────────────────────────
+ *
+ * The number in the card's head (styles/44-highlights-editor.css) answers this
+ * for a highlight already on screen. These two rules answer it for one that is
+ * not obvious: point at a card and the words it is about light up on the page
+ * or in the note; point at a mark in the note and its card lights up in the
+ * pane. See paintLink / paintCardLinkFor in src/panels/highlight-cycle.js.
+ *
+ * An OUTLINE rather than a background, and that is the whole trick: a highlight
+ * already has a background — its own colour, which is what identifies it — so
+ * tinting it would say "this one is a different colour now". An outline is drawn
+ * outside the box and paints over nothing.
+ *
+ * Both live here rather than beside their own surfaces because they are one
+ * feature: neither rule means anything unless the pane is open, and a reader
+ * looking for why a mark went ringed should find both halves in one file.
+ */
+.pdf-mark.is-linked,
+#notesView mark.is-linked {
+  outline: 2px solid var(--accent-strong, var(--accent));
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* The card end of the same pairing. Quieter than .is-current — that one says
+ * "this is where the ◀ ▶ bar is", which survives the pointer leaving; this one
+ * only lasts as long as the pointer is over the mark. */
+.hc-body .hl-note.is-linked {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
