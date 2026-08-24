@@ -113,6 +113,20 @@ export function writeSignedUrlCache() {
 // Everything, for a device wipe. A signed URL is a bearer token for one
 // account's object — leaving the bag behind after "sign out and remove all
 // decks" would leave those objects readable to whoever signs in next.
+// One object's signature, dropped. A cached signature is normally right until
+// it nears expiry, but "the browser could not load this URL" is evidence that
+// it is not — a signature minted before a session change, or one this device
+// cached and then slept through, answers 400 and there is nothing in the entry
+// itself that says so. Forgetting it is what lets the next signedUrlsFor() mint
+// a fresh one rather than hand back the same dead string (see the retry in
+// src/images/broken.js).
+export function forgetSignedUrl(bucket, path) {
+  if (!path) return;
+  loadSignedUrlCache();
+  if (!signedUrls.delete(cacheKey(bucket, path))) return;
+  scheduleSignedUrlCacheWrite();
+}
+
 export function forgetSignedUrls() {
   signedUrls.clear();
   try {

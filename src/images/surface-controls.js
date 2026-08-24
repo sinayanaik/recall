@@ -8,12 +8,13 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
+import { isBrokenImage } from "./broken.js?v=__BUILD__";
 import { deleteSupabaseImage } from "./upload.js?v=__BUILD__";
 import { CANONICAL_SRC_ATTR } from "../cloud/storage-urls.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME } from "./outbox.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
-import { IMG_TOKEN_SOURCE } from "../render/inline.js?v=__BUILD__";
-import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, fencePattern, normalizeImageUrl, parseDiagramWidth } from "../render/preprocess.js?v=__BUILD__";
+import { IMG_ALT_SOURCE, IMG_DEST_SOURCE, IMG_TOKEN_SOURCE, imageDestinationUrl } from "../render/inline.js?v=__BUILD__";
+import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, normalizeImageUrl, parseDiagramWidth, scanFences } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -67,7 +68,7 @@ export function imageSurfaceForView(view) {
 // it needs no DOM at all, and a commit splices one slice.
 //
 // The scan is a single regex pass (against marked.lexer's 125ms on that same
-// 2.6MB note), it skips fenced code by walking the shared fencePattern() the
+// 2.6MB note), it skips fenced code by walking the shared scanFences() the
 // renderer walks, and it is cached on the source string — so the common case,
 // a repeat render of an unchanged note, costs one string compare.
 
@@ -113,11 +114,9 @@ export function parseImgTagAttrs(raw) {
 // the whole slice with a raw <img>, which has nowhere to carry one — the same
 // trade the token-based commit made before it.
 export function parseMarkdownImage(raw) {
-  const match = String(raw || "").match(/^!\[([^\]]*)\]\(([^)]*)\)$/);
+  const match = String(raw || "").match(new RegExp(`^!(${IMG_ALT_SOURCE})(${IMG_DEST_SOURCE})$`));
   if (!match) return null;
-  const inner = match[2].trim();
-  const url = (inner.match(/^<([^>]*)>/)?.[1] ?? inner.split(/\s+(?=["'(])/)[0] ?? "").trim();
-  return { url, alt: match[1], widthPx: null };
+  return { url: imageDestinationUrl(match[2].slice(1, -1)), alt: match[1].slice(1, -1), widthPx: null };
 }
 
 // `![alt][label]` (and the collapsed `![alt][]`), resolved through the note's
@@ -141,10 +140,11 @@ export function imageRefDefinitions(text) {
 }
 
 export function parseReferenceImage(raw, definitions) {
-  const match = String(raw || "").match(/^!\[([^\]]*)\]\[([^\]]*)\]$/);
+  const match = String(raw || "").match(new RegExp(`^!(${IMG_ALT_SOURCE})\\[([^\\]]*)\\]$`));
   if (!match) return null;
-  const url = definitions.get((match[2].trim() || match[1].trim()).toLowerCase());
-  return url ? { url, alt: match[1], widthPx: null } : null;
+  const alt = match[1].slice(1, -1);
+  const url = definitions.get((match[2].trim() || alt.trim()).toLowerCase());
+  return url ? { url, alt, widthPx: null } : null;
 }
 
 // The three forms one image can be written in. IMG_TOKEN_SOURCE (markdown
@@ -153,12 +153,12 @@ export function parseReferenceImage(raw, definitions) {
 // the reference form above. Ordered: the inline branches match first, so
 // `![a](b)` is never read as a reference.
 //
-// A function, not a const, for the same reason fencePattern() is one: a `g`
+// A function, not a const, for the same reason fenceOpenPattern() is one: a `g`
 // regex carries its own lastIndex, so each scan needs its own — and building
 // it at call time keeps this module free of a top-level read across an import
 // cycle (see the TDZ rule in tools/module-symbols.mjs).
 export function sourceImagePattern() {
-  return new RegExp(`${IMG_TOKEN_SOURCE}|!\\[[^\\]]*\\]\\[[^\\]]*\\]`, "gi");
+  return new RegExp(`${IMG_TOKEN_SOURCE}|!${IMG_ALT_SOURCE}\\[[^\\]]*\\]`, "gi");
 }
 
 // Every image in a note's SOURCE, in document order, as
@@ -193,12 +193,10 @@ export function findSourceImages(source) {
       found.push({ start, end, raw, ...info });
     }
   };
-  const fences = fencePattern();
   let at = 0;
-  let fence;
-  while ((fence = fences.exec(text))) {
-    scanGap(at, fence.index);
-    at = fences.lastIndex;
+  for (const fence of scanFences(text)) {
+    scanGap(at, fence.start);
+    at = fence.end;
   }
   scanGap(at, text.length);
   return found;
@@ -402,8 +400,8 @@ export function beginImageResize(event, shell, img, onCommit, refEl, bounds = nu
   event.preventDefault();
   event.stopPropagation();
   shell.setPointerCapture?.(event.pointerId);
-  const minWidth = bounds?.min ?? 20;
-  const maxWidth = bounds?.max ?? 2000;
+  const minWidth = bounds?.min ?? IMAGE_RESIZE_MIN_PX;
+  const maxWidth = bounds?.max ?? IMAGE_RESIZE_MAX_PX;
   const startX = event.clientX;
   // For a diagram, `img` is the block that HOLDS the drawing and is as wide as
   // the column even when the <svg> inside is drawn narrower (the Style panel's
@@ -486,17 +484,36 @@ export const UNSIZED_IMAGE_MAX_PX = 420;
 export function markTinyImageShell(shell, node) {
   if (!shell || !node) return;
   const apply = () => {
+    // A picture that FAILED is not a tiny picture. It has no natural width at
+    // all, so this used to fall out at the `!width` line below and leave the
+    // shell hugging a 0x0 image — 82x50 measured, which is not enough room for
+    // the grip, the delete button and the Zoom pill, and they were painted on
+    // top of each other inside it. A broken image gets its own floor instead
+    // (.has-broken-image, styles/47-broken-image.css).
+    if (isBrokenImage(node)) {
+      shell.classList.remove("is-tiny-image");
+      return;
+    }
     const custom = parseInt(node.style.getPropertyValue("--notes-img-w"), 10);
     const natural = node.naturalWidth || 0;
     const width = custom > 0 ? custom : (natural ? Math.min(natural, UNSIZED_IMAGE_MAX_PX) : 0);
     // Not decoded yet and no committed width — nothing to judge it on, so the
-    // load listener below asks again rather than guessing "tiny" and flashing
-    // the compact layout onto a full-width photo.
+    // listeners below ask again rather than guessing "tiny" and flashing the
+    // compact layout onto a full-width photo.
     if (!width) return;
     shell.classList.toggle("is-tiny-image", width < TINY_IMAGE_WIDTH_PX);
   };
   apply();
-  if (node.tagName === "IMG" && !node.complete) node.addEventListener("load", apply, { once: true });
+  // Both events, and not `once`: the src of a rendered image is rewritten after
+  // the render (hydrateLocalImages swaps in a blob: URL, resolveStorageImages a
+  // signed one), and each rewrite is another load or another failure to judge.
+  // Bound once per element, because this runs again on every enhance pass and
+  // a listener per pass on a book full of screenshots is its own leak.
+  if (node.tagName === "IMG" && !node.dataset.sizeWatch) {
+    node.dataset.sizeWatch = "1";
+    node.addEventListener("load", apply);
+    node.addEventListener("error", apply);
+  }
 }
 
 // Attaches the blue corner-drag resize grip and a delete button to an image.
@@ -507,32 +524,60 @@ export function markTinyImageShell(shell, node) {
 // with no intermediate "move to own line" step.
 // `onDelete` may be null for a target that only resizes (a diagram, whose source
 // is a fenced code block the user edits as text).
+// What each shell's controls currently act on, read AT EVENT TIME rather than
+// captured in the listener's closure. That indirection is the whole point of
+// the rewrite below: the grip and the delete button used to be REMOVED and
+// rebuilt on every pass, and this pass runs on the tail of every render, on
+// every lazily-built span, and on every placeholder-upgrade batch. A pass
+// landing between a finger going down on the delete button and the click it
+// would have produced took that very button out of the DOM, so the click had
+// nothing to dispatch to — which is the desktop half of "sometimes the delete
+// button does nothing". The elements now survive; only their binding changes.
+export const imageControlBindings = new WeakMap();
+
 export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl, bounds = null) {
+  imageControlBindings.set(shell, { node: img, onCommit, onDelete, refEl, bounds });
+  // Surface-agnostic marker for the stylesheets, so a control does not have to
+  // be styled once per view id (see styles/47-broken-image.css).
+  shell.classList.add("is-editable-image");
+  // `.notes-img-controls` is the box these two replaced; only ever removed.
   shell.querySelector(".notes-img-controls")?.remove();
-  shell.querySelector(".notes-img-resize-handle")?.remove();
-  shell.querySelector(".notes-img-delete-btn")?.remove();
   markTinyImageShell(shell, img);
-  const resizeHandle = document.createElement("div");
-  resizeHandle.className = "notes-img-resize-handle";
-  resizeHandle.title = "Drag to resize";
-  resizeHandle.setAttribute("aria-hidden", "true");
-  resizeHandle.addEventListener("pointerdown", (e) => beginImageResize(e, shell, img, onCommit, refEl, bounds));
-  shell.appendChild(resizeHandle);
 
-  if (!onDelete) return;
+  if (!shell.querySelector(".notes-img-resize-handle")) {
+    const resizeHandle = document.createElement("div");
+    resizeHandle.className = "notes-img-resize-handle";
+    resizeHandle.title = "Drag to resize";
+    resizeHandle.setAttribute("aria-hidden", "true");
+    resizeHandle.addEventListener("pointerdown", (e) => {
+      const bound = imageControlBindings.get(shell);
+      if (!bound) return;
+      beginImageResize(e, shell, bound.node, bound.onCommit, bound.refEl, bound.bounds);
+    });
+    shell.appendChild(resizeHandle);
+  }
 
-  const deleteBtn = document.createElement("button");
-  deleteBtn.type = "button";
-  deleteBtn.className = "notes-img-delete-btn";
-  deleteBtn.title = "Remove image";
-  deleteBtn.setAttribute("aria-label", "Remove image");
-  deleteBtn.textContent = "🗑";
-  deleteBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onDelete();
-  });
-  shell.appendChild(deleteBtn);
+  // A target that only resizes (a diagram, whose source is a fenced code block
+  // the reader edits as text) drops the button if it ever had one.
+  if (!onDelete) {
+    shell.querySelector(".notes-img-delete-btn")?.remove();
+    return;
+  }
+
+  if (!shell.querySelector(".notes-img-delete-btn")) {
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "notes-img-delete-btn";
+    deleteBtn.title = "Remove image";
+    deleteBtn.setAttribute("aria-label", "Remove image");
+    deleteBtn.textContent = "🗑";
+    deleteBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      imageControlBindings.get(shell)?.onDelete?.();
+    });
+    shell.appendChild(deleteBtn);
+  }
 }
 
 // Re-attaches the resize grip / delete button after every render of an editable
@@ -620,7 +665,7 @@ export function enhanceSurfaceImageControls(surface, { partial = false, scope = 
 // The DOM→source mapping is by ordinal position, which is exact here in a way it
 // isn't for images: preprocessSpecialBlocks turns every diagram fence into
 // exactly one .mermaid/.nomnoml-diagram element, in source order, wherever the
-// fence sits. Walking the shared fencePattern() keeps the two lists in lockstep;
+// fence sits. Walking the shared scanFences() keeps the two lists in lockstep;
 // if the counts ever disagree, no grip is attached rather than a grip that would
 // resize the wrong diagram.
 //
@@ -634,21 +679,16 @@ export function enhanceSurfaceImageControls(surface, { partial = false, scope = 
 // diagrams than the source has fences means the two lists have genuinely lost
 // each other, and that is the case that still refuses to attach anything.
 export function findDiagramFences(source) {
-  const text = String(source || "");
-  const pattern = fencePattern();
-  const fences = [];
-  let match;
-  while ((match = pattern.exec(text))) {
-    if (!/\b(?:mermaid|nomnoml)\b/i.test(match[1])) continue;
-    const headEnd = text.indexOf("\n", match.index);
-    fences.push({
-      start: match.index,
-      headEnd: headEnd === -1 ? text.length : headEnd,
-      info: match[1],
-      widthPx: parseDiagramWidth(match[1])
-    });
-  }
-  return fences;
+  return scanFences(source)
+    .filter((fence) => /\b(?:mermaid|nomnoml)\b/i.test(fence.info))
+    .map((fence) => ({
+      start: fence.start,
+      headEnd: fence.headEnd,
+      indent: fence.indent,
+      marker: fence.marker,
+      info: fence.info,
+      widthPx: parseDiagramWidth(fence.info)
+    }));
 }
 
 export function commitDiagramWidth(surface, fenceIndex, px) {
@@ -656,7 +696,11 @@ export function commitDiagramWidth(surface, fenceIndex, px) {
   const source = surface.getSource() || "";
   const fence = findDiagramFences(source)[fenceIndex];
   if (!fence) return;
-  const head = "```" + fenceInfoWithWidth(fence.info, widthPx);
+  // The fence's own indent and marker, not a hardcoded "```": the scan starts
+  // the slice at the indentation now, and a ~~~ fence is a fence too, so
+  // rewriting one as an unindented ``` would move the block out of its list
+  // item or change what closes it.
+  const head = `${fence.indent}${fence.marker}${fenceInfoWithWidth(fence.info, widthPx)}`;
   surface.setSource(source.slice(0, fence.start) + head + source.slice(fence.headEnd));
   surface.rerender();
   scheduleDeckAutosave();

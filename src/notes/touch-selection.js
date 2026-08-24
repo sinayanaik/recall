@@ -2005,6 +2005,28 @@ function onRootTouchStart(event) {
   const root = event.currentTarget;
   const touch = event.touches[0];
 
+  // ── The browser has taken nothing from THIS sequence yet ──────────────────
+  //
+  // Up here, not down with the rest of the fresh-sequence state, because every
+  // early return below it skips that block — and one of them is the guard for
+  // an image's own controls a few lines down.
+  //
+  // Chrome marks touchmove non-cancelable the moment a scroll starts, so
+  // onRootTouchMove latches this on every ordinary scroll of a note. Left
+  // latched, the NEXT touch reached onRootTouchEnd with it still true, and that
+  // handler answers `wasSelecting || gestureStolen` with preventDefault() —
+  // which cancels the compatibility mouse sequence, so no click is ever
+  // synthesised. The delete button and the Zoom pill are reached by a click, so
+  // scrolling a note and then tapping 🗑 did nothing at all, while tapping a
+  // paragraph first (which reaches the block below) and then 🗑 worked. That is
+  // the whole of "sometimes the delete button doesn't work". The resize grip
+  // was unaffected because it is driven by pointerdown.
+  //
+  // Only for a genuinely new single-finger sequence, which is why it sits after
+  // the multi-touch guard above: a second finger joining a live drag must not
+  // un-latch what that drag already lost.
+  gestureStolen = false;
+
   // Not on an image's own controls. The resize grip takes pointer capture and
   // drags the corner of the picture, but this listener is passive and bound on
   // the reading root, so beginImageResize's preventDefault cannot reach it: a
@@ -2063,11 +2085,11 @@ function onRootTouchStart(event) {
     pressAnchorTop = rect.top;
     pressAnchorLeft = rect.left;
   }
-  // A fresh sequence: the browser has taken nothing yet, there is no previous
-  // move to measure a speed against, and this touchstart is what calibrates the
-  // clock every later move of it will be read on.
+  // A fresh sequence: there is no previous move to measure a speed against, and
+  // this touchstart is what calibrates the clock every later move of it will be
+  // read on. (gestureStolen is reset at the top of this function instead — see
+  // the comment there for why it cannot live down here.)
   calibrateEventClock(event);
-  gestureStolen = false;
   lastMoveX = NaN;
   lastMoveY = NaN;
   lastMoveAt = NaN;

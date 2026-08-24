@@ -21,14 +21,84 @@ export const DIAGRAM_WIDTH_MIN = 80;
 
 export const DIAGRAM_WIDTH_MAX = 4000;
 
-// The one fence scanner. The renderer walks it to turn diagram fences into
-// elements and the resize grip walks it to find the fence behind the Nth
-// diagram on screen — sharing the pattern is what guarantees those two walks
-// stay in lockstep. Capture 1 is the info string, capture 2 the body.
-export const FENCE_PATTERN_SOURCE = "```[ \\t]*([^\\n]*)\\n([\\s\\S]*?)```";
+// ── The one fence scanner ──────────────────────────────────────────────────
+//
+// The renderer walks it to turn diagram fences into elements, findSourceImages
+// walks it to know which `![](…)` are pictures and which are text, and the
+// diagram grip walks it to find the fence behind the Nth drawing on screen.
+// Sharing one scanner is what keeps those three in lockstep.
+//
+// It used to be one regex — ```[ \t]*([^\n]*)\n([\s\S]*?)``` — which paired
+// ``` markers BY COUNT, wherever they sat. Four ways that disagrees with the
+// markdown parser downstream of it, each verified against marked:
+//
+//   • it is not line-anchored, so a bare ``` written INSIDE A SENTENCE ("wrap
+//     it in ``` fences") opens a fence. Everything up to the next ``` in the
+//     note is then treated as code — the renderer emits that whole span raw,
+//     so every cloze, every $formula$, every [[note link]] and every citation
+//     in it silently stops working, and every image in it loses its resize
+//     grip and its delete button. One stray marker inverts code and prose for
+//     the rest of the note, which is exactly the shape of a note ABOUT code;
+//   • `~~~` is a fence to CommonMark and was not one here, so an image inside
+//     one got controls that would have rewritten text nobody can see;
+//   • a closing fence has to be AT LEAST as long as its opener, so ```` ```` ````
+//     wrapping a ``` block split in the wrong place;
+//   • an unclosed fence runs to the end of the document; this stopped at the
+//     opener and read the rest of the note as prose.
+//
+// So it follows CommonMark instead: an opener is up to three spaces of indent
+// then three or more ` or ~ (a backtick fence's info string may not itself
+// contain a backtick); the closer is the same character, at least as long, on
+// a line of its own; an unclosed fence takes everything after it.
+export const FENCE_OPEN_SOURCE = "^([^\\S\\n]{0,3})(`{3,}|~{3,})[^\\S\\n]*([^\\n]*)$";
 
-export function fencePattern() {
-  return new RegExp(FENCE_PATTERN_SOURCE, "g");
+export function fenceOpenPattern() {
+  return new RegExp(FENCE_OPEN_SOURCE, "gm");
+}
+
+// Every fenced block in `source`, in document order, as
+// { start, end, headEnd, bodyStart, bodyEnd, indent, marker, info, body }.
+//
+//   start    the first character of the opening line, indent included
+//   headEnd  the end of the opening line (the index of its newline)
+//   end      one past the closing line, or the length of the source
+//
+// `start`..`end` is the slice the renderer re-emits verbatim, so a splice on
+// it cannot disturb the text around the block.
+export function scanFences(source) {
+  const text = String(source || "");
+  const found = [];
+  // Cheapest possible reject: most notes have no fence at all, and this runs
+  // on the tail of every render of every surface.
+  if (!text.includes("```") && !text.includes("~~~")) return found;
+  const openers = fenceOpenPattern();
+  let opener;
+  while ((opener = openers.exec(text))) {
+    const [line, indent, marker, info] = opener;
+    // "```js`" is not a fence — a backtick fence's info string may not hold a
+    // backtick, which is what stops an inline code span opening one.
+    if (marker[0] === "`" && info.includes("`")) {
+      openers.lastIndex = opener.index + line.length;
+      continue;
+    }
+    const start = opener.index;
+    const headEnd = start + line.length;
+    const newline = text.indexOf("\n", headEnd);
+    if (newline === -1) {
+      // The opener is the last line of the note: an empty, unclosed block.
+      found.push({ start, end: text.length, headEnd, bodyStart: text.length, bodyEnd: text.length, indent, marker, info, body: "" });
+      break;
+    }
+    const bodyStart = newline + 1;
+    const closer = new RegExp(`^[^\\S\\n]{0,3}${marker[0]}{${marker.length},}[^\\S\\n]*$`, "m");
+    const rest = text.slice(bodyStart);
+    const hit = closer.exec(rest);
+    const bodyEnd = hit ? bodyStart + hit.index : text.length;
+    const end = hit ? bodyEnd + hit[0].length : text.length;
+    found.push({ start, end, headEnd, bodyStart, bodyEnd, indent, marker, info, body: text.slice(bodyStart, bodyEnd) });
+    openers.lastIndex = end;
+  }
+  return found;
 }
 
 export function parseDiagramWidth(info) {
@@ -57,21 +127,19 @@ export function fenceInfoWithWidth(info, px) {
 
 export function preprocessSpecialBlocks(markdown) {
   const source = normalizeMarkdown(markdown || "");
-  const fences = fencePattern();
   let output = "";
   let lastIndex = 0;
-  let match;
 
-  while ((match = fences.exec(source))) {
-    output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex, match.index))));
-    if (/\bmermaid\b/i.test(match[1])) {
-      output += `${diagramOpenTag("mermaid", match[1])} data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
-    } else if (/\bnomnoml\b/i.test(match[1])) {
-      output += `${diagramOpenTag("nomnoml-diagram", match[1])} data-diagram="${encodeAttribute(match[2].trim())}"></div>`;
+  for (const fence of scanFences(source)) {
+    output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex, fence.start))));
+    if (/\bmermaid\b/i.test(fence.info)) {
+      output += `${diagramOpenTag("mermaid", fence.info)} data-diagram="${encodeAttribute(fence.body.trim())}"></div>`;
+    } else if (/\bnomnoml\b/i.test(fence.info)) {
+      output += `${diagramOpenTag("nomnoml-diagram", fence.info)} data-diagram="${encodeAttribute(fence.body.trim())}"></div>`;
     } else {
-      output += match[0];
+      output += source.slice(fence.start, fence.end);
     }
-    lastIndex = fences.lastIndex;
+    lastIndex = fence.end;
   }
 
   output += protectInline(renderImageRows(normalizeCitations(source.slice(lastIndex))));

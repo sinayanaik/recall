@@ -208,6 +208,12 @@ const checks = [
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
     ["mobile-select ", ["node", ["tools/mobile-selection-check.mjs"], ROOT]],
     ["touch-select  ", ["node", ["tools/touch-selection-check.mjs"], ROOT]],
+    // The other half of image-controls above, and the half that needs a real
+    // browser: whether a picture that cannot load is VISIBLE, whether its three
+    // controls have room to not sit on top of each other, and whether a tap on
+    // the delete button still produces a click after the note has been
+    // scrolled. None of that is a fact about a string.
+    ["image-render  ", ["node", ["tools/image-render-check.mjs"], ROOT]],
     ["large-select  ", ["node", ["tools/large-note-selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
