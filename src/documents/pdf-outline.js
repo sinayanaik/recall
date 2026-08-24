@@ -49,9 +49,29 @@ export const OUTLINE_MAX_DEPTH = 3;
 
 // Resolving a destination costs a lookup per entry, and a reference work can
 // carry thousands. Capped so opening one does not spend a second of main thread
-// on a drawer nobody has opened yet; past the cap the entries are still listed,
-// they just jump by resolving on demand when tapped.
+// on a drawer nobody has opened yet.
+//
+// ── What the cap is, and what it is not ────────────────────────────────────
+//
+// It used to be the whole story: the first 300 entries were resolved and the
+// rest kept `page: 0` forever, which the click handler in src/main.js reads as
+// "nowhere to go" and answers by doing nothing at all. On a book with more than
+// 300 outline entries that is a contents list whose bottom half is dead — press
+// a chapter and the drawer just sits there. The comment here claimed those
+// entries "jump by resolving on demand when tapped"; nothing ever did that.
+//
+// Two things do now, and both are needed. resolveOutlineTail keeps going after
+// the eager batch, in chunks, so the numbers fill in by themselves on a document
+// left open — and resolveOutlineEntryPage resolves ONE on the way to a jump, so
+// a press that beats the tail to it still lands. The cap is back to being what
+// it says: how much is resolved before the drawer first paints.
 export const OUTLINE_EAGER_LIMIT = 300;
+
+// How many of the remaining entries are resolved between yields. Each one is a
+// round trip to the pdf.js worker, so the main thread is idle for most of a
+// chunk anyway; this is the granularity at which the tail gets out of the way
+// of something the reader actually asked for.
+export const OUTLINE_TAIL_CHUNK = 50;
 
 // How long the drawer's slide lasts, for the same reason closeNotesToc keeps a
 // timer: `transitionend` only fires if a transition actually runs, and under
@@ -151,9 +171,14 @@ export async function buildDocumentOutline(doc) {
     for (const entry of eager) {
       if (token !== outlineToken) return outlineEntries;
       entry.page = await outlineDestinationPage(doc, entry.dest);
+      if (!entry.page) entry.dead = true;
     }
     if (token !== outlineToken) return outlineEntries;
     renderDocumentOutline();
+    // ...and then everything past the cap, unhurried. Awaited rather than left
+    // running so a caller that wants the finished list gets it, and so the
+    // token guard has one owner.
+    await resolveOutlineTail(doc, token);
     return outlineEntries;
   }
 
@@ -187,6 +212,96 @@ export async function buildDocumentOutline(doc) {
   renderDocumentOutline();
   if (found.length) cachePdfContents(found, doc.numPages);
   return outlineEntries;
+}
+
+// ── Resolving the rest of them ─────────────────────────────────────────────
+
+function outlineBreathe() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// Everything past OUTLINE_EAGER_LIMIT, a chunk at a time.
+//
+// Rows are patched in place rather than re-rendered. renderDocumentOutline
+// rebuilds every <li> in the list, and doing that sixty times over a
+// three-thousand-entry outline would cost more than the lookups it is
+// reporting — and would do it while the reader is scrolling the thing being
+// rebuilt. Only the page number of the one row that just resolved changes, so
+// only that is written.
+async function resolveOutlineTail(doc, token) {
+  if (!doc) return;
+  for (let index = OUTLINE_EAGER_LIMIT; index < outlineEntries.length; index += 1) {
+    if (token !== outlineToken) return;
+    const entry = outlineEntries[index];
+    // Already answered — by the eager batch on a rebuild, or by a press that
+    // got there first (resolveOutlineEntryPage).
+    if (entry.page || entry.dead) continue;
+    entry.page = await outlineDestinationPage(doc, entry.dest);
+    if (!entry.page) entry.dead = true;
+    if (token !== outlineToken) return;
+    paintOutlineRowPage(index);
+    if ((index - OUTLINE_EAGER_LIMIT + 1) % OUTLINE_TAIL_CHUNK === 0) await outlineBreathe();
+  }
+  if (token !== outlineToken) return;
+  // The pages the scroll-spy had nothing to compare against until now.
+  updateDocumentOutlineActive();
+}
+
+// One entry, resolved because it is about to be jumped to.
+//
+// `doc` is passed in rather than read from src/documents/pdf-view.js:
+// pdf-view.js imports THIS module (setDocumentOutlinePage, from
+// updatePageIndicator), and importing it back would add a cycle to the graph
+// for the sake of one accessor. src/main.js has both and hands it over.
+//
+// Returns the page, or 0 for a destination the file does not actually define —
+// a broken link in the PDF, which the row is marked with so it can say so
+// instead of looking like a press that missed.
+export async function resolveOutlineEntryPage(index, doc) {
+  const entry = outlineEntries[index];
+  if (!entry) return 0;
+  if (entry.page) return entry.page;
+  if (entry.dead || !doc) return 0;
+  const token = outlineToken;
+  const page = await outlineDestinationPage(doc, entry.dest);
+  // Another document opened while the lookup was in flight; this answer is
+  // about a list that is no longer on screen.
+  if (token !== outlineToken) return 0;
+  entry.page = page;
+  if (!page) entry.dead = true;
+  paintOutlineRowPage(index);
+  return page;
+}
+
+// The page number on one already-rendered row, written without rebuilding the
+// list around it. A no-op before the row exists, which is the case while the
+// eager batch is still running.
+function paintOutlineRowPage(index) {
+  const link = outlineLinks[index];
+  const entry = outlineEntries[index];
+  if (!link || !entry) return;
+  markOutlineRowDead(outlineItems[index], entry);
+  let tail = link.querySelector(".document-toc-page");
+  if (!entry.page) {
+    tail?.remove();
+    return;
+  }
+  if (!tail) {
+    tail = document.createElement("span");
+    tail.className = "document-toc-page";
+    link.appendChild(tail);
+  }
+  tail.textContent = String(entry.page);
+}
+
+// A row whose destination was looked up and came back with nothing. Kept
+// distinct from "not looked up yet", which is the same missing page number and
+// a completely different thing to tell the reader: one is a file that lies
+// about where its own chapter is, the other is a lookup that has not run.
+function markOutlineRowDead(li, entry) {
+  if (!li) return;
+  if (entry.dead) li.dataset.tocUnresolved = "true";
+  else delete li.dataset.tocUnresolved;
 }
 
 // ── The list ───────────────────────────────────────────────────────────────
@@ -277,6 +392,7 @@ export function renderDocumentOutline() {
       tail
     });
     link.dataset.outlineIndex = String(index);
+    markOutlineRowDead(li, entry);
     frag.appendChild(li);
     outlineItems.push(li);
     outlineLinks.push(link);

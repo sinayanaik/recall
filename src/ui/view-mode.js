@@ -31,6 +31,19 @@ import { measureChromeHeights, resetChromeAutoHide } from "./chrome.js?v=__BUILD
 // press. Every programmatic caller (deck load, import, scheduleNoteJump, …)
 // keeps the original synchronous ordering, because several of them read the
 // rendered DOM straight afterwards.
+// ── Side by side, told where the reader went ───────────────────────────────
+//
+// Registered by src/main.js rather than imported. src/panels/highlight-cycle.js
+// reaches scheduleNoteJump, which imports setViewMode from here — so importing
+// it back would deepen the view-mode ↔ anchors cycle this file's header already
+// warns about. One hook, called with the mode being switched TO, and the split
+// decides for itself whether that is a surface it can be beside.
+let splitViewHook = null;
+
+export function setSplitViewHook(fn) {
+  splitViewHook = fn;
+}
+
 export function setViewMode(mode, options = {}) {
   const next = mode === "notes" ? "notes"
     : mode === "highlights" ? "highlights"
@@ -56,6 +69,10 @@ export function setViewMode(mode, options = {}) {
   closeHighlightsEditor();
   const changed = state.viewMode !== next;
   state.viewMode = next;
+  // Before the stages are shown and hidden below: the split's own layout is a
+  // class on the panel that decides which of them gets a column, and setting it
+  // after the visibility flip would lay the panel out twice.
+  splitViewHook?.(next);
   const notesActive = next === "notes";
   const highlightsActive = next === "highlights";
   const documentActive = next === "document";

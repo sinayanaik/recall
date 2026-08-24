@@ -1,0 +1,327 @@
+/* Side by side: the reading surface, and what you wrote on it
+ *
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ * See src/panels/highlight-cycle.js for what this is for and why the reading
+ * surfaces are not moved to make room for it.
+ *
+ * ── The layout, in one sentence ────────────────────────────────────────────
+ *
+ * .quiz-panel is already a grid holding the four surfaces as siblings, of which
+ * exactly one is ever visible; `is-split` gives that grid a second and third
+ * track and hands them to the divider and this pane. Nothing is reparented, so
+ * .pdf-page's offsetParent is still .document-stage and every highlight on every
+ * paper is still where pageOffsetTop() says it is.
+ *
+ * ── ...and why the tracks are `fr` ─────────────────────────────────────────
+ *
+ * --split-a / --split-b are flex values (60fr / 40fr for the 3:2 default),
+ * written by applySplitRatio. A percentage would be a percentage of the whole
+ * grid, and the split does not own the whole grid — see the long note on that
+ * function. `fr` divides what is left after the tabs row and the divider, which
+ * is the thing actually being divided.
+ */
+
+/* ── Two columns ───────────────────────────────────────────────────────────
+   Both stage selectors, because either reading surface can be the one on the
+   left: a paper on a PDF deck, a note on any deck. The stages themselves are
+   untouched — they are told which cell to sit in and nothing else. */
+/* Both selectors, and the second is load-bearing. The rule this displaces is
+   `.quiz-panel.notes-mode:has(.view-mode-toggle:not([hidden]))` in
+   styles/11-chrome.css, whose :has() takes the specificity of its argument and
+   so out-ranks three plain classes. Losing it left the panel with the two rows
+   THAT rule declares, and the divider and the pane — placed in rows 3 and 4 —
+   fell into implicit auto tracks: the paper collapsed to its 22px minimum and
+   the pane took 695px of an 844px phone. The same pairing 11-chrome.css uses
+   for its own two variants, for the same reason. */
+.quiz-panel.notes-mode.is-split,
+.quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+  grid-template-columns: minmax(0, var(--split-a, 60fr)) auto minmax(0, var(--split-b, 40fr));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.quiz-panel.notes-mode.is-split > .view-mode-row {
+  grid-row: 1;
+  grid-column: 1 / -1;
+}
+
+.quiz-panel.notes-mode.is-split > .notes-stage:not([hidden]),
+.quiz-panel.notes-mode.is-split > .document-stage:not([hidden]) {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.quiz-panel.notes-mode.is-split > .split-divider {
+  grid-row: 2;
+  grid-column: 2;
+}
+
+.quiz-panel.notes-mode.is-split > .highlight-cycle {
+  grid-row: 2;
+  grid-column: 3;
+}
+
+/* ── The divider ───────────────────────────────────────────────────────────
+   A real element rather than `resize: horizontal`, because it has to work in
+   one axis at one width and the other axis at another, and to be reachable by
+   keyboard (← → or ↑ ↓, Home for 3:2).
+
+   Wider than the line it draws: the hit area is the whole track, and a 1px
+   target is not something a finger or a fast mouse can find. */
+.split-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.split-divider > span {
+  display: block;
+  width: 2px;
+  height: 100%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 80%, transparent);
+  transition: background-color 0.15s ease;
+}
+
+.split-divider:hover > span,
+.split-divider:focus-visible > span,
+.split-divider.is-dragging > span {
+  background: var(--accent);
+}
+
+.split-divider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+  border-radius: 6px;
+}
+
+/* ── The pane ──────────────────────────────────────────────────────────────
+   The same card chrome the stages beside it wear (11-chrome.css for the notes
+   stage, 12-notes.css for the highlights one), so the two halves read as two
+   panes of one thing rather than a panel with something bolted to it. */
+.highlight-cycle {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: var(--card-border-width, 1px) solid var(--line);
+  border-radius: var(--card-radius, 14px);
+  background: var(--card);
+  box-shadow: var(--card-shadow);
+}
+
+/* ── The cycle bar ─────────────────────────────────────────────────────────
+   Three controls and a count. The count is the whole point of the bar — "12 /
+   87" is what tells a reader working through a paper how much of it is left —
+   so it takes the middle and the two steps flank it. */
+.hc-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.hc-step,
+.hc-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.hc-step:hover:not(:disabled),
+.hc-close:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+/* At either end of the list. Kept visible rather than hidden — a control that
+   vanishes moves the one beside it, and the reader is aiming at that one. */
+.hc-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.hc-count {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.hc-close {
+  margin-left: auto;
+  font-size: 1.1rem;
+}
+
+/* ── The list ──────────────────────────────────────────────────────────────
+   Rendered by src/panels/highlights-editor.js, exactly as the Highlights tab
+   is — so everything under this box is styled by 44-highlights-editor.css and
+   there is nothing to restate. Only the box is here. */
+.hc-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+/* "Go to →" is hover-revealed in the Highlights tab (44-highlights-editor.css),
+   which is right for a page of cards being read and wrong here: in the split,
+   going to the highlight IS the reason the pane is open, and a phone — where
+   this pane is a third of the screen — has no hover to reveal it with. */
+.hc-body .hl-note-goto {
+  opacity: 1;
+}
+
+.hc-empty {
+  margin: 12px 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-style: italic;
+}
+
+/* Which one the bar is on. Deliberately a rail and a wash rather than a border:
+   an entry is already a bounded card (44-highlights-editor.css), and a second
+   border round the current one makes it a box in a box. */
+.hc-body .hl-note.is-current {
+  position: relative;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.hc-body .hl-note.is-current::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* ── The way in ────────────────────────────────────────────────────────────
+   In the contents drawer's Highlights section, above the list — see
+   installDrawerSections in src/panels/drawer-highlights.js. Full width and
+   quiet: it is the heading of that list as much as it is a button. */
+.drawer-side-by-side {
+  display: block;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent-strong, var(--accent));
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.drawer-side-by-side:hover,
+.drawer-side-by-side:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ── Two rows, on a phone ──────────────────────────────────────────────────
+   390px split down the middle is two 190px columns: a PDF page fit to that is a
+   thumbnail and a note card is one word per line. Stacked, the same 3:2 is a
+   readable page with its highlights under it, and the same divider drags the
+   other way. */
+@media (max-width: 720px) {
+  .quiz-panel.notes-mode.is-split,
+  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+    grid-template-columns: minmax(0, 1fr);
+    /* Lengths, not `fr` — see applyStackedSpace in
+       src/panels/highlight-cycle.js for why a flexible ROW track cannot divide
+       this panel on a phone. --split-space is what is left of the viewport
+       below the tabs, measured; --split-n is the same ratio the columns use,
+       unitless so it can multiply a length. The fallback is a plain 70dvh so a
+       first paint before the measurement lands is still roughly right. */
+    grid-template-rows:
+      auto
+      calc((var(--split-space, 70dvh) - 14px) * var(--split-n, 0.6))
+      auto
+      calc((var(--split-space, 70dvh) - 14px) * (1 - var(--split-n, 0.6)));
+  }
+
+  .quiz-panel.notes-mode.is-split > .view-mode-row {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .quiz-panel.notes-mode.is-split > .notes-stage:not([hidden]),
+  .quiz-panel.notes-mode.is-split > .document-stage:not([hidden]) {
+    grid-row: 2;
+    grid-column: 1;
+  }
+
+  .quiz-panel.notes-mode.is-split > .split-divider {
+    grid-row: 3;
+    grid-column: 1;
+  }
+
+  .quiz-panel.notes-mode.is-split > .highlight-cycle {
+    grid-row: 4;
+    grid-column: 1;
+  }
+
+  /* Stretched rather than given a height, so it FILLS its track.
+     That track is the grid's only `auto` row, which means it also absorbs
+     whatever slack is left after the two measured halves have taken theirs —
+     and a 14px box centred in a 42px track would leave most of the band
+     un-pressable and, worse, would make the drag arithmetic (which subtracts
+     the handle's own thickness) disagree with the layout by that difference.
+     A wider grab band on a phone is the right answer anyway. */
+  .split-divider {
+    width: auto;
+    height: auto;
+    min-height: 16px;
+    align-self: stretch;
+    cursor: row-resize;
+  }
+
+  .split-divider > span {
+    width: 44px;
+    height: 3px;
+    align-self: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .split-divider > span,
+  .hc-step,
+  .hc-close,
+  .drawer-side-by-side {
+    transition: none;
+  }
+}

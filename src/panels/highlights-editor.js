@@ -92,9 +92,16 @@ export function noteVerbsFor(entry) {
     };
 }
 
-function entryKey(entry) {
+// A highlight's identity on this surface, and the value every card carries as
+// data-highlight-key. Exported because side-by-side mode
+// (src/panels/highlight-cycle.js) has to find the card for a given entry in a
+// list this module built — computing the same string over there would be the
+// same key written twice, which is how the two come to disagree.
+export function highlightEntryKey(entry) {
   return entry.highlightId ? `doc:${entry.highlightId}` : `mark:${entry.markIndex}`;
 }
+
+const entryKey = highlightEntryKey;
 
 // ── What is on screen, as one string ────────────────────────────────────────
 //
@@ -318,8 +325,29 @@ export function commitOpenNote({ repaint = true } = {}) {
 
 let lastEntries = [];
 
+// ── One editor, two containers ──────────────────────────────────────────────
+//
+// This surface is the Highlights tab, and it is now also the right-hand pane of
+// side-by-side mode (src/panels/highlight-cycle.js), which lists the highlights
+// of ONE reading surface beside that surface. That pane wants exactly these
+// cards — the excerpt, the region preview, the rendered note under it, editable
+// where it sits — so it renders through this module rather than growing a second
+// implementation of them that would drift.
+//
+// What the two share is everything except where the nodes go, so `list` is
+// threaded through the four places that used to name el.highlightsList outright
+// and defaults to it everywhere. The module's other state (editingKey,
+// openNoteKit, lastEntries) stays singleton deliberately: only one of the two
+// containers is ever on screen — the split turns off when the Highlights tab
+// opens — and entryKey() is a deck-wide identity, not a per-container one.
+let lastList = null;
+
+function editorList(list) {
+  return list || el.highlightsList;
+}
+
 function restampSignature() {
-  const root = el.highlightsList?.querySelector(`:scope > .${HL_NOTES_CLASS}`);
+  const root = lastList?.querySelector(`:scope > .${HL_NOTES_CLASS}`);
   if (root) root.dataset.signature = editorSignature(lastEntries);
 }
 
@@ -472,12 +500,11 @@ export const HL_CONTAIN_MIN_NODES = 12000;
 // Exported under a name that says what it is for: tools/highlight-check.mjs
 // drives the decision directly, because a threshold nothing checks is a
 // threshold that gets moved.
-export function applyContainmentForCheck(articles, samples) {
-  return applyContainment(articles, samples);
+export function applyContainmentForCheck(articles, samples, list) {
+  return applyContainment(articles, samples, editorList(list));
 }
 
-function applyContainment(articles, samples) {
-  const list = el.highlightsList;
+function applyContainment(articles, samples, list) {
   const root = list?.querySelector(`:scope > .${HL_NOTES_CLASS}`);
   if (!root) return;
   // One query, once, at the end of the build. querySelectorAll("*") over a
@@ -540,10 +567,10 @@ function calibrateEntryEstimates(articles, samples) {
 // measured at 6x CPU throttle, 31ms per frame painting everything up front
 // against 71ms rendering it as it was reached. Work done ahead of the reader is
 // free; the same work done under them is not.
-function paintEntries(articles) {
+function paintEntries(articles, list) {
   return Promise.all(articles.map((article) => paintEntry(article))).then(() => {
     // After a frame, so the heights being read are the laid-out ones.
-    requestAnimationFrame(() => measureAndContain(articles));
+    requestAnimationFrame(() => measureAndContain(articles, list));
   });
 }
 
@@ -551,7 +578,7 @@ function paintEntries(articles) {
 // when a tab that has just been opened is still scrolled to the beginning — and
 // an entry the engine is allowed to skip reports its ESTIMATE as its height,
 // which would make this measure its own guess.
-function measureAndContain(articles) {
+function measureAndContain(articles, list) {
   const samples = [];
   for (const article of articles) {
     if (samples.length >= HL_ESTIMATE_SAMPLE) break;
@@ -560,24 +587,28 @@ function measureAndContain(articles) {
     const real = article.offsetHeight;
     if (guess > 0 && real > 0) samples.push([real, guess]);
   }
-  applyContainment(articles, samples);
+  applyContainment(articles, samples, list);
 }
 
-// Rendered into el.highlightsList. `entries` is one flat list in reading order,
+// Rendered into `list` — el.highlightsList for the Highlights tab, the pane's
+// own body in side-by-side mode. `entries` is one flat list in reading order,
 // each carrying the group it belongs to — a page for a document highlight, a
 // chapter for a <mark> — so the grouping is a single pass rather than two
 // shapes of input.
-export function renderHighlightsEditor(entries) {
-  const list = el.highlightsList;
+export function renderHighlightsEditor(entries, list = el.highlightsList) {
   if (!list) return Promise.resolve();
   // A rebuild while somebody is typing would take the words out from under
   // them. Nothing is lost by waiting: the editor writes as you type, and
   // closing it repaints.
   if (editingKey) return Promise.resolve();
   lastEntries = entries;
+  lastList = list;
   const signature = editorSignature(entries);
   const existing = list.querySelector(`:scope > .${HL_NOTES_CLASS}`);
   if (existing && existing.dataset.signature === signature) return Promise.resolve();
+  // ...asked of THIS container. The guard is "what is already on screen here",
+  // and the other container holding an identical signature says nothing about
+  // this one — which is empty until the first render into it.
 
   const scrollTop = list.scrollTop;
   const root = document.createElement("div");
@@ -605,13 +636,12 @@ export function renderHighlightsEditor(entries) {
   // Painted AFTER the surface is in the document, not inline as each article is
   // built: a mermaid diagram inside a note needs real layout to size itself
   // against, which a still-detached node does not have.
-  return paintEntries(painted.map(([article]) => article));
+  return paintEntries(painted.map(([article]) => article), list);
 }
 
-// One delegated listener for the whole surface, installed once. A listener per
-// note would be one more thing every rebuild has to re-attach.
-export function initHighlightsEditor() {
-  const list = el.highlightsList;
+// One delegated listener for the whole surface, installed once per container. A
+// listener per note would be one more thing every rebuild has to re-attach.
+export function initHighlightsEditor(list = el.highlightsList) {
   if (!list) return;
   const open = (target) => {
     const body = target.closest?.(`.${HL_NOTE_CLASS}-body`);
@@ -629,10 +659,18 @@ export function initHighlightsEditor() {
   });
   // The tab going away is the one exit no blur is guaranteed for — a phone
   // backgrounding the browser mid-sentence. The same net the note popup keeps.
+  //
+  // On the DOCUMENT, so it is installed once however many containers this is
+  // called for: two registrations would commit the same note twice, and the
+  // second commit runs against an editingKey the first already cleared.
+  if (visibilityNetInstalled) return;
+  visibilityNetInstalled = true;
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") closeHighlightsEditor();
   });
 }
+
+let visibilityNetInstalled = false;
 
 // Every way out of the Highlights tab — a view change, a deck swap — has to
 // flush, for the reason the note popup's own close does: text typed and not yet

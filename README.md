@@ -1069,7 +1069,7 @@ area of the app —
 | `images/` | Upload, the compression level chosen before it, the offline outbox, paste and drag handling, in-place resize and delete |
 | `backup/` | The whole library as one `.zip`, and the additive restore |
 | `quick-notes/` | The Quick Notes deck and its board |
-| `ui/` `panels/` `pwa/` | Chrome, overlays, navigation, themes; the cloze panel and the Highlights tab — which is a continuous editor of every highlight and its note, plus the Highlights section each reading panel's own drawer carries; the service-worker client and App Info |
+| `ui/` `panels/` `pwa/` | Chrome, overlays, navigation, themes; the cloze panel and the Highlights tab — which is a continuous editor of every highlight and its note, plus the Highlights section each reading panel's own drawer carries, and `highlight-cycle.js`, which puts that same editor in a second pane beside the paper or the note it is about, with ◀ ▶ to walk through them; the service-worker client and App Info |
 
 **The one rule that matters:** `core/` imports nothing from the rest of the app.
 Modules elsewhere import each other freely — that is safe, because what crosses

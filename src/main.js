@@ -72,7 +72,8 @@ import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.j
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
 import { initHighlightsEditor } from "./panels/highlights-editor.js?v=__BUILD__";
-import { markDrawerHighlightsDirty } from "./panels/drawer-highlights.js?v=__BUILD__";
+import { markDrawerHighlightsDirty, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
+import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
@@ -104,11 +105,11 @@ import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BU
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setSplitViewHook, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 import { initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
-import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
+import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
@@ -936,6 +937,26 @@ onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
 // The Highlights tab writes its notes in place — one delegated listener for the
 // whole surface, installed once.
 onDomReady(() => initHighlightsEditor());
+
+// ── Side by side ────────────────────────────────────────────────────────────
+//
+// Three ends wired here because none of the three modules may import another:
+// src/panels/drawer-highlights.js is reached from the document surface, and
+// src/ui/view-mode.js is on the far side of the anchors cycle. main.js is the
+// file that knows all of them — the same arrangement setHighlightsChangedHandler
+// and setDocumentAttachHandler already use.
+onDomReady(() => {
+  initHighlightCycle();
+  // The drawer's "Side by side" button, in whichever of the two drawers it was
+  // pressed in.
+  setDrawerSideBySideHandler((surface) => openHighlightSplit(surface));
+  // ...and a press on one of that drawer's rows, so an open split follows it
+  // rather than showing a different highlight from the one just jumped to.
+  setDrawerRowJumpHook((locator) => cycleToLocator(locator));
+  // Leaving for Cards or the Highlights tab closes the split; moving between
+  // Notes and Document moves it.
+  setSplitViewHook((next) => splitFollowsViewMode(next));
+});
 // The badges are painted with each page as it renders, and the printed notes are
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
 // why these are registered rather than imported.
@@ -969,7 +990,13 @@ onDomReady(() => {
 // pdf-page-notes.js already imports — this file is the one that knows both ends
 // (the same reason setDocumentPagePaintedHook exists below).
 onDomReady(() => setHighlightsChangedHandler(() => {
-  renderHighlightsPanel();
+  // One of the two, never both: they are the same editor rendering the same
+  // cards into two different boxes, and the one that is not on screen would be
+  // several hundred cards rebuilt for nobody. The Highlights tab rebuilds on
+  // the way in regardless (setViewMode -> renderHighlightsPanel), and opening
+  // it closes the split.
+  if (isHighlightSplitOpen()) refreshHighlightCycle();
+  else renderHighlightsPanel();
   repaintPdfPageNotes();
   // ...and the two drawers, which are the third consumer. Marked stale rather
   // than rebuilt: both are closed almost all of the time, and rebuilding a
@@ -2896,13 +2923,40 @@ const DOCUMENT_REFIT_MS = 150;
 el.documentTocBtn?.addEventListener("click", toggleDocumentToc);
 el.documentTocCloseBtn?.addEventListener("click", closeDocumentToc);
 initDocumentOutlineFolding();
+// Landing on a contents entry, including one whose page is not known yet.
+//
+// A big book's outline is resolved a chunk at a time in the background
+// (resolveOutlineTail), so between opening the document and that pass reaching
+// the bottom of the list there is a window where a row genuinely has no page on
+// it. This used to be `if (!entry?.page) return;` — a press in that window, or
+// on ANY entry past the 300-entry eager cap before it was lifted, did nothing
+// whatsoever: no jump, no message, the drawer just sitting there. That is the
+// "clicking a TOC entry at the bottom of a large PDF does nothing" report.
+//
+// So the press resolves the destination itself and then goes. The drawer closes
+// only once there is somewhere to go: a broken destination leaves it open with
+// that row marked, because closing the contents on a jump that did not happen
+// is the same silence with an extra step.
 el.documentOutlineList?.addEventListener("click", (event) => {
   const link = event.target.closest(".notes-toc-link");
   if (!link) return;
   event.preventDefault();
-  const entry = documentOutlineEntries()[Number(link.dataset.outlineIndex)];
-  if (!entry?.page) return;
-  scrollToDocumentPage(entry.page, 0);
+  const index = Number(link.dataset.outlineIndex);
+  const entry = documentOutlineEntries()[index];
+  if (!entry) return;
+  if (entry.page) {
+    goToOutlineEntry(entry.page);
+    return;
+  }
+  // One worker round trip. Unawaited on purpose — the handler cannot block —
+  // and guarded inside against the document having changed underneath it.
+  resolveOutlineEntryPage(index, currentPdfDocument()).then((page) => {
+    if (page) goToOutlineEntry(page);
+  });
+});
+
+function goToOutlineEntry(page) {
+  scrollToDocumentPage(page, 0);
   // Always, unlike the notes contents, and the difference is not an oversight.
   // Above 720px the notes STAGE makes room for its drawer (the
   // .notes-stage.is-toc-open rules in styles/12-notes.css), so the drawer covers
@@ -2913,7 +2967,7 @@ el.documentOutlineList?.addEventListener("click", (event) => {
   // and a drawer that stayed open over the page it just took you to would be
   // hiding the thing it was asked to show.
   closeDocumentToc();
-});
+}
 
 // Clicking outside the open drawer dismisses it. The notes drawer makes this
 // conditional — it stops dismissing once the stage makes room for it, since

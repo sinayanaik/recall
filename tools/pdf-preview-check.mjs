@@ -136,6 +136,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-page-notes.js?v=__BUILD__",
     "/src/panels/highlights-editor.js?v=__BUILD__",
     "/src/panels/drawer-highlights.js?v=__BUILD__",
+    "/src/panels/highlight-cycle.js?v=__BUILD__",
     "/src/notes/notes-edit-split.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
@@ -1787,6 +1788,367 @@ try {
     drawer.wanted === 0 || drawer.landedOn === drawer.wanted,
     `wanted page ${drawer.wanted}, landed on ${drawer.landedOn}`);
 
+  // ── 8f. The contents rows, as the reader sees them ──────────────────────
+  //
+  // One row class, two elements: src/notes/toc-tree.js builds a note's heading
+  // as an <a href> and a PDF's page as a <button>, and .notes-toc-link reset
+  // none of the user-agent button styling underneath it. So a document's
+  // contents rendered as a stack of ButtonFace pills, each shrink-wrapped to
+  // its own title with the text centred and the page number pushed up against
+  // it — while every DOM assertion about the drawer passed, exactly as they all
+  // did while it was invisible. Measured off getComputedStyle and the boxes,
+  // for the same reason.
+  const tocRows = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const el = document.getElementById("documentOutlineDrawer");
+    // OPEN, not merely present. A closed drawer is display:none and every box in
+    // it measures 0x0 — which every assertion below would then pass vacuously,
+    // which is the exact failure mode this whole block exists to catch.
+    if (!el.classList.contains("is-open")) document.getElementById("documentTocBtn").click();
+    await settle(400);
+    api.setDrawerSection(el, "contents");
+    await settle(200);
+    const list = document.getElementById("documentOutlineList");
+    const rows = Array.from(list.querySelectorAll(".notes-toc-link"));
+    if (!rows.length || !list.getBoundingClientRect().width) return { rows: rows.length, listWidth: 0 };
+    const listBox = list.getBoundingClientRect();
+    const widths = rows.map((row) => Math.round(row.getBoundingClientRect().width));
+    // The lit row is SUPPOSED to have a background — it is the section the
+    // reader is in. What must not have one is an ordinary row, which is where
+    // the user agent's ButtonFace was coming through.
+    const styles = rows.filter((row) => !row.classList.contains("is-active")).map((row) => {
+      const s = getComputedStyle(row);
+      return { align: s.textAlign, bg: s.backgroundColor, tag: row.tagName };
+    });
+    // The page numbers form a column only if every one of them ends at the same
+    // x — which is the thing margin-left:auto could not do inside a box that
+    // was only as wide as its own text.
+    const pageRights = rows
+      .map((row) => row.querySelector(".document-toc-page"))
+      .filter(Boolean)
+      .map((tail) => Math.round(tail.getBoundingClientRect().right));
+    return {
+      rows: rows.length,
+      listWidth: Math.round(listBox.width),
+      widths,
+      sameWidth: new Set(widths).size === 1,
+      align: styles.map((s) => s.align),
+      quiet: styles.length,
+      opaque: styles.filter((s) => s.bg !== "rgba(0, 0, 0, 0)" && s.bg !== "transparent" && !s.bg.endsWith(", 0)")).length,
+      tags: Array.from(new Set(styles.map((s) => s.tag))),
+      pageRights,
+      pagesAligned: pageRights.length > 1 && new Set(pageRights).size === 1
+    };
+  }`);
+
+  check("a contents row is as wide as the drawer, not as wide as its title",
+    tocRows.rows > 1 && tocRows.listWidth > 100 && tocRows.sameWidth
+      && tocRows.widths[0] >= tocRows.listWidth - 2,
+    `${tocRows.rows} row(s) of ${new Set(tocRows.widths || []).size} different width(s) in a ${tocRows.listWidth}px list`);
+  check("...with its text against the left edge",
+    (tocRows.align || []).every((a) => a === "left" || a === "start"),
+    Array.from(new Set(tocRows.align || [])).join(", "));
+  check("...and no button of its own painted behind it",
+    tocRows.quiet > 0 && tocRows.opaque === 0,
+    `${tocRows.opaque} of ${tocRows.quiet} unlit row(s) carry a background · ${(tocRows.tags || []).join("/")}`);
+  check("...and the page numbers line up as a column",
+    tocRows.pagesAligned,
+    `${(tocRows.pageRights || []).length} number(s) ending at ${Array.from(new Set(tocRows.pageRights || [])).join(", ")}`);
+
+  // ── 8g. A contents entry whose page is not known yet ────────────────────
+  //
+  // Resolving an outline destination costs a worker round trip each, so only
+  // the first OUTLINE_EAGER_LIMIT of them are done before the drawer paints.
+  // Everything past that used to keep page 0 forever, and the click handler
+  // read page 0 as "nowhere to go" and did nothing whatsoever: a book with more
+  // than 300 chapters had a contents list whose bottom half was dead. This is
+  // that state, made deterministically on a four-page fixture — the entry's
+  // page is cleared, which is exactly what the cap left behind.
+  const lateToc = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const el = document.getElementById("documentOutlineDrawer");
+    const entries = api.documentOutlineEntries();
+    const target = entries.findIndex((entry) => entry.page > 1 && entry.dest);
+    if (target < 0) return { skipped: true };
+    const wanted = entries[target].page;
+    // Back to page 1, so a jump that does not happen is visible as one.
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(200);
+    // Un-resolve it, exactly as the cap left it.
+    entries[target].page = 0;
+    entries[target].dead = false;
+    api.renderDocumentOutline();
+    await settle(120);
+    if (!document.getElementById("documentTocBtn").getAttribute("aria-expanded") !== false) {
+      // The drawer closes on a jump, so re-open it for this one.
+      if (!el.classList.contains("is-open")) document.getElementById("documentTocBtn").click();
+      await settle(300);
+    }
+    api.setDrawerSection(el, "contents");
+    await settle(120);
+    const row = document.querySelectorAll('#documentOutlineList .notes-toc-link')[target];
+    const hadNumber = Boolean(row.querySelector(".document-toc-page"));
+    row.click();
+    await settle(900);
+    return {
+      wanted,
+      hadNumber,
+      landedOn: api.currentDocumentPage(),
+      resolved: api.documentOutlineEntries()[target].page,
+      numberNow: row.querySelector(".document-toc-page")?.textContent || ""
+    };
+  }`);
+
+  if (lateToc.skipped) {
+    notes.push("no outline entry past page 1 with a destination — the late-resolve check had nothing to un-resolve.");
+  } else {
+    check("a contents row whose page is not resolved yet still jumps",
+      lateToc.landedOn === lateToc.wanted,
+      `wanted page ${lateToc.wanted}, landed on ${lateToc.landedOn} (row showed a number first: ${lateToc.hadNumber})`);
+    check("...and the row gets its page number from that press",
+      lateToc.resolved === lateToc.wanted && lateToc.numberNow === String(lateToc.wanted),
+      `entry.page=${lateToc.resolved}, row reads “${lateToc.numberNow}”`);
+  }
+
+  // A destination the file does not define is a different thing from one not
+  // looked up yet, and the reader has to be able to tell: the row says so and
+  // the drawer stays open, rather than closing on a jump that did not happen.
+  const deadToc = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const el = document.getElementById("documentOutlineDrawer");
+    if (!el.classList.contains("is-open")) document.getElementById("documentTocBtn").click();
+    await settle(300);
+    api.setDrawerSection(el, "contents");
+    const entries = api.documentOutlineEntries();
+    const target = entries.findIndex((entry) => entry.dest);
+    if (target < 0) return { skipped: true };
+    entries[target].page = 0;
+    entries[target].dead = false;
+    entries[target].dest = "no-such-destination-in-this-file";
+    api.renderDocumentOutline();
+    await settle(120);
+    const row = document.querySelectorAll('#documentOutlineList .notes-toc-link')[target];
+    row.click();
+    await settle(700);
+    return {
+      marked: row.closest(".notes-toc-item").dataset.tocUnresolved === "true",
+      stillOpen: el.classList.contains("is-open")
+    };
+  }`);
+
+  if (!deadToc.skipped) {
+    check("a contents entry that points nowhere says so instead of doing nothing",
+      deadToc.marked, `data-toc-unresolved=${deadToc.marked}`);
+    check("...and leaves the contents open, since it took you nowhere",
+      deadToc.stillOpen, `drawer open=${deadToc.stillOpen}`);
+  }
+
+  // ── 8h. Side by side ────────────────────────────────────────────────────
+  //
+  // The page and what you wrote on it, in one panel. The layout is a second and
+  // third track on .quiz-panel's own grid rather than a new container, because
+  // a .pdf-page's offsetParent is .document-stage and pageOffsetTop() measures
+  // against it — so the assertions below are about where the boxes ended up on
+  // screen, and about the paper still being where it was.
+  const split = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(300);
+    const drawerEl = document.getElementById("documentOutlineDrawer");
+    if (!drawerEl.classList.contains("is-open")) document.getElementById("documentTocBtn").click();
+    await settle(300);
+    api.setDrawerSection(drawerEl, "highlights");
+    await settle(200);
+    const button = drawerEl.querySelector(".drawer-side-by-side");
+    if (!button) return { error: "no Side by side button in the drawer" };
+    button.click();
+    await settle(700);
+    const panel = document.querySelector(".quiz-panel");
+    const stage = document.getElementById("documentStage").getBoundingClientRect();
+    const pane = document.getElementById("highlightCycle").getBoundingClientRect();
+    const cards = document.querySelectorAll("#highlightCycleBody .hl-note");
+    const records = api.documentHighlightsInReadingOrder();
+    const first = {
+      count: document.getElementById("highlightCycleCount").textContent,
+      page: api.currentDocumentPage(),
+      current: document.querySelector("#highlightCycleBody .hl-note.is-current")?.dataset.highlightKey || ""
+    };
+    document.getElementById("highlightCycleNextBtn").click();
+    await settle(1200);
+    const second = {
+      count: document.getElementById("highlightCycleCount").textContent,
+      page: api.currentDocumentPage(),
+      current: document.querySelector("#highlightCycleBody .hl-note.is-current")?.dataset.highlightKey || ""
+    };
+    // The divider, dragged left. Synthetic PointerEvents, so setPointerCapture
+    // has no real pointer to capture — which the handler is written to survive.
+    const divider = document.getElementById("splitDivider");
+    const grip = divider.getBoundingClientRect();
+    const send = (type, x) => divider.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, pointerId: 1, clientX: x, clientY: grip.top + grip.height / 2
+    }));
+    send("pointerdown", grip.left + grip.width / 2);
+    send("pointermove", stage.left + (pane.right - stage.left) * 0.4);
+    send("pointerup", stage.left + (pane.right - stage.left) * 0.4);
+    await settle(500);
+    const dragged = {
+      stage: Math.round(document.getElementById("documentStage").getBoundingClientRect().width),
+      pane: Math.round(document.getElementById("highlightCycle").getBoundingClientRect().width)
+    };
+    return {
+      isSplit: panel.classList.contains("is-split"),
+      side: Math.round(pane.left) >= Math.round(stage.right) - 1,
+      sameRow: Math.abs(Math.round(pane.top) - Math.round(stage.top)) <= 2,
+      ratio: stage.width / (stage.width + pane.width),
+      cards: cards.length,
+      records: records.length,
+      viewMode: api.state.viewMode,
+      drawerClosed: !drawerEl.classList.contains("is-open"),
+      first, second, dragged
+    };
+  }`);
+
+  check("the drawer's Highlights half offers side by side, and it opens",
+    split.isSplit && !split.error, split.error || `is-split=${split.isSplit}, drawer closed behind it=${split.drawerClosed}`);
+  check("...with the paper on the left and its highlights on the right",
+    split.side && split.sameRow,
+    `pane starts at the stage's right edge=${split.side}, same row=${split.sameRow}`);
+  check("...at 3:2", Math.abs((split.ratio || 0) - 0.6) < 0.03, `${((split.ratio || 0) * 100).toFixed(1)}% / ${(100 - (split.ratio || 0) * 100).toFixed(1)}%`);
+  check("...without leaving the Document view", split.viewMode === "document", `viewMode=${split.viewMode}`);
+  check("...listing every highlight on this paper, with its note under it",
+    split.cards === split.records && split.cards > 0,
+    `${split.cards} card(s) for ${split.records} highlight(s)`);
+  check("▶ moves to the next highlight",
+    split.first?.count !== split.second?.count && split.second?.current && split.first?.current !== split.second?.current,
+    `${split.first?.count} → ${split.second?.count}`);
+  check("...and takes the page with it",
+    split.second?.page !== undefined,
+    `page ${split.first?.page} → ${split.second?.page}`);
+  check("the divider resizes the two halves",
+    split.dragged?.pane > split.dragged?.stage * 0.9,
+    `${split.dragged?.stage}px / ${split.dragged?.pane}px after dragging to 40%`);
+
+  // On a phone the same 3:2 has to be two ROWS: 390px halved is two thumbnails.
+  // Read AFTER the viewport shrinks, so the media query has actually flipped.
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true
+  });
+  const stacked = await page.evaluate(`async () => {
+    const { settle } = window.__recall;
+    await settle(600);
+    // The drag above left the split at 40%. A double-press on the divider is
+    // the documented way back to 3:2, so it is exercised here and the heights
+    // below are measured against the default rather than against a leftover.
+    document.getElementById("splitDivider").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await settle(500);
+    const stage = document.getElementById("documentStage").getBoundingClientRect();
+    const pane = document.getElementById("highlightCycle").getBoundingClientRect();
+    const divider = document.getElementById("splitDivider");
+    return {
+      stacked: Math.round(pane.top) >= Math.round(stage.bottom) - 1,
+      sameColumn: Math.abs(Math.round(pane.left) - Math.round(stage.left)) <= 2,
+      cursor: getComputedStyle(divider).cursor,
+      orientation: divider.getAttribute("aria-orientation"),
+      paneWidth: Math.round(pane.width),
+      viewWidth: window.innerWidth,
+      ratio: stage.height / (stage.height + pane.height),
+      stageHeight: Math.round(stage.height),
+      paneHeight: Math.round(pane.height),
+      viewHeight: window.innerHeight
+    };
+  }`);
+  check("on a phone the split stacks instead of halving the width",
+    stacked.stacked && stacked.sameColumn && stacked.paneWidth > stacked.viewWidth * 0.7,
+    `pane ${stacked.paneWidth}px wide, below the page=${stacked.stacked}, in a ${stacked.viewWidth}px viewport`);
+  check("...and the divider drags the other way",
+    stacked.cursor === "row-resize" && stacked.orientation === "horizontal",
+    `cursor=${stacked.cursor}, aria-orientation=${stacked.orientation}`);
+  // The heights, and this one has drawn blood: `fr` divides FREE space, which
+  // only exists when the container's size in that axis is definite — and down
+  // the page, on a phone, .quiz-panel's is not. Flexible ROW tracks in an
+  // indefinite container are sized to their CONTENT, so 60fr/40fr gave the
+  // paper its 22px minimum and the pane 695px of an 844px screen. The stacked
+  // rows are measured lengths now (applyStackedSpace); this is what says so.
+  check("...and a double-press on it comes back to 3:2 down the screen",
+    Math.abs((stacked.ratio || 0) - 0.6) < 0.04
+      && stacked.stageHeight > stacked.viewHeight * 0.35,
+    `${stacked.stageHeight}px of paper over ${stacked.paneHeight}px of highlights `
+    + `(${((stacked.ratio || 0) * 100).toFixed(1)}%) in a ${stacked.viewHeight}px viewport`);
+
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+  });
+  const splitClosed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    await settle(300);
+    // Leaving for a view that is not a reading surface closes it; the Highlights
+    // tab is where the same cards live full width.
+    api.setViewMode("highlights");
+    await settle(500);
+    const closed = {
+      isSplit: document.querySelector(".quiz-panel").classList.contains("is-split"),
+      paneHidden: document.getElementById("highlightCycle").hidden,
+      tabCards: document.querySelectorAll("#highlightsList .hl-note").length
+    };
+    api.setViewMode("document");
+    await settle(400);
+    return closed;
+  }`);
+
+  check("leaving for the Highlights tab puts the split away",
+    !splitClosed.isSplit && splitClosed.paneHidden,
+    `is-split=${splitClosed.isSplit}, pane hidden=${splitClosed.paneHidden}`);
+  check("...and the tab still lists them, from the same editor",
+    splitClosed.tabCards > 0, `${splitClosed.tabCards} card(s) in the tab`);
+
+  // The Notes panel's own drawer does the same thing, and must list a DIFFERENT
+  // set: a PDF deck's Notes tab is an ordinary note the reader may well have
+  // highlighted too, and the whole point of the drawer's split is that each
+  // panel lists what was marked on IT. A pane beside the note showing the
+  // paper's highlights would be the bug this feature is meant to remove.
+  const notesSplit = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("notes");
+    await settle(400);
+    // Two marks in the note body, made the way the note itself stores them.
+    const q = String.fromCharCode(34);
+    const body = 'A first marked <mark data-color=' + q + 'green' + q + '>phrase in the note</mark> here.\\n\\n'
+      + 'And a second <mark data-color=' + q + 'blue' + q + '>phrase further down</mark> it.\\n\\n';
+    api.state.notes = body + api.state.notes;
+    api.renderNotesView();
+    await settle(500);
+    document.getElementById("notesTocBtn").click();
+    await settle(400);
+    const drawerEl = document.getElementById("notesTocDrawer");
+    api.setDrawerSection(drawerEl, "highlights");
+    await settle(250);
+    const button = drawerEl.querySelector(".drawer-side-by-side");
+    if (!button) return { error: "no Side by side button in the notes drawer" };
+    button.click();
+    await settle(700);
+    const stage = document.getElementById("notesStage").getBoundingClientRect();
+    const pane = document.getElementById("highlightCycle").getBoundingClientRect();
+    const keys = Array.from(document.querySelectorAll("#highlightCycleBody .hl-note"))
+      .map((card) => card.dataset.highlightKey);
+    const out = {
+      isSplit: document.querySelector(".quiz-panel").classList.contains("is-split"),
+      beside: Math.round(pane.left) >= Math.round(stage.right) - 1,
+      viewMode: api.state.viewMode,
+      keys,
+      count: document.getElementById("highlightCycleCount").textContent
+    };
+    api.closeHighlightSplit();
+    await settle(200);
+    return out;
+  }`);
+
+  check("the notes drawer opens the same split beside the note",
+    notesSplit.isSplit && notesSplit.beside && notesSplit.viewMode === "notes",
+    notesSplit.error || `is-split=${notesSplit.isSplit}, beside the note=${notesSplit.beside}`);
+  check("...listing the NOTE's own marks, not the paper's",
+    (notesSplit.keys || []).length >= 2 && (notesSplit.keys || []).every((k) => k.startsWith("mark:")),
+    `${(notesSplit.keys || []).length} card(s): ${(notesSplit.keys || []).join(", ")} · ${notesSplit.count}`);
+
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //
   // The Document view's own export, which is the one thing this surface could
@@ -2971,7 +3333,12 @@ try {
         await settle(600);
       }
       if (SHOT_TOC) {
-        document.getElementById("documentTocBtn").click();
+        // Only if it is not already open. The stages above open this drawer
+        // several times over now, and a bare click on a toggle that is already
+        // on is a click that turns it off — which is a screenshot of no drawer.
+        if (!document.getElementById("documentOutlineDrawer").classList.contains("is-open")) {
+          document.getElementById("documentTocBtn").click();
+        }
         await settle(400);
         api.setDrawerSection(document.getElementById("documentOutlineDrawer"), "SHOT_TOC_SECTION");
         await settle(300);

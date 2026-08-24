@@ -55,6 +55,34 @@ export const DRAWER_SECTION_ATTR = "data-drawer-section";
 
 export const DRAWER_HIGHLIGHTS_CLASS = "drawer-highlights";
 
+// ── The way into side by side ──────────────────────────────────────────────
+//
+// Registered by src/main.js rather than imported, and that is not ceremony: this
+// module is reached from src/documents/pdf-outline.js (refreshDrawerOnOpen),
+// which src/documents/pdf-view.js imports — so importing a module that imports
+// pdf-view.js back would close a cycle right through the document surface. The
+// same reason setHighlightsChangedHandler and setDocumentAttachHandler exist:
+// main.js is the file that knows both ends.
+//
+//   onSideBySide(surface)   the button above the list was pressed
+//   onRowJump(locator)      a row was pressed, and something else may want to
+//                           follow it
+let onSideBySide = null;
+
+let onRowJump = null;
+
+export function setDrawerSideBySideHandler(fn) {
+  onSideBySide = fn;
+}
+
+export function setDrawerRowJumpHook(fn) {
+  onRowJump = fn;
+}
+
+function drawerSurface(drawer) {
+  return drawer === el.documentOutlineDrawer ? "document" : "notes";
+}
+
 // Which section each drawer is showing. Keyed on the drawer ELEMENT rather than
 // held as one flag, because the two drawers are independent surfaces: switching
 // the Document drawer to Highlights must not switch the Notes one under a
@@ -131,12 +159,26 @@ export function installDrawerSections(drawer) {
   const section = document.createElement("div");
   section.className = `${DRAWER_HIGHLIGHTS_CLASS} notes-toc-scroll`;
   section.hidden = true;
+  // "Side by side", above the list rather than beside the tabs: the decision to
+  // work through your highlights is made while looking at them, and this is the
+  // only place in the app where you are looking at the highlights of the exact
+  // surface you are reading. It closes the drawer on the way, because the split
+  // it opens is what the drawer is covering.
+  const sideBySide = document.createElement("button");
+  sideBySide.type = "button";
+  sideBySide.className = "drawer-side-by-side";
+  sideBySide.textContent = "Side by side";
+  sideBySide.title = "Put these beside the page — walk through them without leaving it";
+  sideBySide.addEventListener("click", () => {
+    closeDrawerForJump(drawer);
+    onSideBySide?.(drawerSurface(drawer));
+  });
   const list = document.createElement("ol");
   list.className = "drawer-highlights-list";
   const empty = document.createElement("p");
   empty.className = "notes-toc-empty drawer-highlights-empty";
   empty.hidden = true;
-  section.append(list, empty);
+  section.append(sideBySide, list, empty);
   scroll.after(section);
 
   // The existing scroll box is the contents section from here on, so the switch
@@ -233,6 +275,10 @@ function drawerRowFor(drawer, entry) {
     // takes the identical exact-target path: a <mark>'s ordinal in the note, or
     // a document highlight's id, with the anchor's text as the fallback search.
     scheduleNoteJump(entry.anchor, { patient: true }, entry.locator);
+    // ...and if the split is open, it is showing a list this row is in: point it
+    // at the same highlight rather than leaving the two disagreeing about which
+    // one the reader is on.
+    onRowJump?.(entry.locator);
     // The drawer gets out of the way when it is COVERING what the jump is about
     // to show. Above 720px the notes stage makes room for its drawer and the
     // reader can walk down the list; the Document surface never does — a page is
