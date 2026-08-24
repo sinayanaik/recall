@@ -130,6 +130,7 @@ const API_SRC = `async () => {
     "/src/export/pdf.js?v=__BUILD__",
     "/src/export/notes-body.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
+    "/src/notes/highlight-note-editor.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
     "/src/storage/deck-store.js?v=__BUILD__",
     "/src/documents/pdf-region.js?v=__BUILD__",
@@ -1760,6 +1761,61 @@ try {
     `card "${numbering.bareCard}" badge "${numbering.bareBadge}"`);
   check("...and the card says which page it came from",
     /^Page \d+$/.test(numbering.where), numbering.where || "no place label");
+
+  // ── 8d-iii. Pressing a number shows the note, not a window over it ──────
+  //
+  // A badge press opened a floating editor over the page. That is right when
+  // there is nowhere else for the note to be, and wrong when the note is already
+  // on screen beside the paper — a window covering the page it is about, showing
+  // what the pane is showing anyway.
+  const badgePress = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const records = api.documentHighlightsInReadingOrder();
+    const was = records.map((record) => [record.id, api.documentHighlightNote(record.id)]);
+    // The LAST highlight, annotated, so revealing it has to scroll the pane —
+    // a card already in view would prove nothing about the reveal.
+    const target = records[records.length - 1];
+    records.forEach((record) => api.setDocumentHighlightNote(record.id, "Note on " + record.id + "."));
+    await settle(300);
+    api.setViewMode("document");
+    await settle(300);
+    api.openHighlightSplit("document");
+    await settle(700);
+    await api.whenDocumentPageReady(target.page || 1);
+    api.scrollToDocumentPage(target.page || 1, 0, { smooth: false });
+    await settle(600);
+    const badge = document.querySelector('.pdf-note-badge[data-highlight-id="' + target.id + '"]');
+    if (!badge) return { error: "no badge painted for the last highlight" };
+    badge.click();
+    await settle(400);
+    const card = document.querySelector('#highlightCycleBody .hl-note[data-highlight-key="doc:' + target.id + '"]');
+    const box = document.getElementById("highlightCycleBody").getBoundingClientRect();
+    const rect = card?.getBoundingClientRect();
+    const result = {
+      popupOpen: Boolean(document.querySelector(".highlight-note-editor:not([hidden])")),
+      current: Boolean(card?.classList.contains("is-current")),
+      // Actually brought into view, not merely marked.
+      inView: Boolean(rect && rect.bottom > box.top && rect.top < box.bottom),
+      count: document.getElementById("highlightCycleCount")?.textContent || ""
+    };
+    // ...and with the pane closed the popup is still the answer.
+    api.closeHighlightSplit();
+    await settle(300);
+    badge.click();
+    await settle(400);
+    result.popupWithoutPane = Boolean(document.querySelector(".highlight-note-editor:not([hidden])"));
+    api.closeHighlightNoteEditor();
+    await settle(200);
+    was.forEach(([id, note]) => api.setDocumentHighlightNote(id, note));
+    await settle(250);
+    return result;
+  }`);
+
+  check("pressing a numbered badge reveals that note in the pane",
+    !badgePress.error && badgePress.current && badgePress.inView && !badgePress.popupOpen,
+    badgePress.error || `current=${badgePress.current} in view=${badgePress.inView} popup=${badgePress.popupOpen} counter=${badgePress.count}`);
+  check("...and with no pane open, it still opens the window it always did",
+    Boolean(badgePress.popupWithoutPane), String(badgePress.popupWithoutPane));
 
   // ── 8e. The document panel's own list of what was marked on it ──────────
   //

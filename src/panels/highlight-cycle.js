@@ -343,17 +343,26 @@ export function cycleHighlightBy(step) {
 }
 
 // Point the cycle at one particular highlight — what a press on a contents
-// drawer row means while the split is open. `locator` is the shape the drawer
-// and the Highlights tab both already carry.
+// drawer row means while the split is open, and what a press on a numbered
+// badge means. `locator` is the shape the drawer and the cards both carry.
+//
+// Returns whether it found the highlight, and that answer is load-bearing: the
+// badge handlers fall back to the floating note popup when it comes back false,
+// which is every case where there is no pane to reveal anything in — it is
+// closed, it is beside the other surface, or the highlight is not one of the
+// ones it lists.
 export function cycleToLocator(locator) {
-  if (!splitSurface || !locator) return;
+  if (!splitSurface || !locator) return false;
   const at = cycleEntries.findIndex((entry) => (locator.highlightId
     ? entry.highlightId === locator.highlightId
     : entry.markIndex === locator.markIndex));
-  if (at < 0) return;
-  // No jump: the caller made it. This is the pane catching up with a move the
-  // reader has already asked for somewhere else.
+  if (at < 0) return false;
+  // No jump: the caller made it, or is the thing being jumped FROM. This is the
+  // pane catching up with a move the reader has already asked for somewhere
+  // else — which for a badge press means scrolling the card into view and
+  // lighting it, both of which goToCycleIndex does through paintCurrentCard.
   goToCycleIndex(at, { jump: false });
+  return true;
 }
 
 function goToCycleIndex(index, { jump }) {

@@ -132,7 +132,29 @@ function pageNotesSignature(entries) {
     .join("|");
 }
 
+// ── Where a note is read from ───────────────────────────────────────────────
+//
+// A press on a badge opened a floating window over the page. That is the right
+// answer when there is nowhere else for the note to be — and the wrong one when
+// the note is already on screen, in the pane beside the paper, where it can be
+// read and written without a window covering the page it is about.
+//
+// So the pane gets asked first. It answers false whenever it cannot show this
+// particular note — it is closed, it is beside the other reading surface, or the
+// highlight is not one of the ones it lists — and the popup opens as before.
+//
+// Registered from src/main.js rather than imported, for the reason
+// setDrawerSideBySideHandler gives: src/panels/highlight-cycle.js reaches
+// pdf-view.js, which reaches this module, so importing it back would close a
+// cycle through the document surface.
+let revealInPane = null;
+
+export function setDocumentNoteRevealHook(fn) {
+  revealInPane = typeof fn === "function" ? fn : null;
+}
+
 function openNoteFor(record, anchorEl) {
+  if (revealInPane?.({ highlightId: record.id })) return;
   const rect = anchorEl?.getBoundingClientRect?.() || null;
   openHighlightNoteEditor(record.id, rect, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
 }

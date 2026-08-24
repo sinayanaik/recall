@@ -109,7 +109,7 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
-import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
+import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
@@ -930,6 +930,16 @@ onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
 onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
   const index = sourceMarkIndexFor(el.notesView, mark);
   if (index < 0) return;
+  // The pane first, when there is one: the note this badge names is already on
+  // screen there, and revealing it beats covering the note with a window
+  // showing what is beside it. cycleToLocator says whether it could — false
+  // means the pane is closed, is beside the paper rather than this note, or does
+  // not list this highlight — and the popup is the answer for all three.
+  //
+  // markCount is what revealNoteMark tests before it will trust an ordinal, and
+  // the pane's own entries carry it; here the ordinal is already resolved
+  // against the DOM, so the locator needs only the index.
+  if (cycleToLocator({ markIndex: index })) return;
   openHighlightNoteEditor(index, rect, noteText);
 }));
 // ── Side by side ────────────────────────────────────────────────────────────
@@ -947,6 +957,10 @@ onDomReady(() => {
   // ...and a press on one of that drawer's rows, so an open split follows it
   // rather than showing a different highlight from the one just jumped to.
   setDrawerRowJumpHook((locator) => cycleToLocator(locator));
+  // ...and a press on a numbered badge on a page, or on one of the notes printed
+  // under it. Same question, same answer: show it here rather than in a window
+  // over the page, whenever there is a here to show it in.
+  setDocumentNoteRevealHook((locator) => cycleToLocator(locator));
   // Leaving for Cards or the Highlights tab closes the split; moving between
   // Notes and Document moves it.
   setSplitViewHook((next) => splitFollowsViewMode(next));
