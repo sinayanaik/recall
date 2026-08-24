@@ -1817,6 +1817,59 @@ try {
   check("...and with no pane open, it still opens the window it always did",
     Boolean(badgePress.popupWithoutPane), String(badgePress.popupWithoutPane));
 
+  // ── 8d-iv. Typing, then stepping away ───────────────────────────────────
+  //
+  // End to end through the pane: sit on a highlight, write on it, press ▶. What
+  // must happen is that the text is saved on the way out and the step lands on
+  // the next highlight — a commit fires notifyHighlightsChanged, which rebuilds
+  // this very list, so the two halves of that sentence are not independent.
+  const stepAfterTyping = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const records = api.documentHighlightsInReadingOrder();
+    if (records.length < 2) return { error: "the fixture has fewer than two highlights" };
+    const was = records.map((record) => [record.id, api.documentHighlightNote(record.id)]);
+    records.forEach((record) => api.setDocumentHighlightNote(record.id, ""));
+    await settle(250);
+    api.setViewMode("document");
+    await settle(300);
+    api.openHighlightSplit("document");
+    await settle(700);
+    const list = document.getElementById("highlightCycleBody");
+    const cardFor = (id) => list.querySelector('.hl-note[data-highlight-key="doc:' + id + '"]');
+    // Sit on the first, open its note, and type something that MUST renumber the
+    // list: this highlight becomes annotated where nothing was before.
+    api.cycleToLocator({ highlightId: records[0].id });
+    await settle(300);
+    cardFor(records[0].id).querySelector(".hl-note-edit").click();
+    await settle(250);
+    const area = cardFor(records[0].id).querySelector(".hl-note-editor .note-editor-input");
+    if (!area) return { error: "the card's editor did not open" };
+    area.value = "Typed, then stepped away from.";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(120);
+    // ▶ — which commits what was typed and then has to land on the SECOND
+    // highlight, not on whatever now sits at the old index.
+    document.getElementById("highlightCycleNextBtn").click();
+    await settle(500);
+    const result = {
+      current: list.querySelector(".hl-note.is-current")?.dataset.highlightKey || "",
+      wanted: "doc:" + records[1].id,
+      stored: api.documentHighlightNote(records[0].id)
+    };
+    api.closeHighlightSplit();
+    await settle(200);
+    was.forEach(([id, note]) => api.setDocumentHighlightNote(id, note));
+    await settle(250);
+    return result;
+  }`);
+
+  check("▶ after typing into a note lands on the next highlight",
+    !stepAfterTyping.error && stepAfterTyping.current === stepAfterTyping.wanted,
+    stepAfterTyping.error || `landed on ${stepAfterTyping.current || "nothing"}, wanted ${stepAfterTyping.wanted}`);
+  check("...and what was typed is saved on the way",
+    stepAfterTyping.stored === "Typed, then stepped away from.",
+    JSON.stringify(stepAfterTyping.stored));
+
   // ── 8e. The document panel's own list of what was marked on it ──────────
   //
   // The pane lists a paper's highlights and its deck note's separately, by the
@@ -2265,6 +2318,48 @@ try {
   check("...listing the NOTE's own marks, not the paper's",
     (notesSplit.keys || []).length >= 2 && (notesSplit.keys || []).every((k) => k.startsWith("mark:")),
     `${(notesSplit.keys || []).length} card(s): ${(notesSplit.keys || []).join(", ")} · ${notesSplit.count}`);
+
+  // ── ...and moving the split between the two surfaces ────────────────────
+  //
+  // The split FOLLOWS the reader between Notes and Document rather than closing,
+  // and the other surface's list is a different list — so the position in this
+  // one means nothing over there. It was kept anyway, and because it was almost
+  // always still in range, nearestCycleIndex returned it unchanged and its whole
+  // "the first highlight on or after the page you are looking at" answer never
+  // ran. Standing on the paper's last highlight and tapping Notes landed the
+  // pane on whichever mark happened to share that index.
+  //
+  // The note now carries two marks (the stage above put them there) and the
+  // fixture's paper carries two highlights, so "kept the index" and "started
+  // afresh" are two different cards and the check can tell them apart.
+  const surfaceSwap = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(400);
+    api.openHighlightSplit("document");
+    await settle(600);
+    const records = api.documentHighlightsInReadingOrder();
+    if (records.length < 2) return { error: "the fixture has fewer than two document highlights" };
+    // The LAST one, so the index being carried over is not 0 — which is the
+    // answer a fresh start gives, and would hide the bug.
+    api.cycleToLocator({ highlightId: records[records.length - 1].id });
+    await settle(300);
+    const from = document.querySelector("#highlightCycleBody .hl-note.is-current")?.dataset.highlightKey || "";
+    api.setViewMode("notes");
+    await settle(700);
+    const out = {
+      from,
+      landed: document.querySelector("#highlightCycleBody .hl-note.is-current")?.dataset.highlightKey || "",
+      count: document.getElementById("highlightCycleCount").textContent
+    };
+    api.closeHighlightSplit();
+    await settle(200);
+    return out;
+  }`);
+
+  check("moving the split to the other surface starts at the top of ITS list",
+    !surfaceSwap.error && surfaceSwap.landed === "mark:0",
+    surfaceSwap.error || `stood on ${surfaceSwap.from || "nothing"}, landed on ${surfaceSwap.landed || "nothing"} (${surfaceSwap.count})`);
 
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //

@@ -253,6 +253,14 @@ export function closeHighlightSplit() {
   quizPanel?.style.removeProperty("--split-space");
   if (el.highlightCycle) el.highlightCycle.hidden = true;
   if (el.splitDivider) el.splitDivider.hidden = true;
+  // Emptied, not just hidden. A book's worth of cards left standing in a box
+  // nobody can see is memory held for nothing — and worse, highlights-editor.js
+  // keeps `lastList`/`lastEntries` pointing into whatever it last rendered, so
+  // the next commit's restampSignature() would stamp a surface that is not on
+  // screen and the signature guard would then decline to rebuild the one that
+  // is. Clearing it also makes the next open a real render rather than a
+  // signature match against a stale list.
+  if (el.highlightCycleBody) el.highlightCycleBody.replaceChildren();
   notePaneResized();
 }
 
@@ -265,8 +273,8 @@ export function toggleHighlightSplit(surface) {
 //
 // Notes and Document are both reading surfaces, so the split follows rather than
 // closing — a reader who has the paper and its highlights side by side and taps
-// Notes wants the note and ITS highlights, not the split taken away. Cards and
-// the Highlights tab are not reading surfaces and there is nothing to be beside.
+// Notes wants the note and ITS highlights, not the split taken away. Cards are
+// not a reading surface and there is nothing there to be beside.
 export function splitFollowsViewMode(next) {
   if (!splitSurface) return;
   // A different deck is a different set of highlights and a different paper to
@@ -282,6 +290,14 @@ export function splitFollowsViewMode(next) {
   if (next === splitSurface) return;
   closeHighlightsEditor();
   splitSurface = next;
+  // The other surface's list is a DIFFERENT list, and the position in this one
+  // means nothing in it. Left in place, cycleIndex was almost always still in
+  // range over there — so nearestCycleIndex returned it unchanged, its whole
+  // "the first highlight on or after the page you are looking at" answer never
+  // ran, and moving the split from the note to the paper landed the pane on
+  // whichever highlight happened to share an index with the one being left.
+  cycleIndex = -1;
+  cycleKey = "";
   applyStackedSpace();
   refreshHighlightCycle();
   goToCycleIndex(nearestCycleIndex(), { jump: false });
@@ -308,6 +324,13 @@ export function refreshHighlightCycle() {
   const at = cycleKey ? cycleEntries.findIndex((entry) => highlightEntryKey(entry) === cycleKey) : -1;
   if (at >= 0) cycleIndex = at;
   else if (cycleIndex >= cycleEntries.length) cycleIndex = cycleEntries.length - 1;
+  // ...and when the key is NOT found — the highlight it named was deleted — the
+  // index that survives names a different one, so the key has to be re-derived
+  // from it. Leaving the old key in place left the two disagreeing: the counter
+  // and the lit card followed the index while every lookup keyed on cycleKey
+  // (the scroll spy, the next rebuild, the click handler's "is this already the
+  // current one" test) was still asking about a highlight that no longer exists.
+  if (at < 0) cycleKey = cycleIndex >= 0 && cycleEntries[cycleIndex] ? highlightEntryKey(cycleEntries[cycleIndex]) : "";
   if (el.highlightCycleEmpty) el.highlightCycleEmpty.hidden = cycleEntries.length > 0;
   el.highlightCycleBody.hidden = cycleEntries.length === 0;
   renderHighlightsEditor(cycleEntries, el.highlightCycleBody).then(() => {
@@ -372,15 +395,33 @@ function goToCycleIndex(index, { jump }) {
     paintCycleCount();
     return;
   }
-  // Whatever was being typed is written before the surface moves under it.
+  // ── The target is taken by KEY, before anything can move it ─────────────
+  //
+  // closeHighlightsEditor() commits whatever was being typed, and a commit that
+  // changed the text fires notifyHighlightsChanged — which lands in
+  // refreshHighlightCycle and REPLACES cycleEntries, synchronously, inside this
+  // call. Reading cycleEntries[index] afterwards was reading a new array with an
+  // index taken from the old one, so the ◀ ▶ press after an edit could step to a
+  // highlight the reader had not asked for.
+  //
+  // The key is the identity the whole module already carries positions by (see
+  // cycleKey), so it survives the list being rebuilt under it. If the entry it
+  // names is gone by then — the commit deleted the note, and with it the entry
+  // on a filtered surface — there is nothing to go to.
+  const key = highlightEntryKey(cycleEntries[index]);
   closeHighlightsEditor();
-  cycleIndex = index;
-  const entry = cycleEntries[index];
-  cycleKey = highlightEntryKey(entry);
+  const at = cycleEntries.findIndex((entry) => highlightEntryKey(entry) === key);
+  if (at < 0) {
+    paintCycleCount();
+    return;
+  }
+  cycleIndex = at;
+  const entry = cycleEntries[at];
+  cycleKey = key;
   paintCycleCount();
   paintCurrentCard();
   if (!jump) return;
-  // The same call the drawer's rows and the tab's "Go to →" make, so a step
+  // The same call the drawer's rows and a card's own "Go to →" make, so a step
   // through the list lands exactly where those two already land.
   scheduleNoteJump(entry.anchor, { patient: true }, entry.locator);
 }

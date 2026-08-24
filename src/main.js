@@ -2844,6 +2844,12 @@ el.documentView?.addEventListener("scroll", () => {
   if (documentScrollFrame) return;
   documentScrollFrame = requestAnimationFrame(() => {
     documentScrollFrame = 0;
+    // A frame armed by a scroll can run after the document it was about is gone
+    // — a deck swap or a tab change lands between the two. Each call below
+    // already declines on a torn-down document, so this is not a crash being
+    // caught; it is one test in place of three, and a place to say why the frame
+    // outlives its document at all.
+    if (state.viewMode !== "document") return;
     // READS first, together, off one geometry table.
     scheduleDocumentPositionSave();
     // ...then the writes.
