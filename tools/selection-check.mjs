@@ -159,13 +159,53 @@ try {
   await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 }).catch(() => {});
 
   await page.evaluate(async (apiSrc, fakeSrc, note) => {
+    // Keep showing the app screen until it stops being taken away. Returns once
+    // the shell has stayed up for QUIET consecutive polls, or after the cap —
+    // never throwing, because a boot that genuinely cannot settle is the geometry
+    // wait's story to tell, with the state it prints, rather than an opaque
+    // failure from in here. See the long note at the call site.
+    const holdAppScreen = async (api, { quiet = 5, cap = 120, step = 25 } = {}) => {
+      let settled = 0;
+      for (let i = 0; i < cap && settled < quiet; i += 1) {
+        const shell = document.querySelector(".app-shell");
+        if (shell && !shell.hidden) {
+          settled += 1;
+        } else {
+          api.showAuthenticatedUI();
+          settled = 0;
+        }
+        await new Promise((r) => setTimeout(r, step));
+      }
+    };
     const api = await (0, eval)(apiSrc)();
     window.__api = api;
     api.setSupabaseClient((0, eval)("(" + fakeSrc + ")")());
     api.setSignedIn(true);
     api.showAuthenticatedUI();
     api.initAppForUser();
-    await new Promise((r) => setTimeout(r, 500));
+    // ── Hold that override until boot has stopped changing its mind ─────────
+    //
+    // The page boots for real before a line of this runs. It finds no Supabase
+    // config — there is none; the client above is a fake injected from outside —
+    // and its own correct answer to that is the setup screen. showAuthenticatedUI()
+    // overrules it, and the overrule did not always stick: boot() reaches its
+    // `status === "no-config"` branch AFTER an await (see the library wait above
+    // it in src/boot.js), so on a slower run it lands a few hundred milliseconds
+    // later and puts the setup overlay back over everything.
+    //
+    // What that looked like was not a boot failure, which is why it went unread
+    // for so long: the note had rendered — 60 paragraphs, present and correct —
+    // inside an .app-shell that had been hidden again, so #notesView measured
+    // 0x0, the geometry wait below timed out at 45 seconds, and the whole file
+    // died with a TimeoutError pointing at a line that was only ever the
+    // messenger. Roughly one run in three on this container.
+    //
+    // Waiting on the `app-booting` class is NOT enough, and relying on it is
+    // what left the hole: showBootScreen clears the boot skeleton on the FIRST
+    // screen it shows, so the class is long gone before the last decision is
+    // made. The app is right and this file is the one being unusual, so the
+    // waiting belongs here — re-assert the app screen until it stays put.
+    await holdAppScreen(api);
     api.createNewDeck({ title: "Probe", notesMode: true });
     await new Promise((r) => setTimeout(r, 400));
     api.state.notes = note;
@@ -180,12 +220,37 @@ try {
     // unlaid-out paragraph, and ten assertions failed at once as though the app
     // were broken.
     await api.renderNotesView();
+    // ...and once more, for a decision that lands later than everything above.
+    // Cheap when nothing is wrong (five polls, 125ms) and the difference between
+    // a clean run and a 45-second timeout when something is.
+    await holdAppScreen(api);
   }, MODULE_API, FAKE, probeNote());
 
+  // ...and if it still does not settle, say what was on screen instead of dying
+  // with a TimeoutError pointing at this line. The failure this replaces printed
+  // nothing but a stack, and the interesting part — that the note HAD rendered,
+  // 60 paragraphs of it, inside a shell that had been hidden again — was
+  // invisible for as long as it took someone to attach a debugger. A check that
+  // cannot say what it saw is a check that gets written off as flaky.
   await page.waitForFunction(() => {
     const view = document.querySelector("#notesView");
     return Boolean(view) && !view.hidden && view.clientWidth > 200 && view.querySelectorAll("p").length > 10;
-  }, { timeout: 45000 });
+  }, { timeout: 45000 }).catch(async (error) => {
+    const seen = await page.evaluate(() => {
+      const view = document.querySelector("#notesView");
+      const shell = document.querySelector(".app-shell");
+      const overlay = ["setupOverlay", "loginOverlay", "offlineBootOverlay"]
+        .find((id) => document.getElementById(id) && !document.getElementById(id).hidden);
+      return {
+        paragraphs: view ? view.querySelectorAll("p").length : null,
+        width: view ? view.clientWidth : null,
+        viewHidden: view ? view.hidden : null,
+        shellHidden: shell ? shell.hidden : null,
+        overlayShowing: overlay || "none"
+      };
+    }).catch(() => null);
+    throw new Error(`the notes view never got real geometry — ${JSON.stringify(seen)} (${error.message})`);
+  });
 
   const stage = await page.evaluate(() => ({
     blocks: document.querySelector("#notesView")?.children.length || 0,
