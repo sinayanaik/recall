@@ -79,6 +79,8 @@ const API_SRC = `async () => {
     "/src/notes/touch-selection.js?v=__BUILD__",
     "/src/images/surface-controls.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
+    "/src/render/block-cache.js?v=__BUILD__",
+    "/src/cards/card-view.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -205,6 +207,91 @@ const SETUP_SRC = `async (apiSrc, dead) => {
     width: view.clientWidth,
     images: view.querySelectorAll("img").length,
     shells: view.querySelectorAll(".diagram-shell").length
+  };
+}`;
+
+// ── ...and the same questions of a BOOK ────────────────────────────────────
+//
+// Everything above is a note small enough to render in one go. A note over
+// NOTES_LAZY_MIN_CHARS (200,000 characters — i.e. every imported book) is built
+// span by span as the reader moves through it, and three things that work on a
+// small note did not work there at all:
+//
+//   • an image the book uses TWICE was skipped outright while any span was
+//     unbuilt, deferred to "the pass that runs when the last span lands" — a
+//     pass that only runs once the reader has scrolled the whole book, so in
+//     practice that picture had a Zoom pill and nothing else, forever;
+//   • every diagram was skipped for the same reason, and unconditionally: the
+//     whole diagram pass was gated on the note being complete;
+//   • a URL carrying a non-ASCII character never matched at all, on any note,
+//     because marked percent-encodes an image destination and the scan of the
+//     markdown does not.
+//
+// The fixture is deliberately built and then NOT scrolled: every assertion
+// below is about what a reader sees on opening a book, which is the state the
+// report came from.
+const BOOK_SETUP_SRC = `async (dead) => {
+  const { api, settle } = window.__recall;
+  // 2,400 paragraphs: past NOTES_LAZY_MIN_CHARS *and* past NOTES_LAZY_MIN_SPANS,
+  // which is counted in blocks (NOTES_CHUNK_MIN_BLOCKS / NOTES_LAZY_SPAN_SEGMENTS)
+  // rather than characters. A note that clears one and not the other renders
+  // eagerly and would make all of this vacuous.
+  const filler = (n) => Array.from({ length: n }, (_, i) =>
+    "Paragraph " + i + " of the fixture, long enough to carry its own weight in the span plan and then some more words after that.").join("\\n\\n");
+  const dup = dead + "?dup=1";
+  window.__book = [
+    "# A book",
+    "",
+    "![twice](" + dup + ")",
+    "",
+    // Written with the character in it, NOT pre-encoded: marked runs encodeURI
+    // over the destination and the markdown does not, and that difference is
+    // the whole reason imageMatchKey exists. A fixture that hands over an
+    // already-encoded URL asserts nothing.
+    "![u](" + dead + "?name=\\u00dcber.png)",
+    "",
+    "\\u0060\\u0060\\u0060mermaid",
+    "graph TD; A-->B;",
+    "\\u0060\\u0060\\u0060",
+    "",
+    filler(2400),
+    "",
+    "![twice](" + dup + ")",
+    ""
+  ].join("\\n");
+  api.state.notes = window.__book;
+  api.renderNotesView();
+  await settle(1800);
+  const view = document.getElementById("notesView");
+  const diagram = view.querySelector(".mermaid, .nomnoml-diagram");
+  return {
+    chars: window.__book.length,
+    // The whole point of the fixture: it must still be holding spans back.
+    pending: api.notesLazyPending(view),
+    spans: api.notesLazyPlan(view) ? api.notesLazyPlan(view).spans.length : 0,
+    shells: view.querySelectorAll(".diagram-shell").length,
+    diagramGrip: Boolean(diagram && diagram.parentElement
+      && diagram.parentElement.querySelector(".notes-img-resize-handle"))
+  };
+}`;
+
+// One card face, which no check has ever covered — #questionView is a
+// first-class image surface (IMAGE_SURFACE_NAMES) and a regression there would
+// have passed silently.
+const CARD_SETUP_SRC = `async (dead) => {
+  const { api, settle } = window.__recall;
+  const card = { id: "fixture-card", question: "![cardq](" + dead + "?card=1)", answer: "plain" };
+  api.state.masterCards = [card];
+  api.state.cards = [card];
+  api.state.current = 0;
+  await api.showCard();
+  await settle(600);
+  const shell = document.querySelector("#questionView .diagram-shell");
+  return {
+    shell: Boolean(shell),
+    grip: Boolean(shell && shell.querySelector(".notes-img-resize-handle")),
+    del: Boolean(shell && shell.querySelector(".notes-img-delete-btn")),
+    editable: Boolean(shell && shell.classList.contains("is-editable-image"))
   };
 }`;
 
@@ -349,6 +436,33 @@ async function run() {
     });
     check(Boolean(rebind && rebind.same), "two more enhance passes keep the same delete button",
       rebind ? `present ${rebind.present}, same node ${rebind.same}` : "no shell");
+
+    // ── A book, opened and not scrolled ─────────────────────────────────────
+    const book = await page.evaluate(new Function("dead", `return (${BOOK_SETUP_SRC})(dead);`), DEAD_IMAGE);
+    if (!book || !book.pending) {
+      fail("the book fixture is built lazily",
+        book ? `${book.chars} chars, ${book.spans} spans, pending ${book.pending}` : "no answer");
+    } else {
+      ok("the book fixture is built lazily", `${book.chars} chars, ${book.spans} spans, spans still pending`);
+      const twice = await page.evaluate(() => window.__shellFor("twice"));
+      check(Boolean(twice && twice.grip && twice.del),
+        "an image the book uses twice keeps its controls without reading to the end",
+        twice ? `grip ${Boolean(twice.grip)}, delete ${Boolean(twice.del)}` : "not rendered");
+      const unicode = await page.evaluate(() => window.__shellFor("u"));
+      check(Boolean(unicode && unicode.grip && unicode.del),
+        "an image whose URL carries a non-ASCII character keeps its controls",
+        unicode ? `grip ${Boolean(unicode.grip)}, delete ${Boolean(unicode.del)}` : "not rendered");
+      check(book.diagramGrip, "a diagram in a half-built book keeps its resize grip",
+        book.diagramGrip ? "present" : "missing");
+    }
+
+    // ── ...and a card face, which is an image surface too ───────────────────
+    const card = await page.evaluate(new Function("dead", `return (${CARD_SETUP_SRC})(dead);`), DEAD_IMAGE);
+    check(Boolean(card && card.shell), "a card's question renders its image in a shell",
+      card && card.shell ? "yes" : "no shell");
+    check(Boolean(card && card.grip && card.del && card.editable),
+      "...and the card face gets the same grip and delete button the notes do",
+      card ? `grip ${Boolean(card.grip)}, delete ${Boolean(card.del)}, editable ${Boolean(card.editable)}` : "n/a");
 
     check(errors.length === 0, "no uncaught exceptions", errors.length ? errors[0] : "clean");
   } finally {

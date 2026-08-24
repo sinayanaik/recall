@@ -12,7 +12,7 @@ import { onTouchGestureRelease, touchGestureHoldsSurface } from "../core/gesture
 import { state } from "../core/state.js?v=__BUILD__";
 import { markBrokenImages } from "../images/broken.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
-import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
+import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, findSourceImages, imageMatchKey, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
 import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
@@ -127,29 +127,38 @@ export const surfaceFinalizeFrames = new WeakMap();
 // bottom of what they can see.
 export const SURFACE_FINALIZE_IDLE_TIMEOUT_MS = 300;
 
+// ── The resize grips, on a note built as it is read ────────────────────────
+//
+// Neither pass waits for the whole note, and the reason is the same for both: a
+// picture is found by what it IS, not by where it sits in a walk. An image is
+// paired with the markdown slice holding the same URL, a drawing with the fence
+// holding the same body. Neither needs an ordering and neither needs a complete
+// DOM.
+//
+// Diagrams used to wait — `if (!partial)` — because their pairing was
+// positional, and on a viewport-built note the elements present are not the
+// first N fences. But notesLazyPending stays true on any note over
+// NOTES_LAZY_MIN_CHARS until the reader has scrolled it end to end, so "waits"
+// meant "never", and every diagram in every imported book had a Zoom pill and
+// no grip. `partial` is now only the diagram pass's guard on its positional
+// FALLBACK; the image pass has no such flag at all, because what a half-built
+// note needs is not "is anything missing" but "which of these images is here",
+// which is what builtImages answers.
+//
+// Split out from finalizeRenderedSurface so the render cache's own fast path
+// can re-bind the controls WITHOUT the rest of that tail — the table of
+// contents and the block-height estimate are answers about text that has not
+// changed, and re-deriving them on every raw/rendered toggle would be work for
+// nothing.
+export function bindSurfaceControls(container, surface = imageSurfaceForView(container)) {
+  if (!surface) return;
+  enhanceSurfaceImageControls(surface, { builtImages: () => notesLazyBuiltImages(container) });
+  enhanceSurfaceDiagramControls(surface, { partial: notesLazyPending(container) });
+}
+
 export function finalizeRenderedSurface(container) {
   const surface = imageSurfaceForView(container);
-  // ── Images always; diagrams only once the note is whole ──────────────────
-  //
-  // Diagrams bind by POSITION: enhanceSurfaceDiagramControls walks the note's
-  // diagram fences in source order and the view's .mermaid elements in document
-  // order, pairing them off. On a viewport-built note the elements present are
-  // a subset of the fences, so a jump into the middle of a book desynchronises
-  // the walk and a drag would then resize the wrong diagram. It waits.
-  //
-  // Images do not: enhanceSurfaceImageControls pairs each shell with the
-  // markdown slice holding the same URL (see findSourceImages), which needs no
-  // ordering and no complete DOM. It used to wait here too, and that is why an
-  // imported book — every note over NOTES_LAZY_MIN_CHARS — showed no resize
-  // grip and no delete button on any image until the reader had scrolled it end
-  // to end. It is told the note is partial so it can leave the one ambiguous
-  // case (the same image used twice) to the pass that runs when the last span
-  // lands.
-  const partial = notesLazyPending(container);
-  if (surface) {
-    enhanceSurfaceImageControls(surface, { partial });
-    if (!partial) enhanceSurfaceDiagramControls(surface);
-  }
+  bindSurfaceControls(container, surface);
   if (container === el.notesView) {
     // Not buildNotesToc(). The list is drawn when the drawer is looked at (see
     // notesTocDirty in toc.js) — all this tail owes is "the note changed", plus
@@ -2030,6 +2039,51 @@ export function notesLazyPending(container) {
   return false;
 }
 
+// ── Which of a book's images are actually on screen right now ──────────────
+//
+// A note that uses one image twice used to lose that image's resize grip and
+// delete button for as long as any span was unbuilt — which, on anything over
+// NOTES_LAZY_MIN_CHARS, is until the reader has scrolled the book end to end.
+// See resolveShellCopy in src/images/surface-controls.js for what the pairing
+// does with this; what it needs is one flag per image of the document, in
+// order, saying whether the span holding it is in the DOM.
+//
+// The scan runs over `plan.prepared`, which is the string the SPANS index. Two
+// things keep it off the critical path, because this would otherwise be a
+// second whole-note scan on the tail of every render and every span build —
+// measured at 13ms on a 2.7MB book, paid per scroll batch:
+//
+//   • the caller asks for it as a FUNCTION and only calls it for a note that
+//     actually repeats an image, which is the only case that needs an ordering
+//     at all (see enhanceSurfaceImageControls);
+//   • the scan itself is memoised on the plan. What changes as a book is read
+//     is `plan.built`, not `plan.prepared` or the span boundaries, so the
+//     expensive half is computed once per note and only the flags are re-read.
+//
+// The caller re-checks key by key that this list describes the same images its
+// own scan of the SOURCE found (alignBuiltImages), so a preprocessing step that
+// ever added or dropped one degrades to "cannot say" rather than to a control
+// pointed at the wrong slice.
+export function notesLazyImageSpans(plan) {
+  if (plan.imageSpans && plan.imageSpans.prepared === plan.prepared && plan.imageSpans.spans === plan.spans) {
+    return plan.imageSpans.found;
+  }
+  const found = findSourceImages(plan.prepared).map((image) => ({
+    key: imageMatchKey(image.url || ""),
+    span: notesLazySpanAt(plan, image.start)
+  }));
+  plan.imageSpans = { prepared: plan.prepared, spans: plan.spans, found };
+  return found;
+}
+
+export function notesLazyBuiltImages(container) {
+  const plan = notesLazyPlans.get(container);
+  if (!plan?.prepared || !plan.spans?.length) return null;
+  const found = notesLazyImageSpans(plan);
+  if (!found.length) return null;
+  return found.map((image) => ({ key: image.key, built: Boolean(plan.built[image.span]) }));
+}
+
 // How much of the note has actually been built, for the checks and for anything
 // that wants to report on it.
 // How many edits were patched one span at a time, and how many made the note
@@ -2416,7 +2470,9 @@ export function finishNotesLazySpan(container, index) {
     .then(() => {
       const pending = notesLazyPending(container);
       const surface = imageSurfaceForView(container);
-      if (surface && pending) enhanceSurfaceImageControls(surface, { partial: true, scope: flat });
+      if (surface && pending) {
+        enhanceSurfaceImageControls(surface, { scope: flat, builtImages: () => notesLazyBuiltImages(container) });
+      }
       if (!pending) scheduleSurfaceFinalize(container);
     })
     .catch((error) => console.warn("Deferred note span failed", error));
@@ -2917,6 +2973,13 @@ export function rebuildNotesLazySpan(container, plan, index, blocks) {
       .then(() => { markNotesLazyChunkContainment(chunk); })
       .then(() => resolveStorageImages(fresh))
       .then(() => markBrokenImages(fresh))
+      // The blocks this rebuilt are NEW nodes, so whatever grips the ones they
+      // replaced were carrying went out of the DOM with them. Without this the
+      // span's pictures were left with a Zoom pill until something else
+      // re-rendered the surface — which on a note being edited in place is the
+      // next edit, or never. Coalesced to one pass per container per frame, and
+      // it short-circuits on a note with no images at all.
+      .then(() => scheduleSurfaceFinalize(container))
       .catch((error) => console.warn("Note span re-render failed", error));
   }
 }
@@ -3041,6 +3104,14 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
     // while the surface was hidden and no intersection was reported. Cheap: a
     // rect read per pending chunk, and nothing at all once the note is whole.
     if (notesLazyPending(container)) startNotesLazySpans(container);
+    // "The DOM on screen is already the answer" is a statement about the TEXT.
+    // It says nothing about the controls attached to it: a surface whose grips
+    // were never bound — the pairing missed, a span was rebuilt underneath
+    // them, an export mounted and unmounted these nodes — would keep its Zoom
+    // pills forever, because every later render of the same note takes this
+    // branch. Idempotent (attachNotesImageResizeHandle rebinds rather than
+    // rebuilds), and a regex away from free on a note holding no images.
+    bindSurfaceControls(container);
     return;
   }
 

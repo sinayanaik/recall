@@ -50,13 +50,19 @@ const marked = require("../vendor/marked-14.1.2/marked.min.js");
 const WANTED = [
   ["src/core/text.js", ["escapeHtml"]],
   ["src/render/inline.js", ["IMG_ALT_SOURCE", "IMG_DEST_SOURCE", "IMG_TOKEN_SOURCE", "imageDestinationUrl"]],
-  ["src/render/preprocess.js", ["FENCE_OPEN_SOURCE", "fenceOpenPattern", "scanFences", "normalizeImageUrl"]],
+  ["src/render/preprocess.js", [
+    "FENCE_OPEN_SOURCE", "fenceOpenPattern", "scanFences",
+    "QUOTE_PREFIX_SOURCE", "LIST_ITEM_SOURCE", "HTML_VERBATIM_TAGS",
+    "lineAt", "fenceOpenOn", "isFenceCloseOn", "mergeRanges",
+    "scanHtmlComments", "scanCodeRegions",
+    "normalizeImageUrl"
+  ]],
   ["src/images/surface-controls.js", [
     "IMAGE_RESIZE_MIN_PX", "IMAGE_RESIZE_MAX_PX",
     "decodeMarkupEntities", "parseImgTagAttrs", "parseMarkdownImage",
     "IMAGE_REF_DEFINITION_RE", "imageRefDefinitions", "parseReferenceImage",
-    "sourceImagePattern", "findSourceImages",
-    "sourceMayHaveImages", "imgTagHtml",
+    "sourceImagePattern", "isEscapedOffset", "findSourceImages",
+    "sourceMayHaveImages", "markedImageUrl", "imageMatchKey", "imgTagHtml",
     "sourceImageAt", "pipeRowLinePattern", "imageRemovalRange",
     "replaceSourceImage", "commitSourceImageWidth", "removeSourceImage"
   ]]
@@ -139,6 +145,35 @@ const SHAPES = {
   unclosedFence: "```js\nconst s = 1;\n\n![hidden](https://img.test/no-5.png)\n",
   quadFence: "````\n```\n![hidden](https://img.test/no-6.png)\n```\n````\n\n![real](https://img.test/24.png)\n",
   indentedFence: "- item\n\n  ```js\n  ![hidden](https://img.test/no-7.png)\n  ```\n\n![real](https://img.test/25.png)\n",
+  // ── The rest of what the renderer calls code ─────────────────────────────
+  // scanFences answered "where are the fences", which is not the same question
+  // as "what will the reader see as text". marked treats all five of these as
+  // code or as verbatim HTML, and the scan reported an image for every one —
+  // a phantom that shares its URL with the real picture whenever a note quotes
+  // its own markdown, which is enough to cost the real one its controls.
+  indentedCode: "Text\n\n    ![hidden](https://img.test/no-8.png)\n\n![real](https://img.test/26.png)\n",
+  tabIndentedCode: "Text\n\n\t![hidden](https://img.test/no-9.png)\n\n![real](https://img.test/27.png)\n",
+  blockquoteFence: "> ```js\n> ![hidden](https://img.test/no-10.png)\n> ```\n\n![real](https://img.test/28.png)\n",
+  listIndentedFence: "- item\n\n    ```js\n    ![hidden](https://img.test/no-11.png)\n    ```\n\n![real](https://img.test/29.png)\n",
+  htmlComment: "<!--\n![hidden](https://img.test/no-12.png)\n-->\n\n![real](https://img.test/30.png)\n",
+  inlineHtmlComment: "Text <!-- ![hidden](https://img.test/no-13.png) --> more.\n\n![real](https://img.test/31.png)\n",
+  verbatimHtmlBlock: "<pre>\n![hidden](https://img.test/no-14.png)\n</pre>\n\n![real](https://img.test/32.png)\n",
+  escapedImage: "\\![notapicture](https://img.test/no-15.png)\n\n![real](https://img.test/33.png)\n",
+  // ...and the shapes that must NOT be mistaken for code. Each of these renders
+  // a real picture, and reading its indentation as a code block would take that
+  // picture's controls away — the very bug being fixed.
+  listContinuation: "- item\n\n    ![real](https://img.test/34.png)\n\n- next\n",
+  orderedContinuation: "1. one\n\n   ![real](https://img.test/35.png)\n\n2. two\n",
+  lazyWrappedLine: "Some text\n    wrapping with indentation ![real](https://img.test/36.png)\n",
+  quotedImage: "> one\n>\n> ![real](https://img.test/37.png)\n",
+  // ── URLs the two sides used to spell differently ─────────────────────────
+  // marked's cleanUrl percent-encodes an image destination; the markdown does
+  // not. Compared raw these missed, and a miss is a picture with a Zoom pill
+  // and no grip on every render, forever.
+  unicodeUrl: "![a](https://img.test/\u00dcber-38.png)\n",
+  spacedUrl: "![a](<https://img.test/space 39.png>)\n",
+  encodedUrl: "![a](https://img.test/already%2040.png)\n",
+  reservedEncodedUrl: "![a](https://img.test/plus%2B41.png)\n",
   mixedBook: [
     "# Chapter\n",
     "\n",
@@ -165,6 +200,13 @@ function renderedImageUrls(source) {
   return [...html.matchAll(/<img\b[^>]*\bsrc\s*=\s*"([^"]*)"/gi)].map((m) => api.decodeMarkupEntities(m[1]));
 }
 
+// Parity is asked of the KEY, not of the two spellings, because the key is what
+// enhanceSurfaceImageControls actually pairs on: marked writes the URL through
+// its own cleanUrl and the markdown keeps it as written, so `Über.png` on one
+// side and `%C3%9Cber.png` on the other are the same picture and have to
+// compare equal here or the grip goes missing on screen.
+const key = (url) => api.imageMatchKey(url);
+
 function makeSurface(source) {
   const box = { source, renders: 0 };
   return {
@@ -186,8 +228,8 @@ function assert(ok, message) {
 // ── parity ─────────────────────────────────────────────────────────────────
 
 for (const [name, source] of Object.entries(SHAPES)) {
-  const want = renderedImageUrls(source);
-  const got = api.findSourceImages(source).map((image) => image.url);
+  const want = renderedImageUrls(source).map(key);
+  const got = api.findSourceImages(source).map((image) => key(image.url));
   assert(
     got.length === want.length && got.every((url, i) => url === want[i]),
     `${name}: scan found ${JSON.stringify(got)}, the renderer renders ${JSON.stringify(want)}`
@@ -200,6 +242,42 @@ for (const [name, source] of Object.entries(SHAPES)) {
       `${name}: slice [${image.start},${image.end}) is not the raw ${JSON.stringify(image.raw)}`
     );
   }
+}
+
+// ── The one place the scan still over-reports, deliberately ────────────────
+//
+// An indented code block INSIDE a list item — "- a", a blank line, then six
+// spaces and an image. Six spaces is four past that item's content column, so
+// marked reads it as code and renders nothing. Answering that needs the item's
+// content column tracked through nesting, and getting THAT wrong in the other
+// direction — reading an ordinary list continuation as code — would take a real
+// picture's controls away, which is the failure this whole file is about.
+//
+// So the scan reports an image there and no shell ever matches it. Asserted as
+// a DIRECTION rather than an equality, because the two errors are not
+// equivalent: a phantom costs nothing a reader can see, and a miss is a picture
+// on screen with no grip and no delete button.
+{
+  const source = "- a\n\n      ![deep](https://img.test/deep.png)\n";
+  const rendered = renderedImageUrls(source).map(key);
+  const scanned = api.findSourceImages(source).map((image) => key(image.url));
+  assert(rendered.length === 0, `deepIndentInsideList: marked now renders ${JSON.stringify(rendered)} — the tolerance below is stale`);
+  assert(
+    rendered.every((url) => scanned.includes(url)),
+    "deepIndentInsideList: the scan missed a picture the renderer draws"
+  );
+}
+
+// Nothing the scan hands back may be a picture the renderer does NOT draw when
+// it also fails to find one it does. Said across the whole corpus, because a
+// miss is the failure that reaches a reader.
+for (const [name, source] of Object.entries(SHAPES)) {
+  const rendered = renderedImageUrls(source).map(key);
+  const scanned = api.findSourceImages(source).map((image) => key(image.url));
+  assert(
+    rendered.every((url) => scanned.includes(url)),
+    `${name}: the renderer draws ${JSON.stringify(rendered)} and the scan found ${JSON.stringify(scanned)} — a picture with no slice has no controls`
+  );
 }
 
 // A committed width has to come back off the tag it was written to.
@@ -221,7 +299,7 @@ for (const [name, source] of Object.entries(SHAPES)) {
     const image = images[nth];
     const sameUrl = images.filter((other) => other.url === image.url);
     const surface = makeSurface(source);
-    api.commitSourceImageWidth(surface, { url: image.url, nth: sameUrl.indexOf(image) }, 321);
+    api.commitSourceImageWidth(surface, { url: key(image.url), nth: sameUrl.indexOf(image) }, 321);
     const next = surface.getSource();
     const want = source.slice(0, image.start)
       + api.imgTagHtml({ url: image.url, alt: image.alt, widthPx: 321 })
@@ -257,7 +335,7 @@ for (const [name, source] of Object.entries(SHAPES)) {
     const image = images[nth];
     const sameUrl = images.filter((other) => other.url === image.url);
     const surface = makeSurface(source);
-    api.removeSourceImage(surface, { url: image.url, nth: sameUrl.indexOf(image) });
+    api.removeSourceImage(surface, { url: key(image.url), nth: sameUrl.indexOf(image) });
     const next = surface.getSource();
     const after = api.findSourceImages(next);
     const wantUrls = images.filter((_, i) => i !== nth).map((other) => other.url);
@@ -270,8 +348,14 @@ for (const [name, source] of Object.entries(SHAPES)) {
     // space and separators around it.
     const cut = source.length - next.length;
     assert(cut >= image.raw.length, `${name} #${nth}: delete cut ${cut} chars for a ${image.raw.length}-char image`);
+    // A coarse tripwire, and coarse on purpose — the assertion below is the one
+    // that decides whether the delete was right. The allowance carries the
+    // image line's own indentation, because a picture alone on a line inside a
+    // list item takes that indentation with it, and leaving it behind would be
+    // the bug rather than the fix.
+    const lineIndent = (source.slice(source.lastIndexOf("\n", Math.max(0, image.start - 1)) + 1, image.start).match(/^[ \t]*/) || [""])[0].length;
     const removedExtra = cut - image.raw.length;
-    assert(removedExtra <= 4, `${name} #${nth}: delete cut ${removedExtra} chars beyond the image itself`);
+    assert(removedExtra <= 4 + lineIndent, `${name} #${nth}: delete cut ${removedExtra} chars beyond the image itself`);
     // Stronger, and the one that matters: whatever came out ALONGSIDE the
     // image can only be white space and at most one row separator. A delete
     // that ate a word, a bullet, a table pipe or a fence would show up here
