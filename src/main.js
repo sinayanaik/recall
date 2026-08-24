@@ -70,8 +70,6 @@ import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionP
 import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
-import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
-import { initHighlightsEditor } from "./panels/highlights-editor.js?v=__BUILD__";
 import { markDrawerHighlightsDirty, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
@@ -934,10 +932,6 @@ onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
   if (index < 0) return;
   openHighlightNoteEditor(index, rect, noteText);
 }));
-// The Highlights tab writes its notes in place — one delegated listener for the
-// whole surface, installed once.
-onDomReady(() => initHighlightsEditor());
-
 // ── Side by side ────────────────────────────────────────────────────────────
 //
 // Three ends wired here because none of the three modules may import another:
@@ -981,22 +975,19 @@ onDomReady(() => {
   });
   setDocumentOpenedHook(refreshPdfPageNotes);
 });
-// So an edit made on a mark in the note refreshes the Highlights tab, without
+// So an edit made on a mark in the note refreshes the highlights pane, without
 // highlight-edit.js having to import the panel that owns it.
-// Two surfaces answer to a highlight changing now, not one. The panel is the
-// obvious consumer; the PDF's note badges and printed notes are the other,
-// because adding or deleting a note renumbers every note after it. Registered
-// here rather than imported into src/documents/pdf-highlights.js, which
+// Three surfaces answer to a highlight changing. The pane is the obvious
+// consumer; the PDF's note badges and printed notes are the second, because
+// adding or deleting a note renumbers every note after it. Registered here
+// rather than imported into src/documents/pdf-highlights.js, which
 // pdf-page-notes.js already imports — this file is the one that knows both ends
 // (the same reason setDocumentPagePaintedHook exists below).
 onDomReady(() => setHighlightsChangedHandler(() => {
-  // One of the two, never both: they are the same editor rendering the same
-  // cards into two different boxes, and the one that is not on screen would be
-  // several hundred cards rebuilt for nobody. The Highlights tab rebuilds on
-  // the way in regardless (setViewMode -> renderHighlightsPanel), and opening
-  // it closes the split.
+  // Only when the pane is actually on screen. It is the one container the cards
+  // are ever built into now, and building several hundred of them into a hidden
+  // box for nobody is the cost this guard exists to refuse.
   if (isHighlightSplitOpen()) refreshHighlightCycle();
-  else renderHighlightsPanel();
   repaintPdfPageNotes();
   // ...and the two drawers, which are the third consumer. Marked stale rather
   // than rebuilt: both are closed almost all of the time, and rebuilding a
@@ -1861,8 +1852,11 @@ const openExportHighlightsModal = () => {
   el.exportHighlightsModal.hidden = false;
   lockPageScroll();
 };
-el.exportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
 el.drawerExportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
+// The same dialog from the side-by-side pane's own header, which is the only
+// place a reader working through a PDF's highlights can reach it without
+// leaving the paper — the drawer's row is on the notes side of the ☰ menu.
+el.highlightCycleExportBtn?.addEventListener("click", openExportHighlightsModal);
 
 // ── The export button beside the tabs ────────────────────────────────────
 //
@@ -1899,7 +1893,6 @@ el.viewExportMenu?.addEventListener("click", (event) => {
   if (surface === "cards") handleExportAction(format, "all");
   else if (surface === "notes") handleExportNotesAction(format);
   else if (surface === "doc") handleExportDocumentAction(format);
-  else if (surface === "highlights") openExportHighlightsModal();
 });
 el.exportHighlightsCancelBtn?.addEventListener("click", () => {
   if (!el.exportHighlightsModal) return;

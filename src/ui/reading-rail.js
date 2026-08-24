@@ -208,8 +208,7 @@ export function refreshReadingRailRows() {
 const VIEW_NAMES = {
   cards: "Cards",
   notes: "Notes",
-  document: "Document",
-  highlights: "Highlights"
+  document: "Document"
 };
 
 // A heading with nothing under it is worse than no heading — "This page" over an

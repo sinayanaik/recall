@@ -9,7 +9,6 @@
 // highlight is FOUND — which is what stops a jump from one surface landing
 // somewhere a jump from another would not.
 
-import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
@@ -19,7 +18,6 @@ import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
-import { renderHighlightsEditor } from "./highlights-editor.js?v=__BUILD__";
 import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
@@ -98,8 +96,8 @@ export function highlightUnitSpan(units, source, group) {
   //
   // rawStart/rawEnd (the exact [start,end) `cur` was sliced from) are what
   // let an image inside a row be resized in place — see the image-resize
-  // surface built in renderHighlightsPanel, which splices a commit straight
-  // back into state.notes at this span.
+  // surface paintQuote builds in src/panels/highlights-editor.js, which splices
+  // a commit straight back into state.notes at this span.
   return { cur, first, last, rawStart: units[first].start, rawEnd: units[last].end };
 }
 
@@ -433,25 +431,12 @@ export function collectHighlightEntries() {
   return entries;
 }
 
-// Redraws the Highlights tab.
-//
-// It used to be a list of rows, each with a "Go to →" and a ✎ that opened a
-// popup — so every note took a window to read and a second one to write, and a
-// reader working down a paper they had annotated opened and closed forty of
-// them. It is a continuous editor now: the highlighted line, then its note
-// under it, editable where it sits, grouped by page or by chapter. See
-// src/panels/highlights-editor.js, which is src/documents/pdf-notes-view.js
-// generalised — that module had already solved this and had put the answer in
-// the Notes tab, which is where the reader's own writing belongs.
-//
-// Cheap enough to just always rebuild (the same choice renderClozePanel makes)
-// rather than diffing, and it only runs when this tab is actually open — but
-// the editor's own signature guard stops a rebuild that would change nothing,
-// which matters now that a note being typed HERE is what triggers the rebuild.
-export function renderHighlightsPanel() {
-  const list = el.highlightsList;
-  if (!list) return;
-  const entries = collectHighlightEntries();
-  if (el.highlightsEmpty) el.highlightsEmpty.hidden = entries.length > 0;
-  renderHighlightsEditor(entries);
-}
+// There is no renderHighlightsPanel any more, and no Highlights tab for it to
+// draw. The cards it built are built by src/panels/highlights-editor.js into the
+// side-by-side pane (src/panels/highlight-cycle.js), which is the same editor
+// rendering the same entries beside the surface they are about rather than in a
+// tab you had to leave that surface to reach. What is left here is the
+// collection — collectHighlightEntries, scanHighlightGroups, addRegionPreview,
+// collectDeckHighlights — which the pane, the drawer's index and the exporters
+// all still share, and which is the reason a jump from any of them lands in the
+// same place.

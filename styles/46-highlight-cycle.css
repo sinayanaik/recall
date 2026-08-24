@@ -133,6 +133,7 @@
 }
 
 .hc-step,
+.hc-export,
 .hc-close {
   display: inline-flex;
   align-items: center;
@@ -150,6 +151,7 @@
 }
 
 .hc-step:hover:not(:disabled),
+.hc-export:hover,
 .hc-close:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
   background: color-mix(in srgb, var(--accent) 14%, transparent);
@@ -174,8 +176,16 @@
   text-align: center;
 }
 
-.hc-close {
+/* ⇓ and ×, in that order, pushed to the end of the bar away from the two steps.
+   The margin goes on the FIRST of the pair rather than on each: two `auto`
+   margins would split the free space between them and leave a gap in the middle
+   of what should read as one group. */
+.hc-export {
   margin-left: auto;
+  font-size: 0.95rem;
+}
+
+.hc-close {
   font-size: 1.1rem;
 }
 

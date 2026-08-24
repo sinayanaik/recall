@@ -19,7 +19,6 @@ import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, rend
 import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
 import { flushReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
-import { renderHighlightsPanel } from "../panels/highlights-panel.js?v=__BUILD__";
 import { measureChromeHeights, resetChromeAutoHide } from "./chrome.js?v=__BUILD__";
 
 // `options.deferRender` yields one frame between flipping the toggle's own
@@ -45,25 +44,29 @@ export function setSplitViewHook(fn) {
 }
 
 export function setViewMode(mode, options = {}) {
+  // "highlights" is deliberately not a mode any more, and deliberately not
+  // special-cased into an error either: it falls through to "cards" like any
+  // other unknown string. A nav-history entry recorded while the tab existed
+  // (src/ui/nav-history.js) replays into the cards view rather than into a
+  // stage that is no longer in the document.
+  // The Document surface is on every open deck now (refreshDocumentTab), and on
+  // one with no PDF it opens to the offer of attaching one. This used to fall
+  // back to "cards" unless state.meta.pdf was set, which was right while there
+  // was no tab and nothing behind it — and would now bounce the reader straight
+  // back out of the tab they just pressed.
+  //
+  // The guard that remains is the one that always mattered: no deck, no
+  // surface. A stale nav-history entry replayed against a closed deck must not
+  // open a document panel with no toggle to leave it by.
   const next = mode === "notes" ? "notes"
-    : mode === "highlights" ? "highlights"
-      // The Document surface is on every open deck now (refreshDocumentTab), and
-      // on one with no PDF it opens to the offer of attaching one. This used to
-      // fall back to "cards" unless state.meta.pdf was set, which was right while
-      // there was no tab and nothing behind it — and would now bounce the reader
-      // straight back out of the tab they just pressed.
-      //
-      // The guard that remains is the one that always mattered: no deck, no
-      // surface. A stale nav-history entry replayed against a closed deck must
-      // not open a document panel with no toggle to leave it by.
-      : mode === "document" ? (hasActiveDeck() ? "document" : "cards")
-        : "cards";
+    : mode === "document" ? (hasActiveDeck() ? "document" : "cards")
+      : "cards";
   if (!el.notesStage || !el.viewModeToggle) {
     state.viewMode = next;
     return;
   }
   if (next === "cards") resetNotesEditingUI();
-  // A note being typed into the Highlights tab commits on the way out, exactly
+  // A note being typed in the highlights pane commits on the way out, exactly
   // as the note popup flushes in closeHighlightNoteEditor: leaving a view is not
   // a reason to lose a sentence. A no-op when nothing is open.
   closeHighlightsEditor();
@@ -74,15 +77,12 @@ export function setViewMode(mode, options = {}) {
   // after the visibility flip would lay the panel out twice.
   splitViewHook?.(next);
   const notesActive = next === "notes";
-  const highlightsActive = next === "highlights";
   const documentActive = next === "document";
-  // Highlights reuses the notes-mode layout (deck/controls give way to a
-  // full-height stage) — it's a notes-adjacent view, not a card view. Document
-  // wants the same layout for the same reason, and more so: a page of a paper
-  // needs every pixel of height the chrome is not using.
-  quizPanel?.classList.toggle("notes-mode", notesActive || highlightsActive || documentActive);
+  // The two reading surfaces share the notes-mode layout: deck and controls give
+  // way to a full-height stage. Document wants it most of all — a page of a
+  // paper needs every pixel of height the chrome is not using.
+  quizPanel?.classList.toggle("notes-mode", notesActive || documentActive);
   el.notesStage.hidden = !notesActive;
-  if (el.highlightsStage) el.highlightsStage.hidden = !highlightsActive;
   if (el.documentStage) el.documentStage.hidden = !documentActive;
   // Both containers, explicitly. The reading rail carries a second set of
   // [data-view-mode] buttons for focus mode (src/ui/reading-rail.js) and it must
@@ -158,8 +158,6 @@ export function setViewMode(mode, options = {}) {
       // leaves that deck with a blank Notes tab that will not open its editor —
       // a panel you cannot write in and cannot see why.
       if (!rawEditorValueFor(state.notes).trim()) enterNotesEditing();
-    } else if (highlightsActive) {
-      renderHighlightsPanel();
     } else if (documentActive) {
       // Idempotent for the deck already on screen — this runs on every switch
       // into the tab, and re-parsing a 40MB paper because someone glanced at
@@ -247,13 +245,11 @@ const VIEW_EXPORT_MENUS = {
       ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
       ["doc:original", "The original PDF", "Byte for byte, as it arrived"]
     ]
-  },
-  highlights: {
-    head: "Export highlights",
-    rows: [
-      ["highlights:open", "Export highlights…", "Choose context, chapters and notes"]
-    ]
   }
+  // No `highlights` entry: there is no Highlights view to export "what you are
+  // looking at" from. The highlights export is reached from the ☰ drawer and
+  // from the ⇓ in the side-by-side pane's own header, both of which open the
+  // same #exportHighlightsModal.
 };
 
 export function paintViewExportMenu() {

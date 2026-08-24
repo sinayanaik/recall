@@ -137,7 +137,6 @@ export async function exportHighlightsFlat(format, options = {}) {
   }
 
   setStatus("Preparing highlights standalone HTML export...");
-  if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = true;
   try {
     const rawBodyHtml = buildHighlightsExportBody(title, options);
     const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
@@ -147,8 +146,6 @@ export async function exportHighlightsFlat(format, options = {}) {
   } catch (error) {
     console.error("Highlights export failed", error);
     setStatus("Could not prepare the highlights export.", "error");
-  } finally {
-    if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = false;
   }
 }
 
@@ -161,7 +158,6 @@ export async function exportHighlightsPdf(options = {}) {
   const title = state.deckTitle || "Highlights";
 
   setStatus("Preparing highlights PDF...");
-  if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = true;
   el.printRoot.innerHTML = "";
   el.printRoot.classList.add("is-preparing");
   el.printRoot.classList.remove("is-preview");
@@ -196,7 +192,6 @@ export async function exportHighlightsPdf(options = {}) {
     setStatus("Could not prepare the highlights PDF export.", "error");
   } finally {
     closePrintPreview();
-    if (el.exportHighlightsBtn) el.exportHighlightsBtn.disabled = false;
   }
 }
 

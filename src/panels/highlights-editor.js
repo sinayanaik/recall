@@ -33,7 +33,6 @@
 // carries its own { read, write } and everything else is shared — which is the
 // same split renderNoteBodyWithImageResize was already making on `highlightId`.
 
-import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
@@ -325,26 +324,20 @@ export function commitOpenNote({ repaint = true } = {}) {
 
 let lastEntries = [];
 
-// ── One editor, two containers ──────────────────────────────────────────────
+// ── One editor, one container — but it is passed in ─────────────────────────
 //
-// This surface is the Highlights tab, and it is now also the right-hand pane of
+// This surface was the Highlights tab and is now the right-hand pane of
 // side-by-side mode (src/panels/highlight-cycle.js), which lists the highlights
-// of ONE reading surface beside that surface. That pane wants exactly these
-// cards — the excerpt, the region preview, the rendered note under it, editable
-// where it sits — so it renders through this module rather than growing a second
-// implementation of them that would drift.
+// of ONE reading surface beside that surface. The tab is gone; the cards are
+// unchanged, because they were always the right cards in the wrong place.
 //
-// What the two share is everything except where the nodes go, so `list` is
-// threaded through the four places that used to name el.highlightsList outright
-// and defaults to it everywhere. The module's other state (editingKey,
-// openNoteKit, lastEntries) stays singleton deliberately: only one of the two
-// containers is ever on screen — the split turns off when the Highlights tab
-// opens — and entryKey() is a deck-wide identity, not a per-container one.
+// `list` stays an argument rather than reverting to a hard-coded element for two
+// reasons: tools/highlight-check.mjs renders into a container of its own to
+// measure containment without a deck open, and nothing here needs to know which
+// box it is drawing in. The module's state (editingKey, openNoteKit,
+// lastEntries) is singleton deliberately — entryKey() is a deck-wide identity,
+// not a per-container one.
 let lastList = null;
-
-function editorList(list) {
-  return list || el.highlightsList;
-}
 
 function restampSignature() {
   const root = lastList?.querySelector(`:scope > .${HL_NOTES_CLASS}`);
@@ -501,7 +494,7 @@ export const HL_CONTAIN_MIN_NODES = 12000;
 // drives the decision directly, because a threshold nothing checks is a
 // threshold that gets moved.
 export function applyContainmentForCheck(articles, samples, list) {
-  return applyContainment(articles, samples, editorList(list));
+  return applyContainment(articles, samples, list || lastList);
 }
 
 function applyContainment(articles, samples, list) {
@@ -590,12 +583,12 @@ function measureAndContain(articles, list) {
   applyContainment(articles, samples, list);
 }
 
-// Rendered into `list` — el.highlightsList for the Highlights tab, the pane's
-// own body in side-by-side mode. `entries` is one flat list in reading order,
-// each carrying the group it belongs to — a page for a document highlight, a
-// chapter for a <mark> — so the grouping is a single pass rather than two
-// shapes of input.
-export function renderHighlightsEditor(entries, list = el.highlightsList) {
+// Rendered into `list` — #highlightCycleBody in side-by-side mode, and whatever
+// container tools/highlight-check.mjs hands it. `entries` is one flat list in
+// reading order, each carrying the group it belongs to — a page for a document
+// highlight, a chapter for a <mark> — so the grouping is a single pass rather
+// than two shapes of input.
+export function renderHighlightsEditor(entries, list) {
   if (!list) return Promise.resolve();
   // A rebuild while somebody is typing would take the words out from under
   // them. Nothing is lost by waiting: the editor writes as you type, and
@@ -641,7 +634,7 @@ export function renderHighlightsEditor(entries, list = el.highlightsList) {
 
 // One delegated listener for the whole surface, installed once per container. A
 // listener per note would be one more thing every rebuild has to re-attach.
-export function initHighlightsEditor(list = el.highlightsList) {
+export function initHighlightsEditor(list) {
   if (!list) return;
   const open = (target) => {
     const body = target.closest?.(`.${HL_NOTE_CLASS}-body`);
