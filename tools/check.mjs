@@ -102,6 +102,21 @@
 //                   layer: readable, but with no selection and no make-card
 //                   (these three assert OUTCOMES rather than parity — a fix
 //                   changes the answer, so parity cannot see it by design)
+//   epub-import     ...and does importing an EPUB still work? The modal, the
+//                   figure uploads and the decks, driven end to end through the
+//                   app's own importEpubFile against a book built by hand
+//                   (tools/epub-fixture.mjs). It exists because none of that
+//                   ran at all: a figure-quality control added to the preview
+//                   read an `imageEntries` the modal was never given, so every
+//                   book with a picture in it died on a ReferenceError before
+//                   the modal reached the screen. Nothing here noticed —
+//                   module-symbols only asks about names another MODULE owns,
+//                   and that one is a parameter three functions in the same
+//                   file legitimately use. The fixture is shaped around the
+//                   branches nothing else reaches: a front page the contents
+//                   does not name, two chapters sharing one file and split at
+//                   an anchor, and figures whose archive names and hrefs are
+//                   spelled differently in both directions
 //   sync            do the merge PRIMITIVES behave identically, and still
 //                   refuse to lose data? (parity plus invariants — passing one
 //                   is not passing the other)
@@ -204,6 +219,7 @@ const checks = [
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
+    ["epub-import   ", ["node", ["tools/epub-import-check.mjs"], ROOT]],
     ["offline       ", ["node", ["tools/offline-check.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
