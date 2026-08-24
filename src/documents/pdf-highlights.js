@@ -541,6 +541,58 @@ export function documentHighlightNote(id) {
   return readHighlightNotes(state.notes || "").get(id) || "";
 }
 
+// ── The number a highlight is shown as ──────────────────────────────────────
+//
+// Every annotated highlight on this paper, in reading order, with the number it
+// wears. It lives HERE, beside the records and the ordering it is derived from,
+// rather than in whichever surface happens to print it — and that is the point
+// of the file it moved out of (src/documents/pdf-page-notes.js, which paints the
+// badges) rather than a tidying preference. Three surfaces show this number now:
+// the badge pinned to the highlight on the page, the note printed under that
+// page, and the card in the side-by-side pane. A number that means one thing in
+// two of them and something else in the third is worse than no number at all,
+// and "we computed the same sequence the same way in three files" is exactly the
+// guarantee that does not survive an edit to one of them.
+//
+// A highlight with NO note is not numbered and is not in this list. The number
+// is the whole indicator — it says both "there is something written here" and
+// "it is the third thing you wrote" — so numbering an unannotated highlight
+// would promise something to read that does not exist.
+//
+// Rebuilt on demand rather than memoized: it is one pass over an array that is
+// tens of entries long even for a heavily marked-up paper, and the note text it
+// reads comes from state.notes, which any edit anywhere can replace.
+export function annotatedDocumentHighlights() {
+  // ONE parse for the whole list, not one per record — the same hoist
+  // collectHighlightEntries and documentHighlightEntries already make, and the
+  // note on both of them says why: documentHighlightNote(id) re-reads the fenced
+  // block out of state.notes on every call, so asking it per record is quadratic
+  // in how many highlights a paper has.
+  //
+  // This one mattered most and was the one missed. It runs from the page-painted
+  // hook by way of paintPageNoteBadges, so the cost was paid again for every
+  // page the reader scrolled past: measured on a 4-page paper at 3.9ms per four
+  // pages with 25 annotated highlights and 312ms with 300, which is what
+  // "rendering and scrolling became hella slow" is made of.
+  const notes = readHighlightNotes(state.notes || "");
+  const out = [];
+  documentHighlightsInReadingOrder().forEach((record) => {
+    const note = notes.get(record.id) || "";
+    if (!note) return;
+    out.push({ record, note, n: out.length + 1 });
+  });
+  return out;
+}
+
+// ...and the same answer as a lookup, for a caller that has an id in its hand
+// rather than a list to walk. 0 for a highlight with nothing written about it,
+// which is the same "no number" the page shows.
+export function annotatedDocumentHighlightNumbers() {
+  const numbers = new Map();
+  annotatedDocumentHighlights().forEach(({ record, n }) => numbers.set(record.id, n));
+  return numbers;
+}
+
 // `rerender` is the note editor's autosave option, and it is honoured here now.
 //
 // "Whenever I'm editing the highlight the whole PDF rendering gets refreshed."
@@ -642,10 +694,18 @@ export function repaintDocumentHighlights() {
   });
 }
 
-// Pulse one highlight's quads, so a jump from a card or the Highlights panel
+// Every painted quad belonging to one highlight. One highlight is several of
+// them — a phrase spanning three lines is three boxes — so everything that acts
+// on "the highlight on the page" acts on a list.
+export function documentHighlightMarks(id) {
+  if (!id) return [];
+  return [...document.querySelectorAll(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(id)}"]`)];
+}
+
+// Pulse one highlight's quads, so a jump from a card or the highlights pane
 // lands somewhere the reader can see it landed.
 export function flashDocumentHighlight(id) {
-  const marks = document.querySelectorAll(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(id)}"]`);
+  const marks = documentHighlightMarks(id);
   marks.forEach((mark) => {
     mark.classList.remove("is-flashing");
     // Forces the class removal to take effect before it is re-added, so a

@@ -851,20 +851,37 @@ export function sourceMarkIndexFor(view, mark) {
   return index < offsets.length ? index : -1;
 }
 
-export function revealNoteMark(locator, options) {
+// The rendered <mark> a locator names, or null. Split out of revealNoteMark
+// because "which element is this highlight" and "take me to it" are two
+// questions, and the highlights pane asks only the first — it lights a
+// highlight while the pointer is over its card, which must not scroll the note.
+//
+// Note that resolving one can BUILD a span of a lazily-rendered note
+// (lazyNoteMarkNode), which is the reason this is not a querySelector at the
+// call site — and the reason `build` exists. A jump wants the span built,
+// because the whole point is to put those words on screen. A hover does not: it
+// only wants to tint a mark the reader can already see, and building a span of a
+// book to tint something off-screen would be work nobody asked for, on the
+// pointer's path, for no visible effect.
+export function noteMarkNode(locator, { build = true } = {}) {
   const view = el.notesView;
-  if (!view || view.hidden || !locator) return false;
+  if (!view || view.hidden || !locator) return null;
   const { markIndex, markCount } = locator;
-  if (!Number.isFinite(markIndex) || markIndex < 0) return false;
-  if (!Number.isFinite(markCount)) return false;
+  if (!Number.isFinite(markIndex) || markIndex < 0) return null;
+  if (!Number.isFinite(markCount)) return null;
   const marks = view.querySelectorAll("mark");
   // The whole-note count is the proof that the DOM and the source agree about
   // what the Nth mark IS. It cannot hold on a note that is built as it is read
   // — most of its marks are not in the document — so there the ordinal is
   // resolved against the SOURCE instead and the span holding it is built.
-  const node = marks.length === markCount
-    ? marks[markIndex]
-    : lazyNoteMarkNode(view, markIndex, markCount);
+  if (marks.length === markCount) return marks[markIndex] || null;
+  return build ? lazyNoteMarkNode(view, markIndex, markCount) : null;
+}
+
+export function revealNoteMark(locator, options) {
+  const view = el.notesView;
+  if (!view || view.hidden || !locator) return false;
+  const node = noteMarkNode(locator);
   if (!node) return false;
   let range;
   try {

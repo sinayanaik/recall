@@ -40,7 +40,8 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { currentDocumentPage, isDocumentFitWidth, relayoutDocument } from "../documents/pdf-view.js?v=__BUILD__";
-import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { documentHighlightMarks } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { noteMarkNode, scheduleNoteJump, sourceMarkIndexFor } from "../notes/anchors.js?v=__BUILD__";
 import { quizPanel } from "../notes/notes-view.js?v=__BUILD__";
 import { applyNotesPagedLayout, isNotesPaged } from "../notes/paged-view.js?v=__BUILD__";
 import {
@@ -242,6 +243,8 @@ export function closeHighlightSplit() {
   // A note being typed in the pane commits on the way out, exactly as leaving
   // the Highlights tab commits one being typed there.
   closeHighlightsEditor();
+  // Nothing on the reading surface should stay tinted for a pane that is gone.
+  paintLink(null);
   splitSurface = null;
   cycleEntries = [];
   cycleIndex = -1;
@@ -250,6 +253,14 @@ export function closeHighlightSplit() {
   quizPanel?.style.removeProperty("--split-space");
   if (el.highlightCycle) el.highlightCycle.hidden = true;
   if (el.splitDivider) el.splitDivider.hidden = true;
+  // Emptied, not just hidden. A book's worth of cards left standing in a box
+  // nobody can see is memory held for nothing — and worse, highlights-editor.js
+  // keeps `lastList`/`lastEntries` pointing into whatever it last rendered, so
+  // the next commit's restampSignature() would stamp a surface that is not on
+  // screen and the signature guard would then decline to rebuild the one that
+  // is. Clearing it also makes the next open a real render rather than a
+  // signature match against a stale list.
+  if (el.highlightCycleBody) el.highlightCycleBody.replaceChildren();
   notePaneResized();
 }
 
@@ -262,8 +273,8 @@ export function toggleHighlightSplit(surface) {
 //
 // Notes and Document are both reading surfaces, so the split follows rather than
 // closing — a reader who has the paper and its highlights side by side and taps
-// Notes wants the note and ITS highlights, not the split taken away. Cards and
-// the Highlights tab are not reading surfaces and there is nothing to be beside.
+// Notes wants the note and ITS highlights, not the split taken away. Cards are
+// not a reading surface and there is nothing there to be beside.
 export function splitFollowsViewMode(next) {
   if (!splitSurface) return;
   // A different deck is a different set of highlights and a different paper to
@@ -279,6 +290,14 @@ export function splitFollowsViewMode(next) {
   if (next === splitSurface) return;
   closeHighlightsEditor();
   splitSurface = next;
+  // The other surface's list is a DIFFERENT list, and the position in this one
+  // means nothing in it. Left in place, cycleIndex was almost always still in
+  // range over there — so nearestCycleIndex returned it unchanged, its whole
+  // "the first highlight on or after the page you are looking at" answer never
+  // ran, and moving the split from the note to the paper landed the pane on
+  // whichever highlight happened to share an index with the one being left.
+  cycleIndex = -1;
+  cycleKey = "";
   applyStackedSpace();
   refreshHighlightCycle();
   goToCycleIndex(nearestCycleIndex(), { jump: false });
@@ -305,6 +324,13 @@ export function refreshHighlightCycle() {
   const at = cycleKey ? cycleEntries.findIndex((entry) => highlightEntryKey(entry) === cycleKey) : -1;
   if (at >= 0) cycleIndex = at;
   else if (cycleIndex >= cycleEntries.length) cycleIndex = cycleEntries.length - 1;
+  // ...and when the key is NOT found — the highlight it named was deleted — the
+  // index that survives names a different one, so the key has to be re-derived
+  // from it. Leaving the old key in place left the two disagreeing: the counter
+  // and the lit card followed the index while every lookup keyed on cycleKey
+  // (the scroll spy, the next rebuild, the click handler's "is this already the
+  // current one" test) was still asking about a highlight that no longer exists.
+  if (at < 0) cycleKey = cycleIndex >= 0 && cycleEntries[cycleIndex] ? highlightEntryKey(cycleEntries[cycleIndex]) : "";
   if (el.highlightCycleEmpty) el.highlightCycleEmpty.hidden = cycleEntries.length > 0;
   el.highlightCycleBody.hidden = cycleEntries.length === 0;
   renderHighlightsEditor(cycleEntries, el.highlightCycleBody).then(() => {
@@ -340,17 +366,26 @@ export function cycleHighlightBy(step) {
 }
 
 // Point the cycle at one particular highlight — what a press on a contents
-// drawer row means while the split is open. `locator` is the shape the drawer
-// and the Highlights tab both already carry.
+// drawer row means while the split is open, and what a press on a numbered
+// badge means. `locator` is the shape the drawer and the cards both carry.
+//
+// Returns whether it found the highlight, and that answer is load-bearing: the
+// badge handlers fall back to the floating note popup when it comes back false,
+// which is every case where there is no pane to reveal anything in — it is
+// closed, it is beside the other surface, or the highlight is not one of the
+// ones it lists.
 export function cycleToLocator(locator) {
-  if (!splitSurface || !locator) return;
+  if (!splitSurface || !locator) return false;
   const at = cycleEntries.findIndex((entry) => (locator.highlightId
     ? entry.highlightId === locator.highlightId
     : entry.markIndex === locator.markIndex));
-  if (at < 0) return;
-  // No jump: the caller made it. This is the pane catching up with a move the
-  // reader has already asked for somewhere else.
+  if (at < 0) return false;
+  // No jump: the caller made it, or is the thing being jumped FROM. This is the
+  // pane catching up with a move the reader has already asked for somewhere
+  // else — which for a badge press means scrolling the card into view and
+  // lighting it, both of which goToCycleIndex does through paintCurrentCard.
   goToCycleIndex(at, { jump: false });
+  return true;
 }
 
 function goToCycleIndex(index, { jump }) {
@@ -360,15 +395,33 @@ function goToCycleIndex(index, { jump }) {
     paintCycleCount();
     return;
   }
-  // Whatever was being typed is written before the surface moves under it.
+  // ── The target is taken by KEY, before anything can move it ─────────────
+  //
+  // closeHighlightsEditor() commits whatever was being typed, and a commit that
+  // changed the text fires notifyHighlightsChanged — which lands in
+  // refreshHighlightCycle and REPLACES cycleEntries, synchronously, inside this
+  // call. Reading cycleEntries[index] afterwards was reading a new array with an
+  // index taken from the old one, so the ◀ ▶ press after an edit could step to a
+  // highlight the reader had not asked for.
+  //
+  // The key is the identity the whole module already carries positions by (see
+  // cycleKey), so it survives the list being rebuilt under it. If the entry it
+  // names is gone by then — the commit deleted the note, and with it the entry
+  // on a filtered surface — there is nothing to go to.
+  const key = highlightEntryKey(cycleEntries[index]);
   closeHighlightsEditor();
-  cycleIndex = index;
-  const entry = cycleEntries[index];
-  cycleKey = highlightEntryKey(entry);
+  const at = cycleEntries.findIndex((entry) => highlightEntryKey(entry) === key);
+  if (at < 0) {
+    paintCycleCount();
+    return;
+  }
+  cycleIndex = at;
+  const entry = cycleEntries[at];
+  cycleKey = key;
   paintCycleCount();
   paintCurrentCard();
   if (!jump) return;
-  // The same call the drawer's rows and the tab's "Go to →" make, so a step
+  // The same call the drawer's rows and a card's own "Go to →" make, so a step
   // through the list lands exactly where those two already land.
   scheduleNoteJump(entry.anchor, { patient: true }, entry.locator);
 }
@@ -397,7 +450,68 @@ function paintCurrentCard() {
   const card = cardFor(cycleIndex);
   if (!card) return;
   card.classList.add("is-current");
+  paintLink(cycleEntries[cycleIndex]);
   revealCard(card);
+}
+
+// ── Which mark this card is about ───────────────────────────────────────────
+//
+// The number in a card's head says which highlight it belongs to, and that is
+// the answer for a highlight you can already see. This is the answer for one you
+// cannot: point at a card and the words it is about light up on the page or in
+// the note, and point at a mark in the note and its card lights up over here.
+//
+// Held as a list of NODES rather than as a key to look up again. A highlight is
+// several painted quads on a paper (a phrase across three lines is three boxes),
+// and the nodes can go — a relayout repaints the mark layer, a rebuild replaces
+// the card — so what was lit is remembered directly and cleared directly.
+let linkedNodes = [];
+
+function surfaceNodesFor(entry) {
+  if (!entry) return [];
+  if (entry.highlightId) return documentHighlightMarks(entry.highlightId);
+  // build: false — see noteMarkNode. Tinting something the reader cannot see is
+  // not worth building a span of a book for.
+  const node = noteMarkNode(entry.locator, { build: false });
+  return node ? [node] : [];
+}
+
+export const LINKED_CLASS = "is-linked";
+
+function entryForKey(key) {
+  return key ? cycleEntries.find((entry) => highlightEntryKey(entry) === key) || null : null;
+}
+
+function paintLink(entry) {
+  const next = surfaceNodesFor(entry);
+  if (next.length === linkedNodes.length && next.every((node, i) => node === linkedNodes[i])) return;
+  linkedNodes.forEach((node) => node.classList.remove(LINKED_CLASS));
+  linkedNodes = next;
+  linkedNodes.forEach((node) => node.classList.add(LINKED_CLASS));
+}
+
+// The other direction: a mark in the note, pointed at, lights its card.
+//
+// The notes surface only. A paper's marks sit in a layer carrying
+// `pointer-events: none` and must keep it — the text layer is above them and
+// every pointer event has to reach that or selection stops working over a
+// highlight — so they cannot be hovered at all. What answers there is the
+// numbered badge, which IS pressable: see the reveal hook in src/main.js.
+//
+// The mark is resolved to its SOURCE ordinal (sourceMarkIndexFor), which is what
+// an entry is keyed on. Comparing DOM nodes instead would mean resolving every
+// entry's node to find the one that matched — a walk of the whole list, on the
+// pointer's path, that on a lazily-built note cannot even answer for most of it.
+function paintCardLinkFor(mark) {
+  const body = el.highlightCycleBody;
+  if (!body) return;
+  body.querySelectorAll(`.${HL_NOTE_CLASS}.${LINKED_CLASS}`).forEach((node) => node.classList.remove(LINKED_CLASS));
+  if (!mark) return;
+  const index = sourceMarkIndexFor(el.notesView, mark);
+  if (index < 0) return;
+  const at = cycleEntries.findIndex((entry) => !entry.highlightId && entry.markIndex === index);
+  if (at < 0) return;
+  cardFor(at)?.classList.add(LINKED_CLASS);
 }
 
 // Scrolled by hand rather than with scrollIntoView, for two reasons: that call
@@ -562,6 +676,30 @@ export function initHighlightCycle() {
     paintCurrentCard();
   });
 
+  // Point at a card, light its highlight; take the pointer off the list, and the
+  // current card's own highlight is what stays lit. pointerover/pointerout
+  // rather than mouseenter on each card: one pair of listeners on the container
+  // survives every rebuild, and a card is rebuilt often.
+  el.highlightCycleBody?.addEventListener("pointerover", (event) => {
+    const card = event.target.closest?.(`.${HL_NOTE_CLASS}`);
+    if (!card || !el.highlightCycleBody.contains(card)) return;
+    paintLink(entryForKey(card.dataset.highlightKey || ""));
+  });
+  el.highlightCycleBody?.addEventListener("pointerleave", () => {
+    paintLink(cycleEntries[cycleIndex]);
+  });
+
+  // ...and the way back. A <mark> in the note is an ordinary element that takes
+  // pointer events, so hovering one lights its card over here.
+  el.notesView?.addEventListener("pointerover", (event) => {
+    if (!splitSurface || splitSurface !== "notes") return;
+    paintCardLinkFor(event.target.closest?.("mark") || null);
+  });
+  el.notesView?.addEventListener("pointerleave", () => {
+    if (!splitSurface) return;
+    paintCardLinkFor(null);
+  });
+
   el.highlightCycleBody?.addEventListener("scroll", () => {
     if (cycleScrollFrame) return;
     cycleScrollFrame = requestAnimationFrame(() => {
@@ -571,11 +709,16 @@ export function initHighlightCycle() {
   }, { passive: true });
 
   // ← and → step through the highlights, but only while the pane itself has the
-  // focus and only when nothing is being typed into it: those two keys move the
-  // caret inside a note, and taking them would make the editor unusable.
+  // focus and only when nothing is being typed into it OR selected in it: those
+  // two keys move the caret inside a note, and they also collapse and extend a
+  // selection in rendered text. The rendered halves are named as well as the
+  // textarea, because a note's body is something you select a phrase out of to
+  // format now (registerCardTarget in highlights-editor.js) — taking ← and →
+  // there would make the pill's own selection impossible to adjust.
   el.highlightCycle.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     if (event.target.closest("textarea, input, [contenteditable='true'], .split-divider")) return;
+    if (event.target.closest(".hl-note-body, .hl-note-editor, .note-editor-rendered")) return;
     event.preventDefault();
     cycleHighlightBy(event.key === "ArrowRight" ? 1 : -1);
   });

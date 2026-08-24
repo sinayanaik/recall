@@ -133,6 +133,7 @@
 }
 
 .hc-step,
+.hc-export,
 .hc-close {
   display: inline-flex;
   align-items: center;
@@ -150,6 +151,7 @@
 }
 
 .hc-step:hover:not(:disabled),
+.hc-export:hover,
 .hc-close:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
   background: color-mix(in srgb, var(--accent) 14%, transparent);
@@ -174,14 +176,22 @@
   text-align: center;
 }
 
-.hc-close {
+/* ⇓ and ×, in that order, pushed to the end of the bar away from the two steps.
+   The margin goes on the FIRST of the pair rather than on each: two `auto`
+   margins would split the free space between them and leave a gap in the middle
+   of what should read as one group. */
+.hc-export {
   margin-left: auto;
+  font-size: 0.95rem;
+}
+
+.hc-close {
   font-size: 1.1rem;
 }
 
 /* ── The list ──────────────────────────────────────────────────────────────
-   Rendered by src/panels/highlights-editor.js, exactly as the Highlights tab
-   is — so everything under this box is styled by 44-highlights-editor.css and
+   Rendered by src/panels/highlights-editor.js, which is the one builder of these
+   cards — so everything under this box is styled by 44-highlights-editor.css and
    there is nothing to restate. Only the box is here. */
 .hc-body {
   flex: 1 1 auto;
@@ -190,11 +200,12 @@
   padding: 8px;
 }
 
-/* "Go to →" is hover-revealed in the Highlights tab (44-highlights-editor.css),
-   which is right for a page of cards being read and wrong here: in the split,
-   going to the highlight IS the reason the pane is open, and a phone — where
-   this pane is a third of the screen — has no hover to reveal it with. */
-.hc-body .hl-note-goto {
+/* "Go to →" and ✎ are hover-revealed by 44-highlights-editor.css, which is
+   right for a page of cards being read and wrong here: in the split, going to
+   the highlight IS the reason the pane is open, and a phone — where this pane is
+   a third of the screen — has no hover to reveal either of them with. */
+.hc-body .hl-note-goto,
+.hc-body .hl-note-edit {
   opacity: 1;
 }
 
@@ -325,3 +336,35 @@
     transition: none;
   }
 }
+
+/* ── Which highlight this card is about ────────────────────────────────────
+ *
+ * The number in the card's head (styles/44-highlights-editor.css) answers this
+ * for a highlight already on screen. These two rules answer it for one that is
+ * not obvious: point at a card and the words it is about light up on the page
+ * or in the note; point at a mark in the note and its card lights up in the
+ * pane. See paintLink / paintCardLinkFor in src/panels/highlight-cycle.js.
+ *
+ * An OUTLINE rather than a background, and that is the whole trick: a highlight
+ * already has a background — its own colour, which is what identifies it — so
+ * tinting it would say "this one is a different colour now". An outline is drawn
+ * outside the box and paints over nothing.
+ *
+ * Both live here rather than beside their own surfaces because they are one
+ * feature: neither rule means anything unless the pane is open, and a reader
+ * looking for why a mark went ringed should find both halves in one file.
+ */
+.pdf-mark.is-linked,
+#notesView mark.is-linked {
+  outline: 2px solid var(--accent-strong, var(--accent));
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* The card end of the same pairing. Quieter than .is-current — that one says
+ * "this is where the ◀ ▶ bar is", which survives the pointer leaving; this one
+ * only lasts as long as the pointer is over the mark. */
+.hc-body .hl-note.is-linked {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+

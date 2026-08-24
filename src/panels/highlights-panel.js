@@ -1,15 +1,14 @@
 // Every highlight in the deck, as the shapes its three readers need.
 //
-// One scan of the source, three shapes taken off it: the entries the Highlights
-// tab renders as a continuous editor (collectHighlightEntries, driving
-// src/panels/highlights-editor.js), the entries the two contents drawers list
+// One scan of the source, three shapes taken off it: the entries the
+// side-by-side pane renders as a continuous editor (collectHighlightEntries,
+// driving src/panels/highlights-editor.js), the entries the two contents drawers list
 // as jump targets (src/panels/highlight-index.js, which calls the scan here),
 // and the entries the exports build from (collectDeckHighlightsForExport, with
 // its own opt-in context lines). They differ in what they keep, never in how a
 // highlight is FOUND — which is what stops a jump from one surface landing
 // somewhere a jump from another would not.
 
-import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
@@ -17,10 +16,10 @@ import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-n
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
+import { highlightNoteIndex } from "../notes/highlight-badges.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
-import { renderHighlightsEditor } from "./highlights-editor.js?v=__BUILD__";
-import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { annotatedDocumentHighlightNumbers, documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
@@ -32,7 +31,7 @@ import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view
 // stored list: collectDeckHighlights, like collectDeckClozes above, is fully
 // derived from state.notes on every call, so an edit made in the raw editor
 // (typing <mark> by hand, or deleting one) can never drift out of sync with
-// what the Highlights tab shows.
+// what the pane shows.
 // data-color (see MARK_HIGHLIGHT_COLORS) makes the open tag's length variable,
 // so the offset below is measured off the actual match rather than a fixed
 // "<mark>".length constant — a coloured highlight would otherwise report an
@@ -98,8 +97,8 @@ export function highlightUnitSpan(units, source, group) {
   //
   // rawStart/rawEnd (the exact [start,end) `cur` was sliced from) are what
   // let an image inside a row be resized in place — see the image-resize
-  // surface built in renderHighlightsPanel, which splices a commit straight
-  // back into state.notes at this span.
+  // surface paintQuote builds in src/panels/highlights-editor.js, which splices
+  // a commit straight back into state.notes at this span.
   return { cur, first, last, rawStart: units[first].start, rawEnd: units[last].end };
 }
 
@@ -188,6 +187,11 @@ export function scanHighlightGroups(source, noteSource = source) {
       // own "Highlight Notes" section (or, for an old annotation, inline
       // base64) — so it is looked up here rather than read as text.
       note: noteRef ? noteTextFor(noteRef) || null : null,
+      // ...and the reference itself, carried rather than discarded, because it
+      // is the key the badge index is built on (highlightNoteIndex, in
+      // src/notes/highlight-badges.js). A card that wants to show the number
+      // its highlight wears on the page has to ask that index, not recount.
+      noteRef,
       marker: precedingListMarker(source, start)
     });
   }
@@ -379,12 +383,20 @@ export function collectHighlightEntries() {
     // measured at 4ms for 50 highlights and 60ms for 400, which is the shape of
     // a cost that has no ceiling on a heavily annotated paper.
     const notes = readHighlightNotes(state.notes || "");
+    // The number each highlight wears on the page, asked of the one function
+    // that decides it (annotatedDocumentHighlightNumbers, beside the records in
+    // pdf-highlights.js) rather than recounted here. A card showing "3" beside a
+    // badge showing "5" is worse than a card showing nothing.
+    const numbers = annotatedDocumentHighlightNumbers();
     documentHighlightsInReadingOrder().forEach((record) => {
       const text = String(record.text || "").trim() || documentHighlightLabel(record);
       entries.push({
         highlightId: record.id,
         color: record.color,
         group: record.page ? `Page ${record.page}` : "The document",
+        // 0 for a highlight with nothing written about it, which is the same
+        // "no number" the page shows.
+        n: numbers.get(record.id) || 0,
         region: record.kind === "area" ? record : null,
         // Rendered as plain text: it came out of a PDF, so there is no markdown
         // in it to interpret, and a paper containing "*" or "_" must not turn
@@ -407,6 +419,10 @@ export function collectHighlightEntries() {
   const notes = state.notes || "";
   const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
   const headings = headingIndexFor(source);
+  // ...and the note's own badge numbers, from the index the badges themselves
+  // are painted out of. Keyed on the <mark>'s data-note reference, which is why
+  // scanHighlightGroups carries it.
+  const noteNumbers = highlightNoteIndex(notes).byAttr;
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group);
     const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
@@ -422,6 +438,7 @@ export function collectHighlightEntries() {
       markIndex: group.pieces[0].markIndex,
       color: group.color,
       group: heading?.title || "",
+      n: noteNumbers.get(group.pieces[0].noteRef)?.n || 0,
       region: null,
       markdown,
       span,
@@ -433,25 +450,12 @@ export function collectHighlightEntries() {
   return entries;
 }
 
-// Redraws the Highlights tab.
-//
-// It used to be a list of rows, each with a "Go to →" and a ✎ that opened a
-// popup — so every note took a window to read and a second one to write, and a
-// reader working down a paper they had annotated opened and closed forty of
-// them. It is a continuous editor now: the highlighted line, then its note
-// under it, editable where it sits, grouped by page or by chapter. See
-// src/panels/highlights-editor.js, which is src/documents/pdf-notes-view.js
-// generalised — that module had already solved this and had put the answer in
-// the Notes tab, which is where the reader's own writing belongs.
-//
-// Cheap enough to just always rebuild (the same choice renderClozePanel makes)
-// rather than diffing, and it only runs when this tab is actually open — but
-// the editor's own signature guard stops a rebuild that would change nothing,
-// which matters now that a note being typed HERE is what triggers the rebuild.
-export function renderHighlightsPanel() {
-  const list = el.highlightsList;
-  if (!list) return;
-  const entries = collectHighlightEntries();
-  if (el.highlightsEmpty) el.highlightsEmpty.hidden = entries.length > 0;
-  renderHighlightsEditor(entries);
-}
+// There is no renderHighlightsPanel any more, and no Highlights tab for it to
+// draw. The cards it built are built by src/panels/highlights-editor.js into the
+// side-by-side pane (src/panels/highlight-cycle.js), which is the same editor
+// rendering the same entries beside the surface they are about rather than in a
+// tab you had to leave that surface to reach. What is left here is the
+// collection — collectHighlightEntries, scanHighlightGroups, addRegionPreview,
+// collectDeckHighlights — which the pane, the drawer's index and the exporters
+// all still share, and which is the reason a jump from any of them lands in the
+// same place.

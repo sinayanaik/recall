@@ -1544,6 +1544,7 @@ export function bumpDocumentLayout() {
   documentLayoutGeneration += 1;
   lastPageTop = -1;
   lastPageAnswer = 0;
+  lastPageGeneration = -1;
 }
 
 // How long a geometry table may be trusted without a bump. One frame: long
@@ -1585,6 +1586,25 @@ function documentPageGeometry() {
 let lastPageTop = -1;
 let lastPageAnswer = 0;
 
+// The generation and the timestamp the memoised answer was computed against.
+//
+// Without these the memo defeated the very net the table above it is built on.
+// The comment on documentPageBottoms calls the one-frame ceiling "a net under
+// that, so a bump nobody adds later costs a frame of staleness rather than a
+// wrong answer that persists" — and the `top === lastPageTop` return happened
+// BEFORE the table was consulted, so neither the generation check nor the age
+// check applied to it. A layout change that moved the pages without calling
+// bumpDocumentLayout, at a scroll position the reader was not moving, left the
+// answer wrong for as long as they sat there. That answer is the page indicator
+// AND the saved reading position.
+//
+// It also kept currentDocumentRatio honest, which matters more: that function
+// asks for the page and then for the geometry, and a memoised page paired with
+// a table rebuilt underneath it is a ratio measured against a different page's
+// box.
+let lastPageGeneration = -1;
+let lastPageAt = 0;
+
 export function currentDocumentPage() {
   const view = el.documentView;
   if (!view || !openPdf) return 1;
@@ -1594,7 +1614,11 @@ export function currentDocumentPage() {
   // the very flush the memo existed to avoid, on every call, which is why it
   // bought almost nothing.
   const top = view.scrollTop;
-  if (top === lastPageTop && lastPageAnswer) return lastPageAnswer;
+  if (top === lastPageTop && lastPageAnswer
+      && lastPageGeneration === documentLayoutGeneration
+      && performance.now() - lastPageAt < PAGE_GEOMETRY_MAX_AGE_MS) {
+    return lastPageAnswer;
+  }
 
   const count = openPdf.pageCount;
   const geometry = documentPageGeometry();
@@ -1621,6 +1645,8 @@ export function currentDocumentPage() {
   }
   lastPageTop = top;
   lastPageAnswer = answer;
+  lastPageGeneration = documentLayoutGeneration;
+  lastPageAt = performance.now();
   return answer;
 }
 
@@ -1632,6 +1658,7 @@ export function forgetDocumentPageGuess() {
   pageBottomsGeneration = -1;
   lastPageTop = -1;
   lastPageAnswer = 0;
+  lastPageGeneration = -1;
 }
 
 // How far into the current page the reader is, 0..1 — the second half of a

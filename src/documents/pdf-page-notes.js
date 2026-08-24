@@ -55,13 +55,12 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
-import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import {
   DOCUMENT_NOTE_HANDLERS,
+  annotatedDocumentHighlights,
   documentHighlightLabel,
-  documentHighlightNote,
-  documentHighlightsInReadingOrder
+  documentHighlightNote
 } from "./pdf-highlights.js?v=__BUILD__";
 import { quadToPageBox } from "./pdf-selection.js?v=__BUILD__";
 import {
@@ -106,31 +105,11 @@ export function readPdfPageNotesPreference() {
 
 // ── The index ───────────────────────────────────────────────────────────────
 
-// Every annotated highlight, in reading order, with the number it is shown as.
-// Rebuilt on demand rather than memoized: it is one pass over an array that is
-// tens of entries long even for a heavily marked-up paper, and the note text it
-// reads comes from state.notes, which any edit anywhere can replace.
-export function annotatedDocumentHighlights() {
-  // ONE parse for the whole list, not one per record — the same hoist
-  // collectHighlightEntries and documentHighlightEntries already make, and the
-  // note on both of them says why: documentHighlightNote(id) re-reads the fenced
-  // block out of state.notes on every call, so asking it per record is quadratic
-  // in how many highlights a paper has.
-  //
-  // This one mattered most and was the one missed. It runs from the page-painted
-  // hook by way of paintPageNoteBadges, so the cost was paid again for every
-  // page the reader scrolled past: measured on a 4-page paper at 3.9ms per four
-  // pages with 25 annotated highlights and 312ms with 300, which is what
-  // "rendering and scrolling became hella slow" is made of.
-  const notes = readHighlightNotes(state.notes || "");
-  const out = [];
-  documentHighlightsInReadingOrder().forEach((record) => {
-    const note = notes.get(record.id) || "";
-    if (!note) return;
-    out.push({ record, note, n: out.length + 1 });
-  });
-  return out;
-}
+// annotatedDocumentHighlights moved to src/documents/pdf-highlights.js, beside
+// the records and the reading order it is derived from. It is not this file's
+// answer any more: the side-by-side pane prints the same number on its cards
+// (collectHighlightEntries), and a sequence computed in one file and re-derived
+// in another is a sequence that eventually disagrees with itself.
 
 // ── What a page's notes currently ARE, as one short string ────────────────
 //
@@ -153,7 +132,29 @@ function pageNotesSignature(entries) {
     .join("|");
 }
 
+// ── Where a note is read from ───────────────────────────────────────────────
+//
+// A press on a badge opened a floating window over the page. That is the right
+// answer when there is nowhere else for the note to be — and the wrong one when
+// the note is already on screen, in the pane beside the paper, where it can be
+// read and written without a window covering the page it is about.
+//
+// So the pane gets asked first. It answers false whenever it cannot show this
+// particular note — it is closed, it is beside the other reading surface, or the
+// highlight is not one of the ones it lists — and the popup opens as before.
+//
+// Registered from src/main.js rather than imported, for the reason
+// setDrawerSideBySideHandler gives: src/panels/highlight-cycle.js reaches
+// pdf-view.js, which reaches this module, so importing it back would close a
+// cycle through the document surface.
+let revealInPane = null;
+
+export function setDocumentNoteRevealHook(fn) {
+  revealInPane = typeof fn === "function" ? fn : null;
+}
+
 function openNoteFor(record, anchorEl) {
+  if (revealInPane?.({ highlightId: record.id })) return;
   const rect = anchorEl?.getBoundingClientRect?.() || null;
   openHighlightNoteEditor(record.id, rect, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
 }

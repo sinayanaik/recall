@@ -94,7 +94,6 @@ export const el = {
   exportMenu: document.querySelector("#exportMenu"),
   exportNotesBtn: document.querySelector("#exportNotesBtn"),
   exportNotesMenu: document.querySelector("#exportNotesMenu"),
-  exportHighlightsBtn: document.querySelector("#exportHighlightsBtn"),
   drawerExportHighlightsBtn: document.querySelector("#drawerExportHighlightsBtn"),
   exportHighlightsModal: document.querySelector("#exportHighlightsModal"),
   exportHighlightsContext: document.querySelector("#exportHighlightsContext"),
@@ -228,12 +227,14 @@ export const el = {
   selectionFloat: document.querySelector("#selectionFloat"),
   selectionFloatFormat: document.querySelector("#selectionFloatFormat"),
   immersiveModeBtn: document.querySelector("#immersiveModeBtn"),
-  highlightsStage: document.querySelector("#highlightsStage"),
-  highlightsList: document.querySelector("#highlightsList"),
-  highlightsEmpty: document.querySelector("#highlightsEmpty"),
   // Side by side — the reading surface keeps its own place in the panel's grid
   // and these take the column (or, on a phone, the row) beside it. See
   // src/panels/highlight-cycle.js.
+  //
+  // There is no #highlightsStage / #highlightsList any more. That was the
+  // Highlights TAB, and it rendered the very cards this pane renders, through
+  // the same renderHighlightsEditor, somewhere you had to leave the paper to
+  // reach. One surface, one container.
   splitDivider: document.querySelector("#splitDivider"),
   highlightCycle: document.querySelector("#highlightCycle"),
   highlightCycleBody: document.querySelector("#highlightCycleBody"),
@@ -242,6 +243,7 @@ export const el = {
   highlightCyclePrevBtn: document.querySelector("#highlightCyclePrevBtn"),
   highlightCycleNextBtn: document.querySelector("#highlightCycleNextBtn"),
   highlightCycleCloseBtn: document.querySelector("#highlightCycleCloseBtn"),
+  highlightCycleExportBtn: document.querySelector("#highlightCycleExportBtn"),
   // The Document surface — the PDF itself, for a deck with meta.pdf. See
   // src/documents/pdf-view.js; #documentView is the scroller that holds one
   // .pdf-page per page.

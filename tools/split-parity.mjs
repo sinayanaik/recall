@@ -1432,6 +1432,19 @@ function replaceCall(text, fn, build) {
 // (the old name) and in the ADDED list (the new one), which is the honest way
 // to show it — the tool matches by name and cannot know the two are related.
 const REMOVED = {
+  // ── ...and then the Highlights tab stopped existing ─────────────────────
+  renderHighlightsPanel:
+    "Drew the Highlights tab. By the time it went, everything it did was one " +
+    "call to renderHighlightsEditor(collectHighlightEntries()) — the same " +
+    "cards, from the same collection, that side-by-side mode " +
+    "(src/panels/highlight-cycle.js) renders beside the paper or the note the " +
+    "highlights are ON. A tab is somewhere you go INSTEAD of the page, which " +
+    "is the complaint the pane was written to answer, so keeping both meant " +
+    "one surface built twice and a reader who had to guess which of the two " +
+    "was the real one. The pane is the surface; the way in is the contents " +
+    "drawer's Highlights half, which already knows which reading surface you " +
+    "are on. #highlightsStage, #highlightsList and #exportHighlightsBtn went " +
+    "with it; the ⇓ moved into the pane's own header.",
   // ── The Highlights tab stopped being a list of rows ─────────────────────
   collectDeckHighlights:
     "Built the row shape the Highlights tab rendered: a highlight widened to " +

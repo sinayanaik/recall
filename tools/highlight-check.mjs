@@ -539,9 +539,9 @@ const PROBE = `(api) => {
   // found nothing, so the panel reported every markdown highlight as having no
   // note: the reader's own writing was invisible in the one place that lists it,
   // and pressing ✎ opened an empty editor over a note that was really there.
-  // ── What the Highlights tab costs to scroll ─────────────────────────────
+  // ── What the highlights surface costs to scroll ─────────────────────────
   //
-  // The tab is a document of every highlight AND every note, each one a rendered
+  // It is a document of every highlight AND every note, each one a rendered
   // markdown fragment, and how much DOM that comes to depends on the content
   // rather than the count: 300 highlights of prose are about 7,700 nodes and 300
   // whose lines carry inline maths are 21,000, because one $x$ is a KaTeX tree
@@ -558,8 +558,11 @@ const PROBE = `(api) => {
   // checks is a threshold that gets moved.
   check("a small highlights surface is left uncontained", () => {
     api.state.notes = NOTED;
-    api.renderHighlightsPanel();
-    const list = api.el.highlightsList;
+    // Rendered into the pane's own body — #highlightsList went with the
+    // Highlights tab, and the container stays an argument on
+    // renderHighlightsEditor partly so this check has somewhere to draw.
+    const list = api.el.highlightCycleBody;
+    api.renderHighlightsEditor(api.collectHighlightEntries(), list);
     const root = list.querySelector(".hl-notes");
     if (!root) return "the panel rendered nothing";
     if (root.classList.contains("is-contained")) {
@@ -578,7 +581,7 @@ const PROBE = `(api) => {
     if (!Number.isFinite(api.HL_CONTAIN_MIN_NODES) || api.HL_CONTAIN_MIN_NODES < 1000) {
       return "the threshold is " + api.HL_CONTAIN_MIN_NODES;
     }
-    const list = api.el.highlightsList;
+    const list = api.el.highlightCycleBody;
     const root = list.querySelector(".hl-notes");
     if (!root) return "the panel rendered nothing";
     // Force the count over the line with filler the gate has to notice, and
@@ -621,6 +624,28 @@ const PROBE = `(api) => {
     // annotated ones, without their notes" is not silently empty.
     const only = api.collectDeckHighlightsForExport({ annotatedOnly: true, includeNotes: false });
     if (only.length !== 2) return "annotatedOnly returned " + only.length + " entries";
+    return true;
+  });
+
+  // The number a card shows has to be the number its badge shows, and the only
+  // way to be sure of that is for both to come out of one function. This is that
+  // assertion: the entries the pane renders carry exactly the numbers the badge
+  // index hands out, including the skip over a highlight with nothing written on
+  // it. Three surfaces print this number — the badge on the mark, the note
+  // printed under a page, and the card — and "we computed the same sequence the
+  // same way in three files" is the guarantee that does not survive an edit to
+  // one of them.
+  check("a card's number is the number its badge wears", () => {
+    api.state.notes = NOTED;
+    const index = api.highlightNoteIndex(NOTED).byAttr;
+    const badges = [...index.values()].map((info) => info.n);
+    const cards = api.collectHighlightEntries().map((entry) => entry.n).filter(Boolean);
+    if (cards.join(",") !== badges.join(",")) {
+      return "cards numbered " + JSON.stringify(cards.join(",")) + " against badges " + JSON.stringify(badges.join(","));
+    }
+    // ...and the two highlights with no note are numbered in neither.
+    const unnumbered = api.collectHighlightEntries().filter((entry) => !entry.n).length;
+    if (unnumbered !== 2) return unnumbered + " entries carry no number, expected 2";
     return true;
   });
 

@@ -33,24 +33,32 @@
 // carries its own { read, write } and everything else is shared — which is the
 // same split renderNoteBodyWithImageResize was already making on `highlightId`.
 
-import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { highlightNoteTextAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { scrollTextareaToOffset } from "../notes/caret.js?v=__BUILD__";
+import { findRawOffsetForRenderedPoint } from "../notes/raw-offset.js?v=__BUILD__";
+import { NOTE_EDITOR_TARGET, setNoteEditorSelectionTarget } from "../notes/selection.js?v=__BUILD__";
+import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
 import { NOTE_AUTOSAVE_MS } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
-import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
+import { registerRenderTarget, renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { addRegionPreview } from "./highlights-panel.js?v=__BUILD__";
 import { documentHighlightNote, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
 
 export const HL_NOTES_CLASS = "hl-notes";
 
 export const HL_NOTE_CLASS = "hl-note";
+
+// The ✎ in a card's head. Named because three places have to agree about it:
+// the button itself, the delegated listener that opens the editor, and the
+// stylesheet.
+export const HL_NOTE_EDIT_CLASS = "hl-note-edit";
 
 // The key of the highlight whose note is open in a textarea, or null. A rebuild
 // while one is open would take the words out from under the reader mid-sentence,
@@ -111,9 +119,14 @@ const entryKey = highlightEntryKey;
 // one of them was edited is the churn this guard exists to stop, and it is the
 // same guard pdf-notes-view.js and pdf-page-notes.js each keep for the same
 // reason.
+//
+// The badge NUMBER is part of it, and has to be: a note added on page 2
+// renumbers every annotated highlight after it, and a surface whose signature
+// did not cover that would keep showing the old numbers beside a page already
+// showing the new ones. The same reason pageNotesSignature carries `n`.
 export function editorSignature(entries) {
   return entries
-    .map((entry) => `${entryKey(entry)}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}`)
+    .map((entry) => `${entryKey(entry)}:${entry.n || 0}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}`)
     .join("|");
 }
 
@@ -248,6 +261,42 @@ function articleFor(entry) {
   // selected from.
   const head = document.createElement("div");
   head.className = "hl-note-head";
+
+  // ── The number, and it is the badge's number ────────────────────────────
+  //
+  // "There should be a visually apparent identifier saying which note relates
+  // to which highlight." There was none: the card's only tie to the page was
+  // that both existed, and the pane's own "12 / 87" counter is a different
+  // sequence entirely — position among ALL highlights, annotated or not.
+  //
+  // This is the number the highlight already wears on the page: the badge
+  // pinned to it, and the note printed under its page, both show it. It comes
+  // from the one function that decides it (annotatedDocumentHighlightNumbers /
+  // highlightNoteIndex, asked in collectHighlightEntries) so the three can never
+  // drift apart.
+  //
+  // Absent, not zero, on a highlight with nothing written about it yet — which
+  // is exactly what the page shows there too. A number that promised something
+  // to read and delivered a blank would be worse than the silence it replaced.
+  if (entry.n) {
+    const number = document.createElement("span");
+    number.className = "hl-note-n";
+    number.textContent = String(entry.n);
+    number.title = `Note ${entry.n} — the number this highlight is marked with`;
+    head.appendChild(number);
+  }
+
+  // ...and where it is. The group heading above already says this, but a card
+  // read on its own — scrolled to by ◀ ▶, revealed by a press on its badge, or
+  // simply reached after the sticky heading has scrolled past — was the one
+  // thing on screen that could not say which page it came from.
+  if (entry.group) {
+    const where = document.createElement("span");
+    where.className = "hl-note-where";
+    where.textContent = entry.group;
+    head.appendChild(where);
+  }
+
   const goto = document.createElement("button");
   goto.type = "button";
   goto.className = "hl-note-goto";
@@ -258,14 +307,32 @@ function articleFor(entry) {
   goto.addEventListener("click", () => scheduleNoteJump(entry.anchor, { patient: true }, entry.locator));
   head.appendChild(goto);
 
+  // The ✎, and it is not decoration. A press used to be the ONLY way in, so a
+  // press had to open the editor — which is why one click on a rendered note
+  // dropped the reader into raw markdown at the end of the text. Now a click is
+  // a selection, a triple-click is "edit here", and this is the explicit verb
+  // for the two readers those gestures do not serve: someone who wants the
+  // editor without aiming at a word, and anyone using a pointer that has no
+  // triple-click.
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = HL_NOTE_EDIT_CLASS;
+  edit.title = "Edit this note";
+  edit.setAttribute("aria-label", "Edit this note");
+  edit.textContent = "✎";
+  head.appendChild(edit);
+
   const quote = document.createElement("div");
   quote.className = "hl-note-quote rendered";
 
   const body = document.createElement("div");
   body.className = `${HL_NOTE_CLASS}-body`;
+  // Focusable, but NOT role="button" any more: this is rendered markdown you
+  // select out of, and announcing a paragraph of prose as a button was a lie
+  // that also told a screen reader its text was a label. Enter or Space on it
+  // still opens the editor — that is the keyboard's triple-click.
   body.tabIndex = 0;
-  body.setAttribute("role", "button");
-  body.setAttribute("aria-label", "Edit this note");
+  body.setAttribute("aria-label", "This highlight's note — press Enter to edit");
 
   article.append(head, quote, body);
   // A region drawn round a figure is a picture, so it is listed as one —
@@ -312,6 +379,13 @@ export function commitOpenNote({ repaint = true } = {}) {
   if (article && entry) {
     article.classList.remove("is-editing");
     paintNoteBody(article, entry);
+    // kit.detach() above cleared the pill's target along with the textarea it
+    // belonged to. The note is back to being rendered, and a rendered note is
+    // still something you select and format — so the card takes the
+    // registration back. Without this, closing the editor would silently cost
+    // the reader the pill until they pressed on the note again.
+    const body = article.querySelector(`.${HL_NOTE_CLASS}-body`);
+    if (body) registerCardTarget(body, entry);
   }
   // The signature has to move with it, or the very next notifyHighlightsChanged
   // rebuilds a surface that is already correct.
@@ -325,30 +399,75 @@ export function commitOpenNote({ repaint = true } = {}) {
 
 let lastEntries = [];
 
-// ── One editor, two containers ──────────────────────────────────────────────
+// ── One editor, one container — but it is passed in ─────────────────────────
 //
-// This surface is the Highlights tab, and it is now also the right-hand pane of
+// This surface was the Highlights tab and is now the right-hand pane of
 // side-by-side mode (src/panels/highlight-cycle.js), which lists the highlights
-// of ONE reading surface beside that surface. That pane wants exactly these
-// cards — the excerpt, the region preview, the rendered note under it, editable
-// where it sits — so it renders through this module rather than growing a second
-// implementation of them that would drift.
+// of ONE reading surface beside that surface. The tab is gone; the cards are
+// unchanged, because they were always the right cards in the wrong place.
 //
-// What the two share is everything except where the nodes go, so `list` is
-// threaded through the four places that used to name el.highlightsList outright
-// and defaults to it everywhere. The module's other state (editingKey,
-// openNoteKit, lastEntries) stays singleton deliberately: only one of the two
-// containers is ever on screen — the split turns off when the Highlights tab
-// opens — and entryKey() is a deck-wide identity, not a per-container one.
+// `list` stays an argument rather than reverting to a hard-coded element for two
+// reasons: tools/highlight-check.mjs renders into a container of its own to
+// measure containment without a deck open, and nothing here needs to know which
+// box it is drawing in. The module's state (editingKey, openNoteKit,
+// lastEntries) is singleton deliberately — entryKey() is a deck-wide identity,
+// not a per-container one.
 let lastList = null;
-
-function editorList(list) {
-  return list || el.highlightsList;
-}
 
 function restampSignature() {
   const root = lastList?.querySelector(`:scope > .${HL_NOTES_CLASS}`);
   if (root) root.dataset.signature = editorSignature(lastEntries);
+}
+
+// ── The floating pill over a card nobody is editing ─────────────────────────
+//
+// Selecting a phrase in a rendered note and formatting it is what the notes
+// view has always done, and what a card's note could not: the pill only appears
+// over a registered target, and the only registration was the one an OPEN
+// editor makes (note-editor-kit.js). So the only way to bold a word in a note
+// listed here was to open the editor first — which, until this commit, one
+// click did, and that is exactly the behaviour being taken away.
+//
+// A rendered card registers itself instead, under the SAME name the kit uses.
+// One name rather than a second is deliberate and load-bearing twice over: the
+// two can never be live at once (opening the editor hides the body it replaces
+// and commits any other), and src/notes/selection.js withholds cloze and
+// split-out by testing `name === NOTE_EDITOR_TARGET` — a note about a highlight
+// is not a card face, whichever half of it you are looking at.
+//
+// `edit: null` is how "this one is rendered, always" is said: isTargetEditing()
+// is `Boolean(target.edit && !target.edit.hidden)`, and every path in
+// selection.js that dereferences .edit is behind that test.
+//
+// Registered on pointerdown and never cleared. A registration left pointing at
+// a card the reader has moved on from is inert, because activeRenderedTarget()
+// only accepts a target whose view CONTAINS the live selection, and isActive()
+// stops answering the moment the node is replaced by a rebuild.
+function registerCardTarget(body, entry) {
+  if (editingKey) return;
+  const verbs = noteVerbsFor(entry);
+  registerRenderTarget(NOTE_EDITOR_TARGET, {
+    view: body,
+    edit: null,
+    label: "note",
+    isEditing: () => false,
+    getSource: () => entry.note || "",
+    setSource: (text) => {
+      verbs.write(text, { rerender: false });
+      entry.note = text;
+    },
+    // A no-op for the reason paintNoteBody's image surface gives: the write
+    // above goes through notifyHighlightsChanged, which rebuilds this whole
+    // surface, so by the time a rerender() would run this body has already been
+    // replaced by a freshly rendered one.
+    rerender: () => {}
+  });
+  setNoteEditorSelectionTarget({
+    name: NOTE_EDITOR_TARGET,
+    view: body,
+    edit: null,
+    isActive: () => body.isConnected && !editingKey
+  });
 }
 
 // ── Editing, with the same tools the popup has ──────────────────────────────
@@ -360,7 +479,18 @@ function restampSignature() {
 // Both build src/notes/note-editor-kit.js now, so there is nothing left to
 // diverge, and selecting a phrase in here raises the floating pill exactly as
 // selecting one in the note does.
-function openNoteEditor(article, entry) {
+//
+// `caret` is how the gesture that opened it reaches the caret. A triple-click
+// carries a point in the rendered note, and that point is resolved to an offset
+// in the markdown BEFORE the body is hidden — the same
+// findRawOffsetForRenderedPoint the notes view and both card editors use, and
+// for the same reason: "assigning .value leaves the caret at the very end in
+// most browsers, so always place it explicitly".
+//
+// It always opens in WRITE. Preview is somewhere the reader goes from here
+// (the Preview button, or Ctrl+E); it is not somewhere they are put, because
+// the rendered note they pressed on is already the preview.
+function openNoteEditor(article, entry, { caret = null } = {}) {
   const key = entryKey(entry);
   if (editingKey === key) return;
   commitOpenNote();
@@ -434,18 +564,60 @@ function openNoteEditor(article, entry) {
     event.stopPropagation();
     commitOpenNote();
   });
-  // Ctrl+E means the same thing it means everywhere else, "show me the other
-  // mode" — which in the flow of a list is the rendered note, so committing puts
-  // the editor away and paints it back. Ctrl+Enter is done.
+  // Into raw markdown with the caret at `pos`, and the same five steps in the
+  // same order as every other surface that does this (src/notes/notes-view.js,
+  // src/ui/edit-mode.js, src/editor/triple-click.js). The ordering is
+  // load-bearing at the end: scrollTextareaToOffset measures the syntax-highlight
+  // backdrop, so the backdrop has to have been painted for the text it is about
+  // to measure.
+  const toWriteAt = (offset) => {
+    kit.setMode("write");
+    const pos = Math.max(0, Math.min(Number.isFinite(offset) ? offset : 0, kit.textarea.value.length));
+    kit.textarea.focus();
+    kit.textarea.setSelectionRange(pos, pos);
+    refreshHighlightBackdrop(kit.textarea);
+    scrollTextareaToOffset(kit.textarea, pos);
+  };
+
+  // Triple-click in the Preview half, so the gesture means the same thing at
+  // both levels: in the rendered card it opens the editor at the word you aimed
+  // at, and in the editor's own preview it crosses back to the markdown for the
+  // same word. Links and buttons are exempt — a triple-click that lands on one
+  // was aimed at the thing, not at the text under it.
+  kit.rendered.addEventListener("click", (event) => {
+    if (event.detail < 3) return;
+    if (event.target.closest("a, button")) return;
+    const at = findRawOffsetForRenderedPoint(kit.rendered, kit.textarea.value, event.clientX, event.clientY);
+    toWriteAt(at ?? 0);
+  });
+
+  // Ctrl+E means what it means everywhere else — "show me the other mode" — and
+  // that is now a real flip rather than a commit. It used to close the editor
+  // and paint the note back, which was the same keystroke doing the job of Esc
+  // and left the reader with no way to look at a note's rendered form without
+  // giving up their place in it. Ctrl+Enter is still done.
   installModeKeys(kit.root, {
-    toggleMode: () => commitOpenNote(),
+    toggleMode: () => {
+      if (kit.currentMode() === "write") kit.setMode("preview");
+      // Back the way we came in: the caret the reader left in the markdown, not
+      // the end of it.
+      else toWriteAt(kit.textarea.selectionStart ?? 0);
+    },
     done: () => commitOpenNote()
   });
-  kit.setMode("write");
   kit.attach();
+  toWriteAt(caret ?? kit.textarea.value.length);
   fit();
-  kit.textarea.focus();
-  kit.textarea.setSelectionRange(kit.textarea.value.length, kit.textarea.value.length);
+}
+
+// The offset in a note's markdown that a click at (x, y) in its RENDERED form
+// points at, or null when nothing can be matched — a click in the margin, or on
+// a widget that has no text behind it. Null is the caller's cue to fall back;
+// it must never be quietly read as 0, which is the "took me to the top of the
+// note" failure the notes view already learned about.
+function noteCaretFromPoint(body, entry, event) {
+  if (!entry.note) return 0;
+  return findRawOffsetForRenderedPoint(body, entry.note, event.clientX, event.clientY);
 }
 
 // ── The surface ─────────────────────────────────────────────────────────────
@@ -501,7 +673,7 @@ export const HL_CONTAIN_MIN_NODES = 12000;
 // drives the decision directly, because a threshold nothing checks is a
 // threshold that gets moved.
 export function applyContainmentForCheck(articles, samples, list) {
-  return applyContainment(articles, samples, editorList(list));
+  return applyContainment(articles, samples, list || lastList);
 }
 
 function applyContainment(articles, samples, list) {
@@ -590,12 +762,12 @@ function measureAndContain(articles, list) {
   applyContainment(articles, samples, list);
 }
 
-// Rendered into `list` — el.highlightsList for the Highlights tab, the pane's
-// own body in side-by-side mode. `entries` is one flat list in reading order,
-// each carrying the group it belongs to — a page for a document highlight, a
-// chapter for a <mark> — so the grouping is a single pass rather than two
-// shapes of input.
-export function renderHighlightsEditor(entries, list = el.highlightsList) {
+// Rendered into `list` — #highlightCycleBody in side-by-side mode, and whatever
+// container tools/highlight-check.mjs hands it. `entries` is one flat list in
+// reading order, each carrying the group it belongs to — a page for a document
+// highlight, a chapter for a <mark> — so the grouping is a single pass rather
+// than two shapes of input.
+export function renderHighlightsEditor(entries, list) {
   if (!list) return Promise.resolve();
   // A rebuild while somebody is typing would take the words out from under
   // them. Nothing is lost by waiting: the editor writes as you type, and
@@ -639,25 +811,83 @@ export function renderHighlightsEditor(entries, list = el.highlightsList) {
   return paintEntries(painted.map(([article]) => article), list);
 }
 
-// One delegated listener for the whole surface, installed once per container. A
-// listener per note would be one more thing every rebuild has to re-attach.
-export function initHighlightsEditor(list = el.highlightsList) {
+// ── What a press on a note means ────────────────────────────────────────────
+//
+// It used to mean one thing: open the editor, in raw markdown, caret at the end
+// of the text. Which made a rendered note something you could not select a word
+// out of, could not format in place, and could not open at the sentence you were
+// actually looking at — three ways in which the note listed beside a highlight
+// behaved unlike every other markdown surface in the app.
+//
+// It means what it means in the notes view now:
+//
+//   click            select — the note stays rendered and the floating pill
+//                    formats what you selected (registerCardTarget)
+//   triple-click     the raw markdown, caret at the word under the pointer
+//   ✎ / Enter / Space  the raw markdown, from the top
+//   an empty note    the raw markdown — there is nothing rendered to select,
+//                    and "Write a note on this highlight…" is an invitation
+//
+// One delegated listener per event per container. A listener per note would be
+// one more thing every rebuild has to re-attach.
+export function initHighlightsEditor(list) {
   if (!list) return;
-  const open = (target) => {
-    const body = target.closest?.(`.${HL_NOTE_CLASS}-body`);
-    if (!body || !list.contains(body)) return false;
-    const article = body.closest(`.${HL_NOTE_CLASS}`);
-    const entry = lastEntries.find((one) => entryKey(one) === article?.dataset.highlightKey);
-    if (!entry) return false;
-    openNoteEditor(article, entry);
+  const bodyIn = (target) => {
+    const body = target?.closest?.(`.${HL_NOTE_CLASS}-body`);
+    return body && list.contains(body) ? body : null;
+  };
+  const cardAt = (node) => {
+    const article = node?.closest(`.${HL_NOTE_CLASS}`);
+    if (!article) return null;
+    const entry = lastEntries.find((one) => entryKey(one) === article.dataset.highlightKey);
+    return entry ? { article, entry } : null;
+  };
+  const open = (node, options) => {
+    const found = cardAt(node);
+    if (!found) return false;
+    openNoteEditor(found.article, found.entry, options);
     return true;
   };
-  list.addEventListener("click", (event) => { open(event.target); });
+
+  // Before the selection is made, not after: the pill asks which target holds
+  // the selection the moment there is one.
+  list.addEventListener("pointerdown", (event) => {
+    const body = bodyIn(event.target);
+    if (!body) return;
+    const found = cardAt(body);
+    if (found) registerCardTarget(body, found.entry);
+  });
+
+  list.addEventListener("click", (event) => {
+    const edit = event.target.closest?.(`.${HL_NOTE_EDIT_CLASS}`);
+    if (edit && list.contains(edit)) {
+      open(edit, { caret: 0 });
+      return;
+    }
+    const body = bodyIn(event.target);
+    if (!body) return;
+    if (body.classList.contains("is-empty")) {
+      open(body, { caret: 0 });
+      return;
+    }
+    // >= 3, not === 3, for the reason the notes view gives: a fast fourth click
+    // is still the same gesture, and an exact test made it silently do nothing.
+    if (event.detail < 3) return;
+    if (event.target.closest("a, button")) return;
+    const found = cardAt(body);
+    if (!found) return;
+    // Resolved against the RENDERED body, before openNoteEditor hides it.
+    const at = noteCaretFromPoint(body, found.entry, event);
+    openNoteEditor(found.article, found.entry, { caret: at ?? 0 });
+  });
+
   list.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
-    if (open(event.target)) event.preventDefault();
+    const body = bodyIn(event.target);
+    if (!body) return;
+    if (open(body, { caret: 0 })) event.preventDefault();
   });
-  // The tab going away is the one exit no blur is guaranteed for — a phone
+  // The page going away is the one exit no blur is guaranteed for — a phone
   // backgrounding the browser mid-sentence. The same net the note popup keeps.
   //
   // On the DOCUMENT, so it is installed once however many containers this is
@@ -672,9 +902,10 @@ export function initHighlightsEditor(list = el.highlightsList) {
 
 let visibilityNetInstalled = false;
 
-// Every way out of the Highlights tab — a view change, a deck swap — has to
-// flush, for the reason the note popup's own close does: text typed and not yet
-// committed is text the reader believes they have written.
+// Every way out of the highlights pane — a view change, a deck swap, a step to
+// the next highlight — has to flush, for the reason the note popup's own close
+// does: text typed and not yet committed is text the reader believes they have
+// written.
 export function closeHighlightsEditor() {
   if (editingKey) commitOpenNote();
 }

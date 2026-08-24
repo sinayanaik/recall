@@ -136,11 +136,62 @@
    passage you marked. */
 .hl-note-head {
   display: flex;
+  align-items: center;
+  gap: 2px;
   justify-content: flex-end;
   min-height: 1.2em;
 }
 
-.hl-note-goto {
+/* ── Which highlight this is ───────────────────────────────────────────────
+   The same number the badge on the page wears (src/notes/highlight-badges.js,
+   src/documents/pdf-page-notes.js), so the card and the mark can be matched by
+   eye. Deliberately the same shape as that badge — a small filled disc in the
+   accent, tabular digits — because two different-looking numbers claiming to be
+   the same number is worse than one of them not being there.
+
+   First in the row, and pushed to the LEFT: it is an identity, not a control,
+   and it should not move when the controls beside it appear on hover. */
+.hl-note-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35em;
+  height: 1.35em;
+  margin-right: auto;
+  padding: 0 0.3em;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 88%, transparent);
+  color: #fff;
+  font-size: 0.66em;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* The page or chapter, beside the number. Quiet — the group heading above says
+   it too; this is for a card being read out from under that heading. */
+.hl-note-where {
+  overflow: hidden;
+  max-width: 45%;
+  color: var(--muted);
+  font-size: 0.68em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Without a number there is nothing carrying margin-right: auto, so the place
+   label takes the job of pushing the controls to the far end. */
+.hl-note-head > .hl-note-where:first-child {
+  margin-right: auto;
+}
+
+/* Both the same shape: a quiet pill that comes up when the card is reached for.
+   The ✎ is square because it is one glyph — a pill round a single character
+   reads as a badge rather than as a button. */
+.hl-note-goto,
+.hl-note-edit {
   padding: 2px 8px;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -154,17 +205,29 @@
   transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
+.hl-note-edit {
+  width: 24px;
+  padding: 2px 0;
+  border-radius: 7px;
+  font-size: 0.86em;
+}
+
 /* Shown when the entry is reached for, always shown to the keyboard. A row of
    Go-to buttons down a page the reader is trying to READ is chrome competing
    with the text; one that appears under the pointer is a control. */
 .hl-note:hover .hl-note-goto,
 .hl-note:focus-within .hl-note-goto,
-.hl-note-goto:focus-visible {
+.hl-note-goto:focus-visible,
+.hl-note:hover .hl-note-edit,
+.hl-note:focus-within .hl-note-edit,
+.hl-note-edit:focus-visible {
   opacity: 1;
 }
 
 .hl-note-goto:hover,
-.hl-note-goto:focus-visible {
+.hl-note-goto:focus-visible,
+.hl-note-edit:hover,
+.hl-note-edit:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   color: var(--accent-strong);
 }

@@ -70,8 +70,6 @@ import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionP
 import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
-import { renderHighlightsPanel } from "./panels/highlights-panel.js?v=__BUILD__";
-import { initHighlightsEditor } from "./panels/highlights-editor.js?v=__BUILD__";
 import { markDrawerHighlightsDirty, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
@@ -111,7 +109,7 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
-import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
+import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
@@ -932,12 +930,18 @@ onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
 onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
   const index = sourceMarkIndexFor(el.notesView, mark);
   if (index < 0) return;
+  // The pane first, when there is one: the note this badge names is already on
+  // screen there, and revealing it beats covering the note with a window
+  // showing what is beside it. cycleToLocator says whether it could — false
+  // means the pane is closed, is beside the paper rather than this note, or does
+  // not list this highlight — and the popup is the answer for all three.
+  //
+  // markCount is what revealNoteMark tests before it will trust an ordinal, and
+  // the pane's own entries carry it; here the ordinal is already resolved
+  // against the DOM, so the locator needs only the index.
+  if (cycleToLocator({ markIndex: index })) return;
   openHighlightNoteEditor(index, rect, noteText);
 }));
-// The Highlights tab writes its notes in place — one delegated listener for the
-// whole surface, installed once.
-onDomReady(() => initHighlightsEditor());
-
 // ── Side by side ────────────────────────────────────────────────────────────
 //
 // Three ends wired here because none of the three modules may import another:
@@ -953,6 +957,10 @@ onDomReady(() => {
   // ...and a press on one of that drawer's rows, so an open split follows it
   // rather than showing a different highlight from the one just jumped to.
   setDrawerRowJumpHook((locator) => cycleToLocator(locator));
+  // ...and a press on a numbered badge on a page, or on one of the notes printed
+  // under it. Same question, same answer: show it here rather than in a window
+  // over the page, whenever there is a here to show it in.
+  setDocumentNoteRevealHook((locator) => cycleToLocator(locator));
   // Leaving for Cards or the Highlights tab closes the split; moving between
   // Notes and Document moves it.
   setSplitViewHook((next) => splitFollowsViewMode(next));
@@ -981,22 +989,19 @@ onDomReady(() => {
   });
   setDocumentOpenedHook(refreshPdfPageNotes);
 });
-// So an edit made on a mark in the note refreshes the Highlights tab, without
+// So an edit made on a mark in the note refreshes the highlights pane, without
 // highlight-edit.js having to import the panel that owns it.
-// Two surfaces answer to a highlight changing now, not one. The panel is the
-// obvious consumer; the PDF's note badges and printed notes are the other,
-// because adding or deleting a note renumbers every note after it. Registered
-// here rather than imported into src/documents/pdf-highlights.js, which
+// Three surfaces answer to a highlight changing. The pane is the obvious
+// consumer; the PDF's note badges and printed notes are the second, because
+// adding or deleting a note renumbers every note after it. Registered here
+// rather than imported into src/documents/pdf-highlights.js, which
 // pdf-page-notes.js already imports — this file is the one that knows both ends
 // (the same reason setDocumentPagePaintedHook exists below).
 onDomReady(() => setHighlightsChangedHandler(() => {
-  // One of the two, never both: they are the same editor rendering the same
-  // cards into two different boxes, and the one that is not on screen would be
-  // several hundred cards rebuilt for nobody. The Highlights tab rebuilds on
-  // the way in regardless (setViewMode -> renderHighlightsPanel), and opening
-  // it closes the split.
+  // Only when the pane is actually on screen. It is the one container the cards
+  // are ever built into now, and building several hundred of them into a hidden
+  // box for nobody is the cost this guard exists to refuse.
   if (isHighlightSplitOpen()) refreshHighlightCycle();
-  else renderHighlightsPanel();
   repaintPdfPageNotes();
   // ...and the two drawers, which are the third consumer. Marked stale rather
   // than rebuilt: both are closed almost all of the time, and rebuilding a
@@ -1861,8 +1866,11 @@ const openExportHighlightsModal = () => {
   el.exportHighlightsModal.hidden = false;
   lockPageScroll();
 };
-el.exportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
 el.drawerExportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
+// The same dialog from the side-by-side pane's own header, which is the only
+// place a reader working through a PDF's highlights can reach it without
+// leaving the paper — the drawer's row is on the notes side of the ☰ menu.
+el.highlightCycleExportBtn?.addEventListener("click", openExportHighlightsModal);
 
 // ── The export button beside the tabs ────────────────────────────────────
 //
@@ -1899,7 +1907,6 @@ el.viewExportMenu?.addEventListener("click", (event) => {
   if (surface === "cards") handleExportAction(format, "all");
   else if (surface === "notes") handleExportNotesAction(format);
   else if (surface === "doc") handleExportDocumentAction(format);
-  else if (surface === "highlights") openExportHighlightsModal();
 });
 el.exportHighlightsCancelBtn?.addEventListener("click", () => {
   if (!el.exportHighlightsModal) return;
@@ -2837,6 +2844,12 @@ el.documentView?.addEventListener("scroll", () => {
   if (documentScrollFrame) return;
   documentScrollFrame = requestAnimationFrame(() => {
     documentScrollFrame = 0;
+    // A frame armed by a scroll can run after the document it was about is gone
+    // — a deck swap or a tab change lands between the two. Each call below
+    // already declines on a torn-down document, so this is not a crash being
+    // caught; it is one test in place of three, and a place to say why the frame
+    // outlives its document at all.
+    if (state.viewMode !== "document") return;
     // READS first, together, off one geometry table.
     scheduleDocumentPositionSave();
     // ...then the writes.
