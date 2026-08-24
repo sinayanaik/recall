@@ -32,6 +32,10 @@
 import { state } from "../core/state.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { rawEditorValueFor } from "./notes-edit-split.js?v=__BUILD__";
+// A second cycle, of exactly the shape the one below is safe by:
+// highlight-edit.js imports pushNotesUndo from here, and the binding crossing
+// in this direction is a hoisted `function` declaration called at runtime.
+import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -172,6 +176,16 @@ function applyNotesHistoryEntry(entry) {
   state.notes = entry.text;
   const editing = Boolean(el.notesEdit && !el.notesEdit.hidden);
   syncNotesHistoryBaseline(entry.text);
+  // A snapshot is the whole note, so stepping to one can add or remove any
+  // number of <mark>s and any number of the notes written on them — undoing a
+  // highlight is one of the commonest things this stack is used for. Everything
+  // that LISTS those (the side-by-side pane and its counter, the contents
+  // drawer, the badges) reads state.notes and is told by this one call; without
+  // it the pane went on showing a highlight the reader had just undone.
+  //
+  // Before the repaint below rather than after, so the pane and the surface are
+  // rebuilt from the same text within one turn.
+  notifyHighlightsChanged();
 
   if (editing) {
     // The snapshot is the whole source; the editor only ever shows the body, and

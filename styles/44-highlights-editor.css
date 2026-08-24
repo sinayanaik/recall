@@ -12,13 +12,51 @@
  * than by page). Renamed with it — a rule called .doc-note on a surface that is
  * mostly not a document reads as a leftover.
  *
- * Typography is inherited, deliberately: the reader's own Notes font, size,
- * weight and line height (Style → Notes) apply, because these ARE their notes.
- * Everything sized here is sized in em against that.
+ * ── Typography: the Notes scale, and now actually ─────────────────────────
+ *
+ * This file has said since it was written that "typography is inherited,
+ * deliberately: the reader's own Notes font, size, weight and line height
+ * (Style → Notes) apply, because these ARE their notes". That was true while
+ * this surface was the Highlights TAB, inside the notes stage. It has not been
+ * true since it became the pane beside the reading surface: --notes-font-family
+ * and its three siblings are read by exactly ONE rule in the whole stylesheet
+ * (.notes-rendered, styles/12-notes.css), and .hl-notes is not that element and
+ * is not inside it. So the cards inherited the app's base type instead, and a
+ * note read in a card was a different size and a different face from the same
+ * note read in the Notes view — half of "the formatting is not identical".
+ *
+ * They are declared on .hl-notes now. Everything below is still sized in em
+ * against that, so the one declaration scales the cards, the group heads, the
+ * number chip and the row of buttons together.
+ *
+ * ── ...and the tokens that let Style → Highlights move it ─────────────────
+ *
+ * Declared here rather than in styles/01-tokens.css because that file is a
+ * verified slice of the pre-split stylesheet (see POST_SPLIT in
+ * tools/split-css.mjs) and this file is not. They are the fallbacks: the three
+ * that default to "inherit" are simply not written by applyStyleSettings in that
+ * state, so the var() falls through to the Notes value beside it and today's
+ * rendering is unchanged until somebody chooses otherwise.
  */
+:root {
+  --hl-quote-font-size: 0.95em;
+  --hl-quote-ink: 74%;
+  --hl-card-padding: 11px;
+  --hl-card-gap: 20px;
+  --hl-card-radius: 10px;
+  --hl-card-rail: 3px;
+  --hl-note-empty-height: 18px;
+}
+
 .hl-notes {
   max-width: var(--notes-max-width);
   margin-inline: auto;
+  /* The fallbacks are the point: with no Highlights setting chosen, each of
+     these IS the Notes value, which is what the surface always claimed to use. */
+  font-family: var(--notes-font-family);
+  font-size: var(--hl-note-font-size, var(--notes-font-size));
+  line-height: var(--hl-note-line-height, var(--notes-line-height));
+  font-weight: var(--hl-note-weight, var(--notes-font-weight));
 }
 
 .hl-notes-group + .hl-notes-group {
@@ -82,11 +120,11 @@
    Everything is in em, so it rides the reader's own Notes type scale like the
    rest of this file. */
 .hl-note {
-  margin-bottom: 1.4em;
-  padding: 0.7em 0.85em 0.75em;
+  margin-bottom: var(--hl-card-gap);
+  padding: var(--hl-card-padding);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--line);
-  border-radius: 10px;
+  border-left: var(--hl-card-rail) solid var(--line);
+  border-radius: var(--hl-card-radius);
   background: color-mix(in srgb, var(--card) 55%, transparent);
 }
 
@@ -240,7 +278,8 @@
    highlight's own tint is what carries the eye to the words that were marked,
    so the ink around them does not have to. */
 .hl-note-quote {
-  color: color-mix(in srgb, var(--text) 74%, transparent);
+  font-size: var(--hl-quote-font-size);
+  color: color-mix(in srgb, var(--text) var(--hl-quote-ink), transparent);
 }
 
 .hl-note-quote > :first-child { margin-top: 0; }
@@ -280,9 +319,65 @@
 .hl-note-body > :first-child { margin-top: 0; }
 .hl-note-body > :last-child { margin-bottom: 0; }
 
-.hl-note-placeholder {
-  color: var(--muted);
-  font-style: italic;
+/* ── A highlight with nothing written on it ────────────────────────────────
+   It used to print "Write a note on this highlight…" here, in muted italics.
+   On a paper marked up while reading, most highlights have no note yet — so a
+   list whose job is to show what the reader WROTE was mostly one instruction
+   repeated down the column, which is what "very disturbing" was about. An
+   invitation said forty times is not an invitation.
+
+   So there is nothing here at all, and the box itself is gone: not `display:
+   none`, which would take the card's own click target with it, but a zero-height
+   box with its padding and rule removed, so the card is just its quote. Nothing
+   about the card says "empty" — the absence does.
+
+   `overflow: hidden` matters even with no content: the element is still
+   `.rendered`, and a collapsed box that could not clip would let a stray margin
+   through. The transition is on the two properties that actually move. */
+.hl-note-body.is-empty {
+  height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-width: 0;
+  overflow: hidden;
+  transition: height 0.12s ease, border-top-width 0.12s ease;
+}
+
+/* ...and back, the moment the card is reached for — by pointer, by keyboard, or
+   by being the one the ◀ ▶ bar is standing on. A small quiet box, which is
+   enough to say "you can write here" without saying it in words. */
+.hl-note:hover > .hl-note-body.is-empty,
+.hl-note:focus-within > .hl-note-body.is-empty,
+.hl-note.is-current > .hl-note-body.is-empty {
+  height: var(--hl-note-empty-height);
+  border-top-width: 1px;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hl-note-body.is-empty {
+    transition: none;
+  }
+}
+
+/* ── ...and on a touch screen, where there is no reaching for ──────────────
+   A phone has no hover, so a box that only appears under a pointer is a box
+   that never appears — and with it goes the single-click-to-write target. The
+   ✎ in the card's head is the other way in and is itself hover-revealed
+   (further up this file), so both are pinned open here. Small and quiet is
+   still the point; invisible is not available. */
+@media (pointer: coarse) {
+  .hl-note-body.is-empty {
+    height: var(--hl-note-empty-height);
+    border-top-width: 1px;
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--line) 85%, transparent);
+  }
+
+  .hl-note-edit {
+    opacity: 1;
+  }
 }
 
 /* While the note is being typed, the rendered copy stands down rather than

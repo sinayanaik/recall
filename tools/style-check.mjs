@@ -153,6 +153,88 @@ const PROBE = `async (api) => {
   })());
 
   await setNotesFont("inherit");
+
+  // ── The highlights pane, which had no settings at all ────────────────────
+  //
+  // It claimed in its own stylesheet to inherit the Notes scale and did not:
+  // --notes-font-size and its siblings are read by one rule (.notes-rendered)
+  // and the pane is not inside it, so a reader who had tuned Notes to their eyes
+  // found this surface untouched by any of it. Two things to assert, and they
+  // are the two halves of every control in this file: the default is exactly
+  // today's rendering, and an explicit choice reaches the thing it names and
+  // nothing else.
+  const setHighlightStyle = async (patch) => {
+    api.setStyleProfileSettings(profile, { ...api.getStyleProfileSettings(profile), ...patch });
+    api.applyActiveStyleSettings({ force: true });
+    await settle(200);
+  };
+  const card = document.createElement("div");
+  card.className = "hl-notes";
+  card.innerHTML = '<section class="hl-notes-group"><article class="hl-note"><div class="hl-note-body rendered">note</div></article></section>';
+  document.body.appendChild(card);
+  try {
+    const cardBody = card.querySelector(".hl-note");
+    const px = (node, prop) => parseFloat(getComputedStyle(node)[prop]) || 0;
+
+    await setHighlightStyle({ hlNoteFontSize: "inherit", hlCardPadding: "11px" });
+    const inheritedSize = px(card, "fontSize");
+    const notesSize = px(notes, "fontSize");
+    push("the pane's default type IS the Notes type", (() => {
+      // Not "close to": the fallback in the stylesheet is literally
+      // var(--notes-font-size), so this is an equality or the wiring is wrong.
+      if (Math.abs(inheritedSize - notesSize) > 0.5) {
+        return "the pane is at " + inheritedSize + "px while the notes are at " + notesSize + "px";
+      }
+      return true;
+    })());
+
+    const notesBefore = px(notes, "fontSize");
+    await setHighlightStyle({ hlNoteFontSize: "31px", hlCardPadding: "27px" });
+    push("a Highlights setting reaches the pane", (() => {
+      if (Math.abs(px(card, "fontSize") - 31) > 0.5) return "the pane is at " + px(card, "fontSize") + "px, expected 31";
+      if (Math.abs(px(cardBody, "paddingTop") - 27) > 0.5) return "card padding is " + px(cardBody, "paddingTop") + "px, expected 27";
+      return true;
+    })());
+
+    push("...and reaches nothing else", (() => {
+      if (Math.abs(px(notes, "fontSize") - notesBefore) > 0.5) {
+        return "the notes moved from " + notesBefore + "px to " + px(notes, "fontSize") + "px";
+      }
+      return true;
+    })());
+
+    // ...and back. "inherit" is expressed by REMOVING the property, not by
+    // writing the word — a literal "font-size: inherit" on .hl-notes would
+    // inherit from the pane around it, which is a different and wrong answer.
+    await setHighlightStyle({ hlNoteFontSize: "inherit" });
+    push("resetting to inherit hands the pane back to the Notes scale", (() => {
+      if (document.documentElement.style.getPropertyValue("--hl-note-font-size")) {
+        return "--hl-note-font-size was written as " + JSON.stringify(document.documentElement.style.getPropertyValue("--hl-note-font-size"));
+      }
+      if (Math.abs(px(card, "fontSize") - px(notes, "fontSize")) > 0.5) {
+        return "the pane is at " + px(card, "fontSize") + "px against the notes' " + px(notes, "fontSize") + "px";
+      }
+      return true;
+    })());
+
+    push("every Highlights control is in a group the panel renders", (() => {
+      const keys = ["hlNoteFontSize", "hlNoteLineHeight", "hlNoteWeight", "hlQuoteFontSize",
+        "hlQuoteInkPercent", "hlCardPadding", "hlCardGap", "hlCardRadius", "hlCardRail", "hlNoteEmptyHeight"];
+      const missing = keys.filter((key) => !api.styleFieldByKey[key]);
+      if (missing.length) return "no control renders " + missing.join(", ");
+      // ...and every one of them is a stored setting in both profiles, or it
+      // resets to undefined the first time somebody presses ↺.
+      const gone = keys.filter((key) => !(key in api.defaultStyleProfiles.desktop) || !(key in api.defaultStyleProfiles.mobile));
+      if (gone.length) return "no stored default for " + gone.join(", ");
+      return true;
+    })());
+  } finally {
+    card.remove();
+    await setHighlightStyle({
+      hlNoteFontSize: "inherit",
+      hlCardPadding: api.defaultStyleProfiles[profile].hlCardPadding
+    });
+  }
   return results;
 }`;
 

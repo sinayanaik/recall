@@ -15,7 +15,7 @@ import { createLinkedNoteFlow } from "../notes/note-links.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
-import { activeEditingTarget, activeRenderedTarget, ensurePillSelectionCapture, hideNotesSelectionButton, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
+import { activeEditingTarget, activeRenderedTarget, ensurePillSelectionCapture, hideNotesSelectionButton, noteEditorHoldsSelection, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
 import { noteLinkMarkupFor } from "../render/note-links.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -106,7 +106,15 @@ export function pillActionTarget() {
   // button is pointerdown + preventDefault, so the selection is still alive at
   // this instant, and a document capture is cheap (a range walk and its client
   // rects) in a way the markdown one is not.
-  if (isDocumentViewActive()) {
+  // ...but only when the selection is actually ON the paper. With the
+  // side-by-side pane open beside a document, a phrase selected in a note CARD
+  // is a markdown selection sitting over a document view — and this branch
+  // claimed it, so Highlight, Erase and Cloze acted on the paper or, more often,
+  // silently did nothing at all. positionNotesSelectionButton has carried the
+  // same guard since the pane existed (it is what draws the pill for the note
+  // rather than for the document); without it here the bar appeared for the note
+  // and its buttons resolved to the document, which is the worst of both.
+  if (isDocumentViewActive() && !noteEditorHoldsSelection()) {
     // Live first, snapshot second — and the snapshot is the half that was
     // missing. Every pill button is pointerdown + preventDefault, so on a mouse
     // the selection genuinely is still alive at this instant and the live

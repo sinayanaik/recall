@@ -1762,6 +1762,77 @@ try {
   check("...and the card says which page it came from",
     /^Page \d+$/.test(numbering.where), numbering.where || "no place label");
 
+  // ── 8d-ii-b. ...and it appears the MOMENT the note is written ────────────
+  //
+  // The number is the whole indicator that a note exists — the case above says
+  // it is the right number, and this one says it is on screen at all. It was
+  // not: writing a note in the pane and closing the editor left the paper
+  // showing nothing, and the only way to see the badge was to leave the
+  // document and come back. "I have to juggle from documents to some other
+  // panel, then only the numbering appears."
+  //
+  // Two faults had to coincide, so both are exercised by one press:
+  //
+  //   * commitOpenNote decided whether to notify by asking whether the textarea
+  //     still held text nobody had saved — and the autosave saves on every
+  //     typing pause, so after the pause that answer is no. The ordinary way of
+  //     writing a note therefore told nobody it had been written.
+  //   * setDocumentHighlightNote read its { rerender: false } as { notify:
+  //     false } too, so the autosave had not told anyone either.
+  //
+  // The note is CLEARED first and the card re-queried afterwards: an earlier
+  // stage in this file leaves the fixture annotated, and a check whose premise
+  // is "this highlight has no note" has to make that true rather than hope.
+  const liveBadge = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const records = api.documentHighlightsInReadingOrder();
+    const was = records.map((record) => [record.id, api.documentHighlightNote(record.id)]);
+    const target = records[0];
+    api.setViewMode("document");
+    await settle(300);
+    records.forEach((record) => api.setDocumentHighlightNote(record.id, ""));
+    await settle(250);
+    api.openHighlightSplit("document");
+    await settle(700);
+    await api.whenDocumentPageReady(target.page || 1);
+    api.scrollToDocumentPage(target.page || 1, 0, { smooth: false });
+    await settle(500);
+    const list = document.getElementById("highlightCycleBody");
+    const badgeOf = () => document.querySelector('.pdf-note-badge[data-highlight-id="' + target.id + '"]')?.textContent || "";
+    const numberOf = () => list.querySelector('.hl-note[data-highlight-key="doc:' + target.id + '"] .hl-note-n')?.textContent || "";
+    const before = { badge: badgeOf(), number: numberOf() };
+    const card = list.querySelector('.hl-note[data-highlight-key="doc:' + target.id + '"]');
+    if (!card) return { error: "the pane lists no card for the first highlight" };
+    card.querySelector(".hl-note-edit").click();
+    await settle(200);
+    const area = card.querySelector(".hl-note-editor .note-editor-input");
+    if (!area) return { error: "pressing the pencil opened no editor" };
+    area.value = "Written beside the paper.";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    // PAST the autosave, deliberately: that is the state the bug lived in. With
+    // the text already saved, the commit had nothing left to write and used to
+    // take that as nothing to say.
+    await settle(700);
+    const savedWhileOpen = api.documentHighlightNote(target.id);
+    area.blur();
+    await settle(500);
+    const after = { badge: badgeOf(), number: numberOf() };
+    was.forEach(([id, note]) => api.setDocumentHighlightNote(id, note));
+    await settle(300);
+    return { before, after, savedWhileOpen };
+  }`);
+
+  check("a note written in the pane puts its number on the paper at once",
+    !liveBadge.error && !liveBadge.before?.badge && Boolean(liveBadge.after?.badge),
+    liveBadge.error || `badge "${liveBadge.before?.badge}" -> "${liveBadge.after?.badge}", `
+      + `autosaved while open=${JSON.stringify(liveBadge.savedWhileOpen)}`);
+  // Non-empty on BOTH sides of the comparison, or the case passes vacuously the
+  // moment the badge stops appearing — which is precisely the regression above.
+  check("...and on its card, with no view change in between",
+    !liveBadge.error && !liveBadge.before?.number
+      && Boolean(liveBadge.after?.number) && liveBadge.after?.number === liveBadge.after?.badge,
+    liveBadge.error || `card "${liveBadge.before?.number}" -> "${liveBadge.after?.number}" against badge "${liveBadge.after?.badge}"`);
+
   // ── 8d-iii. Pressing a number shows the note, not a window over it ──────
   //
   // A badge press opened a floating editor over the page. That is right when
@@ -2246,6 +2317,69 @@ try {
       && stacked.stageHeight > stacked.viewHeight * 0.35,
     `${stacked.stageHeight}px of paper over ${stacked.paneHeight}px of highlights `
     + `(${((stacked.ratio || 0) * 100).toFixed(1)}%) in a ${stacked.viewHeight}px viewport`);
+
+  // ── ...and the whole of it fits on a screen 390px tall ───────────────────
+  //
+  // Turned on its side, a phone is ~844x390 and the appbar plus the tabs row
+  // take a third of it. Two things then conspired:
+  //
+  //   * styles/09-all-cards.css gives .quiz-panel `min-height: 520px` on this
+  //     breakpoint — right for a panel holding a flashcard, 130px taller than
+  //     the screen for one holding a measured split. The page then scrolls past
+  //     the panel, and .quiz-panel is overflow:hidden, so what is under it is
+  //     nothing at all.
+  //   * applyStackedSpace floored --split-space at 240px, so the two halves were
+  //     sized for a screen with more room than this one has, and the leftover
+  //     inside the panel was blank too.
+  //
+  // "When there's no highlights left and I'm scrolling I'm being shown blank
+  // page" is both of those. The assertion is the plain one: the bottom of the
+  // pane is on screen, and the document does not scroll.
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 844, height: 390, deviceScaleFactor: 2, mobile: true
+  });
+  const shortScreen = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    await settle(600);
+    const read = () => {
+      const panel = document.querySelector(".quiz-panel").getBoundingClientRect();
+      const pane = document.getElementById("highlightCycle").getBoundingClientRect();
+      const stage = document.getElementById("documentStage").getBoundingClientRect();
+      return {
+        panelBottom: Math.round(panel.bottom),
+        paneBottom: Math.round(pane.bottom),
+        stageHeight: Math.round(stage.height),
+        paneHeight: Math.round(pane.height),
+        scrollable: Math.round(document.documentElement.scrollHeight - document.documentElement.clientHeight),
+        viewHeight: window.innerHeight
+      };
+    };
+    const before = read();
+    // ...and again once the chrome folds, which moves the stage's top by ~130px
+    // and fires no resize event at all. The measurement is re-taken from
+    // applyChromeCollapse's own hook; without that the halves stay sized for the
+    // layout that is no longer on screen.
+    api.setFocusMode(true);
+    await settle(600);
+    const folded = read();
+    api.setFocusMode(false);
+    await settle(400);
+    return { before, folded };
+  }`);
+  check("a landscape phone's split fits the screen it is on",
+    shortScreen.before?.paneBottom <= shortScreen.before?.viewHeight + 2
+      && shortScreen.before?.scrollable <= 2,
+    `pane ends at ${shortScreen.before?.paneBottom}px in a ${shortScreen.before?.viewHeight}px viewport, `
+    + `${shortScreen.before?.scrollable}px of page scroll`);
+  // ...and it is still on screen once the chrome folds. At this width the split
+  // is two columns rather than two rows, so the panel's height does not change
+  // here — what this rules out is the fold leaving the page scrollable behind a
+  // panel that has stopped fitting.
+  check("...and stays on it once the chrome folds away",
+    shortScreen.folded?.paneBottom <= shortScreen.folded?.viewHeight + 2
+      && shortScreen.folded?.scrollable <= 2,
+    `pane ends at ${shortScreen.folded?.paneBottom}px of ${shortScreen.folded?.viewHeight}px, `
+    + `${shortScreen.folded?.scrollable}px of page scroll`);
 
   await page.call("Emulation.setDeviceMetricsOverride", {
     width: 1280, height: 900, deviceScaleFactor: 1, mobile: false

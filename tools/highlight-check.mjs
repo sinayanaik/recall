@@ -649,6 +649,191 @@ const PROBE = `(api) => {
     return true;
   });
 
+  // ── A card is a markdown surface, and has to be dressed as one ───────────
+  //
+  // paintNoteBody has always used the full renderMarkdown pipeline, so the
+  // CONTENT of a note in a card was right; the element it was rendered into did
+  // not carry 'rendered', and every rule that makes markdown look like markdown
+  // in this app is scoped to that class. So a "## " came out as a bare bold line
+  // with no rule under it, a fence as unstyled monospace with no panel, a list
+  // at the UA's indent. "The formatting of texts in the highlighter is not
+  // identical to the notes section" — and it was one word in a className.
+  check("a card's note is dressed as rendered markdown", () => {
+    api.state.notes = NOTED;
+    const list = api.el.highlightCycleBody;
+    api.renderHighlightsEditor(api.collectHighlightEntries(), list);
+    const bodies = [...list.querySelectorAll(".hl-note-body")];
+    if (!bodies.length) return "the pane rendered no note bodies at all";
+    const bare = bodies.filter((body) => !body.classList.contains("rendered"));
+    if (bare.length) return bare.length + " of " + bodies.length + " note bodies do not carry 'rendered'";
+    // The quote above it always did, and the two have to agree — they are the
+    // same markdown, one quoted and one written.
+    const quotes = [...list.querySelectorAll(".hl-note-quote")];
+    if (quotes.some((q) => !q.classList.contains("rendered"))) return "a quote lost its 'rendered'";
+    return true;
+  });
+
+  // ...and a highlight with nothing written on it says nothing at all.
+  //
+  // It used to print "Write a note on this highlight…" into every such card. On
+  // a paper marked up while reading that is most of them, so a list of what the
+  // reader WROTE was mostly one instruction repeated down the column. The box is
+  // still there — it is the click target, and it still carries an accessible
+  // name, because a screen reader has no hover state to discover it with — but
+  // there is nothing in it.
+  check("an unannotated card is blank, not an instruction", () => {
+    api.state.notes = NOTED;
+    const list = api.el.highlightCycleBody;
+    api.renderHighlightsEditor(api.collectHighlightEntries(), list);
+    const empty = [...list.querySelectorAll(".hl-note-body.is-empty")];
+    if (empty.length !== 2) return empty.length + " cards report an empty note, expected 2";
+    const talking = empty.filter((body) => body.textContent.trim());
+    if (talking.length) return "an empty card still says " + JSON.stringify(talking[0].textContent.trim());
+    if (list.querySelector(".hl-note-placeholder")) return "the placeholder element is still being built";
+    // Still reachable, and still says what it is to anything reading the page.
+    const first = empty[0];
+    if (first.tabIndex !== 0) return "an empty note is not focusable, so there is no way in by keyboard";
+    if (!/no note/i.test(first.getAttribute("aria-label") || "")) {
+      return "an empty note is announced as " + JSON.stringify(first.getAttribute("aria-label"));
+    }
+    // ...and the height estimate agrees with it. A blank box contributes no
+    // height, and an estimate that still counts a line for one is a scroller
+    // claiming more than the cards occupy — see estimateEntryHeight.
+    const entries = api.collectHighlightEntries();
+    const blank = entries.find((entry) => !entry.note);
+    const written = entries.find((entry) => entry.note);
+    if (!blank || !written) return "the fixture no longer has one of each";
+    if (api.estimateEntryHeight(blank) >= api.estimateEntryHeight(written)) {
+      return "an empty card is estimated as tall as one carrying a note";
+    }
+    return true;
+  });
+
+  // ── Everything that changes the SET of highlights has to say so ──────────
+  //
+  // notifyHighlightsChanged is what rebuilds the side-by-side pane, moves its
+  // "12 / 87" counter, repaints the badges and marks the contents drawers stale.
+  // makeHighlightFromSelection — the one verb behind every way of marking text
+  // in a note — never called it, so a highlight made with the pane open beside
+  // the note did not appear in it. "The highlight count is not real-time
+  // updating." The document side never had the bug, because
+  // addDocumentHighlight goes through commitDocumentHighlights.
+  //
+  // Asserted through the registered handler rather than through the pane, so
+  // this is a statement about the verb and not about whatever surface happens to
+  // be listening.
+  check("making a highlight tells the surfaces that list them", () => {
+    const source = "A plain sentence in a note.\\n";
+    let told = 0;
+    const previous = api.notifyHighlightsChanged;
+    api.setHighlightsChangedHandler(() => { told += 1; });
+    try {
+      let written = source;
+      api.makeHighlightFromSelection({
+        view: document.createElement("div"),
+        label: "notes",
+        getSource: () => written,
+        setSource: (text) => { written = text; },
+        rerender: () => {}
+      }, "green", { asText: "plain sentence", occurrence: 0 });
+      if (!written.includes("<mark")) return "nothing was highlighted, so this proves nothing";
+      if (told !== 1) return "the highlight was made and the handler was called " + told + " time(s)";
+      // ...and erasing one, which takes any <mark> inside it with it.
+      api.eraseNotesSelection({
+        view: document.createElement("div"),
+        label: "notes",
+        getSource: () => written,
+        setSource: (text) => { written = text; },
+        rerender: () => {}
+      }, { asText: "in a note", occurrence: 0 });
+      if (told !== 2) return "erasing a passage called the handler " + told + " time(s) in total, expected 2";
+      return true;
+    } finally {
+      api.setHighlightsChangedHandler(previous);
+    }
+  });
+
+  // ...and so does formatting a phrase inside a note that is already written.
+  //
+  // The card registers itself as a render target so the floating pill can splice
+  // its markdown (registerCardTarget). Its setSource wrote with { rerender:
+  // false } and stopped, on the belief that the write notified by itself. For a
+  // <mark> it does; for a DOCUMENT highlight setDocumentHighlightNote passes the
+  // same flag on as { notify: false }, so bolding a word in a note about a PDF
+  // highlight wrote the ** and repainted nothing. The button looked dead.
+  check("formatting a rendered card's note repaints the card", () => {
+    api.state.notes = NOTED;
+    const list = api.el.highlightCycleBody;
+    api.renderHighlightsEditor(api.collectHighlightEntries(), list);
+    const card = [...list.querySelectorAll(".hl-note")]
+      .find((node) => !node.querySelector(".hl-note-body.is-empty"));
+    if (!card) return "no card in the fixture carries a note";
+    const body = card.querySelector(".hl-note-body");
+    let told = 0;
+    const previous = api.notifyHighlightsChanged;
+    api.setHighlightsChangedHandler(() => { told += 1; });
+    try {
+      // The registration the pill resolves through, made the way a press on the
+      // card makes it.
+      body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      const config = api.renderTargetConfig(api.NOTE_EDITOR_TARGET);
+      if (!config || config.view !== body) return "a press on a card registered no render target";
+      if (config.isEditing()) return "a rendered card reported itself as being edited";
+      const before = config.getSource();
+      if (!before) return "the registered target reads an empty note";
+      config.setSource(before + " More.");
+      if (told !== 1) return "a write through the card's own target notified " + told + " time(s)";
+      return true;
+    } finally {
+      api.setHighlightsChangedHandler(previous);
+      api.state.notes = NOTED;
+    }
+  });
+
+  // ── ...and the two verbs behind that write agree about when to say so ────
+  //
+  // A card's note is written by one of two verbs depending on which kind of
+  // highlight it belongs to, and they disagreed about what { rerender: false }
+  // meant. For a <mark> it meant "do not repaint the note" and the surfaces were
+  // told anyway; for a document highlight it was passed straight through as the
+  // notify as well, so the same call told nobody. That asymmetry is the whole of
+  // why bolding a word in a note about a PDF highlight repainted nothing while
+  // the identical press on a note in a markdown deck worked.
+  //
+  // Both take 'notify' by that name now, so a caller can ask for either without
+  // knowing which kind it is holding. The per-typing-pause default is preserved
+  // on the document side and asserted here too — printing a page's notes again
+  // between keystrokes is what made the paper jump under the note being written.
+  check("both note verbs take rerender and notify as separate questions", () => {
+    const previousMeta = api.state.meta;
+    const previousNotes = api.state.notes;
+    let told = 0;
+    const previous = api.notifyHighlightsChanged;
+    api.setHighlightsChangedHandler(() => { told += 1; });
+    try {
+      api.state.notes = NOTED;
+      api.state.meta = {
+        pdf: { pages: 1 },
+        pdfHighlights: [{ id: "doc-1", color: "yellow", page: 1, text: "a passage", quads: [{ page: 1 }] }]
+      };
+      // Quiet, because this is the shape an editor saves in on every pause.
+      api.setDocumentHighlightNote("doc-1", "First pause.", { rerender: false });
+      if (told !== 0) return "a quiet document write notified " + told + " time(s)";
+      api.setHighlightNoteAt(0, "First pause.", { rerender: false, notify: false });
+      if (told !== 0) return "a quiet mark write notified " + told + " time(s)";
+      // ...and loud, which is the shape a discrete action saves in.
+      api.setDocumentHighlightNote("doc-1", "Committed.", { rerender: false, notify: true });
+      if (told !== 1) return "a document write asking to notify called the handler " + told + " time(s)";
+      api.setHighlightNoteAt(0, "Committed.", { rerender: false, notify: true });
+      if (told !== 2) return "a mark write asking to notify brought the total to " + told + ", expected 2";
+      return true;
+    } finally {
+      api.setHighlightsChangedHandler(previous);
+      api.state.meta = previousMeta;
+      api.state.notes = previousNotes;
+    }
+  });
+
   check("note index: numbered in document order, dangling ids skipped", () => {
     const index = api.highlightNoteIndex(NOTED);
     const got = [...index.byAttr.entries()].map(([attr, info]) => attr + "=" + info.n).join(",");
@@ -861,7 +1046,13 @@ const API_SRC = `async () => {
     import("/src/notes/chapters.js?v=__BUILD__"),
     import("/src/render/preprocess.js?v=__BUILD__"),
     import("/src/render/block-cache.js?v=__BUILD__"),
-    import("/src/format/render-toolbar.js?v=__BUILD__")
+    import("/src/format/render-toolbar.js?v=__BUILD__"),
+    // eraseNotesSelection, for the "everything that changes the set says so"
+    // case — it is the other verb that can take a <mark> out of a note.
+    import("/src/format/cloze.js?v=__BUILD__"),
+    // ...and setDocumentHighlightNote, the other half of the pair whose
+    // { rerender, notify } contract the two verbs now share.
+    import("/src/documents/pdf-highlights.js?v=__BUILD__")
   ]);
   const api = {};
   for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];

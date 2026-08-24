@@ -67,7 +67,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { toggleDocumentToc } from "../documents/pdf-outline.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
-import { hasStudyTextSelection, isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
+import { isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { bookmarkCurrentSpot, goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
@@ -322,25 +322,20 @@ export function initReadingRail() {
     else expandRail();
   });
 
-  // Hover opens it on a pointer, which is what makes the grip cost one gesture
-  // rather than two. `pointerenter` and not `mouseenter` so a stylus counts.
+  // ── The tray is a press, and only a press ─────────────────────────────────
   //
-  // Never mid-selection. Dragging a selection out to the right edge of the
-  // window is how you extend it to the end of a line, and a tray unfolding over
-  // the words being selected is the app taking the gesture away at the moment
-  // it is being made.
-  rail.addEventListener("pointerenter", (event) => {
-    if (event.pointerType === "touch") return;
-    if (hasStudyTextSelection()) return;
-    setReadingRailExpanded(true);
-    refreshReadingRailRows();
-  });
-
-  rail.addEventListener("pointerleave", (event) => {
-    if (event.pointerType === "touch") return;
-    setReadingRailExpanded(false);
-  });
-
+  // It used to open on `pointerenter` and close on `pointerleave` as well, on
+  // the argument that hover makes the grip cost one gesture rather than two.
+  // What that actually bought was a column of sixteen rows unfolding over the
+  // page whenever the pointer crossed the right edge — which is where a
+  // scrollbar is, where a reader's hand rests, and where a selection drag goes
+  // to reach the end of a line. The hover guard for that last case
+  // (hasStudyTextSelection) tells you the shape of the problem: a control that
+  // needs to be told when not to appear is appearing when nobody asked.
+  //
+  // So the grip's own click handler above is the only way in, and the three ways
+  // out are all the reader's: the ✕ in the tray's head, a row that goes
+  // somewhere, and the capture-phase pointerdown below.
   rail.addEventListener("click", (event) => {
     // The tray's own ✕, checked before anything else so it can never be read as
     // a row. Its whole job is to be the way out that a finger can find — the

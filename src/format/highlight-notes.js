@@ -341,8 +341,18 @@ export function pruneOrphanHighlightNotes(source) {
 //     The editor pushes ONE snapshot for the whole editing session, the same
 //     shape applyFormatToTextarea uses for a formatting run.
 //
-// Both default to true, so every other caller is unchanged.
-function rewriteFirstMarkNote(markIndex, makeNote, { rerender = true, undo = true } = {}) {
+//   notify — telling the surfaces that LIST highlights (the side-by-side pane
+//     and its counter, the drawers, the badges) that one changed. A DIFFERENT
+//     question from `rerender`, which is about repainting the surface the
+//     highlight is ON, and the two were conflated on the document side of this
+//     pair: setDocumentHighlightNote passed `rerender` straight through as its
+//     notify, so { rerender: false } meant "and tell nobody" there while it
+//     meant "but tell everybody" here. One option per question, same name on
+//     both verbs, so a caller can ask for either without knowing which kind of
+//     highlight it is holding.
+//
+// All three default to true, so every other caller is unchanged.
+function rewriteFirstMarkNote(markIndex, makeNote, { rerender = true, undo = true, notify = true } = {}) {
   const source = state.notes || "";
   const span = markGroupSpanAt(source, markIndex);
   const first = markSpanAt(source, markIndex);
@@ -360,11 +370,14 @@ function rewriteFirstMarkNote(markIndex, makeNote, { rerender = true, undo = tru
   if (undo) pushNotesUndo("highlight");
   state.notes = setHighlightNoteInSource(withMark, id || first.note, text, id ? excerptLabel(first.inner) : null);
   if (rerender) renderNotesViewPinned();
-  // Not optional, either of them. The deck has changed on disk whether or not
-  // anything was repainted, and the Highlights panel is a different surface
-  // that may well be the one the edit was made from.
+  // Not optional: the deck has changed on disk whether or not anything was
+  // repainted.
   scheduleDeckAutosave();
-  notifyHighlightsChanged();
+  // ...whereas this one is, for one caller: an editor saving on every typing
+  // pause rebuilds the pane it is being typed into once per pause, and notifies
+  // once at the end instead. Everyone else takes the default — the Highlights
+  // pane is a different surface and may well be the one the edit was made from.
+  if (notify) notifyHighlightsChanged();
   return true;
 }
 

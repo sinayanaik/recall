@@ -11,7 +11,10 @@
 // they had annotated opened and closed forty windows to do it. It is a
 // continuous surface now — the highlight, then its note under it, editable
 // where it sits, grouped by page or by chapter — and a note with nothing in it
-// yet is a blank line waiting for one rather than something hidden.
+// yet is a blank box waiting for one rather than something hidden. Blank, and
+// silent: it used to carry "Write a note on this highlight…", which on a paper
+// marked up while reading is the same sentence down most of the column. See
+// paintNoteBody.
 //
 // ── Where this came from ────────────────────────────────────────────────────
 //
@@ -70,6 +73,26 @@ let editingKey = null;
 let noteSaveTimer = 0;
 
 let noteSavedText = "";
+
+// Did THIS editing session write anything at all — including through the
+// autosave, which is the whole point of the flag.
+//
+// commitOpenNote used to decide whether to notify by comparing the textarea's
+// value against noteSavedText, and the autosave assigns noteSavedText on every
+// typing pause. So the ordinary way of writing a note — type, pause, close —
+// arrived at the commit with nothing left to write and therefore told nobody a
+// note had been written.
+//
+// The autosave does not tell anyone either, deliberately and now explicitly
+// ({ notify: false } below): rebuilding the pane being typed into once per
+// pause is churn nobody can see the point of. So the commit is the only chance,
+// and it was skipping it — which on a paper meant the badge that says a note
+// exists simply never appeared. "I have to juggle to some other panel, then
+// only the numbering appears."
+//
+// `wrote` still decides whether there is text to WRITE. This decides whether
+// anyone needs telling, and those are not the same question.
+let noteSessionDirty = false;
 
 // The editor currently open in the flow, and the entry it belongs to. Held here
 // rather than found by querying the DOM on commit: the panel can be rebuilt
@@ -138,9 +161,28 @@ function paintNoteBody(article, entry) {
   const note = entry.note || "";
   body.classList.toggle("is-empty", !note);
   if (!note) {
-    body.innerHTML = "<p class=\"hl-note-placeholder\">Write a note on this highlight…</p>";
+    // ── Nothing, until it is reached for ────────────────────────────────────
+    //
+    // This used to print "Write a note on this highlight…" into every card with
+    // no note yet. On a paper marked up while reading that is most of them, so a
+    // list whose job is to show what the reader WROTE was mostly a column of the
+    // same instruction repeated — "very disturbing", and correctly so: an
+    // invitation repeated forty times is not an invitation, it is noise.
+    //
+    // So the box collapses to nothing and grows back into a small quiet one when
+    // the card is hovered, focused, or is the one the ◀ ▶ bar is on (the rules
+    // are in styles/44-highlights-editor.css, along with the coarse-pointer case
+    // where there is no hover to grow it with).
+    //
+    // The element itself stays, and stays focusable and labelled: `is-empty` is
+    // what the delegated click handler reads to open the editor on a single
+    // click, and a screen reader has no hover state to discover this with, so
+    // what is silent on screen has to be said in the accessible name.
+    body.replaceChildren();
+    body.setAttribute("aria-label", "No note on this highlight yet — press to write one");
     return Promise.resolve();
   }
+  body.setAttribute("aria-label", "This highlight's note — press Enter to edit");
   // renderMarkdown, not the bare markdownToSafeHtml pdf-notes-view.js used: a
   // note holding LaTeX or a still-uploading image rendered as a raw "$…$" or a
   // broken-image icon there, which is the exact bug the Highlights panel had
@@ -157,14 +199,19 @@ function paintNoteBody(article, entry) {
     const surface = {
       view: body,
       getSource: () => entry.note || "",
+      // { rerender: false, notify: true } — do not repaint the reading surface
+      // for this, but do tell the surfaces that LIST highlights. Both halves are
+      // said out loud because the two verbs used to disagree about the second:
+      // a <mark>'s write notified whatever you asked, and a DOCUMENT
+      // highlight's read `rerender` as its notify, so a resize committed here
+      // reached storage and repainted nothing at all.
       setSource: (text) => {
-        verbs.write(text, { rerender: false });
+        verbs.write(text, { rerender: false, notify: true });
         entry.note = text;
       },
-      // A write goes through notifyHighlightsChanged, which rebuilds this whole
-      // panel — so by the time a rerender() call would run, this body has
-      // already been replaced by a freshly rendered one. Deliberately a no-op;
-      // the real refresh has happened.
+      // The notify above rebuilds this whole panel, so by the time a rerender()
+      // call would run, this body has already been replaced by a freshly
+      // rendered one. Deliberately a no-op; the real refresh has happened.
       rerender: () => {}
     };
     enhanceSurfaceImageControls(surface);
@@ -235,7 +282,13 @@ export const HL_ENTRY_CHROME_PX = 64;
 
 export function estimateEntryHeight(entry) {
   const quoteLines = Math.max(1, Math.ceil((entry.markdown || "").length / HL_ENTRY_LINE_CHARS));
-  const noteLines = entry.note ? Math.max(1, Math.ceil(entry.note.length / HL_ENTRY_LINE_CHARS)) : 1;
+  // Zero for a highlight with no note, not one. It used to be one, because the
+  // empty note was a line of placeholder text; it is a collapsed box now (see
+  // .hl-note-body.is-empty in styles/44-highlights-editor.css) and contributes
+  // no height at all until the card is reached for. On a paper marked up while
+  // reading, most entries are this one — so a whole line over-counted per entry
+  // is a scroller claiming a screenful more than the cards occupy.
+  const noteLines = entry.note ? Math.max(1, Math.ceil(entry.note.length / HL_ENTRY_LINE_CHARS)) : 0;
   return HL_ENTRY_CHROME_PX + (quoteLines + noteLines) * HL_ENTRY_LINE_PX;
 }
 
@@ -326,12 +379,25 @@ function articleFor(entry) {
   quote.className = "hl-note-quote rendered";
 
   const body = document.createElement("div");
-  body.className = `${HL_NOTE_CLASS}-body`;
+  // `rendered`, like the quote above it. Every rule that makes markdown look
+  // like markdown in this app — headings and their rules, lists and their
+  // indents, <pre>/<code>, blockquotes, tables, strong/em — is scoped to
+  // `.rendered` in styles/06-rendered.css, and this element did not carry it.
+  // So a note in a card was the one markdown surface in the app rendered with
+  // the BROWSER's defaults: a "## " came out as a bare bold line at h2's own
+  // size with no rule under it, a fenced block as unstyled monospace with no
+  // panel, a list at the UA's indent rather than the note's. Which is the whole
+  // of "the formatting of texts in the highlighter is not identical to the
+  // notes section" — the renderer was already the right one (renderMarkdown,
+  // see paintNoteBody); it was the class name that was missing.
+  body.className = `${HL_NOTE_CLASS}-body rendered`;
   // Focusable, but NOT role="button" any more: this is rendered markdown you
   // select out of, and announcing a paragraph of prose as a button was a lie
   // that also told a screen reader its text was a label. Enter or Space on it
   // still opens the editor — that is the keyboard's triple-click.
   body.tabIndex = 0;
+  // Replaced by paintNoteBody, which says something different for a note that
+  // has not been written yet — see there.
   body.setAttribute("aria-label", "This highlight's note — press Enter to edit");
 
   article.append(head, quote, body);
@@ -372,9 +438,13 @@ export function commitOpenNote({ repaint = true } = {}) {
   // just replaced.
   const wrote = text !== null && text !== noteSavedText;
   if (wrote && entry) {
-    noteVerbsFor(entry).write(text, { rerender: false });
+    // notify: false here too — the one notify for the session is at the bottom
+    // of this function, and it fires whether or not there was anything left to
+    // write. Two would rebuild the pane twice on a single close.
+    noteVerbsFor(entry).write(text, { rerender: false, notify: false });
     entry.note = text;
     noteSavedText = text;
+    noteSessionDirty = true;
   }
   if (article && entry) {
     article.classList.remove("is-editing");
@@ -390,10 +460,20 @@ export function commitOpenNote({ repaint = true } = {}) {
   // The signature has to move with it, or the very next notifyHighlightsChanged
   // rebuilds a surface that is already correct.
   restampSignature();
-  if (!wrote) return;
-  // One notify for the whole editing session: the drawers, the page badges and
-  // the printed page notes all show this text, and none of them needs to see it
-  // a word at a time.
+  const dirty = noteSessionDirty;
+  noteSessionDirty = false;
+  if (!dirty) return;
+  // ── ...on `dirty`, and NOT on `wrote` ────────────────────────────────────
+  //
+  // `wrote` asks whether the textarea still held text nobody had saved. After a
+  // typing pause the answer is no, because the autosave has already saved it —
+  // so the ordinary close, the one every reader makes, returned here and
+  // notified nobody. See noteSessionDirty at the top of this file for what that
+  // cost: on a paper, the badge that says a note exists never appeared.
+  //
+  // One notify for the whole editing session either way: the drawers, the page
+  // badges and the printed page notes all show this text, and none of them
+  // needs to see it a word at a time.
   if (repaint) notifyHighlightsChanged();
 }
 
@@ -452,14 +532,29 @@ function registerCardTarget(body, entry) {
     label: "note",
     isEditing: () => false,
     getSource: () => entry.note || "",
+    // ── { rerender: false, notify: true }, and both halves are load-bearing ──
+    //
+    // This used to be a bare { rerender: false }, on the stated ground that "a
+    // write goes through notifyHighlightsChanged, which rebuilds this whole
+    // surface". That was true of a <mark>'s note and FALSE of a document
+    // highlight's: setDocumentHighlightNote read `rerender` as its notify too,
+    // so selecting a phrase in a note about a PDF highlight and pressing B wrote
+    // the ** into the markdown, autosaved the deck, and changed nothing on
+    // screen. The button looked dead, and the next thing to rebuild the pane
+    // would have shown the word bold as though it always had been.
+    //
+    // A formatting press is one discrete action, not the per-keystroke storm
+    // { rerender: false } exists to keep off the reading surface, and every
+    // consumer of the notify is guarded by a signature (renderHighlightsEditor,
+    // paintPageNoteBadges, refreshPdfPageNotes) — so an unchanged surface still
+    // costs nothing.
     setSource: (text) => {
-      verbs.write(text, { rerender: false });
+      verbs.write(text, { rerender: false, notify: true });
       entry.note = text;
     },
-    // A no-op for the reason paintNoteBody's image surface gives: the write
-    // above goes through notifyHighlightsChanged, which rebuilds this whole
-    // surface, so by the time a rerender() would run this body has already been
-    // replaced by a freshly rendered one.
+    // A no-op for the reason paintNoteBody's image surface gives: the notify
+    // above rebuilds this whole surface, so by the time a rerender() would run
+    // this body has already been replaced by a freshly rendered one.
     rerender: () => {}
   });
   setNoteEditorSelectionTarget({
@@ -509,10 +604,18 @@ function openNoteEditor(article, entry, { caret = null } = {}) {
       noteSaveTimer = setTimeout(() => {
         noteSaveTimer = 0;
         if (kit.textarea.value === noteSavedText) return;
-        noteVerbsFor(entry).write(kit.textarea.value, { rerender: false, undo: !noteUndoTaken });
+        // notify: false — one notify for the whole session, from commitOpenNote.
+        // A <mark>'s write used to notify on every pause (the option did not
+        // exist), which rebuilt the pane being typed into once per pause for an
+        // answer nobody could see change; a document highlight's never did.
+        // Neither does now, and the commit is what tells everyone.
+        noteVerbsFor(entry).write(kit.textarea.value, { rerender: false, notify: false, undo: !noteUndoTaken });
         noteUndoTaken = true;
         noteSavedText = kit.textarea.value;
         entry.note = kit.textarea.value;
+        // The session has written something, whether or not anything is left
+        // over for the commit to write. That is what commitOpenNote notifies on.
+        noteSessionDirty = true;
       }, NOTE_AUTOSAVE_MS);
     },
     onModeChange: () => fit()
@@ -520,6 +623,11 @@ function openNoteEditor(article, entry, { caret = null } = {}) {
   kit.root.classList.add("hl-note-editor");
   kit.setValue(entry.note || "");
   noteSavedText = kit.textarea.value;
+  // A fresh session. commitOpenNote() above has already flushed and cleared any
+  // previous one, so this is belt to those braces — and it is what stops an
+  // opened-and-closed note being reported as a change because the note BEFORE
+  // it was edited.
+  noteSessionDirty = false;
   editingKey = key;
   openNoteKit = kit;
   openNoteEntry = entry;
@@ -826,7 +934,9 @@ export function renderHighlightsEditor(entries, list) {
 //   triple-click     the raw markdown, caret at the word under the pointer
 //   ✎ / Enter / Space  the raw markdown, from the top
 //   an empty note    the raw markdown — there is nothing rendered to select,
-//                    and "Write a note on this highlight…" is an invitation
+//                    so the whole box is the way in (see paintNoteBody: the
+//                    box is blank and only appears when the card is reached
+//                    for, which is why the ✎ in the head matters more here)
 //
 // One delegated listener per event per container. A listener per note would be
 // one more thing every rebuild has to re-attach.

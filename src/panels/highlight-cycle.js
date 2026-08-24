@@ -172,6 +172,23 @@ function applySplitRatio(ratio) {
 // `auto` track above the split and does not depend on how the split is divided.
 export const SPLIT_STACK_FLOOR_PX = 240;
 
+// The height the reader can actually SEE, which on a phone is not
+// window.innerHeight: a browser with its URL bar showing reports the larger
+// figure and paints the smaller one. Measuring against innerHeight there made
+// the two halves add up to more room than exists, so the bottom of the pane sat
+// under the URL bar and the page scrolled to reach it.
+function visibleViewportHeight() {
+  return Math.round(window.visualViewport?.height || window.innerHeight);
+}
+
+// Exported because the measurement goes stale for a reason no resize event
+// reports: folding the chrome away moves the stage's top by ~130px, and
+// applyChromeCollapse is the only thing that knows it happened. src/main.js
+// registers this alongside refreshReadingRail on that same hook.
+export function refreshHighlightSplitSpace() {
+  applyStackedSpace();
+}
+
 function applyStackedSpace() {
   if (!quizPanel) return;
   const stage = stageFor(splitSurface);
@@ -180,7 +197,24 @@ function applyStackedSpace() {
     return;
   }
   const top = stage.getBoundingClientRect().top;
-  const space = Math.max(SPLIT_STACK_FLOOR_PX, Math.round(window.innerHeight - top - 8));
+  const available = Math.round(visibleViewportHeight() - top - 8);
+  // ── The floor is a fallback now, not a minimum ───────────────────────────
+  //
+  // This used to be `Math.max(SPLIT_STACK_FLOOR_PX, available)`, which on a
+  // short screen — a landscape phone is ~390px tall, and the appbar and tabs
+  // take a third of it — told the panel to be taller than the space it had. On a
+  // phone .study-layout is content-sized and scrollable, so "taller than the
+  // space" means the whole PAGE scrolls past the panel, and the panel is
+  // overflow:hidden, so what is under it is nothing at all. That is the report:
+  // "I'm scrolling and I'm being shown blank page".
+  //
+  // A measurement can only be nonsense in one direction — zero or less, when the
+  // stage has not been laid out yet because the split is being opened in the same
+  // turn the panel appears — and THAT is what the floor is for. Every other
+  // answer is the truth about the screen and is used as it stands; a genuinely
+  // cramped screen gives each half its own scroller instead (the row tracks are
+  // minmax(0, …) in styles/46-highlight-cycle.css for exactly this).
+  const space = available > 0 ? available : SPLIT_STACK_FLOOR_PX;
   quizPanel.style.setProperty("--split-space", `${space}px`);
 }
 
@@ -739,5 +773,15 @@ export function initHighlightCycle() {
     // how much room is below the chrome, so the measured length is retaken.
     applyStackedSpace();
     notePaneResized();
+  });
+
+  // ...and the URL bar sliding away, which is not a window resize. The visual
+  // viewport is the part of the page a phone is actually painting, and it grows
+  // and shrinks by ~60px as the reader scrolls — while window.innerHeight stays
+  // at the larger figure throughout. Without this the pane is sized for a
+  // viewport the reader cannot see all of.
+  window.visualViewport?.addEventListener("resize", () => {
+    if (!splitSurface) return;
+    applyStackedSpace();
   });
 }

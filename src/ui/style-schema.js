@@ -54,6 +54,17 @@ export const defaultStyleProfiles = {
     "notesLineHeight": "1.5",
     "notesFontWeight": "400",
     "notesPadding": "4px",
+    // Highlights
+    "hlNoteFontSize": "inherit",
+    "hlNoteLineHeight": "inherit",
+    "hlNoteWeight": "inherit",
+    "hlQuoteFontSize": "0.95em",
+    "hlQuoteInkPercent": "74",
+    "hlCardPadding": "10px",
+    "hlCardGap": "16px",
+    "hlCardRadius": "10px",
+    "hlCardRail": "3px",
+    "hlNoteEmptyHeight": "18px",
     // Controls and text
     // 34px, not desktop's 38: this now drives the Review/Prev/Next row too,
     // which the old hardcoded mobile override pinned at exactly 34px.
@@ -108,6 +119,17 @@ export const defaultStyleProfiles = {
     "notesLineHeight": "1.58",
     "notesFontWeight": "400",
     "notesPadding": "6px",
+    // Highlights
+    "hlNoteFontSize": "inherit",
+    "hlNoteLineHeight": "inherit",
+    "hlNoteWeight": "inherit",
+    "hlQuoteFontSize": "0.95em",
+    "hlQuoteInkPercent": "74",
+    "hlCardPadding": "11px",
+    "hlCardGap": "20px",
+    "hlCardRadius": "10px",
+    "hlCardRail": "3px",
+    "hlNoteEmptyHeight": "18px",
     // Controls and text
     "toolbarButtonHeight": "38px",
     "buttonFontSize": "14px",
@@ -230,6 +252,35 @@ export const styleControlGroups = [
       { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing around the Study Notes content." }
     ]
   },
+  // ── The pane beside what you are reading ──────────────────────────────────
+  //
+  // Every highlight of the surface on screen, its note under it, editable where
+  // it sits (src/panels/highlight-cycle.js). It had no settings at all: it
+  // claimed to inherit the Notes scale and did not (see the header of
+  // styles/44-highlights-editor.css), so a reader who had tuned Notes to their
+  // eyes found this surface untouched by any of it and nothing to reach for.
+  //
+  // "inherit" on the three type fields is the same device notesFontFamily uses
+  // one group up, and means the same thing: applyStyleSettings does not write
+  // the variable at all in that state, so the stylesheet's own fallback — the
+  // matching --notes-* value — applies. So the defaults ARE "follow Notes", and
+  // only an explicit choice makes this surface differ from it.
+  {
+    title: "Highlights",
+    tier: "advanced",
+    fields: [
+      { key: "hlNoteFontSize", label: "Highlight note text size", type: "text", unit: "px", probe: "font-size", hint: "Body text size in the side-by-side highlights pane. Everything else in the pane is sized against this, so it scales the cards, their headings and their buttons together. “Inherit” follows the Notes text size." },
+      { key: "hlNoteLineHeight", label: "Highlight note line spacing", type: "text", probe: "line-height", hint: "Reading spacing inside a highlight's note. “Inherit” follows the Notes line spacing." },
+      { key: "hlNoteWeight", label: "Highlight note weight", type: "select", options: ["inherit", "300", "400", "500", "600", "700", "800", "900"], hint: "Text thickness in the pane. “Inherit” follows the Notes weight." },
+      { key: "hlQuoteFontSize", label: "Quoted line size", type: "text", probe: "font-size", hint: "Size of the highlighted passage quoted at the top of each card, relative to the note under it." },
+      { key: "hlQuoteInkPercent", label: "Quoted line contrast %", type: "text", probe: "number", hint: "How strongly the quoted passage is inked against the note. Lower is quieter — the passage is what you marked, the note is what you wrote about it." },
+      { key: "hlCardPadding", label: "Card padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing on each highlight card." },
+      { key: "hlCardGap", label: "Card gap", type: "text", unit: "px", probe: "width", hint: "Space between one highlight card and the next." },
+      { key: "hlCardRadius", label: "Card corner radius", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of a highlight card's corners." },
+      { key: "hlCardRail", label: "Colour rail width", type: "text", unit: "px", probe: "border-top-width", hint: "Thickness of the coloured edge down the left of each card — the highlight's own colour." },
+      { key: "hlNoteEmptyHeight", label: "Empty note box height", type: "text", unit: "px", probe: "height", hint: "How tall the blank box is on a highlight with nothing written on it yet. It is hidden until the card is pointed at or focused." }
+    ]
+  },
   {
     title: "Controls and text",
     tier: "advanced",
@@ -294,6 +345,19 @@ export const styleCssVariables = {
   notesLineHeight: "--notes-line-height",
   notesFontWeight: "--notes-font-weight",
   notesPadding: "--notes-padding",
+  // The highlights pane. The three type fields are NOT here — they default to
+  // "inherit", which applyStyleSettings expresses by removing the property so
+  // the stylesheet's --notes-* fallback applies, and the generic loop below can
+  // only ever write. hlQuoteInkPercent is not here either: it stores a bare
+  // number that has to become "${n}%". All four are hand-written beside
+  // notesFontFamily and notesMaxWidthPercent, which are absent for the same two
+  // reasons.
+  hlQuoteFontSize: "--hl-quote-font-size",
+  hlCardPadding: "--hl-card-padding",
+  hlCardGap: "--hl-card-gap",
+  hlCardRadius: "--hl-card-radius",
+  hlCardRail: "--hl-card-rail",
+  hlNoteEmptyHeight: "--hl-note-empty-height",
   appGap: "--app-gap",
   panelPadding: "--panel-padding",
   cardPadding: "--card-face-padding",
