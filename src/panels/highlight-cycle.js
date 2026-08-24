@@ -571,11 +571,16 @@ export function initHighlightCycle() {
   }, { passive: true });
 
   // ← and → step through the highlights, but only while the pane itself has the
-  // focus and only when nothing is being typed into it: those two keys move the
-  // caret inside a note, and taking them would make the editor unusable.
+  // focus and only when nothing is being typed into it OR selected in it: those
+  // two keys move the caret inside a note, and they also collapse and extend a
+  // selection in rendered text. The rendered halves are named as well as the
+  // textarea, because a note's body is something you select a phrase out of to
+  // format now (registerCardTarget in highlights-editor.js) — taking ← and →
+  // there would make the pill's own selection impossible to adjust.
   el.highlightCycle.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     if (event.target.closest("textarea, input, [contenteditable='true'], .split-divider")) return;
+    if (event.target.closest(".hl-note-body, .hl-note-editor, .note-editor-rendered")) return;
     event.preventDefault();
     cycleHighlightBy(event.key === "ArrowRight" ? 1 : -1);
   });

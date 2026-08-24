@@ -136,11 +136,17 @@
    passage you marked. */
 .hl-note-head {
   display: flex;
+  align-items: center;
+  gap: 2px;
   justify-content: flex-end;
   min-height: 1.2em;
 }
 
-.hl-note-goto {
+/* Both the same shape: a quiet pill that comes up when the card is reached for.
+   The ✎ is square because it is one glyph — a pill round a single character
+   reads as a badge rather than as a button. */
+.hl-note-goto,
+.hl-note-edit {
   padding: 2px 8px;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -154,17 +160,29 @@
   transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
+.hl-note-edit {
+  width: 24px;
+  padding: 2px 0;
+  border-radius: 7px;
+  font-size: 0.86em;
+}
+
 /* Shown when the entry is reached for, always shown to the keyboard. A row of
    Go-to buttons down a page the reader is trying to READ is chrome competing
    with the text; one that appears under the pointer is a control. */
 .hl-note:hover .hl-note-goto,
 .hl-note:focus-within .hl-note-goto,
-.hl-note-goto:focus-visible {
+.hl-note-goto:focus-visible,
+.hl-note:hover .hl-note-edit,
+.hl-note:focus-within .hl-note-edit,
+.hl-note-edit:focus-visible {
   opacity: 1;
 }
 
 .hl-note-goto:hover,
-.hl-note-goto:focus-visible {
+.hl-note-goto:focus-visible,
+.hl-note-edit:hover,
+.hl-note-edit:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   color: var(--accent-strong);
 }

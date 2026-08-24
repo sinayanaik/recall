@@ -200,11 +200,12 @@
   padding: 8px;
 }
 
-/* "Go to →" is hover-revealed in the Highlights tab (44-highlights-editor.css),
-   which is right for a page of cards being read and wrong here: in the split,
-   going to the highlight IS the reason the pane is open, and a phone — where
-   this pane is a third of the screen — has no hover to reveal it with. */
-.hc-body .hl-note-goto {
+/* "Go to →" and ✎ are hover-revealed by 44-highlights-editor.css, which is
+   right for a page of cards being read and wrong here: in the split, going to
+   the highlight IS the reason the pane is open, and a phone — where this pane is
+   a third of the screen — has no hover to reveal either of them with. */
+.hc-body .hl-note-goto,
+.hc-body .hl-note-edit {
   opacity: 1;
 }
 

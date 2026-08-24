@@ -14,9 +14,19 @@
 // a negative one: state.viewMode and isNotesEditing() must be exactly what they
 // were before the key was pressed.
 //
-// The same battery runs against the Highlights tab's in-place editor, because
-// that is the other place a note is written and the two must not disagree about
-// what a key does.
+// The same battery runs against the in-place editor in the side-by-side pane,
+// because that is the other place a note is written and the two must not
+// disagree about what a key does.
+//
+// ── ...and what a PRESS does ──────────────────────────────────────────────
+//
+// A note listed beside its highlight used to open into raw markdown on a single
+// click, with the caret pinned to the end of the text — so it could not be
+// selected out of, could not be formatted where it stood, and could not be
+// opened at the sentence the reader was looking at. The cases below are the
+// three halves of the answer: a click leaves it rendered and raises the pill
+// over it, a triple-click crosses to the markdown at the word under the
+// pointer, and Ctrl+E flips the two rather than closing the editor.
 //
 //   node tools/note-editor-check.mjs
 
@@ -51,6 +61,7 @@ const API_SRC = `async () => {
     "/src/format/selection-tools.js?v=__BUILD__",
     "/src/panels/highlights-editor.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
+    "/src/panels/highlight-cycle.js?v=__BUILD__",
     "/src/format/highlight-notes.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
@@ -227,55 +238,135 @@ try {
   }`);
   check("...and again flips it back", back);
 
-  // ── The Highlights tab's in-place editor ────────────────────────────────
+  // ── The side-by-side pane's in-place editor ─────────────────────────────
+  //
+  // This used to be the Highlights TAB (api.setViewMode("highlights")). There is
+  // no such view any more — the cards are the same cards, rendered by the same
+  // renderHighlightsEditor into #highlightCycleBody beside the surface the
+  // highlights are on — so the battery is asked of the pane instead. It is the
+  // same question as before and one more: a note listed here must behave like a
+  // note, which means a click SELECTS rather than dropping into raw markdown.
   const inPlace = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     api.closeHighlightNoteEditor();
     await settle(200);
-    api.setViewMode("highlights");
+    api.setViewMode("notes");
+    await settle(400);
+    api.openHighlightSplit("notes");
     await settle(700);
-    const list = document.getElementById("highlightsList");
+    const list = document.getElementById("highlightCycleBody");
     const article = list.querySelector(".hl-note");
+    if (!article) return { error: "the pane listed no highlights" };
+
+    // The regression this whole change is about: one click used to open the
+    // editor, in raw markdown, caret at the end of the text.
     article.querySelector(".hl-note-body").click();
     await settle(200);
+    const openedOnClick = Boolean(article.querySelector(".hl-note-editor .note-editor-input"));
+
+    article.querySelector(".hl-note-edit").click();
+    await settle(200);
     const area = article.querySelector(".hl-note-editor .note-editor-input");
-    if (!area) return { error: "pressing a note body opened no textarea" };
+    if (!area) return { error: "pressing ✎ opened no textarea", openedOnClick };
     area.focus();
     // Located, not assumed: the popup cases above have already reformatted this
     // note, so a fixed offset would select somebody else's asterisks.
     const at = area.value.indexOf("about it");
     area.setSelectionRange(at, at + "about it".length);
-    return { value: area.value, selected: area.value.slice(at, at + "about it".length), viewMode: api.state.viewMode };
+    return { value: area.value, openedOnClick, viewMode: api.state.viewMode };
   }`);
-  check("the Highlights tab opens a note in place", !inPlace.error, inPlace.error || "");
+  check("a click on a rendered note leaves it rendered", !inPlace.openedOnClick,
+    inPlace.openedOnClick ? "one click dropped straight into raw markdown" : "");
+  check("...and ✎ opens that note in place", !inPlace.error, inPlace.error || "");
 
   if (!inPlace.error) {
     await press("b");
     const inPlaceBold = await page.evaluate(`() => {
       const { api } = window.__recall;
-      const area = document.querySelector("#highlightsList .hl-note-editor .note-editor-input");
+      const area = document.querySelector("#highlightCycleBody .hl-note-editor .note-editor-input");
       return { value: area ? area.value : null, viewMode: api.state.viewMode };
     }`);
     check("...and Ctrl+B works there too, on the same terms",
       inPlaceBold.value === inPlace.value.replace("about it", "**about it**"),
       JSON.stringify(inPlaceBold.value));
     check("...without the view changing under it",
-      inPlaceBold.viewMode === "highlights", inPlaceBold.viewMode);
+      inPlaceBold.viewMode === "notes", inPlaceBold.viewMode);
+
+    // Ctrl+E used to COMMIT here — the same keystroke as Esc, which left a
+    // reader with no way to look at a note's rendered form without giving up
+    // their place in it. It flips, like it does everywhere else.
+    await press("e");
+    const flippedInPlace = await page.evaluate(`() => {
+      const root = document.querySelector("#highlightCycleBody .hl-note-editor");
+      if (!root) return { gone: true };
+      return {
+        gone: false,
+        previewActive: root.querySelectorAll(".note-editor-mode")[1].classList.contains("is-active"),
+        renderedShown: !root.querySelector(".note-editor-rendered").hidden
+      };
+    }`);
+    check("...and Ctrl+E flips it to Preview rather than closing it",
+      !flippedInPlace.gone && flippedInPlace.previewActive && flippedInPlace.renderedShown,
+      flippedInPlace.gone ? "the editor closed" : `preview=${flippedInPlace.previewActive} rendered=${flippedInPlace.renderedShown}`);
 
     await press("e");
-    const committed = await page.evaluate(`() => {
-      const { api } = window.__recall;
-      const list = document.getElementById("highlightsList");
+    const backInPlace = await page.evaluate(`() => {
+      const root = document.querySelector("#highlightCycleBody .hl-note-editor");
+      return Boolean(root && root.querySelectorAll(".note-editor-mode")[0].classList.contains("is-active"));
+    }`);
+    check("...and again flips it back to Write", backInPlace);
+
+    const committed = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const area = document.querySelector("#highlightCycleBody .hl-note-editor .note-editor-input");
+      area.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await settle(300);
       return {
-        stillEditing: Boolean(list.querySelector(".hl-note-editor .note-editor-input")),
+        stillEditing: Boolean(document.querySelector("#highlightCycleBody .hl-note-editor .note-editor-input")),
         stored: api.readHighlightNotes(api.state.notes || "").get("hn-aaaa") || "",
         viewMode: api.state.viewMode
       };
     }`);
-    check("...and Ctrl+E puts the textarea away, saving what was typed",
-      !committed.stillEditing && committed.stored === inPlace.value.replace("about it", "**about it**") && committed.viewMode === "highlights",
+    check("...and Esc puts the textarea away, saving what was typed",
+      !committed.stillEditing && committed.stored === inPlace.value.replace("about it", "**about it**") && committed.viewMode === "notes",
       `editing=${committed.stillEditing} stored=${JSON.stringify(committed.stored)} view=${committed.viewMode}`);
   }
+
+  // ── Triple-click lands the caret where you aimed it ─────────────────────
+  //
+  // The one that made the panel feel broken: whatever you pressed on, the caret
+  // went to the END of the note. On a three-line note that is a nuisance; on a
+  // note of several paragraphs it means the gesture tells you nothing about
+  // where you will be typing. A long note with distinct paragraphs is used here
+  // precisely so "landed near the click" and "landed at the end" cannot be
+  // confused for one another.
+  const TRIPLE_NOTE = "First paragraph, at the very top.\n\nSecond paragraph, in the middle.\n\nThird paragraph, at the end.";
+  const aimed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setHighlightNoteAt(1, ${JSON.stringify(TRIPLE_NOTE)}, { rerender: false });
+    api.refreshHighlightCycle();
+    await settle(600);
+    const list = document.getElementById("highlightCycleBody");
+    const article = [...list.querySelectorAll(".hl-note")]
+      .find((a) => a.dataset.highlightKey === "mark:1");
+    if (!article) return { error: "the pane did not list the second highlight" };
+    const body = article.querySelector(".hl-note-body");
+    const paragraphs = body.querySelectorAll("p");
+    if (paragraphs.length < 3) return { error: "the note rendered as " + paragraphs.length + " paragraph(s)" };
+    const box = paragraphs[0].getBoundingClientRect();
+    const x = Math.round(box.left + box.width / 2);
+    const y = Math.round(box.top + box.height / 2);
+    (document.elementFromPoint(x, y) || body).dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, detail: 3, clientX: x, clientY: y })
+    );
+    await settle(300);
+    const area = article.querySelector(".hl-note-editor .note-editor-input");
+    if (!area) return { error: "a triple-click opened no textarea" };
+    return { caret: area.selectionStart, length: area.value.length, firstLine: area.value.indexOf("\\n") };
+  }`);
+  check("a triple-click opens the raw markdown where you pressed, not at the end",
+    !aimed.error && aimed.caret <= aimed.firstLine && aimed.caret < aimed.length,
+    aimed.error || `caret ${aimed.caret} of ${aimed.length}, first line ends at ${aimed.firstLine}`);
 
 // ── The floating pill, over the note editors ────────────────────────────────
 //
@@ -381,14 +472,16 @@ check("...and formatting there is spliced into the note's markdown",
 
 const pillPanel = await page.evaluate(`async () => {
   const { api, settle } = window.__recall;
-  api.setViewMode("highlights");
+  api.setViewMode("notes");
+  await settle(400);
+  api.openHighlightSplit("notes");
   await settle(700);
-  const list = document.getElementById("highlightsList");
+  const list = document.getElementById("highlightCycleBody");
   const article = list.querySelector(".hl-note");
-  article.querySelector(".hl-note-body").click();
+  article.querySelector(".hl-note-edit").click();
   await settle(300);
   const kit = article.querySelector(".hl-note-editor");
-  if (!kit) return { error: "pressing a note body opened no editor" };
+  if (!kit) return { error: "pressing ✎ opened no editor" };
   const toolbar = kit.querySelector(".edit-toolbar");
   const area = kit.querySelector(".note-editor-input");
   area.focus();
@@ -413,7 +506,7 @@ const pillPanel = await page.evaluate(`async () => {
   return result;
 }`);
 
-check("the Highlights tab's editor carries the popup's whole kit",
+check("the pane's editor carries the popup's whole kit",
   !pillPanel.error && pillPanel.toolbar && pillPanel.modes === 2 && pillPanel.mirror,
   pillPanel.error || `toolbar=${pillPanel.toolbar} modes=${pillPanel.modes} mirror=${pillPanel.mirror}`);
 check("...and the pill appears over it as well",
@@ -421,6 +514,64 @@ check("...and the pill appears over it as well",
 check("...writing through to the same note the popup writes to",
   /<mark[^>]*>sentence<\/mark>/.test(pillPanel.stored || ""),
   JSON.stringify((pillPanel.stored || "").slice(0, 80)));
+
+// ── ...and over a card with NO editor open at all ──────────────────────────
+//
+// The half that made "a click selects" a real answer rather than a smaller
+// feature set. Until now the pill only appeared over a registered target, and
+// the only registration was the one an open editor makes — so selecting a
+// phrase in a rendered note did nothing, and the only way to bold a word was to
+// open the editor first, which is the behaviour this change removes. A rendered
+// card registers itself (registerCardTarget), under the same name the kit uses,
+// so cloze and split-out stay withheld here exactly as they are in the popup.
+const pillRendered = await page.evaluate(`async () => {
+  const { api, settle } = window.__recall;
+  api.setHighlightNoteAt(0, "A rendered sentence to format.", { rerender: false });
+  api.refreshHighlightCycle();
+  await settle(600);
+  const list = document.getElementById("highlightCycleBody");
+  const article = [...list.querySelectorAll(".hl-note")].find((a) => a.dataset.highlightKey === "mark:0");
+  if (!article) return { error: "the pane did not list the annotated highlight" };
+  const body = article.querySelector(".hl-note-body");
+  if (article.querySelector(".hl-note-editor")) return { error: "an editor was already open" };
+  // The press that registers the card, then a real selection inside it.
+  // pointerup as well as pointerdown: the touch-selection controller treats a
+  // pointerdown with no matching up as a drag still in progress, and the pill
+  // deliberately draws nothing while one is (selectionGestureIsLive).
+  body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  const text = [...body.querySelectorAll("p")][0]?.firstChild;
+  if (!text) return { error: "the note rendered no text to select" };
+  const at = text.textContent.indexOf("sentence");
+  const range = document.createRange();
+  range.setStart(text, at);
+  range.setEnd(text, at + "sentence".length);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  api.positionNotesSelectionButton();
+  await settle(150);
+  const pill = document.getElementById("selectionFloat");
+  const result = {
+    visible: !pill.hidden && pill.dataset.renderTarget === "highlight-note",
+    // Cloze is withheld on a note, whichever half of it is on screen.
+    cloze: !document.getElementById("makeClozeFromSelectionBtn")?.hidden,
+    editorOpen: Boolean(article.querySelector(".hl-note-editor"))
+  };
+  api.applyPillHighlight("green");
+  await settle(400);
+  result.stored = api.readHighlightNotes(api.state.notes || "").get("hn-aaaa") || "";
+  return result;
+}`);
+
+check("the pill appears over a rendered card with no editor open",
+  !pillRendered.error && pillRendered.visible && !pillRendered.editorOpen,
+  pillRendered.error || `visible=${pillRendered.visible} editorOpen=${pillRendered.editorOpen}`);
+check("...and formatting there is written into that highlight's note",
+  /<mark[^>]*>sentence<\/mark>/.test(pillRendered.stored || ""),
+  JSON.stringify((pillRendered.stored || "").slice(0, 80)));
+check("...with cloze still withheld, because a note is not a card face",
+  !pillRendered.cloze, String(pillRendered.cloze));
 
 } finally {
   await client.close?.();
