@@ -9,7 +9,14 @@
  *
  * The answer had to be small enough not to undo the fold. So: a grip on the
  * right edge, eight pixels wide and mostly transparent, which expands into
- * seven icon buttons when it is reached for and puts itself away afterwards.
+ * seven icon buttons when it is PRESSED and puts itself away afterwards.
+ *
+ * Pressed, and not merely reached for: the tray used to unfold on hover as
+ * well, and the right edge is where a scrollbar is, where a hand rests, and
+ * where a selection drag goes to reach the end of a line — so it unfolded over
+ * the page whenever the pointer crossed it. See initReadingRail. The hover
+ * rules that remain in this file are feedback ON THE BUTTON, which is a
+ * different thing from opening what the button opens.
  *
  * ── Why the right edge ──────────────────────────────────────────────────
  *

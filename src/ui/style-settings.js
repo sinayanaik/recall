@@ -539,6 +539,25 @@ export function applyStyleSettings(rawSettings, options = {}) {
   } else {
     root.style.removeProperty("--notes-font-family");
   }
+  // ── The highlights pane's three type fields ──────────────────────────────
+  //
+  // Same device as notesFontFamily above, for the same reason and with the same
+  // effect: "inherit" is not a value to write, it is an instruction NOT to. The
+  // rules in styles/44-highlights-editor.css read each of these as
+  // `var(--hl-note-font-size, var(--notes-font-size))`, so removing ours hands
+  // the surface back to the Notes scale — which is what it has always claimed to
+  // use and, until this commit, silently did not. Writing the literal word
+  // "inherit" would be a different thing entirely: `font-size: inherit` on
+  // .hl-notes inherits from the PANE, not from the notes.
+  [
+    ["hlNoteFontSize", "--hl-note-font-size"],
+    ["hlNoteLineHeight", "--hl-note-line-height"],
+    ["hlNoteWeight", "--hl-note-weight"]
+  ].forEach(([key, cssVariable]) => {
+    const value = settings[key];
+    if (!value || value === "inherit") root.style.removeProperty(cssVariable);
+    else root.style.setProperty(cssVariable, usable(key));
+  });
   root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
   Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
     root.style.setProperty(cssVariable, usable(key));
@@ -548,6 +567,11 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // two ways to push the same text inward; the second only sized the import
   // box). The :root defaults in styles.css carry them now.
   root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
+  // A bare number in storage, a percentage on the page — the same shape as the
+  // line above, and absent from styleCssVariables for the same reason: the
+  // generic loop writes a setting's value verbatim, and "74" is not a colour
+  // stop. Consumed by .hl-note-quote's color-mix.
+  root.style.setProperty("--hl-quote-ink", `${numericStyleValue(settings.hlQuoteInkPercent) ?? numericStyleValue(profileDefaults.hlQuoteInkPercent) ?? 74}%`);
   // Deliberately not in styleCssVariables above: this setting selects a
   // different LAYOUT for the notes view (a class plus a repagination), not a
   // different value for one of its properties. See src/notes/paged-view.js.

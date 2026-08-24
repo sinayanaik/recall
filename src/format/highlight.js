@@ -5,9 +5,15 @@
 // have to stay outside the mark or the markup breaks.
 
 import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT } from "./highlight-colors.js?v=__BUILD__";
+// A cycle — highlight-edit.js imports markGroupSpanAt and markOpenTag from here
+// — and the same one highlight-notes.js already crosses for the same binding.
+// Safe for the reason given there: notifyHighlightsChanged is a hoisted
+// `function` declaration called at runtime, never a top-level `const` read while
+// either module body is still evaluating.
+import { notifyHighlightsChanged } from "./highlight-edit.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults } from "./render-toolbar.js?v=__BUILD__";
-import { SELECTION_TARGETS, ensurePillSelectionCapture, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
+import { ensurePillSelectionCapture, pillSelectionCapture, selectionTargets } from "../notes/selection.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -343,7 +349,15 @@ export function selectionForRenderTarget(view, selOverride = null) {
   // Deferred capture, resolved on demand — see pillActionTarget.
   ensurePillSelectionCapture();
   if (pillSelectionCapture && !pillSelectionCapture.editing && pillSelectionCapture.sel) {
-    const captured = SELECTION_TARGETS.find((t) => t.name === pillSelectionCapture.targetName);
+    // selectionTargets(), not SELECTION_TARGETS: the second is the three fixed
+    // surfaces, and a note written on a highlight is a fourth that comes and
+    // goes — registered by whichever editor or card is showing (see
+    // NOTE_EDITOR_TARGET). Looking the capture up in the fixed list alone could
+    // never match "highlight-note", so on a touch screen — where the tap that
+    // hits a pill button dissolves the live selection, which is exactly why this
+    // fallback exists — formatting a phrase in a card resolved to nothing and
+    // the button did nothing.
+    const captured = selectionTargets().find((t) => t.name === pillSelectionCapture.targetName);
     if (captured && captured.view === view) return pillSelectionCapture.sel;
   }
   return null;
@@ -413,6 +427,7 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
       window.getSelection()?.removeAllRanges();
       rerender(result.idx);
       scheduleDeckAutosave();
+      notifyHighlightsChanged();
       return;
     }
   }
@@ -435,4 +450,22 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
   window.getSelection()?.removeAllRanges();
   rerender(result.idx);
   scheduleDeckAutosave();
+  // ── ...and everything else that lists this deck's highlights ─────────────
+  //
+  // This is THE verb behind every way of marking text in a note — the pill, the
+  // render toolbar's swatch menu, the mark menu's recolour-by-reselect — and it
+  // told nobody. `rerender` repaints the surface the mark is ON and nothing
+  // else, so the side-by-side pane kept the list it had: a highlight made with
+  // the pane open beside the note did not appear in it, and the "12 / 87"
+  // counter did not move. "The highlight count is not real-time updating."
+  //
+  // The document surface never had this problem, because addDocumentHighlight
+  // goes through commitDocumentHighlights, which notifies by default. This is
+  // the notes side catching up with it.
+  //
+  // The import edge closes a cycle (highlight-edit.js imports from here), which
+  // is the same cycle and the same shape highlight-notes.js already crosses:
+  // notifyHighlightsChanged is a hoisted `function` called at runtime, never a
+  // `const` read while a module body is still evaluating.
+  notifyHighlightsChanged();
 }

@@ -278,11 +278,35 @@
        below the tabs, measured; --split-n is the same ratio the columns use,
        unitless so it can multiply a length. The fallback is a plain 70dvh so a
        first paint before the measurement lands is still roughly right. */
+    /* minmax(0, …) rather than the bare length. A track given a length is that
+       length whatever else is going on; wrapped in minmax(0, …) it is that
+       length AS A MAXIMUM and may shrink when the grid has less room than the
+       measurement expected. On a screen too short to give both halves what they
+       asked for, that is the difference between two cramped scrollers inside the
+       panel and a panel the page has to scroll past. */
     grid-template-rows:
       auto
-      calc((var(--split-space, 70dvh) - 14px) * var(--split-n, 0.6))
+      minmax(0, calc((var(--split-space, 70dvh) - 14px) * var(--split-n, 0.6)))
       auto
-      calc((var(--split-space, 70dvh) - 14px) * (1 - var(--split-n, 0.6)));
+      minmax(0, calc((var(--split-space, 70dvh) - 14px) * (1 - var(--split-n, 0.6))));
+  }
+
+  /* ── ...and the panel is the sum of those rows, nothing more ──────────────
+     styles/09-all-cards.css gives .quiz-panel `height: min(760px, …)` with a
+     `min-height: 520px` under it on this breakpoint. That floor is right for a
+     panel holding a flashcard, which has a shape of its own to keep, and wrong
+     for one holding a measured split: a landscape phone is ~390px tall, so the
+     floor made the panel 130px taller than the screen. The page then scrolled
+     past it — and .quiz-panel is overflow:hidden, so what was under it was
+     nothing at all. Worse, the two halves are sized from the VIEWPORT while the
+     panel is sized by the floor, so the leftover inside the panel was blank too.
+
+     Here the four rows above are the whole height, and every one of them is
+     measured from what the screen actually has. */
+  .quiz-panel.notes-mode.is-split,
+  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+    height: auto;
+    min-height: 0;
   }
 
   .quiz-panel.notes-mode.is-split > .view-mode-row {
@@ -325,6 +349,46 @@
     width: 44px;
     height: 3px;
     align-self: center;
+  }
+}
+
+/* ── A screen that is short rather than narrow ─────────────────────────────
+ *
+ * A phone on its side is ~844x390. That is WIDER than the 720px phone
+ * breakpoint, so none of the stacking above applies and the split is two
+ * ordinary columns — and it lands instead in styles/09-all-cards.css's
+ * `(min-width: 721px) and (max-width: 1080px)` band, which was written for a
+ * tablet held upright and says:
+ *
+ *     .app-shell   { height: auto; min-height: 100vh; overflow: visible }
+ *     .study-layout{ height: auto; overflow: visible }
+ *     .quiz-panel  { height: min(760px, calc(100vh - 86px)); min-height: 520px }
+ *
+ * On a 390px-tall screen that floor is 130px taller than the viewport, and with
+ * the two boxes above it scrolling rather than clipping, the PAGE scrolls past
+ * the panel. .quiz-panel is overflow:hidden, so what is under it is nothing at
+ * all: "I'm scrolling and I'm being shown blank page". Measured before this
+ * rule: a 573px pane bottom in a 390px viewport, with 189px of page scroll.
+ *
+ * The floor is right for a panel holding a flashcard, which has a shape of its
+ * own to keep. It is wrong for one that has to fit, so it is lifted here — and
+ * only here, on a screen short enough for it to be the problem, and only with
+ * the split open, which is the surface this file owns. `dvh` rather than the
+ * `vh` it replaces: on a phone `vh` is the LARGEST viewport height, the one with
+ * the URL bar already gone, so sizing against it overflows by exactly the height
+ * of the bar for as long as the bar is showing.
+ *
+ * The width bounds mirror that band exactly rather than being a bare
+ * `min-width: 721px`: above 1080px .quiz-panel keeps `height: 100%` of a
+ * .study-layout that fills the window, and re-sizing it from the viewport there
+ * would leave a gap under it on any short desktop window — a rule that fixes a
+ * phone by breaking a laptop.
+ */
+@media (min-width: 721px) and (max-width: 1080px) and (max-height: 620px) {
+  .quiz-panel.notes-mode.is-split,
+  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+    height: min(760px, calc(100dvh - 86px));
+    min-height: 0;
   }
 }
 

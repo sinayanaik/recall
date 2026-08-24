@@ -9,6 +9,11 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
+// A cycle — highlight-edit.js imports renderNotesViewPinned from here — and the
+// same shape the notes-history.js one below is safe by: the binding crossing in
+// this direction is a hoisted `function` declaration called at runtime, never a
+// `const` read while either module body is still evaluating.
+import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { migrateLegacyHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { rawEditorValueFor, sourceFromRawEditor } from "./notes-edit-split.js?v=__BUILD__";
@@ -484,6 +489,7 @@ export function commitNotesEditIfActive() {
   // block back on the end. The resume offset above needs no adjusting for that:
   // the block is a tail, so an offset into the body means the same thing in
   // both strings.
+  const before = state.notes;
   state.notes = sourceFromRawEditor(el.notesEdit.value);
   resetNotesEditingUI();
   // #notesView's own stale scrollTop (it's never destroyed, just hidden) is
@@ -500,6 +506,13 @@ export function commitNotesEditIfActive() {
   renderNotesView({ sameNote: true }).then(() => scrollRenderedNotesToRawOffset(resumeOffset, { smooth: false }));
   scheduleDeckAutosave();
   updateMeta();
+  // A reader in raw mode can type, paste or delete a <mark> by hand, and can
+  // edit the "Highlight Notes" section directly — so leaving the editor is one
+  // of the ways the set of highlights changes, and everything that lists them
+  // has to be told. Only when the text actually moved: this function is also
+  // reached by a view switch and a deck save, where nothing has changed and
+  // collectHighlightEntries would be a scan of the whole note for nothing.
+  if (state.notes !== before) notifyHighlightsChanged();
 }
 
 // `cursorOffset` (raw-markdown character index), when given, places the caret

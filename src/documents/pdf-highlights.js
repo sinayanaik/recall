@@ -609,7 +609,15 @@ export function annotatedDocumentHighlightNumbers() {
 // side dropped it on the floor. Both agree now — and the deck autosave inside
 // commitDocumentHighlights is unconditional either way, so nothing typed is at
 // risk of not being written down.
-export function setDocumentHighlightNote(id, text, { undo = false, rerender = true } = {}) {
+// `notify` is a separate question from `rerender` — see the option list above
+// rewriteFirstMarkNote, which is this verb's twin for a <mark>'s note and now
+// takes the same three options by the same names. It DEFAULTS to `rerender`
+// rather than to true, and only here: the one caller that passes { rerender:
+// false } and nothing else is an editor saving on a typing pause, and printing
+// a page's notes again between keystrokes is what made the paper jump under the
+// note being written (see pageNotesSignature). A caller that wants the surfaces
+// told without the paper repainted asks for it by name.
+export function setDocumentHighlightNote(id, text, { undo = false, rerender = true, notify = rerender } = {}) {
   const record = documentHighlightById(id);
   if (!record) return false;
   // One snapshot per editing session, taken on the first write — the same
@@ -638,7 +646,7 @@ export function setDocumentHighlightNote(id, text, { undo = false, rerender = tr
   // as older than one that has one — the rule mergePdfHighlights and
   // betterReadingPosition already use for the same reason.
   commitDocumentHighlights(documentHighlights().map((entry) =>
-    entry.id === id ? { ...entry, noteAt: Date.now() } : entry), { notify: rerender });
+    entry.id === id ? { ...entry, noteAt: Date.now() } : entry), { notify });
   return true;
 }
 

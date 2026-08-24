@@ -1,5 +1,6 @@
 // Making and removing clozes, and erasing a selection from the source.
 
+import { notifyHighlightsChanged } from "./highlight-edit.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -163,5 +164,9 @@ export function eraseNotesSelection({ view, label, getSource, setSource, rerende
   window.getSelection()?.removeAllRanges();
   rerender();
   scheduleDeckAutosave();
+  // Erasing a passage takes any <mark> inside it with it, so this changes the
+  // set of highlights as surely as making one does — and the pane beside the
+  // note would otherwise go on listing a highlight whose words are gone.
+  notifyHighlightsChanged();
   showToast("Selection erased");
 }

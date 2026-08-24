@@ -52,7 +52,7 @@ import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
 import { sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
-import { setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
+import { refreshHighlightBadges, setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
 import { bookmarkCurrentSpot, goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
@@ -71,7 +71,7 @@ import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
 import { markDrawerHighlightsDirty, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
-import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
+import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, refreshHighlightSplitSpace, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
@@ -903,7 +903,18 @@ onDomReady(initDocumentPinchZoom);
 onDomReady(initDocumentRegionSelect);
 onDomReady(() => {
   initReadingRail();
-  setChromeCollapseHandler(refreshReadingRail);
+  // Two things care that the chrome just folded or unfolded, and only one of
+  // them can hold the single handler slot — so this file, which knows both,
+  // calls both. The second is the side-by-side pane: on a phone its two halves
+  // are LENGTHS measured from where the reading stage starts (see
+  // applyStackedSpace), and folding the appbar and the tabs row moves that by
+  // ~130px without firing a resize. Left un-remeasured the halves stayed sized
+  // for the old layout, so the panel and the screen disagreed about how much
+  // room there was and the page scrolled past it into blank.
+  setChromeCollapseHandler(() => {
+    refreshReadingRail();
+    refreshHighlightSplitSpace();
+  });
   // The rail's Focus mode and Full screen rows are copies that read their state
   // back off the original buttons, so they have to be told when a mode changes
   // by some route other than pressing them: Ctrl+. , Ctrl+Q, Escape, the phone's
@@ -1003,6 +1014,20 @@ onDomReady(() => setHighlightsChangedHandler(() => {
   // box for nobody is the cost this guard exists to refuse.
   if (isHighlightSplitOpen()) refreshHighlightCycle();
   repaintPdfPageNotes();
+  // ...and the number on a <mark> in the note, which is the same fact on the
+  // other reading surface and had nothing painting it.
+  //
+  // refreshHighlightBadges' only caller was renderNotesView, and every in-place
+  // note editor writes with { rerender: false } precisely so that a book is not
+  // repainted between keystrokes — so a note written beside the highlight it is
+  // about never made its badge appear. Leaving the view and coming back did,
+  // because that is a render. That is "I have to juggle to some other panel,
+  // then only the numbering appears".
+  //
+  // Free when nothing moved: the pass returns on its own signature unless a
+  // note's NUMBER or TEXT actually changed, which is the only time there is
+  // anything to redo.
+  refreshHighlightBadges();
   // ...and the two drawers, which are the third consumer. Marked stale rather
   // than rebuilt: both are closed almost all of the time, and rebuilding a
   // book's worth of rows for a drawer nobody is looking at is the cost this
