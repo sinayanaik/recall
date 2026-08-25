@@ -17,7 +17,8 @@ import { questionFitDeferredBySelection, scheduleLiveQuestionFit } from "./cards
 import { handleDiagramPointerDown, handleDiagramPointerEnd, handleDiagramPointerMove, handleDiagramWheel, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp, handleStylePanelTouchMove, handleStylePanelTouchStart, handleStylePanelWheel, handleTouchCancel, handleTouchEnd, handleTouchMove, handleTouchStart, hasCardTextSelection, isCardActionTarget } from "./cards/swipe.js?v=__BUILD__";
 import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup } from "./cloud/auth.js?v=__BUILD__";
 import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
-import { clearSupabaseConfig, initSupabaseClient, isSignedIn, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
+import { resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUILD__";
+import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
 import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
@@ -33,6 +34,7 @@ import { generatePdfDirectly, handleExportAction, handleExportDocumentAction, ha
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
+import { markBrokenImages } from "./images/broken.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
 import { allImageFiles, dragContainsImage, gifSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
 import { imagePickerActive } from "./images/upload.js?v=__BUILD__";
@@ -2341,6 +2343,40 @@ window.addEventListener("offline", () => {
   showToast("You're offline — local decks still work", "info");
 });
 updateOnlineIndicator();
+
+// ── Pictures that were rendered before this device could sign for them ──────
+//
+// The images bucket is private, so an <img> needs a signed URL, and a signature
+// needs a session. bootApp deliberately opens this device's own decks BEFORE
+// the session is confirmed (a lapsed token must not be a blank page), so the
+// render tail can run with nothing signable — and every image in the note is
+// left holding the canonical URL, which the bucket answers 400 to.
+//
+// On the device that uploaded a picture this is invisible: its bytes are in the
+// worker's image cache under exactly that canonical URL. On every other device
+// it was the whole bug — a deck arrived by sync, none of its images had ever
+// been fetched here, and all of them came up as broken-image placeholders that
+// nothing ever revisited.
+//
+// So the moment the answer lands, ask again. Also on `online`, which covers the
+// device that booted with no connection at all. Both are cheap when there is
+// nothing waiting: one querySelectorAll that matches nothing.
+async function resolveImagesAwaitingSignature() {
+  try {
+    const retried = await resolveUnresolvedStorageImages(document);
+    if (retried.length) await markBrokenImages(retried);
+  } catch (error) {
+    console.warn("Could not re-resolve images waiting on a signature", error);
+  }
+}
+
+onSigningReadyChange(() => { resolveImagesAwaitingSignature(); });
+window.addEventListener("online", () => { resolveImagesAwaitingSignature(); });
+// ...and once now. bootApp() is started higher up this file, and two of its
+// paths settle the session question synchronously — before this line has run
+// and there is a listener to hear it. Costs one querySelectorAll that normally
+// matches nothing, and removes the dependency on where in the file this sits.
+resolveImagesAwaitingSignature();
 
 
 el.editQuestionBtn.addEventListener('click', (e) => {

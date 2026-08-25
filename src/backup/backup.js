@@ -6,6 +6,7 @@
 // matters. Restore re-homes them.
 
 import { mapWithConcurrency, withRetry } from "../cloud/net.js?v=__BUILD__";
+import { fetchableStorageUrl } from "../cloud/storage-urls.js?v=__BUILD__";
 import { deckPayloadSnapshot } from "../cloud/web-decks.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { allMyDeckSelections } from "../export/decks.js?v=__BUILD__";
@@ -372,10 +373,18 @@ async function fetchBackupAssetOverNetwork(ref) {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), BACKUP_ASSET_FETCH_TIMEOUT_MS);
   try {
+    // The images bucket is private, so the canonical `/object/public/…` URL a
+    // note holds is an identifier, not an address — fetched as-is it answers
+    // 400. That made a backup taken on a device which had only ever SYNCED its
+    // decks pack no images at all: the cache lookup above misses (nothing was
+    // ever fetched here) and this fetch fails for every hosted picture, which
+    // reads as "the image is missing" when it is sitting in the bucket. A no-op
+    // for a third-party link, so the CORS reasoning below is unchanged.
+    const fetchRef = await fetchableStorageUrl(ref);
     // Storage serves public objects with permissive CORS; a third-party host
     // (an old ImgBB/Drive link) may not, in which case this throws and the
     // image is reported as missing rather than failing the backup.
-    const response = await fetch(ref, { mode: "cors", credentials: "omit", signal: abort.signal });
+    const response = await fetch(fetchRef, { mode: "cors", credentials: "omit", signal: abort.signal });
     if (!response.ok) throw new Error(`Backup asset fetch failed: HTTP ${response.status}`);
     const blob = await response.blob();
     if (!blob.size) throw new Error("Backup asset fetch returned an empty body");

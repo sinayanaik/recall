@@ -146,7 +146,12 @@ const SETUP_SRC = `async (apiSrc) => {
   const api = await (0, eval)(apiSrc)();
   const settle = (ms) => new Promise((r) => setTimeout(r, ms));
   const uploaded = [];
-  window.__recall = { api, settle, uploaded };
+  // What the bucket KEPT, as opposed to what it was handed. The two are the
+  // same until __swallowUpload is set, which is how "the upload came back clean
+  // and stored nothing" — the failure the whole read-back exists for — gets
+  // asked for on purpose.
+  const stored = [];
+  window.__recall = { api, settle, uploaded, stored };
   api.setSupabaseClient({
     auth: {
       getSession: async () => ({ data: { session: { user: { id: "u1", email: "you@example.com" }, access_token: "t" } }, error: null }),
@@ -156,9 +161,25 @@ const SETUP_SRC = `async (apiSrc) => {
     },
     from: () => { throw new Error("epub-import-check does not touch the deck tables"); },
     storage: { from: () => ({
-      upload: async (p) => { uploaded.push(p); return { error: null }; },
+      upload: async (p) => {
+        uploaded.push(p);
+        if (!window.__swallowUpload || !p.includes(window.__swallowUpload)) stored.push(p);
+        return { data: { path: p }, error: null };
+      },
       remove: async () => ({ error: null }),
-      list: async () => ({ data: [], error: null }),
+      // A bucket that actually holds what it was handed. The import reads the
+      // run's folder back before it writes the figures' URLs into the notes
+      // (dropUnstoredEpubImages), and a stub that accepts every upload and then
+      // lists nothing is not standing in for a backend — it is standing in for
+      // a broken one, and it would make the read-back the thing under test
+      // rather than the import. \`window.__swallowUpload\` is how the broken
+      // case gets asked for deliberately.
+      list: async (dir) => ({
+        data: stored
+          .filter((p) => p.slice(0, p.lastIndexOf("/")) === dir)
+          .map((p, i) => ({ id: "obj-" + i, name: p.slice(p.lastIndexOf("/") + 1), metadata: { size: 1 } })),
+        error: null
+      }),
       createSignedUrls: async () => ({ data: [], error: null }),
       getPublicUrl: (p) => ({ data: { publicUrl: "https://example.supabase.co/storage/v1/object/public/images/" + p } })
     }) }
@@ -534,6 +555,59 @@ try {
     // One deck means no book folder — the chapter headings ARE the navigation.
     check("...and no folder made for a book that is one deck",
       wholeBook.category !== fixture.title, `filed in “${wholeBook.category}”`);
+  }
+
+  // ── An upload that reports success and stores nothing ────────────────────
+  //
+  // The failure this book's read-back exists for, and the one that is invisible
+  // on the importing device: cacheUploadedImageOffline puts the bytes in the
+  // service worker's image cache under the same canonical URL the note now
+  // holds, so the figure renders here and is a broken-image placeholder on
+  // every device the book syncs to. A URL with nothing behind it must not reach
+  // the markdown at all — the gap in the chapter is honest, the dead link is
+  // not.
+  const swallowed = await page.evaluate(`async (bytes, name) => {
+    const { api, settle } = window.__recall;
+    window.__epubError = "";
+    window.__swallowUpload = "0002-";
+    api.setMyDecksCwd("");
+    const before = api.readLocalDeckIndex().map((entry) => entry.id);
+    const file = new File([new Uint8Array(bytes)], name, { type: "application/epub+zip" });
+    window.__epubRun = api.importEpubFile(file, null).catch((error) => {
+      window.__epubError = String(error?.message || error);
+    });
+    for (let i = 0; i < 300 && !document.querySelector(".epub-preview-modal"); i += 1) await settle(50);
+    const modal = document.querySelector(".epub-preview-modal");
+    if (!modal) { window.__swallowUpload = ""; return { error: window.__epubError || "the preview never opened" }; }
+    const book = modal.querySelector('input[name="epub-import-mode"][value="book"]');
+    book.checked = true;
+    book.dispatchEvent(new Event("change", { bubbles: true }));
+    modal.querySelector("[data-epub-confirm]").click();
+    await window.__epubRun;
+    await settle(400);
+    window.__swallowUpload = "";
+    const index = api.readLocalDeckIndex();
+    const fresh = index.filter((entry) => !before.includes(entry.id));
+    if (fresh.length !== 1) return { error: window.__epubError, decks: fresh.length, markdown: "" };
+    await api.loadDeckFromLibrary(fresh[0].id);
+    await settle(100);
+    return { error: window.__epubError, decks: 1, markdown: api.state.notes || "" };
+  }`, Array.from(fixture.bytes), fileName);
+
+  if (swallowed.decks !== 1) {
+    check("a figure the bucket silently dropped is left out of the notes", false,
+      `${swallowed.decks} deck(s)${swallowed.error ? ` — “${swallowed.error}”` : ""}`);
+  } else {
+    const kept = Array.from(String(swallowed.markdown).matchAll(/https:\/\/example\.supabase\.co\/\S+?\.(?:webp|png|jpe?g|gif)/g)).map((m) => m[0]);
+    check("a figure the bucket silently dropped is left out of the notes",
+      kept.every((url) => !url.includes("0002-")), kept.map((u) => u.split("/").pop()).join(", ") || "no figures at all");
+    // ...and the read-back took nothing else with it. A check that only asserts
+    // the absence would pass just as happily on an import that dropped the lot.
+    // DISTINCT urls: the book puts its cover in two chapters, so counting
+    // occurrences would be counting the same surviving figure twice.
+    const distinctKept = new Set(kept);
+    check("...and the figures that DID land are still there", distinctKept.size === 2,
+      `${distinctKept.size} of 2 surviving figure(s)`);
   }
 
   // ── The folder the warning is about ──────────────────────────────────────

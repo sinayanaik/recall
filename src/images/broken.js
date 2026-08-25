@@ -27,7 +27,8 @@
 // link. My Decks -> More -> Check for broken images is where a deliberate
 // clean-up belongs.
 
-import { CANONICAL_SRC_ATTR, canSignStorageUrls, forgetSignedUrl, signedUrlsFor, storagePathFromUrl } from "../cloud/storage-urls.js?v=__BUILD__";
+import { CANONICAL_SRC_ATTR, STORAGE_UNRESOLVED_ATTR, canSignStorageUrls, forgetSignedUrl, signedUrlsFor, storagePathFromUrl } from "../cloud/storage-urls.js?v=__BUILD__";
+import { isSigningPending } from "../cloud/supabase-client.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 import { IMAGE_BUCKET } from "./upload.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME } from "./outbox.js?v=__BUILD__";
@@ -103,6 +104,21 @@ export function applyBrokenImageState(img) {
   return broken;
 }
 
+// The placeholder taken off without asking whether the image loads — for when
+// the REASON for a verdict is withdrawn rather than answered. An image that was
+// called broken during the pre-session window is about to be re-signed and
+// re-fetched, and leaving the box up until that fetch resolves would flash the
+// placeholder over a picture that is on its way in.
+export function clearBrokenImageState(img) {
+  if (!img) return;
+  img.classList.remove(BROKEN_IMAGE_CLASS);
+  const shell = img.closest(".diagram-shell");
+  if (!shell) return;
+  shell.classList.remove(BROKEN_SHELL_CLASS);
+  delete shell.dataset.brokenLabel;
+  shell.removeAttribute("title");
+}
+
 // One forced re-sign, for an image of the user's own that failed. Returns true
 // when a fresh URL was actually put on the element — the caller then leaves the
 // placeholder off and waits for the load or the second failure.
@@ -139,6 +155,24 @@ export function imageSettled(img) {
   return img?.dataset?.imageSettled === "1";
 }
 
+// ...and one more step that is not this element's own answer: the session.
+//
+// bootApp opens this device's decks before the session is confirmed, so the
+// render tail can run with nothing signable (see cloud/supabase-client.js). An
+// image resolveStorageImages could not sign THEN is holding a canonical URL the
+// private bucket answers 400 to — which is a fact about the clock, not about
+// the picture. Judging it there is what put a permanent placeholder on every
+// image that had never been fetched on this device before, which is every image
+// a deck brought with it when it synced. Left unsettled instead, and re-judged
+// by the subscription in src/main.js the moment the answer arrives.
+//
+// Only while the question is actually OPEN. Signed out, or offline, the
+// canonical URL is all this device will ever have, the worker's cache either
+// answers it or does not, and the honest report is the one it always was.
+export function awaitingSigningAnswer(img) {
+  return Boolean(img?.hasAttribute?.(STORAGE_UNRESOLVED_ATTR)) && isSigningPending();
+}
+
 export function watchImageLoading(img) {
   if (!img || img.dataset.brokenWatch) return;
   img.dataset.brokenWatch = "1";
@@ -161,6 +195,17 @@ export async function markBrokenImages(root = document) {
   if (!nodes || !nodes.length) return;
   const retries = [];
   for (const img of nodes) {
+    if (awaitingSigningAnswer(img)) {
+      // Not settled, so neither this pass nor the error listener reaches a
+      // verdict. The watcher still goes on, so the load that follows the
+      // re-resolve repaints without waiting for another render — and any
+      // placeholder an earlier pass left is cleared, because the reason for it
+      // has been withdrawn.
+      watchImageLoading(img);
+      delete img.dataset.imageSettled;
+      clearBrokenImageState(img);
+      continue;
+    }
     img.dataset.imageSettled = "1";
     watchImageLoading(img);
     if (!isBrokenImage(img)) {

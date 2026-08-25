@@ -211,7 +211,12 @@ export async function flushPendingImageUploads(onProgress = null) {
     } catch (error) {
       // A permanent rejection (RLS) would fail identically forever, and holding
       // the blob would re-attempt it on every single sync. Anything else is
-      // worth keeping for the next try.
+      // worth keeping for the next try — including `notStored` (the upload came
+      // back clean and left nothing in the bucket, see assertImageStored): the
+      // image is still on screen from the outbox, so retrying costs a request
+      // where giving up costs the picture. A retry takes a fresh random path, so
+      // an object that did land after all is left behind as an orphan — which
+      // Storage & Data can see and clear, and which is much the cheaper mistake.
       if (error?.authFailed) {
         console.warn("Dropping a queued image the server refuses", error);
         await deleteOutboxImage(entry.token).catch(() => {});
@@ -327,13 +332,22 @@ export async function insertPreparedImageUpload(textarea, file, atPos) {
   // Resolved before the await so the image is filed under the deck the user
   // actually pasted into, even if they switch decks while it uploads.
   const folder = deckImageFolder();
+  // Which of the two "keep it here and try again" cases we ended up in, so the
+  // toast and the failure toast below say something true.
+  let queuedReason = "offline";
   try {
     const url = await uploadImageToSupabase(file, { folder });
     replaceInTextarea(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
     return;
   } catch (err) {
-    if (err.message !== "OFFLINE") {
+    // `notStored` means the upload reported success and the object is not in
+    // the bucket (see assertImageStored). Treated exactly like being offline —
+    // keep the bytes, keep the picture on screen, try again on the next sync —
+    // because the alternative the app used to take is what caused the report:
+    // writing a URL that only THIS device can display, since only this device
+    // has the bytes cached under it.
+    if (err.message !== "OFFLINE" && !err.notStored) {
       replaceInTextarea(textarea, uploadToken, "");
       if (err.message === "NOT_SIGNED_IN") {
         showToast("Sign in to upload images", "error");
@@ -343,6 +357,8 @@ export async function insertPreparedImageUpload(textarea, file, atPos) {
       }
       return;
     }
+    if (err.notStored) console.warn("An upload came back clean but left nothing in the bucket", err);
+    queuedReason = err.notStored ? "not-stored" : "offline";
   }
 
   // Offline: park the blob and leave a placeholder that renders from it, rather
@@ -357,9 +373,13 @@ export async function insertPreparedImageUpload(textarea, file, atPos) {
   } catch (error) {
     console.warn("Could not queue the image for upload", error);
     replaceInTextarea(textarea, uploadToken, "");
-    showToast("Can't upload image while offline", "error");
+    showToast(queuedReason === "not-stored"
+      ? "That image didn't reach the cloud and couldn't be kept here"
+      : "Can't upload image while offline", "error");
     return;
   }
   replaceInTextarea(textarea, uploadToken, `![](${LOCAL_IMAGE_SCHEME}${token})`);
-  showToast("Image saved here — uploads when you're back online", "info");
+  showToast(queuedReason === "not-stored"
+    ? "That image didn't reach the cloud — kept here and retried on the next sync"
+    : "Image saved here — uploads when you're back online", "info");
 }

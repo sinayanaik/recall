@@ -8,6 +8,7 @@
 // re-adding the picture) stays a manual, per-image decision.
 
 import { mapWithConcurrency } from "../cloud/net.js?v=__BUILD__";
+import { fetchableStorageUrl } from "../cloud/storage-urls.js?v=__BUILD__";
 import { deckPayloadSnapshot } from "../cloud/web-decks.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME } from "../images/outbox.js?v=__BUILD__";
 import { collectBackupImageRefs, collectBackupPayloads, isSupabaseStorageRef } from "./backup.js?v=__BUILD__";
@@ -45,13 +46,21 @@ function probeImageLoads(ref) {
 // to know whether the object/host answers, and costs nothing like the full
 // GETs packBackupAssets does. Some hosts don't implement HEAD (405); a
 // one-byte ranged GET is the fallback, still far cheaper than the real image.
+//
+// SIGNED first. The refs handed in are the canonical `/object/public/…` URLs a
+// note holds, and the images bucket is private, so asking for one directly is a
+// 400 for every picture the user owns — which this reported as `HTTP 400` and
+// sorted to the top as "your own dead Storage objects". A tool that answers
+// "all of them are broken" is worse than no tool, and it is the first place
+// anyone looks when an image does not appear. A no-op for an external link.
 async function checkRefReachable(ref) {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), CHECK_TIMEOUT_MS);
   try {
-    let response = await fetch(ref, { method: "HEAD", mode: "cors", credentials: "omit", signal: abort.signal });
+    const target = await fetchableStorageUrl(ref);
+    let response = await fetch(target, { method: "HEAD", mode: "cors", credentials: "omit", signal: abort.signal });
     if (response.status === 405) {
-      response = await fetch(ref, {
+      response = await fetch(target, {
         method: "GET", mode: "cors", credentials: "omit",
         headers: { Range: "bytes=0-0" }, signal: abort.signal
       });
