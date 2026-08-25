@@ -58,6 +58,29 @@ export const HL_NOTES_CLASS = "hl-notes";
 
 export const HL_NOTE_CLASS = "hl-note";
 
+// ── Before a card jumps ─────────────────────────────────────────────────────
+//
+// Registered rather than imported, the way setHighlightsChangedHandler and
+// setDrawerRowJumpHook already are, because the only thing that has anything to
+// say here is the pane this editor is rendered INTO — and that pane imports this
+// module. An import back would close the cycle for one call.
+//
+// What it is for: the pane can be showing the highlights ALONE, with the reading
+// surface display:none beside it. A surface with no box has no geometry, so
+// scheduleNoteJump would scroll nowhere — the same failure a highlight in an
+// un-activated chapter used to have. The hook is where the pane puts the page
+// back on screen first.
+let onBeforeHighlightJump = () => {};
+
+export function setHighlightJumpHook(fn) {
+  onBeforeHighlightJump = typeof fn === "function" ? fn : () => {};
+}
+
+export function jumpToHighlight(entry) {
+  onBeforeHighlightJump(entry);
+  scheduleNoteJump(entry.anchor, { patient: true }, entry.locator);
+}
+
 // The ✎ in a card's head. Named because three places have to agree about it:
 // the button itself, the delegated listener that opens the editor, and the
 // stylesheet.
@@ -357,7 +380,7 @@ function articleFor(entry) {
   goto.title = label;
   goto.setAttribute("aria-label", label);
   goto.textContent = "Go to →";
-  goto.addEventListener("click", () => scheduleNoteJump(entry.anchor, { patient: true }, entry.locator));
+  goto.addEventListener("click", () => jumpToHighlight(entry));
   head.appendChild(goto);
 
   // The ✎, and it is not decoration. A press used to be the ONLY way in, so a

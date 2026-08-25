@@ -72,7 +72,7 @@ import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionP
 import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
-import { markDrawerHighlightsDirty, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
+import { markDrawerHighlightsDirty, setDrawerHighlightsOnlyHandler, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, refreshHighlightSplitSpace, repaintHighlightLink, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
 // The two index builders the contents drawer's Highlights half already uses.
 // Imported HERE, not by the mark menu, which is reached from the document
@@ -1071,8 +1071,10 @@ onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
 onDomReady(() => {
   initHighlightCycle();
   // The drawer's "Side by side" button, in whichever of the two drawers it was
-  // pressed in.
+  // pressed in — and its neighbour, which opens the same pane with the whole
+  // panel to itself.
   setDrawerSideBySideHandler((surface) => openHighlightSplit(surface));
+  setDrawerHighlightsOnlyHandler((surface) => openHighlightSplit(surface, { mode: "only" }));
   // ...and a press on one of that drawer's rows, so an open split follows it
   // rather than showing a different highlight from the one just jumped to.
   setDrawerRowJumpHook((locator) => cycleToLocator(locator));

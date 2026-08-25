@@ -187,7 +187,162 @@ export function chapterIndexFor(source) {
   const blocks = split ? split.blocks : [];
   cachedIndex = blocks.length ? chapterIndexForBlocks(blocks) : [{ title: "", blockStart: 0, blockEnd: 0 }];
   cachedSource = text;
+  cachedBlockChars = blocks.map((block) => block.length);
   return cachedIndex;
+}
+
+// ── Spans: what the columns are actually given ──────────────────────────────
+//
+// A chapter was the unit of layout, and that is what put a page break after
+// every heading: only one chunk is in the multi-column flow at a time, so a
+// chapter that IS the flow necessarily ends partway down some column and the
+// next one restarts at page 1. On a paper — six "##" sections — that is a
+// half-empty column between every pair of sections, which is the whole of "the
+// notes feel discontinuous".
+//
+// A SPAN is a run of CONSECUTIVE chapters laid out together. Chapters inside one
+// span flow into each other exactly as they would in a single continuous
+// document, because they genuinely are one flow. A paper is one span and has no
+// break in it at all.
+//
+// The budget is what keeps the original property: the reason for chaptering was
+// that multi-column layout has to measure every block it is given (see the
+// content-visibility note in styles/18-paged-notes.css), so the flow must stay
+// bounded no matter how long the note is. A span is bounded; a book is many
+// spans. Where a span DOES end, fitPagedSpanSeam in src/notes/paged-view.js
+// moves the boundary onto a page boundary, so even that seam is invisible.
+
+// Roughly thirteen two-column pages at a typical reading width (a page holds
+// about 4,500 characters — the same measurement CHAPTER_MIN_CHARS is drawn
+// from). Comfortably under the 250,000-character ceiling paged mode used to
+// refuse outright, and the one knob to turn if laying a span out ever costs too
+// much.
+export const SPAN_MAX_CHARS = 60000;
+
+// The block ceiling as well as the character one, because "600 one-line list
+// items" and "60,000 characters of prose" cost multi-column layout very
+// different amounts. Same value as the per-chapter ceiling, so a span is never
+// more blocks than a single chapter already could be.
+export const SPAN_MAX_BLOCKS = CHAPTER_MAX_BLOCKS;
+
+let cachedBlockChars = null;
+let cachedSpanSource = null;
+let cachedSpanStarts = null;
+
+// Seams the layout has MEASURED — see fitPagedSpanSeam. Keyed by span index,
+// holding the block index that span starts at. They are geometry-dependent (a
+// resize re-flows every column), so they are dropped rather than recomputed
+// whenever the columns change shape.
+//
+// `measuredSource` is which note they were measured on. Nothing calls
+// resetChapterIndexCache — every cache here is keyed on the source string
+// instead — so without this a seam measured in one note would be replayed into
+// the next one opened, cutting a span at a block index that means nothing there.
+const measuredSpanStarts = new Map();
+let measuredSource = null;
+
+function seamsFor(text) {
+  if (measuredSource !== text) {
+    measuredSpanStarts.clear();
+    measuredSource = text;
+  }
+  return measuredSpanStarts;
+}
+
+// [0, ...] — the block index each span begins at, covering the note in order.
+// Chapters are added to the open span while both budgets hold; a span always
+// takes at least one chapter, so a single over-budget chapter still gets a span
+// of its own (and is already capped at CHAPTER_MAX_BLOCKS by the index above).
+//
+// `blockChars` is the per-block character count, passed in rather than measured
+// here: the caller already has the split blocks, and a span's cost is the sum of
+// what its blocks hold.
+export function spanStartsForChapters(chapters, blockChars) {
+  if (!chapters.length) return [0];
+  const chars = blockChars || [];
+  const weigh = (chapter) => {
+    let total = 0;
+    for (let i = chapter.blockStart; i < chapter.blockEnd; i += 1) total += chars[i] || 0;
+    return total;
+  };
+  const starts = [chapters[0].blockStart];
+  let held = 0;
+  let blocks = 0;
+  chapters.forEach((chapter) => {
+    const ownChars = weigh(chapter);
+    const ownBlocks = chapter.blockEnd - chapter.blockStart;
+    if (blocks > 0 && (held + ownChars > SPAN_MAX_CHARS || blocks + ownBlocks > SPAN_MAX_BLOCKS)) {
+      starts.push(chapter.blockStart);
+      held = 0;
+      blocks = 0;
+    }
+    held += ownChars;
+    blocks += ownBlocks;
+  });
+  return starts;
+}
+
+// Re-pack from `fromSpan` onwards. Everything before it is left exactly as it
+// is: those spans are already on screen or already fitted, and re-deriving them
+// would move boundaries the reader has been reading against.
+function packSpansFrom(starts, fromSpan, chapters, blockChars) {
+  const out = starts.slice(0, fromSpan);
+  const at = starts[fromSpan];
+  if (at == null) return out;
+  const rest = chapters.filter((chapter) => chapter.blockEnd > at)
+    .map((chapter) => ({ ...chapter, blockStart: Math.max(chapter.blockStart, at) }));
+  return out.concat(spanStartsForChapters(rest, blockChars));
+}
+
+// Where each span begins, for `source`. Memoised the same way the chapter index
+// is — every caller asks per render and the work is a scan of the whole note.
+export function pagedSpanStarts(source) {
+  const text = String(source || "");
+  if (cachedSpanSource === text && cachedSpanStarts) return cachedSpanStarts;
+  // Fills cachedBlockChars for this exact source as a side effect, which is why
+  // it is read only after this call.
+  const chapters = chapterIndexFor(text);
+  const chars = cachedBlockChars;
+  const seams = seamsFor(text);
+  let starts = spanStartsForChapters(chapters, chars);
+  // Measured seams are replayed in order, so a re-render reproduces exactly the
+  // boundaries the reader is looking at rather than snapping back to the packed
+  // ones and re-flowing the page under them.
+  [...seams.keys()].sort((a, b) => a - b).forEach((spanIndex) => {
+    const block = seams.get(spanIndex);
+    if (spanIndex <= 0 || spanIndex >= starts.length) return;
+    if (block <= starts[spanIndex - 1]) return;
+    starts = packSpansFrom([...starts.slice(0, spanIndex), block], spanIndex, chapters, chars);
+  });
+  cachedSpanStarts = starts;
+  cachedSpanSource = text;
+  return cachedSpanStarts;
+}
+
+// Record a measured seam and rebuild from it. Returns whether anything moved,
+// which is how the caller knows whether a re-chunk is worth doing.
+export function refinePagedSpanStart(source, spanIndex, blockIndex) {
+  if (!(spanIndex > 0) || !(blockIndex > 0)) return false;
+  const text = String(source || "");
+  const seams = seamsFor(text);
+  if (seams.get(spanIndex) === blockIndex) return false;
+  if (cachedSpanSource === text && cachedSpanStarts?.[spanIndex] === blockIndex) return false;
+  seams.set(spanIndex, blockIndex);
+  cachedSpanStarts = null;
+  cachedSpanSource = null;
+  return true;
+}
+
+// A resize, a rotate, a font change or a column-count change re-flows every
+// column, so every measured seam is an answer to a question nobody is asking any
+// more. Dropped rather than recomputed; the span on screen is re-fitted.
+export function resetPagedSpanSeams() {
+  if (!measuredSpanStarts.size) return false;
+  measuredSpanStarts.clear();
+  measuredSource = null;
+  cachedSpanStarts = null;
+  cachedSpanSource = null;
+  return true;
 }
 
 // Which chapter a given top-level BLOCK INDEX belongs to.
@@ -201,4 +356,9 @@ export function chapterForBlockIndex(chapters, blockIndex) {
 export function resetChapterIndexCache() {
   cachedSource = null;
   cachedIndex = null;
+  cachedBlockChars = null;
+  cachedSpanSource = null;
+  cachedSpanStarts = null;
+  measuredSpanStarts.clear();
+  measuredSource = null;
 }
