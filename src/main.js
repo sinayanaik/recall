@@ -108,7 +108,6 @@ import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
-import { canSpeak, isSpeaking, speakText } from "./ui/speech.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setSplitViewHook, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
@@ -901,17 +900,6 @@ function openWebSearchFor(text) {
   window.open(`https://www.google.com/search?q=${encodeURIComponent(value.slice(0, WEB_QUERY_MAX_CHARS))}`, "_blank", "noopener");
 }
 
-// Auto-detect the source language and let the reader's own Translate settings
-// pick the target — an explicit `sl`/`tl` pair would be this app guessing at
-// both, and it guesses at neither. Same shape as the search above: a plain URL,
-// no key, no request from inside the app, and nothing to fail offline except
-// the tab it opens.
-function openTranslationFor(text) {
-  const value = String(text || "").trim();
-  if (!value) return;
-  window.open(`https://translate.google.com/?op=translate&text=${encodeURIComponent(value.slice(0, WEB_QUERY_MAX_CHARS))}`, "_blank", "noopener");
-}
-
 el.shareSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
@@ -1131,21 +1119,25 @@ onDomReady(() => {
       openHighlightSplit(surface);
       cycleToLocator(locator);
     },
-    // ── The four the pill had and a highlight did not ────────────────────
+    // ── The two the pill had and a highlight did not ─────────────────────
     //
-    // Every one of these needed you to select the words again, which is the one
-    // gesture that cannot reliably re-find a span with tags already round it.
-    // They are the same functions the pill's own buttons call.
+    // Both needed you to select the words again, which is the one gesture that
+    // cannot reliably re-find a span with tags already round it. They are the
+    // same functions the pill's own buttons call.
     //
-    // Two are registered CONDITIONALLY, and that is the whole of their
+    // Share is registered CONDITIONALLY, and that is the whole of its
     // availability rule: openMarkMenuWith builds no row for a verb that is not
-    // a function, so a desktop with no share sheet and a build with no speech
-    // engine each simply show one row fewer. Same reason the pill removes its
-    // own share button outright rather than leaving it there to apologise.
+    // a function, so a desktop with no share sheet simply shows one row fewer.
+    // Same reason the pill removes its own share button outright rather than
+    // leaving it there to apologise.
+    //
+    // There were four. Read aloud and Translate are gone — Translate because
+    // translate.google.com without an `sl`/`tl` pair hands the Android app a
+    // link it opens with the passage missing, and the target language that
+    // would fix it is a preference this app has nowhere to keep; Read aloud
+    // because it went with it rather than stand alone.
     ...(navigator.share ? { share: (text) => shareText(text) } : {}),
-    ...(canSpeak() ? { speak: (text) => speakText(text), isSpeaking } : {}),
-    search: (text) => openWebSearchFor(text),
-    translate: (text) => openTranslationFor(text)
+    search: (text) => openWebSearchFor(text)
   });
 });
 // The badges are painted with each page as it renders, and the printed notes are

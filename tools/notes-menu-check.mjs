@@ -611,11 +611,10 @@ try {
     const menu = await page.evaluate(READ_MARK_MENU);
     if (menu.error) return menu.error;
     const ids = menu.rows.map((r) => r.id);
-    // The four the pill already had and a highlight could not reach. "share" is
-    // absent where the browser has no share sheet and "speak" where it has no
-    // speech engine — headless Chromium has neither reliably — so those two are
-    // checked for being ABSENT-or-working rather than required.
-    const wanted = ["card", "highlights", "copy", "search", "translate"];
+    // The verbs the pill already had and a highlight could not reach. "share" is
+    // absent where the browser has no share sheet — headless Chromium has none
+    // reliably — so it is left out of the required set rather than asserted.
+    const wanted = ["card", "highlights", "copy", "search"];
     const missing = wanted.filter((id) => !ids.includes(id));
     if (missing.length) return `no row for: ${missing.join(", ")} (got ${ids.join(", ")})`;
     // ...and every one of them says what it does, in words.
