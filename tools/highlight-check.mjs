@@ -259,6 +259,40 @@ const PROBE = `(api) => {
     return true;
   });
 
+  // ── ...and where the mark it made begins ────────────────────────────────
+  //
+  // 'idx' was only ever used to tell the re-render which block to pin to, so
+  // nothing checked what it actually pointed AT. "Highlight & annotate" turns
+  // it into an ordinal — markOpenOffsets(source).indexOf(idx) — and opens the
+  // note editor on that mark, so an 'idx' that is off by the width of an open
+  // tag is a note written on the wrong highlight. That is the invariant here:
+  // in the text it hands back, 'idx' is the first character of the new mark's
+  // own '<mark' tag, on both the paths that change anything.
+  check("a fresh highlight says where the mark it made begins", () => {
+    const source = "One sentence here, and a second sentence after it.";
+    const added = api.highlightToggleInSource(source, { asText: "second sentence", occurrence: 0 }, "yellow");
+    if (!added || added.action !== "added") return "action was " + (added && added.action);
+    if (!added.text.startsWith("<mark", added.idx)) {
+      return "idx " + added.idx + " points at " + JSON.stringify(added.text.slice(added.idx, added.idx + 12));
+    }
+    // ...and it is the FIRST such offset that is not already accounted for —
+    // i.e. the ordinal the annotate path computes is the mark just made.
+    const opens = added.text.match(/<mark\b[^>]*>/g) || [];
+    if (opens.length !== 1) return "expected one mark, got " + opens.length;
+    return true;
+  });
+
+  check("...and a recolour says where the mark it rewrote begins", () => {
+    const source = "One sentence here, and a second sentence after it.";
+    const added = api.highlightToggleInSource(source, { asText: "second sentence", occurrence: 0 }, "yellow");
+    const recoloured = api.highlightToggleInSource(added.text, { asText: "second sentence", occurrence: 0 }, "green");
+    if (!recoloured || recoloured.action !== "recolored") return "action was " + (recoloured && recoloured.action);
+    if (!recoloured.text.startsWith("<mark", recoloured.idx)) {
+      return "idx " + recoloured.idx + " points at " + JSON.stringify(recoloured.text.slice(recoloured.idx, recoloured.idx + 12));
+    }
+    return true;
+  });
+
   check("highlighting then re-highlighting the same words removes it", () => {
     const source = "one plain sentence here";
     const added = api.highlightToggleInSource(source, { asText: "plain sentence", occurrence: 0 }, "yellow");
@@ -311,6 +345,70 @@ const PROBE = `(api) => {
   check("bulletify leaves a single plain sentence as one bullet", () => {
     const out = api.smartBulletify("one line only");
     if (out !== "- one line only") return JSON.stringify(out);
+    return true;
+  });
+
+  // ── Quote it ──────────────────────────────────────────────────────────────
+  //
+  // The bulletify's neighbour on the selection bar, and deliberately NOT its
+  // sentence-splitting cousin: a quote is somebody else's words, and breaking
+  // them up on the punctuation would be editing them. Same toggle contract
+  // though — press it twice and the text has to come back byte for byte, which
+  // is what the round-trip cases below are for.
+  check("quoting a passage prefixes every line", () => {
+    const out = api.toggleBlockquote("first line\nsecond line");
+    if (out !== "> first line\n> second line") return JSON.stringify(out);
+    return true;
+  });
+
+  check("...and quotes the blank lines inside it too", () => {
+    // A bare blank line ENDS a blockquote — everything after it reads as a new
+    // paragraph outside the quote. Quoting the blank as ">" is what keeps a
+    // two-paragraph passage one quotation.
+    const out = api.toggleBlockquote("one\n\ntwo");
+    if (out !== "> one\n>\n> two") return JSON.stringify(out);
+    return true;
+  });
+
+  check("...without splitting a run-on sentence the way bulletify does", () => {
+    const out = api.toggleBlockquote("First do this. Then do that.");
+    if (out !== "> First do this. Then do that.") return JSON.stringify(out);
+    return true;
+  });
+
+  check("...and toggles an existing quote back off", () => {
+    const out = api.toggleBlockquote("> already\n> quoted");
+    if (out !== "already\nquoted") return JSON.stringify(out);
+    return true;
+  });
+
+  check("...counting a nested quote as quoted, so it unwraps one level", () => {
+    const out = api.toggleBlockquote(">> deep\n>> quote");
+    if (out !== "> deep\n> quote") return JSON.stringify(out);
+    return true;
+  });
+
+  check("quoting a passage twice gives it back unchanged", () => {
+    const shapes = ["one line only", "a\nb", "one\n\ntwo", "- a bullet\n- and another"];
+    for (const shape of shapes) {
+      const back = api.toggleBlockquote(api.toggleBlockquote(shape));
+      if (back !== shape) return JSON.stringify(shape) + " came back as " + JSON.stringify(back);
+    }
+    return true;
+  });
+
+  // The block half: a quotation is a BLOCK, so a selection taken out of the
+  // middle of a paragraph has to be detached from what is left either side of
+  // it — otherwise markdown reads the run-up and the remainder as part of the
+  // quote. blockFormat is the shared machinery bulletify already used; this is
+  // the case that says quoting goes through it.
+  check("quoting the middle of a paragraph detaches it from both ends", () => {
+    const source = "Before it. The quoted part. After it.";
+    const start = source.indexOf("The quoted");
+    const end = start + "The quoted part.".length;
+    const result = api.blockquoteFormat(source, start, end);
+    const spliced = source.slice(0, result.rangeStart) + result.text + source.slice(result.rangeEnd);
+    if (spliced !== "Before it.\n\n> The quoted part.\n\nAfter it.") return JSON.stringify(spliced);
     return true;
   });
 

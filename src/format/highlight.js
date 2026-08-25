@@ -415,6 +415,17 @@ export function highlightToggleByOverlap(source, markIndex, color) {
 // `color` defaults to the shared last-used swatch (renderFormatDefaults.highlight)
 // so a plain tap of the floating pill applies/toggles that colour; the render
 // toolbar's split-button menu passes a specific token instead.
+//
+// ── ...and what it hands back ──────────────────────────────────────────────
+//
+// It returned nothing at all, because until now nobody needed to know WHICH
+// mark had just been made — every caller wanted the highlight and stopped
+// there. "Highlight and annotate" wants the next thing after it: the note
+// editor, open on this mark and no other. So the paths that changed the source
+// return { action, idx, source }, where `idx` is the offset of the new mark's
+// own `<mark` open tag in `source` — which is what lets a caller turn it into
+// an ordinal (markOpenOffsets) without re-searching for the words. The refusals
+// return null, and every existing caller ignores the value either way.
 export function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight, selOverride = null) {
   // Only for a LIVE selection — selOverride (the pill's position-time
   // snapshot) has no DOM range left to test overlap against by the time it's
@@ -428,23 +439,23 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
       rerender(result.idx);
       scheduleDeckAutosave();
       notifyHighlightsChanged();
-      return;
+      return { action: result.action, idx: result.idx, source: result.text };
     }
   }
 
   const sel = selectionForRenderTarget(view, selOverride);
   if (!sel) {
     showToast(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
-    return;
+    return null;
   }
   const result = highlightToggleInSource(getSource(), sel, color);
   if (!result) {
     showToast("Couldn't match that selection in the source — try selecting whole words.", "error");
-    return;
+    return null;
   }
   if (result.action === "already" || result.action === "not-highlighted") {
     showToast(highlightInfoMessage(result.action), "info");
-    return;
+    return null;
   }
   setSource(result.text);
   window.getSelection()?.removeAllRanges();
@@ -468,4 +479,5 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
   // notifyHighlightsChanged is a hoisted `function` called at runtime, never a
   // `const` read while a module body is still evaluating.
   notifyHighlightsChanged();
+  return { action: result.action, idx: result.idx, source: result.text };
 }

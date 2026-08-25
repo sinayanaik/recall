@@ -144,6 +144,7 @@ const API_SRC = `async () => {
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
     "/src/ui/reading-rail.js?v=__BUILD__",
+    "/src/notes/bookmark.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
@@ -3135,16 +3136,23 @@ try {
     const modesAnnounce = ["focus", "immersive"].every((a) => Boolean(modeRow(a)?.hasAttribute("aria-pressed")));
     const modesPaint = ["focus", "immersive"].every(pressedPaints);
     // ...and the rows that belong to one surface. A row that does nothing when
-    // pressed is worse than no row: bookmarkCurrentSpot returns without a word
-    // unless the notes view is on screen, and "Fit to width" has no page to fit
-    // while a markdown note is being read.
+    // pressed is worse than no row, and "Fit to width" has no page to fit while
+    // a markdown note is being read.
     const documentRows = ["fit-width", "dark-page", "region"];
     // "inline-notes" is not here any more: the mode that printed every
     // highlight's note into the paragraph it annotated is gone, and a note is
     // read by pressing the number on its highlight.
-    const notesRows = ["bookmark-set"];
+    //
+    // Nor is "bookmark-set", and nor is this list about the notes any more. The
+    // bookmark used to be two notes-only rows; the sync saves the spot now, and
+    // what is left is the way BACK — which belongs to both reading surfaces,
+    // because a paper's reader has no other door to it (.notes-head, where the
+    // button lives, is not shown over a PDF). So the question changed shape: it
+    // is no longer "which view", it is "is there a bookmark at all". Measured
+    // below, in both views, before and after there is one.
     const documentRowsInDocument = documentRows.filter((action) => !offers(action));
-    const notesRowsInDocument = notesRows.filter((action) => offers(action));
+    const bookmarkSetGone = !document.querySelector('[data-rail-action="bookmark-set"], #bookmarkSetBtn');
+    const goBeforeInDocument = offers("bookmark-go");
     const documentIconShown = !tray.querySelector('[data-view-mode="document"]').hidden;
     const activeMatches = tray.querySelector('[data-view-mode="document"]').classList.contains("is-active");
     // The tray's own view buttons have to actually switch view.
@@ -3161,15 +3169,32 @@ try {
     await settle(250);
     grip.click();
     await settle(120);
-    const notesRowsInNotes = notesRows.filter((action) => !offers(action));
+    const goBeforeInNotes = offers("bookmark-go");
     document.getElementById("readingRail").dataset.expanded = "false";
+    // ...and now there is one. Written straight onto the deck rather than
+    // through a sync: reconcileAllDecks wants a signed-in client, and the rule
+    // under test is refreshReadingRailRows', not the capture's.
+    api.state.meta.bookmark = { offset: 0, pdfPage: 1, ratio: 0, text: "Page 1", at: Date.now() };
+    api.refreshBookmarkButtonUI();
+    grip.click();
+    await settle(120);
+    const goAfterInNotes = offers("bookmark-go");
+    document.getElementById("readingRail").dataset.expanded = "false";
+    api.setViewMode("document");
+    await settle(250);
+    grip.click();
+    await settle(120);
+    const goAfterInDocument = offers("bookmark-go");
+    document.getElementById("readingRail").dataset.expanded = "false";
+    api.setViewMode("notes");
+    await settle(250);
     // ...and leaving focus mode has to take the rail with it.
     api.setFocusMode(false);
     await settle(450);
     const afterFocus = shown();
     api.setViewMode("document");
     await settle(200);
-    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, groups, modesStick, modesInView, quietAlpha, loudAlpha, gripBox, gripIsHit, modesAnnounce, modesPaint, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, notesRowsInDocument, notesRowsInNotes };
+    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, groups, modesStick, modesInView, quietAlpha, loudAlpha, gripBox, gripIsHit, modesAnnounce, modesPaint, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, bookmarkSetGone, goBeforeInDocument, goBeforeInNotes, goAfterInNotes, goAfterInDocument };
   }`);
 
   check("the rail is on screen whether or not focus mode is on",
@@ -3202,13 +3227,14 @@ try {
       : rail.documentRowsOutside.length
         ? `shown outside Document: ${rail.documentRowsOutside.join(", ")}`
         : "3 row(s), Document only");
-  check("...and the bookmarks in the notes view, and only there",
-    rail.notesRowsInNotes.length === 0 && rail.notesRowsInDocument.length === 0,
-    rail.notesRowsInNotes.length
-      ? `missing in Notes: ${rail.notesRowsInNotes.join(", ")}`
-      : rail.notesRowsInDocument.length
-        ? `shown over a PDF: ${rail.notesRowsInDocument.join(", ")}`
-        : "Notes only");
+  check("...and no row for setting a bookmark, on either surface",
+    rail.bookmarkSetGone, `a set-bookmark control is still in the page = ${!rail.bookmarkSetGone}`);
+  check("...nor a way back to one, until a sync has saved somewhere to go",
+    rail.goBeforeInDocument === false && rail.goBeforeInNotes === false,
+    `document=${rail.goBeforeInDocument} notes=${rail.goBeforeInNotes}`);
+  check("...and once there is one, it is offered over the paper as well as the note",
+    rail.goAfterInNotes === true && rail.goAfterInDocument === true,
+    `notes=${rail.goAfterInNotes} document=${rail.goAfterInDocument}`);
   check("...including the Document view, lit for the view you are in",
     rail.documentIconShown && rail.activeMatches,
     `shown=${rail.documentIconShown} active=${rail.activeMatches}`);

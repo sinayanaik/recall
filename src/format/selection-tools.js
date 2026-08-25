@@ -211,7 +211,22 @@ function selectionRects(target) {
 //
 // Everything here is pointerdown + preventDefault, exactly like the other pill
 // buttons, so no tap ever collapses the selection being acted on.
+//
+// ── ...and what it hands back ──────────────────────────────────────────────
+//
+// A descriptor of what was just marked, so a caller can do the NEXT thing to it
+// — which today means "Highlight & annotate" opening the note editor on the
+// mark it made. The two surfaces name a highlight differently (an ordinal in
+// the markdown, a record id on a paper), so what comes back is whichever of the
+// two this press produced, and null when nothing was marked at all.
+//
+// Deliberately not the note editor itself. Both halves of that live on the far
+// side of modules this one must not reach — notes/anchors.js for the ordinal,
+// documents' own handler set for the paper — and src/main.js already knows all
+// of them. Same arrangement as setHighlightBadgeHandler, and for the same
+// reason.
 export function applyPillHighlight(color) {
+  let made = null;
   const target = pillActionTarget();
   if (target?.kind === "document") {
     // "clear" on the document surface means "un-highlight what I have
@@ -256,19 +271,34 @@ export function applyPillHighlight(color) {
       // nothing new, and add a highlight when it does.
       const rects = selectionRects(target);
       const covering = documentHighlightsCovering(rects);
-      if (covering.length) covering.forEach((record) => recolourDocumentHighlight(record.id, color));
-      else addDocumentHighlight(target.capture, color);
+      if (covering.length) {
+        covering.forEach((record) => recolourDocumentHighlight(record.id, color));
+        // The one the reader was pointing at, when the press covered several.
+        made = { surface: "document", id: covering[0].id };
+      } else {
+        const record = addDocumentHighlight(target.capture, color);
+        if (record) made = { surface: "document", id: record.id };
+      }
     }
     // The selection has served its purpose and a live one over a fresh
     // highlight hides the colour that was just applied.
     window.getSelection()?.removeAllRanges();
   } else if (target?.kind === "rendered") {
-    makeHighlightFromSelection(renderTargetConfig(target.name), color, target.sel);
+    const result = makeHighlightFromSelection(renderTargetConfig(target.name), color, target.sel);
+    // `idx` is the offset of the new mark's own open tag in `source` — an
+    // ordinal is one scan away, and only the caller that wants one has to pay
+    // for it. A removal has nothing to annotate.
+    if (result && result.action !== "removed") {
+      made = { surface: "notes", target: target.name, idx: result.idx, source: result.source };
+    }
   } else if (target?.kind === "editing") {
+    // No mark to point a popup at: the raw editor shows tags, not marks. The
+    // highlight still lands; the note step simply has nowhere to open.
     highlightTextareaSelection(target.target, color);
   }
   closePillHighlightMenu();
   hideNotesSelectionButton();
+  return made;
 }
 
 export function closePillHighlightMenu() {

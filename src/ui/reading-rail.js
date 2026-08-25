@@ -70,7 +70,7 @@ import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
-import { bookmarkCurrentSpot, goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
+import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
@@ -163,10 +163,16 @@ export function refreshReadingRail() {
 // ── Which rows belong to the view being read ──────────────────────────────
 //
 // Some of the rail's rows belong to one surface: dark page and select a region
-// mean nothing over a markdown note, and the bookmarks mean nothing over a page
-// of a PDF — bookmarkCurrentSpot returns without a word unless the notes view
-// is the one on screen, and a row that does nothing when pressed is worse than
-// no row.
+// mean nothing over a markdown note, and a row that does nothing when pressed is
+// worse than no row.
+//
+// "Go to bookmark" used to be in that list, scoped to the notes. It is not any
+// more: a bookmark is a spot on either reading surface now (src/notes/bookmark.js),
+// and on a paper this row is the ONLY way back to it — the button it stands in
+// for lives in .notes-head, which the Document view never shows. What it is
+// still scoped by is whether there is a bookmark at all, and whether the reader
+// is on a reading surface rather than studying cards; both are settled below
+// rather than by data-rail-scope, because neither is a view name.
 //
 // Painted when the tray OPENS rather than from setViewMode, for two reasons:
 // the tray is display:none until then, so there is no moment where a wrong
@@ -193,9 +199,16 @@ export function refreshReadingRailRows() {
   const contentsRow = tray.querySelector('[data-rail-action="contents"]');
   if (contentsRow) contentsRow.hidden = state.viewMode === "document" && !hasDocument;
   // "Go to bookmark" only once there is one to go to, exactly as
-  // refreshBookmarkButtonUI hides the button this row stands in for.
+  // refreshBookmarkButtonUI hides the button this row stands in for — and only
+  // on a reading surface, because jumping to a spot in a book from the middle of
+  // a card review is not what the press means.
+  //
+  // Assigned outright rather than only when the row is already showing. That
+  // guard belonged to the days when the data-rail-scope pass above owned this
+  // row's `hidden`; with the scope gone, a row hidden once for want of a
+  // bookmark would never have come back.
   const goRow = tray.querySelector('[data-rail-action="bookmark-go"]');
-  if (goRow && !goRow.hidden) goRow.hidden = Boolean(el.bookmarkGoBtn?.hidden);
+  if (goRow) goRow.hidden = Boolean(el.bookmarkGoBtn?.hidden) || state.viewMode === "cards";
   // Says where the reader is, at the top of the tray. The tray is a list of
   // places to go and things to do TO SOMETHING, and naming the something is what
   // makes "Contents" and "Bookmark here" unambiguous when three of the four
@@ -231,12 +244,10 @@ function refreshRailGroupHeadings() {
 // Dark page, region select, full screen and focus mode each
 // already publish their state as aria-pressed on their own button
 // (togglePdfInvert, toggleRegionSelect, paintInlineNotesButton,
-// paintImmersiveButton, applyChromeCollapse), and the
-// bookmark button already says whether pressing it will SET a bookmark or MOVE
-// the one you have. All of those buttons are in the row focus mode folds away,
-// so the rail's copies have to be told. Copying the answer is right and
-// deriving it again would not be: two readings of one mode is exactly the
-// "second opinion" this file exists to avoid.
+// paintImmersiveButton, applyChromeCollapse). All of those buttons are in the
+// row focus mode folds away, so the rail's copies have to be told. Copying the
+// answer is right and deriving it again would not be: two readings of one mode
+// is exactly the "second opinion" this file exists to avoid.
 export function refreshReadingRailModes() {
   const tray = el.readingRailTray;
   if (!tray) return;
@@ -265,13 +276,11 @@ export function refreshReadingRailModes() {
     if (editIcon) editIcon.textContent = editing ? "\u{1F441}" : "✎";
     if (el.editNotesBtn?.title) editRow.title = el.editNotesBtn.title;
   }
-  const setRow = row("bookmark-set");
-  const setLabel = el.bookmarkSetBtn?.querySelector(".nhm-label")?.textContent?.trim();
-  const rowLabel = setRow?.querySelector(".rr-label");
-  // "Bookmark here" / "Move bookmark here" — a note keeps exactly one, and a
-  // reader should not have to lose theirs to find that out.
-  if (rowLabel && setLabel) rowLabel.textContent = setLabel.startsWith("Move") ? "Move bookmark here" : "Bookmark here";
-  if (setRow && el.bookmarkSetBtn?.title) setRow.title = el.bookmarkSetBtn.title;
+  // (The bookmark's SET row used to be mirrored here too, for its "Bookmark
+  // here" / "Move bookmark here" label. There is no set row any more — the sync
+  // saves the spot — and the row that is left says one thing whatever the state,
+  // so it needs no mirroring at all. Whether it is SHOWN is the only question
+  // left about it, and refreshReadingRailRows answers that.)
 }
 
 // The contents of whatever is being read. One button, because "contents" means
@@ -355,7 +364,6 @@ export function initReadingRail() {
     const action = button.dataset.railAction;
     if (action === "decks") openMyDecksPanel();
     else if (action === "contents") toggleContents();
-    else if (action === "bookmark-set") bookmarkCurrentSpot();
     else if (action === "bookmark-go") goToBookmark();
     else if (action === "style") openStylePanel();
     else if (action === "sync") reconcileAllDecks({ explicit: true });

@@ -588,6 +588,15 @@
   font-size: 0.7rem;
 }
 
+/* Highlight-and-annotate. It shares the swatch's tray tint because it shares
+   the swatch's colour — one preference drives both, and a control that looked
+   like a neighbour rather than a sibling would suggest a second one. Its icon is
+   a pen, so it is the same verb "plus what you write on it" at a glance. */
+.selection-float-btn.is-highlight-note {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+}
+
 .pill-swatch {
   display: block;
   width: 17px;

@@ -23,6 +23,7 @@ import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { beginIndexBatch, deleteDeckFromLibrary, endIndexBatch, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrary, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { TOMBSTONE_ORIGIN_INFERRED, TOMBSTONE_ORIGIN_USER, clearDeckTombstone, deckTombstoneOrigin, flushPendingUntombstones, isDeckTombstoned, readDeckTombstones, removeDecksMissingFromCloud, resetActiveDeckAfterDelete, tombstoneDeck } from "../library/tombstones.js?v=__BUILD__";
+import { captureBookmarkForSync } from "../notes/bookmark.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { warmDeckImageCache } from "../pwa/service-worker-client.js?v=__BUILD__";
 import { flushPendingQuickNoteAnchors } from "../quick-notes/anchors.js?v=__BUILD__";
@@ -712,6 +713,22 @@ async function withSessionRetry(label, run) {
 }
 
 export async function reconcileAllDecks({ explicit = false } = {}) {
+  // ── Where the reader is, written down first ─────────────────────────────
+  //
+  // Before the guards, deliberately. "Save where I am" and "sync" used to be
+  // two presses; they are one now, and the Bookmark button is gone — so every
+  // path out of this function has to have recorded the spot, including the
+  // three below that return without syncing anything. A reader who presses
+  // Sync on a train would otherwise have no way to keep their place at all.
+  //
+  // It writes into state.meta and schedules the local save; whichever run
+  // succeeds next carries it to the cloud. When THIS run proceeds, the flush
+  // further down (see commitEditIfActive) is still downstream of this line, so
+  // the bookmark lands in the snapshot this very run pushes.
+  //
+  // captureBookmarkForSync declines on its own when the resume has not settled
+  // or the reader has not moved — see the notes on both in bookmark.js.
+  captureBookmarkForSync({ announce: explicit });
   if (!supabaseClient || !isSignedIn) {
     if (explicit) showToast("Sign in to sync with the cloud", "info");
     return;

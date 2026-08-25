@@ -5,7 +5,7 @@ import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { applyInlineStyleProperty, clearInlineStyleProperty, smartBulletify, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../editor/text-transforms.js?v=__BUILD__";
+import { applyInlineStyleProperty, clearInlineStyleProperty, smartBulletify, toggleBlockquote, toggleCode, toggleStrikethrough, toggleUnderline, toggleWrap } from "../editor/text-transforms.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
 import { makeClozeFromSelection } from "./cloze.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "./highlight-colors.js?v=__BUILD__";
@@ -253,6 +253,13 @@ export const CLOZE_LIST_ICON = `<svg ${CLOZE_SVG_ATTRS}><path d="M2.5 5.5h4"/><r
 
 export const CLOZE_TOGGLE_ICON = `<svg ${CLOZE_SVG_ATTRS} stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg>`;
 
+// A quotation mark with a rule down its left, which is what a rendered
+// blockquote actually looks like — so the button is a picture of its result,
+// the same argument the cloze icons above are drawn for. currentColor
+// throughout, so it takes the row's ink like every other control on the pill.
+export const BLOCKQUOTE_ICON =
+  '<svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.6 4.5v15"/><path d="M8.8 8.2c-1.7 0-3 1.3-3 2.9s1.3 2.9 3 2.9c.4 0 .8-.1 1.1-.2-.2 1.4-1.2 2.4-2.4 2.7"/><path d="M17 8.2c-1.7 0-3 1.3-3 2.9s1.3 2.9 3 2.9c.4 0 .8-.1 1.1-.2-.2 1.4-1.2 2.4-2.4 2.7"/></svg>';
+
 export const RENDER_COLOR_GLYPH =
   '<span class="render-glyph">A</span><span class="render-underbar" data-render-swatch="color"></span>';
 
@@ -276,8 +283,17 @@ export function createRenderToolbarHtml({ actions = true, highlight = true } = {
     <button type="button" class="render-btn make-cloze-btn" data-render-action="cloze" title="Cloze — hide the selection as a fill-in-the-blank">${CLOZE_MAKE_ICON}</button>
     <button type="button" class="render-btn render-quick-note" data-render-action="quick-note" title="Save selection to the quick_notes deck">📌</button>`
     : "";
+  // ── ≡ and ❝, side by side ─────────────────────────────────────────────
+  //
+  // The two things a reader does to the STRUCTURE of a passage rather than to
+  // its words: break it into points, or set it off as somebody else's. They
+  // belong together, and the quote mark is drawn rather than typed for the
+  // reason this file already records for the cloze icons — a ">" beside a "≡"
+  // reads as a chevron, not as a quotation, and the one glyph that does read as
+  // one (") is punctuation the eye skips.
   return `
     <button type="button" class="render-btn render-bulletify" data-render-action="bulletify" title="Make bullet points from the selection">&#8801;</button>
+    <button type="button" class="render-btn render-blockquote" data-render-action="blockquote" title="Quote the selection — set it off as a block quotation">${BLOCKQUOTE_ICON}</button>
     ${renderTextStyleControlHtml()}
     ${highlight ? renderSplitControlHtml("highlight", RENDER_HIGHLIGHT_GLYPH, "highlight", MARK_HIGHLIGHT_COLORS) : ""}${captureGroup}`;
 }
@@ -434,6 +450,29 @@ export function applyRenderFormat(config, formatFn, opts = {}) {
 // is actually something to separate) makes the list a block of its own and puts
 // the rest back to being a paragraph.
 export function bulletifyFormat(value, start, end) {
+  return blockFormat(value, start, end, smartBulletify);
+}
+
+// Set the selection off as a quotation — the same shape as bulletify, and for
+// the same reason it needs the machinery below: a blockquote is a BLOCK, so
+// text left on the line either side of it is not merely untidy, markdown reads
+// it as part of the quote.
+export function blockquoteFormat(value, start, end) {
+  return blockFormat(value, start, end, toggleBlockquote);
+}
+
+// The half both of the two above share: turn a selection into a block of its
+// own, and detach whatever of its paragraph was NOT selected.
+//
+// A list is a block, so text left on the same line either side of it is not
+// merely untidy — markdown reads it as part of the block. Bulletifying the
+// middle of a paragraph used to leave the run-up glued to the first bullet and,
+// worse, the remainder lazily continuing the LAST one, so a sentence the reader
+// never touched became part of a bullet. A blank line on each side (only where
+// there is actually something to separate) makes it a block of its own and puts
+// the rest back to being a paragraph. Every word of that is true of a quotation
+// too, which is why the two differ by nothing but `transform`.
+export function blockFormat(value, start, end, transform) {
   // Swallow the spaces either side of the selection: they belonged to the
   // sentence flow that is being broken up, and left behind they show up as a
   // trailing space on the run-up and a leading one on the remainder.
@@ -443,7 +482,7 @@ export function bulletifyFormat(value, start, end) {
   while (to < value.length && (value[to] === " " || value[to] === "\t")) to += 1;
   start = from;
   end = to;
-  const body = smartBulletify(value.slice(start, end).trim());
+  const body = transform(value.slice(start, end).trim());
   const before = value.slice(0, start);
   const after = value.slice(end);
   // Only what is on THIS line matters: a blank line is already a separation.
@@ -517,15 +556,21 @@ export function handleRenderToolbarAction(btn, toolbar) {
   }
 
   // Turn the selection into a bullet list — including a run-on line that IS a
-  // list and was never written as one. See smartBulletify.
-  if (action === "bulletify") {
+  // list and was never written as one. See smartBulletify. Quoting it is the
+  // same journey with a different transform (blockFormat), so the two share a
+  // branch rather than repeating the raw-editor fallback twice.
+  if (action === "bulletify" || action === "blockquote") {
+    const format = action === "blockquote" ? blockquoteFormat : bulletifyFormat;
     const editing2 = config.isEditing?.() ? activeEditingTarget() : null;
     if (editing2) {
-      pushNotesUndo("bulletify");
-      applyFormatToTextarea(editing2.edit, bulletifyFormat);
+      pushNotesUndo(action);
+      applyFormatToTextarea(editing2.edit, format);
       return;
     }
-    applyRenderFormat(config, bulletifyFormat, { fuzzy: true });
+    // Fuzzy, like bulletify and for its reason: a selection spanning several
+    // lines never matches the source verbatim, because Turndown pads its
+    // markers differently.
+    applyRenderFormat(config, format, { fuzzy: true });
     return;
   }
 

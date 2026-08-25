@@ -460,6 +460,17 @@ export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkd
   // nothing better to go on.
   const box = root.getBoundingClientRect();
   const margin = 8;
+  // ...unless there is no mark to be under. A caller can legitimately have
+  // nothing to point at — "Highlight & annotate" on a paper opens the note for
+  // a highlight whose page may still be laying out, and whose selection was
+  // dropped so the colour could be seen. Centre it there rather than reading
+  // .bottom off null: a window in the middle of the screen is a guess, and a
+  // crash is not.
+  if (!anchorRect) {
+    root.style.top = `${Math.max(margin, (window.innerHeight - box.height) / 2)}px`;
+    root.style.left = `${Math.max(margin, (window.innerWidth - box.width) / 2)}px`;
+    return;
+  }
   let top = anchorRect.bottom + margin;
   if (top + box.height > window.innerHeight - margin) top = Math.max(margin, anchorRect.top - box.height - margin);
   const left = Math.min(

@@ -1507,6 +1507,70 @@ async function run() {
       "...and the pill is up, describing it",
       `hidden: ${captures.hidden}, title: "${captures.title}"`);
 
+    // ── ...and it is still two honest rows of related buttons ─────────────
+    //
+    // The bar is one flex container of .sel-group wrappers, and where it folds
+    // is left to the arithmetic rather than forced onto a group — see the sum
+    // in styles/22-selection-bar.css. That sum is a measurement, so it goes
+    // stale the moment a button is added to it, and it has been added to twice
+    // (highlight-and-annotate in `mark`, quote-it in `style`).
+    //
+    // What must hold is not the sum but its two conclusions: the bar wraps to
+    // at most two rows on the narrowest phone the app supports, and no GROUP is
+    // ever broken across a fold — a group is `flex: 0 0 auto` precisely so that
+    // "capture" cannot end up half on one line and half on the next.
+    const pillBar = await page.evaluate(() => {
+      const pill = document.getElementById("selectionFloat");
+      if (!pill || pill.hidden) return { error: "the pill is not up" };
+      const groups = [...pill.querySelectorAll(":scope > .sel-group")]
+        .filter((g) => g.getBoundingClientRect().height > 0);
+      // A row is a distinct top edge, rounded so sub-pixel baselines do not
+      // read as extra rows.
+      const rowsOf = (nodes) => [...new Set(nodes.map((n) => Math.round(n.getBoundingClientRect().top)))];
+      const split = groups.filter((g) => {
+        const kids = [...g.children].filter((k) => k.getBoundingClientRect().height > 0);
+        return rowsOf(kids).length > 1;
+      }).map((g) => g.dataset.selGroup);
+      const box = pill.getBoundingClientRect();
+      // The two verbs the bar grew, and the reason the sum above had to be
+      // restated. One is markup (#highlightAnnotateSelectionBtn, beside the
+      // swatch it extends); the other is built into the formatting slot by
+      // initRenderToolbars, so its presence is also a check that that slot was
+      // filled at all.
+      const onScreen = (sel) => {
+        const node = pill.querySelector(sel);
+        if (!node || node.hidden) return false;
+        const r = node.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      return {
+        rows: rowsOf(groups).length,
+        groups: groups.length,
+        split,
+        annotate: onScreen("#highlightAnnotateSelectionBtn"),
+        blockquote: onScreen('[data-render-action="blockquote"]'),
+        overflows: box.left < -1 || box.right > window.innerWidth + 1,
+        width: Math.round(box.width),
+        viewport: window.innerWidth
+      };
+    });
+    if (pillBar.error) {
+      fail("the selection bar still folds into two rows on a phone", pillBar.error);
+    } else {
+      check(pillBar.rows > 0 && pillBar.rows <= 2,
+        "the selection bar still folds into two rows on a phone",
+        `${pillBar.groups} group(s) over ${pillBar.rows} row(s), ${pillBar.width}px in a ${pillBar.viewport}px viewport`);
+      check(pillBar.split.length === 0,
+        "...with no group broken across the fold",
+        pillBar.split.length ? `split: ${pillBar.split.join(", ")}` : "every group whole");
+      check(!pillBar.overflows,
+        "...and nothing hanging off the edge of the screen",
+        `${pillBar.width}px of ${pillBar.viewport}px`);
+      check(pillBar.annotate && pillBar.blockquote,
+        "...with both of the verbs the bar was missing on it",
+        `highlight-and-annotate=${pillBar.annotate} quote-it=${pillBar.blockquote}`);
+    }
+
     // ── 6d. A SLOW slide inside the escape window keeps its selection ──────
     //
     // 6b and 6c between them only prove that the escape fires early and not

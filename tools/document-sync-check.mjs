@@ -439,6 +439,40 @@ try {
       return (r?.meta?.readingPosition?.offset === 900 && back?.meta?.readingPosition?.offset === 10)
         || `kept ${r?.meta?.readingPosition?.offset} then ${back?.meta?.readingPosition?.offset}`;
     });
+    // ── A bookmark on a paper is the same key, a different shape ──────────
+    //
+    // The bookmark stopped being notes-only when the sync took over saving it:
+    // on the Document view it carries { pdfPage, ratio } instead of a character
+    // offset (see buildBookmarkAnchor in src/notes/bookmark.js). Nothing in the
+    // merge had to change for that, and this is the case that says so — the
+    // rule above compares `.at` and never looks inside the anchor, so a page on
+    // one device and an offset on another are settled by when the reader was
+    // there, exactly as two offsets are.
+    must("...including one that names a page rather than a character", () => {
+      const cloud = { notes: "", meta: { bookmark: { offset: 3, pdfPage: 3, ratio: 0.25, text: "Page 3", at: 200 } } };
+      const mine = { notes: "", meta: {} };
+      const r = docSync.reconcileDeckBeforePush(mine, cloud);
+      const kept = r?.meta?.bookmark;
+      if (kept?.pdfPage !== 3) return `pdfPage is ${kept?.pdfPage}`;
+      if (kept?.ratio !== 0.25) return `ratio is ${kept?.ratio}`;
+      return true;
+    });
+    must("...and a newer page beats an older offset, and the other way round", () => {
+      // The two devices are reading the same deck on different surfaces — one
+      // has the paper open, one the notes. Whoever was there LAST wins, which
+      // is the only rule either shape has ever been settled by.
+      const cloudNotes = { bookmark: { offset: 4200, source: "a line", at: 100 } };
+      const minePage = { notes: "", meta: { bookmark: { offset: 7, pdfPage: 7, ratio: 0.5, at: 900 } } };
+      const newer = docSync.reconcileDeckBeforePush(minePage, { notes: "", meta: cloudNotes });
+      if (newer?.meta?.bookmark?.pdfPage !== 7) return `the newer page lost: ${JSON.stringify(newer?.meta?.bookmark)}`;
+      const cloudPage = { bookmark: { offset: 7, pdfPage: 7, ratio: 0.5, at: 900 } };
+      const mineOlder = { notes: "", meta: { bookmark: { offset: 4200, source: "a line", at: 100 } } };
+      const older = docSync.reconcileDeckBeforePush(mineOlder, { notes: "", meta: cloudPage });
+      if (older?.meta?.bookmark?.pdfPage !== 7) return `the newer page lost on the other side: ${JSON.stringify(older?.meta?.bookmark)}`;
+      // ...and the pull, where the preference is the other way, must agree.
+      const pulled = docSync.mergeDeckMeta(cloudPage, { bookmark: { offset: 4200, at: 100 } }, { prefer: "cloud" });
+      return pulled.bookmark?.pdfPage === 7 || `the pull kept ${JSON.stringify(pulled.bookmark)}`;
+    });
     must("...while a key only this device knows about still goes up", () => {
       const r = docSync.reconcileDeckBeforePush(
         { notes: "", meta: { pdf: { name: "mine.pdf", sha256: "zzz" } } }, { notes: "", meta: {} });
