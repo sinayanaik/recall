@@ -275,6 +275,73 @@ const BOOK_SETUP_SRC = `async (dead) => {
   };
 }`;
 
+// ── A picture the scan cannot pair, which still gets its controls ──────────
+//
+// An <img> inside a <pre>. marked treats <pre> as verbatim HTML and hands the
+// block to the page, so the browser paints a real image and
+// addDiagramZoomControl wraps it in a shell — while findSourceImages, correctly
+// for its own question ("what will the reader see as a picture"), calls that
+// region code and skips it. Under the old rule that shell got a Zoom pill and
+// nothing else, on every render, forever, with nothing said.
+//
+// It is one instance of the class, not the class: the point of attaching first
+// and resolving later is that the NEXT unanticipated shape costs a reader
+// nothing either. So the sweep below asks the question of every picture in the
+// view rather than of this one.
+const UNPAIRED_SETUP_SRC = `async () => {
+  const { api, settle } = window.__recall;
+  const hidden = "/icons/icon-192.png";
+  window.__unpaired = [
+    "# Out of reach",
+    "",
+    '<pre><img src="' + hidden + '" alt="inpre"></pre>',
+    "",
+    "![ordinary](/icons/icon-512.png)",
+    ""
+  ].join("\\n");
+  api.state.notes = window.__unpaired;
+  api.renderNotesView();
+  await settle(900);
+  const view = document.getElementById("notesView");
+  const shellFor = (alt) => Array.from(view.querySelectorAll(".diagram-shell"))
+    .find((node) => node.querySelector('img[alt="' + alt + '"]'));
+  const shell = shellFor("inpre");
+  if (!shell) return null;
+  const before = {
+    grip: Boolean(shell.querySelector(".notes-img-resize-handle")),
+    del: Boolean(shell.querySelector(".notes-img-delete-btn")),
+    bind: shell.dataset.imageBind,
+    ordinaryBind: shellFor("ordinary") ? shellFor("ordinary").dataset.imageBind : null
+  };
+  // Used the way the grip uses it: the ref is worked out from the DOM at the
+  // moment of the commit, not captured when the control was attached.
+  const surface = api.imageSurfaceFor("notes");
+  api.commitSourceImageWidth(surface, api.imageRefForShell(view, shell, api.imageMatchKey(hidden)), 260);
+  await settle(700);
+  const painted = view.querySelector('img[alt="inpre"]');
+  return {
+    ...before,
+    wrote: api.state.notes.includes("--notes-img-w:260px"),
+    // ...and nothing else in the note moved.
+    keptOther: api.state.notes.includes("![ordinary](/icons/icon-512.png)"),
+    width: painted ? Math.round(painted.getBoundingClientRect().width) : null
+  };
+}`;
+
+// Does EVERY picture in the view have both controls? The assertion the old
+// design could not make, asked of whatever is on screen at the time.
+const SWEEP_SRC = `() => {
+  const shells = Array.from(document.querySelectorAll("#notesView .diagram-shell"))
+    .filter((node) => node.querySelector("img"));
+  const missing = shells.filter((node) => !node.querySelector(".notes-img-resize-handle")
+    || !node.querySelector(".notes-img-delete-btn"));
+  return {
+    shells: shells.length,
+    missing: missing.length,
+    which: missing.map((node) => node.querySelector("img").getAttribute("alt") || "(no alt)")
+  };
+}`;
+
 // ── A committed width, on the paint it is committed in ─────────────────────
 //
 // Letting go of the resize grip made the picture snap back to its ORIGINAL size
@@ -537,6 +604,33 @@ async function run() {
         unicode ? `grip ${Boolean(unicode.grip)}, delete ${Boolean(unicode.del)}` : "not rendered");
       check(book.diagramGrip, "a diagram in a half-built book keeps its resize grip",
         book.diagramGrip ? "present" : "missing");
+      const bookSweep = await page.evaluate(new Function(`return (${SWEEP_SRC})();`));
+      check(Boolean(bookSweep && bookSweep.shells) && bookSweep.missing === 0,
+        "every picture on screen in the book has a grip and a delete button",
+        bookSweep ? `${bookSweep.shells} shell(s), ${bookSweep.missing} without${bookSweep.missing ? `: ${bookSweep.which.join(", ")}` : ""}` : "no answer");
+    }
+
+    // ── ...including one no scan of the markdown can find ───────────────────
+    const unpaired = await page.evaluate(new Function(`return (${UNPAIRED_SETUP_SRC})();`));
+    if (!unpaired) {
+      fail("an image inside a <pre> renders in a shell", "no shell");
+    } else {
+      check(unpaired.grip && unpaired.del,
+        "an image the source scan cannot find still gets a grip and a delete button",
+        `grip ${unpaired.grip}, delete ${unpaired.del}`);
+      check(unpaired.bind === "unmatched" && unpaired.ordinaryBind === "matched",
+        "...and says which of the two it is, on the shell",
+        `inpre ${unpaired.bind}, ordinary ${unpaired.ordinaryBind}`);
+      check(unpaired.wrote && unpaired.keptOther,
+        "...and a resize on it still writes that image's own slice",
+        `wrote ${unpaired.wrote}, left the other alone ${unpaired.keptOther}`);
+      check(unpaired.width === 260,
+        "...and the picture is the size it was given",
+        `${unpaired.width}px`);
+      const sweep = await page.evaluate(new Function(`return (${SWEEP_SRC})();`));
+      check(Boolean(sweep && sweep.shells) && sweep.missing === 0,
+        "every picture in the note has both controls after that",
+        sweep ? `${sweep.shells} shell(s), ${sweep.missing} without${sweep.missing ? `: ${sweep.which.join(", ")}` : ""}` : "no answer");
     }
 
     // ── A committed width, painted at the width that was committed ─────────

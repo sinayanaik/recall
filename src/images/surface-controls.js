@@ -183,7 +183,13 @@ export function isEscapedOffset(text, offset) {
 // a doubled or spaced delimiter is still found; nothing renders for it, so no
 // shell ever matches it, and the only cost is that a real image sharing that URL
 // is treated as having a duplicate.)
-export function findSourceImages(source) {
+// `skipCode` — off only for the recovery pass in sourceImageFor, which is asking
+// a different question: not "what will the reader see as a picture" but "where
+// on earth is the picture they are ALREADY looking at". A shell on screen is
+// marked's own answer that this image is not code, so a scan that disagrees is
+// the thing that is wrong, and looking again without the filter is how the
+// disagreement gets resolved. Nothing else may pass false here.
+export function findSourceImages(source, { skipCode = true } = {}) {
   const text = String(source || "");
   if (!sourceMayHaveImages(text)) return [];
   const definitions = imageRefDefinitions(text);
@@ -210,9 +216,11 @@ export function findSourceImages(source) {
   // scanCodeRegions, not scanFences: a fence is only part of what the renderer
   // reads as code or as raw HTML, and an image the reader never sees is not an
   // image a control may act on. See the header on scanCodeRegions.
-  for (const region of scanCodeRegions(text)) {
-    scanGap(at, region.start);
-    at = Math.max(at, region.end);
+  if (skipCode) {
+    for (const region of scanCodeRegions(text)) {
+      scanGap(at, region.start);
+      at = Math.max(at, region.end);
+    }
   }
   scanGap(at, text.length);
   return found;
@@ -355,6 +363,62 @@ export function sourceImageAt(images, ref) {
   return matches[ref.nth] || (matches.length === 1 ? matches[0] : null);
 }
 
+// ── ...and what to do when that lookup comes back empty ────────────────────
+//
+// The controls are now attached to every picture on an editable surface, paired
+// or not (see enhanceSurfaceImageControls), so this is where a pairing the
+// scan could not make gets one more chance — at the moment it matters, with
+// everything the DOM knows in hand.
+//
+// The order is by how much each step assumes:
+//
+//   1. the URL, exactly as before. Answers every ordinary image.
+//   2. the same URL in a scan that does NOT skip code — and only for a ref
+//      that came from a shell (`rendered`). That flag is the whole licence for
+//      this step: the caller has the ELEMENT in hand, so the renderer has
+//      already ruled that this image is not code, whatever the scan thinks.
+//      The plainest case is an <img> inside a <pre>: marked hands that block to
+//      the page verbatim, so the browser paints a real picture, while
+//      scanCodeRegions — correctly for its own question — calls the region code
+//      and skips it. Without an element there is no such licence, and an
+//      `![](…)` inside a fence stays untouchable text, which
+//      tools/image-controls-check.mjs holds this to.
+//   3. position: `ref.index` of `ref.total`, used only when the view holds
+//      exactly as many image shells as the note holds image slices. That is
+//      self-verifying — the two lists are the same length, so the nth of one
+//      IS the nth of the other — and it is the answer when the URL on the
+//      element and the URL in the markdown have stopped agreeing for a reason
+//      nothing here has thought of yet.
+//
+// Anything past that returns null and the caller says so out loud, which is the
+// one promise worth keeping: a control that cannot say which slice it acts on
+// writes nothing at all.
+export function sourceImageFor(source, ref) {
+  if (!ref?.url) return null;
+  const images = findSourceImages(source);
+  const found = sourceImageAt(images, ref);
+  if (found) return found;
+
+  if (!ref.rendered) return null;
+
+  // Only when the strict scan knows nothing about this URL at all. If it found
+  // copies and merely could not say WHICH, looking again in the regions it
+  // excluded cannot break that tie — it can only add a copy the reader sees as
+  // text, and picking that one is the single outcome this whole chain exists to
+  // avoid.
+  if (!images.some((image) => imageMatchKey(image.url) === ref.url)) {
+    const loose = findSourceImages(source, { skipCode: false })
+      .filter((image) => imageMatchKey(image.url) === ref.url);
+    if (loose.length === 1) return loose[0];
+    if (loose.length > 1 && loose[ref.nth]) return loose[ref.nth];
+  }
+
+  if (Number.isInteger(ref.index) && ref.total === images.length && images[ref.index]) {
+    return images[ref.index];
+  }
+  return null;
+}
+
 // One line that is two or more images separated by "|" — the side-by-side row
 // renderImageRows turns into a `.notes-img-row`. Anchored and single-line
 // (renderImageRows scans with /gm), and deliberately unable to match a GFM
@@ -409,7 +473,7 @@ export function imageRemovalRange(source, image) {
 
 export function replaceSourceImage(surface, ref, build) {
   const source = surface?.getSource?.() || "";
-  const image = sourceImageAt(findSourceImages(source), ref);
+  const image = sourceImageFor(source, ref);
   if (!image) {
     showToast("Couldn't find that image in the note any more", "error");
     return false;
@@ -677,8 +741,13 @@ export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, ref
 // The give-up case is a WHOLE note holding more slices than shells, which means
 // some of those slices render nothing — an image inside code the scan still
 // reports (see scanCodeRegions). There the nth on screen names no particular
-// slice, and no control is offered: a missing grip is recoverable, a resize
-// that rewrites the wrong text is not.
+// slice, so this says so.
+//
+// Saying so no longer costs the reader their controls: null here means the
+// width sync above is skipped and the shell is marked data-image-bind
+// ="unmatched", and the question is asked again — with a whole-view ordinal and
+// a source that may since have been built out — if a control is ever used. See
+// sourceImageFor.
 export function resolveShellCopy(copies, nth, { built = null, domCount = null } = {}) {
   if (copies.length === 1) return copies[0];
   if (domCount === copies.length) return copies[nth] || null;
@@ -731,6 +800,30 @@ export function alignBuiltImages(images, builtImages) {
 // built binds its built half correctly instead of going without controls
 // entirely until the reader reaches the end of the book.
 //
+// ── Every picture gets its controls, whether or not this pass can pair it ──
+//
+// The pairing above used to be a PRECONDITION: a shell it could not match, or
+// could not tell apart from another copy of the same image, was left with its
+// Zoom pill and nothing else. Silently, on every render, forever. Four separate
+// fixes each closed one more way for that matching to fail — an unencoded URL,
+// a phantom image inside code, a repeated image in a book, a diagram gated on a
+// complete DOM — and each left the rest, because they all shared one shape:
+// identity has to be recovered AFTER the fact, and when the recovery fails the
+// reader is told nothing.
+//
+// So the dependency is inverted. The grip and the delete button go on every
+// image of an editable surface. What this pass works out is a HINT — recorded
+// on the shell as data-image-bind, and used for the one thing it is needed for
+// here, syncing the width the note holds onto the element. WHICH slice a
+// control acts on is worked out when the control is used, by sourceImageFor,
+// against the source as it is then and everything the DOM knows by then. If
+// even that cannot say, the write is refused out loud (one toast) rather than
+// guessed at — the one promise worth keeping is that a control never rewrites
+// a slice that is not its own.
+//
+// A missing grip is not recoverable by the reader and cannot be reported. A
+// refusal is both.
+//
 // There is no `partial` flag any more, and its absence is the point. It used to
 // mean "a repeated image gets nothing until the whole note is here", which on a
 // book meant "gets nothing". What a half-built note actually needs is not a
@@ -750,8 +843,14 @@ export function enhanceSurfaceImageControls(surface, { scope = null, builtImages
   if (!view) return;
   // Cheapest test first — see sourceMayHaveImages. This runs on the tail of
   // every render of every surface, and most notes hold no images at all.
+  //
+  // The test is on the SOURCE and not on what the scan found, and the
+  // difference is the whole point: a note whose markdown mentions no image at
+  // all cannot own the pictures in its view, and gets nothing. A note that
+  // mentions one the scan then failed to find is the case this pass exists to
+  // stop being silent, so it goes all the way through.
+  if (!sourceMayHaveImages(surface?.getSource?.() || "")) return;
   const images = surfaceSourceImages(surface);
-  if (!images.length) return;
 
   const byKey = new Map();
   images.forEach((image, index) => {
@@ -790,33 +889,86 @@ export function enhanceSurfaceImageControls(surface, { scope = null, builtImages
     if (!img) return;
     const key = imageMatchKey(sourceUrlForImage(img));
     const copies = byKey.get(key);
-    // A shell whose image is in no markdown this surface owns: an export root's
-    // clone, a preview, something a plugin put there. Zoom pill only.
-    if (!copies?.length) return;
-    const copy = resolveShellCopy(copies, repeated ? (ordinals.get(shell) || 0) : 0, {
-      built,
-      domCount: repeated ? (domCounts.get(key) || 0) : 1
-    });
-    if (!copy) return;
-    const image = copy.image;
+    const copy = copies?.length
+      ? resolveShellCopy(copies, repeated ? (ordinals.get(shell) || 0) : 0, {
+        built,
+        domCount: repeated ? (domCounts.get(key) || 0) : 1
+      })
+      : null;
 
     img.draggable = false;
     shell.dataset.imageUrl = key;
-    shell.dataset.imageNth = String(copy.nth);
-    if (image.widthPx) {
-      img.style.setProperty("--notes-img-w", `${image.widthPx}px`);
-      img.classList.add("has-custom-size");
-    } else {
-      img.classList.remove("has-custom-size");
+    shell.dataset.imageNth = String(copy ? copy.nth : (repeated ? (ordinals.get(shell) || 0) : 0));
+    // Which of the two this shell is, kept where devtools and
+    // tools/image-render-check.mjs can both read it. "unmatched" is not a
+    // failure to attach any more — it is a note to itself that this one will
+    // be worked out again, with more to go on, if the reader ever uses it.
+    shell.dataset.imageBind = copy ? "matched" : "unmatched";
+    // Only for a shell whose slice is known: the width the NOTE says, which may
+    // differ from what a previous render left on the element. An unmatched one
+    // keeps whatever its own markup gave it — guessing "no width" there would
+    // undo a committed size the scan simply could not find.
+    if (copy) {
+      if (copy.image.widthPx) {
+        img.style.setProperty("--notes-img-w", `${copy.image.widthPx}px`);
+        img.classList.add("has-custom-size");
+      } else {
+        img.classList.remove("has-custom-size");
+      }
     }
 
-    const ref = { url: key, nth: copy.nth };
+    // Read when the control is USED, not now. `nth` and the position are both
+    // facts about a DOM that is still being built on a book — by the time a
+    // finger comes down on this grip, the note is far more likely to be able to
+    // answer than it was on the pass that attached it. See sourceImageFor.
+    // The key is read again here rather than captured, so it is arrived at the
+    // same way the ordinals it is counted against are: off the elements as they
+    // are at that moment. An upload landing while the note is on screen swaps a
+    // recall-img: placeholder for its storage URL, and a ref built half from
+    // then and half from now would be counting two different pictures.
+    const refAt = () => imageRefForShell(view, shell, imageMatchKey(sourceUrlForImage(img)));
     attachNotesImageResizeHandle(shell, img,
-      (px) => commitSourceImageWidth(surface, ref, px),
-      () => removeSourceImage(surface, ref),
+      (px) => commitSourceImageWidth(surface, refAt(), px),
+      () => removeSourceImage(surface, refAt()),
       view
     );
   });
+}
+
+// Everything the DOM can say about which slice this shell's picture is, asked
+// at the moment a control is used:
+//
+//   nth    which copy of that URL this shell is, among the shells on screen
+//   index  where it sits among ALL the image shells in the view, and
+//   total  how many there are — the pair sourceImageFor's positional step
+//          needs, and which are only meaningful together.
+//
+// A whole-view walk, which is affordable precisely because it happens once per
+// drag or delete rather than on the tail of every render.
+export function imageRefForShell(view, shell, key) {
+  let nth = 0;
+  let index = -1;
+  let total = 0;
+  view.querySelectorAll(".diagram-shell").forEach((node) => {
+    const img = node.querySelector("img");
+    if (!img) return;
+    if (node === shell) index = total;
+    else if (index === -1 && imageMatchKey(sourceUrlForImage(img)) === key) nth += 1;
+    total += 1;
+  });
+  // The shell is not in the view any more: a render landed between the finger
+  // going down and the drag ending, and this element has been replaced by its
+  // successor. The walk above counted every copy rather than the ones in front
+  // of it, so it says nothing — but what the attach pass wrote on the shell
+  // still does, and it was true of the note this drag started in.
+  if (index === -1) {
+    const stored = Number.parseInt(shell?.dataset?.imageNth ?? "", 10);
+    return { url: key, nth: Number.isInteger(stored) ? stored : 0, index: null, total, rendered: true };
+  }
+  // `rendered` says where this ref came from, and it is what licenses
+  // sourceImageFor's recovery steps: there is an element on screen for this
+  // picture, so the renderer has already ruled that it is not code.
+  return { url: key, nth, index, total, rendered: true };
 }
 
 // ── Editable diagrams: the same corner-drag resize images get ──────────────

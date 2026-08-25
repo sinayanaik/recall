@@ -63,7 +63,7 @@ const WANTED = [
     "IMAGE_REF_DEFINITION_RE", "imageRefDefinitions", "parseReferenceImage",
     "sourceImagePattern", "isEscapedOffset", "findSourceImages",
     "sourceMayHaveImages", "markedImageUrl", "imageMatchKey", "imgTagHtml",
-    "sourceImageAt", "pipeRowLinePattern", "imageRemovalRange",
+    "sourceImageAt", "sourceImageFor", "pipeRowLinePattern", "imageRemovalRange",
     "replaceSourceImage", "commitSourceImageWidth", "removeSourceImage"
   ]]
 ];
@@ -324,6 +324,64 @@ for (const [name, source] of Object.entries(SHAPES)) {
   assert(
     surface.getSource().includes(`--notes-img-w:${api.IMAGE_RESIZE_MAX_PX}px`),
     `clamp: a 99999px drag was not clamped to ${api.IMAGE_RESIZE_MAX_PX}`
+  );
+}
+
+// ── recovery: the picture the scan cannot find ─────────────────────────────
+//
+// Every control is now attached to every image on an editable surface, paired
+// or not, so a shell whose slice the scan missed is no longer a picture with no
+// grip — it is a grip whose slice has to be found when it is USED. sourceImageFor
+// is that second look, and the four cases below are its whole contract.
+{
+  // A real picture the scan cannot see: an <img> inside a <pre>. marked treats
+  // <pre> as verbatim HTML and hands the whole block to the page, so the
+  // browser paints a real image and addDiagramZoomControl wraps it in a shell —
+  // while scanCodeRegions, correctly for its own question, calls that region
+  // code and skips it. On screen, no grip and no delete button, forever.
+  const inPre = "<pre><img src=\"https://img.test/30.png\" alt=\"fig\"></pre>\n";
+  assert(
+    !api.findSourceImages(inPre).some((image) => image.url.includes("30.png")),
+    "the <pre> fixture is not the case it exists to be: the strict scan found it"
+  );
+  const ref = { url: key("https://img.test/30.png"), nth: 0, rendered: true };
+  assert(
+    api.sourceImageFor(inPre, ref)?.url === "https://img.test/30.png",
+    "an image the code-region scan skipped is still found for a shell that exists"
+  );
+  // ...but not without an element. A ref with no `rendered` on it has no
+  // evidence that the renderer disagreed, and for it that text is still code —
+  // which is what keeps an `![](…)` inside a fence untouchable.
+  assert(
+    api.sourceImageFor(inPre, { url: ref.url, nth: 0 }) === null,
+    "...and is NOT found without one"
+  );
+
+  const surface = makeSurface(inPre);
+  api.commitSourceImageWidth(surface, ref, 240);
+  assert(
+    surface.getSource() === inPre.replace(
+      "<img src=\"https://img.test/30.png\" alt=\"fig\">",
+      api.imgTagHtml({ url: "https://img.test/30.png", alt: "fig", widthPx: 240 })
+    ),
+    `recovered resize wrote ${JSON.stringify(surface.getSource())}`
+  );
+}
+
+{
+  // The last resort: the URL on the element and the URL in the markdown have
+  // stopped agreeing for a reason nothing here anticipated. Position answers it
+  // when the two lists are the same length, and declines when they are not.
+  const source = SHAPES.twoInAParagraph;
+  const total = api.findSourceImages(source).length;
+  const stranger = { url: key("https://img.test/nowhere.png"), nth: 0, index: 1, total, rendered: true };
+  assert(
+    api.sourceImageFor(source, stranger)?.url === "https://img.test/10b.png",
+    "a shell whose URL matches nothing falls back to its position when the counts agree"
+  );
+  assert(
+    api.sourceImageFor(source, { ...stranger, total: total + 1 }) === null,
+    "...and declines when they do not"
   );
 }
 

@@ -166,10 +166,17 @@ const ACCEPTED = {
     "three rendered with no resize grip and no delete button — and pairing by " +
     "position meant the pass could not run at all until the whole note was in " +
     "the DOM, so no image in an imported book had controls until it had been " +
-    "read end to end. Takes { partial, scope }: partial leaves only the " +
-    "ambiguous case (the same image used twice in one note) to the pass that " +
-    "runs when the last span lands, and scope binds just the span that was " +
-    "built rather than re-walking every shell built so far.",
+    "read end to end. Takes { scope, builtImages }: scope binds just the span " +
+    "that was built rather than re-walking every shell built so far, and " +
+    "builtImages says which of a book's images are in the DOM right now. And " +
+    "the pairing is no longer a PRECONDITION for attaching: every image of an " +
+    "editable surface gets the grip and the delete button, what this pass works " +
+    "out is recorded as a hint (data-image-bind), and WHICH slice a control " +
+    "acts on is worked out when it is used, by sourceImageFor. Four separate " +
+    "fixes each closed one more way for the matching to fail and left the rest, " +
+    "because they shared one shape: identity recovered after the fact, and " +
+    "nothing said when the recovery fails. A missing grip is not recoverable by " +
+    "the reader and cannot be reported; a refused write is both.",
   enhanceSurfaceDiagramControls:
     "Returns before the fence walk when the source names no diagram " +
     "(sourceMayHaveDiagrams). The `diagrams.length` test below it was always " +
