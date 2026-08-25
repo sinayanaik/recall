@@ -1583,6 +1583,9 @@ export function positionNotesSelectionButton() {
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = true;
     if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = true;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
+    // A paper's highlight carries a note exactly as a note's <mark> does — same
+    // editor, same fenced tail, a different handler set (DOCUMENT_NOTE_HANDLERS).
+    if (el.highlightAnnotateSelectionBtn) el.highlightAnnotateSelectionBtn.hidden = false;
     // A cloze is markdown ({{…}} spliced into the source) and so is a quick-note
     // pin's round-trip through the note; neither has a home on a document.
     if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = true;
@@ -1628,6 +1631,12 @@ export function positionNotesSelectionButton() {
     if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = false;
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
+    // ...but not its annotate twin. The raw editor shows the <mark> TAGS, not
+    // marks — there is no element for the note popup to open over, and the
+    // highlight it would be about is a string of angle brackets under the
+    // caret. The plain swatch still works here; the note is a preview-mode
+    // gesture, and tapping ✎ back to preview is where it lives.
+    if (el.highlightAnnotateSelectionBtn) el.highlightAnnotateSelectionBtn.hidden = true;
     // Put back what the document branch above hides — the pill is one element
     // shared by every surface, so a control hidden for one has to be restored
     // by the others rather than staying hidden for the rest of the session.
@@ -1732,6 +1741,13 @@ export function positionNotesSelectionButton() {
   // sub-note does not: see the editing branch above.
   if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = false;
   if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
+  // Annotating a highlight from inside a highlight's OWN note is a note on a
+  // note: the mark would be written into the fenced tail, and the editor it
+  // opened would be the one already on screen. Everywhere else it follows the
+  // swatch it stands beside.
+  if (el.highlightAnnotateSelectionBtn) {
+    el.highlightAnnotateSelectionBtn.hidden = renderedTarget.name === NOTE_EDITOR_TARGET;
+  }
   if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = renderedTarget.name !== "notes";
   // ...and the same on the rendered half — see the editing branch above.
   if (el.makeClozeFromSelectionBtn && renderedTarget.name === NOTE_EDITOR_TARGET) {

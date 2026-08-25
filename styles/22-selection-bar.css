@@ -103,14 +103,20 @@
    costs a row. Measured on a 360px screen, where the bar is 344px wide and the
    trays and gaps are as above:
 
-     capture 116 + mark 99            = 224   row 1
-     style 58 + use 116 + cut 42      = 234   row 2
+     capture 116 + mark 136           = 261   row 1
+     style 95 + use 116 + cut 42      = 253   row 2
 
    Two rows, every group whole, because a group is `flex: 0 0 auto` and so can
    only wrap between groups — never through one. Forcing the formatting group
    onto a line by itself would have made that three rows, and a taller bar
    covers more of the sentence it is about. Left to the arithmetic, and the
-   arithmetic has ~100px of slack on the narrowest screen the app supports. */
+   arithmetic still has ~80px of slack on the narrowest screen the app supports.
+
+   Those two numbers grew by 37px each when the bar took on the two verbs it was
+   missing — highlight-and-annotate in `mark`, quote-it in `style`. The sum is
+   restated rather than left at its old figures because it is the only reason
+   this file can say the fold falls where it does, and a stale measurement is a
+   worse guide than none. */
 
 /* ── The font list ────────────────────────────────────────────────────────
    Shares .render-color-menu, so it opens, closes and positions through exactly

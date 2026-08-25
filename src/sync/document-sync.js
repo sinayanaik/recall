@@ -210,12 +210,14 @@ export function mergeDocumentAnnotations({
 // BECAUSE its updated_at is newer, which is the case where it may not have
 // pulled the others' work yet.
 //
-// The app already knows this is dangerous and already works around it in the two
-// places it noticed: pushBookmarkNow (src/sync/bookmark-cloud.js) and
-// serialiseQuickNoteMetaWrite (src/quick-notes/anchors.js) are both narrow
-// read-merge-writes of exactly one key, written that way so a bookmark or a
-// category cannot clobber its neighbours. A whole-column deck push then undoes
-// the careful thing both of them did.
+// The app already knows this is dangerous and already works around it where it
+// noticed: serialiseQuickNoteMetaWrite (src/quick-notes/anchors.js) is a narrow
+// read-merge-write of exactly one key, written that way so a category cannot
+// clobber its neighbours. A whole-column deck push then undoes the careful thing
+// it did. (There was a second such writer, pushBookmarkNow, for the same reason
+// — removed once the bookmark stopped being a button of its own and became
+// something the sync itself captures, at which point the run that wrote it was
+// always the run about to push it. See src/notes/bookmark.js.)
 //
 // What that costs, key by key, on the ordinary "two devices, one deck" story:
 //
@@ -286,10 +288,12 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   // none, and the preferred side wins when both do.
   if (!winner.pdf && loser.pdf) next.pdf = loser.pdf;
 
-  // meta.bookmark and meta.readingPosition — { offset, source, text, at }. Both
-  // carry their own `at` precisely so cross-device ordering is settled by when
-  // the reader was there, not by which device synced first. Same rule
-  // pushBookmarkNow already applies against the cloud's copy, and the same rule
+  // meta.bookmark and meta.readingPosition — { offset, source, text, at }, or
+  // the document shape { offset, pdfPage, ratio, text, at }. Both carry their
+  // own `at` precisely so cross-device ordering is settled by when the reader
+  // was there, not by which device synced first — and neither rule below looks
+  // inside the anchor, which is what let the bookmark grow a second shape for
+  // the Document view without a line changing here. Same rule
   // betterReadingPosition applies between the meta and the local store: a record
   // with no stamp reads as older than one that has one.
   for (const key of ["bookmark", "readingPosition"]) {

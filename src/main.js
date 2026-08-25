@@ -53,10 +53,10 @@ import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
-import { sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
+import { markOpenOffsets, noteMarkNode, sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
 import { refreshHighlightBadges, setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
-import { bookmarkCurrentSpot, goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
+import { goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
@@ -108,9 +108,10 @@ import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
+import { canSpeak, isSpeaking, speakText } from "./ui/speech.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setSplitViewHook, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
-import { initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
@@ -297,7 +298,6 @@ el.editNotesBtn?.addEventListener("click", () => {
   else enterNotesEditing(rawOffsetForCurrentNotesScroll());
 });
 
-el.bookmarkSetBtn?.addEventListener("click", () => bookmarkCurrentSpot());
 el.bookmarkGoBtn?.addEventListener("click", () => goToBookmark());
 
 el.notesEdit?.addEventListener("input", () => {
@@ -719,6 +719,51 @@ el.highlightSelectionBtn?.addEventListener("pointerdown", (event) => {
 });
 
 
+// ── Highlight it, and write on it, in one press ─────────────────────────────
+//
+// The same verb as the swatch beside it, plus the step that used to cost two
+// more gestures: marking a passage and then annotating it meant highlight → tap
+// the mark to raise its menu → "Add a note". The middle gesture existed only
+// because the note editor had to be told WHICH mark, and while the selection is
+// still standing that is a thing the bar already knows.
+//
+// Joined here rather than inside applyPillHighlight for the reason its own
+// comment gives: the ordinal lookup lives in notes/anchors.js and the paper's
+// note handlers live in src/documents/, and neither module may be reached from
+// src/format/. This file already imports both, exactly as it does for
+// setHighlightBadgeHandler.
+el.highlightAnnotateSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const made = applyPillHighlight(renderFormatDefaults.highlight);
+  if (!made) return;
+  if (made.surface === "document") {
+    // No rect to anchor against: the selection that named this highlight is
+    // gone by now (applyPillHighlight drops it so the colour is visible), and
+    // the quads are on a page that may still be laying out. The popup centres
+    // itself when it has nowhere to point — the same fallback a badge press
+    // from an unrendered page already relies on.
+    openHighlightNoteEditor(made.id, null, documentHighlightNote(made.id), DOCUMENT_NOTE_HANDLERS);
+    return;
+  }
+  // Notes. The mark's ORDINAL, counted off the source the highlight was just
+  // written into — not its position among the <mark>s on screen, which on a
+  // note built as it is read is a different number (see sourceMarkIndexFor).
+  const markOffsets = markOpenOffsets(made.source);
+  const markIndex = markOffsets.indexOf(made.idx);
+  if (markIndex === -1) return;
+  // ...and the element for it, so the popup opens over the words rather than in
+  // the middle of the screen. noteMarkNode builds the span holding it on a
+  // lazily rendered note, which is what makes this work on a book.
+  //
+  // In a microtask: applyPillHighlight has just re-rendered the surface through
+  // renderNotesViewPinned, and the node cannot be found until that has landed.
+  queueMicrotask(() => {
+    const mark = noteMarkNode({ markIndex, markCount: markOffsets.length });
+    openHighlightNoteEditor(markIndex, mark?.getBoundingClientRect() || null, "");
+  });
+});
+
 el.highlightSelectionMenuBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
@@ -831,6 +876,42 @@ el.copySelectionBtn?.addEventListener("pointerdown", (event) => {
   hideNotesSelectionButton();
 });
 
+// Named for the reason copyTextToClipboard above is: there are two callers now,
+// the pill button below and the mark menu's own row, and a highlight nobody has
+// selected would otherwise have needed its own copy of the AbortError rule and
+// its own way of getting it subtly wrong.
+function shareText(text) {
+  const value = String(text || "");
+  if (!value) return;
+  // AbortError is the reader dismissing the share sheet, which is not a failure
+  // and must not raise a toast saying it was.
+  navigator.share?.({ text: value }).catch((error) => {
+    if (error?.name !== "AbortError") showToast("Couldn't open the share sheet.", "error");
+  });
+}
+
+// ...and the same for the two that hand the words to a website. Capped for the
+// reason the search button always was: a URL carrying a whole selected page is
+// rejected by every engine and by most proxies before it gets there.
+const WEB_QUERY_MAX_CHARS = 512;
+
+function openWebSearchFor(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  window.open(`https://www.google.com/search?q=${encodeURIComponent(value.slice(0, WEB_QUERY_MAX_CHARS))}`, "_blank", "noopener");
+}
+
+// Auto-detect the source language and let the reader's own Translate settings
+// pick the target — an explicit `sl`/`tl` pair would be this app guessing at
+// both, and it guesses at neither. Same shape as the search above: a plain URL,
+// no key, no request from inside the app, and nothing to fail offline except
+// the tab it opens.
+function openTranslationFor(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  window.open(`https://translate.google.com/?op=translate&text=${encodeURIComponent(value.slice(0, WEB_QUERY_MAX_CHARS))}`, "_blank", "noopener");
+}
+
 el.shareSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
@@ -839,11 +920,7 @@ el.shareSelectionBtn?.addEventListener("pointerdown", (event) => {
     showToast("Select some text first, then tap share.", "error");
     return;
   }
-  // AbortError is the reader dismissing the share sheet, which is not a failure
-  // and must not raise a toast saying it was.
-  navigator.share?.({ text }).catch((error) => {
-    if (error?.name !== "AbortError") showToast("Couldn't open the share sheet.", "error");
-  });
+  shareText(text);
   hideNotesSelectionButton();
 });
 
@@ -855,10 +932,7 @@ el.searchSelectionBtn?.addEventListener("pointerdown", (event) => {
     showToast("Select some text first, then tap search.", "error");
     return;
   }
-  // Capped: a search URL carrying a whole selected page is rejected by every
-  // engine and by most proxies before it gets there.
-  const query = encodeURIComponent(text.slice(0, 512));
-  window.open(`https://www.google.com/search?q=${query}`, "_blank", "noopener");
+  openWebSearchFor(text);
   hideNotesSelectionButton();
 });
 
@@ -1056,7 +1130,22 @@ onDomReady(() => {
     showInHighlights: (surface, locator) => {
       openHighlightSplit(surface);
       cycleToLocator(locator);
-    }
+    },
+    // ── The four the pill had and a highlight did not ────────────────────
+    //
+    // Every one of these needed you to select the words again, which is the one
+    // gesture that cannot reliably re-find a span with tags already round it.
+    // They are the same functions the pill's own buttons call.
+    //
+    // Two are registered CONDITIONALLY, and that is the whole of their
+    // availability rule: openMarkMenuWith builds no row for a verb that is not
+    // a function, so a desktop with no share sheet and a build with no speech
+    // engine each simply show one row fewer. Same reason the pill removes its
+    // own share button outright rather than leaving it there to apologise.
+    ...(navigator.share ? { share: (text) => shareText(text) } : {}),
+    ...(canSpeak() ? { speak: (text) => speakText(text), isSpeaking } : {}),
+    search: (text) => openWebSearchFor(text),
+    translate: (text) => openTranslationFor(text)
   });
 });
 // The badges are painted with each page as it renders, and the printed notes are

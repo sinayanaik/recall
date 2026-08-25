@@ -245,6 +245,31 @@ export function smartBulletify(text) {
 
 export const LIST_LINE_RE = /^\s*(?:[-*+]|\d+[.)])[ \t]+/;
 
+// ── Quote it ───────────────────────────────────────────────────────────────
+//
+// The other thing a reader does to a passage they have just marked: set it off
+// as a quotation. Same toggle contract as toggleBulletPoints above — press it
+// twice and you get your text back — and deliberately NOT smartBulletify's
+// sentence-splitting cleverness. A quote is somebody else's words, and breaking
+// them up on the punctuation would be editing them.
+//
+// A line already quoted at any depth counts as quoted, so pressing this on a
+// nested quote unwraps one level rather than adding a fifth `>`.
+export const QUOTE_LINE_RE = /^(\s*)>[ \t]?/;
+
+export function toggleBlockquote(text) {
+  const lines = String(text || "").split("\n");
+  const content = lines.filter((line) => line.trim());
+  if (!content.length) return text;
+  if (content.every((line) => QUOTE_LINE_RE.test(line))) {
+    return lines.map((line) => line.replace(QUOTE_LINE_RE, "$1")).join("\n");
+  }
+  // A blank line inside a blockquote ENDS it — the lines after it read as a new
+  // paragraph outside the quote. So the blanks are quoted too (as a bare ">"),
+  // which is what keeps a two-paragraph passage one quotation.
+  return lines.map((line) => (line.trim() ? `> ${line}` : ">")).join("\n");
+}
+
 export function clearFormatting(text) {
   let cleared = text;
   

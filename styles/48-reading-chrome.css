@@ -417,6 +417,13 @@
   width: max-content;
   min-width: 208px;
   max-width: min(280px, calc(100vw - 16px));
+  /* Ten rows at 44px plus the swatches is ~490px, and openMarkMenuWith clamps
+     its top to the margin without ever asking how tall the thing it is placing
+     is. On a short screen — a landscape phone is 360px of height — that put the
+     last rows, Remove among them, off the bottom with no way to reach them.
+     dvh rather than vh because the surface this opens over is the one a phone's
+     retracting address bar is measured against. */
+  max-height: calc(100dvh - 32px);
   border-radius: 14px;
   padding: 0;
   overflow: hidden;
@@ -447,6 +454,29 @@
   display: flex;
   flex-direction: column;
   padding: 4px;
+  /* The colours keep their box and the rows scroll under it, so the swatch a
+     reader came here to press never leaves the screen however many verbs are
+     below it. `contain` because this opens OVER a note: without it, a flick
+     that reaches the end of the list carries on scrolling the reading surface
+     behind — and the menu is positioned against a rect that scrolling
+     invalidates, so the note would move out from under its own menu. */
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ── Where one kind of thing ends and the next begins ──────────────────────
+   Eight action rows is a list, not a menu, unless it says which of them are
+   about keeping the passage here and which are about sending it somewhere. The
+   same hairline the colours already sit above, put on the first VISIBLE row of
+   each run — which is a thing only openMarkMenuWith can know, because it
+   depends on what this surface offers and on what this browser can do. See the
+   `starts-run` toggle there. */
+.mark-menu-item.starts-run {
+  margin-top: 5px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 9px 9px;
+  padding-top: 4px;
 }
 
 /* One row, 44px, icon then sentence. */

@@ -267,12 +267,15 @@ try {
     if (menu.error) return menu.error;
     if (!menu.open) return "the ⋯ menu did not open";
     const shown = menu.rows.filter((r) => !r.hidden);
-    // Eight, not nine: "Notes in the text" — the opt-in mode that printed every
-    // highlight's note into the paragraph it annotated — is gone. A note is
-    // read by pressing the number on its highlight now, or in the Highlights
-    // tab. The floor is here to catch rows going missing by accident, so it
-    // tracks what the menu is actually meant to hold.
-    if (shown.length < 8) return `only ${shown.length} rows in the menu`;
+    // Seven, and it has come down twice. "Notes in the text" — the opt-in mode
+    // that printed every highlight's note into the paragraph it annotated —
+    // went first; a note is read by pressing the number on its highlight now,
+    // or in the Highlights tab. "Bookmark this spot" went second, when the sync
+    // took over saving where you are (src/notes/bookmark.js), leaving only the
+    // way back — and that row is hidden until there IS a bookmark, so a deck
+    // that has never synced sees seven. The floor is here to catch rows going
+    // missing by accident, so it tracks what the menu is meant to hold.
+    if (shown.length < 7) return `only ${shown.length} rows in the menu`;
     const mute = shown.filter((r) => r.label.length < 4).map((r) => r.id);
     if (mute.length) return `no readable label on: ${mute.join(", ")}`;
     // Two rows that say the same thing are the bookmark report in a different
@@ -361,36 +364,67 @@ try {
     return null;
   });
 
-  // ── The two bookmarks ───────────────────────────────────────────────────
+  // ── The bookmark is one control now, not two ────────────────────────────
+  //
+  // There was a "Bookmark this spot" beside it, and the two cases that used to
+  // be here were about telling the pair apart: two different drawings, and a
+  // label that flipped to "Move bookmark here" once there was one to move. Both
+  // are gone with the button. Pressing it and then pressing Sync was one
+  // sentence said twice, so reconcileAllDecks captures the spot itself — see
+  // captureBookmarkForSync in src/notes/bookmark.js.
+  //
+  // What is left to check is that the pair really did become one: the set
+  // control is ABSENT rather than merely hidden, and the way back appears the
+  // moment a sync has saved somewhere to go.
 
-  await check("the two bookmark controls are two different sentences", async () => {
+  await check("the bookmark is one control, and it is the way back", async () => {
     await openMenu();
     const before = await page.evaluate(READ_MENU);
-    const set = before.rows.find((r) => r.id === "bookmarkSetBtn");
+    if (before.rows.some((r) => r.id === "bookmarkSetBtn")) {
+      return "a set-bookmark control is still in the menu";
+    }
     const go = before.rows.find((r) => r.id === "bookmarkGoBtn");
-    if (!set) return "the set-bookmark control is not in the menu";
     if (!go) return "the go-to-bookmark control is not in the menu";
     if (!go.hidden) return "the go-to-bookmark row is showing before a bookmark exists";
-    if (!/bookmark/i.test(set.label)) return `the set row says "${set.label}"`;
-    // Their drawings must differ too: they were the same path, filled and not.
-    const same = await page.evaluate(`() => {
-      const svg = (id) => document.getElementById(id)?.querySelector("svg")?.innerHTML || "";
-      return svg("bookmarkSetBtn") === svg("bookmarkGoBtn");
-    }`);
-    if (same) return "the two bookmark buttons are still the same drawing";
+    // Its TITLE, not its label: a hidden row measures zero by zero, so
+    // READ_MENU reports no label for one. The sentence is still there to read
+    // the moment it is shown, which the next case is about.
+    if (!/bookmark/i.test(go.title)) return `the go row's sentence is "${go.title}"`;
     return null;
   });
 
-  await check("setting a bookmark says the next press will move it", async () => {
-    await openMenu();
-    await page.evaluate(`() => { document.getElementById("bookmarkSetBtn").click(); }`);
-    await new Promise((r) => setTimeout(r, 400));
+  await check("a sync saves the spot, and the way back appears", async () => {
+    // The capture, not the whole sync: reconcileAllDecks needs a signed-in
+    // Supabase client, and what this case is about is the line that runs before
+    // its guards. captureBookmarkForSync is that line.
+    const result = await page.evaluate(`() => {
+      const { api } = window.__recall;
+      // A capture is refused until the deck's resume has settled — the guard
+      // that stops the sync 1200ms after boot writing "the top of the note"
+      // over a real bookmark. Opening a deck is what normally arms it.
+      api.maybePromptBookmarkJump();
+      const saved = api.captureBookmarkForSync();
+      return { saved, at: api.state.meta && api.state.meta.bookmark ? api.state.meta.bookmark.at : null };
+    }`);
+    if (!result.saved) return "the sync capture declined to save a spot";
+    if (!result.at) return "nothing was written to meta.bookmark";
+    await new Promise((r) => setTimeout(r, 200));
     await openMenu();
     const after = await page.evaluate(READ_MENU);
-    const set = after.rows.find((r) => r.id === "bookmarkSetBtn");
     const go = after.rows.find((r) => r.id === "bookmarkGoBtn");
-    if (go.hidden) return "the go-to-bookmark row did not appear once a bookmark existed";
-    if (!/move/i.test(set.label)) return `the set row still says "${set.label}" with a bookmark already saved`;
+    if (!go || go.hidden) return "the go-to-bookmark row did not appear once a bookmark existed";
+    if (!/bookmark/i.test(go.label)) return `the go row says "${go.label}" now it is showing`;
+    // ...and standing still must not write a second one. A changed
+    // meta.bookmark.at counts as real content (deckContentMatches), so a
+    // bookmark that moved on every auto-sync would push the whole deck every
+    // cycle even when nobody had read a word.
+    const again = await page.evaluate(`() => {
+      const { api } = window.__recall;
+      const saved = api.captureBookmarkForSync();
+      return { saved, at: api.state.meta && api.state.meta.bookmark ? api.state.meta.bookmark.at : null };
+    }`);
+    if (again.saved) return "a second sync moved the bookmark without the reader moving";
+    if (again.at !== result.at) return "the bookmark was rewritten though nothing had moved";
     return null;
   });
 
@@ -525,6 +559,90 @@ try {
     const bad = await page.evaluate(`() => [...document.querySelectorAll("#notesView .hl-note-badge")]
       .filter((n) => getComputedStyle(n).userSelect !== "none").length`);
     if (bad) return `${bad} badge(s) are selectable`;
+    return null;
+  });
+
+  // ── The other menu: what a highlight can be turned into ─────────────────
+  //
+  // A tapped highlight offered four colours and six rows; everything the
+  // selection bar could do to unmarked text — search it, share it, read it —
+  // needed you to select the words again, which is the one gesture that cannot
+  // reliably re-find a span that already has tags round it. The rows are here
+  // now, and this is the pair of things that has to hold about them: they are
+  // all reachable, and adding them did not push the menu off the screen.
+  //
+  // Reached by CLICKING a mark, not by calling openMarkMenuFor — the ordinal
+  // resolution on the way in (sourceMarkIndexFor) is part of what is being
+  // checked, and a menu opened by hand would skip it.
+  const READ_MARK_MENU = `() => {
+    const menu = document.querySelector(".mark-menu");
+    if (!menu || menu.hidden) return { error: "the mark menu did not open" };
+    const box = menu.getBoundingClientRect();
+    const actions = menu.querySelector(".mark-menu-actions");
+    const rows = [...menu.querySelectorAll("[data-mark-action], [data-mark-color]")]
+      .filter((b) => !b.hidden)
+      .map((b) => ({
+        id: b.dataset.markAction || ("colour:" + b.dataset.markColor),
+        label: (b.querySelector(".mmi-label") || {}).textContent || "",
+        startsRun: b.classList.contains("starts-run")
+      }));
+    return {
+      rows,
+      box: { top: box.top, bottom: box.bottom, left: box.left, right: box.right, height: box.height },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      scrolls: Boolean(actions) && actions.scrollHeight > actions.clientHeight + 1,
+      canScroll: Boolean(actions) && getComputedStyle(actions).overflowY === "auto"
+    };
+  }`;
+
+  async function openMarkMenu() {
+    await page.evaluate(`() => {
+      document.querySelector(".mark-menu")?.setAttribute("hidden", "");
+      const mark = document.querySelector("#notesView mark");
+      if (mark) mark.click();
+    }`);
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
+  await check("tapping a highlight offers more than a colour and an ✕", async () => {
+    await emulateDesktop();
+    await new Promise((r) => setTimeout(r, 300));
+    await openMarkMenu();
+    const menu = await page.evaluate(READ_MARK_MENU);
+    if (menu.error) return menu.error;
+    const ids = menu.rows.map((r) => r.id);
+    // The four the pill already had and a highlight could not reach. "share" is
+    // absent where the browser has no share sheet and "speak" where it has no
+    // speech engine — headless Chromium has neither reliably — so those two are
+    // checked for being ABSENT-or-working rather than required.
+    const wanted = ["card", "highlights", "copy", "search", "translate"];
+    const missing = wanted.filter((id) => !ids.includes(id));
+    if (missing.length) return `no row for: ${missing.join(", ")} (got ${ids.join(", ")})`;
+    // ...and every one of them says what it does, in words.
+    const mute = menu.rows.filter((r) => r.id.indexOf("colour:") !== 0 && r.label.trim().length < 4);
+    if (mute.length) return `no readable label on: ${mute.map((r) => r.id).join(", ")}`;
+    // The runs have to be drawn, or eight rows is a list rather than a menu.
+    if (!menu.rows.some((r) => r.startsRun)) return "no rule between what stays here and what leaves";
+    return null;
+  });
+
+  await check("...and the menu it opens still fits the screen", async () => {
+    await emulatePhone(page, { width: 390, height: 844 });
+    await new Promise((r) => setTimeout(r, 400));
+    await openMarkMenu();
+    const menu = await page.evaluate(READ_MARK_MENU);
+    if (menu.error) return menu.error;
+    if (menu.box.left < -1) return `the menu starts ${Math.round(-menu.box.left)}px off the left edge`;
+    if (menu.box.right > menu.viewport.width + 1) {
+      return `the menu is ${Math.round(menu.box.right - menu.viewport.width)}px past the right edge`;
+    }
+    if (menu.box.bottom > menu.viewport.height + 1) {
+      return `the menu runs ${Math.round(menu.box.bottom - menu.viewport.height)}px off the bottom`;
+    }
+    if (menu.box.top < -1) return `the menu starts ${Math.round(-menu.box.top)}px above the screen`;
+    // ...and where it IS capped, the rows have to be reachable rather than
+    // simply cut off. The colours keep their box; the actions scroll under it.
+    if (menu.scrolls && !menu.canScroll) return "the menu is taller than its box and does not scroll";
     return null;
   });
 
