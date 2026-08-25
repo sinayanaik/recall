@@ -43,7 +43,7 @@ let openForMark = null;
 // The default set is the notes one, so every existing caller is unchanged.
 const NOTES_MARK_HANDLERS = {
   surface: "notes",
-  actions: ["card", "pin", "highlights", "copy", "speak", "share", "search", "translate"],
+  actions: ["card", "pin", "highlights", "copy", "share", "search"],
   recolour: (index, color) => recolourHighlightAt(index, color),
   remove: (index) => removeHighlightAt(index),
   noteText: (index) => highlightNoteTextAt(index),
@@ -77,16 +77,14 @@ let markHandlers = NOTES_MARK_HANDLERS;
 //   pin(text, anchor)       a Quick Note
 //   showInHighlights(surface, locator)
 //                           the side-by-side pane, opened on this one
-//   speak(text)             read out loud (src/ui/speech.js)
 //   share(text)             the platform share sheet
 //   search(text)            the web, for these words
-//   translate(text)         the same, at a translator
 //
-// The last four are the pill's own verbs, which a highlight could not reach.
-// Two of them do not exist everywhere — there is no share sheet on most
-// desktops and no speech engine in some builds — and neither needs a rule of
-// its own here: src/main.js registers a verb only where the browser has it, and
-// a row whose verb is missing is not built (see openMarkMenuWith).
+// The last two are the pill's own verbs, which a highlight could not reach.
+// One of them does not exist everywhere — there is no share sheet on most
+// desktops — and that needs no rule of its own here: src/main.js registers a
+// verb only where the browser has it, and a row whose verb is missing is not
+// built (see openMarkMenuWith).
 let markActions = {};
 
 export function setMarkMenuActions(actions) {
@@ -105,20 +103,15 @@ export function setMarkMenuActions(actions) {
 // highlight button. ⧉ + ☰ ✕ ✎ are ordinary text and take currentColor as they
 // are, so they stay as they are.
 //
-// Drawn for the same reason the pin is: 🔊 and 🔍 are colour-font emoji that
-// ignore `color`, and this menu's icons take the row's ink. 🌐 stays an emoji
-// deliberately — every drawn globe at 15px is a circle with scribbles in it,
-// and it is the one row here whose meaning survives being a picture rather than
-// a diagram.
-const SPEAK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M4 9.5h3.2L12 5.4v13.2L7.2 14.5H4z"/><path d="M16 9.4a3.6 3.6 0 0 1 0 5.2"/><path d="M18.6 6.6a7.4 7.4 0 0 1 0 10.8"/></svg>';
-
+// Drawn for the same reason the pin is: 🔍 is a colour-font emoji that ignores
+// `color`, and this menu's icons take the row's ink.
 const SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m15.7 15.7 4.6 4.6"/></svg>';
 
 const PIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M9.5 3.5h5l-.7 5.2 3.4 3.1v1.7H6.8v-1.7l3.4-3.1z"/><path d="M12 13.5v7"/></svg>';
 
 // ── ...and the order they come in ──────────────────────────────────────────
 //
-// Two runs, because eight rows in one column is a list rather than a menu, and
+// Two runs, because six rows in one column is a list rather than a menu, and
 // the reader is choosing between kinds of thing before they choose a thing:
 //
 //   keep    what stays in the app and belongs to this deck
@@ -140,10 +133,8 @@ const MARK_MENU_ACTIONS = [
   { id: "pin", verb: "pin", label: "Pin to Quick Notes", icon: PIN_ICON, run: "keep" },
   { id: "highlights", verb: "showInHighlights", label: "Show in Highlights", icon: "&#9776;", run: "keep" },
   { id: "copy", verb: "copy", label: "Copy", icon: "&#10697;", run: "send" },
-  { id: "speak", verb: "speak", label: "Read aloud", icon: SPEAK_ICON, run: "send" },
   { id: "share", verb: "share", label: "Share", icon: "&#8599;", run: "send" },
-  { id: "search", verb: "search", label: "Search the web", icon: SEARCH_ICON, run: "send" },
-  { id: "translate", verb: "translate", label: "Translate", icon: "&#127760;", run: "send" }
+  { id: "search", verb: "search", label: "Search the web", icon: SEARCH_ICON, run: "send" }
 ];
 
 export function isMarkMenuOpen() {
@@ -281,13 +272,11 @@ function ensureMarkMenu() {
     else if (action === "card") markActions.makeCard?.(entry.text, entry.anchor);
     else if (action === "pin") markActions.pin?.(entry.text, entry.anchor, button);
     else if (action === "highlights") markActions.showInHighlights?.(surface, entry.locator);
-    // The four that take the words out of the app entirely. Each is handed the
-    // passage and nothing else — none of them has any business with an anchor,
-    // a locator or which surface this was.
-    else if (action === "speak") markActions.speak?.(entry.text);
+    // The two that take the words out of the app entirely. Each is handed the
+    // passage and nothing else — neither has any business with an anchor, a
+    // locator or which surface this was.
     else if (action === "share") markActions.share?.(entry.text);
     else if (action === "search") markActions.search?.(entry.text);
-    else if (action === "translate") markActions.translate?.(entry.text);
   });
 
   document.body.appendChild(menuEl);
@@ -359,10 +348,6 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
     button.classList.toggle("starts-run", startsRun);
     if (!button.hidden) lastRun = row?.run ?? null;
   });
-  // "Read aloud" while something is already being read is a row that lies about
-  // what pressing it does — the same fault the bookmark buttons were fixed for.
-  const speakLabel = menu.querySelector(".mark-menu-speak .mmi-label");
-  if (speakLabel) speakLabel.textContent = markActions.isSpeaking?.() ? "Stop reading" : "Read aloud";
 
   const rect = mark.getBoundingClientRect();
   const box = menu.getBoundingClientRect();

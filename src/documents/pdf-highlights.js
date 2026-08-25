@@ -956,13 +956,12 @@ export const DOCUMENT_MARK_HANDLERS = {
   // text is text, the anchor carries the page for a card, and the locator is
   // the record's own id.
   //
-  // ...and the four take-it-elsewhere verbs cross most easily of all — copy,
-  // read aloud, share, search, translate are handed the passage and nothing
-  // else, so there is nothing about a paper for them to lose. A region drawn
-  // round a figure resolves to documentHighlightLabel's "Region · page 12",
-  // which is a poor thing to read out loud but an honest one, and the same
-  // string the drawer already shows for it.
-  actions: ["card", "highlights", "copy", "speak", "share", "search", "translate"],
+  // ...and the take-it-elsewhere verbs cross most easily of all — copy, share
+  // and search are handed the passage and nothing else, so there is nothing
+  // about a paper for them to lose. A region drawn round a figure resolves to
+  // documentHighlightLabel's "Region · page 12", which is the same string the
+  // drawer already shows for it.
+  actions: ["card", "highlights", "copy", "share", "search"],
   recolour: (id, color) => recolourDocumentHighlight(id, color),
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),

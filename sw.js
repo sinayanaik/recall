@@ -467,7 +467,6 @@ const APP_SHELL = [
   `./src/ui/overlays.js?v=${STAMP}`,
   `./src/ui/pickers.js?v=${STAMP}`,
   `./src/ui/reading-rail.js?v=${STAMP}`,
-  `./src/ui/speech.js?v=${STAMP}`,
   `./src/ui/style-schema.js?v=${STAMP}`,
   `./src/ui/style-settings.js?v=${STAMP}`,
   `./src/ui/style-tokens.js?v=${STAMP}`,

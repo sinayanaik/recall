@@ -417,7 +417,7 @@
   width: max-content;
   min-width: 208px;
   max-width: min(280px, calc(100vw - 16px));
-  /* Ten rows at 44px plus the swatches is ~490px, and openMarkMenuWith clamps
+  /* Eight rows at 44px plus the swatches is ~400px, and openMarkMenuWith clamps
      its top to the margin without ever asking how tall the thing it is placing
      is. On a short screen — a landscape phone is 360px of height — that put the
      last rows, Remove among them, off the bottom with no way to reach them.
@@ -466,7 +466,7 @@
 }
 
 /* ── Where one kind of thing ends and the next begins ──────────────────────
-   Eight action rows is a list, not a menu, unless it says which of them are
+   Six action rows is a list, not a menu, unless it says which of them are
    about keeping the passage here and which are about sending it somewhere. The
    same hairline the colours already sit above, put on the first VISIBLE row of
    each run — which is a thing only openMarkMenuWith can know, because it
