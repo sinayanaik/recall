@@ -1025,10 +1025,24 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   const pdfAnchor = anchor?.pdf || (Number.isFinite(anchor?.pdfPage) ? { page: anchor.pdfPage } : null);
   if (pdfAnchor && state.meta?.pdf) {
     if (state.viewMode !== "document") setViewMode("document");
+    // The same line revealNoteAnchor already carries for the note surface, so
+    // both halves of the split answer "centre it, or put it back?" the same way.
+    // Centring is right for a jump to somewhere you weren't; a RESUME must land
+    // top-aligned, because its ratio was sampled top-aligned by
+    // currentDocumentRatio() and restoring it anywhere else is not the identity.
+    const alignment = options?.align || (options?.resume ? "top" : "center");
     const land = () => {
-      const resolved = resolveDocumentAnchor(anchor) || { page: pdfAnchor.page, ratio: anchor?.ratio || 0 };
+      const resolved = resolveDocumentAnchor(anchor) || { page: pdfAnchor.page, ratio: anchor?.ratio || 0, span: 0 };
       scrollToDocumentPage(resolved.page, Number.isFinite(anchor?.ratio) ? anchor.ratio : resolved.ratio, {
-        smooth: options?.smooth !== false
+        smooth: options?.smooth !== false,
+        // Centred only once the quads have been measured against a laid-out
+        // page. This first pass runs before the page exists, where `span` is 0
+        // and the ratio is 0 too — centring that would aim half a screen ABOVE
+        // the page and correct back down a quarter of a second later, a visible
+        // jump in the wrong direction. This pass lands ON the page, which is
+        // what makes it lay out; the pass below centres.
+        align: resolved.span > 0 ? alignment : "top",
+        span: resolved.span
       });
     };
     land();

@@ -2694,6 +2694,232 @@ try {
     !surfaceSwap.error && surfaceSwap.landed === "mark:0",
     surfaceSwap.error || `stood on ${surfaceSwap.from || "nothing"}, landed on ${surfaceSwap.landed || "nothing"} (${surfaceSwap.count})`);
 
+  // ── 8b-iv. The pane's scroll stays in the pane ───────────────────────────
+  //
+  // "When I'm coming to the end of the scroll in the highlights panel, I'm
+  // scrolling the main app and being shown blank page." A scroller that reaches
+  // its end hands the rest of the wheel to whichever ancestor will take it, and
+  // .hc-body carried no overscroll-behavior at all — so the app slid out from
+  // under the reader, and .quiz-panel being overflow:hidden, what was left
+  // behind it was nothing.
+  //
+  // This is the CHAINING half of that report. The sizing half — a panel taller
+  // than the screen it is on — is the landscape-phone pair above; the two are
+  // independent and neither subsumes the other.
+  //
+  // Both premises are established rather than assumed, because either one being
+  // false makes the wheel a no-op and the check vacuous:
+  //
+  //   * the PAGE has to be able to scroll. --app-height is the app's own lever
+  //     for that — the Style panel writes exactly this property, and
+  //     src/ui/overlays.js names an App height over 100% as the one
+  //     configuration where the document scrolls at all;
+  //   * the LIST has to be able to scroll, or .hc-body is not a scroll container
+  //     and the wheel passes straight through it whatever overscroll-behavior
+  //     says. Long notes on the fixture's highlights are what make the two cards
+  //     taller than the pane.
+  //
+  // The wheel is dispatched through the browser's own input pipeline rather than
+  // synthesised in the page: scroll chaining is something the compositor does
+  // between scrollers, and a `new WheelEvent` never reaches it.
+  const chainSetup = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(300);
+    api.openHighlightSplit("document");
+    await settle(600);
+    const records = api.documentHighlightsInReadingOrder();
+    if (!records.length) return { error: "the fixture has no document highlights" };
+    window.__hcNotesWere = records.map((record) => [record.id, api.documentHighlightNote(record.id)]);
+    const long = ("A long note, written beside the paper, so that this card is "
+      + "taller than the pane it sits in and the list beneath it can be "
+      + "scrolled to an end at all. ").repeat(40);
+    records.forEach((record) => api.setDocumentHighlightNote(record.id, long));
+    await settle(900);
+    // The one configuration where the document itself scrolls. Kept so the
+    // teardown below can put back exactly what was there.
+    window.__appHeightWas = document.documentElement.style.getPropertyValue("--app-height");
+    document.documentElement.style.setProperty("--app-height", "160vh");
+    await settle(500);
+    const list = document.getElementById("highlightCycleBody");
+    list.scrollTop = list.scrollHeight;
+    await settle(400);
+    const box = list.getBoundingClientRect();
+    const root = document.documentElement;
+    return {
+      pageCanScroll: root.scrollHeight > root.clientHeight + 1,
+      listCanScroll: list.scrollHeight > list.clientHeight + 1,
+      atEnd: list.scrollTop >= list.scrollHeight - list.clientHeight - 2,
+      behaviour: getComputedStyle(list).overscrollBehaviorY,
+      x: Math.round(box.left + box.width / 2),
+      y: Math.round(box.top + box.height / 2),
+      panelTop: Math.round(document.querySelector(".quiz-panel").getBoundingClientRect().top)
+    };
+  }`);
+  // Four of them, well past the end: one wheel can be absorbed by the list's
+  // own last few pixels, and the report is about what happens when the reader
+  // keeps going.
+  if (!chainSetup.error) {
+    for (let i = 0; i < 4; i += 1) {
+      await page.call("Input.dispatchMouseEvent", {
+        type: "mouseWheel", x: chainSetup.x, y: chainSetup.y, deltaX: 0, deltaY: 320
+      });
+    }
+  }
+  const chained = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    await settle(500);
+    const root = document.documentElement;
+    const out = {
+      page: Math.round(root.scrollTop || window.scrollY || 0),
+      layout: Math.round(document.querySelector(".study-layout")?.scrollTop || 0),
+      shell: Math.round(document.querySelector(".app-shell")?.scrollTop || 0),
+      panelTop: Math.round(document.querySelector(".quiz-panel").getBoundingClientRect().top)
+    };
+    if (window.__appHeightWas) document.documentElement.style.setProperty("--app-height", window.__appHeightWas);
+    else document.documentElement.style.removeProperty("--app-height");
+    (window.__hcNotesWere || []).forEach(([id, note]) => api.setDocumentHighlightNote(id, note));
+    await settle(600);
+    return out;
+  }`);
+
+  check("the pane's own scroll is what the wheel moves, past its end too",
+    !chainSetup.error && chainSetup.pageCanScroll && chainSetup.listCanScroll && chainSetup.atEnd
+      && chainSetup.behaviour === "contain",
+    chainSetup.error || `overscroll-behavior-y=${chainSetup.behaviour}, page scrollable=${chainSetup.pageCanScroll}, `
+      + `list scrollable=${chainSetup.listCanScroll}, at its end=${chainSetup.atEnd}`);
+  check("...so four wheels past it move neither the page nor the panel",
+    !chainSetup.error && chained.page === 0 && chained.layout === 0 && chained.shell === 0
+      && Math.abs(chained.panelTop - chainSetup.panelTop) <= 2,
+    `page ${chained.page}px, .study-layout ${chained.layout}px, .app-shell ${chained.shell}px, `
+      + `panel top ${chainSetup.panelTop} → ${chained.panelTop}`);
+
+  // ── 8b-v. ...and a jump lands the highlight in the MIDDLE ────────────────
+  //
+  // "I am being correctly taken to that specific location, but that is almost at
+  // the start of the page." resolveDocumentAnchor reports the ratio of the
+  // highlight's TOP edge and scrollToDocumentPage put that ratio on the top edge
+  // of the viewport, so the marked words sat flush against the top of the screen
+  // with the whole page below them and nothing above.
+  //
+  // The aiming is asserted here directly rather than through a jump, and the
+  // numbers are exact rather than a tolerance band, because a jump cannot say
+  // which of three things it exercised: `smooth: false` and a laid-out page
+  // leave nothing settling, so a pixel is a pixel. What a jump WOULD add — that
+  // the reader's route reaches this at all — is the check after it.
+  //
+  // The three alignments have to be told apart, and the fixture's own highlights
+  // cannot tell them apart: both sit near the top of page 2, where centring is
+  // clamped to the page top and therefore looks exactly like the behaviour it
+  // replaced. So the ratio is CHOSEN, from the page and viewport actually on
+  // screen, to be far enough down the page that centring has room — and `roomy`
+  // asserts that choice worked rather than assuming it.
+  const aim = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.closeHighlightSplit();
+    api.setViewMode("document");
+    await settle(400);
+    const view = document.getElementById("documentView");
+    const pageNo = Math.min(2, api.currentPdfPageCount() || 1);
+    await api.whenDocumentPageReady(pageNo);
+    await settle(300);
+    const pageEl = api.pdfPageElement(pageNo);
+    if (!pageEl) return { error: "page " + pageNo + " has no element to measure" };
+    const pageH = pageEl.offsetHeight;
+    const viewH = view.clientHeight;
+    const span = 0.02;
+    const ratio = Math.min(0.9, (viewH / 2) / pageH + 0.08);
+    // Where the target sits relative to the top of the scrollport, now.
+    const at = () => {
+      const from = pageEl.getBoundingClientRect().top - view.getBoundingClientRect().top;
+      return { top: from + pageH * ratio, middle: from + pageH * (ratio + span / 2), page: from };
+    };
+
+    api.scrollToDocumentPage(pageNo, ratio, { smooth: false });
+    await settle(250);
+    const topAligned = Math.round(at().top);
+
+    api.scrollToDocumentPage(pageNo, ratio, { align: "center", span, smooth: false });
+    await settle(250);
+    const offCentre = Math.round(at().middle - viewH / 2);
+
+    // ...and the clamp. The same call aimed at the very top of the page must not
+    // scroll ABOVE that page: "which page am I on" is whatever sits at the top
+    // of the viewport, so a highlight centred out of its own page renames it.
+    api.scrollToDocumentPage(pageNo, 0, { align: "center", span, smooth: false });
+    await settle(250);
+    return {
+      pageNo,
+      pageH: Math.round(pageH),
+      viewH: Math.round(viewH),
+      ratio: Number(ratio.toFixed(3)),
+      roomy: pageH * ratio >= viewH / 2,
+      topAligned,
+      offCentre,
+      clamped: Math.round(at().page),
+      clampedPage: api.currentDocumentPage()
+    };
+  }`);
+
+  check("the aim has a page with room above the target to centre into",
+    !aim.error && aim.roomy,
+    aim.error || `ratio ${aim.ratio} of a ${aim.pageH}px page in a ${aim.viewH}px view`);
+  check("a page jump still lands the point it names on the top of the view",
+    !aim.error && Math.abs(aim.topAligned) <= 4,
+    aim.error || `${aim.topAligned}px from the top`);
+  check("...and a highlight jump lands it in the middle instead",
+    !aim.error && Math.abs(aim.offCentre) <= 4,
+    aim.error || `${aim.offCentre}px off the centre of a ${aim.viewH}px view`);
+  check("...but never above the page the highlight is on",
+    !aim.error && Math.abs(aim.clamped) <= 4 && aim.clampedPage === aim.pageNo,
+    aim.error || `page top ${aim.clamped}px from the top of the view, reading as page ${aim.clampedPage}`);
+
+  // The reader's route to all of that: a card's own "Go to →", which is where
+  // the alignment is CHOSEN (scheduleNoteJump's document branch) rather than
+  // applied. Asserted as the reader would judge it — the marked words are on
+  // screen, below the top edge, and the paper still says it is on their page.
+  const goneTo = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(300);
+    api.openHighlightSplit("document");
+    await settle(600);
+    const records = api.documentHighlightsInReadingOrder();
+    const target = records[records.length - 1];
+    if (!target) return { error: "the fixture has no document highlights" };
+    await api.whenDocumentPageReady(target.page || 1);
+    // Somewhere else first, so the jump has to actually travel.
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(400);
+    const card = document.querySelector('#highlightCycleBody .hl-note[data-highlight-key="doc:' + target.id + '"]');
+    const goto = card?.querySelector(".hl-note-goto");
+    if (!goto) return { error: "the pane lists no Go to for the last highlight" };
+    goto.click();
+    // Past the 260ms second pass AND the smooth scroll it starts.
+    await settle(1800);
+    const view = document.getElementById("documentView").getBoundingClientRect();
+    const marks = Array.from(document.querySelectorAll('.pdf-mark[data-highlight-id="' + target.id + '"]'));
+    if (!marks.length) return { error: "the highlight painted no marks after the jump" };
+    const top = Math.min(...marks.map((mark) => mark.getBoundingClientRect().top));
+    const bottom = Math.max(...marks.map((mark) => mark.getBoundingClientRect().bottom));
+    const out = {
+      fromTop: Math.round(top - view.top),
+      fromBottom: Math.round(view.bottom - bottom),
+      landedOn: api.currentDocumentPage(),
+      wanted: target.page || 1
+    };
+    api.closeHighlightSplit();
+    await settle(300);
+    return out;
+  }`);
+
+  check("a press on a card's Go to brings its highlight onto the screen",
+    !goneTo.error && goneTo.fromTop >= 0 && goneTo.fromBottom >= 0,
+    goneTo.error || `${goneTo.fromTop}px below the top, ${goneTo.fromBottom}px above the bottom`);
+  check("...on the page the card says it is on",
+    !goneTo.error && goneTo.landedOn === goneTo.wanted,
+    goneTo.error || `wanted page ${goneTo.wanted}, landed on ${goneTo.landedOn}`);
+
   // ── 8c. Exporting the paper with the notes on it ─────────────────────────
   //
   // The Document view's own export, which is the one thing this surface could

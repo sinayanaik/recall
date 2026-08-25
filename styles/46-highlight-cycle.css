@@ -192,11 +192,34 @@
 /* ── The list ──────────────────────────────────────────────────────────────
    Rendered by src/panels/highlights-editor.js, which is the one builder of these
    cards — so everything under this box is styled by 44-highlights-editor.css and
-   there is nothing to restate. Only the box is here. */
+   there is nothing to restate. Only the box is here.
+
+   ── ...and the scroll stays in it ────────────────────────────────────────
+   A scroller that reaches its end hands the rest of the wheel to whichever
+   ancestor will take it, and two here will: .study-layout is `overflow-y: auto`
+   on the phone breakpoint (styles/09-all-cards.css), and the document itself
+   scrolls whenever the reader has set App height above 100% in the Style panel
+   — which src/ui/overlays.js already names as the one case where the page can
+   scroll at all. Either way the panel slides out from under the reader and what
+   is left behind it is nothing: "coming to the end of the scroll in the
+   highlights panel, I'm scrolling the main app and being shown blank page".
+
+   This pane runs out of scroll earlier than the scrollbar suggests, which is
+   what makes it so easy to hit. Past HL_CONTAIN_MIN_NODES the cards carry
+   `content-visibility: auto` (styles/44-highlights-editor.css), so an unreached
+   card contributes an ESTIMATE to the scroll height and swaps it for its real
+   height on the way in — the bottom of the list keeps moving up to meet a
+   reader who is still turning the wheel.
+
+   `contain` rather than `none`, matching .document-scroll next door: the pane
+   keeps its own overscroll feel and only the propagation is cut. One
+   declaration covers every ancestor, so this does not depend on working out
+   which of them moved. */
 .hc-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px;
 }
 
