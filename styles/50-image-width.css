@@ -1,0 +1,55 @@
+/* A committed image width, applied on the first paint rather than one JS pass
+   later.
+
+   ── The jitter this is here for ────────────────────────────────────────────
+   Letting go of the resize grip made the picture snap back to its ORIGINAL size
+   for a moment and then jump to the size that had just been chosen. Nothing was
+   animating it: the two sizes are two consecutive paints of the same element.
+
+   A drag writes its width straight onto the <img> as an inline style, so the
+   drag itself is smooth. The release rewrites the markdown slice as a raw tag —
+   `<img src="…" style="--notes-img-w:520px; width:520px">` (imgTagHtml, see
+   src/images/surface-controls.js) — and re-renders the block, which builds a
+   FRESH element from that markup. And an inline `width` is a non-important
+   declaration, so it loses outright to this, in 06-rendered.css:
+
+       #notesView .diagram-shell img:not(.has-custom-size) {
+         width: auto !important;
+         max-width: min(420px, 100%) !important;
+       }
+
+   The class that would have excused it from that rule is added afterwards, by
+   enhanceSurfaceImageControls, on the tail of the render — and on a big note
+   that tail waits for an idle callback with a 300ms backstop (see
+   SURFACE_FINALIZE_IDLE_TIMEOUT_MS in src/render/block-cache.js). Up to 300ms of
+   the picture at its old size, then the jump. Exactly the report.
+
+   ── Why the property and not the class ────────────────────────────────────
+   imgTagHtml now writes `class="has-custom-size"` into the markup as well, which
+   fixes every width committed from here on. It cannot fix the ones already in
+   people's notes: a note resized last week holds the style and no class, so it
+   flashes on EVERY open, forever, until someone happens to resize that picture
+   again.
+
+   So the width keys off the inline custom property itself, which every committed
+   width has always carried. `[style*="--notes-img-w"]` is the same specificity
+   as `:not(.has-custom-size)` — an attribute selector and a class both count as
+   one — and this file loads after 06-rendered.css, so source order settles it.
+   Old notes and new ones paint at the committed width immediately, and the class
+   remains the thing JS reads and writes.
+
+   Each surface needs its own selector because each has its own default to beat:
+   the notes/print 420px cap, the card faces' full-width fill, the highlight
+   note editor's 220px, and the highlights panel's 220px. Same shape as the
+   `.has-custom-size` rules those files already carry, keyed differently. */
+
+#notesView .diagram-shell img[style*="--notes-img-w"],
+#questionView .diagram-shell img[style*="--notes-img-w"],
+#answerView .diagram-shell img[style*="--notes-img-w"],
+#printRoot .diagram-shell img[style*="--notes-img-w"],
+.note-editor-rendered .diagram-shell img[style*="--notes-img-w"],
+.hl-note-quote .diagram-shell img[style*="--notes-img-w"],
+.hl-note-body .diagram-shell img[style*="--notes-img-w"] {
+  width: var(--notes-img-w) !important;
+  max-width: var(--notes-img-w) !important;
+}

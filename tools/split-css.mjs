@@ -383,6 +383,17 @@ const POST_SPLIT = {
     "hides the stage and the divider, carries the .hc-wide switch that sets " +
     "it, and lays out the drawer's two ways in as one row. See splitMode in " +
     "src/panels/highlight-cycle.js.",
+  "50-image-width.css":
+    "A committed image width, on the first paint. The width lives on the tag " +
+    "as an inline `--notes-img-w` and an inline `width`, and a non-important " +
+    "inline width loses to 06-rendered.css's `img:not(.has-custom-size) { " +
+    "width: auto !important }` — so a resized picture painted at its OLD size " +
+    "until enhanceSurfaceImageControls added the class, which on a big note " +
+    "waits for an idle callback with a 300ms backstop. That is the snap-back " +
+    "on letting go of the grip, and the flash on opening any note that was " +
+    "resized before today. Keyed off the property rather than the class so it " +
+    "fixes the widths already written into people's notes as well as the ones " +
+    "written from now on.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline
