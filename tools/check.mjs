@@ -61,6 +61,16 @@
 //                   were bound by token index — and does using one rewrite that
 //                   image's own slice and nothing else in the note? marked is
 //                   the oracle for "what is an image"
+//   image-sync      does a picture that arrived by SYNC appear? Both Storage
+//                   buckets are private, so an <img> needs a signed URL and a
+//                   signature needs a session — and the app opens this device's
+//                   decks before the session is confirmed, which is the window
+//                   every image in a freshly pulled deck was rendered in and
+//                   called broken in. Asserts that an image waiting on a
+//                   signature is not judged, that it resolves itself when the
+//                   answer lands, that one which genuinely cannot be signed IS
+//                   still reported, and that warm-on-pull hands the worker
+//                   signed URLs rather than public ones it can only 400 on
 //   precache        does sw.js precache every module the app imports, and
 //                   nothing that no longer exists? (a missing entry breaks the
 //                   app OFFLINE only; a stale one stops any worker activating)
@@ -214,6 +224,12 @@ const checks = [
     // the delete button still produces a click after the note has been
     // scrolled. None of that is a fact about a string.
     ["image-render  ", ["node", ["tools/image-render-check.mjs"], ROOT]],
+    // ...and the half neither of those two can see: the OTHER device. Both
+    // buckets are private, so a rendered image needs a signature, and bootApp
+    // opens this device's decks before the session that mints one is confirmed.
+    // Everything above renders on a device that is already signed in, which is
+    // exactly the state the failure cannot occur in.
+    ["image-sync    ", ["node", ["tools/image-sync-check.mjs"], ROOT]],
     ["large-select  ", ["node", ["tools/large-note-selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],

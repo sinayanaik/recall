@@ -12,7 +12,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml, formatStorageBytes } from "../core/text.js?v=__BUILD__";
 import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
-import { IMAGE_BUCKET, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
+import { IMAGE_BUCKET, IMAGE_STORAGE_EXT, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
 import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { resetActiveDeckAfterDelete } from "../library/tombstones.js?v=__BUILD__";
@@ -304,6 +304,20 @@ export async function buildStorageReport(onProgress) {
   return report;
 }
 
+// How many missing images get named before the list turns into a count. A
+// count on its own is not actionable — "which picture is gone" is the question
+// — but a storage path is long and there can be hundreds, so the list is the
+// basenames and it stops.
+export const MISSING_REF_PREVIEW = 8;
+
+// Not decoded here: supabaseImagePathFromUrl already hands back the object's
+// real name, so a second pass would turn a filename that genuinely contains
+// "%20" into one with a space in it that matches nothing in the bucket.
+export function missingRefPreview(paths) {
+  return (paths || []).slice(0, MISSING_REF_PREVIEW)
+    .map((path) => String(path).split("/").filter(Boolean).pop() || path);
+}
+
 // The 1GB Supabase free tier, which is the budget this panel exists to make
 // legible. Not read from the project (there is no API for it) and not enforced
 // anywhere — it is a denominator, so a reader can see "310MB of about 1GB"
@@ -327,14 +341,86 @@ export async function deleteStorageObjects(paths, onProgress) {
   try {
     if (typeof caches !== "undefined") {
       const cache = await caches.open(OFFLINE_IMAGE_CACHE);
-      const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("");
-      const prefix = (data?.publicUrl || "").replace(/\/+$/, "");
-      for (const path of paths) await cache.delete(`${prefix}/${path}`);
+      // Built with getPublicUrl per path rather than by joining a prefix: the
+      // cache is keyed by the URL, and getPublicUrl percent-encodes it, so a
+      // name holding a space or an accent is stored under a key the raw join
+      // never produces and its copy outlived the delete.
+      for (const path of paths) await cache.delete(canonicalImageUrl(path), { ignoreVary: true });
     }
   } catch (error) {
     console.warn("Could not drop deleted images from the offline cache", error);
   }
   return deleted;
+}
+
+// The canonical URL for one object path — the string a note holds, and the key
+// both the service worker's image cache and cacheUploadedImageOffline use.
+export function canonicalImageUrl(path) {
+  try {
+    return supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path).data?.publicUrl || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+// ── Putting back an image the bucket has lost ───────────────────────────────
+//
+// `missingRefs` is the opposite of an orphan: a deck points at a storage path
+// with no object behind it, so the picture is gone wherever that deck is read.
+// It used to be reported and nothing more, on the reasoning that only the
+// reader knows whether to remove the reference or re-add the picture. That is
+// true when the bytes are gone — and often they are not.
+//
+// A device that ever displayed the image, and the device that uploaded it in
+// the first place (cacheUploadedImageOffline writes the bytes there before the
+// URL is even handed out), still hold it in the service worker's image cache.
+// Re-uploading from there to the SAME path fixes every note that points at it,
+// on every device, with no edit to any markdown — the reference was never
+// wrong, only unfulfilled.
+//
+// upsert:true because this is a repair: if the object turns out to be there
+// after all, writing identical bytes over it costs nothing, where a 409 would
+// abandon the run.
+export async function repairMissingStorageObjects(paths, onProgress) {
+  const repaired = [];
+  const unrecoverable = [];
+  const cache = typeof caches !== "undefined" ? await caches.open(OFFLINE_IMAGE_CACHE).catch(() => null) : null;
+  const mimeByExt = new Map(Object.entries(IMAGE_STORAGE_EXT).map(([type, ext]) => [ext, type]));
+
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+    onProgress?.(`Restoring images ${i + 1}/${paths.length}…`);
+    let blob = null;
+    try {
+      // ignoreVary, for the same reason the worker matches with it: Storage
+      // answers a CORS request with `Vary: Origin`, and the entry would not
+      // match a lookup that carries no Origin at all.
+      const hit = cache ? await cache.match(canonicalImageUrl(path), { ignoreVary: true }) : null;
+      if (hit) blob = await hit.blob();
+    } catch (error) {
+      console.warn("Could not read a cached copy of a missing image", path, error);
+    }
+    if (!blob?.size) { unrecoverable.push(path); continue; }
+    const ext = path.split(".").pop()?.toLowerCase() || "";
+    const contentType = blob.type || mimeByExt.get(ext) || "application/octet-stream";
+    try {
+      const { error } = await withTimeout(
+        supabaseClient.storage.from(IMAGE_BUCKET).upload(path, blob, {
+          contentType,
+          cacheControl: "31536000, immutable",
+          upsert: true
+        }),
+        CLOUD_TIMEOUT_MS,
+        "restore image"
+      );
+      if (error) throw error;
+      repaired.push(path);
+    } catch (error) {
+      console.warn("Could not restore a missing image", path, error);
+      unrecoverable.push(path);
+    }
+  }
+  return { repaired, unrecoverable };
 }
 
 // Delete every deck row for this account. Cards go with them (cards.deck_id is
@@ -465,7 +551,12 @@ export function renderStoragePanel(busyText = "") {
           ? `<p class="storage-note">${store.orphans.length} image${store.orphans.length === 1 ? " is" : "s are"} no longer referenced by any deck or note (${escapeHtml(formatStorageBytes(store.orphanBytes))}). These are what deleting an image or a deck leaves behind.</p>`
           : `<p class="storage-note">Every stored image is still in use.</p>`}
        ${store.missingRefs.length
-          ? `<p class="storage-note is-warning">${store.missingRefs.length} image${store.missingRefs.length === 1 ? "" : "s"} referenced by your decks ${store.missingRefs.length === 1 ? "is" : "are"} no longer in storage, so ${store.missingRefs.length === 1 ? "it" : "they"} can't be shown or backed up. Deleting unused images will not help — this is the opposite problem. Use My Decks → More → Check for broken images to see which decks they're in.</p>`
+          ? `<p class="storage-note is-warning">${store.missingRefs.length} image${store.missingRefs.length === 1 ? "" : "s"} referenced by your decks ${store.missingRefs.length === 1 ? "is" : "are"} no longer in storage, so ${store.missingRefs.length === 1 ? "it" : "they"} can't be shown or backed up. Deleting unused images will not help — this is the opposite problem. <strong>Restore missing images</strong> below puts back any this device still has a copy of; My Decks → More → Check for broken images shows which decks they're in.</p>
+             <ul class="storage-groups">${missingRefPreview(store.missingRefs).map((name) => `
+               <li><span class="storage-group-name">${escapeHtml(name)}</span></li>`).join("")}${
+              store.missingRefs.length > MISSING_REF_PREVIEW
+                ? `<li><span class="storage-group-name">…and ${store.missingRefs.length - MISSING_REF_PREVIEW} more</span></li>`
+                : ""}</ul>`
           : ""}`}`
     : `<p class="storage-note is-warning">${escapeHtml(report.storageError || "No image data.")}</p>`;
 
@@ -528,6 +619,10 @@ export function renderStoragePanel(busyText = "") {
       <h2>Clean up</h2>
       <p class="storage-sub">Nothing here drops a table, a bucket or your account — it only empties contents, and only for your account.</p>
       <div class="storage-actions">
+        <button type="button" class="storage-action" data-storage-action="repair"
+          ${store && !store.orphanError && store.missingRefs.length ? "" : "disabled"}>
+          Restore missing images${store && !store.orphanError && store.missingRefs.length ? ` (${store.missingRefs.length})` : ""}
+        </button>
         <button type="button" class="storage-action" data-storage-action="orphans"
           ${store && !store.orphanError && store.orphans.length ? "" : "disabled"}>
           Delete unused images${store && !store.orphanError && store.orphans.length ? ` (${store.orphans.length})` : ""}
@@ -593,10 +688,13 @@ export async function runStorageAction(action) {
     storageBusy = true;
     renderStoragePanel(label);
     try {
-      await work((text) => renderStoragePanel(text));
+      // What `work` returns, when it returns anything, replaces the flat
+      // "Done": a repair's outcome is a count and a remainder, and "Done" over
+      // the top of it would bury the only part a reader has to act on.
+      const outcome = await work((text) => renderStoragePanel(text));
       storageBusy = false;
       await refreshStorageReport();
-      showToast("Done", "success");
+      showToast(outcome?.message || "Done", outcome?.tone || "success");
     } catch (error) {
       console.error("Storage cleanup failed", error);
       storageBusy = false;
@@ -604,6 +702,33 @@ export async function runStorageAction(action) {
       showToast("Cleanup failed", "error");
     }
   };
+
+  if (action === "repair") {
+    if (!store?.missingRefs.length) return;
+    const paths = [...store.missingRefs];
+    // Not behind a typed confirmation: this is the one action in the panel that
+    // only ever ADDS. Nothing is deleted, nothing is overwritten but a path that
+    // is already empty, and a run that finds no cached bytes changes nothing at
+    // all.
+    showConfirmModal(
+      `Restore ${paths.length} missing image${paths.length === 1 ? "" : "s"} from this device's cache? Any this device no longer has a copy of are left alone and reported.`,
+      () => run("Restoring images…", async (progress) => {
+        const { repaired, unrecoverable } = await repairMissingStorageObjects(paths, progress);
+        // Said plainly rather than as "Done": a partial repair is the normal
+        // outcome — only a device that displayed or uploaded a picture still
+        // holds its bytes — and the number that could not be restored is what
+        // tells the reader which decks still need attention.
+        return {
+          message: repaired.length
+            ? `Restored ${repaired.length} image${repaired.length === 1 ? "" : "s"}${unrecoverable.length ? `, ${unrecoverable.length} not held on this device` : ""}`
+            : "No copies of those images are held on this device",
+          tone: repaired.length ? "success" : "info"
+        };
+      }),
+      { confirmLabel: "Restore" }
+    );
+    return;
+  }
 
   if (action === "orphans") {
     if (!store?.orphans.length) return;

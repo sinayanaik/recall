@@ -13,7 +13,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { formatStorageBytes } from "../core/text.js?v=__BUILD__";
 import { compressImageToPreset, normalizeImageCompressionChoice, readImageCompressionChoice, writeImageCompressionChoice } from "../images/compress.js?v=__BUILD__";
 import { compressionSavingLabel, imageCompressionLevels } from "../images/compress-dialog.js?v=__BUILD__";
-import { storageFolderSlug, storageGroupId, uploadImageToSupabase } from "../images/upload.js?v=__BUILD__";
+import { storageFolderSlug, storageGroupId, storedImageNames, supabaseImagePathFromUrl, uploadImageToSupabase } from "../images/upload.js?v=__BUILD__";
 import { htmlToMarkdown } from "./html-to-markdown.js?v=__BUILD__";
 import { decksUnderFolder } from "../library/folder-tree.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
@@ -424,6 +424,59 @@ export async function estimateEpubImageCompression(zip, imageEntries, choice) {
   return { count, bytes, estimatedBytes: Math.round(bytes * ratio), ratio, sampled };
 }
 
+// ── Did the book's figures actually land? ───────────────────────────────────
+//
+// An upload that comes back clean and stores nothing is invisible on the device
+// that made it — its bytes are in the service worker's image cache under the
+// same canonical URL the note now holds, so the figure renders here and is a
+// broken-image placeholder on every device the book syncs to (see
+// storedImageObject in images/upload.js). Read back once, over the one folder
+// this whole run wrote into, and drop the URLs that have nothing behind them so
+// the markdown carries no reference to a picture that is not there.
+//
+// A read-back this device could not complete (offline, a timeout) returns null
+// and changes nothing: an unanswered question is not evidence of a gap, and
+// throwing away a book's figures on one flaky request would be far worse than
+// the problem.
+//
+// Returns the book paths whose figures are missing, or null when unanswered.
+export async function dropUnstoredEpubImages(urlMap, progress) {
+  if (!urlMap.size) return null;
+  // The folder every figure went into, taken from a URL rather than rebuilt:
+  // uploadImageToSupabase owns the path scheme and the uid, and re-deriving
+  // either here is how the two drift apart.
+  const [firstUrl] = urlMap.values();
+  const samplePath = supabaseImagePathFromUrl(firstUrl);
+  const cut = samplePath ? samplePath.lastIndexOf("/") : -1;
+  if (cut === -1) return null;
+  const dir = samplePath.slice(0, cut);
+  progress?.update("Checking the figures reached storage…", 1);
+  const stored = await storedImageNames(dir);
+  if (!stored) return null;
+  // A folder that lists as completely empty right after a run wrote figures
+  // into it is far more likely to be a listing that did not work than a bucket
+  // that swallowed every single upload — an older project whose policies refuse
+  // list, a stand-in client, a paged response that came back short. Dropping a
+  // whole book's figures on that reading would be a much worse bug than the one
+  // this guards against, so a total blank is treated as no answer. A PARTIAL
+  // listing is a real answer and is trusted: it proves the query works.
+  if (!stored.size) return null;
+
+  const missing = [];
+  for (const [bookPath, url] of [...urlMap]) {
+    const path = supabaseImagePathFromUrl(url);
+    const name = path ? path.slice(path.lastIndexOf("/") + 1) : "";
+    // Only figures filed in the folder we just listed can be judged by it; one
+    // that landed elsewhere (an older run's URL reused, an upload that fell back
+    // to unfiled/) is left alone rather than called missing on no evidence.
+    if (!name || !path.startsWith(`${dir}/`) || stored.has(name)) continue;
+    urlMap.delete(bookPath);
+    missing.push(bookPath);
+  }
+  if (missing.length) console.warn(`EPUB import: ${missing.length} figure(s) did not reach storage`, missing);
+  return missing.length ? missing : null;
+}
+
 // Uploads every manifest image through the existing compress+Supabase Storage
 // pipeline at the level chosen in the preview modal, returning { urlMap: Map(zip path -> hosted URL), failed: [zip path], reason }.
 // An image that still won't upload after retries is left out of the map, and
@@ -463,7 +516,10 @@ export async function uploadEpubImages(zip, imageEntries, progress, folder = nul
       const storageName = `${String(i + 1).padStart(4, "0")}-${storageFolderSlug(
         name.replace(/\.[^.]+$/, ""), "image"
       )}`;
-      urlMap.set(path, await uploadEpubImageWithRetry(optimized, progress, { folder, name: storageName }));
+      // verify:false — every figure in this run lands in one folder, so the
+      // read-back that proves they are really there is done once for the whole
+      // book below rather than as a round trip per image.
+      urlMap.set(path, await uploadEpubImageWithRetry(optimized, progress, { folder, name: storageName, verify: false }));
     } catch (error) {
       // Cancelled mid-upload (uploadEpubImageWithRetry bails out of its backoff
       // on cancel): stop the run without counting this image as a real failure —
@@ -485,6 +541,13 @@ export async function uploadEpubImages(zip, imageEntries, progress, folder = nul
         for (let j = i + 1; j < imageEntries.length; j++) failed.push(imageEntries[j].path);
         break;
       }
+    }
+  }
+  if (!progress?.cancelled()) {
+    const unstored = await dropUnstoredEpubImages(urlMap, progress);
+    if (unstored) {
+      for (const path of unstored) failed.push(path);
+      reason = reason || "some figures didn't reach storage";
     }
   }
   return { urlMap, failed, reason };

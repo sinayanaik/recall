@@ -8,8 +8,9 @@
 
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
 import { explicitLogout, getCachedSession, getSessionOutcome, setExplicitLogout } from "./cloud/auth.js?v=__BUILD__";
+import { forgetSignedUrls } from "./cloud/storage-urls.js?v=__BUILD__";
 import { PENDING_STYLE_KEY } from "./cloud/style-sync.js?v=__BUILD__";
-import { initSupabaseClient, isSignedIn, loadSupabaseConfig, setSignedIn, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
+import { initSupabaseClient, isSignedIn, loadSupabaseConfig, setSignedIn, setSigningPending, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
 import { deckStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
@@ -154,6 +155,12 @@ export async function resetLocalLibrary() {
   // Reading positions describe the decks that were just removed, and each one
   // carries a snippet of the note's own text.
   forgetAllReadingPositions();
+  // A signed storage URL is a bearer token for one account's private objects,
+  // and the bag survives a reload by design (see SIGNED_URL_CACHE_KEY). Leaving
+  // it behind on an account switch or a sign-out would leave the previous
+  // account's figures and papers readable to whoever signs in next — which is
+  // what forgetSignedUrls was written for, and it had no caller.
+  forgetSignedUrls();
   localStorage.removeItem(deckStorageKey);
   // Persisted state was cleared but the OPEN DECK was not: state.deckId,
   // masterCards and notes survived the switch in memory, so the next
@@ -339,6 +346,7 @@ export async function bootApp() {
   }
 
   if (status === "no-config") {
+    setSigningPending(false);
     showSetupScreen();
     return;
   }
@@ -349,6 +357,11 @@ export async function bootApp() {
     // is unavailable — which is what this screen amounts to — is simply untrue.
     // The wall is now only for the case it describes: no client AND nothing
     // local to fall back on.
+    // No client means no signature is ever coming for this launch, so the
+    // images in those decks should be judged on what the worker's cache can
+    // actually answer rather than left waiting on an answer that cannot arrive
+    // (see the signing-state block in cloud/supabase-client.js).
+    setSigningPending(false);
     if (hasUsableLocalLibrary()) {
       openLocalLibraryOffline();
       return;
@@ -398,11 +411,13 @@ export async function bootApp() {
   // to demand the password. Open the app, mark sync as paused, and let the
   // recovery path bring the session back when the network does.
   if (sessionStatus !== "signed-out") {
+    setSigningPending(false);
     openLocalLibraryOffline();
     setSignedOutChip(true);
     setSyncIndicator(navigator.onLine ? "signedout" : "offline");
     return;
   }
+  setSigningPending(false);
   showLoginScreen();
 }
 
@@ -447,6 +462,9 @@ export async function confirmSessionInBackground() {
     outcome = await getSessionOutcome();
   } catch (error) {
     console.warn("Background session check failed", error);
+    // Answered, in the only way that matters to anything waiting on it: no
+    // session is coming out of this launch.
+    setSigningPending(false);
     return;
   }
   const session = outcome.session;
@@ -467,6 +485,7 @@ export async function confirmSessionInBackground() {
   }
 
   if (!navigator.onLine) {
+    setSigningPending(false);
     setSyncIndicator("offline");
     return;
   }

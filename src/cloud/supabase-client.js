@@ -41,8 +41,92 @@ export function setSupabaseClient(client) {
   supabaseClient = client;
 }
 
+// ── "Can this device sign a storage URL yet?" is a STATE, not an instant ────
+//
+// The images bucket is private, so every rendered <img> needs a signature minted
+// against a live session (src/cloud/storage-urls.js). But bootApp opens this
+// device's own decks BEFORE the session is confirmed — deliberately, so a lapsed
+// token is not a blank page (see the "Local first, cloud second" block in
+// src/boot.js) — and the notes render inside that window. Read as an instant,
+// `isSignedIn` is false there, nothing can be signed, and every image in the
+// note is left holding a canonical URL the private bucket answers 400 to.
+//
+// On the device that UPLOADED the image that is invisible: its bytes are in the
+// service worker's cache under exactly that canonical URL (cacheUploadedImageOffline),
+// so the un-signed src is served from cache. On every other device it is a
+// permanent broken-image placeholder — which is the whole of "the picture shows
+// where I added it and nowhere else".
+//
+// So the state is published, in two parts:
+//
+//   • isSigningPending() — the session question has been ASKED and not yet
+//     answered. "I cannot sign" means nothing while this is true, and in
+//     particular it is not evidence that an image is broken.
+//   • onSigningReadyChange() — the answer, whichever way it went. Anything that
+//     gave up because it could not sign yet gets told, and tries again.
+//
+// Both are here rather than in boot.js because this module is a leaf: the
+// render path (storage-urls.js) and the broken-image path (images/broken.js)
+// already import from it, and neither can import boot without a cycle.
+const signingReadyListeners = new Set();
+
+// Returns an unsubscribe, so a caller with a lifetime shorter than the page's
+// (a modal, a view) can let go without leaking into this set.
+export function onSigningReadyChange(listener) {
+  if (typeof listener !== "function") return () => {};
+  signingReadyListeners.add(listener);
+  return () => signingReadyListeners.delete(listener);
+}
+
+function publishSigningState() {
+  // Never let one listener's failure stop the others, and never let it throw
+  // back into the auth flow that published the change.
+  for (const listener of [...signingReadyListeners]) {
+    try {
+      listener(isSignedIn);
+    } catch (error) {
+      console.warn("A signing-readiness listener failed", error);
+    }
+  }
+}
+
+// Open from the first line of the module, because the very first render can
+// happen before boot has even asked. Closed by the first setSignedIn of any
+// kind, by setSigningPending(false) on the paths that end without one (a device
+// with no config, an offline confirm that returns early), and — as a floor no
+// forgotten path can drop through — by the timer below.
+let signingPending = true;
+
+export function isSigningPending() {
+  return signingPending;
+}
+
+// Slightly longer than SESSION_RESTORE_TIMEOUT_MS in cloud/auth.js, which is
+// what actually bounds the wait: this is the backstop for a path that never
+// reports at all, not a second deadline for the one that does. Deliberately not
+// imported from there — auth.js imports this module, and the cycle would cost
+// more than the duplicated number.
+export const SIGNING_PENDING_MAX_MS = 20000;
+
+export function setSigningPending(value) {
+  const next = Boolean(value);
+  if (signingPending === next) return;
+  signingPending = next;
+  publishSigningState();
+}
+
+setTimeout(() => setSigningPending(false), SIGNING_PENDING_MAX_MS);
+
 export function setSignedIn(value) {
-  isSignedIn = value;
+  const next = Boolean(value);
+  const changed = isSignedIn !== next;
+  isSignedIn = next;
+  // An answer either way closes the question, so a sign-out is as much a
+  // resolution as a sign-in: the images that were waiting to hear should stop
+  // waiting and be judged on what they can actually load.
+  const wasPending = signingPending;
+  signingPending = false;
+  if (changed || wasPending) publishSigningState();
 }
 
 // Returns a REASON, not a boolean. The two failures it used to conflate need

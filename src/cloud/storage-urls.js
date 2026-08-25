@@ -22,7 +22,7 @@
 // is cached under its canonical URL) is load-bearing rather than tidiness.
 
 import { isSignedIn, supabaseClient } from "./supabase-client.js?v=__BUILD__";
-import { IMAGE_BUCKET } from "../images/upload.js?v=__BUILD__";
+import { IMAGE_BUCKET, decodeStoragePath } from "../images/upload.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 
 // A week. The upper bound Storage allows for a signed URL is far higher, but a
@@ -213,7 +213,7 @@ export function canonicalStoragePrefix(bucket) {
 export function storagePathFromUrl(bucket, url) {
   const prefix = canonicalStoragePrefix(bucket);
   if (!prefix || !url || !url.startsWith(prefix)) return null;
-  return url.slice(prefix.length).replace(/^\/+/, "");
+  return decodeStoragePath(url.slice(prefix.length).replace(/^\/+/, ""));
 }
 
 // Whether signing is possible at all right now. Signed out, offline, or with no
@@ -313,6 +313,19 @@ export async function fetchableStorageUrl(url) {
 // mounting the same nodes) can re-derive the path without parsing a signature.
 export const CANONICAL_SRC_ATTR = "data-canonical-src";
 
+// ── "Not signed yet" is not the same fact as "will not load" ────────────────
+//
+// An image left holding its canonical URL because this device could not sign
+// ANYTHING at that moment — the session was still being confirmed, or the
+// connection was gone — has not failed. It has not been asked yet. The
+// distinction is load-bearing: bootApp renders this device's decks before the
+// session answer arrives (see the signing-state block in cloud/supabase-client.js),
+// so on every device except the one that uploaded the picture, that window is
+// where every image in the note gets a canonical URL a private bucket answers
+// 400 to. Marked here, read by images/broken.js, cleared by the re-resolve
+// below when the answer finally lands.
+export const STORAGE_UNRESOLVED_ATTR = "data-storage-unresolved";
+
 export async function resolveStorageImages(root = document) {
   const prefix = canonicalStoragePrefix(IMAGE_BUCKET);
   if (!prefix) return;
@@ -334,14 +347,52 @@ export async function resolveStorageImages(root = document) {
   });
   if (!byPath.size) return;
 
+  // Read ONCE, before the await: whether this device could ask at all is a fact
+  // about the attempt, and re-reading it after the round trip would attribute a
+  // sign-out that happened meanwhile to the images this pass was resolving.
+  const couldAsk = canSignStorageUrls() && storageSigningAvailable(IMAGE_BUCKET);
   const signed = await signedUrlsFor(IMAGE_BUCKET, [...byPath.keys()]);
   byPath.forEach((elements, path) => {
     const url = signed.get(path);
-    if (!url) return;
     elements.forEach((node) => {
+      if (!url) {
+        // No signature. If we never got to ask, this is unresolved and will be
+        // retried; if we asked and the server declined for this one object, it
+        // is a real answer and images/broken.js should be free to say so.
+        if (couldAsk) node.removeAttribute(STORAGE_UNRESOLVED_ATTR);
+        else node.setAttribute(STORAGE_UNRESOLVED_ATTR, "1");
+        return;
+      }
+      node.removeAttribute(STORAGE_UNRESOLVED_ATTR);
       // Only when it actually differs: writing an identical src is still a DOM
       // write, and this runs after every render.
       if (node.getAttribute("src") !== url) node.setAttribute("src", url);
     });
   });
+}
+
+// Every image still waiting for a signature, asked again.
+//
+// Called when the session question is answered and when the connection comes
+// back (see the subscription in src/main.js). Document-wide on purpose: the
+// point is to reach surfaces that were rendered minutes ago and are still on
+// screen, which is exactly what the per-render `root` cannot do. Cheap when
+// there is nothing to do — one querySelectorAll that usually matches nothing.
+//
+// Returns the elements it re-resolved, so the caller can re-judge just those
+// rather than re-walking every image on the page.
+export async function resolveUnresolvedStorageImages(root = document) {
+  const scope = root || document;
+  const nodes = Array.isArray(scope)
+    ? scopedQueryAll(scope, `img[${STORAGE_UNRESOLVED_ATTR}]`)
+    : scope.querySelectorAll?.(`img[${STORAGE_UNRESOLVED_ATTR}]`);
+  const waiting = nodes ? Array.from(nodes) : [];
+  if (!waiting.length) return [];
+  // The one retry images/broken.js allows was never spent — retrySignedImage
+  // returns at its own canSignStorageUrls() guard before marking — but an image
+  // that failed for some other reason earlier in the session may have spent it.
+  // A fresh signature is a fresh chance, so give it back.
+  for (const node of waiting) delete node.dataset.signRetried;
+  await resolveStorageImages(waiting);
+  return waiting;
 }

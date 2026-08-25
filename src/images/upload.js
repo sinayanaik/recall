@@ -135,16 +135,48 @@ export function deckImageFolder() {
   return `decks/${slug}--${localId}`;
 }
 
+// ── A URL's path is spelled for a URL; the API wants the object's real name ──
+//
+// getPublicUrl returns `encodeURI(...)` over the whole address, so the path
+// inside a canonical URL is percent-ENCODED. Every API that takes a path takes
+// the RAW one instead — createSignedUrls and remove() put it in a JSON body,
+// list() hands the name back verbatim. So slicing the prefix off a canonical
+// URL and using the remainder is right only for an object whose name happens to
+// survive encodeURI, and silently wrong for one holding a space, a non-ASCII
+// character, or any of [ ] { } ^ ` | " < >. For those it is wrong three times
+// over: no signature is ever minted (createSignedUrls reports the miss per row,
+// so the image is left on a canonical URL the private bucket refuses),
+// remove() deletes nothing, and — because the orphan sweep compares these
+// against the raw names list() gives it — the object reads as referenced by
+// nothing and is offered up to "Delete unused images". A live picture,
+// deletable by a tidy-up.
+//
+// Lives here rather than in cloud/storage-urls.js because that module already
+// imports this one (for IMAGE_BUCKET); putting it there would make the pair
+// circular for the sake of one four-line function.
+//
+// Guarded: a stray `%` that is not an escape makes decodeURI throw, and the
+// encoded form is a better answer than none.
+export function decodeStoragePath(path) {
+  if (!path) return path;
+  try {
+    return decodeURI(path);
+  } catch (_) {
+    return path;
+  }
+}
+
 // Resolves a canonical Supabase storage URL back to its object path within
 // IMAGE_BUCKET, or null if `url` isn't one of ours (a legacy ImgBB/Drive/
 // external link) — the signal deleteSupabaseImage uses to know whether
-// there's anything it can actually delete.
+// there's anything it can actually delete. Decoded for the reason above: what
+// comes back is the object's real name, not the spelling its URL uses.
 export function supabaseImagePathFromUrl(url) {
   if (!supabaseClient || !url) return null;
   const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("");
   const prefix = data?.publicUrl || "";
   if (!prefix || !url.startsWith(prefix)) return null;
-  return url.slice(prefix.length).replace(/^\/+/, "");
+  return decodeStoragePath(url.slice(prefix.length).replace(/^\/+/, ""));
 }
 
 // Best-effort delete of an uploaded image's underlying storage object. A no-op
@@ -162,6 +194,105 @@ export async function deleteSupabaseImage(url) {
   }
 }
 
+// ── Reading the object back ─────────────────────────────────────────────────
+//
+// "The upload call returned without an error" and "the picture is in the bucket
+// and will show on another device" were treated as the same fact, and they are
+// not. The gap is invisible on the device doing the uploading, and only there:
+// cacheUploadedImageOffline (below) writes the bytes into the service worker's
+// image cache under the canonical URL, and the worker is cache-first, so that
+// device renders the picture out of its own cache whether or not the object
+// exists. Every other device has to really fetch it. So an upload that did not
+// land looks perfect where it was made and broken everywhere else — which is
+// exactly the report this work started from, and it could go unnoticed for as
+// long as the uploading device's cache held out.
+//
+// So the object is read back. Deliberately list() rather than a GET of the
+// bytes: it is one small request, it answers from the objects table rather than
+// from any cache (the worker never sees it), and it carries the stored SIZE,
+// which is what catches a truncated write that a bare existence check would
+// pass. The RLS SELECT policy that makes signing possible is the same one that
+// makes this possible, so a project that can show images can run this.
+export const UPLOAD_VERIFY_TIMEOUT_MS = 15000;
+
+// The stored object's row, `null` when it is definitively not there, and
+// `undefined` when this device could not find out (offline, a timeout, a
+// project whose policies refuse list). The three are not the same and the
+// caller treats them differently — see assertImageStored.
+export async function storedImageObject(path) {
+  if (!supabaseClient || !path) return undefined;
+  const cut = path.lastIndexOf("/");
+  const dir = cut === -1 ? "" : path.slice(0, cut);
+  const name = cut === -1 ? path : path.slice(cut + 1);
+  try {
+    // `search` is a prefix match, not an exact one, so the row is picked out by
+    // name below rather than trusted to be the only one returned.
+    const { data, error } = await withTimeout(
+      supabaseClient.storage.from(IMAGE_BUCKET).list(dir, { limit: 100, search: name }),
+      UPLOAD_VERIFY_TIMEOUT_MS,
+      "confirm image"
+    );
+    if (error) throw error;
+    // A folder entry has no id; only a real object counts as stored.
+    return (data || []).find((row) => row.name === name && row.id) || null;
+  } catch (error) {
+    console.warn("Could not confirm the uploaded image", error);
+    return undefined;
+  }
+}
+
+// Every object name stored directly under one folder, or null when this device
+// could not find out. The batched form of the check above, for a caller that
+// uploaded a whole run into one folder (the EPUB importer) and would otherwise
+// pay a request per figure: list() pages at 100, so a 300-figure book is three
+// requests rather than three hundred.
+export const STORAGE_LIST_PAGE_SIZE = 100;
+
+export async function storedImageNames(dir) {
+  if (!supabaseClient || !dir) return null;
+  const names = new Set();
+  try {
+    for (let offset = 0; ; offset += STORAGE_LIST_PAGE_SIZE) {
+      const { data, error } = await withTimeout(
+        supabaseClient.storage.from(IMAGE_BUCKET).list(dir, {
+          limit: STORAGE_LIST_PAGE_SIZE,
+          offset,
+          sortBy: { column: "name", order: "asc" }
+        }),
+        UPLOAD_VERIFY_TIMEOUT_MS,
+        "confirm images"
+      );
+      if (error) throw error;
+      const rows = data || [];
+      // A folder entry has no id and is not an object; skipping it also keeps a
+      // nested folder from being read as a stored figure.
+      for (const row of rows) if (row.id) names.add(row.name);
+      if (rows.length < STORAGE_LIST_PAGE_SIZE) break;
+    }
+  } catch (error) {
+    console.warn("Could not confirm the uploaded images", error);
+    return null;
+  }
+  return names;
+}
+
+// Throws with `.notStored` when the object is provably absent or the wrong
+// size. Silence — the `undefined` case — is not a failure: refusing an upload
+// because the confirming request itself flaked would turn a working upload into
+// a lost one, which is the opposite of the point.
+export async function assertImageStored(path, expectedSize = 0) {
+  const row = await storedImageObject(path);
+  if (row === undefined) return;
+  const size = row ? Number(row.metadata?.size) || 0 : 0;
+  const wrongSize = Boolean(row && expectedSize && size && size !== expectedSize);
+  if (row && !wrongSize) return;
+  const err = new Error(row
+    ? `The image reached storage incomplete (${size} of ${expectedSize} bytes)`
+    : "The image did not reach storage");
+  err.notStored = true;
+  throw err;
+}
+
 // Upload an image File/Blob to the signed-in user's own Supabase Storage
 // bucket, returning its permanent public URL. Unlike ImgBB there's no separate
 // API key to manage — the same login that unlocks sync also unlocks uploads,
@@ -173,7 +304,12 @@ export async function deleteSupabaseImage(url) {
 // `name` is an optional extension-less basename — the EPUB importer passes the
 // book's own image filename so a figure is recognisable in the bucket instead
 // of being another anonymous timestamp.
-export async function uploadImageToSupabase(file, { folder = null, name = null } = {}) {
+//
+// `verify` reads the object back before the URL is handed out — see
+// storedImageObject below for why "the call returned no error" was not enough.
+// The EPUB importer turns it off and does one batched read-back for the whole
+// run instead, which is the same guarantee at one request per hundred figures.
+export async function uploadImageToSupabase(file, { folder = null, name = null, verify = true } = {}) {
   if (!navigator.onLine) throw new Error("OFFLINE");
   if (!supabaseClient || !isSignedIn) throw new Error("NOT_SIGNED_IN");
   // Read the id from the cached session (no network) rather than getUser()
@@ -189,7 +325,7 @@ export async function uploadImageToSupabase(file, { folder = null, name = null }
   const dir = `${userId}/${folder || UNFILED_IMAGE_FOLDER}`;
   const base = name || `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const path = `${dir}/${base}.${ext}`;
-  const { error } = await withTimeout(
+  const { data: uploaded, error } = await withTimeout(
     supabaseClient.storage.from(IMAGE_BUCKET).upload(path, file, {
       contentType: file.type || "application/octet-stream",
       // Without this Supabase serves max-age=3600, so the browser re-fetched
@@ -210,10 +346,16 @@ export async function uploadImageToSupabase(file, { folder = null, name = null }
     err.authFailed = /permission|policy|not.*authoriz|row-level security/i.test(error.message || "");
     throw err;
   }
+  // The path the SERVER says it stored, not the one we asked for. supabase-js
+  // runs _removeEmptyFolders over the key before sending it, so the two can
+  // differ — and a canonical URL built from the wrong one names an object that
+  // does not exist, which is indistinguishable from a lost upload afterwards.
+  const storedPath = uploaded?.path || path;
+  if (verify) await assertImageStored(storedPath, file.size);
   // The canonical URL — an identifier now, not a fetchable address (see
   // IMAGE_BUCKET above). Returned unchanged so the markdown, the offline cache
   // key and supabaseImagePathFromUrl all keep agreeing on one string per image.
-  const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path);
+  const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(storedPath);
   await cacheUploadedImageOffline(data.publicUrl, file);
   return data.publicUrl;
 }
