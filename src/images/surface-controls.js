@@ -314,9 +314,20 @@ export function imageMatchKey(url) {
 
 // Sizing is stored as an absolute pixel width (not a percentage of whatever
 // happens to contain it), so it's stable regardless of viewport width changes.
+//
+// The class is written beside the style, and it is not decoration: it is what
+// excuses the tag from `#notesView .diagram-shell img:not(.has-custom-size) {
+// width: auto !important }` (06-rendered.css), which an inline non-important
+// `width` loses to outright. Without it a freshly committed width painted at the
+// picture's OLD size until enhanceSurfaceImageControls added the class on the
+// tail of the render — up to 300ms later on a big note, which is the snap-back
+// on letting go of the grip. Same thing preprocessSpecialBlocks already writes
+// for a resized diagram (src/render/preprocess.js), and styles/50-image-width.css
+// covers the widths already sitting in notes with no class on them.
 export function imgTagHtml({ url, alt = "", widthPx = null }) {
-  const style = widthPx ? ` style="--notes-img-w:${widthPx}px; width:${widthPx}px"` : "";
-  return `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}"${style}>`;
+  if (!widthPx) return `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`;
+  return `<img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" class="has-custom-size"`
+    + ` style="--notes-img-w:${widthPx}px; width:${widthPx}px">`;
 }
 
 // ── Writing one image back into the note ───────────────────────────────────

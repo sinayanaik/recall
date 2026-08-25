@@ -275,6 +275,89 @@ const BOOK_SETUP_SRC = `async (dead) => {
   };
 }`;
 
+// ── A committed width, on the paint it is committed in ─────────────────────
+//
+// Letting go of the resize grip made the picture snap back to its ORIGINAL size
+// and then jump to the chosen one. Two consecutive paints of the same element,
+// and a fact about the cascade rather than about JS: the commit writes the width
+// as an INLINE style, and an inline non-important `width` loses outright to
+// 06-rendered.css's
+//
+//     #notesView .diagram-shell img:not(.has-custom-size) { width: auto !important }
+//
+// The class that excuses it is added by enhanceSurfaceImageControls on the tail
+// of the render, which on a big note waits for an idle callback with a 300ms
+// backstop. That is the window, and every note resized before today reopens it
+// on EVERY render, because their markdown carries the style and no class at all.
+//
+// So the assertion is made on exactly that state — the property, no class —
+// rather than on a stopwatch: a picture in that state must already be at its
+// committed width. It is the state the deferred window consists of, so a rule
+// that sizes it correctly is a window with nothing visible in it.
+//
+// A real, loadable image, because a broken one is `display: none` (see
+// styles/47-broken-image.css) and would measure 0 whatever the width says.
+const WIDTH_SETUP_SRC = `async () => {
+  const { api, settle } = window.__recall;
+  // Three DIFFERENT files, so each is one picture rather than three copies of
+  // one — a commit below names its image by URL.
+  const legacy = "/icons/icon-192.png";
+  const modern = "/icons/icon-512.png";
+  const plain = "/icons/apple-touch-icon.png";
+  window.__widthNote = [
+    "# Sizes",
+    "",
+    // What a note resized before today actually holds.
+    '<img src="' + legacy + '" alt="legacy" style="--notes-img-w:520px; width:520px">',
+    "",
+    // ...and what one resized now holds: imgTagHtml writes the class too, so
+    // the element is in its final state before any JS has run.
+    api.imgTagHtml({ url: modern, alt: "modern", widthPx: 520 }),
+    "",
+    "![plain](" + plain + ")",
+    ""
+  ].join("\\n");
+  api.state.notes = window.__widthNote;
+  api.renderNotesView();
+  await settle(900);
+  const imgFor = (alt) => Array.from(document.querySelectorAll("#notesView img"))
+    .find((n) => n.getAttribute("alt") === alt);
+  const widthOf = (alt) => {
+    const img = imgFor(alt);
+    return img ? Math.round(img.getBoundingClientRect().width) : null;
+  };
+  // The width WITHOUT the class on the element — which is not a hypothetical:
+  // it is the state every rendered image is in between the paint that inserts
+  // it and the finalize pass that adds the class, and the state a note resized
+  // before today is in on every single render. Reproduced rather than timed,
+  // because an idle callback in a quiet headless tab fires immediately and a
+  // stopwatch here would assert nothing.
+  const widthUnclassed = (alt) => {
+    const img = imgFor(alt);
+    if (!img) return null;
+    const had = img.classList.contains("has-custom-size");
+    img.classList.remove("has-custom-size");
+    const width = Math.round(img.getBoundingClientRect().width);
+    if (had) img.classList.add("has-custom-size");
+    return width;
+  };
+  // The one the reader would have dragged, taken through the real commit path
+  // and re-rendered — which is the moment the snap-back was visible.
+  const shell = Array.from(document.querySelectorAll("#notesView .diagram-shell"))
+    .find((node) => node.querySelector('img[alt="plain"]'));
+  const surface = api.imageSurfaceFor("notes");
+  api.commitSourceImageWidth(surface, { url: api.imageMatchKey(plain), nth: 0 }, 300);
+  await settle(700);
+  return {
+    legacy: widthUnclassed("legacy"),
+    modern: widthUnclassed("modern"),
+    committedMarkup: api.state.notes.includes('class="has-custom-size"'),
+    committed: widthOf("plain"),
+    committedUnclassed: widthUnclassed("plain"),
+    hadShell: Boolean(shell)
+  };
+}`;
+
 // One card face, which no check has ever covered — #questionView is a
 // first-class image surface (IMAGE_SURFACE_NAMES) and a regression there would
 // have passed silently.
@@ -454,6 +537,32 @@ async function run() {
         unicode ? `grip ${Boolean(unicode.grip)}, delete ${Boolean(unicode.del)}` : "not rendered");
       check(book.diagramGrip, "a diagram in a half-built book keeps its resize grip",
         book.diagramGrip ? "present" : "missing");
+    }
+
+    // ── A committed width, painted at the width that was committed ─────────
+    const widths = await page.evaluate(new Function(`return (${WIDTH_SETUP_SRC})();`));
+    if (!widths) {
+      fail("the width fixture renders", "no answer");
+    } else {
+      // 520 is deliberately wider than the emulated column: the shell scrolls,
+      // and the picture is the size it was asked to be. Before the fix these
+      // read the 420px/100% cap, because an image with no .has-custom-size on
+      // it is capped by an !important rule an inline width cannot beat.
+      check(widths.legacy === 520,
+        "a width committed before today paints at that width with no class on the element",
+        `${widths.legacy}px`);
+      check(widths.modern === 520,
+        "...and so does one written by imgTagHtml",
+        `${widths.modern}px`);
+      check(widths.committedMarkup,
+        "a resize writes the class into the markdown beside the style",
+        widths.committedMarkup ? "class written" : "style only");
+      check(widths.committed === 300,
+        "...so the picture is at its new size on the paint that follows the drag",
+        `${widths.committed}px`);
+      check(widths.committedUnclassed === 300,
+        "...before the finalize pass has put the class back on it, too",
+        `${widths.committedUnclassed}px`);
     }
 
     // ── ...and a card face, which is an image surface too ───────────────────

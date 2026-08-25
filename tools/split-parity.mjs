@@ -1343,6 +1343,15 @@ const ACCEPTED = {
     "returns \"\" when Turndown has not arrived — so an import started before " +
     "the idle warm-up converted the whole book to nothing and then blamed the " +
     "book for it.",
+  imgTagHtml:
+    "Writes class=\"has-custom-size\" beside the inline style. An inline " +
+    "non-important `width` loses outright to 06-rendered.css's " +
+    "`img:not(.has-custom-size) { width: auto !important }`, so a freshly " +
+    "committed width painted the picture at its OLD size until " +
+    "enhanceSurfaceImageControls added the class on the tail of the render — " +
+    "up to 300ms later on a big note, which is the snap-back on letting go of " +
+    "the grip. styles/50-image-width.css answers the same thing for the widths " +
+    "already sitting in notes with no class on them.",
   attachNotesImageResizeHandle:
     "Marks its shell is-tiny-image (markTinyImageShell) so a thumbnail's grip, " +
     "delete button and Zoom pill stop being painted on top of each other and " +
