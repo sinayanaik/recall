@@ -212,24 +212,37 @@ export function pageNumberForRect(rect, fromPage, toPage) {
 // Derived from the QUADS, not from the text index — the quads are already in
 // page space and need no text-content fetch, which matters because a jump is
 // something the reader is waiting for.
+//
+// `span` is the second half of that answer: how TALL the highlight is, in the
+// same ratio-of-the-page units, so a jump can centre the marked words rather
+// than putting their top edge on the screen's top edge. A phrase running across
+// three lines is three quads and one span from the first line's top to the
+// last line's bottom.
+//
+// It is also the flag for "this was actually measured". Every early return
+// below reports span 0 — no quads on the page, no viewport to convert against,
+// no box that converted — and 0 is the one value a real highlight cannot have,
+// so a caller that centres only on `span > 0` never centres on a guess.
 export function resolveDocumentAnchor(record) {
   const quads = Array.isArray(record?.quads) ? record.quads : [];
   const page = Number(record?.page || record?.anchor?.page || quads[0]?.page || 0);
   if (!page) return null;
   const onPage = quads.filter((quad) => quad.page === page);
-  if (!onPage.length) return { page, ratio: 0, quads: [] };
+  if (!onPage.length) return { page, ratio: 0, span: 0, quads: [] };
   const viewport = pdfPageViewport(page);
   if (!viewport) {
     // The page has not been laid out yet, so nothing can be measured against
     // it. The page number alone is still a correct answer — the caller scrolls
     // there, which is what makes the page lay out, and can ask again.
-    return { page, ratio: 0, quads: onPage };
+    return { page, ratio: 0, span: 0, quads: onPage };
   }
   const boxes = onPage.map(quadToPageBox).filter(Boolean);
-  if (!boxes.length) return { page, ratio: 0, quads: onPage };
+  if (!boxes.length) return { page, ratio: 0, span: 0, quads: onPage };
   const top = Math.min(...boxes.map((box) => box.top));
+  const bottom = Math.max(...boxes.map((box) => box.top + box.height));
   const height = viewport.height || 1;
-  return { page, ratio: Math.min(1, Math.max(0, top / height)), quads: onPage };
+  const onto = (value) => Math.min(1, Math.max(0, value));
+  return { page, ratio: onto(top / height), span: onto((bottom - top) / height), quads: onPage };
 }
 
 // ── Text items, for the importer ────────────────────────────────────────────

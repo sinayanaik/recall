@@ -246,7 +246,15 @@ const ACCEPTED = {
     "resolves, which is what \"open a note, the menu takes seconds\" turned " +
     "out to be. Both are now skipped while isNotesStreamBusy(), with every " +
     "exit path (give up, report, reschedule) still running unconditionally so " +
-    "a budget that expires mid-stream still reports itself.",
+    "a budget that expires mid-stream still reports itself. " +
+    "Also (2026-08-25): the document branch picks an alignment the way " +
+    "revealNoteAnchor already picks one for a note — centred for a jump, top " +
+    "for a resume, whose ratio was SAMPLED top-aligned by currentDocumentRatio " +
+    "and is not the identity restored anywhere else. A highlight used to land " +
+    "flush against the top of the screen with the whole page below it. Centred " +
+    "only on the second pass, where resolveDocumentAnchor's span proves the " +
+    "quads were measured against a laid-out page; the first pass runs before " +
+    "that page exists and centring an unmeasured point would aim above it.",
   loadWebDeck:
     "Resumes from the newer of the deck's meta.readingPosition and this " +
     "device's own stored position (betterReadingPosition) — see " +

@@ -1711,14 +1711,53 @@ export function currentDocumentRatio() {
   return Math.min(1, Math.max(0, (view.scrollTop - pageOffsetTop(entry.el)) / entry.el.offsetHeight));
 }
 
-export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true } = {}) {
+// ── Where on the screen the thing being scrolled to ends up ────────────────
+//
+// `align: "top"` puts the point `ratio` names on the top edge of the viewport,
+// which is what a page number means: "show me page 47" is the top of page 47.
+//
+// `align: "center"` puts it in the middle instead, and that is what a jump to a
+// HIGHLIGHT means. Aimed at the top edge, the marked words sat flush against the
+// top of the screen with the whole page below them and nothing above — "I am
+// being correctly taken to that specific location, but that is almost at the
+// start of the page". `span` is how tall the target is as a ratio of the page
+// (resolveDocumentAnchor), so what is centred is the whole marked phrase rather
+// than its first line.
+//
+// The notes half of the split has always done this — see noteRangeCenterResidual
+// in src/notes/anchors.js, whose arithmetic this is — and the two surfaces
+// should not answer "go to this highlight" differently.
+//
+// ── ...but never above the page the highlight is ON ────────────────────────
+//
+// A note is one continuous scroll and can be centred on anything. A paper is
+// not: it is a stack of numbered pages, and "which page am I on" is answered by
+// whatever sits at the TOP of the viewport (currentDocumentPage). So centring a
+// highlight near the top of page 32 puts the tail of page 31 above it and the
+// indicator, the contents scroll-spy and the saved reading position all start
+// saying 31 — about a jump the reader made to page 32. Measured on the fixture:
+// a drawer row for a highlight on page 2 landed the reader on page 1.
+//
+// The clamp is therefore part of what centring MEANS here: centre it wherever
+// the page has room above it, and land on the page's own top where it does not.
+// That is no worse than the behaviour being replaced (which was always the
+// page-top answer) and it costs nothing in the case the report is about — a
+// highlight partway down a page, which is where centring has all its room.
+export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true, align = "top", span = 0 } = {}) {
   const view = el.documentView;
   const entry = openPdf?.pages.get(Math.min(Math.max(1, Math.round(pageNumber)), openPdf?.pageCount || 1));
   if (!view || !entry) return false;
-  view.scrollTo({
-    top: pageOffsetTop(entry.el) + entry.el.offsetHeight * (Number.isFinite(ratio) ? ratio : 0),
-    behavior: smooth ? "smooth" : "auto"
-  });
+  const height = entry.el.offsetHeight;
+  const pageTop = pageOffsetTop(entry.el);
+  let top = pageTop + height * (Number.isFinite(ratio) ? ratio : 0);
+  if (align === "center") {
+    // max(0, …) on the lead for a highlight taller than the screen: centring one
+    // of those would push its start off the top, and the start is the part being
+    // read. Same fallback, same reason, as the notes residual.
+    const tall = height * (Number.isFinite(span) ? Math.max(0, span) : 0);
+    top = Math.max(pageTop, top - Math.max(0, (view.clientHeight - tall) / 2));
+  }
+  view.scrollTo({ top: Math.max(0, top), behavior: smooth ? "smooth" : "auto" });
   updatePageIndicator();
   return true;
 }
