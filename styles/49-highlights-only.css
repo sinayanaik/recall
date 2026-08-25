@@ -1,0 +1,155 @@
+/* Highlights only: the same pane, without the page beside it
+ *
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * ── What this is ──────────────────────────────────────────────────────────
+ *
+ * styles/46-highlight-cycle.css puts the reading surface and the highlights
+ * pane in two tracks of .quiz-panel's grid. This file is the second WIDTH that
+ * pane has: `is-split-only` on the same panel collapses the layout back to one
+ * track and gives it to the pane.
+ *
+ * It is a width and not a view. state.viewMode is still "notes" or "document",
+ * the deck is the same deck, the stage is still in the same place in the DOM
+ * (so .pdf-page's offsetParent is still .document-stage and pageOffsetTop() is
+ * still right), and everything that reads any of those needs no idea this
+ * exists. The old Highlights TAB was a view, and it is not coming back: it
+ * rendered these very cards through the same renderHighlightsEditor, somewhere
+ * you had to leave the reading surface to reach.
+ *
+ * ── Why the stage is display:none rather than a zero-width track ───────────
+ *
+ * A grid track of 0 still lays its item out, at 1px wide and 40,000px tall, and
+ * the reading surfaces are the two most expensive things in the app to lay out —
+ * a PDF re-rasterises every page in its render window against the width it is
+ * given, and paged notes re-column against theirs. `display: none` costs
+ * nothing and, unlike `visibility: hidden`, is what makes the single track the
+ * pane's alone.
+ *
+ * The cost of that is the reason src/panels/highlight-cycle.js sends every jump
+ * through revealReadingSurfaceForJump first: a surface with no box has no
+ * geometry, so scrolling to a highlight in it would scroll nowhere — the same
+ * failure a highlight in an un-activated chapter used to have
+ * (activateChapterForNode in src/notes/paged-view.js).
+ *
+ * ── Specificity ───────────────────────────────────────────────────────────
+ *
+ * Every rule here carries the whole `.quiz-panel.notes-mode.is-split` prefix
+ * that 46-highlight-cycle.css uses, plus `.is-split-only`, so it out-ranks the
+ * rule it replaces at every breakpoint. The paired
+ * `:has(.view-mode-toggle:not([hidden]))` selector is repeated for the same
+ * reason 46 repeats it: the rule being displaced in styles/11-chrome.css uses a
+ * :has() whose specificity is its argument's, and losing to it drops the panel
+ * back to two tracks with the pane in an implicit one.
+ */
+
+.quiz-panel.notes-mode.is-split.is-split-only,
+.quiz-panel.notes-mode.is-split.is-split-only:has(.view-mode-toggle:not([hidden])) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.quiz-panel.notes-mode.is-split.is-split-only > .view-mode-row {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.quiz-panel.notes-mode.is-split.is-split-only > .notes-stage,
+.quiz-panel.notes-mode.is-split.is-split-only > .document-stage,
+.quiz-panel.notes-mode.is-split.is-split-only > .split-divider {
+  display: none;
+}
+
+.quiz-panel.notes-mode.is-split.is-split-only > .highlight-cycle {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+/* ── On a phone ────────────────────────────────────────────────────────────
+   46-highlight-cycle.css gives the stacked panel four rows measured from
+   --split-space, because a flexible row track cannot divide an indefinite-height
+   container (see applyStackedSpace). With one surface there is nothing to
+   divide: the pane takes the single row, and the panel goes back to the height
+   .quiz-panel has for everything else — which is why `height` and `min-height`
+   are not overridden here the way they are there. applyStackedSpace removes
+   --split-space in this mode, so nothing is left pointing at a measurement
+   taken against a stage that has no box. */
+@media (max-width: 720px) {
+  .quiz-panel.notes-mode.is-split.is-split-only,
+  .quiz-panel.notes-mode.is-split.is-split-only:has(.view-mode-toggle:not([hidden])) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .quiz-panel.notes-mode.is-split.is-split-only > .highlight-cycle {
+    grid-row: 2;
+    grid-column: 1;
+  }
+}
+
+/* ── The switch in the pane's own bar ──────────────────────────────────────
+   Beside ⇓ and ×, and styled with them: it is the same size and the same quiet
+   until pointed at. `aria-pressed` is what says which way it is set — the two
+   widths look nothing alike once you are in one, but the bar has to answer the
+   question before you press it, and a title that changes with the state is the
+   other half of that. See applySplitMode in src/panels/highlight-cycle.js. */
+.hc-wide {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.hc-wide:hover,
+.hc-wide:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+/* Held down, because it IS held down: the pane is in that mode until it is
+   pressed again. Filled rather than outlined so it reads as a state and not as
+   a hover that got stuck. */
+.hc-wide[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-wide {
+    transition: none;
+  }
+}
+
+/* ── The pair of ways in, in the contents drawer ───────────────────────────
+   "Side by side" and "Highlights only" are one decision — which of the two you
+   want — so they sit on one row and share it equally rather than stacking into
+   two full-width bars that read as two unrelated commands. Their own styling is
+   .drawer-side-by-side in styles/46-highlight-cycle.css; both carry it, and only
+   the box around them is here.
+
+   Wrapping is allowed, and at the drawer's narrowest it happens: two uppercase
+   labels at 0.74rem do not both fit in ~280px, and half a word cut off is worse
+   than two rows. */
+.drawer-highlights-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+.drawer-highlights-modes > .drawer-side-by-side {
+  flex: 1 1 8em;
+  margin: 0;
+}

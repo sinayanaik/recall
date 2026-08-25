@@ -369,42 +369,49 @@ const PROBE = `async (api) => {
       return true;
     });
 
-    big("the note is split into chapters", () => {
+    big("the note is split into spans", () => {
       const w = wrappers();
-      if (w.length < 10) return "expected many chapter wrappers, found " + w.length;
-      if (w.length !== api.chapterIndexFor(api.state.notes).length) {
-        return "wrappers (" + w.length + ") disagree with the chapter index (" + api.chapterIndexFor(api.state.notes).length + ")";
+      if (w.length < 10) return "expected many span wrappers, found " + w.length;
+      if (w.length !== api.pagedSpanStarts(api.state.notes).length) {
+        return "wrappers (" + w.length + ") disagree with the span index (" + api.pagedSpanStarts(api.state.notes).length + ")";
       }
+      // Deliberately NOT "there are fewer spans than chapters" here. This
+      // fixture's chapters are ~30,000 characters each, so two of them do not
+      // fit one span and the packing correctly declines to pack — a budget that
+      // packed them anyway would be a budget that lays out 60,000 characters of
+      // columns per span. Packing is asserted on the paper below, which is the
+      // shape it exists for; what this book has to show is that the SEAMS are
+      // clean, and the cases further down do that.
       return true;
     });
 
-    big("exactly one chapter is active", () => {
+    big("exactly one span is active", () => {
       const active = wrappers().filter((n) => n.classList.contains("is-active-chapter"));
-      if (active.length !== 1) return active.length + " chapters are active";
+      if (active.length !== 1) return active.length + " spans are active";
       return true;
     });
 
-    big("the other chapters are not laid out at all", () => {
-      // THE point of the whole design: an inactive chapter costs no layout, so
-      // the cost of paging a book is the cost of paging one chapter.
+    big("the other spans are not laid out at all", () => {
+      // THE point of the whole design: an inactive span costs no layout, so
+      // the cost of paging a book is the cost of paging one span.
       const idle = wrappers().filter((n) => !n.classList.contains("is-active-chapter"));
       const sample = idle.slice(0, 5).map((n) => n.firstElementChild).filter(Boolean);
-      if (!sample.length) return "no inactive chapter had a block to measure";
+      if (!sample.length) return "no inactive span had a block to measure";
       const laidOut = sample.filter((b) => b.getBoundingClientRect().width > 0);
       if (laidOut.length) return laidOut.length + " of " + sample.length + " sampled inactive blocks are still laid out";
       return true;
     });
 
-    // Onto a chapter with real content: chapter 0 is the title block alone, and
-    // "is a chapter more than one page" asked of a one-block chapter answers no
-    // for a reason that has nothing to do with paging.
+    // Onto a span with real content: span 0 opens with the title block, and
+    // "is a span more than one page" asked of a one-block span answers no for a
+    // reason that has nothing to do with paging.
     api.goToNotesChapter(1);
     await settle(400);
-    big("a chapter is more than one page", () => {
-      // Otherwise "turn to the next chapter" would be the only navigation there
+    big("a span is more than one page", () => {
+      // Otherwise "turn to the next span" would be the only navigation there
       // is, and the paging assertions below would prove nothing.
       const pagesHere = api.notesPageCount();
-      if (pagesHere < 2) return "the active chapter is only " + pagesHere + " page(s)";
+      if (pagesHere < 2) return "the active span is only " + pagesHere + " page(s)";
       return true;
     });
 
@@ -413,9 +420,9 @@ const PROBE = `async (api) => {
     const wasAt = activeIdx();
     api.turnNotesPage(1);
     await settle(800);
-    big("turning past a chapter's last page opens the next chapter", () => {
+    big("turning past a span's last page opens the next span", () => {
       const now = activeIdx();
-      if (now !== wasAt + 1) return "went from chapter " + wasAt + " to " + now;
+      if (now !== wasAt + 1) return "went from span " + wasAt + " to " + now;
       if (Math.round(view.scrollLeft) > 4) return "landed " + Math.round(view.scrollLeft) + "px in, not on page 1";
       return true;
     });
@@ -425,9 +432,9 @@ const PROBE = `async (api) => {
     const wasAt2 = activeIdx();
     api.turnNotesPage(-1);
     await settle(800);
-    big("turning back before page 1 opens the previous chapter at its end", () => {
+    big("turning back before page 1 opens the previous span at its end", () => {
       const now = activeIdx();
-      if (now !== wasAt2 - 1) return "went from chapter " + wasAt2 + " to " + now;
+      if (now !== wasAt2 - 1) return "went from span " + wasAt2 + " to " + now;
       const last = api.notesPageCount() - 1;
       const at = Math.round(view.scrollLeft / api.notesPageWidth());
       if (at !== last) return "landed on page " + at + " of " + (last + 1) + ", not the last";
@@ -508,6 +515,129 @@ const PROBE = `async (api) => {
       if (sep === -1) return "label has no page part: " + JSON.stringify(label);
       if (label.slice(3, sep).split("/").length !== 2) return "chapter part reads " + JSON.stringify(label.slice(3, sep));
       if (label.slice(sep + 3).split("/").length !== 2) return "page part reads " + JSON.stringify(label.slice(sep + 3));
+      return true;
+    });
+
+    // ── A seam is a page boundary ──────────────────────────────────────────
+    //
+    // A span that is not the last one gives its final page to the span after
+    // it (fitPagedSpanSeam), so its own flow ends flush on a page. Anything
+    // else is the void this whole change is about, moved from between chapters
+    // to between spans: a flow ending mid-page leaves the rest of that page
+    // blank with nothing after it to fill it.
+    //
+    // Measured on several spans rather than one, because whether a span happens
+    // to end flush without any fitting at all is exactly the coincidence a
+    // single sample would pass on.
+    for (const spanIndex of [1, 2, 3]) {
+      if (spanIndex >= wrappers().length - 1) continue;
+      api.goToNotesChapter(spanIndex);
+      await settle(500);
+      big("span " + spanIndex + " ends on a whole page", () => {
+        if (view.classList.contains("has-page-filler")) return "the filler is padding a span that is not the last";
+        const width = api.notesPageWidth();
+        const over = view.scrollWidth % width;
+        // Within a pixel or two of flush, in either direction: sub-pixel column
+        // widths mean scrollWidth is almost never an exact multiple.
+        if (over > 4 && width - over > 4) {
+          return Math.round(width - over) + "px of the last page is blank (scrollWidth " + view.scrollWidth + ", page " + Math.round(width) + ")";
+        }
+        return true;
+      });
+    }
+
+    // ...and the text runs straight across that seam. The block a span ends
+    // with and the block the next span opens with have to be NEIGHBOURS in the
+    // note — a cut that skipped or repeated one would be a far worse bug than
+    // the gap it was meant to close.
+    big("no block is lost or repeated at a seam", () => {
+      const all = [...view.querySelectorAll(":scope > .notes-chunk")]
+        .reduce((n, chunk) => n + chunk.childElementCount, 0);
+      const blocks = api.notesTopLevelBlocks(view).length;
+      if (all !== blocks) return all + " blocks across the spans, " + blocks + " in the note";
+      const empty = wrappers().filter((chunk) => chunk.childElementCount === 0).length;
+      if (empty) return empty + " span(s) hold no blocks at all";
+      return true;
+    });
+  }
+
+  // ── A paper reads as one continuous flow ─────────────────────────────────
+  //
+  // The report this is here for, in the reader's words: "when chapter 4 ends
+  // there's still a lot of space remaining in column 2, but the next chapter
+  // started one page ahead — this is creating unnecessary voids in the notes".
+  //
+  // A paper's shallowest heading is "##", so EVERY section used to be its own
+  // chunk and therefore its own flow, and a flow that runs out of text leaves
+  // the rest of its last page blank. Sections are packed into one span now, so
+  // a paper of this size is a single continuous flow with no break in it at
+  // all — which is the thing to assert, because it is the thing that was wrong.
+  {
+    const sections = ["Introduction", "Related Work", "The Method", "The High-Level Innovation",
+      "Performance Analysis", "Conclusion"];
+    const paper = sections.map((title) =>
+      "## " + title + "\\n\\n" + Array.from({ length: 6 }, (_, p) =>
+        "Paragraph " + (p + 1) + " of " + title + ". " +
+        "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ".repeat(3)
+      ).join("\\n\\n")
+    ).join("\\n\\n");
+    // No "#" title, deliberately — see "six sections are one flow" below.
+    api.state.notes = paper;
+    await api.renderNotesView();
+    api.setNotesReadingMode("paged-2");
+    await settle(700);
+
+    const paperCase = (name, fn) => {
+      try {
+        const detail = fn();
+        results.push({ name: "paper — " + name, ok: detail === true, detail: detail === true ? "" : String(detail) });
+      } catch (e) {
+        results.push({ name: "paper — " + name, ok: false, detail: "THREW: " + e.message });
+      }
+    };
+
+    paperCase("six sections are one flow", () => {
+      const chunks = [...view.querySelectorAll(":scope > .notes-chunk")];
+      const chapters = api.chapterIndexFor(api.state.notes).length;
+      // The fixture only means anything if the sections ARE chapters. They are
+      // because there is no "#" above them — with one, the shallowest heading
+      // level is 1, the whole paper is a single chapter already, and this case
+      // would pass without exercising any of it.
+      if (chapters < 5) return "the fixture produced " + chapters + " chapter(s) — check the heading levels";
+      if (chunks.length !== 1) return chunks.length + " wrappers for a paper that fits one span";
+      return true;
+    });
+
+    paperCase("no section starts a fresh page", () => {
+      // "Starts a fresh page" is the TOP-LEFT CORNER of one: at the page's left
+      // edge AND at the top of the column. The horizontal offset on its own only
+      // says which column the heading is in, which is not the question — and it
+      // is the mistake that made the first version of this case pass on a build
+      // where every section did start a page.
+      //
+      // :is(h1..h6) rather than h2: the renderer promotes the note's shallowest
+      // heading level, so a paper written in "##" arrives as <h1>.
+      const heads = [...view.querySelectorAll(".notes-chunk.is-active-chapter > :is(h1, h2, h3, h4, h5, h6), #notesView > :is(h1, h2, h3, h4, h5, h6)")];
+      if (heads.length < 5) return "only " + heads.length + " section headings rendered";
+      const width = api.notesPageWidth();
+      const box = view.getBoundingClientRect();
+      const fresh = heads.filter((h) => {
+        const rects = h.getClientRects();
+        if (!rects.length) return false;
+        const into = (rects[0].left - box.left + view.scrollLeft) % width;
+        return into < 40 && rects[0].top - box.top < 40;
+      });
+      // The first heading opens the note and is at the top-left by definition.
+      if (fresh.length > 1) return fresh.length + " of " + heads.length + " sections begin at the top-left of a page";
+      return true;
+    });
+
+    paperCase("the indicator drops the chapter half", () => {
+      // One wrapper, so there is no "Ch x/y" to name — the label is the page
+      // number in the whole note, which is what a continuous flow means.
+      const label = document.querySelector(".notes-page-label")?.textContent || "";
+      if (label.indexOf("Ch ") === 0) return "label still names a chapter: " + JSON.stringify(label);
+      if (label.indexOf("/") === -1) return "label reads " + JSON.stringify(label);
       return true;
     });
   }

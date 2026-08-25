@@ -49,7 +49,8 @@ import {
   closeHighlightsEditor,
   highlightEntryKey,
   initHighlightsEditor,
-  renderHighlightsEditor
+  renderHighlightsEditor,
+  setHighlightJumpHook
 } from "./highlights-editor.js?v=__BUILD__";
 import { collectHighlightEntries } from "./highlights-panel.js?v=__BUILD__";
 
@@ -81,6 +82,22 @@ export const SPLIT_STACK_QUERY = "(max-width: 720px)";
 // the class on the panel.
 let splitSurface = null;
 
+// ── Side by side, or only the highlights ────────────────────────────────────
+//
+// "side" is the pane beside the reading surface. "only" is the same pane, the
+// same cards and the same editor, given the whole panel — for reading back what
+// you marked without the paper next to it. It is a WIDTH, not a view: the deck,
+// the surface and state.viewMode are all exactly what they were, so everything
+// that reads them (the export menu, the drawer, the deck swap hook) needs no
+// idea this exists.
+//
+// Not remembered across sessions, deliberately, for the same reason the split
+// itself is not: it is opened for a task, and the pane you get when you press
+// "Side by side" should be the pane that button names.
+export const SPLIT_ONLY_CLASS = "is-split-only";
+
+let splitMode = "side";
+
 let cycleEntries = [];
 
 let cycleIndex = -1;
@@ -106,6 +123,14 @@ export function isHighlightSplitOpen() {
 
 export function highlightSplitSurface() {
   return splitSurface;
+}
+
+export function highlightSplitMode() {
+  return splitSurface ? splitMode : null;
+}
+
+export function isHighlightsOnly() {
+  return Boolean(splitSurface) && splitMode === "only";
 }
 
 function stageFor(surface) {
@@ -192,7 +217,11 @@ export function refreshHighlightSplitSpace() {
 function applyStackedSpace() {
   if (!quizPanel) return;
   const stage = stageFor(splitSurface);
-  if (!splitSurface || !splitStacked() || !stage) {
+  // Nothing to divide in only-mode, and nothing measurable either: the stage is
+  // display:none there, so its top reads 0 and the length taken from it would be
+  // the whole viewport. The only-mode rules give the pane the single track
+  // outright and never consult --split-space.
+  if (!splitSurface || isHighlightsOnly() || !splitStacked() || !stage) {
     quizPanel.style.removeProperty("--split-space");
     return;
   }
@@ -254,22 +283,62 @@ function notePaneResized() {
 
 // ── Opening and closing ─────────────────────────────────────────────────────
 
-export function openHighlightSplit(surface) {
+export function openHighlightSplit(surface, { mode = "side" } = {}) {
   const next = surface === "document" ? "document" : "notes";
   if (!quizPanel || !el.highlightCycle || !el.splitDivider) return;
-  // The split is beside a reading surface, so there has to be one on screen.
+  // The split is beside a reading surface, so there has to be one on screen —
+  // and "only" is still beside one, just not showing it: a jump out of the pane
+  // has to land somewhere, and that somewhere is this surface.
   if (state.viewMode !== next) return;
   splitSurface = next;
+  splitMode = mode === "only" ? "only" : "side";
   splitDeckId = state.deckId || "";
   el.highlightCycle.hidden = false;
-  el.splitDivider.hidden = false;
-  el.splitDivider.setAttribute("aria-orientation", splitStacked() ? "horizontal" : "vertical");
   quizPanel.classList.add("is-split");
+  applySplitMode();
   applySplitRatio(readSplitRatio());
   applyStackedSpace();
   refreshHighlightCycle();
   goToCycleIndex(nearestCycleIndex(), { jump: false });
   notePaneResized();
+}
+
+// The one place the mode reaches the DOM. The divider is HIDDEN rather than
+// merely unstyled in only-mode: it is a role="separator" with its own keyboard
+// handling, and a separator between one thing and nothing is something a
+// keyboard reader can land on and be told to resize.
+function applySplitMode() {
+  const only = isHighlightsOnly();
+  quizPanel?.classList.toggle(SPLIT_ONLY_CLASS, only);
+  if (el.splitDivider) {
+    el.splitDivider.hidden = !splitSurface || only;
+    el.splitDivider.setAttribute("aria-orientation", splitStacked() ? "horizontal" : "vertical");
+  }
+  if (el.highlightCycleWideBtn) {
+    el.highlightCycleWideBtn.setAttribute("aria-pressed", only ? "true" : "false");
+    const label = only ? "Show the page beside the highlights" : "Highlights only";
+    el.highlightCycleWideBtn.title = label;
+    el.highlightCycleWideBtn.setAttribute("aria-label", label);
+  }
+}
+
+// Flip between the two widths while the pane is open. Returns whether anything
+// changed, which is what the jump paths below read: they only have to wait for a
+// relayout when they actually caused one.
+export function setHighlightSplitMode(mode) {
+  if (!splitSurface) return false;
+  const next = mode === "only" ? "only" : "side";
+  if (next === splitMode) return false;
+  splitMode = next;
+  applySplitMode();
+  applySplitRatio(readSplitRatio());
+  applyStackedSpace();
+  notePaneResized();
+  return true;
+}
+
+export function toggleHighlightsOnly() {
+  return setHighlightSplitMode(isHighlightsOnly() ? "side" : "only");
 }
 
 export function closeHighlightSplit() {
@@ -280,10 +349,12 @@ export function closeHighlightSplit() {
   // Nothing on the reading surface should stay tinted for a pane that is gone.
   paintLink(null);
   splitSurface = null;
+  splitMode = "side";
   cycleEntries = [];
   cycleIndex = -1;
   cycleKey = "";
   quizPanel?.classList.remove("is-split");
+  quizPanel?.classList.remove(SPLIT_ONLY_CLASS);
   quizPanel?.style.removeProperty("--split-space");
   if (el.highlightCycle) el.highlightCycle.hidden = true;
   if (el.splitDivider) el.splitDivider.hidden = true;
@@ -324,6 +395,11 @@ export function splitFollowsViewMode(next) {
   if (next === splitSurface) return;
   closeHighlightsEditor();
   splitSurface = next;
+  // The reader asked for the OTHER surface, so they want to see it. Only-mode is
+  // about not needing the one you were beside; it is not a preference to carry
+  // onto the one you just switched to.
+  splitMode = "side";
+  applySplitMode();
   // The other surface's list is a DIFFERENT list, and the position in this one
   // means nothing in it. Left in place, cycleIndex was almost always still in
   // range over there — so nearestCycleIndex returned it unchanged, its whole
@@ -456,8 +532,18 @@ function goToCycleIndex(index, { jump }) {
   paintCurrentCard();
   if (!jump) return;
   // The same call the drawer's rows and a card's own "Go to →" make, so a step
-  // through the list lands exactly where those two already land.
+  // through the list lands exactly where those two already land — including
+  // putting the reading surface back on screen when the pane has it to itself.
+  revealReadingSurfaceForJump();
   scheduleNoteJump(entry.anchor, { patient: true }, entry.locator);
+}
+
+// Stepping to a highlight means showing it on the page, so only-mode stands
+// down for it. Nothing to do when the pane is already beside the surface, which
+// is the overwhelmingly common case.
+function revealReadingSurfaceForJump() {
+  if (!isHighlightsOnly()) return;
+  setHighlightSplitMode("side");
 }
 
 function paintCycleCount() {
@@ -719,8 +805,14 @@ export function initHighlightCycle() {
   initHighlightsEditor(el.highlightCycleBody);
   installDivider();
 
+  // A card's own "Go to →" is built in highlights-editor.js and knows nothing
+  // about the pane it is rendered into, so the pane says here what has to happen
+  // before one of those jumps: put the reading surface back if it is hidden.
+  setHighlightJumpHook(() => revealReadingSurfaceForJump());
+
   el.highlightCyclePrevBtn?.addEventListener("click", () => cycleHighlightBy(-1));
   el.highlightCycleNextBtn?.addEventListener("click", () => cycleHighlightBy(1));
+  el.highlightCycleWideBtn?.addEventListener("click", () => toggleHighlightsOnly());
   el.highlightCycleCloseBtn?.addEventListener("click", () => closeHighlightSplit());
 
   // A press on a card's own "Go to →" is a move like any other, so the counter
@@ -786,9 +878,13 @@ export function initHighlightCycle() {
     cycleHighlightBy(event.key === "ArrowRight" ? 1 : -1);
   });
 
+  // Escape steps BACK one width at a time rather than closing outright from
+  // only-mode: the pane is covering the page there, and "put the page back" is
+  // what the key means when something is over it. A second press closes.
   el.highlightCycle.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     event.stopPropagation();
+    if (isHighlightsOnly()) { setHighlightSplitMode("side"); return; }
     closeHighlightSplit();
   });
 
@@ -797,7 +893,10 @@ export function initHighlightCycle() {
   // proportion as 3:2 of the width.
   window.addEventListener("resize", () => {
     if (!splitSurface) return;
-    el.splitDivider?.setAttribute("aria-orientation", splitStacked() ? "horizontal" : "vertical");
+    // applySplitMode rather than the attribute directly: it sets the same
+    // orientation and keeps the divider hidden in only-mode, where a rotation
+    // must not bring it back.
+    applySplitMode();
     // Turning the phone sideways changes both which axis the split runs in and
     // how much room is below the chrome, so the measured length is retaken.
     applyStackedSpace();

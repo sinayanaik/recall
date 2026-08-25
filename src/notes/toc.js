@@ -620,7 +620,7 @@ export function updateNotesTocActive() {
   const mark = el.notesView.getBoundingClientRect().top + 24;
   // ── Paged mode asks the question in TWO parts ────────────────────────────
   //
-  // Paging is per CHAPTER: only the active chapter is laid out and the rest are
+  // Paging is per SPAN: only the active span is laid out and the rest are
   // display:none, so a heading outside it has no box at all and
   // notesPageForElement answers with whatever page the current scrollLeft
   // happens to be on. "page <= current page" was therefore TRUE for every
@@ -629,8 +629,8 @@ export function updateNotesTocActive() {
   // 60-chapter fixture: reading chapter 37, the contents lit "Chapter 60", and
   // it did that on every multi-chapter note.
   //
-  // Chapter index first (monotonic in document order, and knowable without a
-  // box), page only within the chapter being read.
+  // Span index first (monotonic in document order, and knowable without a
+  // box), page only within the span being read.
   const chapterOf = new Map();
   if (paged) {
     Array.from(el.notesView.querySelectorAll(`:scope > .${NOTES_CHUNK_CLASS}`))

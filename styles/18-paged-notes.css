@@ -137,7 +137,7 @@
   }
 }
 
-/* ── One chapter at a time ─────────────────────────────────────────────────
+/* ── One span at a time ────────────────────────────────────────────────────
    Paged mode used to refuse any note over 250KB ("Note too long for pages —
    scrolling instead"), because multi-column layout has to MEASURE every block
    it is given to know where the columns break. There is no skipping to be had:
@@ -145,12 +145,24 @@
    would stop a paragraph flowing across a column boundary. So a whole book cost
    a whole book's layout, every time.
 
-   Giving the columns one chapter instead bounds that cost by chapter length
-   rather than book length, at any size. The chunk wrappers the renderer already
-   builds are grouped by chapter in paged mode (see notesChunkBoundaries), and
-   the two rules below are the whole mechanism:
+   Giving the columns part of the note instead bounds that cost by that part's
+   length rather than book length, at any size. That part used to be one
+   CHAPTER, and that is what made the note read as a set of documents rather
+   than one: only one wrapper is in the flow at a time, so a chapter that IS the
+   flow ends partway down a column and the next chapter restarts at page 1 —
+   a half-empty column after every heading.
 
-   `display: none` on an inactive chapter costs no layout at all, while leaving
+   It is a SPAN now: a run of consecutive chapters laid out together, packed up
+   to a budget (see pagedSpanStarts in src/notes/chapters.js). Chapters inside
+   one span flow into each other because they genuinely are one flow, and a
+   paper is a single span. Where a span does end, fitPagedSpanSeam in
+   src/notes/paged-view.js moves the boundary onto the nearest page boundary.
+
+   The chunk wrappers the renderer already builds are grouped by span in paged
+   mode (see notesChunkBoundaries), and the two rules below are the whole
+   mechanism:
+
+   `display: none` on an inactive span costs no layout at all, while leaving
    its nodes in the DOM — so the Highlights panel's mark count, the TOC and every
    querySelectorAll still see the whole note.
 

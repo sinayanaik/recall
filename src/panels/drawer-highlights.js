@@ -64,15 +64,22 @@ export const DRAWER_HIGHLIGHTS_CLASS = "drawer-highlights";
 // same reason setHighlightsChangedHandler and setDocumentAttachHandler exist:
 // main.js is the file that knows both ends.
 //
-//   onSideBySide(surface)   the button above the list was pressed
-//   onRowJump(locator)      a row was pressed, and something else may want to
-//                           follow it
+//   onSideBySide(surface)     the button above the list was pressed
+//   onHighlightsOnly(surface) ...and its neighbour, for the pane on its own
+//   onRowJump(locator)        a row was pressed, and something else may want to
+//                             follow it
 let onSideBySide = null;
+
+let onHighlightsOnly = null;
 
 let onRowJump = null;
 
 export function setDrawerSideBySideHandler(fn) {
   onSideBySide = fn;
+}
+
+export function setDrawerHighlightsOnlyHandler(fn) {
+  onHighlightsOnly = fn;
 }
 
 export function setDrawerRowJumpHook(fn) {
@@ -173,12 +180,27 @@ export function installDrawerSections(drawer) {
     closeDrawerForJump(drawer);
     onSideBySide?.(drawerSurface(drawer));
   });
+  // ...and the same pane without the page. Beside the first rather than in a
+  // menu because they are one decision made once — which of the two you want —
+  // and the pane's own ≡ switches between them afterwards.
+  const only = document.createElement("button");
+  only.type = "button";
+  only.className = "drawer-side-by-side drawer-highlights-only";
+  only.textContent = "Highlights only";
+  only.title = "Read the highlights on their own, with the whole panel";
+  only.addEventListener("click", () => {
+    closeDrawerForJump(drawer);
+    onHighlightsOnly?.(drawerSurface(drawer));
+  });
+  const modes = document.createElement("div");
+  modes.className = "drawer-highlights-modes";
+  modes.append(sideBySide, only);
   const list = document.createElement("ol");
   list.className = "drawer-highlights-list";
   const empty = document.createElement("p");
   empty.className = "notes-toc-empty drawer-highlights-empty";
   empty.hidden = true;
-  section.append(sideBySide, list, empty);
+  section.append(modes, list, empty);
   scroll.after(section);
 
   // The existing scroll box is the contents section from here on, so the switch

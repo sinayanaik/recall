@@ -249,6 +249,9 @@ export const el = {
   highlightCycleNextBtn: document.querySelector("#highlightCycleNextBtn"),
   highlightCycleCloseBtn: document.querySelector("#highlightCycleCloseBtn"),
   highlightCycleExportBtn: document.querySelector("#highlightCycleExportBtn"),
+  // The switch between the two widths the pane has: beside the reading surface,
+  // or holding the whole panel on its own. See splitMode in highlight-cycle.js.
+  highlightCycleWideBtn: document.querySelector("#highlightCycleWideBtn"),
   // The Document surface — the PDF itself, for a deck with meta.pdf. See
   // src/documents/pdf-view.js; #documentView is the scroller that holds one
   // .pdf-page per page.

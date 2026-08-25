@@ -371,6 +371,18 @@ const POST_SPLIT = {
     "selection bar, which mixed colour-font emoji with drawn icons across a " +
     "scatter of circles; and the highlight menu, which was six 20px targets " +
     "and no words.",
+  "49-highlights-only.css":
+    "The second WIDTH the highlights pane has: the same cards and the same " +
+    "editor, holding the whole panel instead of one track beside the reading " +
+    "surface. Reading back what you marked was only possible with the page " +
+    "taking three fifths of the screen, and the Highlights tab that used to " +
+    "answer that is deliberately gone — it was a VIEW, reached by leaving the " +
+    "paper. This is not: state.viewMode, the deck and the stage's place in the " +
+    "DOM are all untouched, so pageOffsetTop() and everything else that reads " +
+    "them is unaffected. Collapses .quiz-panel's split grid to one track and " +
+    "hides the stage and the divider, carries the .hc-wide switch that sets " +
+    "it, and lays out the drawer's two ways in as one row. See splitMode in " +
+    "src/panels/highlight-cycle.js.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

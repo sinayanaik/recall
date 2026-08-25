@@ -14,7 +14,7 @@ import { markBrokenImages } from "../images/broken.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, findSourceImages, imageMatchKey, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
-import { chapterIndexFor } from "../notes/chapters.js?v=__BUILD__";
+import { pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
@@ -1342,14 +1342,20 @@ export function reshapeRenderedChunks(container) {
   else container.replaceChildren(...blocks);
 }
 
-// Where a chunk must start. Paged mode chapters; continuous mode has no opinion
+// Where a chunk must start. Paged mode spans; continuous mode has no opinion
 // and lets the fixed run size decide.
+//
+// A span, not a chapter. One chunk per CHAPTER is what put a page break after
+// every heading — only one chunk is in the multi-column flow at a time, so a
+// chapter that is the whole flow ends partway down a column and the next one
+// restarts at page 1. A span packs consecutive chapters into one flow up to a
+// budget, so they read continuously; see the note above pagedSpanStarts in
+// src/notes/chapters.js.
 export function notesChunkBoundaries(blockCount) {
   if (!el.notesView?.classList.contains("is-paged")) return null;
-  const chapters = chapterIndexFor(state.notes || "");
   const starts = new Set();
-  chapters.forEach((chapter) => {
-    if (chapter.blockStart < blockCount) starts.add(chapter.blockStart);
+  pagedSpanStarts(state.notes || "").forEach((blockStart) => {
+    if (blockStart < blockCount) starts.add(blockStart);
   });
   return starts.size ? starts : null;
 }
@@ -1967,11 +1973,12 @@ export function startNotesLazySpans(container) {
 // the build is the whole of the win for a reading session; capping memory for a
 // session that scrolls an entire 20MB book in one sitting is separate work.
 //
-// It is also not on in paged mode. There a chunk is a CHAPTER, and chapter
-// boundaries come from chapterIndexFor(), which full-lexes the document to
-// count blocks — so paged mode is O(note) before this could even be consulted.
-// Making chapters offset-addressed rather than block-index-addressed is its own
-// change; until then paged mode takes exactly the path it takes today.
+// It is also not on in paged mode. There a chunk is a SPAN — a run of chapters
+// laid out as one flow — and span boundaries come from pagedSpanStarts(), which
+// full-lexes the document to count blocks, so paged mode is O(note) before this
+// could even be consulted. Making spans offset-addressed rather than
+// block-index-addressed is its own change; until then paged mode takes exactly
+// the path it takes today.
 //
 // Correctness is asserted, not argued: tools/viewport-split-check.mjs pins
 // every property this rests on — that a span lexed on its own gives the blocks
