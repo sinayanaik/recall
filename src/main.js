@@ -69,11 +69,15 @@ import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
 import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, setDocumentPillCaptureHook } from "./notes/selection.js?v=__BUILD__";
-import { initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
+import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
-import { initMarkMenu } from "./notes/mark-menu.js?v=__BUILD__";
+import { initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
 import { markDrawerHighlightsDirty, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, refreshHighlightSplitSpace, repaintHighlightLink, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
+// The two index builders the contents drawer's Highlights half already uses.
+// Imported HERE, not by the mark menu, which is reached from the document
+// surface this module's own subtree imports — see setMarkMenuActions.
+import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlight-index.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
@@ -311,7 +315,11 @@ el.notesEdit?.addEventListener("input", () => {
   // in step here so leaving the editor for the cards and coming back doesn't
   // read as "different note" and throw away your place.
   setNotesScrolledSource(state.notes);
-  if (el.exportNotesBtn) el.exportNotesBtn.disabled = !state.notes.trim();
+  // The drawer's "Export Notes…" row used to be disabled here while the note
+  // was empty. That row is gone (its menu duplicated VIEW_EXPORT_MENUS.notes),
+  // and the ⇓ that replaced it is not disabled per-keystroke on purpose: it
+  // carries every view's exports, so greying it out for an empty NOTE would
+  // also take the cards and the document with it.
   // Writing at the end of the note must not push what you just typed off the
   // bottom of the box. See keepNotesCaretVisible.
   scheduleNotesCaretCheck();
@@ -778,21 +786,23 @@ el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
 // nothing, and nobody shares a sentence wanting the asterisks. Each takes the
 // same pointerdown + preventDefault as its neighbours, for the same reason —
 // letting the press through would dissolve the selection being acted on.
-el.copySelectionBtn?.addEventListener("pointerdown", (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  const text = currentSelectionPlainText();
-  if (!text) {
-    showToast("Select some text first, then tap copy.", "error");
-    return;
-  }
-  // The async clipboard API needs a secure context and a user gesture; this IS
-  // the gesture, but a file:// open or an insecure LAN host is not a secure
-  // context, and that is a normal way to run this app. execCommand("copy") is
-  // deprecated and still the only thing that works there.
+// Copy, and the reason it is not one line.
+//
+// The async clipboard API needs a secure context and a user gesture. The press
+// IS the gesture, but a file:// open or an insecure LAN host is not a secure
+// context, and both are normal ways to run this app. execCommand("copy") is
+// deprecated and still the only thing that works there.
+//
+// A function rather than a closure inside the button's handler, because there
+// are two callers now: this button, and the mark menu's "Copy" row — which
+// copies a highlight nobody has selected, and would otherwise have needed its
+// own copy of the fallback and its own way of getting it subtly wrong.
+function copyTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value) return;
   const fallback = () => {
     const scratch = document.createElement("textarea");
-    scratch.value = text;
+    scratch.value = value;
     scratch.setAttribute("readonly", "");
     scratch.style.cssText = "position:fixed;top:-1000px;opacity:0";
     document.body.appendChild(scratch);
@@ -803,10 +813,21 @@ el.copySelectionBtn?.addEventListener("pointerdown", (event) => {
     showToast(ok ? "Copied" : "Couldn't copy — your browser refused clipboard access.", ok ? "success" : "error");
   };
   if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).then(() => showToast("Copied"), fallback);
+    navigator.clipboard.writeText(value).then(() => showToast("Copied"), fallback);
   } else {
     fallback();
   }
+}
+
+el.copySelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const text = currentSelectionPlainText();
+  if (!text) {
+    showToast("Select some text first, then tap copy.", "error");
+    return;
+  }
+  copyTextToClipboard(text);
   hideNotesSelectionButton();
 });
 
@@ -839,6 +860,29 @@ el.searchSelectionBtn?.addEventListener("pointerdown", (event) => {
   const query = encodeURIComponent(text.slice(0, 512));
   window.open(`https://www.google.com/search?q=${query}`, "_blank", "noopener");
   hideNotesSelectionButton();
+});
+
+// ── "Done" ────────────────────────────────────────────────────────────────
+//
+// The only control on the bar that does nothing to the selection: it puts the
+// bar away and drops the selection with it.
+//
+// It exists because a phone had no visible way out. Escape has always cleared a
+// selection and a phone has no Escape; tapping elsewhere is the gesture people
+// reach for, and until src/notes/touch-selection.js grew an outside-press
+// listener a tap anywhere but the note itself did nothing at all. That listener
+// is the fix; this is the affordance, because a dismissal you have to discover
+// by guessing where to tap is one people learn to work around rather than use.
+//
+// pointerdown and preventDefault, like every other button here: a click would
+// let the compatibility mouse sequence through, and on this one that is a caret
+// dropped into the note on the way out.
+el.dismissSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  hideNotesSelectionButton();
+  clearTouchSelection();
+  try { window.getSelection()?.removeAllRanges(); } catch (_) { /* nothing selected */ }
 });
 
 // A button that cannot do anything is worse than an absent one, and there is no
@@ -977,6 +1021,43 @@ onDomReady(() => {
   // Leaving for Cards or the Highlights tab closes the split; moving between
   // Notes and Document moves it.
   setSplitViewHook((next) => splitFollowsViewMode(next));
+
+  // ── What a highlight can be turned into ─────────────────────────────────
+  //
+  // "After a highlight is done, when I'm clicking that, there's not much
+  // options showing for it." The mark menu had four colours, a pencil and an ✕;
+  // everything else you might want to do with a passage you had marked meant
+  // selecting the words again, which is the one gesture that cannot reliably
+  // re-find a span with tags already round it.
+  //
+  // Every verb below already existed. Registered rather than imported for the
+  // reason set out on setMarkMenuActions: src/notes/mark-menu.js is reached
+  // FROM src/documents/pdf-highlights.js, which src/panels/highlight-index.js
+  // imports through highlights-panel.js, so an import back would close a cycle
+  // straight through the document surface. This file already imports both ends.
+  setMarkMenuActions({
+    // The highlight as the contents drawer already describes it — same scan,
+    // same text, same anchor, same locator, so a card framed from the mark menu
+    // and a jump from the drawer cannot disagree about which highlight it was.
+    resolveHighlightEntry: (surface, key) => (surface === "document"
+      ? documentHighlightEntries().find((entry) => entry.locator.highlightId === key)
+      : noteHighlightEntries().find((entry) => entry.locator.markIndex === key)),
+    copy: (text) => copyTextToClipboard(text),
+    makeCard: (text, anchor) => createCardFromNotesSelection(text, anchor),
+    // deckLocalId is added HERE and not in the index: a Quick Note is stored in
+    // a different deck from the one it came from, so its anchor is the only
+    // thing that can say which deck to open first (see captureSourceAnchor,
+    // which does the same for a pinned selection).
+    pin: (text, anchor, button) => saveQuickNote(text, button, anchor
+      ? { ...anchor, deckLocalId: state.localDeckId || null }
+      : null),
+    // The pane, opened on this highlight. openHighlightSplit first, because
+    // cycleToLocator has nothing to point at until it is.
+    showInHighlights: (surface, locator) => {
+      openHighlightSplit(surface);
+      cycleToLocator(locator);
+    }
+  });
 });
 // The badges are painted with each page as it renders, and the printed notes are
 // rebuilt when a document opens — see the note on setDocumentPagePaintedHook for
@@ -1478,21 +1559,16 @@ document.getElementById("myDecksImportPdfBtn")?.addEventListener("click", () => 
 // The same file, onto the deck already open, for a deck that was created without
 // a PDF. Not an import: nothing about the deck's title, category, cards or notes
 // body is touched — see attachPdfToOpenDeck.
-el.attachPdfInput?.addEventListener("change", async (event) => {
-  const file = event.target.files?.[0] || null;
-  event.target.value = ""; // allow picking the same file again after a failure
-  if (!file) return;
-  closeMainMenu();
-  await attachPdfToOpenDeck(file).catch(reportPdfImportCrash);
-});
-
-// ...and the same function again, for the Document panel's own attach card —
-// which is now the route a reader is most likely to find, the drawer row above
-// being the one you have to be told about. Registered rather than imported,
-// because src/import/pdf.js already imports openDocumentView from
-// src/documents/pdf-view.js and the reverse edge would close that cycle; this
-// file is the one that knows both ends. Same crash reporter, so a malformed PDF
-// says the same thing whichever route picked it.
+//
+// There used to be a second picker here, on the ☰ drawer's "📄 Attach a PDF…"
+// row (#attachPdfInput). It is gone with the row: the Document tab is on every
+// open deck now (refreshDocumentTab), and a deck with no paper opens it to the
+// card below — same function, same crash reporter, on the surface the paper is
+// about to appear on rather than three rows into the app menu.
+//
+// Registered rather than imported, because src/import/pdf.js already imports
+// openDocumentView from src/documents/pdf-view.js and the reverse edge would
+// close that cycle; this file is the one that knows both ends.
 setDocumentAttachHandler((file) => attachPdfToOpenDeck(file).catch(reportPdfImportCrash));
 
 // View switcher (Grid / Folder / Tree) — pure presentation, repaint from cache.
@@ -1873,43 +1949,44 @@ el.allCardsList.addEventListener("keydown", (event) => {
   event.preventDefault();
   flipAllCard(item);
 });
-el.exportBtn.addEventListener("click", (event) => {
-  event.stopPropagation();
-  if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
-  el.exportMenu.hidden = !el.exportMenu.hidden;
-});
-el.exportMenu.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-export]");
-  if (!button) return;
-  handleExportAction(button.dataset.export, button.dataset.scope);
-});
-el.exportNotesBtn?.addEventListener("click", (event) => {
-  event.stopPropagation();
-  el.exportMenu.hidden = true;
-  el.exportNotesMenu.hidden = !el.exportNotesMenu.hidden;
-});
-el.exportNotesMenu?.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-export-notes]");
-  if (!button) return;
-  handleExportNotesAction(button.dataset.exportNotes);
-});
+// ── The ☰ drawer's three export rows, and where they went ────────────────
+//
+// Five handlers used to stand here: a toggle and a delegated click for
+// #exportMenu, the same pair for #exportNotesMenu, and one for
+// #drawerExportHighlightsBtn. All five elements are gone from index.html.
+//
+// Not a feature removal — a de-duplication. Every row of #exportMenu carried
+// data-scope="all", which is row for row what VIEW_EXPORT_MENUS.cards already
+// offers through the ⇓ beside the tabs, and #exportNotesMenu was the same
+// duplicate of VIEW_EXPORT_MENUS.notes. (The comment on the ⇓ dispatch below
+// used to say the drawer was still "where a known/review/uncategorized scope is
+// chosen"; there was no such row, and there had not been one for some time.)
+//
+// The highlights dialog was the one with no view menu to duplicate, so it is a
+// row on the notes and document view menus now — "hl:open" — rather than
+// deleted. handleExportAction and handleExportNotesAction are untouched; the ⇓
+// dispatch below is their caller.
 const openExportHighlightsModal = () => {
   if (!el.exportHighlightsModal) return;
   el.exportHighlightsModal.hidden = false;
   lockPageScroll();
 };
-el.drawerExportHighlightsBtn?.addEventListener("click", openExportHighlightsModal);
-// The same dialog from the side-by-side pane's own header, which is the only
-// place a reader working through a PDF's highlights can reach it without
-// leaving the paper — the drawer's row is on the notes side of the ☰ menu.
+// The side-by-side pane's own header, which is the only place a reader working
+// through a PDF's highlights can reach this without leaving the split they are
+// in. The ⇓ beside the tabs carries the same dialog on both reading views.
 el.highlightCycleExportBtn?.addEventListener("click", openExportHighlightsModal);
 
 // ── The export button beside the tabs ────────────────────────────────────
 //
 // It means "export what I am looking at", so its rows come from the view
 // (paintViewExportMenu, src/ui/view-mode.js) and every one of them dispatches
-// into an export that already existed — the three drawer entries above, the
+// into an export that already existed — the cards and notes exports, the
 // highlights dialog, and the Document surface's own three.
+//
+// It is now the ONLY way into the first two: the ☰ drawer's duplicates of them
+// are gone (see above), so this is not a closer way in any more, it is the way
+// in. Nothing about the dispatch changed with that — the same four functions
+// are called with the same arguments.
 el.viewExportBtn?.addEventListener("click", (event) => {
   event.stopPropagation();
   if (!el.viewExportMenu) return;
@@ -1933,12 +2010,16 @@ el.viewExportMenu?.addEventListener("click", (event) => {
   closeViewExportMenu();
   const action = button.dataset.viewExport;
   // "surface:format". A bare format is the cards menu, which is the one that
-  // also carries a scope — always "all" from here; the drawer's own menu is
-  // still where a known/review/uncategorized scope is chosen.
+  // also carries a scope — always "all", which is the only scope any menu has
+  // ever offered (the drawer's copy said the same thing and is now gone).
   const [surface, format] = action.includes(":") ? action.split(":") : ["cards", action];
   if (surface === "cards") handleExportAction(format, "all");
   else if (surface === "notes") handleExportNotesAction(format);
   else if (surface === "doc") handleExportDocumentAction(format);
+  // The row that took over from the drawer's "🔴⇓ Export Highlights…". Not a
+  // format — it opens the dialog that asks which one, plus the three questions
+  // only a highlights export has (context lines, chapter headings, notes).
+  else if (surface === "hl") openExportHighlightsModal();
 });
 el.exportHighlightsCancelBtn?.addEventListener("click", () => {
   if (!el.exportHighlightsModal) return;
@@ -2197,10 +2278,11 @@ document.addEventListener("click", (event) => {
     closeWebDeckExportMenus();
     document.getElementById("myDecksBulkExportBtn")?.setAttribute("aria-expanded", "false");
   }
-  if (!event.target.closest(".menu-wrap")) {
-    el.exportMenu.hidden = true;
-    if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
-  }
+  // The third branch here closed the drawer's two .menu-wrap export popovers.
+  // Both are gone with the rows they hung off; the ⇓ beside the tabs has its
+  // own outside-press listener a few hundred lines up (closeViewExportMenu),
+  // which is capture-phase and therefore closes on a press rather than on a
+  // completed click.
 });
 
 el.closeDiagramBtn.addEventListener("click", closeDiagramModal);
@@ -2796,8 +2878,11 @@ document.addEventListener("click", (e) => {
     toolbar.addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn) return;
-      // Export menus have inline expansion inside the drawer — don't close for them
-      if (btn.id === "exportBtn" || btn.id === "exportNotesBtn") return;
+      // The exemption that used to stand here was for #exportBtn and
+      // #exportNotesBtn, the two rows that expanded a menu INSIDE the drawer
+      // rather than opening a panel. Both are gone (their menus duplicated the
+      // ⇓ beside the tabs), so every row left in here opens something over the
+      // drawer and every one of them wants it closed.
       // Close button, section-label clicks, and all other actions close the
       // drawer — SYNCHRONOUSLY. This used to be setTimeout(closeMenu, 150), and
       // that 150ms was the single largest source of "I press a button and

@@ -118,18 +118,35 @@ body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-g
      • top: 50% is the one height a reader's eye never sweeps, and on a touch
        screen it is also where the selection handles work.
 
-   So: a real button, small and quiet but shaped like something you press, with
-   the one glyph that means "the menu is in here" everywhere else in this app
-   (#mobileMenuBtn is ☰ at every width). It borrows the tray's own surface —
-   panel, hairline border, blur — so pressing it opens something that looks like
-   what the button already looked like. */
+   So: a real button, small and quiet but shaped like something you press. It
+   borrows the tray's own surface — panel, hairline border, blur — so pressing it
+   opens something that looks like what the button already looked like.
+
+   ── ...and it is not a ☰ ──────────────────────────────────────────────────
+   It was, on the argument that ☰ is "the menu is in here" everywhere else in
+   this app. It is — in ONE place, #mobileMenuBtn — and borrowing the glyph put
+   three unrelated controls on one screen wearing it: the app menu at top-left,
+   the contents drawer in the tab row, and this. "There are three different
+   hamburger items that may confuse the user", and the reader is right: a
+   hamburger promises a menu of the app's own commands, and pressing this one
+   gets a panel that slides out of the edge it is attached to.
+
+   A chevron is what that panel actually is. Every pull-out on every platform is
+   marked by one, it says which way the thing will move, and it cannot be read
+   as a menu. There is no ‹/› pair to keep in step, either: the grip is
+   display:none once the tray is open (see below), so it only ever has to mean
+   "open", which is the direction it points.
+
+   46px tall rather than 32: this is the one control a reader in focus mode has,
+   it lives on the edge where a thumb is least accurate, and 32px was below what
+   a touch target should be in the first place. */
 .reading-rail-grip {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 30px;
-  height: 32px;
+  height: 46px;
   padding: 0;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
   border-right: 0;
@@ -142,31 +159,35 @@ body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-g
   transition: background 0.16s linear, border-color 0.16s linear, opacity 0.22s linear;
 }
 
-/* Three bars from one span: the middle one is the span, the outer two are its
-   pseudo-elements. No extra markup, so #readingRailGrip stays exactly the node
-   src/ui/reading-rail.js and src/core/dom.js already reach for. */
+/* The chevron, from the one span that used to be the middle of three bars. Two
+   borders of a square, rotated — no extra markup and no pseudo-elements, so
+   #readingRailGrip stays exactly the node src/ui/reading-rail.js and
+   src/core/dom.js already reach for, and the span stays exactly the child they
+   never look at.
+
+   margin-right, not centring: a rotated square's ink is its two borders, which
+   sit on the lower-left of the box it is drawn in, so a box centred by flex
+   leaves the chevron looking pushed right. 3px puts the apex on the middle. */
 .reading-rail-grip > span {
   display: block;
-  position: relative;
-  width: 15px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent-strong);
+  width: 9px;
+  height: 9px;
+  border: 0;
+  border-left: 2px solid var(--accent-strong);
+  border-bottom: 2px solid var(--accent-strong);
+  border-radius: 0 0 0 2px;
+  background: none;
+  margin-right: 3px;
+  transform: rotate(45deg);
 }
 
+/* The two bars that are no longer drawn. Stated rather than deleted: a
+   pseudo-element with no `content` never renders, and saying so out loud is
+   what stops the next edit re-inheriting them from the rule above. */
 .reading-rail-grip > span::before,
 .reading-rail-grip > span::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  width: 15px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--accent-strong);
+  content: none;
 }
-
-.reading-rail-grip > span::before { top: -5px; }
-.reading-rail-grip > span::after { top: 5px; }
 
 /* No size change on hover. A control that grows under the pointer is a control
    that moves out from under the finger already on its way to it — the same

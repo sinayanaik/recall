@@ -90,11 +90,13 @@ export const el = {
   closeDiagramBtn: document.querySelector("#closeDiagramBtn"),
   diagramZoomInBtn: document.querySelector("#diagramZoomInBtn"),
   diagramZoomOutBtn: document.querySelector("#diagramZoomOutBtn"),
-  exportBtn: document.querySelector("#exportBtn"),
-  exportMenu: document.querySelector("#exportMenu"),
-  exportNotesBtn: document.querySelector("#exportNotesBtn"),
-  exportNotesMenu: document.querySelector("#exportNotesMenu"),
-  drawerExportHighlightsBtn: document.querySelector("#drawerExportHighlightsBtn"),
+  // No exportBtn / exportMenu / exportNotesBtn / exportNotesMenu /
+  // drawerExportHighlightsBtn here any more. Those five were the ☰ drawer's
+  // three export rows and their two inline popovers; the first two menus were
+  // row-for-row duplicates of what the ⇓ beside the tabs already offers
+  // (VIEW_EXPORT_MENUS in src/ui/view-mode.js), and the highlights row became a
+  // row on that same ⇓. The dialog below is unchanged and still has two
+  // openers — the ⇓ and the side-by-side pane's own header.
   exportHighlightsModal: document.querySelector("#exportHighlightsModal"),
   exportHighlightsContext: document.querySelector("#exportHighlightsContext"),
   exportHighlightsChapterToggle: document.querySelector("#exportHighlightsChapterToggle"),
@@ -224,6 +226,9 @@ export const el = {
   copySelectionBtn: document.querySelector("#copySelectionBtn"),
   shareSelectionBtn: document.querySelector("#shareSelectionBtn"),
   searchSelectionBtn: document.querySelector("#searchSelectionBtn"),
+  // "Done" — the phone bar's own way out. See the handler in src/main.js and
+  // the outside-press listener in src/notes/touch-selection.js.
+  dismissSelectionBtn: document.querySelector("#dismissSelectionBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
   selectionFloatFormat: document.querySelector("#selectionFloatFormat"),
   immersiveModeBtn: document.querySelector("#immersiveModeBtn"),
@@ -277,10 +282,11 @@ export const el = {
   readingRailCloseBtn: document.querySelector("#readingRailCloseBtn"),
   readingRailViewName: document.querySelector("#readingRailViewName"),
   myDecksImportPdfInput: document.querySelector("#myDecksImportPdfInput"),
-  // The drawer's "Attach a PDF" row, for a deck that was created without one.
-  // Hidden by refreshDocumentTab whenever the open deck already has a document.
-  attachPdfBtn: document.querySelector("#attachPdfBtn"),
-  attachPdfInput: document.querySelector("#attachPdfInput"),
+  // No attachPdfBtn / attachPdfInput. They were the drawer's "Attach a PDF"
+  // row, which existed because the Document surface only existed once meta.pdf
+  // did. It is on every open deck now (refreshDocumentTab), and a deck with no
+  // paper opens it to a card carrying the same picker and calling the same
+  // attachPdfToOpenDeck — see renderAttachDocumentPrompt.
   frameCardModal: document.querySelector("#frameCardModal"),
   frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),

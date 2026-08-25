@@ -104,6 +104,7 @@
     <link rel="stylesheet" href="styles/45-toc-rows.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/46-highlight-cycle.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/47-broken-image.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/48-reading-chrome.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -475,22 +476,66 @@
           <button class="tool-button" id="newDeckBtn" type="button">&#43; New Deck</button>
           <button class="tool-button" id="importBtn" type="button" title="Import a file, pasted Markdown, or a link — as notes, as cards, or both">&#8679; Import</button>
           <button class="tool-button" id="myDecksBtn" type="button" title="All your decks — saved on this device and synced to the cloud automatically">&#128218; My Decks</button>
-          <!-- Attaching a paper to a deck that already exists.
-               "Once a deck has been created without a PDF there is no option to
-               attach one again" — and there was not: importing a PDF makes a NEW
-               deck, and the Document surface, which owns "Re-attach the PDF…",
-               only exists once meta.pdf does. A deck whose import failed, or one
-               whose notes were typed up before the file was to hand, had no way
-               in at all.
-               Shown only for an open deck that has no document yet (see
-               refreshDocumentTab) — a row offering to attach a second PDF to a
-               paper would be the wrong control, and Re-attach, which checks the
-               hash, is the right one there. -->
-          <label class="tool-button file-pick" id="attachPdfBtn" title="Attach a PDF to this deck — read it, highlight it and make cards from it, with your notes and cards kept exactly as they are" hidden>
-            <input id="attachPdfInput" type="file" accept=".pdf,application/pdf" hidden>
-            <span>&#128196; Attach a PDF&#8230;</span>
-          </label>
+          <!-- No "📄 Attach a PDF…" row here any more, and it is not a feature
+               that went away. It existed because the Document surface only
+               existed once meta.pdf did, so a deck whose notes were typed up
+               before the paper was to hand had no way in at all. That is no
+               longer true: refreshDocumentTab (src/cards/card-status.js) shows
+               the Document tab on EVERY open deck, and a deck with no paper
+               opens it to "Attach a PDF to read it here"
+               (renderAttachDocumentPrompt), whose picker calls the identical
+               attachPdfToOpenDeck this row called.
+               So the row was a second door onto the same room, in the app menu,
+               for something scoped to one open deck — which is exactly the rule
+               this drawer now follows: what belongs to the deck or the view you
+               are looking at lives in that view's own chrome. -->
           <button class="tool-button" id="syncNowBtn" type="button" title="Sync all decks with the cloud now (two-way, keeps the newest of each)">&#8635; Sync Now</button>
+
+          <span class="drawer-section-label">Study</span>
+          <!-- 🗂, not the ≡ this used to carry: a stack of horizontal lines is
+               the fourth thing on screen drawing one, and this row is a card
+               browser rather than a menu of anything. 🗂 (card index dividers),
+               not the 🗃 (card file box) Storage & Data carries — a different
+               drawing in a different section. -->
+          <button class="tool-button" id="allCardsBtn" type="button">&#128450; Browse All Cards</button>
+          <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all decks, sorted by subject">&#128209; Quick Notes</button>
+          <!-- No "Study Notes" entry here. It ran setViewMode("notes") — byte for
+               byte what the always-visible Cards / Notes toggle on
+               the quiz panel already does — so the drawer held a second 📝 that
+               led exactly where the first one did. The toggle is the one that
+               shows you which view you're in, so it's the one that stays. -->
+          <!-- ── The three export rows that used to close this section ──────
+               Export Cards, Export Notes and Export Highlights are gone from
+               here, and none of the three exports went with them.
+
+               "In the main system level hamburger menu there are a lot of
+               options unnecessary because already present inside each panel."
+               Measured, that was exactly true of these: every row of
+               #exportMenu carried data-scope="all", which is row for row what
+               VIEW_EXPORT_MENUS.cards already offers through the ⇓ beside the
+               tabs, and #exportNotesMenu was the same duplicate of
+               VIEW_EXPORT_MENUS.notes. Two menus, four maintainers' worth of
+               drift waiting to happen, and a reader looking at their notes was
+               being offered "Export Cards" three rows deep in a drawer.
+
+               Highlights had no view menu to be a duplicate OF, so it is not
+               deleted — paintViewExportMenu now carries a "Highlights…" row on
+               the notes and document views (src/ui/view-mode.js), which opens
+               the identical #exportHighlightsModal. Every export is therefore
+               reached from the surface it is an export of, which is what the ⇓
+               was added for in the first place.
+
+               The rule this leaves behind: the app menu holds what is true of
+               the APP. Anything scoped to the open deck or the view on screen
+               belongs to that view's own chrome. -->
+
+          <span class="drawer-section-label">App</span>
+          <!-- Auto-sync moved here from Decks, and it is the only thing in this
+               drawer that is not a verb: every other row DOES something when
+               pressed, and this one remembers a number. It sat between Sync Now
+               and Browse All Cards, which read as a third action and made the
+               Decks section three rows longer than the two it actually holds.
+               Sync Now stays up there — that one really is a verb. -->
           <div class="autosync-field" title="Automatically run Sync Now on a timer, so you don't have to click it">
             <label class="autosync-label" for="autoSyncSelect">&#8635; Auto-sync</label>
             <select class="autosync-select" id="autoSyncSelect" aria-label="Auto-sync interval">
@@ -503,45 +548,6 @@
               <option value="30">Every 30 min</option>
             </select>
           </div>
-
-          <span class="drawer-section-label">Study</span>
-          <button class="tool-button" id="allCardsBtn" type="button">&#8801; Browse All Cards</button>
-          <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all decks, sorted by subject">&#128209; Quick Notes</button>
-          <!-- No "Study Notes" entry here. It ran setViewMode("notes") — byte for
-               byte what the always-visible Cards / Notes toggle on
-               the quiz panel already does — so the drawer held a second 📝 that
-               led exactly where the first one did. The toggle is the one that
-               shows you which view you're in, so it's the one that stays. -->
-          <div class="menu-wrap">
-            <button class="tool-button" id="exportBtn" type="button">&#8659; Export Cards&#8230;</button>
-            <div class="export-menu" id="exportMenu" hidden>
-              <button type="button" data-export="pdf" data-scope="all">Cornell PDF</button>
-              <button type="button" data-export="html" data-scope="all">Standalone HTML</button>
-              <button type="button" data-export="doc" data-scope="all">Word (.docx)</button>
-              <button type="button" data-export="markdown" data-scope="all">Markdown</button>
-              <button type="button" data-export="json" data-scope="all">JSON</button>
-              <button type="button" data-export="sql" data-scope="all">SQL</button>
-            </div>
-          </div>
-          <div class="menu-wrap">
-            <!-- 📝⇓, not the bare ⇓ that Export Cards uses: these two sit as
-                 adjacent rows in the same drawer section, and with one glyph
-                 between them the only thing telling them apart was the word. -->
-            <button class="tool-button" id="exportNotesBtn" type="button" title="Export this deck's study notes">&#128221;&#8659; Export Notes&#8230;</button>
-            <div class="export-menu" id="exportNotesMenu" hidden>
-              <button type="button" data-export-notes="pdf">PDF</button>
-              <button type="button" data-export-notes="html">Standalone HTML</button>
-              <button type="button" data-export-notes="doc">Word (.docx)</button>
-              <button type="button" data-export-notes="markdown">Markdown</button>
-            </div>
-          </div>
-          <!-- Same drawer section as Export Cards/Export Notes above — a
-               reader looking for "export my highlights" checks here first,
-               not the ⇓ in the side-by-side pane's own header (which still
-               opens the identical dialog — see #exportHighlightsModal). -->
-          <button class="tool-button" id="drawerExportHighlightsBtn" type="button" title="Export highlighted lines">&#128308;&#8659; Export Highlights&#8230;</button>
-
-          <span class="drawer-section-label">App</span>
           <button class="tool-button" id="styleBtn" type="button" title="Themes &amp; Style" aria-label="Themes and style">&#9711; Themes &amp; Style</button>
           <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — decks, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
@@ -615,8 +621,14 @@
                  by paintViewExportMenu (src/ui/view-mode.js), so it always means
                  "export this", and every row calls a function that already
                  exists — nothing here is a second implementation of an export.
-                 The drawer entries stay where they are; this is a closer way in,
-                 not a move. -->
+
+                 It shipped as a closer way in with the drawer entries left
+                 where they were, and that was one duplicate too many: the
+                 drawer's Export Cards menu was row for row this one's cards
+                 menu, and its Export Notes the same. Both drawer rows are gone
+                 now, and the highlights dialog they sat beside is a row HERE
+                 (on notes and document) rather than in the app menu. So this is
+                 the way in, not a second one. -->
             <button class="tool-button view-export-btn" id="viewExportBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Export" title="Export what you are looking at">&#8659;</button>
             <div class="view-export-menu" id="viewExportMenu" role="menu" hidden></div>
           </div>
@@ -726,7 +738,24 @@
                  sit outside it. Nearest ancestor wins, so the toolbar's own
                  buttons still resolve to the toolbar. -->
             <div class="notes-head" data-render-target="notes">
-              <button class="notes-toc-toggle" id="notesTocBtn" type="button" title="Table of contents" aria-label="Table of contents" aria-expanded="false" aria-controls="notesTocDrawer"><span class="notes-toc-bars" aria-hidden="true"></span></button>
+              <!-- NOT a ☰ any more. It was one, and so were the app menu at
+                   top-left and the reading rail on the right edge: three
+                   unrelated controls wearing one glyph, which is the whole of
+                   "three different hamburger items that may confuse the user".
+                   ☰ means "the menu is in here" and there is one menu, so ☰ is
+                   the app's and this is a contents glyph — rows with leading
+                   dots, because a table of contents is what it lists.
+
+                   The <span class="notes-toc-bars"> stays in the markup and is
+                   stood down by styles/48-reading-chrome.css: its three bars are
+                   drawn in the FROZEN styles/12-notes.css, which cannot be
+                   edited, and removing the span would take .has-toc's dot badge
+                   and the is-active states with it.
+
+                   ...and it opens both halves of the drawer now (Contents and
+                   Highlights — see src/panels/drawer-highlights.js), which is
+                   what the label says. -->
+              <button class="notes-toc-toggle" id="notesTocBtn" type="button" title="Contents and highlights" aria-label="Contents and highlights" aria-expanded="false" aria-controls="notesTocDrawer"><span class="notes-toc-bars" aria-hidden="true"></span><svg class="toc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="toc-ico-list"><path d="M4 6h.01M4 12h.01M4 18h.01"/><path d="M9 6h11M9 12h11M9 18h11"/></g><path class="toc-ico-close" d="M6 6l12 12M18 6 6 18"/></svg></button>
               <div class="face-label-row">
                 <span class="face-label">Study Notes</span>
               </div>
@@ -862,7 +891,9 @@
                looking identical. -->
           <div class="document-stage" id="documentStage" hidden>
             <div class="document-head" id="documentHead">
-              <button class="notes-toc-toggle" id="documentTocBtn" type="button" title="Contents" aria-label="Contents" aria-expanded="false" aria-controls="documentOutlineDrawer"><span class="notes-toc-bars" aria-hidden="true"></span></button>
+              <!-- The same drawing as the notes one, for the same reason — see
+                   the comment on #notesTocBtn. -->
+              <button class="notes-toc-toggle" id="documentTocBtn" type="button" title="Contents and highlights" aria-label="Contents and highlights" aria-expanded="false" aria-controls="documentOutlineDrawer"><span class="notes-toc-bars" aria-hidden="true"></span><svg class="toc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="toc-ico-list"><path d="M4 6h.01M4 12h.01M4 18h.01"/><path d="M9 6h11M9 12h11M9 18h11"/></g><path class="toc-ico-close" d="M6 6l12 12M18 6 6 18"/></svg></button>
               <!-- Dark page was a row in the ⋯ menu below and read as missing:
                    "there is no option to see the PDF in dark mode" is what a
                    feature buried two presses deep looks like. It is a button
@@ -943,10 +974,12 @@
               <span class="hc-count" id="highlightCycleCount" aria-live="polite">0 / 0</span>
               <button class="hc-step" id="highlightCycleNextBtn" type="button" title="The next highlight" aria-label="Next highlight">&#9654;</button>
               <!-- The Highlights tab's own ⇓ Export, which came here with the
-                   rest of it. The ☰ drawer carries one too, but only on the
-                   notes side (#drawerExportHighlightsBtn) — a reader working
-                   through a paper would otherwise have no way to export what
-                   they had marked without leaving the surface it is on. -->
+                   rest of it. The ⇓ beside the tabs opens the identical dialog
+                   from a "Highlights…" row on both reading views; this one is
+                   the copy that can be reached without leaving the split, which
+                   is the whole point of the split. (The ☰ drawer used to carry
+                   a third — a global menu row for something scoped to the deck
+                   on screen — and no longer does.) -->
               <button class="hc-export" id="highlightCycleExportBtn" type="button" title="Export highlighted lines" aria-label="Export highlights">&#8659;</button>
               <button class="hc-close" id="highlightCycleCloseBtn" type="button" title="Close side by side" aria-label="Close side by side">&times;</button>
             </div>
@@ -987,7 +1020,7 @@
             <span class="sel-group" data-sel-group="capture">
               <button class="selection-float-btn" id="makeCardFromSelectionBtn" type="button" title="Make a card from the selection" aria-label="Make a card from the selection">&#43;</button>
               <button class="selection-float-btn is-cloze" id="makeClozeFromSelectionBtn" type="button" title="Hide the selection as a cloze" aria-label="Hide the selection as a cloze"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg></button>
-              <button class="selection-float-btn is-quick-note" id="pinQuickNoteFromSelectionBtn" type="button" title="Pin the selection to quick_notes" aria-label="Pin the selection to quick_notes">&#128204;</button>
+              <button class="selection-float-btn is-quick-note" id="pinQuickNoteFromSelectionBtn" type="button" title="Pin the selection to Quick Notes" aria-label="Pin the selection to Quick Notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 3.5h5l-.7 5.2 3.4 3.1v1.7H6.8v-1.7l3.4-3.1z"/><path d="M12 13.5v7"/></svg></button>
             </span>
             <span class="sel-group" data-sel-group="mark">
               <!-- The swatch is DRAWN, not an emoji. This used to be a 🔴 (U+1F534),
@@ -1024,7 +1057,24 @@
             <span class="sel-group" data-sel-group="style">
               <span class="selection-float-format render-toolbar" id="selectionFloatFormat"></span>
             </span>
-            <!-- Copy / Share / Web search — the three things Android's own
+            <!-- ── ...and why these are drawn, not 📋 and 🔍 ────────────────
+                 They were. 📌, 📋 and 🔍 are colour-font glyphs: they ignore
+                 `color`, so they paint their own palette whatever the theme is
+                 and whatever the buttons either side of them are doing. Sitting
+                 in a row with the drawn cloze icon and the drawn highlight
+                 swatch, that is three different icon families in one bar — "the
+                 highlight menu looks super ugly in mobile".
+
+                 It is the same fault this file already records for the old 🔴
+                 highlight button, whose `color: color-mix(…)` was a dead
+                 declaration for exactly this reason (see .selection-float-btn
+                 .is-highlight in styles/12-notes.css). Drawn in currentColor,
+                 they take the button's ink like everything else.
+
+                 ↗ (share) and ⌫ (erase) stay as they are — both are ordinary
+                 text glyphs, not emoji, and both already take currentColor.
+
+                 Copy / Share / Web search — the three things Android's own
                  selection bar offered, which the app now has to offer itself.
                  src/notes/touch-selection.js suppresses the native long press
                  outright (user-select: none on the reading surfaces), so that
@@ -1043,15 +1093,36 @@
                  Safari), rather than left sitting there doing nothing — which
                  is why this group can legitimately end up holding two. -->
             <span class="sel-group" data-sel-group="use">
-              <button class="selection-float-btn is-copy" id="copySelectionBtn" type="button" title="Copy the selection" aria-label="Copy the selection">&#128203;</button>
+              <button class="selection-float-btn is-copy" id="copySelectionBtn" type="button" title="Copy the selection" aria-label="Copy the selection"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3.2" width="11.5" height="14" rx="2"/><path d="M15.5 20.8H5.8a2.3 2.3 0 0 1-2.3-2.3V7.6"/></svg></button>
               <button class="selection-float-btn is-share" id="shareSelectionBtn" type="button" title="Share the selection" aria-label="Share the selection">&#8599;</button>
-              <button class="selection-float-btn is-search" id="searchSelectionBtn" type="button" title="Search the web for the selection" aria-label="Search the web for the selection">&#128269;</button>
+              <button class="selection-float-btn is-search" id="searchSelectionBtn" type="button" title="Search the web for the selection" aria-label="Search the web for the selection"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m15.7 15.7 4.6 4.6"/></svg></button>
             </span>
             <!-- Alone, and last. The only control here that destroys what you
                  selected; in the old run it sat between "split into a note" and
                  "copy", one 34px circle from both. -->
             <span class="sel-group" data-sel-group="cut">
               <button class="selection-float-btn is-erase" id="eraseNotesSelectionBtn" type="button" title="Delete the selection" aria-label="Delete the selection">&#9003;</button>
+            </span>
+            <!-- ── The way out ────────────────────────────────────────────
+                 "Sometimes it gets involved and doesn't go away even if I click
+                 on somewhere else."
+
+                 The cause is fixed where it lives — src/notes/touch-selection.js
+                 now dismisses on a press outside the reading surface, which it
+                 never did, because every touch listener it has is bound to the
+                 note itself. This is the other half: a way out you can SEE.
+                 Escape has always worked and a phone has no Escape, and a bar
+                 that can only be dismissed by guessing where to tap is a bar
+                 you learn to work around.
+
+                 Its own group, and last, so it is nowhere near the eraser: the
+                 two would otherwise be a ✕ and a ⌫ side by side, one of which
+                 deletes your words and one of which does not, which is the
+                 exact pairing .sel-group ordering exists to avoid. Phone only —
+                 on a desktop the pill follows the selection and clicking away
+                 has always dismissed it. -->
+            <span class="sel-group" data-sel-group="dismiss">
+              <button class="selection-float-btn is-dismiss" id="dismissSelectionBtn" type="button" title="Done" aria-label="Dismiss the selection">&#215;</button>
             </span>
           </div>
 
@@ -1092,8 +1163,10 @@
            four views and the way back to My Decks with them. Leaving focus mode
            to change tab and re-entering it is not a mode, it is a chore.
 
-           So this is what stays: a ☰ on the right edge that expands into the
-           things focus mode took away, and puts itself away afterwards.
+           So this is what stays: a chevron tab on the right edge that expands
+           into the things focus mode took away, and puts itself away
+           afterwards. (It was a ☰ until the reader pointed out that it was the
+           third one on screen — see the button itself.)
 
            It used to exist ONLY while body.chrome-collapsed, on the argument
            that outside focus mode every one of these is already on screen in the
@@ -1108,10 +1181,15 @@
            and these carry none — every one of them calls a function that
            already exists (see src/ui/reading-rail.js). -->
       <div class="reading-rail" id="readingRail" data-expanded="false">
-        <!-- The grip is a ☰ now, not a hairline. Its three bars are drawn from
-             this one span and its two pseudo-elements (styles/38-reading-rail
-             .css) rather than from three nodes, so #readingRailGrip stays
-             exactly the element dom.js and reading-rail.js already reach for. -->
+        <!-- The grip is a chevron edge-tab, not a hairline and not a ☰. It WAS
+             a ☰, which put three unrelated controls on one screen wearing one
+             glyph — the app menu, the contents drawer and this — and a
+             hamburger promises a menu of commands where this opens a panel that
+             slides out of the edge it is attached to. A chevron says which way
+             the panel moves and cannot be read as a menu. Drawn from two
+             borders of this one span, rotated (styles/38-reading-rail.css),
+             rather than from three nodes, so #readingRailGrip stays exactly the
+             element dom.js and reading-rail.js already reach for. -->
         <button class="reading-rail-grip" id="readingRailGrip" type="button" aria-expanded="false" aria-controls="readingRailTray" aria-label="Reading controls" title="Reading controls — the views, focus mode and full screen"><span aria-hidden="true"></span></button>
         <!-- Every row is named. The glyph is what the eye lands on; the label is
              what makes the tray legible the first time it is opened, which is
@@ -1644,7 +1722,7 @@
               <li><strong>Link to a section, not just a note</strong> — add <code>#</code> after the note's name (<code>[[Calculus#</code>) and the list switches to that note's headings; pick one and the link opens the note scrolled straight to it. Typing it by hand works too: <code>[[Calculus#The chain rule]]</code> jumps to that heading, and <code>[[#The chain rule]]</code> jumps to one in the note you're already in</li>
               <li><strong>Name a note that doesn't exist yet</strong> — type any name after <code>[[</code> and take <em>Create…</em>. You choose which folder it goes in, and you stay exactly where you were writing. Clicking a greyed-out link offers the same thing</li>
               <li><strong>Split a note that got too long</strong> — select the part that has outgrown its home and tap <strong>↪</strong> in the selection strip. It moves into a note of its own and leaves a link in its place</li>
-              <li><strong>See what points here</strong> — open the <strong>☰ On this page</strong> drawer in the notes header; under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
+              <li><strong>See what points here</strong> — open the <strong>contents</strong> drawer beside the tabs (the icon of three lines with dots beside them — <strong>not</strong> the ☰ at top-left, which is the app's own menu); under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
               <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
               <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the deck title bar and Cards/Notes toggle fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
@@ -1654,7 +1732,7 @@
           <section class="help-section">
             <h3 class="help-section-title">Documents 📄 — read the PDF, not a translation of it</h3>
             <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Decks → ⋯ → Import PDF</strong>) and you get one deck per paper, opening on a third tab: <strong>Document</strong>, beside Notes and Cards. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
-            <p><strong>Already have the deck, and the paper turned up later?</strong> Open it and press its <strong>📄 Document</strong> tab. Every deck has one; on a deck with no paper it opens to <strong>Attach a PDF to read it here</strong>, and the file you pick becomes that deck's document — with any highlights already in it imported, exactly as an import would — while the deck's title, cards and notes are left as they are. <strong>☰ → 📄 Attach a PDF…</strong> in the side menu does the identical thing if you are already there. A deck that already <em>has</em> a document uses <strong>Document ⋯ → Re-attach the PDF…</strong> instead, which checks the file really is the same one first, because a highlight is a position in one exact file.</p>
+            <p><strong>Already have the deck, and the paper turned up later?</strong> Open it and press its <strong>📄 Document</strong> tab. Every deck has one; on a deck with no paper it opens to <strong>Attach a PDF to read it here</strong>, and the file you pick becomes that deck's document — with any highlights already in it imported, exactly as an import would — while the deck's title, cards and notes are left as they are. (The side menu used to carry <strong>📄 Attach a PDF…</strong> as well; it did the identical thing, and the tab is the place you are already standing when you want it.) A deck that already <em>has</em> a document uses <strong>Document ⋯ → Re-attach the PDF…</strong> instead, which checks the file really is the same one first, because a highlight is a position in one exact file.</p>
             <ul class="help-list">
               <li><strong>Select text on the page → the same selection bar you already know</strong> — <strong>Highlight</strong> in any of the four colours, <strong>Add note</strong>, or <strong>+ Make card</strong>. The card remembers the page and the exact passage, so "Go to notes" on that card brings you back to it. On a phone the press-and-slide is the app's own, the same one your notes use: it starts the moment you feel it rather than a second or two later, and the two grips stay on the words they mark however the page moves</li>
               <li><strong>Highlights already in the file are imported</strong> — a paper you have been annotating in Zotero, Preview or Okular arrives with those highlights in place, and any comment on one becomes a note on it</li>
@@ -1662,7 +1740,7 @@
               <li><strong>The Notes tab is still yours</strong> — an ordinary Markdown note beside the paper, with clozes, math and note links all working as they always have. The two are one deck</li>
               <li><strong>Select a figure, a table or an equation</strong> — press <strong>▣</strong> and drag a box round it. A region is a highlight like any other: it takes a colour, it takes a note, it turns into a card, and it is listed beside the paper with a picture of what you drew round. Any words the box covers come with it, so a boxed equation is still searchable text; a photograph is listed by its page. The mode turns itself off after one box, so you are never left unable to select text</li>
               <li><strong>Read every note on the page it belongs to</strong> — a highlight with a note on it wears a small numbered badge; press it to open the note. <strong>⋯ → Notes on the page</strong> is a switch: flip it on and all of them print, numbered, in the gap under each page, so a paper you have read closely reads back as a paper plus its margins rather than a paper plus another tab. It says how many it printed and takes you to a page carrying one, since the notes are wherever you made them and not necessarily where you are now</li>
-              <li><strong>Contents, even for a paper that has none</strong> — <strong>☰</strong> opens the same drawer the notes view has, with the same foldable tree. Most books carry a table of contents in the file and it is used as-is; most papers, preprints and printed-to-PDF chapters do not, so one is read out of the type on their pages instead — the headings, set larger or numbered — and the drawer says when what you are looking at was found that way rather than written by the author. It is worked out once and kept, so it is there instantly every time afterwards</li>
+              <li><strong>Contents, even for a paper that has none</strong> — the <strong>contents</strong> icon beside the tabs opens the same drawer the notes view has, with the same foldable tree. Most books carry a table of contents in the file and it is used as-is; most papers, preprints and printed-to-PDF chapters do not, so one is read out of the type on their pages instead — the headings, set larger or numbered — and the drawer says when what you are looking at was found that way rather than written by the author. It is worked out once and kept, so it is there instantly every time afterwards</li>
               <li><strong>...and what you marked on it, in the same drawer</strong> — the <strong>Highlights</strong> half lists every highlight on this paper with its page and the first of whatever you wrote about it, so finding one does not mean leaving the page you are on</li>
               <li><strong>Side by side</strong> — the button at the top of that Highlights half splits the panel in two: the paper on the left, and every highlight on it with its note underneath on the right, written where it sits. Each card carries the same number the badge on the page carries, says which page it is from, and lights up with its highlight when you point at either — and pressing a numbered badge on the page takes the pane straight to that note. <strong>◀ ▶</strong> walks through them and the page follows along, so working through a paper you have annotated is one press per highlight instead of a tab each way. Drag the divider between the two to resize them — they start at 3:2, and it remembers where you put it. On a phone they stack instead, the page above and the highlights below, because half of a phone is not a page. The Notes panel's own drawer does the same thing for the note's highlights</li>
               <li><strong>Zoom and dark page</strong> — the page number and <strong>+ − ↔</strong> float over the bottom corner of the page, out of the way until you reach for them; <strong>◐</strong> inverts the page for a dark theme, off by default because a paper full of photographs looks wrong inverted (your highlights keep their own colours either way)</li>
@@ -1704,7 +1782,7 @@
               <tr><td><kbd>R</kbd></td><td>Mark for Review</td></tr>
               <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Navigate cards</td></tr>
               <tr><td><kbd>Ctrl</kbd> + <kbd>E</kbd></td><td>Toggle edit / rendered view</td></tr>
-              <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read — the <strong>☰</strong> on the right edge of the screen is always there, and opens the contents, the four views, My Decks, and Focus mode and Full screen themselves)</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read — the <strong>‹</strong> tab on the right edge of the screen is always there, and opens the contents, the four views, My Decks, and Focus mode and Full screen themselves)</td></tr>
               <tr><td><kbd>Esc</kbd></td><td>Close the topmost panel, or leave focus mode</td></tr>
             </table>
           </section>
@@ -1776,7 +1854,7 @@
 
           <section class="help-section">
             <h3 class="help-section-title">8. All Cards Panel</h3>
-            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">≡ Browse All Cards</button> to see every card in a scrollable Cornell-note view. You can edit, delete, or reorder cards from here.</p>
+            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">🗂 Browse All Cards</button> to see every card in a scrollable Cornell-note view. You can edit, delete, or reorder cards from here.</p>
           </section>
 
           <section class="help-section">
@@ -1784,12 +1862,11 @@
             <div class="help-btn-row">
               <button type="button" class="tool-button help-demo-btn" tabindex="-1">⟳ Sync Now</button>
               <button type="button" class="tool-button help-demo-btn" tabindex="-1">📚 My Decks</button>
-              <button type="button" class="tool-button help-demo-btn" tabindex="-1">⇓ Export Cards…</button>
             </div>
             <ul class="help-list">
-              <li><strong>Sync is automatic</strong> — every deck is mirrored to your account in the background; <strong>Sync Now</strong> forces an immediate two-way reconcile (newest copy of each deck wins)</li>
+              <li><strong>Sync is automatic</strong> — every deck is mirrored to your account in the background; <strong>Sync Now</strong> forces an immediate two-way reconcile (newest copy of each deck wins). <strong>Auto-sync</strong>, under <strong>App</strong> in the same menu, is how often that happens on its own</li>
               <li><strong>My Decks</strong> — every deck, on this device and in the cloud, with a live sync-status column. Per deck: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several decks for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
-              <li><strong>Export Cards…</strong> (menu) — the current deck as Cornell PDF, Markdown, JSON, or SQL</li>
+              <li><strong>Exporting the deck you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / Document tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and Document</li>
             </ul>
             <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Deck deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
           </section>

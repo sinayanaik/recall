@@ -1,0 +1,560 @@
+/* Three ☰ that meant three different things, and the surfaces that reach for one
+ *
+ * A separate file rather than more rules inside the slices it corrects: the
+ * original thirteen stylesheets still have to reassemble byte-for-byte into the
+ * pre-modular styles.css (see tools/split-css.mjs and the css-parity check), so
+ * anything written since the split lives in its own numbered file.
+ *
+ * ── What this answers ──────────────────────────────────────────────────────
+ *
+ * "There are three different hamburger items that may confuse the user."
+ * There were, and they were not three copies of one control — they were three
+ * unrelated controls wearing one glyph:
+ *
+ *   #mobileMenuBtn      top-left, the app's own menu
+ *   #notesTocBtn        in the tab row, this note's contents AND its highlights
+ *   #readingRailGrip    right edge, the reading controls focus mode folds away
+ *
+ * ☰ means "the menu is in here" and there is exactly one menu, so ☰ keeps that
+ * one job. The other two get drawings that say what they open: a contents glyph
+ * (rows with leading dots — a table of contents is what it lists) and, in
+ * styles/38-reading-rail.css, a chevron edge-tab, which is what every pull-out
+ * panel on every platform looks like and cannot be read as a menu.
+ *
+ * The rest of this file is the other surfaces the same report named — the EPUB
+ * import dialog's missing scroll region, the selection bar's mixed icon
+ * families, and the highlight menu that had six controls and no words.
+ */
+
+/* ── 1 · The contents drawer's own icon ────────────────────────────────────
+   #notesTocBtn and #documentTocBtn draw their three bars from one span and its
+   two pseudo-elements in the FROZEN styles/12-notes.css:727, which cannot be
+   edited. So the span is stood down here and an <svg class="toc-ico"> sibling
+   (added in index.html) is what is actually seen.
+
+   Everything else about the button is left exactly as it was: .has-toc's dot
+   badge, the .is-active accent, the 30px box in the notes header and the 26px
+   one in the tab row (styles/16-mobile-reading.css:394) all still apply, because
+   none of them addresses the glyph. */
+.notes-toc-toggle .notes-toc-bars {
+  display: none;
+}
+
+.toc-ico {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  transition: color 0.18s ease;
+}
+
+/* 26px button, 16px icon leaves 5px a side — enough that the glyph reads as
+   ink on a button rather than as a filled square. */
+.view-mode-row > .notes-toc-toggle .toc-ico {
+  width: 15px;
+  height: 15px;
+}
+
+.notes-toc-toggle:hover .toc-ico,
+.notes-toc-toggle.is-active .toc-ico {
+  color: var(--accent);
+}
+
+/* The two halves of the drawing, cross-faded rather than morphed. The bars
+   version rotated into an X because three bars ARE an X's worth of strokes; a
+   contents glyph is six strokes and three of them are dots, so there is nothing
+   to rotate. Both paths are always in the DOM and one of them is transparent —
+   no layout, no reflow, and the transition is a compositor-only fade. */
+.toc-ico-close {
+  opacity: 0;
+}
+
+.notes-toc-toggle.is-active .toc-ico-list {
+  opacity: 0;
+}
+
+.notes-toc-toggle.is-active .toc-ico-close {
+  opacity: 1;
+}
+
+.toc-ico-list,
+.toc-ico-close {
+  transition: opacity 0.16s ease;
+}
+
+/* ── 2 · The EPUB import dialog, which could not show its own Import button ─
+   "When I'm importing epub the import button is almost hidden."
+
+   It was, and the dialog had no way not to be. .category-choice-shell
+   (styles/08-panels.css, frozen) is a plain grid with no max-height and no
+   scroll region — right for the four-row dialogs it was written for, and this
+   is the tallest thing ever poured into it: two stat tiles, five quality tiles
+   and an estimate line, two mode options with a sentence each, a 46vh chapter
+   list, and a warning. Measured at 393x852 that runs past the viewport, so the
+   shell simply overflowed it and the actions row went off the bottom edge.
+
+   The one part that DID scroll was the chapter list — the least urgent thing
+   in the dialog, given the only scroller in it.
+
+   So: the shell is bounded, the middle scrolls (src/import/epub.js wraps it in
+   .epub-preview-body), and the head and actions are pinned either side. Scoped
+   to .epub-preview-modal throughout, because every other .category-choice-modal
+   in the app is short enough that a max-height would only add a scrollbar. */
+.epub-preview-modal .epub-preview-shell {
+  /* Both rows and a floor for the middle: `auto 1fr auto` would let a very
+     short book's body stretch, and `min-height: 0` on the middle track is what
+     lets it scroll instead of growing the grid past the ceiling. */
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(calc(100dvh - 36px), 780px);
+  overflow: hidden;
+}
+
+.epub-preview-body {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* The gutter the scrollbar takes, given back as padding so the content is not
+     shunted sideways the moment a book is long enough to need one. */
+  padding-right: 2px;
+}
+
+/* The chapter list had a max-height of its own, which is now a second scroller
+   inside the first — two bars for one list, and an inner one that traps the
+   flick that was meant for the dialog. The body is the scroller now. */
+.epub-preview-body .epub-preview-toc-list {
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* The disclosure. Its label was a <p> and is a <summary> now, so the marker,
+   the cursor and the row's own hit area all have to be stated. */
+.epub-preview-toc > .epub-preview-toc-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  margin: 0;
+  padding: 0 2px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.epub-preview-toc > .epub-preview-toc-label::-webkit-details-marker {
+  display: none;
+}
+
+/* Drawn, not the UA triangle: the triangle is a different shape and colour in
+   every browser, and this one already exists two files away on the chapter rows
+   (.epub-preview-chapter-chevron), pointing the same way for the same reason. */
+.epub-preview-toc > .epub-preview-toc-label::before {
+  content: "▸";
+  flex: none;
+  color: var(--muted);
+  font-size: 0.75rem;
+  transition: transform 0.15s ease;
+}
+
+.epub-preview-toc[open] > .epub-preview-toc-label::before {
+  transform: rotate(90deg);
+}
+
+.epub-preview-toc[open] > .epub-preview-toc-list:not([hidden]) {
+  margin-top: 6px;
+}
+
+/* ...and the footer it can no longer push off the screen. A hairline and the
+   panel's own colour, so the rows scrolling under it stop at a line rather than
+   fading into the buttons. */
+.epub-preview-modal .category-choice-actions {
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.epub-preview-modal .category-choice-actions button {
+  min-height: 44px;
+  padding: 0 18px;
+}
+
+/* One primary. Import is the reason the dialog is open; Cancel is the way out
+   of it, and two buttons of equal weight side by side make you read both. */
+.epub-preview-modal .category-choice-actions .import-action-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-weight: 900;
+}
+
+/* ── ...and on a phone, a sheet rather than a card ─────────────────────────
+   Below 560px a centred card with 18px of scrim either side is 324px of usable
+   width for two mode options that each carry a sentence. The same dialog as a
+   bottom sheet gets the full width, puts the actions where the thumb already
+   is, and needs no vertical margin at all — which is the difference between a
+   46-chapter book fitting and not. */
+@media (max-width: 560px) {
+  .epub-preview-modal {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .epub-preview-modal .epub-preview-shell {
+    width: 100%;
+    max-height: min(92dvh, 780px);
+    border-width: 1px 0 0;
+    border-radius: var(--modal-radius) var(--modal-radius) 0 0;
+    padding-bottom: max(14px, var(--safe-bottom));
+  }
+
+  /* Import to the right, where the thumb is, and both buttons wide enough to
+     hit without looking. */
+  .epub-preview-modal .category-choice-actions button {
+    flex: 1 1 0;
+  }
+}
+
+/* ── 3 · The selection bar on a phone ──────────────────────────────────────
+   "The highlight menu looks super ugly in mobile."
+
+   Three faults, and none of them is the grouping — styles/22-selection-bar.css
+   got that right and it is left alone:
+
+     • THREE ICON FAMILIES. 📌, 📋 and 🔍 were colour-font glyphs, which ignore
+       `color` and paint their own palette whatever the theme is, sitting beside
+       drawn SVG (the cloze mark), a drawn swatch (highlight) and plain text
+       glyphs (+ ↗ ⌫ ↪). Fixed in index.html: those three are drawn now, in
+       currentColor, like everything else.
+     • FOURTEEN CIRCLES. Every control was `border-radius: 999px` with its own
+       hairline, wrapped in a pill-shaped group tray, inside a pill-shaped bar.
+       Round things inside round things inside round things, and no two of them
+       concentric. Below, the buttons on the phone bar are soft rectangles and
+       the groups are told apart by a hairline instead of a second tray, so the
+       only lozenge left is the bar itself.
+     • NO HIERARCHY. Fourteen controls in one weight says every one of them is
+       as likely as every other. On a book being read, one is: the highlighter.
+
+   Everything here is under .is-pinned-bottom — the desktop pill follows the
+   selection, is a single row, and has none of these problems. */
+
+/* Soft rectangles, not circles. 36px tall rather than 32: this is the row a
+   thumb aims at over text it cannot see, and 4px is the difference between a
+   comfortable target and a careful one. */
+.selection-float.is-pinned-bottom .selection-float-btn,
+.selection-float.is-pinned-bottom .render-btn {
+  height: 36px;
+  border-radius: 10px;
+}
+
+.selection-float.is-pinned-bottom .render-split-main,
+.selection-float.is-pinned-bottom .render-split-side {
+  height: 36px;
+  border-radius: 10px;
+}
+
+/* The group tray, replaced by a rule. 22-selection-bar.css gives each group a
+   faint filled pill so the categories still read once the bar wraps to two
+   rows, and it is the right instinct with the wrong device here: a filled tray
+   round a run of filled buttons is two surfaces doing one job, and it is what
+   made the bar look like beads on a string.
+
+   A hairline BEFORE each group does the same work with no surface at all.
+
+   A SHORT rule, drawn as a background gradient rather than a border-left, and
+   that is the one concession to 22-selection-bar.css's objection. CSS still has
+   no "is this the first item on its line" selector, so the group that begins the
+   second row does carry one — but a hairline inset to the middle 56% of the
+   row's height reads as a divider between two things wherever it lands, where a
+   full-height border reads as the EDGE of the bar. */
+.selection-float.is-pinned-bottom .sel-group {
+  padding: 0 0 0 9px;
+  border-radius: 0;
+  background-color: transparent;
+  background-image: linear-gradient(
+    to bottom,
+    transparent 22%,
+    color-mix(in srgb, var(--text) 28%, transparent) 22%,
+    color-mix(in srgb, var(--text) 28%, transparent) 78%,
+    transparent 78%
+  );
+  background-repeat: no-repeat;
+  background-size: 1px 100%;
+  background-position: left center;
+}
+
+.selection-float.is-pinned-bottom .sel-group:first-of-type {
+  padding-left: 0;
+  background-image: none;
+}
+
+/* ...and the gap shrinks to match. 9px of gap PLUS 8px of padding either side
+   of a rule is a canyon; the rule is the separation now, so the space only has
+   to keep the buttons off it.
+   The ROW gap is not zero, though. The bar genuinely wraps to two rows on a
+   360px screen (styles/22-selection-bar.css does that arithmetic), and two rows
+   of chips with nothing between them read as one grid of buttons rather than as
+   a bar that ran out of width. */
+.selection-float.is-pinned-bottom {
+  column-gap: 8px;
+  row-gap: 6px;
+  padding: 5px 7px max(5px, var(--safe-bottom));
+}
+
+/* One filled button, and it is the highlighter.
+   It was the quiet one (styles/12-notes.css gives .is-highlight the same
+   panel-2 wash as cloze, pin and erase) while "make a card" carried the solid
+   accent. That is the right hierarchy for a deck being built and the wrong one
+   for a book being read, which is what this bar appears over: a reader marking
+   up a chapter presses highlight thirty times and "make a card" twice. */
+.selection-float.is-pinned-bottom .selection-float-btn.is-highlight {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* Its ▾ is the same control, so it takes the same surface — a quiet chip beside
+   a filled one reads as two buttons rather than one split. */
+.selection-float.is-pinned-bottom .selection-float-btn.is-highlight-menu {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+  color: var(--accent-contrast, #fff);
+}
+
+/* ...which makes everything else a peer.
+   Four buttons were solid accent, not one: styles/12-notes.css quiets the
+   cloze, the pin, the eraser, the extract and the highlight by name and leaves
+   the base `background: var(--accent)` standing for the rest — so "make a
+   card", Copy, Share and Web search were all shouting, and three of them are
+   things you reach for once a session. Make-a-card stays FIRST in the bar (the
+   order is unchanged, and it is what you want when you are building a deck
+   rather than reading) but it no longer looks like the only button that works.
+
+   Listed by class, in the same idiom as the rules this joins, rather than by
+   `:not(.is-highlight)` — a blanket negation would also catch anything added to
+   the bar later and quietly decide its weight for it. */
+.selection-float.is-pinned-bottom .selection-float-btn#makeCardFromSelectionBtn,
+.selection-float.is-pinned-bottom .selection-float-btn.is-copy,
+.selection-float.is-pinned-bottom .selection-float-btn.is-share,
+.selection-float.is-pinned-bottom .selection-float-btn.is-search {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+}
+
+/* ── The two that were not buttons at all ─────────────────────────────────
+   Bulletify (≡) and the text-style menu (Aa) are .render-btn, whose box comes
+   from the render toolbar it was written for: transparent, no border, because
+   there it sat on a panel of its own. On this bar they were two bare glyphs in
+   a row of chips — the one place the eye could not tell what was pressable.
+
+   The style group's own popover keeps its own look (.render-text-style-menu in
+   styles/22-selection-bar.css); this is only the two controls ON the bar. */
+.selection-float.is-pinned-bottom .selection-float-format .render-btn {
+  min-width: 40px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent);
+}
+
+/* Left-aligned, not centred. The bar is `width: max-content` and genuinely
+   wraps, so a centred second row floats under the middle of the first with its
+   groups lining up with nothing — and the dividers, which are the whole
+   grouping signal now, point at gaps rather than at boundaries. Flush left, the
+   two rows read as one bar that ran out of width. (The BAR is still centred on
+   screen; that is `left: 50%` on the element, not this.) */
+.selection-float.is-pinned-bottom {
+  justify-content: flex-start;
+}
+
+/* The drawn replacements for 📌 / 📋 / 🔍, sized to sit level with the text
+   glyphs beside them (+, ↗, ⌫) rather than to fill their buttons. */
+.selection-float-btn > .cz-ico {
+  width: 18px;
+  height: 18px;
+}
+
+/* "Done". Quiet, and the only control here with no ink of its own — it is the
+   absence of an action, and it should not look like one. */
+.selection-float-btn.is-dismiss {
+  border-color: color-mix(in srgb, var(--text) 22%, transparent);
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  color: var(--muted);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+/* Phone only. On a desktop the pill tracks the selection and clicking anywhere
+   else has always dismissed it, so a button for that is a fourteenth control
+   earning nothing. `display: none` and not `[hidden]`, because the group's own
+   "hide me if everything in me is hidden" rule (22-selection-bar.css) reads
+   [hidden] and would then eat the group's divider along with the button. */
+.selection-float:not(.is-pinned-bottom) .sel-group[data-sel-group="dismiss"] {
+  display: none;
+}
+
+/* ── 4 · The menu on a finished highlight ──────────────────────────────────
+   "After a highlight is done, when I'm clicking that, there's not much options
+   showing for it."
+
+   There were three kinds of thing and six targets: four 20px colour circles, a
+   24px ✎ and a 24px ✕, in a single 999px lozenge. Two faults in one control:
+
+     • it could do almost nothing. Copying the passage, making a card of it,
+       pinning it or going to read what you wrote about it all meant selecting
+       the words again — the one gesture that cannot reliably re-find a span
+       that already has tags round it, which is why this menu exists at all;
+     • 20px is not a touch target. Android asks for 48dp and this was under
+       half of it, on circles 6px apart.
+
+   So it is a small sheet: the colours as one row, and the verbs under them as
+   rows with words on. Not a second run of glyphs — six unlabelled circles is
+   the legibility fault the selection bar was already carrying, and a menu that
+   opens over the sentence it is about has room for a sentence.
+   See src/notes/mark-menu.js. */
+.mark-menu {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  width: max-content;
+  min-width: 208px;
+  max-width: min(280px, calc(100vw - 16px));
+  border-radius: 14px;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Row one. The swatches keep their own size and their own ring — this is only
+   the box round them. */
+.mark-menu-colors {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* 26px, not 20. Still a circle and still the same drawing, with the extra
+   pixels spent on the target rather than on the ink. */
+.mark-menu-colors .mark-menu-swatch {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 26px;
+  height: 26px;
+  border-radius: 8px;
+}
+
+.mark-menu-actions {
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+}
+
+/* One row, 44px, icon then sentence. */
+.mark-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  padding: 0 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.mark-menu-item[hidden] {
+  display: none;
+}
+
+.mark-menu-item:hover,
+.mark-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+}
+
+.mmi-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1;
+}
+
+.mark-menu-item:hover .mmi-ico,
+.mark-menu-item:focus-visible .mmi-ico {
+  color: inherit;
+}
+
+.mmi-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* styles/27-highlight-notes.css dims this one to `opacity: 0.75`, which was
+   right for a single ✎ among six circles — the quiet one of the set — and is
+   wrong for a row among six rows: at 75% the only labelled row that is dimmer
+   than its neighbours reads as disabled. The "does this highlight have a note"
+   signal is the icon's colour and the row's own wording ("Add a note" against
+   "Edit the note", set in mark-menu.js), neither of which needs the row to be
+   faint to work. */
+.mark-menu-note {
+  opacity: 1;
+}
+
+.mark-menu-note.has-note .mmi-ico {
+  color: var(--accent-strong);
+}
+
+/* Remove, and only remove. Set off by a hairline rather than by colour alone:
+   red-on-hover is a hint you get after you have already reached for it. */
+.mark-menu-remove {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 9px 9px;
+}
+
+.mark-menu-remove:hover,
+.mark-menu-remove:focus-visible {
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+  color: #ef4444;
+}
+
+.mark-menu-remove:hover .mmi-ico,
+.mark-menu-remove:focus-visible .mmi-ico {
+  color: #ef4444;
+}
+
+/* ── 5 · The highlights row on the ⇓ menu ──────────────────────────────────
+   The ☰ drawer's "🔴⇓ Export Highlights…" had nothing in this menu to be a
+   duplicate of when the other two drawer export rows were removed as
+   duplicates, so it became a row here instead — on Notes and on Document, the
+   two views that can carry a highlight (VIEW_EXPORT_MENUS, src/ui/view-mode.js).
+
+   Set off, because it is not a format of the view above it: every other row
+   downloads a file directly, and this one opens #exportHighlightsModal, which
+   asks its own three questions (context lines, chapter headings, whether the
+   notes come too) before anything is exported. A hairline says "the run of
+   formats ended here" without a second heading for one row.
+
+   `padding-top` alone, against the `padding: 5px 9px` that
+   styles/37-document-chrome.css gives every row of this menu: same specificity,
+   and this file loads last, which is how 22-selection-bar.css settles its own
+   tie with 16-mobile-reading.css and is the convention here. */
+.view-export-menu .md-menu-item.is-view-export-aside {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}

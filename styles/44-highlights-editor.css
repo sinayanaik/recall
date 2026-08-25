@@ -172,12 +172,31 @@
    Right-aligned and quiet: it is navigation, not the content of the entry, and
    an entry that led with a button would read as a control rather than as a
    passage you marked. */
+/* ── ...and what the floor under it cost ───────────────────────────────────
+   `min-height: 1.2em` reserved a line on EVERY card, including the ones with
+   nothing to put in it. A highlight in a note that carries no chapter heading
+   above it has no `where`, and one nobody has written about has no number
+   (articleFor only builds the badge for entry.n) — so on a plain note the row
+   was 1.2em of nothing per card, holding two controls that are `opacity: 0`
+   until the card is reached for.
+
+   In the side-by-side pane that is not free: on a phone the pane is a THIRD of
+   the screen (styles/46-highlight-cycle.css stacks it under the page below
+   720px), and a reserved line per card is highlights not shown — the same
+   complaint the drawer rows answer, one surface along.
+
+   No floor, then: the row is as tall as what is actually in it, and on a card
+   with neither a number nor a place it is as tall as the hidden controls and no
+   taller. They are deliberately left IN the flow rather than floated into the
+   corner — the pane forces both visible (46-highlight-cycle.css:230, because a
+   phone has no hover), and a "Go to →" lifted out of the flow there would sit
+   on top of the first line of the passage it belongs to. */
 .hl-note-head {
   display: flex;
   align-items: center;
   gap: 2px;
   justify-content: flex-end;
-  min-height: 1.2em;
+  line-height: 1.2;
 }
 
 /* ── Which highlight this is ───────────────────────────────────────────────

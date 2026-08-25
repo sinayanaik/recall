@@ -945,6 +945,17 @@ export function annotationQuads(annotation, pageNumber) {
 // handler set at all.
 
 export const DOCUMENT_MARK_HANDLERS = {
+  surface: "document",
+  // No "pin". A Quick Note keeps a trimNoteAnchor'd anchor
+  // (src/quick-notes/anchors.js), and that shape has no room for `pdf` or
+  // `quads` — the two fields that are the whole of where a highlight on a paper
+  // IS. Pinning one would store the words and lose the page, so the card's "Go
+  // to notes" would fall back to searching a note that does not contain them.
+  // A row that half-works is worse than a row that is not offered, so the
+  // Document surface does not offer it. Everything else crosses intact: the
+  // text is text, the anchor carries the page for a card, and the locator is
+  // the record's own id.
+  actions: ["copy", "card", "highlights"],
   recolour: (id, color) => recolourDocumentHighlight(id, color),
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),

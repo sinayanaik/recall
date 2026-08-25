@@ -26,6 +26,11 @@ import { isFocusModeActive, isImmersive, setFocusMode, setImmersiveMode } from "
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { showToast } from "./feedback.js?v=__BUILD__";
 import { closeHelpModal } from "./help.js?v=__BUILD__";
+// Imported rather than inlined, unlike the two drawer export menus this
+// replaced: closeViewExportMenu also resets the button's aria-expanded, and a
+// second copy of that pair is a second thing to keep in step. Checked for a
+// cycle — nothing view-mode.js reaches imports this module back.
+import { closeViewExportMenu } from "./view-mode.js?v=__BUILD__";
 import { goNavBack } from "./nav-history.js?v=__BUILD__";
 import { unlockPageScroll } from "./overlays.js?v=__BUILD__";
 
@@ -55,8 +60,15 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden), close: () => closeMyDecksMoreMenu() },
   { isOpen: () => Boolean(el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")), close: () => closeAllDeckTileMenus() },
   { isOpen: () => Boolean(document.querySelector(".web-deck-export-menu:not([hidden]), .bulk-export-menu:not([hidden])")), close: () => closeWebDeckExportMenus() },
-  { isOpen: () => Boolean(el.exportMenu && !el.exportMenu.hidden), close: () => { el.exportMenu.hidden = true; } },
-  { isOpen: () => Boolean(el.exportNotesMenu && !el.exportNotesMenu.hidden), close: () => { el.exportNotesMenu.hidden = true; } },
+  // ONE export menu, where there were two. #exportMenu and #exportNotesMenu
+  // were the ☰ drawer's inline export popovers, and both are gone: their rows
+  // duplicated, row for row, what the ⇓ beside the tabs already offers.
+  //
+  // That ⇓ was never in this list, which was survivable while it was a
+  // convenience and is not now that it is the only way in — an open menu with
+  // no entry here loses the hardware Back key to goNavBack(), which would have
+  // loaded another deck out from under it.
+  { isOpen: () => Boolean(el.viewExportMenu && !el.viewExportMenu.hidden), close: () => closeViewExportMenu() },
   // The notes header's phone-only ⋯ menu. A popover like the rest of this
   // group, and it has to be in the list for the same reason they are: on a
   // phone the Back gesture is the primary dismiss, and without an entry here a

@@ -645,13 +645,31 @@ try {
     if (wide.disclosure) return "the ⋯ formatting disclosure is still there";
     if (wide.divider) return "the .selection-float-divider survived the regroup";
     if (wide.ungrouped.length) return `controls outside any group: ${wide.ungrouped.join(", ")}`;
-    const expected = ["capture", "mark", "style", "use", "cut"];
+    // Six groups now. "dismiss" is one button — a × that puts the bar away and
+    // drops the selection — and it is PHONE ONLY, which is why it is the one
+    // group allowed to be missing from the desktop pill.
+    //
+    // It exists because a phone had no visible way out of the bar: Escape has
+    // always cleared a selection and a phone has no Escape, and until
+    // src/notes/touch-selection.js grew an outside-press listener a tap
+    // anywhere but the reading surface itself did nothing at all. On a desktop
+    // the pill tracks the selection and clicking away has always dismissed it,
+    // so a button for that would be a fourteenth control earning nothing.
+    const expected = ["capture", "mark", "style", "use", "cut", "dismiss"];
+    const PHONE_ONLY = ["dismiss"];
     if (wide.order.join(",") !== expected.join(",")) {
       return `groups are ${wide.order.join(",")}, expected ${expected.join(",")}`;
     }
-    if (wide.hidden.length) return `hidden on a desktop: ${wide.hidden.join(", ")}`;
-    if (wide.reachable !== wide.buttons) {
-      return `${wide.buttons - wide.reachable} of ${wide.buttons} controls are not reachable on a desktop`;
+    const strandedOnDesktop = wide.hidden.filter((g) => !PHONE_ONLY.includes(g));
+    if (strandedOnDesktop.length) return `hidden on a desktop: ${strandedOnDesktop.join(", ")}`;
+    // ...and the phone-only group must actually BE hidden here, or the rule that
+    // excuses it above is excusing nothing and the desktop pill has grown a
+    // control it was not meant to.
+    for (const group of PHONE_ONLY) {
+      if (!wide.hidden.includes(group)) return `${group} is meant to be phone-only and is on the desktop pill`;
+    }
+    if (wide.reachable !== wide.buttons - PHONE_ONLY.length) {
+      return `${wide.buttons - PHONE_ONLY.length - wide.reachable} of ${wide.buttons - PHONE_ONLY.length} controls are not reachable on a desktop`;
     }
     if (wide.rows !== 1) return `the desktop pill wrapped onto ${wide.rows} rows`;
 
