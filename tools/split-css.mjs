@@ -358,6 +358,19 @@ const POST_SPLIT = {
     "grip\" \u2014 written once per view in 06-rendered.css, 27-highlight-notes.css " +
     "and 44-highlights-editor.css, which is how a new editable surface kept " +
     "shipping without image controls. See src/images/broken.js.",
+  "48-reading-chrome.css":
+    "\"There are three different hamburger items that may confuse the user.\" " +
+    "There were, and they were not three copies of one control — the app " +
+    "menu, the contents drawer and the reading rail wore one glyph between " +
+    "them. ☰ keeps the app menu; the contents drawer gets a contents glyph " +
+    "(its bars are drawn in the frozen 12-notes.css, so the span is stood down " +
+    "here and an <svg> sibling replaces it) and the rail gets a chevron " +
+    "edge-tab in 38-reading-rail.css. Also the other three surfaces the same " +
+    "report named: the EPUB dialog, whose .category-choice-shell has no " +
+    "max-height and no scroller so Import fell off the bottom of a phone; the " +
+    "selection bar, which mixed colour-font emoji with drawn icons across a " +
+    "scatter of circles; and the highlight menu, which was six 20px targets " +
+    "and no words.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline

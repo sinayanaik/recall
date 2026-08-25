@@ -34,6 +34,23 @@ export function imageEmbedSuffix(failedImageCount) {
   return ` (${failedImageCount} image${failedImageCount === 1 ? "" : "s"} couldn't be embedded — kept as ${failedImageCount === 1 ? "a link" : "links"})`;
 }
 
+// "An export is running, don't start a second one" — greyed out on the button
+// that was actually pressed.
+//
+// Six sites used to write `el.exportBtn.disabled` directly, and unguarded: that
+// was the ☰ drawer's "⇓ Export Cards…" row, which no longer exists (its menu
+// was row for row what the ⇓ beside the tabs already offers — see
+// VIEW_EXPORT_MENUS in src/ui/view-mode.js), so every one of them would now
+// throw on `undefined.disabled` and take the export down with it.
+//
+// One function rather than six optional chains, because there is one fact here
+// and it should have one name. #viewExportBtn is the opener in every path that
+// reaches these — the tab row's ⇓ — and it is optional too: the button is not
+// in the DOM before the app shell paints.
+function setExportBusy(busy) {
+  if (el.viewExportBtn) el.viewExportBtn.disabled = busy;
+}
+
 export async function exportCardsFlat(scope, format) {
   const cards = cardsForScope(scope);
   const title = scopeTitle(scope);
@@ -43,7 +60,7 @@ export async function exportCardsFlat(scope, format) {
   }
   const formatLabel = format === "doc" ? "Word" : "standalone HTML";
   setStatus(`Preparing ${title.toLowerCase()} ${formatLabel} export...`);
-  el.exportBtn.disabled = true;
+  setExportBusy(true);
   try {
     const docTitle = exportBaseName(scope);
     const rawBodyHtml = buildCornellFlatDocument(title, cards, { sourceTitle: state.deckTitle || state.sourceTitle });
@@ -63,7 +80,7 @@ export async function exportCardsFlat(scope, format) {
     console.error("Cards export failed", error);
     setStatus("Could not prepare the export.", "error");
   } finally {
-    el.exportBtn.disabled = false;
+    setExportBusy(false);
   }
 }
 
@@ -88,7 +105,7 @@ export async function exportNotesFlat(format) {
 
   const formatLabel = format === "doc" ? "Word" : "standalone HTML";
   setStatus(`Preparing notes ${formatLabel} export...`);
-  if (el.exportNotesBtn) el.exportNotesBtn.disabled = true;
+  setExportBusy(true);
   try {
     const rawBodyHtml = buildNotesExportBody(title, notes);
     let failedImageCount;
@@ -107,7 +124,12 @@ export async function exportNotesFlat(format) {
     console.error("Notes export failed", error);
     setStatus("Could not prepare the notes export.", "error");
   } finally {
-    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !notesForExport().trim();
+    // Plainly false, not `!notesForExport().trim()`. That expression was for
+    // the drawer's own "Export Notes…" row, which stayed disabled while the
+    // note was empty; the ⇓ that replaced it carries the cards and the
+    // document as well, so leaving it disabled after an empty-note export
+    // would take those with it.
+    setExportBusy(false);
   }
 }
 
@@ -524,7 +546,7 @@ export async function exportCardsPdf(sourceTitle, cards, options = {}) {
   }
 
   setStatus(`Preparing ${sourceTitle} Cornell PDF...`);
-  el.exportBtn.disabled = true;
+  setExportBusy(true);
   el.printRoot.innerHTML = "";
   el.printRoot.classList.add("is-preparing");
   el.printRoot.classList.remove("is-preview");
@@ -564,7 +586,7 @@ export async function exportCardsPdf(sourceTitle, cards, options = {}) {
     setStatus("Could not prepare the PDF export.", "error");
   } finally {
     closePrintPreview();
-    el.exportBtn.disabled = false;
+    setExportBusy(false);
   }
 }
 
@@ -577,7 +599,7 @@ export async function exportPdf(scope = "all") {
   }
 
   setStatus(`Preparing ${title.toLowerCase()} Cornell PDF...`);
-  el.exportBtn.disabled = true;
+  setExportBusy(true);
   el.printRoot.innerHTML = "";
   el.printRoot.classList.add("is-preparing");
   el.printRoot.classList.remove("is-preview");
@@ -616,12 +638,14 @@ export async function exportPdf(scope = "all") {
     setStatus("Could not prepare the PDF export.", "error");
   } finally {
     closePrintPreview();
-    el.exportBtn.disabled = false;
+    setExportBusy(false);
   }
 }
 
 export function handleExportAction(format, scope) {
-  el.exportMenu.hidden = true;
+  // The drawer's #exportMenu was closed here. It is gone, and the ⇓ menu that
+  // replaced it closes itself in its own dispatch (closeViewExportMenu, called
+  // before this) rather than making each export responsible for it.
   if (format === "pdf") {
     setStatus("Opening PDF export...");
     window.setTimeout(() => exportPdf(scope), 0);
@@ -651,7 +675,7 @@ export async function exportNotesPdf() {
   const title = state.deckTitle || "Notes";
 
   setStatus("Preparing notes PDF...");
-  if (el.exportNotesBtn) el.exportNotesBtn.disabled = true;
+  setExportBusy(true);
   el.printRoot.innerHTML = "";
   el.printRoot.classList.add("is-preparing");
   el.printRoot.classList.remove("is-preview");
@@ -687,7 +711,7 @@ export async function exportNotesPdf() {
     setStatus("Could not prepare the notes PDF export.", "error");
   } finally {
     closePrintPreview();
-    if (el.exportNotesBtn) el.exportNotesBtn.disabled = !notesForExport().trim();
+    setExportBusy(false);
   }
 }
 
@@ -779,7 +803,8 @@ export function handleExportDocumentAction(action) {
 }
 
 export function handleExportNotesAction(format) {
-  if (el.exportNotesMenu) el.exportNotesMenu.hidden = true;
+  // As in handleExportAction: the drawer's own #exportNotesMenu was closed
+  // here, and the ⇓ menu that replaced it closes itself before dispatching.
   if (format === "pdf") {
     setStatus("Opening notes PDF export...");
     window.setTimeout(() => exportNotesPdf(), 0);

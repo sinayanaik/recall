@@ -2386,6 +2386,63 @@ export function initTouchSelection() {
     if (event.key === "Escape" && liveRange) clearTouchSelection();
   });
 
+  // ── A press that lands outside the reading surface entirely ───────────────
+  //
+  // "Sometimes it gets involved and doesn't go away even if I click on
+  // somewhere else." It did not, and it could not: every touch listener above
+  // is bound to touchSelectionRoots() — the note, the two card faces and the
+  // document — so `dismissPending` is only ever set for a press INSIDE one of
+  // them. A press on the notes header, the tab row, the appbar, the margin
+  // beside the column, the side-by-side pane or the reading rail set nothing at
+  // all.
+  //
+  // And nothing else was going to clear it either. The reading surfaces carry
+  // `user-select: none` while this controller is armed (styles/32-touch-select
+  // .css), so the browser never collapses the selection on its own; the pill is
+  // pinned to the bottom of the screen on a phone and
+  // hideNotesSelectionButtonUnlessPinned deliberately declines to hide it on a
+  // scroll. So the bar stayed, over the words, with no way out but Escape on a
+  // device with no keyboard.
+  //
+  // Capture, and pointerdown rather than click, for the same two reasons the
+  // mark menu's own outside-press listener gives (src/notes/mark-menu.js): the
+  // note's handlers stopPropagation in places, and a press is the moment the
+  // reader has decided, not the release.
+  //
+  // What it must NOT eat:
+  //
+  //   • a press inside the surface — the touch handlers own that, and they can
+  //     tell a tap from a scroll, which is the distinction this listener has no
+  //     way to make and the reason the dismissal was moved to the touchend in
+  //     the first place (see onRootTouchStart);
+  //   • a press on the bar, or on a menu hanging off it, or on a drag handle:
+  //     that is the reader USING the selection, not leaving it;
+  //   • a press on the mark menu, which can be open over a highlight while a
+  //     selection stands somewhere else;
+  //   • and — the one that is not obvious — a press on ANY [data-render-action]
+  //     button. Those are the notes header's ⋯ rows: make a flashcard, make a
+  //     cloze, pin to Quick Notes. They sit OUTSIDE every reading root, they
+  //     act on the live selection, and they are driven by a pointerdown handler
+  //     of their own (src/main.js). This listener is capture-phase, so without
+  //     this line it would run first and throw the selection away a beat before
+  //     the button that wanted it.
+  document.addEventListener("pointerdown", (event) => {
+    if (!liveRange) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (touchSelectionRoots().some((root) => root.contains(target))) return;
+    if (target.closest("[data-render-action], [data-render-color], .selection-float, .selection-float-menu, .render-color-menu, .render-text-style-menu, .mark-menu, .touch-select-handle")) return;
+    clearTouchSelection();
+    // ...and the bar with it, explicitly. clearTouchSelection() ends in
+    // removeAllRanges(), and the pill's own hide rides on the selectionchange
+    // that fires — but removeAllRanges() on a selection the browser already
+    // considers empty fires nothing, which is exactly the state a bar left
+    // standing after an action is in. One direct call costs a few property
+    // reads (hideNotesSelectionButton returns early when there is nothing to
+    // do) and closes that gap for good.
+    hideNotesSelectionButton();
+  }, { capture: true, passive: true });
+
   window.addEventListener("resize", scheduleHandleUpdate, { passive: true });
   // The layout viewport is not the visual one on a phone. Android's URL bar
   // collapsing on a scroll, and the software keyboard opening, both move the

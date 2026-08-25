@@ -982,6 +982,34 @@ export function showEpubPreview({ title, author, chapterCount, imageEntries = []
 
     const shell = document.createElement("div");
     shell.className = "category-choice-shell epub-preview-shell";
+    // ── Head, a SCROLLING body, and a footer that is always on screen ──────
+    //
+    // "When I'm importing epub the import button is almost hidden."
+    //
+    // It was, and the dialog had no way not to be: .category-choice-shell
+    // (styles/08-panels.css) is a plain grid with no max-height and no
+    // scroller, and this is by far the tallest thing ever poured into it —
+    // two stat tiles, five quality tiles, an estimate line, two mode options
+    // with a sentence each, a 46vh chapter list and a warning. Measured on a
+    // 393x852 phone that comes to more than the viewport, so the shell simply
+    // overflowed it and the actions row went off the bottom edge. Nothing was
+    // scrollable except the chapter list, which is the one part that did not
+    // need to be.
+    //
+    // So the middle is its own box. .epub-preview-body is what scrolls; the
+    // head and the actions are pinned either side of it (see
+    // styles/48-reading-chrome.css). Every querySelector below — and every one
+    // in tools/epub-import-check.mjs — is a descendant lookup on `shell` or
+    // `modal`, so wrapping changes nothing for any of them.
+    //
+    // ── ...and the order inside it ─────────────────────────────────────────
+    //
+    // Mode first. It is the only control here that changes what you END UP
+    // with — one deck or forty-six — and it sat third, under a figure-quality
+    // row that is a refinement of something you have not chosen yet. The
+    // chapter preview goes last and folded: it is the most expensive thing in
+    // the dialog and the least urgent, and open by default it pushed the two
+    // real decisions and the Import button off a phone on its own.
     shell.innerHTML = `
       <div class="category-choice-head">
         <div>
@@ -990,36 +1018,43 @@ export function showEpubPreview({ title, author, chapterCount, imageEntries = []
         </div>
         <button type="button" data-epub-cancel aria-label="Close">&#215;</button>
       </div>
-      <div class="epub-preview-stats">
-        <div class="epub-preview-stat"><strong class="epub-preview-chapters"></strong><span>Chapters</span></div>
-        <div class="epub-preview-stat"><strong class="epub-preview-images"></strong><span>Images</span></div>
+      <div class="epub-preview-body">
+        <div class="epub-preview-stats">
+          <div class="epub-preview-stat"><strong class="epub-preview-chapters"></strong><span>Chapters</span></div>
+          <div class="epub-preview-stat"><strong class="epub-preview-images"></strong><span>Images</span></div>
+        </div>
+        <div class="epub-preview-mode" role="radiogroup" aria-label="Import as">
+          <label class="epub-preview-mode-option">
+            <input type="radio" name="epub-import-mode" value="chapters" checked>
+            <span>
+              <strong>Separate deck per chapter</strong>
+              <small>One deck per chapter (notes only), inside a new folder named after the book.</small>
+            </span>
+          </label>
+          <label class="epub-preview-mode-option">
+            <input type="radio" name="epub-import-mode" value="book">
+            <span>
+              <strong>Single deck for the whole book</strong>
+              <small>All chapters combined into one deck's notes, with chapter titles kept as headings.</small>
+            </span>
+          </label>
+        </div>
+        <div class="epub-preview-compress">
+          <p class="epub-preview-compress-label">Figure quality — one setting for every image in the book</p>
+          <p class="epub-preview-compress-total" aria-live="polite"></p>
+        </div>
+        <!-- A real <details>, not a hand-rolled toggle: it is a disclosure, the
+             element exists, and it comes with the keyboard and the accessibility
+             tree already right. The rows inside are built exactly as before and
+             still render their chapter lazily on first expand, so folding this
+             defers nothing that was not already deferred. -->
+        <details class="epub-preview-toc">
+          <summary class="epub-preview-toc-label">Preview the chapters</summary>
+          <p class="epub-preview-toc-loading">Reading chapter titles…</p>
+          <ol class="epub-preview-toc-list" hidden></ol>
+        </details>
+        <p class="restore-note epub-preview-warning" hidden></p>
       </div>
-      <div class="epub-preview-compress">
-        <p class="epub-preview-compress-label">Figure quality — one setting for every image in the book</p>
-        <p class="epub-preview-compress-total" aria-live="polite"></p>
-      </div>
-      <div class="epub-preview-mode" role="radiogroup" aria-label="Import as">
-        <label class="epub-preview-mode-option">
-          <input type="radio" name="epub-import-mode" value="chapters" checked>
-          <span>
-            <strong>Separate deck per chapter</strong>
-            <small>One deck per chapter (notes only), inside a new folder named after the book.</small>
-          </span>
-        </label>
-        <label class="epub-preview-mode-option">
-          <input type="radio" name="epub-import-mode" value="book">
-          <span>
-            <strong>Single deck for the whole book</strong>
-            <small>All chapters combined into one deck's notes, with chapter titles kept as headings.</small>
-          </span>
-        </label>
-      </div>
-      <div class="epub-preview-toc">
-        <p class="epub-preview-toc-label">Chapter preview — tap a chapter to read the note</p>
-        <p class="epub-preview-toc-loading">Reading chapter titles…</p>
-        <ol class="epub-preview-toc-list" hidden></ol>
-      </div>
-      <p class="restore-note epub-preview-warning" hidden></p>
       <div class="category-choice-actions">
         <button type="button" data-epub-cancel>Cancel</button>
         <button type="button" class="import-action-primary" data-epub-confirm>Import</button>
@@ -1031,6 +1066,11 @@ export function showEpubPreview({ title, author, chapterCount, imageEntries = []
     shell.querySelector(".epub-preview-author").textContent = author ? `by ${author}` : "";
     shell.querySelector(".epub-preview-chapters").textContent = String(chapterCount);
     shell.querySelector(".epub-preview-images").textContent = String(imageCount);
+    // The disclosure says how much is behind it. "Preview the chapters" alone
+    // is a promise with no size on it, and the number is the thing that tells
+    // you whether opening it is worth the scroll.
+    const tocSummary = shell.querySelector(".epub-preview-toc-label");
+    if (tocSummary && chapterCount) tocSummary.textContent = `Preview the chapters (${chapterCount})`;
 
     // Every object URL created to show a preview image is tracked here and
     // revoked in cleanup(), so nothing is committed to the notes and no

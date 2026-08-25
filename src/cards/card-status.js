@@ -81,14 +81,24 @@ export function updateMeta() {
   el.shuffleBtn.disabled = total < 2;
   el.resetBtn.disabled = total === 0;
   el.allCardsBtn.disabled = state.masterCards.length === 0;
-  el.exportBtn.disabled = !hasDeck && state.results.known.length === 0 && state.results.review.length === 0;
+  // Was el.exportBtn, the ☰ drawer's "⇓ Export Cards…" row, which no longer
+  // exists — its menu was row for row what the ⇓ beside the tabs already
+  // offers. Same predicate, pointed at that ⇓: nothing to export is nothing to
+  // export whichever button asks.
+  if (el.viewExportBtn) {
+    el.viewExportBtn.disabled = !hasDeck && state.results.known.length === 0 && state.results.review.length === 0;
+  }
   el.replayKnownBtn.disabled = state.results.known.length === 0;
   el.replayReviewBtn.disabled = state.results.review.length === 0;
   el.replayUncategorizedBtn.disabled = uncategorizedCards().length === 0;
   el.replayAllBtn.disabled = state.masterCards.length === 0;
   if (el.viewModeToggle) el.viewModeToggle.hidden = !hasDeck;
   refreshDocumentTab();
-  if (el.exportNotesBtn) el.exportNotesBtn.disabled = !hasDeck || !state.notes.trim();
+  // No second disable for the notes export. That line drove el.exportNotesBtn,
+  // the drawer's own row, and the ⇓ that replaced it is not per-surface — it
+  // carries the cards, the notes and the document, so greying it out for an
+  // empty NOTE would take the other two with it. The empty case is answered
+  // where it always was, by exportNotesFlat's "No notes to export."
   if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
 }
 
@@ -136,9 +146,12 @@ export function refreshDocumentTab() {
   // controls over an "Attach a PDF" panel is exactly the fault
   // styles/37-document-chrome.css opens by describing, the other way round.
   el.documentStage?.classList.toggle("has-no-document", !hasDocument);
-  // Only for a deck that is actually open: attaching a paper to nothing is not a
-  // thing to offer, and the row would sit there on the welcome screen.
-  if (el.attachPdfBtn) el.attachPdfBtn.hidden = hasDocument || !showTab;
+  // The ☰ drawer's "Attach a PDF" row was shown and hidden here, from exactly
+  // these two facts. The row is gone: the attach panel this class reveals says
+  // the same thing on the surface the paper is about to appear on, with the
+  // same picker and the same attachPdfToOpenDeck behind it, so the drawer row
+  // was a second door onto one room — in the app menu, for something scoped to
+  // one open deck.
   // Closing the deck must still take the reader off the surface — there is no
   // tab to leave by once the toggle itself is hidden. A deck whose document went
   // away underneath the open view (offloaded on another device and pulled down)

@@ -2997,14 +2997,32 @@ try {
   }`);
 
   check("the export button is on screen beside the tabs", exportMenu.visible);
+  // The invariant is that a row belongs to the surface you are looking at —
+  // asserted as "every row carries this view's prefix", which is the same thing
+  // for as long as every row IS a format of the view.
+  //
+  // "hl:open" is the exception, and it is deliberate. It is not a format of
+  // anything: it opens #exportHighlightsModal, which asks its own questions and
+  // then exports in whichever format is chosen there. It arrived when the ☰
+  // drawer's three export rows were removed as duplicates of this menu — that
+  // one had nothing here to be a duplicate OF, so rather than delete it, it
+  // became a row on the two views that can carry highlights. So it is allowed
+  // on either reading view and nowhere else, and the "no Cards row in the
+  // Document view" rule this case exists for is unchanged.
+  const surfaceRows = (rows, prefix) => rows.filter((row) => row !== "hl:open").every((row) => row.startsWith(prefix));
   check("...offering the document's own exports in the Document view",
-    exportMenu.document_.every((row) => row.startsWith("doc:"))
+    surfaceRows(exportMenu.document_, "doc:")
       && exportMenu.document_.includes("doc:annotated-pdf")
       && exportMenu.document_.includes("doc:original"),
     exportMenu.document_.join(", "));
   check("...the notes exports in Notes, and the card exports in Cards",
-    exportMenu.notes.every((row) => row.startsWith("notes:")) && exportMenu.cards.includes("pdf"),
+    surfaceRows(exportMenu.notes, "notes:") && exportMenu.cards.includes("pdf"),
     `${exportMenu.notes.length} notes row(s), ${exportMenu.cards.length} cards row(s)`);
+  check("...and the highlights export on both reading views, but not on Cards",
+    exportMenu.document_.includes("hl:open")
+      && exportMenu.notes.includes("hl:open")
+      && !exportMenu.cards.includes("hl:open"),
+    `document ${exportMenu.document_.includes("hl:open")}, notes ${exportMenu.notes.includes("hl:open")}, cards ${exportMenu.cards.includes("hl:open")}`);
 
   // ── 9. The reading rail ──────────────────────────────────────────────────
   //
@@ -3841,6 +3859,15 @@ try {
   // which makes a new deck, and "Re-attach the PDF…" lives inside a surface that
   // does not exist until meta.pdf does — so a deck whose import failed, or one
   // whose notes were written before the file was to hand, had no way in at all.
+  //
+  // The first answer was a row in the ☰ drawer. The second — "the attach pdf
+  // needs to be inside the panels itself" — was the Document tab on every deck,
+  // opening to the offer of a paper. Both shipped, and for a while both stood.
+  // The drawer row is gone now: it was the app menu carrying something scoped
+  // to one open deck, calling the identical function the panel calls, and a
+  // second door onto one room is a thing to keep in step rather than a feature.
+  // So the cases below assert the panel route AND assert that the drawer row
+  // has not come back.
   const attached = await page.evaluate(`async (bytes, name) => {
     const { api, settle } = window.__recall;
     api.closeMyDecksPanel();
@@ -3862,7 +3889,8 @@ try {
     // row, and it runs from updateMeta, which loading is what triggers.
     await api.loadDeckFromLibrary(api.state.localDeckId);
     await settle(300);
-    const rowBefore = document.getElementById("attachPdfBtn")?.hidden;
+    // The ☰ drawer's own "Attach a PDF" row, which is GONE — see below.
+    const drawerRow = Boolean(document.getElementById("attachPdfBtn"));
     const tabBefore = document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden;
 
     // ── ...and the panel that offers it ───────────────────────────────────
@@ -3896,9 +3924,9 @@ try {
 
     return {
       ok, twice,
-      rowBefore, tabBefore,
+      drawerRow, tabBefore,
       panelView, panelHeading, panelPicks, inertShown, pagerShown,
-      rowAfter: document.getElementById("attachPdfBtn")?.hidden,
+      drawerRowAfter: Boolean(document.getElementById("attachPdfBtn")),
       tabAfter: document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden,
       title: api.state.deckTitle,
       notesKept: (api.state.notes || "").indexOf("Written before the paper turned up") !== -1,
@@ -3911,8 +3939,16 @@ try {
     };
   }`, Array.from(fixture.bytes), "attached.pdf");
 
-  check("a deck created without a PDF offers a way to attach one", attached.rowBefore === false,
-    `row hidden=${attached.rowBefore}, Document tab hidden=${attached.tabBefore}`);
+  // ONE door, not two. This used to assert the ☰ drawer's "📄 Attach a PDF…"
+  // row was showing, and that row existed because the Document surface only
+  // existed once meta.pdf did. It does not any more — refreshDocumentTab puts
+  // the tab on every open deck and the panel below offers the same picker
+  // calling the same attachPdfToOpenDeck — so the drawer row was a second
+  // route onto one function, in the app menu, for something scoped to the one
+  // deck on screen. It is removed, and this is the case that keeps it removed.
+  check("a deck created without a PDF is not offered a drawer row for it",
+    attached.drawerRow === false,
+    `drawer row present=${attached.drawerRow}, Document tab hidden=${attached.tabBefore}`);
   check("...including a Document tab, on a deck that has no document",
     attached.tabBefore === false, `tab hidden=${attached.tabBefore}`);
   check("...which opens to the offer of one, inside the panel",
@@ -3932,8 +3968,14 @@ try {
     `title "${attached.title}", notes ${attached.notesKept ? "kept" : "LOST"}`);
   check("...and highlights already in the file imported with it", attached.highlights >= (fixture.annotation ? 1 : 0),
     `${attached.highlights} record(s)`);
-  check("the row goes away once the deck has a document", attached.rowAfter === true && attached.twice === false,
-    `row hidden=${attached.rowAfter}, second attach refused=${attached.twice === false}`);
+  // ...and a deck that HAS a paper is not offered a second one. The check that
+  // used to stand here read the drawer row's `hidden` for this; with the row
+  // gone, the refusal itself is the assertion — attachPdfToOpenDeck is what
+  // both routes call, and it is where "this deck already has one, use
+  // Re-attach" lives.
+  check("a deck that already has a document refuses a second attach",
+    attached.drawerRowAfter === false && attached.twice === false,
+    `drawer row present=${attached.drawerRowAfter}, second attach refused=${attached.twice === false}`);
 
   // ── A phone on its side ──────────────────────────────────────────────────
   //

@@ -239,20 +239,41 @@ function drawerRowFor(drawer, entry) {
   text.textContent = entry.text;
 
   jump.append(chip, text);
-  if (entry.note) {
-    const noted = document.createElement("span");
-    noted.className = "drawer-highlight-noted";
-    noted.textContent = "✎";
-    noted.title = "This highlight has a note on it";
-    jump.appendChild(noted);
-  }
-  // Last of the first line, so the page numbers line up as a column whether or
-  // not the row beside them carries a note.
-  if (entry.where) {
-    const where = document.createElement("span");
-    where.className = "drawer-highlight-where";
-    where.textContent = entry.where;
-    jump.appendChild(where);
+  // ── The two small things, on a line of their own under the words ─────────
+  //
+  // They used to be the third and fourth COLUMNS of the first line, beside the
+  // highlight: "in the Highlights panel the page indicators and contents are in
+  // the same row, reducing space to actual highlights". They were, and the page
+  // column was allowed up to 8em of a ~300px drawer — a third of every row
+  // spent on metadata, taken from the one thing in the row a reader recognises
+  // a passage by.
+  //
+  // A wrapper rather than two more grid cells, because these two share a line
+  // and a grid cell holds one thing. It is built only when there is something
+  // to put in it, so a row with neither a note nor a page keeps exactly the two
+  // lines it always had.
+  //
+  // Both class names, and the order they are appended in, are unchanged —
+  // tools/pdf-preview-check.mjs reads .drawer-highlight-noted and
+  // .drawer-highlight-where off the row, and both are descendant lookups a
+  // wrapper does not disturb.
+  if (entry.note || entry.where) {
+    const meta = document.createElement("span");
+    meta.className = "drawer-highlight-meta";
+    if (entry.note) {
+      const noted = document.createElement("span");
+      noted.className = "drawer-highlight-noted";
+      noted.textContent = "✎";
+      noted.title = "This highlight has a note on it";
+      meta.appendChild(noted);
+    }
+    if (entry.where) {
+      const where = document.createElement("span");
+      where.className = "drawer-highlight-where";
+      where.textContent = entry.where;
+      meta.appendChild(where);
+    }
+    jump.appendChild(meta);
   }
   // ...and the note itself, under the words it is about.
   //

@@ -27,14 +27,23 @@ let openForMark = null;
 
 // ── Whose highlight is this? ────────────────────────────────────────────────
 //
-// The menu itself is the same three controls wherever it opens: four colours, a
-// note and a remove. What differs is what "recolour" MEANS — splicing a
-// <mark>'s open tag in the markdown, or rewriting a record in
+// What differs between a note's <mark> and a paper's record is what "recolour"
+// MEANS — splicing a <mark>'s open tag in the markdown, or rewriting a record in
 // meta.pdfHighlights — so the menu is handed a set of verbs rather than
 // reaching for state.notes itself.
 //
+// `surface` and `actions` are what the second row below is built from: the
+// surface picks which highlight the shared resolvers are asked about, and the
+// list says which of the verbs make sense HERE. A row whose id is not in the
+// list is not built, which is how the Document surface drops "Pin to Quick
+// Notes" without a second appearance rule anywhere — see the note on
+// DOCUMENT_MARK_HANDLERS in src/documents/pdf-highlights.js for why that one
+// does not survive the crossing.
+//
 // The default set is the notes one, so every existing caller is unchanged.
 const NOTES_MARK_HANDLERS = {
+  surface: "notes",
+  actions: ["copy", "card", "pin", "highlights"],
   recolour: (index, color) => recolourHighlightAt(index, color),
   remove: (index) => removeHighlightAt(index),
   noteText: (index) => highlightNoteTextAt(index),
@@ -42,6 +51,57 @@ const NOTES_MARK_HANDLERS = {
 };
 
 let markHandlers = NOTES_MARK_HANDLERS;
+
+// ── ...and what the app can DO with one ────────────────────────────────────
+//
+// "After a highlight is done, when I'm clicking that, there's not much options
+// showing for it." There were three: four colours, a pencil and an ✕. Everything
+// else you might want to do with a passage you had marked — copy it, make a card
+// of it, pin it, go and read what you wrote about it — needed you to select the
+// words again, which is the one gesture that cannot reliably re-find a span with
+// tags already round it (see the header of this file).
+//
+// The verbs themselves all exist. What did not exist was a way to reach them
+// from here, and it has to be a registration rather than an import: this module
+// is reached FROM src/documents/pdf-highlights.js, which src/panels/highlight-
+// index.js imports through highlights-panel.js — so importing the index back to
+// look a highlight up would close a cycle straight through the document surface.
+// Same reason setDrawerSideBySideHandler and setDocumentAttachHandler exist:
+// src/main.js is the one file that already knows both ends.
+//
+//   resolveHighlightEntry(surface, key)
+//                           the highlight as the drawer and the panel already
+//                           describe it — { text, anchor, locator, ... }
+//   copy(text)              to the clipboard
+//   makeCard(text, anchor)  a flashcard framed from it
+//   pin(text, anchor)       a Quick Note
+//   showInHighlights(surface, locator)
+//                           the side-by-side pane, opened on this one
+let markActions = {};
+
+export function setMarkMenuActions(actions) {
+  markActions = actions && typeof actions === "object" ? actions : {};
+}
+
+// The rows of the second half, in the order they are built. `id` is what a
+// handler set names in its `actions` list; `verb` is the key in the registry
+// above, and a row whose verb has not been registered is not built either — so
+// a half-wired app degrades to the menu it always had rather than to a row that
+// does nothing.
+// The pin is DRAWN, and the rest are text glyphs on purpose. 📌 is a colour-font
+// emoji: it ignores `color`, so it paints its own red beside five glyphs that
+// take the row's ink — the same fault the selection bar's 📌 / 📋 / 🔍 were
+// replaced for, and the same one this app's own comments record for the old 🔴
+// highlight button. ⧉ + ☰ ✕ ✎ are ordinary text and take currentColor as they
+// are, so they stay as they are.
+const PIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M9.5 3.5h5l-.7 5.2 3.4 3.1v1.7H6.8v-1.7l3.4-3.1z"/><path d="M12 13.5v7"/></svg>';
+
+const MARK_MENU_ACTIONS = [
+  { id: "copy", verb: "copy", label: "Copy", icon: "&#10697;" },
+  { id: "card", verb: "makeCard", label: "Make a flashcard", icon: "&#43;" },
+  { id: "pin", verb: "pin", label: "Pin to Quick Notes", icon: PIN_ICON },
+  { id: "highlights", verb: "showInHighlights", label: "Show in Highlights", icon: "&#9776;" }
+];
 
 export function isMarkMenuOpen() {
   return Boolean(menuEl && !menuEl.hidden);
@@ -63,6 +123,15 @@ function ensureMarkMenu() {
   menuEl.setAttribute("role", "toolbar");
   menuEl.setAttribute("aria-label", "Highlight");
 
+  // ── Row one: the colours ────────────────────────────────────────────────
+  //
+  // Its own box now that there is a second row under it, and NOT because the
+  // swatches changed: every class and every data-mark-color below is the one
+  // that was there before, because tools/paged-check.mjs asks the menu for
+  // .mark-menu-swatch.is-current and [data-mark-color=green] by name and both
+  // are descendant lookups that a wrapper does not disturb.
+  const colours = document.createElement("div");
+  colours.className = "mark-menu-colors";
   MARK_HIGHLIGHT_COLORS.forEach((colour) => {
     const swatch = document.createElement("button");
     swatch.type = "button";
@@ -71,35 +140,56 @@ function ensureMarkMenu() {
     swatch.title = colour.name;
     swatch.setAttribute("aria-label", `Recolour to ${colour.name}`);
     swatch.dataset.markColor = colour.value;
-    menuEl.appendChild(swatch);
+    colours.appendChild(swatch);
   });
+  menuEl.appendChild(colours);
+
+  // ── Row two: what you can do with the passage ───────────────────────────
+  //
+  // Rows with words on them, not a second run of glyphs. Six unlabelled circles
+  // is the legibility problem the selection bar was already carrying, and this
+  // menu opens over the sentence it is about — there is room for a sentence.
+  const actions = document.createElement("div");
+  actions.className = "mark-menu-actions";
 
   // A note is Kindle-style commentary attached to the highlight (see
-  // format/highlight-notes.js) — a "written" glyph rather than a colour, so
-  // it doesn't read as an eighth swatch.
+  // format/highlight-notes.js). First, because it is the one thing here that
+  // adds to the highlight rather than taking from it or taking it elsewhere.
   const note = document.createElement("button");
   note.type = "button";
-  note.className = "mark-menu-note";
+  note.className = "mark-menu-item mark-menu-note";
   note.title = "Add or edit a note on this highlight";
-  note.setAttribute("aria-label", "Add or edit a note on this highlight");
   note.dataset.markColor = "note";
-  note.innerHTML = "&#9998;";
-  menuEl.appendChild(note);
+  note.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#9998;</span><span class="mmi-label">Add a note</span>';
+  actions.appendChild(note);
 
+  MARK_MENU_ACTIONS.forEach((row) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `mark-menu-item mark-menu-${row.id}`;
+    button.dataset.markAction = row.id;
+    button.title = row.label;
+    button.innerHTML = `<span class="mmi-ico" aria-hidden="true">${row.icon}</span><span class="mmi-label">${row.label}</span>`;
+    actions.appendChild(button);
+  });
+
+  // Last, and alone, for the same reason the selection bar's eraser is: it is
+  // the only row that destroys what you marked.
   const remove = document.createElement("button");
   remove.type = "button";
-  remove.className = "mark-menu-remove";
+  remove.className = "mark-menu-item mark-menu-remove";
   remove.title = "Remove this highlight";
-  remove.setAttribute("aria-label", "Remove this highlight");
   remove.dataset.markColor = "remove";
-  remove.innerHTML = "&#10005;";
-  menuEl.appendChild(remove);
+  remove.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#10005;</span><span class="mmi-label">Remove the highlight</span>';
+  actions.appendChild(remove);
+
+  menuEl.appendChild(actions);
 
   // pointerdown + preventDefault, like every control on the floating pill: a
   // click would first place a caret in the note, which collapses the very thing
   // being acted on and (on touch) dismisses the menu before the handler runs.
   menuEl.addEventListener("pointerdown", (event) => {
-    const button = event.target.closest("[data-mark-color]");
+    const button = event.target.closest("[data-mark-color], [data-mark-action]");
     if (!button) {
       // A press on the menu's own padding still must not reach the note.
       event.preventDefault();
@@ -110,6 +200,9 @@ function ensureMarkMenu() {
     const index = openForIndex;
     const mark = openForMark;
     const set = markHandlers;
+
+    // The verbs that act on the highlight ITSELF — its colour, its note, its
+    // existence. Unchanged, including closing before acting.
     if (button.dataset.markColor === "note") {
       // Keep the menu's own popup replaced by the note editor's, not both —
       // close before opening so they don't stack.
@@ -122,10 +215,29 @@ function ensureMarkMenu() {
       set.openNote(index, rect);
       return;
     }
+    if (button.dataset.markColor) {
+      closeMarkMenu();
+      if (index == null) return;
+      if (button.dataset.markColor === "remove") set.remove(index);
+      else set.recolour(index, button.dataset.markColor);
+      return;
+    }
+
+    // ...and the verbs that take the passage somewhere else. Every one of them
+    // needs the WORDS, which the menu does not hold — it holds an ordinal or a
+    // record id. They come from the same index the contents drawer builds its
+    // rows from, asked once, here, on a press: it is a scan of the source, and a
+    // tap is not a scroll frame.
+    const action = button.dataset.markAction;
+    const surface = set.surface || "notes";
     closeMarkMenu();
     if (index == null) return;
-    if (button.dataset.markColor === "remove") set.remove(index);
-    else set.recolour(index, button.dataset.markColor);
+    const entry = markActions.resolveHighlightEntry?.(surface, index);
+    if (!entry) return;
+    if (action === "copy") markActions.copy?.(entry.text);
+    else if (action === "card") markActions.makeCard?.(entry.text, entry.anchor);
+    else if (action === "pin") markActions.pin?.(entry.text, entry.anchor, button);
+    else if (action === "highlights") markActions.showInHighlights?.(surface, entry.locator);
   });
 
   document.body.appendChild(menuEl);
@@ -164,11 +276,30 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
   // Mark the colour it already is, so six identical circles say which one is
   // current rather than making you press one to find out.
   const current = currentColor || mark.dataset.color || "yellow";
+  const hasNote = Boolean(markHandlers.noteText(index));
   menu.querySelectorAll("[data-mark-color]").forEach((button) => {
     button.classList.toggle("is-current", button.dataset.markColor === current);
     // Resolved through the section rather than trusting the attribute: an id
     // whose entry was deleted by hand is not a note, and must not light up.
-    if (button.dataset.markColor === "note") button.classList.toggle("has-note", Boolean(markHandlers.noteText(index)));
+    if (button.dataset.markColor === "note") button.classList.toggle("has-note", hasNote);
+  });
+  // ...and the row says which of the two things pressing it will do. "Add a
+  // note" over a highlight that already has one is a row that lies about what
+  // is behind it — the same fault the bookmark buttons were fixed for.
+  const noteLabel = menu.querySelector(".mark-menu-note .mmi-label");
+  if (noteLabel) noteLabel.textContent = hasNote ? "Edit the note" : "Add a note";
+
+  // Which of the four take-it-elsewhere rows this surface can honour. Hidden
+  // rather than disabled: a row that is there and refuses is worse than one that
+  // is not there, and the set that knows is the one that was handed in.
+  const allowed = Array.isArray(markHandlers.actions) ? markHandlers.actions : [];
+  menu.querySelectorAll("[data-mark-action]").forEach((button) => {
+    const row = MARK_MENU_ACTIONS.find((r) => r.id === button.dataset.markAction);
+    // Both halves have to hold: this surface offers it, AND main.js has wired
+    // the verb behind it.
+    button.hidden = !allowed.includes(button.dataset.markAction)
+      || typeof markActions[row?.verb] !== "function"
+      || typeof markActions.resolveHighlightEntry !== "function";
   });
 
   const rect = mark.getBoundingClientRect();

@@ -234,7 +234,16 @@ const VIEW_EXPORT_MENUS = {
       ["notes:pdf", "PDF", ""],
       ["notes:html", "Standalone HTML", ""],
       ["notes:doc", "Word (.docx)", ""],
-      ["notes:markdown", "Markdown", "Highlight notes ride along as a section"]
+      ["notes:markdown", "Markdown", "Highlight notes ride along as a section"],
+      // ── The row the ☰ drawer used to hold ────────────────────────────────
+      // "Export Highlights…" was a drawer entry, three rows deep and nowhere
+      // near the thing being exported — the same complaint that put this ⇓
+      // beside the tabs for the other two. It is not a fourth FORMAT of the
+      // notes: it opens #exportHighlightsModal, which asks its own questions
+      // (context lines, chapter headings, whether the notes come too) and then
+      // exports in whichever format is chosen there. Hence the separator ahead
+      // of it and the sentence under it, rather than a fifth peer of PDF/HTML.
+      ["hl:open", "Highlights…", "Every line you marked, with its note"]
     ]
   },
   document: {
@@ -243,13 +252,17 @@ const VIEW_EXPORT_MENUS = {
       ["doc:annotated-pdf", "Annotated pages + notes", "Only the pages you wrote something about"],
       ["doc:pages-pdf", "The whole document + notes", "Every page, marked, notes underneath"],
       ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
-      ["doc:original", "The original PDF", "Byte for byte, as it arrived"]
+      ["doc:original", "The original PDF", "Byte for byte, as it arrived"],
+      // Same row, same dialog, on the surface a reader marking up a paper is
+      // actually standing on. The side-by-side pane's own ⇓
+      // (#highlightCycleExportBtn) still opens it too — that one is reachable
+      // without leaving the split.
+      ["hl:open", "Highlights…", "Every line you marked, with its note"]
     ]
   }
-  // No `highlights` entry: there is no Highlights view to export "what you are
-  // looking at" from. The highlights export is reached from the ☰ drawer and
-  // from the ⇓ in the side-by-side pane's own header, both of which open the
-  // same #exportHighlightsModal.
+  // Still no `highlights` entry keyed by view: there is no Highlights VIEW, and
+  // this table is keyed by state.viewMode. The highlights export is a row on
+  // the two views that can have highlights instead — see "hl:open" above.
 };
 
 export function paintViewExportMenu() {
@@ -268,6 +281,11 @@ export function paintViewExportMenu() {
     button.type = "button";
     button.className = "md-menu-item";
     button.dataset.viewExport = action;
+    // The highlights row is not a format of the view above it — it opens a
+    // dialog that asks its own questions — so it is set off from the run of
+    // formats rather than reading as the last of them. A class, so the rule
+    // lives in styles/48-reading-chrome.css with the rest of this work.
+    if (action === "hl:open") button.classList.add("is-view-export-aside");
     const text = document.createElement("span");
     text.textContent = label;
     if (hint) {
