@@ -249,6 +249,11 @@ export function buildMergedNotes(members) {
 
   return {
     notes,
+    // Did any deck actually contribute something to READ? The document is never
+    // empty — every member gets a marker and a `# Title` whether it has notes or
+    // not — so a caller deciding which tab to open on, or whether the request
+    // made sense at all, cannot tell by looking at the string.
+    hasNotes: entries.length > 0 || prepared.some((member) => member.body.trim()),
     noteOwner,
     originalNoteId,
     preambleById,

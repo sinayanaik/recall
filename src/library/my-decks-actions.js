@@ -1,26 +1,21 @@
 // The per-deck and bulk actions on the My Decks list: open, categorise,
 // delete.
 
-import { closeAllCardsPanel } from "../cards/all-cards-edit.js?v=__BUILD__";
-import { showCard } from "../cards/card-view.js?v=__BUILD__";
-import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { closeWebDeckExportMenus, loadWebDeck, touchLocalDeckAccess } from "../cloud/web-decks.js?v=__BUILD__";
-import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { exportMyDeck } from "../export/decks.js?v=__BUILD__";
-import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
+import { openSelectionAsOneDeck } from "./folder-deck.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
 import { forgetFolderTree, normalizeDeckCategory } from "./folders.js?v=__BUILD__";
 import { loadDeckFromLibrary } from "./local-library.js?v=__BUILD__";
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
-import { myDeckPayload, myDeckSelKey, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
+import { myDeckSelKey, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
 import { TOMBSTONE_REFUSED_MESSAGE, deleteDeckEverywhere } from "./tombstones.js?v=__BUILD__";
 import { closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { flushWorkingDeck } from "../ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseDeckCategory } from "../ui/pickers.js?v=__BUILD__";
-import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
 export function createDeckExportControl(sel, deckTitle, { compact = false } = {}) {
   const wrap = document.createElement("div");
@@ -98,53 +93,23 @@ export async function loadSelectedMyDecks(selections) {
     return;
   }
 
-  setStatus(`Loading ${selections.length} decks...`);
+  // Two or more decks are read as ONE document, exactly as a folder is
+  // (src/library/folder-deck.js): every deck's notes under its own `# Title`
+  // heading, its cards merged into one run, and every edit — a highlight, a
+  // renamed section, a card marked known — written back into the deck it
+  // belongs to.
+  //
+  // This used to build the merged deck here, from the cards alone: `state.notes
+  // = ""` threw every selected deck's notes away, so the Notes tab of a
+  // "Combined: …" deck was empty however much writing was in the decks behind
+  // it. And because it detached from the library (localDeckId = null) while
+  // resolveSaveTarget reads a null id as "mint one", the first autosave — which
+  // marking a single card known is enough to schedule — wrote the whole
+  // selection out as a BRAND-NEW deck and the next sync pushed it to every
+  // device. Merging the notes in without changing that would have made the
+  // duplicate a copy of every deck's writing as well.
   try {
-    const payloads = [];
-    for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    flushWorkingDeck();
-
-    const combinedCards = [];
-    const combinedStatusById = {};
-    const usedIds = new Set();
-    const titles = [];
-    let combinedCategory = "";
-    payloads.forEach((payload) => {
-      titles.push(payload.deck.title || "Untitled");
-      if (!combinedCategory) combinedCategory = normalizeDeckCategory(payload.deck.category);
-      payload.cards.forEach((card) => {
-        // Older decks may carry deterministic ids that collide across decks —
-        // remint on collision so statuses/navigation stay per-card.
-        let id = String(card.id);
-        while (usedIds.has(id)) id = `${id}-${Math.random().toString(36).slice(2, 6)}`;
-        usedIds.add(id);
-        combinedCards.push({ id, question: card.question, answer: card.answer });
-        const status = normalizeCardStatus(card.status);
-        if (status) combinedStatusById[id] = status;
-      });
-    });
-
-    state.deckId = null;
-    // Fresh combined deck — detach from any previously-loaded library entry so
-    // its first autosave creates a NEW deck instead of overwriting that one.
-    state.localDeckId = null;
-    state.masterCards = combinedCards;
-    resetStudyDeck(state.masterCards);
-    state.statusById = combinedStatusById;
-    state.current = 0;
-    state.deckTitle = `Combined: ${titles.join(", ")}`.slice(0, 80);
-    state.deckCategory = combinedCategory || defaultDeckCategory;
-    state.sourceTitle = state.deckTitle;
-    state.importTitleHint = state.deckTitle;
-    state.notes = "";
-    setViewMode("cards");
-
-    syncResults();
-    closeAllCardsPanel();
-    closeMyDecksPanel();
-    showCard();
-    setStatus(`Loaded ${selections.length} decks.`);
-    showToast(`Loaded ${selections.length} decks · ${combinedCards.length} cards`);
+    await openSelectionAsOneDeck(selections);
   } catch (error) {
     console.error("Failed to load selected decks", error);
     setStatus("Failed to load selected decks.", "error");

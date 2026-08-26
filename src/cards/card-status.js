@@ -45,18 +45,22 @@ export function updateMeta() {
   el.deckTitleWrap.hidden = !hasDeck;
   if (el.deckMeta2Row) el.deckMeta2Row.hidden = !hasDeck;
   if (!hasDeck) setSyncIndicator("idle");
-  // A folder open as one document is not a deck: it has no record to rename and
-  // no category of its own, so both pencils would be editing something that
-  // does not exist. The decks it is made of are renamed from their own rows in
-  // My Decks — or, for the title, by editing the section's `#` heading, which
-  // saveFolderDeck writes back as that deck's new name.
+  // Several decks open as one document are not a deck: there is no record to
+  // rename and no category of its own, so both pencils would be editing
+  // something that does not exist. The decks it is made of are renamed from
+  // their own rows in My Decks — or, for the title, by editing the section's
+  // `#` heading, which saveFolderDeck writes back as that deck's new name.
   const isFolder = Boolean(state.folderDeck);
   el.editDeckTitleBtn.disabled = !hasDeck || isFolder;
   el.editDeckTitleBtn.title = isFolder ? "Rename each deck from its own row in My Decks" : "Edit deck title";
   if (el.deckCategory) {
-    el.deckCategory.textContent = isFolder ? "FOLDER" : normalizeDeckCategory(state.deckCategory);
+    el.deckCategory.textContent = isFolder
+      ? (state.folderDeck.path ? "FOLDER" : "MERGED")
+      : normalizeDeckCategory(state.deckCategory);
     el.deckCategory.title = isFolder
-      ? `Reading every deck in ${state.folderDeck.path} as one document`
+      ? (state.folderDeck.path
+        ? `Reading every deck in ${state.folderDeck.path} as one document`
+        : `Reading ${state.folderDeck.members.length} decks as one document — edits are saved back to each of them`)
       : `Category: ${normalizeDeckCategory(state.deckCategory)}`;
   }
   if (el.editDeckCategoryBtn) {

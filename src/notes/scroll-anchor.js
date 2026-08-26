@@ -218,12 +218,12 @@ export function setCurrentReadingAnchorDeckKey(value) {
 }
 
 export function currentDeckKey() {
-  // The folder path is part of the identity, because a folder open as one
-  // document has NEITHER id — both are null by construction, which is exactly
-  // the key an unattached working deck also has. Without the path, reading a
-  // folder and then starting a new deck would look like the same place, and the
-  // anchor captured in one would be attached to the other.
-  return JSON.stringify([state.deckId || null, state.localDeckId || null, state.folderDeck?.path || null]);
+  // The merged document's key is part of the identity, because several decks
+  // open as one document have NEITHER id — both are null by construction, which
+  // is exactly the key an unattached working deck also has. Without it, reading
+  // a folder and then starting a new deck would look like the same place, and
+  // the anchor captured in one would be attached to the other.
+  return JSON.stringify([state.deckId || null, state.localDeckId || null, state.folderDeck?.key || null]);
 }
 
 export function captureCurrentReadingAnchor() {

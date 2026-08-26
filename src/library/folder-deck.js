@@ -42,6 +42,7 @@
 import { closeAllCardsPanel } from "../cards/all-cards-edit.js?v=__BUILD__";
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
+import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import {
@@ -53,6 +54,7 @@ import {
   splitMemberNoteTails,
   splitMergedNotes
 } from "../format/merged-notes.js?v=__BUILD__";
+import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
 import { cachedDeckSnapshotSync, finishSaveDeckToLibrary } from "./local-library.js?v=__BUILD__";
@@ -70,7 +72,7 @@ import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 // point the next ordinary save at whichever member happened to be written last.
 const NEVER_THE_OPEN_DECK = -1;
 
-// Is a folder REALLY the thing on screen?
+// Is a merged document REALLY the thing on screen?
 //
 // Not just `Boolean(state.folderDeck)`. Eight places in the app replace the
 // open deck (library open, cloud open, two import paths, EPUB's two, delete,
@@ -79,10 +81,14 @@ const NEVER_THE_OPEN_DECK = -1;
 // member decks. Every one of them does two things this can check instead: it
 // claims an id, and it rewrites the title. So the flag is verified against what
 // `state` actually says, and dropped the moment it disagrees.
+//
+// Against folder.title, not folder.path: a selection of decks has no path, and
+// its title is the "Combined: …" line the header shows. For a folder the two
+// are the same string, so this is the same check it always was.
 export function isFolderDeckActive() {
   const folder = state.folderDeck;
   if (!folder) return false;
-  if (state.localDeckId || state.deckId || state.deckTitle !== folder.path) {
+  if (state.localDeckId || state.deckId || state.deckTitle !== folder.title) {
     state.folderDeck = null;
     return false;
   }
@@ -91,35 +97,40 @@ export function isFolderDeckActive() {
 
 // ── Opening ────────────────────────────────────────────────────────────────
 
-export async function openFolderAsDeck(path) {
-  const folderPath = normalizeDeckCategory(path);
-  const found = decksUnderFolder(folderPath);
-  if (!found.length) {
-    // Named, because the two ways to get here look identical from the outside:
-    // the folder really is empty, or My Decks has not been painted this session
-    // and decksUnderFolder therefore has nothing to read.
-    setStatus(`No decks found in "${folderPath}".`, "error");
-    showToast(`No decks in "${folderPath}" to read`, "error");
-    return false;
-  }
+// N decks, read as one document. `entries` are { sel, title, category } — the
+// shape decksUnderFolder() returns and the shape a My Decks selection is turned
+// into — already in the order they will appear.
+//
+//   title    what the header shows, and what isFolderDeckActive verifies the
+//            merged view against — computed ONCE and used for state.deckTitle,
+//            sourceTitle, importTitleHint and folder.title alike. If those ever
+//            differ by so much as the 80-character trim, isFolderDeckActive
+//            answers false on the first autosave and the merged document is
+//            minted as a brand-new deck and synced to every device. May be a
+//            function of the members, for a selection whose titles are not
+//            known until they have been read.
+//   path     the folder this is, or null for a selection that is not one. It is
+//            the only thing that says "these decks have a home of their own".
+//   key      this document's identity for the caches and the back stack.
+//   landOn   "notes" | "cards" | "auto" — where to put the reader.
+//   onEmpty  "refuse" when a document with no notes in it means the request
+//            made no sense (a folder is opened TO READ); "cards" when it is
+//            simply a selection of decks that have no notes yet.
+export async function openDecksAsOneDeck(entries, { title, path = null, key, landOn = "auto", onEmpty = "cards", label = "" } = {}) {
+  const what = label || title;
 
   // BEFORE the payloads are read, not after. The deck being left is very often
-  // one of the folder's own decks, and its last 400ms of typing lives only in
-  // memory until this runs — reading first captured the stale copy from disk,
-  // and the merged document then wrote that stale copy back over the edit.
-  // Measured: a 2,687-character note came back as 2,658.
+  // one of these decks, and its last 400ms of typing lives only in memory until
+  // this runs — reading first captured the stale copy from disk, and the merged
+  // document then wrote that stale copy back over the edit. Measured: a 2,687-
+  // character note came back as 2,658.
   flushWorkingDeck();
 
-  setStatus(`Opening ${found.length} deck${found.length === 1 ? "" : "s"} in ${folderPath}…`);
-
-  // Alphabetical, by the title as shown in the library. localeCompare with
-  // numeric:true so "Chapter 2" sorts before "Chapter 10".
-  const ordered = found.slice().sort((a, b) =>
-    String(a.title || "").localeCompare(String(b.title || ""), undefined, { numeric: true, sensitivity: "base" }));
+  setStatus(`Opening ${entries.length} deck${entries.length === 1 ? "" : "s"} in ${what}…`);
 
   const members = [];
   const skipped = [];
-  for (const entry of ordered) {
+  for (const entry of entries) {
     // Per member, never all-or-nothing — the lesson rewriteFolderPaths already
     // learned. A cloud-only deck read offline throws, and one unreachable deck
     // must not cost the reader the other twenty.
@@ -147,14 +158,14 @@ export async function openFolderAsDeck(path) {
         cards: payload.cards || [],
       });
     } catch (error) {
-      console.warn(`Could not open "${entry.title}" as part of ${folderPath}`, error);
+      console.warn(`Could not open "${entry.title}" as part of ${what}`, error);
       skipped.push(entry.title || "Untitled");
     }
   }
 
   const writable = members.filter((member) => member.localId);
   if (!writable.length) {
-    setStatus(`Couldn't read any of the ${found.length} decks in "${folderPath}" on this device.`, "error");
+    setStatus(`Couldn't read any of the ${entries.length} decks in "${what}" on this device.`, "error");
     showToast("None of those decks could be read on this device", "error");
     return false;
   }
@@ -167,9 +178,10 @@ export async function openFolderAsDeck(path) {
   const usedIds = new Set();
   writable.forEach((member) => {
     (member.cards || []).forEach((card) => {
-      // Same remint-on-collision rule as loadSelectedMyDecks: older decks carry
-      // deterministic ids that repeat across decks, and here a collision would
-      // also mean two decks claiming the same card on the way back.
+      // Older decks carry deterministic ids that repeat across decks, and here a
+      // collision would also mean two decks claiming the same card on the way
+      // back. Reminted, and remembered so the card is written back under the id
+      // its own deck already knows it by.
       let id = String(card.id);
       while (usedIds.has(id)) id = `${id}-${Math.random().toString(36).slice(2, 6)}`;
       usedIds.add(id);
@@ -178,29 +190,47 @@ export async function openFolderAsDeck(path) {
       if (status) statusById[id] = status;
       if (card.category) categoryById[id] = card.category;
       cardOwner[id] = member.localId;
-      // Remembered so a card whose id was reminted is written back under the id
-      // its own deck already knows it by — the remint exists only to keep the
-      // merged view's per-card state apart, and must not leak into the deck.
       if (id !== String(card.id)) originalCardId[id] = String(card.id);
     });
   });
 
-  // Built in full BEFORE anything is assigned, and refused if it came out
-  // empty. Everything above this line is reads; everything below is writes.
-  // Interleaving them is how a throw halfway through leaves `state` describing
-  // a deck that does not exist — the open deck replaced, the notes not yet
-  // written, and all three tabs blank with no way back but a reload.
-  const { notes: mergedNotes, noteOwner, originalNoteId, preambleById, protectedNoteIds } = buildMergedNotes(writable);
-  if (!mergedNotes.trim()) {
-    setStatus(`The decks in "${folderPath}" have no notes to read.`, "error");
-    showToast(`Nothing to read in "${folderPath}"`, "error");
+  // Built in full BEFORE anything is assigned. Everything above this line is
+  // reads; everything below is writes. Interleaving them is how a throw halfway
+  // through leaves `state` describing a deck that does not exist — the open deck
+  // replaced, the notes not yet written, and all three tabs blank with no way
+  // back but a reload.
+  // Resolved here, where the members are known and nothing has been assigned yet.
+  const resolvedTitle = typeof title === "function" ? title(writable) : title;
+
+  const { notes: mergedNotes, hasNotes, noteOwner, originalNoteId, preambleById, protectedNoteIds } = buildMergedNotes(writable);
+  if (!hasNotes && !cards.length) {
+    setStatus(`Those decks have nothing in them to open.`, "error");
+    showToast(`Nothing to open in ${what}`, "error");
     return false;
   }
+  if (!hasNotes && onEmpty === "refuse") {
+    setStatus(`The decks in "${what}" have no notes to read.`, "error");
+    showToast(`Nothing to read in ${what}`, "error");
+    return false;
+  }
+
+  // The raw editor is not part of `state` and survives a deck swap holding the
+  // OUTGOING note — so the next keystroke would write that note into this
+  // document. Discarded before state.notes is replaced, exactly as
+  // loadDeckSnapshot does it, rather than left to the last-resort re-seed in
+  // setViewMode.
+  discardNotesEditingForDeckSwap();
 
   state.deckId = null;
   state.localDeckId = null;
   state.folderDeck = {
-    path: folderPath,
+    kind: path ? "folder" : "selection",
+    path,
+    // Verified against state.deckTitle on every save (isFolderDeckActive), so
+    // this is the very string that was assigned there, not a second computation
+    // of it.
+    title: resolvedTitle,
+    key,
     members: writable,
     cardOwner,
     originalCardId,
@@ -210,7 +240,7 @@ export async function openFolderAsDeck(path) {
     // Union of the members' document-highlight ids. pruneOrphanHighlightNotes
     // reads state.meta.pdfHighlights to decide which entries still have a
     // highlight behind them, and the merged view's meta is empty by design —
-    // so without this, removing ANY highlight while reading a folder would
+    // so without this, removing ANY highlight while reading these decks would
     // sweep every paper's annotations out of every member deck at once.
     protectedNoteIds,
     readOnlyCount: members.length - writable.length
@@ -219,14 +249,19 @@ export async function openFolderAsDeck(path) {
   resetStudyDeck(state.masterCards);
   state.statusById = statusById;
   state.categoryById = categoryById;
+  // Emptied, not carried: the meta bag belongs to a DECK — its PDF, its reading
+  // position, its quick-note categories — and this is not one. A bag left over
+  // from the deck that was open before would put that deck's paper on this
+  // document's Document tab (refreshDocumentTab reads state.meta.pdf) and be
+  // written into every member on the first save.
   state.meta = {};
   state.current = 0;
-  state.deckTitle = folderPath;
-  state.deckCategory = folderPath;
-  state.sourceTitle = folderPath;
-  state.importTitleHint = folderPath;
+  state.deckTitle = resolvedTitle;
+  state.deckCategory = path || defaultDeckCategory;
+  state.sourceTitle = resolvedTitle;
+  state.importTitleHint = resolvedTitle;
   state.notes = mergedNotes;
-  setViewMode("notes");
+  setViewMode(landOn === "auto" ? (hasNotes ? "notes" : "cards") : landOn);
 
   syncResults();
   closeAllCardsPanel();
@@ -234,8 +269,8 @@ export async function openFolderAsDeck(path) {
   showCard();
 
   const note = `${writable.length} deck${writable.length === 1 ? "" : "s"} · ${cards.length} card${cards.length === 1 ? "" : "s"}`;
-  setStatus(`Reading ${folderPath} — ${note}. Edits are saved back to each deck.`);
-  showToast(`Reading ${folderPath} · ${note}`);
+  setStatus(`Reading ${resolvedTitle} — ${note}. Edits are saved back to each deck.`);
+  showToast(`Reading ${note} as one document · edits save back to each deck`);
   if (skipped.length) {
     showToast(
       `${skipped.length} deck${skipped.length === 1 ? "" : "s"} couldn't be opened: ${skipped.slice(0, 2).join(", ")}` +
@@ -244,6 +279,72 @@ export async function openFolderAsDeck(path) {
     );
   }
   return true;
+}
+
+export async function openFolderAsDeck(path) {
+  const folderPath = normalizeDeckCategory(path);
+  const found = decksUnderFolder(folderPath);
+  if (!found.length) {
+    // Named, because the two ways to get here look identical from the outside:
+    // the folder really is empty, or My Decks has not been painted this session
+    // and decksUnderFolder therefore has nothing to read.
+    setStatus(`No decks found in "${folderPath}".`, "error");
+    showToast(`No decks in "${folderPath}" to read`, "error");
+    return false;
+  }
+
+  // Alphabetical, by the title as shown in the library. localeCompare with
+  // numeric:true so "Chapter 2" sorts before "Chapter 10".
+  const ordered = found.slice().sort((a, b) =>
+    String(a.title || "").localeCompare(String(b.title || ""), undefined, { numeric: true, sensitivity: "base" }));
+
+  return openDecksAsOneDeck(ordered, {
+    title: folderPath,
+    path: folderPath,
+    key: folderDeckKey(folderPath),
+    // A folder is opened TO READ, so it lands on the notes and says so when
+    // there is nothing there.
+    landOn: "notes",
+    onEmpty: "refuse"
+  });
+}
+
+// The same thing for a My Decks selection: the decks the reader ticked, in the
+// order they are looking at them.
+//
+// Deliberately NOT special-cased when the selection happens to be every deck in
+// one folder. That is a fact that can change between two identical clicks — a
+// deck added on another device, a search filter narrowing what a ticked folder
+// even covers — and behaviour that depends on it is behaviour nobody can
+// predict. The two differ in what they are: a folder has a path, which is the
+// decks' home and their category; a selection has none and must re-file
+// nothing.
+export async function openSelectionAsOneDeck(selections) {
+  return openDecksAsOneDeck(selections.map((sel) => ({ sel, title: "", category: "" })), {
+    // Only known once the decks have been read — a selection carries ids, not
+    // titles.
+    title: (members) => `Combined: ${members.map((member) => member.title || "Untitled").join(", ")}`.slice(0, 80),
+    path: null,
+    key: selectionDeckKey(selections),
+    // A selection can be decks with notes, decks with only cards, or both, so it
+    // lands on whichever surface actually received something. Refusing it for
+    // having no notes would break the one thing a bulk Load already did.
+    landOn: "auto",
+    onEmpty: "cards",
+    label: `${selections.length} selected decks`
+  });
+}
+
+// The identity of a merged document, for the render cache, the reading anchor
+// and the back stack — none of which can use a deck id, because a merged view
+// has neither. Sorted for a selection so the same decks picked in a different
+// order are the same place to go back to.
+export function folderDeckKey(path) {
+  return `folder:${path}`;
+}
+
+export function selectionDeckKey(selections) {
+  return `selection:${selections.map((sel) => `${sel.localId || ""}|${sel.deckId || ""}`).sort().join(",")}`;
 }
 
 // ── Writing back ───────────────────────────────────────────────────────────
@@ -336,10 +437,10 @@ export function saveFolderDeckSync() {
       member.title = title;
       written += 1;
     } catch (error) {
-      console.warn(`Could not flush "${member.title}" back from ${folder.path}`, error);
+      console.warn(`Could not flush "${member.title}" back from ${folder.title}`, error);
     }
   }
-  return written ? { id: null, title: folder.path, folder: true } : null;
+  return written ? { id: null, title: folder.title, folder: true } : null;
 }
 
 export async function saveFolderDeck({ silent = true } = {}) {
@@ -369,7 +470,7 @@ export async function saveFolderDeck({ silent = true } = {}) {
       member.title = title;
       written += 1;
     } catch (error) {
-      console.warn(`Could not save "${member.title}" back from ${folder.path}`, error);
+      console.warn(`Could not save "${member.title}" back from ${folder.title}`, error);
     }
   }
 
@@ -377,7 +478,7 @@ export async function saveFolderDeck({ silent = true } = {}) {
     setStatus(`Saved ${written} of ${folder.members.length} decks.`, "error");
   }
   // A truthy return is what the autosave reads as "saved" for the sync pill.
-  return written ? { id: null, title: folder.path, folder: true } : null;
+  return written ? { id: null, title: folder.title, folder: true } : null;
 }
 
 // A member deck's snapshot: its previous one with the notes, title and cards
@@ -393,7 +494,11 @@ export function memberSnapshot(member, previousSnapshot, notes, title, cards) {
     version: 1,
     exportedAt: new Date().toISOString(),
     deckTitle: title,
-    deckCategory: normalizeDeckCategory(previous.deckCategory || member.category || state.folderDeck?.path),
+    // The deck's OWN category, never the merged view's. A selection can span
+    // several folders, and falling back to the view's category — as this did
+    // while a merged view could only ever be one folder — would re-file every
+    // deck in it under whichever folder happened to be open.
+    deckCategory: normalizeDeckCategory(previous.deckCategory || member.category),
     notes,
     sourceTitle: previous.sourceTitle || title,
     importTitleHint: previous.importTitleHint || "",
