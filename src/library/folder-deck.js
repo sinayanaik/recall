@@ -46,9 +46,11 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import {
   buildMergedNotes,
+  memberNotesFromMerged,
   mergedSectionBody,
   mergedSplitProblem,
   ownerForNewCard,
+  splitMemberNoteTails,
   splitMergedNotes
 } from "../format/merged-notes.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
@@ -129,7 +131,19 @@ export async function openFolderAsDeck(path) {
         localId: entry.sel.localId ? String(entry.sel.localId) : null,
         deckId: payload.deck?.id ? String(payload.deck.id) : (entry.sel.deckId || null),
         title: String(payload.deck?.title || entry.title || "Untitled deck"),
+        // Its own category, carried so memberSnapshot can put the deck back
+        // where it was. Without it a write-back has nothing but the merged
+        // view's own category to fall back on, which for a selection spanning
+        // several folders would re-file every deck in it.
+        category: normalizeDeckCategory(payload.deck?.category || entry.category),
         notes: String(payload.deck?.notes || ""),
+        // The ids of highlights that live on the PDF rather than in the note.
+        // They own entries in the highlight-notes block but appear in no body,
+        // so pruneOrphanHighlightNotes cannot see them from the merged view —
+        // see protectedNoteIds below.
+        documentNoteIds: (payload.deck?.meta?.pdfHighlights || [])
+          .map((record) => record?.id)
+          .filter(Boolean),
         cards: payload.cards || [],
       });
     } catch (error) {
@@ -176,7 +190,7 @@ export async function openFolderAsDeck(path) {
   // Interleaving them is how a throw halfway through leaves `state` describing
   // a deck that does not exist — the open deck replaced, the notes not yet
   // written, and all three tabs blank with no way back but a reload.
-  const mergedNotes = buildMergedNotes(writable);
+  const { notes: mergedNotes, noteOwner, originalNoteId, preambleById, protectedNoteIds } = buildMergedNotes(writable);
   if (!mergedNotes.trim()) {
     setStatus(`The decks in "${folderPath}" have no notes to read.`, "error");
     showToast(`Nothing to read in "${folderPath}"`, "error");
@@ -185,7 +199,22 @@ export async function openFolderAsDeck(path) {
 
   state.deckId = null;
   state.localDeckId = null;
-  state.folderDeck = { path: folderPath, members: writable, cardOwner, originalCardId, readOnlyCount: members.length - writable.length };
+  state.folderDeck = {
+    path: folderPath,
+    members: writable,
+    cardOwner,
+    originalCardId,
+    noteOwner,
+    originalNoteId,
+    preambleById,
+    // Union of the members' document-highlight ids. pruneOrphanHighlightNotes
+    // reads state.meta.pdfHighlights to decide which entries still have a
+    // highlight behind them, and the merged view's meta is empty by design —
+    // so without this, removing ANY highlight while reading a folder would
+    // sweep every paper's annotations out of every member deck at once.
+    protectedNoteIds,
+    readOnlyCount: members.length - writable.length
+  };
   state.masterCards = cards;
   resetStudyDeck(state.masterCards);
   state.statusById = statusById;
@@ -242,8 +271,14 @@ export function planFolderDeckWrite({ announce = true } = {}) {
   }
   if (announce) folderDeckRefusalShown = false;
 
-  const { sections } = splitMergedNotes(state.notes);
-  const bodyById = new Map(sections.map((section) => [section.localId, mergedSectionBody(section)]));
+  const { sections, tail } = splitMergedNotes(state.notes);
+  // The merged document's one highlight-notes block, cut back into a tail per
+  // deck. Done ONCE here rather than per member: the block is parsed by a walk
+  // whose cost grows with the number of annotations, and this runs on every
+  // autosave.
+  const shareById = splitMemberNoteTails(tail, sections, folder);
+  const bodyById = new Map(sections.map((section) =>
+    [section.localId, memberNotesFromMerged(mergedSectionBody(section), shareById.get(section.localId))]));
   const titleById = new Map(sections.map((section) => [section.localId, section.title]));
 
   // Cards, back to the deck each came from. state.masterCards is the live list,

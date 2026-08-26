@@ -299,6 +299,23 @@ export function pruneOrphanHighlightNotes(source) {
       if (isHighlightNoteId(record?.id)) live.add(record.id);
     });
   }
+  // ── The third source, and the one with no meta to read ────────────────────
+  //
+  // Several decks open as ONE document (a folder read as one deck, a bulk Load
+  // of a selection) have no meta bag of their own: state.meta is {} by design,
+  // because the merged view is not a deck and must not carry one deck's PDF,
+  // reading position or quick-note categories. The members' papers are still
+  // in the document though, and their notes are in the block this prunes — so
+  // read from the body alone, every one of them is an orphan, and removing a
+  // single highlight anywhere in the merged note would sweep every paper's
+  // annotations out of every deck at once. The ids are collected at open (see
+  // src/library/folder-deck.js) under whatever id the merge is using for them.
+  const protectedIds = state.folderDeck?.protectedNoteIds;
+  if (Array.isArray(protectedIds)) {
+    protectedIds.forEach((id) => {
+      if (isHighlightNoteId(id)) live.add(id);
+    });
+  }
   const entries = parseFencedHighlightNoteEntries(upgraded, span);
   if (entries.every((entry) => live.has(entry.id))) return upgraded;
   const preamble = highlightNoteBlockPreamble(upgraded, span, entries);
