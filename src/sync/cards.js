@@ -231,8 +231,20 @@ export function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbac
   // Retire the tombstones the cloud has already honoured. Keeping them past
   // that point would block a card the user later re-creates with the same id
   // (a restore from backup, say) from ever syncing again.
+  //
+  // But retirement is an inference from ABSENCE, exactly like dropping a clean
+  // local-only card above — so it takes the same refusal. On a blank read
+  // `cloudIds` is empty, which read as "the cloud has honoured every one of
+  // them" and threw away the only evidence the deletions ever happened. The next
+  // healthy sync then found the cards still in the cloud with nothing to block
+  // them, adopted them back, and re-pushed them to every device: the deletion
+  // un-happening, which is the one thing this whole mechanism exists to stop.
+  // A read we would not delete a card on is not a read we may retire a
+  // tombstone on.
   const deletedCardIds = pruneCardTombstones(
-    Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudIds.has(id)))
+    cloudLooksBlank
+      ? tombstones
+      : Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudIds.has(id)))
   );
 
   return { cards: merged, keptLocal, blockedResurrections, deletedCardIds };
@@ -309,10 +321,15 @@ export function reconcileCardsBeforePush(snapshot, cloudCards) {
     });
   }
 
-  // Same retirement rule as the pull: a tombstone whose card is no longer in the
-  // cloud has done its job.
+  // Same retirement rule as the pull, and the same refusal with it: a tombstone
+  // whose card is no longer in the cloud has done its job, but only a read we
+  // actually believe can establish that. `cloudById` is empty on a blank read,
+  // which retired every tombstone on the strength of the very response this
+  // function has just declined to prune cards on.
   const deletedCardIds = pruneCardTombstones(
-    Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudById.has(id)))
+    cloudLooksBlank
+      ? tombstones
+      : Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudById.has(id)))
   );
 
   return { cards, dropped, adopted, deletedCardIds };
