@@ -52,6 +52,7 @@ import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { registerRenderTarget, renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { addRegionPreview } from "./highlights-panel.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { documentHighlightNote, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
 
 export const HL_NOTES_CLASS = "hl-notes";
@@ -255,6 +256,24 @@ function paintNoteBody(article, entry) {
 // Scoping BOTH the surface's view (this quote, holding only its own images) and
 // its source (the slice, not the whole note) to the same span is what makes the
 // shell↔markdown matching inside enhanceSurfaceImageControls valid.
+//
+// ── Every card below this one is holding offsets that have just moved ──────
+//
+// A write here splices state.notes at THIS entry's [rawStart, rawEnd), and the
+// note gets shorter or longer by the difference. Every other card in the pane
+// was measured against the note as it was before that, so each one below is now
+// off by exactly that difference — and this was the one write path in the app
+// that did not announce itself, so nothing re-derived them. Deleting an image
+// in one card and then in a second overwrote a window starting N characters
+// past the second card's real line: whatever lived in the gap — prose, and any
+// pictures in it — was destroyed, and the card's own quote was duplicated over
+// the top. Two presses, several images gone.
+//
+// So: announce the write (notifyHighlightsChanged, exactly as every other
+// highlight write does), and refuse one whose window no longer holds what this
+// card is showing. The second is a net under the first — with the entries
+// re-derived it should never fire — and a refusal costs the reader one press,
+// where the splice it replaces cost them the paragraph.
 function paintQuote(quote, entry) {
   if (!entry.span) return renderMarkdown(quote, entry.markdown);
   const notesConfig = renderTargetConfig("notes");
@@ -263,10 +282,19 @@ function paintQuote(quote, entry) {
     getSource: () => entry.markdown,
     setSource: (slice) => {
       const notes = state.notes || "";
+      if (notes.slice(entry.span.rawStart, entry.span.rawEnd) !== entry.markdown) {
+        showToast("That highlight has moved in the note — reopen the panel to edit it", "error");
+        return;
+      }
       const updated = notes.slice(0, entry.span.rawStart) + slice + notes.slice(entry.span.rawEnd);
       notesConfig.setSource(updated); // pushNotesUndo + state.notes write + raw-editor/history sync
       entry.span.rawEnd = entry.span.rawStart + slice.length;
       entry.markdown = slice;
+      // Every sibling entry's offsets moved by (slice.length - the old length).
+      // Re-derived rather than adjusted here, because the panel already knows
+      // how to collect them and an adjustment would be a second definition of
+      // where a highlight is.
+      notifyHighlightsChanged();
     },
     rerender: () => {
       notesConfig.rerender(); // keeps the Notes tab in step even while it is off-screen
