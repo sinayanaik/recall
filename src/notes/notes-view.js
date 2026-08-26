@@ -469,8 +469,16 @@ export function discardNotesEditingForDeckSwap() {
   // would make Ctrl+Z paste the previous deck's note into this one — the same
   // class of mistake the `startedIn` guard in extractSelectionToNote exists for.
   clearNotesHistory();
+  // The clear comes FIRST, and unconditionally. It used to sit behind this
+  // early return, so an editor that had already been committed — hidden, but
+  // never emptied — kept the outgoing note's whole body in .value. Nothing
+  // reads a hidden textarea by hand, but an `input` event on it does (see the
+  // listener in main.js and replaceInTextarea in src/images/upload.js), and a
+  // synthetic one from an upload landing after the deck swap copied deck A's
+  // note into deck B. That is the same corruption the paragraph above says was
+  // fixed for keystrokes; it was only ever half fixed.
+  if (el.notesEdit) el.notesEdit.value = "";
   if (!isNotesEditing()) return;
-  el.notesEdit.value = "";
   // The mirror holds its own copy of the text (see refreshHighlightBackdrop);
   // left alone it keeps painting the old note behind the empty textarea.
   refreshHighlightBackdrop(el.notesEdit);

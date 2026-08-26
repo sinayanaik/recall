@@ -18,6 +18,11 @@ import { LOCAL_DECK_TOMBSTONES_KEY, clearMissingDeckWatch } from "../storage/key
 import { deckAutosaveTimer, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
+// What a reader is told when a deletion is declined because its tombstone could
+// not be recorded. One definition, because three call sites say it.
+export const TOMBSTONE_REFUSED_MESSAGE =
+  "Storage is full, so this deck was left in place — deleting it without a record would let it come back on the next sync.";
+
 export function readDeckTombstones() {
   try {
     const map = JSON.parse(localStorage.getItem(LOCAL_DECK_TOMBSTONES_KEY) || "{}");
@@ -27,8 +32,29 @@ export function readDeckTombstones() {
   }
 }
 
+// ── The one write on a deletion path that could throw ─────────────────────
+//
+// localStorage throws on a full store, and every other writer of it in this
+// tree is wrapped for that (my-decks-prefs.js, folders.js, reading-position.js,
+// keys.js). This one was not — so under quota pressure, which this app
+// anticipates and handles everywhere else, tombstoneDeck threw and took the
+// deletion with it: removeDecksMissingFromCloud abandoned its loop partway,
+// having already deleted the decks it had got to.
+//
+// Worse than the throw is what a caller that swallowed it would leave behind: a
+// deck deleted locally with no record that the deletion was deliberate, which
+// the next reconcile reads as "present in the cloud, absent here" and re-adopts.
+// A deletion that un-happens is precisely the failure this module exists to
+// prevent, so this reports whether the record is really on disk and its callers
+// decline to delete when it is not.
 export function writeDeckTombstones(map) {
-  localStorage.setItem(LOCAL_DECK_TOMBSTONES_KEY, JSON.stringify(map));
+  try {
+    localStorage.setItem(LOCAL_DECK_TOMBSTONES_KEY, JSON.stringify(map));
+    return true;
+  } catch (error) {
+    console.warn("Could not write the deck tombstones", error);
+    return false;
+  }
 }
 
 export function isDeckTombstoned(deckId) {
@@ -63,20 +89,21 @@ export function deckTombstoneOrigin(deckId) {
   return entry.origin === TOMBSTONE_ORIGIN_INFERRED ? TOMBSTONE_ORIGIN_INFERRED : TOMBSTONE_ORIGIN_USER;
 }
 
+// True when the tombstone is recorded — see writeDeckTombstones. A deck with no
+// deckId has nothing to tombstone and is vacuously fine.
 export function tombstoneDeck(deckId, origin = TOMBSTONE_ORIGIN_USER) {
-  if (!deckId) return;
+  if (!deckId) return true;
   const map = readDeckTombstones();
   map[String(deckId)] = { at: new Date().toISOString(), origin };
-  writeDeckTombstones(map);
+  return writeDeckTombstones(map);
 }
 
 export function clearDeckTombstone(deckId) {
-  if (!deckId) return;
+  if (!deckId) return true;
   const map = readDeckTombstones();
-  if (map[String(deckId)] !== undefined) {
-    delete map[String(deckId)];
-    writeDeckTombstones(map);
-  }
+  if (map[String(deckId)] === undefined) return true;
+  delete map[String(deckId)];
+  return writeDeckTombstones(map);
 }
 
 // ── Un-deleting a deck (restore from backup) ────────────────────────────────
@@ -207,7 +234,10 @@ export function removeDecksMissingFromCloud(entries) {
     // user has now confirmed, so they tombstone as "user" — that record already
     // exists in the cloud, and matching it keeps the deck from bouncing back.
     // Entries derived purely from absence stay "inferred" and local-only.
-    tombstoneDeck(deckId, entry.origin === TOMBSTONE_ORIGIN_USER ? TOMBSTONE_ORIGIN_USER : TOMBSTONE_ORIGIN_INFERRED);
+    // Skipped rather than deleted when the record cannot be written: a deck
+    // removed with no tombstone is one the next reconcile re-adopts, and this
+    // loop runs over several at once.
+    if (!tombstoneDeck(deckId, entry.origin === TOMBSTONE_ORIGIN_USER ? TOMBSTONE_ORIGIN_USER : TOMBSTONE_ORIGIN_INFERRED)) continue;
     clearMissingDeckWatch(deckId);
     if (!meta) continue;
     const wasActive = state.deckId && String(state.deckId) === deckId;
@@ -236,7 +266,11 @@ export async function deleteDeckEverywhere({ localId = null, deckId = null } = {
     (localId && state.localDeckId && String(localId) === String(state.localDeckId)) ||
     (deckId && state.deckId && String(deckId) === String(state.deckId));
 
-  if (deckId) tombstoneDeck(deckId);
+  // The tombstone first, and nothing else if it could not be written: deleting
+  // the deck anyway would leave no record that the deletion was deliberate, and
+  // the next reconcile brings it straight back. `refused` is how the caller
+  // knows to say so instead of reporting a delete that did not happen.
+  if (!tombstoneDeck(deckId)) return { cloudError: null, refused: true };
   if (localId) deleteDeckFromLibrary(localId);
   if (state.deckId && String(state.deckId) === String(deckId)) state.deckId = null;
   if (wasActiveDeck) resetActiveDeckAfterDelete();
@@ -261,7 +295,7 @@ export async function deleteDeckEverywhere({ localId = null, deckId = null } = {
     const { error } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().eq("id", deckId).abortSignal(signal)), CLOUD_TIMEOUT_MS, "delete deck");
     cloudError = error || null;
   }
-  return { cloudError };
+  return { cloudError, refused: false };
 }
 
 export async function renameDeckInLibrary(id, title) {

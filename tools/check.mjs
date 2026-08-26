@@ -54,7 +54,14 @@
 //                   cloud row driven through the real merge, in the order the
 //                   reconcile calls it. Pure Node: the merge is string-and-object
 //                   work by design, so this needs neither a browser nor the
-//                   pre-modular tag the sync checks below rest on
+//                   pre-modular tag the sync checks below rest on. It also asks
+//                   whether the deck they live on ever gets SAVED: a paper is
+//                   the one deck shape that is empty by every other measure (no
+//                   cards, and a body that is empty because the PDF is the
+//                   document), so a save predicate spelled out twice can
+//                   disagree about it — and one did, the navigation flush
+//                   restating it and dropping the last 400ms of highlighting on
+//                   every PDF deck
 //   image-controls  does every image the renderer renders get a resize grip and
 //                   a delete button — including the ones in a table cell, a
 //                   link, or an HTML block that had none for as long as they

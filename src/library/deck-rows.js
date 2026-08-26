@@ -8,7 +8,7 @@ import { createDeckExportControl, deckCardInfo, deckSelOf, loadDeckEntry } from 
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { createDeckCategoryControl, createDeckSelectCell, formatLocalDeckSavedDate, formatLocalDeckSavedDateShort, renameMyDeck } from "./my-decks-selection.js?v=__BUILD__";
-import { deleteDeckEverywhere } from "./tombstones.js?v=__BUILD__";
+import { TOMBSTONE_REFUSED_MESSAGE, deleteDeckEverywhere } from "./tombstones.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Tile actions carry an icon plus a label the phone layout drops, so a tile
@@ -41,17 +41,19 @@ export function buildDeckRenameButton(sel, deck) {
 export function deleteDeckEntry(deck, kind) {
   if (kind === "cloud") {
     showConfirmModal(`Delete "${deck.title || "this deck"}" from the cloud? This cannot be undone.`, async () => {
-      const { cloudError } = await deleteDeckEverywhere({ localId: null, deckId: deck.id });
+      const { cloudError, refused } = await deleteDeckEverywhere({ localId: null, deckId: deck.id });
       renderMyDecksList();
-      showToast(cloudError ? "Delete failed — will retry on next sync" : "Deck deleted everywhere", "info");
+      if (refused) showToast(TOMBSTONE_REFUSED_MESSAGE, "error");
+      else showToast(cloudError ? "Delete failed — will retry on next sync" : "Deck deleted everywhere", "info");
     }, { confirmLabel: "Delete", danger: true });
   } else {
     const inCloud = Boolean(deck.deckId);
     const scope = inCloud ? "from this device and the cloud" : "from this device";
     showConfirmModal(`Delete "${deck.title || "this deck"}" ${scope}? This cannot be undone.`, async () => {
-      const { cloudError } = await deleteDeckEverywhere({ localId: deck.id, deckId: deck.deckId || null });
+      const { cloudError, refused } = await deleteDeckEverywhere({ localId: deck.id, deckId: deck.deckId || null });
       renderMyDecksList();
-      if (cloudError) showToast("Deleted here — cloud delete will retry on next sync", "info");
+      if (refused) showToast(TOMBSTONE_REFUSED_MESSAGE, "error");
+      else if (cloudError) showToast("Deleted here — cloud delete will retry on next sync", "info");
       else showToast(inCloud ? "Deck deleted everywhere" : "Deck deleted from device", "info");
     }, { confirmLabel: "Delete", danger: true });
   }

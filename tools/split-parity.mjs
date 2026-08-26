@@ -1288,6 +1288,57 @@ const ACCEPTED = {
     "else points at this\", the storage object was deleted, and every remaining " +
     "copy in the deck became a broken picture at once. imageMatchKey is the " +
     "identity every other comparison in that file already uses.",
+  // ── A deletion that un-happened, and a save that never happened ─────────
+  // Four entries below are one story: a write on a data-safety path that could
+  // fail, or could disagree with the predicate it was supposed to share.
+  writeDeckTombstones:
+    "Wrapped in try/catch and reports whether the record reached disk. It was " +
+    "the ONLY localStorage write on a deletion path not wrapped — every other " +
+    "writer in the tree is (my-decks-prefs.js, folders.js, reading-position.js, " +
+    "keys.js) — so under quota pressure, which this app anticipates and handles " +
+    "everywhere else, tombstoneDeck threw and took the deletion with it: " +
+    "removeDecksMissingFromCloud abandoned its loop partway, having already " +
+    "deleted the decks it had reached. Worse is what a caller that swallowed " +
+    "the throw would leave: a deck deleted with no record that the deletion was " +
+    "deliberate, which the next reconcile reads as present-in-cloud, " +
+    "absent-here and re-adopts. A deletion that un-happens is the failure this " +
+    "module exists to prevent.",
+  tombstoneDeck:
+    "Returns whether the tombstone was recorded — see writeDeckTombstones. A " +
+    "deck with no deckId has nothing to tombstone and answers true.",
+  clearDeckTombstone:
+    "Returns whether the write landed, for the same reason, and skips the " +
+    "read-modify-write entirely when there is no entry to clear.",
+  removeDecksMissingFromCloud:
+    "Skips a deck whose tombstone could not be written instead of deleting it " +
+    "anyway. This loop runs over several decks during a reconcile, and one that " +
+    "goes without its record comes straight back on the next one.",
+  deleteDeckEverywhere:
+    "Returns { cloudError, refused } and does NOTHING when the tombstone could " +
+    "not be written. Deleting the deck in that state would leave no record that " +
+    "the deletion was deliberate; `refused` is how the three call sites know to " +
+    "say so rather than report a delete that did not happen.",
+  deleteDeckEntry:
+    "Reports a refused delete (see deleteDeckEverywhere) instead of saying the " +
+    "deck was deleted when it is still there.",
+  deleteSelectedMyDecks:
+    "Counts refusals alongside cloud failures, for the same reason.",
+  flushPendingDeckAutosave:
+    "Asks deckHasNothingToSave() — saveDeckToLibrary's own predicate — instead " +
+    "of restating it as `!masterCards.length && !notes.trim()`. The two " +
+    "disagreed about exactly one thing: a PDF deck, whose body is empty because " +
+    "the paper IS the document and which holds no cards. Every one of them hit " +
+    "the restated no-op, so this cleared the armed timer and returned without " +
+    "saving — and the highlights of the last 400ms went with the deck being " +
+    "left. The autosave timer forty lines above says in its own comment that " +
+    "this exact divergence caused this exact bug once already.",
+  repairEscapedMathInLibrary:
+    "Uses the cursor to find WHICH decks are damaged and rewrites each one " +
+    "through rewriteDeckSnapshot, which re-reads it under that deck's own lock " +
+    "and re-applies the repair to whatever is there now. forEachDeckSnapshot " +
+    "reads the object store directly and says so: a deck with a write in flight " +
+    "comes back at its previous durable value, and writing that copy back " +
+    "replaces the newer save. This runs at BOOT, which is not a quiet moment.",
   buildStorageReport:
     "Also computes missingRefs — storage paths a deck still points at that " +
     "have no file behind them. The exact inverse of `orphans`, from the two " +

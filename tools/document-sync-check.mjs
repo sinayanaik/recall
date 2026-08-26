@@ -571,6 +571,50 @@ try {
     });
   }
 
+  // ── ...and does the deck they live on ever get SAVED? ───────────────────
+  //
+  // A paper's annotations are the one deck shape that is empty by every other
+  // measure: no cards, and a body that is empty because the PDF is the
+  // document. saveDeckToLibrary knows that (deckPayloadHasContent answers true
+  // for meta.pdf) and the autosave timer asks it — but the flush that runs on
+  // NAVIGATION restated the predicate as `!masterCards.length &&
+  // !notes.trim()`, which is true of every PDF deck. So it cleared the armed
+  // timer, returned without saving, and the highlights of the last 400ms went
+  // with the deck being left. That is a merge that never gets the chance to
+  // happen, which is why it is asserted here.
+  //
+  // Two questions, because passing one is not passing the other: does the
+  // shared predicate still recognise a paper, and is the flush still asking it
+  // rather than spelling it out again?
+  {
+    const snapshotSrc = readFileSync(path.join(ROOT, "src/storage/deck-snapshot.js"), "utf8");
+    const hasContent = new Function(
+      `${snapshotSrc.match(/export function deckPayloadHasContent[\s\S]*?\n}/)[0].replace(/^export /, "")}
+       return deckPayloadHasContent;`
+    )();
+
+    must("a PDF deck with no cards and no body still counts as content", () =>
+      hasContent({ cards: [], notes: "", meta: { pdf: { name: "paper.pdf" } } }) === true
+      || "deckPayloadHasContent called a paper empty");
+
+    must("a deck with nothing at all still counts as empty", () =>
+      hasContent({ cards: [], notes: "   ", meta: {} }) === false
+      || "deckPayloadHasContent called an empty deck full");
+
+    const storeSrc = readFileSync(path.join(ROOT, "src/storage/deck-store.js"), "utf8");
+    // Comments stripped: the entry in tools/split-parity.mjs and the comment in
+    // the function itself both NAME the predicate that was there, and a check
+    // that fails on its own explanation is a check nobody keeps.
+    const flush = storeSrc.match(/export async function flushPendingDeckAutosave[\s\S]*?\n}/)[0]
+      .replace(/^[^\S\n]*\/\/.*$/gm, "");
+    must("the navigation flush asks the shared predicate", () =>
+      /deckHasNothingToSave\(\)/.test(flush)
+      || "flushPendingDeckAutosave does not call deckHasNothingToSave()");
+    must("...and does not spell out a second one", () =>
+      !/masterCards\.length|notes\.trim\(\)/.test(flush)
+      || "flushPendingDeckAutosave restates the save predicate — the two will drift again");
+  }
+
   console.log("── document sync ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);

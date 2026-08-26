@@ -15,7 +15,7 @@ import { loadDeckFromLibrary } from "./local-library.js?v=__BUILD__";
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { myDeckPayload, myDeckSelKey, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
-import { deleteDeckEverywhere } from "./tombstones.js?v=__BUILD__";
+import { TOMBSTONE_REFUSED_MESSAGE, deleteDeckEverywhere } from "./tombstones.js?v=__BUILD__";
 import { closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { flushWorkingDeck } from "../ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -203,14 +203,21 @@ export function deleteSelectedMyDecks(selections, folders = []) {
       );
 
       let cloudFailures = 0;
+      let refusals = 0;
       for (const sel of selections) {
-        const { cloudError } = await deleteDeckEverywhere({ localId: sel.localId, deckId: sel.deckId });
-        if (cloudError) cloudFailures += 1;
+        const { cloudError, refused } = await deleteDeckEverywhere({ localId: sel.localId, deckId: sel.deckId });
+        if (refused) refusals += 1;
+        else if (cloudError) cloudFailures += 1;
       }
       emptiedByThisDelete.forEach(forgetFolderTree);
 
       renderMyDecksList();
-      if (cloudFailures) {
+      // A deck whose tombstone could not be written was LEFT IN PLACE — saying
+      // "deleted" here would be reporting something that did not happen, and
+      // the reader would find it back where it was.
+      if (refusals) {
+        showToast(TOMBSTONE_REFUSED_MESSAGE, "error");
+      } else if (cloudFailures) {
         showToast("Deleted here — cloud delete will retry on next sync", "info");
       } else {
         showToast(`Deleted ${what} everywhere`, "info");

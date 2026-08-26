@@ -300,6 +300,16 @@ el.editNotesBtn?.addEventListener("click", () => {
 el.bookmarkGoBtn?.addEventListener("click", () => goToBookmark());
 
 el.notesEdit?.addEventListener("input", () => {
+  // ── Only while the editor is really open ─────────────────────────────────
+  //
+  // An `input` event is not proof that the reader typed. replaceInTextarea
+  // (src/images/upload.js) dispatches one when an upload finishes, and it holds
+  // the textarea across the await — so an upload that landed after the editor
+  // closed published a value nobody had looked at since, over the top of
+  // whatever had been done in the rendered view in the meantime. Every
+  // rendered-view edit made in that window — a highlight, another image, a
+  // deletion — was lost, and then autosaved.
+  if (!isNotesEditing()) return;
   // Through sourceFromRawEditor, never straight across. The textarea holds the
   // note's BODY — the highlight-notes block is sliced off it when the editor
   // opens (see src/notes/notes-edit-split.js) — so a bare assignment here would
