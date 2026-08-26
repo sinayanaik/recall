@@ -51,7 +51,8 @@ const WANTED = [
   ["src/core/text.js", ["escapeHtml"]],
   ["src/render/inline.js", [
     "INLINE_SOFT_BREAK_SOURCE", "IMG_ALT_SOURCE", "IMG_DEST_SOURCE", "IMG_TAG_SOURCE",
-    "IMG_TOKEN_SOURCE", "imageDestinationUrl"
+    "IMG_TOKEN_SOURCE", "imageDestinationUrl", "TABLE_DELIMITER_RE", "pipeRowInTable",
+    "imageMarkupToTag", "renderImageRows"
   ]],
   ["src/render/preprocess.js", [
     "FENCE_OPEN_SOURCE", "fenceOpenPattern", "scanFences",
@@ -130,6 +131,13 @@ const SHAPES = {
   heading: "# Title ![nine](https://img.test/9.png)\n",
   twoInAParagraph: "![a](https://img.test/10a.png) ![b](https://img.test/10b.png)\n",
   pipeRow: "![a](https://img.test/11a.png) | ![b](https://img.test/11b.png)\n",
+  // GFM lets a table be written with no leading pipes, and a body row of one is
+  // then spelled exactly like a side-by-side image row. renderImageRows used to
+  // turn this line into a .notes-img-row, which left marked a header and a
+  // delimiter with no body under them and took the table apart — and the delete
+  // then took a column separator with it. Both sides ask pipeRowInTable now.
+  pipelessTableRow:
+    "Before | After\n--- | ---\n![a](https://img.test/22a.png) | ![b](https://img.test/22b.png)\n",
   alreadySized: "<img src=\"https://img.test/12.png\" alt=\"twelve\" style=\"--notes-img-w:320px; width:320px\">\n",
   referenceStyle: "![thirteen][fig]\n\n[fig]: https://img.test/13.png\n",
   entityUrl: "<img src=\"https://img.test/14.png?a=1&amp;b=2\" alt=\"fourteen\">\n",
@@ -437,7 +445,21 @@ for (const [name, source] of Object.entries(SHAPES)) {
     );
     // No hole where the picture was.
     assert(!/\n{3,}/.test(next), `${name} #${nth}: delete left a blank hole:\n      ${JSON.stringify(next)}`);
-    assert(!/^[^\S\n]*\|/m.test(next.replace(/^\|.*\|$/gm, "")), `${name} #${nth}: delete left a stray row separator:\n      ${JSON.stringify(next)}`);
+    // A stray "|" left at the start of a line, which is what a delete that took
+    // an image out of a side-by-side row but not its separator looks like.
+    // Lines that belong to a TABLE are exempt: a table row keeps its pipes when
+    // a cell is emptied, whether it is written with leading pipes (`|  | x |`)
+    // or without them (` | ![b](…)`), and that is the correct outcome.
+    const withoutTableRows = next
+      .split("\n")
+      .filter((line, index, all) => {
+        if (/^\|.*\|$/.test(line)) return false;
+        return !all.slice(0, index).some((above, i) =>
+          api.TABLE_DELIMITER_RE.test(above)
+          && all.slice(i + 1, index).every((between) => between.includes("|")));
+      })
+      .join("\n");
+    assert(!/^[^\S\n]*\|/m.test(withoutTableRows), `${name} #${nth}: delete left a stray row separator:\n      ${JSON.stringify(next)}`);
   }
 }
 
@@ -619,6 +641,49 @@ for (const [name, source] of Object.entries(SHAPES)) {
       `built flags: deleting the only visible copy left ${JSON.stringify(surface.getSource())}`
     );
     assert(toasts.length === 0, "built flags: the delete complained even though it could be settled");
+  }
+}
+
+// ── A side-by-side row and a table row are spelled the same ────────────────
+//
+// GFM lets a table be written without leading pipes, so a body row whose cells
+// are all pictures is character for character a side-by-side image row.
+// renderImageRows used to convert it, which left marked a header and a
+// delimiter with no body under them: the table came apart on screen. What
+// separates the two is the delimiter row ABOVE, so both the renderer and the
+// delete ask pipeRowInTable.
+{
+  const table = "Before | After\n--- | ---\n![a](https://img.test/22a.png) | ![b](https://img.test/22b.png)\n";
+  assert(
+    api.renderImageRows(table) === table,
+    `a pipeless table row was rendered as an image row:\n      ${JSON.stringify(api.renderImageRows(table))}`
+  );
+
+  // ...and a real side-by-side row still becomes one, so the guard above cannot
+  // pass by refusing everything.
+  const row = "![a](https://img.test/23a.png) | ![b](https://img.test/23b.png)\n";
+  assert(
+    api.renderImageRows(row).includes("notes-img-row"),
+    `a real side-by-side row stopped being one:\n      ${JSON.stringify(api.renderImageRows(row))}`
+  );
+
+  // A row that merely FOLLOWS a table, with a blank line between, is its own
+  // row again — the walk back stops at the first line with no "|" in it.
+  const after = `${table}\n${row}`;
+  assert(
+    api.renderImageRows(after).includes("notes-img-row"),
+    `a row after a table was taken for part of it:\n      ${JSON.stringify(api.renderImageRows(after))}`
+  );
+
+  // The delete agrees with all of that: an image in the table row keeps the
+  // separator beside it, where one in a real row takes it along.
+  {
+    const surface = makeSurface(table);
+    api.removeSourceImage(surface, { url: key("https://img.test/22a.png"), nth: 0, rendered: true });
+    assert(
+      surface.getSource() === "Before | After\n--- | ---\n | ![b](https://img.test/22b.png)\n",
+      `deleting a table cell's image left ${JSON.stringify(surface.getSource())}`
+    );
   }
 }
 

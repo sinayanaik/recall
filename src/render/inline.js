@@ -164,13 +164,51 @@ export function imageDestinationUrl(inner) {
   return (text.split(/\s+(?=["'(])/)[0] ?? "").trim();
 }
 
+// ── ...unless the row belongs to a TABLE ──────────────────────────────────
+//
+// GFM lets a table be written without leading pipes, and a body row of one is
+// then indistinguishable from a side-by-side image row when every cell holds a
+// picture:
+//
+//     Before      After          <- header
+//     --- | ---                  <- delimiter
+//     ![a](1.png) | ![b](2.png)  <- a table row, and also a "pipe row"
+//
+// Turning that line into a .notes-img-row took the table apart: marked saw a
+// header and a delimiter with no body under them, and the reader lost the
+// table entirely. The line alone cannot tell the two apart — what decides it is
+// the DELIMITER row above — so the test takes the text around the line.
+//
+// Exported because the delete has to agree: imageRemovalRange takes the "|"
+// beside an image when the line is a side-by-side row, and taking one out of a
+// table row would leave the table a column short. One predicate, both callers.
+export const TABLE_DELIMITER_RE = /^[^\S\n]*:?-+:?([^\S\n]*\|[^\S\n]*:?-+:?)+[^\S\n]*$/;
+
+export function pipeRowInTable(text, lineStart) {
+  // Walk back over the rows above this one — a table body can be any height,
+  // and every row above is either another candidate row or the delimiter.
+  let at = lineStart;
+  while (at > 0) {
+    const previousEnd = at - 1;
+    const previousStart = text.lastIndexOf("\n", previousEnd - 1) + 1;
+    const previous = text.slice(previousStart, previousEnd);
+    if (TABLE_DELIMITER_RE.test(previous)) return true;
+    // Not a delimiter and not a row that could be sitting between this line and
+    // one: nothing above can make this a table row.
+    if (!previous.includes("|")) return false;
+    at = previousStart;
+  }
+  return false;
+}
+
 export function renderImageRows(segment) {
   const lineRe = new RegExp(
     `^[^\\S\\n]*(?:${IMG_TOKEN_SOURCE})(?:[^\\S\\n]*\\|[^\\S\\n]*(?:${IMG_TOKEN_SOURCE}))+[^\\S\\n]*$`,
     "gm"
   );
   const imgRe = new RegExp(IMG_TOKEN_SOURCE, "gi");
-  return segment.replace(lineRe, (line) => {
+  return segment.replace(lineRe, (line, offset) => {
+    if (pipeRowInTable(segment, offset)) return line;
     const imgs = (line.match(imgRe) || []).map(imageMarkupToTag).filter(Boolean);
     if (imgs.length < 2) return line;
     return `<div class="notes-img-row">${imgs.join("")}</div>`;

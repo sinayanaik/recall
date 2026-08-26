@@ -347,13 +347,31 @@
     if (/^<img\b[^>]*>$/i.test(raw)) return raw;
     return "";
   }
+  // A GFM table body row written without leading pipes is spelled exactly like a
+  // side-by-side image row when every cell is a picture — what tells them apart
+  // is the delimiter row above. Converting one took the table apart. Port of
+  // src/render/inline.js.
+  const TABLE_DELIMITER_RE = /^[^\S\n]*:?-+:?([^\S\n]*\|[^\S\n]*:?-+:?)+[^\S\n]*$/;
+  function pipeRowInTable(text, lineStart) {
+    let at = lineStart;
+    while (at > 0) {
+      const previousEnd = at - 1;
+      const previousStart = text.lastIndexOf("\n", previousEnd - 1) + 1;
+      const previous = text.slice(previousStart, previousEnd);
+      if (TABLE_DELIMITER_RE.test(previous)) return true;
+      if (!previous.includes("|")) return false;
+      at = previousStart;
+    }
+    return false;
+  }
   function renderImageRows(segment) {
     const lineRe = new RegExp(
       `^[^\\S\\n]*(?:${IMG_TOKEN_SOURCE})(?:[^\\S\\n]*\\|[^\\S\\n]*(?:${IMG_TOKEN_SOURCE}))+[^\\S\\n]*$`,
       "gm"
     );
     const imgRe = new RegExp(IMG_TOKEN_SOURCE, "gi");
-    return segment.replace(lineRe, (line) => {
+    return segment.replace(lineRe, (line, offset) => {
+      if (pipeRowInTable(segment, offset)) return line;
       const imgs = (line.match(imgRe) || []).map(imageMarkupToTag).filter(Boolean);
       if (imgs.length < 2) return line;
       return `<div class="notes-img-row">${imgs.join("")}</div>`;

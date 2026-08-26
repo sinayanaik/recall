@@ -890,6 +890,36 @@ const ACCEPTED = {
   // missing grip, it is a delete that takes the note with it. Covered by the
   // "one press, one picture" cases in tools/image-controls-check.mjs, with
   // marked as the oracle for what the reader can actually press.
+  renderImageRows:
+    "Leaves a GFM table body row alone. A table may be written without leading " +
+    "pipes, and a body row of one whose cells are all pictures is character for " +
+    "character a side-by-side image row — so this converted it to a " +
+    ".notes-img-row, marked was left a header and a delimiter with no body " +
+    "under them, and the table came apart on screen. What separates the two is " +
+    "the delimiter row ABOVE, so the test takes the text around the line " +
+    "(pipeRowInTable). imageRemovalRange asks the same question, because a " +
+    "delete that took a column separator out of a table row would leave it a " +
+    "column short and disagree with what the reader is looking at.",
+  imageRemovalRange:
+    "Does not take the \"|\" beside an image when the line is a GFM table row " +
+    "rather than a side-by-side image row — see renderImageRows above, which is " +
+    "where the two are told apart.",
+  smartBulletify:
+    "Leaves a line that is ALREADY a bullet alone when bulleting several lines. " +
+    "The all-list branch above only fires when every line is a list line, so a " +
+    "mixed selection — two bullets and a line of prose, which is what a " +
+    "half-finished list looks like — fell through and came back as `- - item`. " +
+    "toggleBulletPoints guards the same case the same way.",
+  addBlankCardAtCursor:
+    "Places the new card after the one being READ, found in masterCards by its " +
+    "own id, instead of splicing masterCards at `state.current + 1`. " +
+    "state.current indexes state.cards, which is the run being STUDIED, and the " +
+    "two are not the same list: Replay known rebuilds state.cards from a filter " +
+    "of masterCards, and a deletion can shorten one alone. Reading card 3 of a " +
+    "six-card replay inside a hundred-card deck inserted the card after the " +
+    "deck's third card, and the autosave made that order permanent. Same shape " +
+    "insertCardAfter already uses, gate included, plus the syncResults() the " +
+    "known/review tallies need once masterCards has changed.",
   IMG_TOKEN_SOURCE:
     "Both branches are BOUNDED now. `<img\\b[^>]*>` matched newlines, so an " +
     "`<img` with no closing bracket — a truncated paste, imported HTML, a " +

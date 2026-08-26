@@ -17,7 +17,7 @@ import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 // called at runtime, which is the case the TDZ rule in tools/module-symbols.mjs
 // allows. Nothing here reads it at module scope.
 import { notesLazyBuiltImages } from "../render/block-cache.js?v=__BUILD__";
-import { IMG_ALT_SOURCE, IMG_DEST_SOURCE, IMG_TOKEN_SOURCE, imageDestinationUrl } from "../render/inline.js?v=__BUILD__";
+import { IMG_ALT_SOURCE, IMG_DEST_SOURCE, IMG_TOKEN_SOURCE, imageDestinationUrl, pipeRowInTable } from "../render/inline.js?v=__BUILD__";
 import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, normalizeImageUrl, parseDiagramWidth, scanCodeRegions, scanFences } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -496,7 +496,11 @@ export function imageRemovalRange(source, image) {
     return { start, end };
   }
 
-  if (pipeRowLinePattern().test(source.slice(lineStart, lineEnd))) {
+  // ...and not when the "row" is really a GFM table body row written without
+  // leading pipes. renderImageRows leaves those alone (see pipeRowInTable), so
+  // taking a separator out of one here would leave the table a column short
+  // AND disagree with what the reader is looking at.
+  if (!pipeRowInTable(source, lineStart) && pipeRowLinePattern().test(source.slice(lineStart, lineEnd))) {
     const previous = before.match(/[ \t]*\|[ \t]*$/);
     if (previous) return { start: image.start - previous[0].length, end: image.end };
     const next = after.match(/^[ \t]*\|[ \t]*/);

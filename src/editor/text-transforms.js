@@ -234,9 +234,15 @@ export function smartBulletify(text) {
 
   // Several lines already: one bullet each, which is what the reader means by
   // selecting several lines and pressing this.
+  //
+  // A line that IS already a bullet keeps the one it has. The branch above only
+  // fires when EVERY line is a list line, so a mixed selection — two bullets and
+  // a line of prose, which is what a half-finished list looks like — fell
+  // through to here and came back as `- - item`. toggleBulletPoints guards the
+  // same case the same way; this did not.
   if (content.length > 1) {
     return lines
-      .map((line) => (line.trim() ? line.replace(/^(\s*)/, "$1- ") : line))
+      .map((line) => (line.trim() && !LIST_LINE_RE.test(line) ? line.replace(/^(\s*)/, "$1- ") : line))
       .join("\n");
   }
 
