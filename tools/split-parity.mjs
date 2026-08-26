@@ -1260,6 +1260,34 @@ const ACCEPTED = {
     "and key are entered once on a setup screen the user never sees again.",
 
   // ── Storage panel: the check nobody had written ──────────────────────────
+  // ── A tidy-up that deleted live pictures ────────────────────────────────
+  // Both entries below answer the same question — "does anything still point
+  // at this image?" — and both used to answer it with a weaker reading of the
+  // markdown than the one the controls use. A miss here is not a cosmetic
+  // count: it is a hard delete of an object the reader is still looking at,
+  // and the sweep deletes in batches, so several go at once.
+  collectReferencedStoragePaths:
+    "Unions BACKUP_IMAGE_REF_RE with findSourceImages (referencedImageRefsIn) " +
+    "rather than trusting the pattern alone. That pattern's alt is `[^\\]]*` " +
+    "and its url is `[^)\\s<>\"']+`, so `![see [1]](url)` matched nothing at " +
+    "all and `![](…/Foo_(1).png)` yielded the truncated `…/Foo_(1` — and the " +
+    "reference form `![a][label]` is not in it at any point. Each of those made " +
+    "a LIVE object read as referenced by nothing, which put it in the Unused " +
+    "tile and handed it to \"Delete unused images\". src/images/upload.js names " +
+    "this failure in as many words: \"A live picture, deletable by a tidy-up.\" " +
+    "Unioned rather than replaced because this set is the input to a deletion: " +
+    "an extra path costs one image that is never swept, a missing one costs a " +
+    "picture the reader still uses.",
+  deckStillReferencesImage:
+    "Compares through imageMatchKey over findSourceImages instead of " +
+    "`text.includes(url)`. The url it is handed has come back through " +
+    "parseImgTagAttrs with its entities DECODED, while the note holds the " +
+    "escaped form imgTagHtml wrote through escapeHtml — so a URL carrying an " +
+    "`&` (every query string), a space, a non-ASCII character, or a Drive link " +
+    "written in the other of its two equivalent spellings read as \"nothing " +
+    "else points at this\", the storage object was deleted, and every remaining " +
+    "copy in the deck became a broken picture at once. imageMatchKey is the " +
+    "identity every other comparison in that file already uses.",
   buildStorageReport:
     "Also computes missingRefs — storage paths a deck still points at that " +
     "have no file behind them. The exact inverse of `orphans`, from the two " +

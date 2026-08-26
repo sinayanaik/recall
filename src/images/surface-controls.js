@@ -552,12 +552,35 @@ export function removeSourceImage(surface, ref) {
 // notes and then captured into a card, and hard-deleting the storage object
 // because one of those copies went away turns every other one into a broken
 // link.
+//
+// ── Compared as a KEY, not as a substring ─────────────────────────────────
+//
+// This used to be `text.includes(url)`, against a `url` that had come back
+// through parseImgTagAttrs with its entities DECODED — while the note holds the
+// escaped form imgTagHtml wrote through escapeHtml. So a URL carrying an `&`
+// (every query string), a space, a non-ASCII character, or a Drive link written
+// in the other of its two equivalent spellings read as "nothing else points at
+// this", the storage object was deleted, and every remaining copy in the deck
+// became a broken picture at once. From the reader's side that is several
+// images disappearing because one was deleted.
+//
+// imageMatchKey is the identity every other comparison in this file already
+// uses, and findSourceImages is what decides where an image reference IS —
+// including a raw `<img>` tag and the reference form, neither of which a
+// substring test distinguishes from the same characters sitting in prose.
 export function deckStillReferencesImage(url) {
   if (!url) return true;
-  if ((state.notes || "").includes(url)) return true;
-  return state.masterCards.some(
-    (card) => String(card.question || "").includes(url) || String(card.answer || "").includes(url)
-  );
+  const key = imageMatchKey(url);
+  const points = (text) => {
+    const value = String(text || "");
+    // Cheap reject first: this runs over every card in the deck, and the
+    // overwhelming majority hold no image at all.
+    if (!sourceMayHaveImages(value)) return false;
+    return findSourceImages(value, { skipCode: false })
+      .some((image) => imageMatchKey(image.url) === key);
+  };
+  if (points(state.notes)) return true;
+  return state.masterCards.some((card) => points(card.question) || points(card.answer));
 }
 
 // Bottom-right corner-grip resize (the universal affordance): drag out from the
