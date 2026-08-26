@@ -208,6 +208,47 @@ function stageAndBind(prepared, mode) {
   }));
 }
 
+// ── The same question in RAW mode ──────────────────────────────────────────
+//
+// The rendered view is hidden while the editor is open, so a press on a row
+// moves the CARET instead of scrolling. That path used a heading walker of its
+// own — ATX only, anchored at column 0 — while the rows come from a scanner
+// that also reports setext, blockquoted and indented headings. Every one of
+// those shifted the ordinal, so a press landed on a different section, and the
+// rows past the last ATX heading did nothing at all.
+//
+// Asserted here as: the caret this puts down is on the line the row names.
+const RAW_SHAPES = {
+  setextFirst: "Overview\n========\n\n## Setup\n\n> ### Warning\n\n  ## Indented\n\n## Done\n",
+  fencedHash: "# Alpha\n\n```\n# not a heading\n```\n\n## Beta\n\n## Gamma\n",
+  atxOnly: "# Alpha\n\n## Beta\n\n### Gamma\n\n## Delta\n"
+};
+
+// Runs IN THE PAGE: put the shape in the raw editor, press each row in turn,
+// and report the line the caret ended up on.
+function caretLinesForRows(source) {
+  const api = window.__tocApi;
+  const textarea = api.el.notesEdit;
+  const wasHidden = textarea.hidden;
+  textarea.hidden = false;
+  textarea.value = source;
+  const rows = api.scanPreparedHeadings(source);
+  const out = rows.map((heading, index) => {
+    api.scrollNotesEditToHeadingIndex(index);
+    const at = textarea.selectionStart;
+    const lineStart = source.lastIndexOf("\n", Math.max(0, at - 1)) + 1;
+    const newline = source.indexOf("\n", at);
+    return {
+      text: heading.text,
+      level: heading.level,
+      caretLine: source.slice(lineStart, newline === -1 ? source.length : newline)
+    };
+  });
+  textarea.value = "";
+  textarea.hidden = wasHidden;
+  return out;
+}
+
 const failures = [];
 let cases = 0;
 let rows = 0;
@@ -269,6 +310,28 @@ try {
         const twin = seen.get(row.bound.id);
         if (twin !== undefined) failures.push(`${where}: rows ${twin} and ${i} both landed on ${row.bound.id}`);
         seen.set(row.bound.id, i);
+      }
+    }
+  }
+
+  for (const [shapeName, source] of Object.entries(RAW_SHAPES)) {
+    cases += 1;
+    const report = await page.evaluate(caretLinesForRows, source);
+    if (!report.length) {
+      failures.push(`raw / ${shapeName}: no contents rows at all`);
+      continue;
+    }
+    for (let i = 0; i < report.length; i += 1) {
+      const row = report[i];
+      rows += 1;
+      // The line the caret landed on has to be the line the row names. Compared
+      // by the row's own text so the markers in front of it — `#`, `>`, indent
+      // — do not have to be re-parsed here.
+      if (!row.caretLine.includes(row.text)) {
+        failures.push(
+          `raw / ${shapeName}: row ${i} h${row.level} ${JSON.stringify(row.text)} ` +
+          `put the caret on ${JSON.stringify(row.caretLine)}`
+        );
       }
     }
   }

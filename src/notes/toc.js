@@ -16,7 +16,7 @@ import { activeChapterIndex, firstVisibleNotesBlock, isNotesPaged, notesCurrentP
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { MARK_BADGE_CLASS } from "./highlight-badges.js?v=__BUILD__";
-import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, NOTES_TOP_LEVEL_SELECTOR, ensureNotesLazyOffsetBuilt, notesHeadingScan, notesLazyPlan, notesLazyTopAtOffset, renderedBlockCache, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, NOTES_TOP_LEVEL_SELECTOR, ensureNotesLazyOffsetBuilt, notesHeadingScan, notesLazyPlan, notesLazyTopAtOffset, renderedBlockCache, scanPreparedHeadings, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
 import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -618,9 +618,17 @@ export const NOTES_HEADING_SCROLL_GAP = 8;
 // containment sits on the wrapper, so a heading inside a skipped chunk answers
 // with its chunk's box — the same answer all 40 of its neighbours give, which is
 // a jump landing up to 40 blocks early.
+//
+// `null`, not 0, when there is no element to measure. This is the residual the
+// convergence loop aims at, and null is how that loop is told the target has
+// stopped being measurable and it should stand down (see convergeNotesScroll).
+// Answering 0 made the residual `0 - NOTES_HEADING_SCROLL_GAP`, so a jump whose
+// target was replaced by a re-render mid-flight scrolled the reader UP eight
+// pixels and then stalled — which from the outside is a contents row that does
+// nothing at all.
 export function notesHeadingOffset(heading) {
   const node = heading?.el?.isConnected ? heading.el : null;
-  if (!node) return 0;
+  if (!node) return null;
   return withChunkRendered(node, el.notesView, () =>
     node.getBoundingClientRect().top - el.notesView.getBoundingClientRect().top);
 }
@@ -636,51 +644,86 @@ const HEADING_AIM_BUDGET_MS = 1500;
 // convergence loop that replaced it now lives in anchors.js, shared with the
 // anchor/highlight jump, which had exactly the same problem for exactly the same
 // reasons; all that differs is what counts as "arrived", which is the callback.
+// The descriptor for a slug, re-derived from whatever the note is NOW.
+//
+// A descriptor is not a durable handle: every render mints a fresh list with
+// every `el` reset (notesHeadingsForPrepared), so one captured before an await
+// is orphaned the moment a render lands — pointing at an element that has been
+// replaced and carrying an offset into a string that is no longer the note. The
+// SLUG survives, because it is derived from the heading's own text.
+export function notesHeadingById(id) {
+  if (!id) return null;
+  const prepared = preparedNotesSource();
+  if (prepared == null) return null;
+  return notesHeadingsForPrepared(prepared).find((heading) => heading.id === id) || null;
+}
+
 export async function scrollNotesHeadingIntoView(heading) {
-  if (!heading || !el.notesView) return;
+  if (!heading || !el.notesView) return null;
   // The reader asked to go here, so this is exactly the case that may not wait
   // for a scroll to bring the span into view: build it now. A no-op on an
   // eagerly rendered note, and on a heading whose span is already built.
-  const node = resolveNotesHeadingElement(heading);
-  if (!node) return;
+  if (!resolveNotesHeadingElement(heading)) return null;
   // Paged mode: turn to the heading's page. Handled by revealInPagedNotes, which
   // has its own convergence loop over PAGES rather than heights.
-  if (revealInPagedNotes(node)) return;
+  if (revealInPagedNotes(heading.el)) return heading;
+  // Re-resolved on every correction rather than measured against the element
+  // captured above. This loop runs for up to HEADING_AIM_BUDGET_MS, which is
+  // ample time for an autosave, a highlight or a streamed note finishing to
+  // re-render the surface underneath it — and the old code answered a replaced
+  // element with a residual of `0 - NOTES_HEADING_SCROLL_GAP`, so the jump
+  // scrolled the reader UP eight pixels and stopped.
+  let landed = heading;
   await convergeNotesScroll(
-    () => (node.isConnected ? notesHeadingOffset(heading) - NOTES_HEADING_SCROLL_GAP : null),
+    () => {
+      const live = notesHeadingById(landed.id) || landed;
+      landed = live;
+      if (!resolveNotesHeadingElement(live)) return null;
+      const top = notesHeadingOffset(live);
+      return top == null ? null : top - NOTES_HEADING_SCROLL_GAP;
+    },
     HEADING_AIM_BUDGET_MS
   );
+  return landed;
 }
 
 // Raw-mode counterpart of scrollNotesHeadingIntoView: the rendered notes view is
-// hidden while editing, so a TOC click must scroll the textarea instead. The Nth
-// TOC entry is the Nth ATX heading in source order (rendering preserves order and
-// count), so walk the raw lines — skipping fenced code, where a leading # isn't a
-// heading — to the Nth heading and drop the caret on that line.
+// hidden while editing, so a TOC click must scroll the textarea instead.
+//
+// ── Counted by the SAME scanner the rows came from ────────────────────────
+//
+// This used to carry a walker of its own, on the stated premise that "the Nth
+// TOC entry is the Nth ATX heading in source order". That premise is false, and
+// each way it is false silently moved the caret to a different section:
+//
+//   Overview            the rows are  Overview / Setup / Warning / Indented /
+//   ========            Done, and the ATX-only walk found only "## Setup" and
+//                       "## Done" — so pressing "Overview" landed on Setup,
+//   ## Setup            pressing "Setup" landed on Done, and the last three
+//                       rows did nothing at all.
+//   > ### Warning
+//     ## Indented       (HEADING_ATX_RE allows up to three spaces of indent;
+//   ## Done             `^#` does not. Blockquoted and setext headings are in
+//                       the contents too, and were in neither walk.)
+//
+// So it asks scanPreparedHeadings, which is where the rows themselves come
+// from, and takes that heading's own offset. One definition of "what a heading
+// is", for the rows and for the jump alike.
+//
+// The textarea holds the note's BODY with the highlight-notes block sliced off
+// its end (src/notes/notes-edit-split.js). That block is a suffix, so an offset
+// measured from the start means the same thing in both strings — the same
+// argument the header of src/format/notes-fence.js already makes — and the
+// block is fenced, so the scanner never reported a heading inside it anyway.
 export function scrollNotesEditToHeadingIndex(index) {
   const textarea = el.notesEdit;
   if (!textarea) return;
-  const lines = textarea.value.split("\n");
-  let inFence = false;
-  let fenceChar = "";
-  let count = -1;
-  let targetLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const fence = line.match(/^\s*(```+|~~~+)/);
-    if (fence) {
-      if (!inFence) { inFence = true; fenceChar = fence[1][0]; }
-      else if (line.trim().startsWith(fenceChar)) { inFence = false; }
-      continue;
-    }
-    if (inFence) continue;
-    if (/^#{1,6}\s+\S/.test(line)) {
-      count += 1;
-      if (count === index) { targetLine = i; break; }
-    }
-  }
-  if (targetLine < 0) return;
-  const pos = lines.slice(0, targetLine).reduce((n, l) => n + l.length + 1, 0);
+  // scanPreparedHeadings rather than the memoized notesHeadingScan: that memo
+  // holds ONE answer and the note on screen is what wants it. Swapping it for
+  // the textarea's value would make the next render re-scan the whole note.
+  const heading = scanPreparedHeadings(textarea.value)[index];
+  if (!heading) return;
+  const pos = heading.offset;
   // Caret before focus, then the shared reveal — same path as opening the editor
   // from the rendered view, so a raw-mode TOC jump gets the same exact
   // measurement and the same arrival band. (revealNotesCaretAt also nudges the

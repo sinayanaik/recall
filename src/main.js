@@ -79,7 +79,7 @@ import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlight
 // surface this module's own subtree imports — see setMarkMenuActions.
 import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlight-index.js?v=__BUILD__";
 import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
-import { closeNotesToc, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
+import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
@@ -462,11 +462,18 @@ el.notesTocList?.addEventListener("click", (event) => {
   if (isNotesEditing()) {
     scrollNotesEditToHeadingIndex(index);
   } else {
+    // Built if it is stale, before the index is used to address it. A render
+    // that landed while the drawer was open only MARKS the list dirty and
+    // rebuilds a frame later (scheduleNotesTocRebuild), so a press inside that
+    // frame was reading row N of the previous note's list.
+    ensureNotesTocBuilt();
     const heading = notesTocHeadings[index];
     // The flash waits for the jump: on a viewport-built note the heading's
     // element does not exist until scrollNotesHeadingIntoView has built its
-    // span, so flashing first would flash nothing.
-    Promise.resolve(scrollNotesHeadingIntoView(heading)).then(() => flashNotesHeading(heading));
+    // span, so flashing first would flash nothing. It flashes whatever the jump
+    // ACTUALLY landed on — a re-render mid-jump replaces the descriptor, and
+    // flashing the one captured here would light an element that is gone.
+    Promise.resolve(scrollNotesHeadingIntoView(heading)).then((landed) => flashNotesHeading(landed || heading));
   }
   // Only when the drawer overlays the notes: it has to step out of the way to
   // show you what you just jumped to. When it pushes instead, the destination

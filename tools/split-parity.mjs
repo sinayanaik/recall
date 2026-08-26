@@ -887,7 +887,14 @@ const ACCEPTED = {
   scrollNotesHeadingIntoView:
     "Turns to the heading's page when paged. No re-aiming loop there — a page " +
     "boundary is exact, and the loop exists for heights that keep changing " +
-    "under a vertical scroll.",
+    "under a vertical scroll. The vertical loop now RE-RESOLVES its target on " +
+    "every correction instead of measuring the element it captured before the " +
+    "first await, and returns the descriptor it actually landed on so the " +
+    "caller flashes that one. A descriptor is not a durable handle — every " +
+    "render mints a fresh list with every `el` reset — and this loop runs for " +
+    "up to 1.5s, which is ample time for an autosave or a highlight to " +
+    "re-render the surface under it. The slug is what survives, so the live " +
+    "descriptor is found by id (notesHeadingById).",
   estimateNotesScrollForOffset:
     "There is no scrollHeight to take a fraction of when the note runs " +
     "sideways, so the same proportional guess becomes a page number.",
@@ -1074,9 +1081,23 @@ const ACCEPTED = {
     "CHUNK's box — the same answer all ~40 of its neighbours give, which is a " +
     "TOC jump landing up to 40 blocks early. Forcing just that one chunk to " +
     "lay out is what makes the answer the heading's own, without un-skipping " +
-    "the document the way a full sweep would.",
+    "the document the way a full sweep would. Answers `null` rather than 0 " +
+    "when there is nothing to measure: this is the residual the convergence " +
+    "loop aims at, and null is how that loop is told to stand down. 0 made the " +
+    "residual `0 - NOTES_HEADING_SCROLL_GAP`, so a jump whose target was " +
+    "replaced by a re-render mid-flight scrolled the reader UP eight pixels " +
+    "and stalled — a contents row that appears to do nothing.",
   scrollNotesEditToHeadingIndex:
-    "Sets the caret before focusing, then hands off to revealNotesCaretAt() " +
+    "Counts headings with scanPreparedHeadings — the scanner the contents rows " +
+    "themselves come from — instead of a walker of its own. The premise it " +
+    "carried, 'the Nth TOC entry is the Nth ATX heading in source order', is " +
+    "false: the rows also hold setext, blockquoted and up-to-three-space-" +
+    "indented headings, and an ATX-only walk anchored at column 0 finds none " +
+    "of them. On a note opening with a setext title, pressing the first row " +
+    "put the caret on the SECOND heading, pressing the second put it on the " +
+    "third, and every row past the last ATX heading did nothing at all. " +
+    "Covered by the raw cases in tools/toc-binding-check.mjs. It also still " +
+    "sets the caret before focusing, then hands off to revealNotesCaretAt() " +
     "instead of scrolling itself. That is the single entry point for an " +
     "explicit jump: it owns both halves from ONE measurement (where to scroll " +
     "and where to draw the reading band) and re-asserts after the reflow that " +
