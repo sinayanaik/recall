@@ -9,6 +9,59 @@ export function tsMs(value) {
   return Number.isFinite(t) ? t : 0;
 }
 
+// ── Two clocks, and no server to arbitrate ──────────────────────────────────
+//
+// Every timestamp the sync decides on is written by the CLIENT. That is
+// deliberate and cannot simply be changed: supabase_setup.sql (section 5)
+// explains why `decks` and `cards` carry no `updated_at` trigger — the push
+// writes the deck row stamped at the UNIX epoch and only rewrites it with the
+// real time once every card has landed, so a trigger would overwrite that
+// crash-recovery sentinel and defeat the per-card merge besides.
+//
+// What that leaves is a system whose every safety net is a comparison between
+// two devices' clocks, with nothing compensating for them disagreeing. With one
+// device two hours fast:
+//
+//   • it pushes, and the row is stamped two hours in the future;
+//   • the other device pulls, and its index entry inherits that stamp;
+//   • it edits, stamping the edit with the TRUE time — which is older than the
+//     deck's own baseline, so the push gate never fires and the pull gate does;
+//   • the pull's stash gate is `updatedAt > lastSyncedAt`, which is false for
+//     the same reason, so the edit is replaced with no copy kept and no flag.
+//
+// The two helpers below are what the call sites use instead of a bare
+// `new Date().toISOString()`.
+
+// A stamp that is strictly later than `after`, using the clock when the clock is
+// already ahead of it. This is what makes a write MONOTONIC with respect to the
+// copy it supersedes: a local edit always outranks the deck's own baseline, and
+// a push always outranks the cloud row it merged against, whichever way the two
+// clocks happen to disagree. Without it a device with a slow clock can neither
+// push its work nor stop its work being pulled over.
+export function nextSyncStamp(clockIso, after) {
+  const clockMs = tsMs(clockIso);
+  const afterMs = tsMs(after);
+  if (!afterMs || clockMs > afterMs) return clockIso;
+  return new Date(afterMs + 1).toISOString();
+}
+
+// How far ahead of this device a timestamp may be before it stops being evidence
+// of anything. Generous: ordinary skew between two NTP-synced devices is
+// milliseconds, and the round trip that produced the stamp is seconds, so
+// anything past this is a genuinely wrong clock rather than noise.
+export const SYNC_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+
+// True when `iso` is stamped beyond this device's own clock by more than the
+// tolerance — i.e. the two edits CANNOT be ordered, so any rule that picks a
+// winner by comparing them is guessing. Callers respond by keeping the losing
+// copy rather than discarding it; a stash costs a little storage, and the
+// alternative is silent loss.
+export function clockSkewedAhead(iso, nowIso = new Date().toISOString()) {
+  const stamp = tsMs(iso);
+  if (!stamp) return false;
+  return stamp > tsMs(nowIso) + SYNC_CLOCK_SKEW_TOLERANCE_MS;
+}
+
 // The one shape every push/pull reports its diff in. Both directions fill the
 // same fields so the report can describe them with one vocabulary — and so a
 // change kind can never be silently invisible just because the side that

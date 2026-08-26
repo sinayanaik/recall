@@ -19,6 +19,11 @@ import { LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_PREFIX, NOTES_CONFLICT_SUFFIX } from 
 import { handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveStorageFailed, setLastSaveErrorWasQuota } from "../storage/quota.js?v=__BUILD__";
 import { cardSyncSignature, dropTombstonesForLiveCards, recordDeletedCardIds, stampCardSyncState } from "../sync/cards.js?v=__BUILD__";
 import { normalizeSyncText } from "../sync/diff.js?v=__BUILD__";
+// Closes a cycle (stats → quick-notes/categories → back here), which is the
+// case module-symbols allows for hoisted function declarations: nextSyncStamp
+// is one, and the tolerance constant beside it is only read when it is called,
+// so neither is touched at module-evaluation time in either order.
+import { nextSyncStamp } from "../sync/stats.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline } from "../sync/indicator.js?v=__BUILD__";
 import { resetChromeAutoHide } from "../ui/chrome.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
@@ -439,8 +444,22 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   const nowIso = new Date().toISOString();
   const contentChanged = !previousSnapshot
     || !deckContentMatches(previousSnapshot, snapshot);
+  // MONOTONIC when the content really changed, not merely "the clock says now".
+  // Every timestamp the sync decides on is written by the client, so a deck
+  // pulled from a device whose clock runs fast carries a baseline stamped in
+  // THIS device's future — and a real edit stamped with the true time then reads
+  // as older than the deck it is editing. The push gate never fires, the pull
+  // gate does, and the pull replaces the edit; worse, the stash gate is
+  // `updatedAt > lastSyncedAt`, false for the same reason, so nothing is kept
+  // and no conflict is raised. See nextSyncStamp.
+  //
+  // A caller-supplied `updatedAt` is left exactly as given: it means "align this
+  // deck to a stamp the sync has already decided on", and second-guessing it
+  // here would undo the alignment.
   const resolvedUpdatedAt = updatedAt
-    || (contentChanged ? nowIso : (previousEntry?.updatedAt || nowIso));
+    || (contentChanged
+      ? nextSyncStamp(nowIso, previousEntry?.updatedAt)
+      : (previousEntry?.updatedAt || nowIso));
 
   // Mark exactly the cards this save changed, so a later pull can tell "I edited
   // this and haven't pushed it" apart from "this is just what the cloud gave me"
