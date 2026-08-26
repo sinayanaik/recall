@@ -40,7 +40,7 @@ import { mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
-import { describeSyncStats, emptySyncStats, isNoOpStats, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
+import { clockSkewedAhead, describeSyncStats, emptySyncStats, isNoOpStats, nextSyncStamp, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
 import { commitEditIfActive } from "../ui/edit-mode.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setStyleStatus } from "../ui/style-settings.js?v=__BUILD__";
@@ -256,13 +256,19 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   let notesConflicted = false;
   if (oldSnapshot && syncTextChanged(oldBody, newBody)) {
     const localNotesEdited = tsMs(existing?.updatedAt) > tsMs(existing?.lastSyncedAt);
+    // The same refusal as the push's, and the more important of the two: this is
+    // the gate a device with a slow clock hits on every single sync, and it is
+    // false for exactly the reason the edit is at risk — the deck's baseline was
+    // stamped in this device's future by whoever pushed it, so a real local edit
+    // reads as older than the deck it edits.
+    const unorderableClocks = clockSkewedAhead(cloudIso);
     // Notes going from "something" to "nothing" is the destructive case, and it
     // used to be stashed only when this device had unsynced edits — so the
     // ordinary path (notes fully synced, then wiped by a bad pull) left no copy
     // at all. Whatever emptied them, a deck's entire notes body disappearing is
     // worth one recoverable copy.
     const notesBeingEmptied = oldBody.trim() && !newBody.trim();
-    if ((localNotesEdited || notesBeingEmptied) && oldBody.trim()) {
+    if ((localNotesEdited || notesBeingEmptied || unorderableClocks) && oldBody.trim()) {
       notesConflicted = true;
       // There is one stash slot per deck, and this used to write straight over
       // it — so a second conflict arriving before the first was answered
@@ -403,7 +409,15 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     isNewDeck = true;
   }
 
-  const now = new Date().toISOString();
+  // MONOTONIC past the cloud row this push is about to replace. The stamp is
+  // written by this device's clock, and it is what every other device compares
+  // against — so a device running slow wrote `updated_at` BACKWARDS, and the
+  // faster device then read its own older copy as the newer one and pushed
+  // straight back over this one's work, with the stash gate (which is another
+  // comparison of the same two clocks) staying quiet throughout. Bumping past
+  // the row we merged against costs a millisecond and makes the write mean what
+  // it says: this copy supersedes that one. See nextSyncStamp.
+  const now = nextSyncStamp(new Date().toISOString(), cloudDeck?.updated_at);
   const title = snapshot.deckTitle || "Untitled Deck";
   const deckCategory = normalizeDeckCategory(snapshot.deckCategory);
 
@@ -508,7 +522,13 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     const cloudBody = splitHighlightNotesTail(String(cloudDeck.notes || "")).body;
     const pushedBody = splitHighlightNotesTail(String(documentPush.notes || "")).body;
     const cloudMovedSinceWeSynced = tsMs(cloudDeck.updated_at) > tsMs(localMeta.lastSyncedAt);
-    if (cloudBody.trim() && cloudMovedSinceWeSynced && syncTextChanged(cloudBody, pushedBody)) {
+    // ...or the two clocks cannot order the two edits at all. Every gate here is
+    // a comparison between this device's clock and another's, so a row stamped
+    // well beyond our own present makes all of them meaningless — and this one
+    // fails CLOSED, silently replacing a body with nothing kept. When nothing
+    // can say which edit came last, keeping a copy is the only safe answer.
+    const unorderable = clockSkewedAhead(cloudDeck.updated_at);
+    if (cloudBody.trim() && (cloudMovedSinceWeSynced || unorderable) && syncTextChanged(cloudBody, pushedBody)) {
       notesToStash = String(cloudDeck.notes || "");
     }
   }
@@ -1013,6 +1033,28 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     }
     const cloudById = new Map(cloudDecks.map((d) => [String(d.id), d]));
     const cloudIdSet = new Set(cloudDecks.map((d) => String(d.id)));
+
+    // ── Another device's clock is wrong ─────────────────────────────────────
+    //
+    // Worth saying out loud, because it is the one sync problem no merge rule
+    // can fix. Every timestamp this function decides on is written by a client
+    // (see the note in supabase_setup.sql on why there is no trigger), so a deck
+    // stamped well beyond this device's own present means one of the two clocks
+    // is simply wrong — and until it is corrected, the gates below cannot order
+    // two edits at all. The stashes are skew-aware now, so nothing is lost while
+    // that lasts; the deck still syncs sluggishly and confusingly, and only the
+    // user can fix the cause.
+    const skewedAhead = cloudDecks.filter((d) => clockSkewedAhead(d.updated_at));
+    if (skewedAhead.length) {
+      console.warn(
+        `${skewedAhead.length} cloud deck(s) are stamped ahead of this device's clock — ` +
+        "another device's date/time is wrong, so sync cannot reliably order edits."
+      );
+      const message = "Another device's clock is wrong, so edits can't be ordered reliably. " +
+        "Check the date and time on your devices — nothing has been lost.";
+      if (explicit) showToast(message, "error");
+      else reportBackgroundSyncProblem("clock-skew", message);
+    }
 
     // Without the tombstone table, deleting a deck is a one-device-only event:
     // every other device still holding it pushes it back on its next sync and

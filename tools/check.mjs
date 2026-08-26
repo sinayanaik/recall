@@ -227,6 +227,14 @@ const checks = [
   // so this can drive it with no browser and no baseline tag — the sync checks
   // below need both, and a check that can only skip verifies nothing.
   ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
+  // ...and the other half of the sync: the per-card merge, the tombstones
+  // that make a deletion stick, and the timestamps that choose the
+  // direction. Those had no runnable check at all — sync-parity and
+  // reconcile-parity below both need puppeteer AND the pre-modular tag, and
+  // exit 0 without them, so on most machines they verified nothing. This one
+  // drives the real modules in plain Node, like document-sync above, so it
+  // cannot skip.
+  ["sync-reconcile", ["node", ["tools/sync-reconcile-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
