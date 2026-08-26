@@ -15,7 +15,8 @@ import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { activeChapterIndex, firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
-import { NOTES_CHUNK_CLASS, NOTES_TOP_LEVEL_SELECTOR, ensureNotesLazyOffsetBuilt, notesHeadingScan, notesLazyTopAtOffset, renderedBlockCache, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { MARK_BADGE_CLASS } from "./highlight-badges.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, NOTES_TOP_LEVEL_SELECTOR, ensureNotesLazyOffsetBuilt, notesHeadingScan, notesLazyPlan, notesLazyTopAtOffset, renderedBlockCache, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
 import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -216,14 +217,65 @@ export function firstNotesHeadingAtOrAfter(headings, from) {
   return lo;
 }
 
+// What a rendered heading SAYS, for comparison against a descriptor's `text`.
+//
+// The badge a highlight's note hangs on its mark is a button printed into the
+// text (src/notes/highlight-badges.js) and is not part of what the heading says
+// — the same exception the selection walk makes at src/notes/selection.js:563,
+// and for the same reason: a number that came from the machine must not change
+// what a line is compared as.
+export function renderedHeadingText(node) {
+  let text = "";
+  for (const child of node?.childNodes || []) {
+    if (child.nodeType === 1 && child.classList?.contains(MARK_BADGE_CLASS)) continue;
+    text += child.textContent || "";
+  }
+  return text.replace(/\s+/g, " ").trim();
+}
+
+// Does this rendered heading say what this descriptor says? Level and text are
+// the two things each side can answer without consulting the other, and
+// plainHeadingText exists precisely so the scanner's answer is the one the DOM
+// will produce.
+export function notesHeadingMatchesNode(heading, node) {
+  if (!heading || !node) return false;
+  if (heading.level !== Number(node.tagName[1])) return false;
+  return heading.text === renderedHeadingText(node);
+}
+
+// How far either side may be out of step before the pairing stops trying to
+// resynchronise and falls back to position. Deliberately small: this is for the
+// one heading the other side does not have, not for re-deriving the list.
+export const NOTES_HEADING_RESYNC_LOOKAHEAD = 4;
+
 // Pair the descriptors covering [from, to) with the rendered headings inside
 // `root`, in document order, and give each element its descriptor's id.
 //
 // Called once per span as that span is built, and once over the whole surface
-// for an ordinary (eagerly rendered) note. Pairing positionally within a span
-// is what keeps it O(what was just built); a count mismatch binds the common
-// prefix and leaves the rest unbound, where a jump still lands on the right
-// chunk — a degraded answer rather than a wrong one.
+// for an ordinary (eagerly rendered) note.
+//
+// ── Why this is not simply "the Nth element is the Nth descriptor" ─────────
+//
+// It was, and that is what "the contents takes me to the wrong heading" was.
+// The descriptors come from a scan of the SOURCE and the elements come from
+// marked, and the two do not always agree about how many headings a note has:
+//
+//   • `- ## thing` renders as a heading and is deliberately NOT in the contents
+//     (see the heading-index property in tools/viewport-split-check.mjs), and a
+//     raw `<h2>` in an HTML block is not in the scan either — the DOM has one
+//     the descriptors do not, so every row after it named the heading BEFORE it
+//     and the last rows named nothing at all;
+//   • the reverse used to happen too, for a `- foo` / `---` pair and for a
+//     commented-out section (both fixed in scanPreparedHeadings, both still
+//     possible for a shape nobody has thought of yet).
+//
+// So position is the expectation, not the rule. Each element is checked against
+// the descriptor it would have taken, and a disagreement is resynchronised —
+// look ahead a few descriptors for one this element matches (the DOM is missing
+// some) and a few elements for one the descriptor matches (the DOM has extra).
+// When neither side can resync, the two are paired positionally anyway, which
+// is exactly what this did before and is the right answer for a heading whose
+// text simply does not round-trip.
 export function bindNotesHeadingElements(container, from = null, to = null, root = null) {
   if (!container || container !== el.notesView) return;
   const prepared = preparedNotesSource();
@@ -232,14 +284,42 @@ export function bindNotesHeadingElements(container, from = null, to = null, root
   if (!headings.length) return;
   const scope = root || container;
   const nodes = Array.from(scope.querySelectorAll("h1, h2, h3, h4, h5, h6"))
-    .filter((h) => h.textContent.trim() !== "");
-  const start = from == null ? 0 : firstNotesHeadingAtOrAfter(headings, from);
+    .filter((h) => h.textContent.trim() !== "")
+    // A heading inside a list item is one the contents does not carry, so it
+    // has no descriptor to take and must not consume the next one.
+    .filter((h) => !h.closest("li"))
+    // ...and a chunk that has not been built yet holds nothing, so anything
+    // found inside one is not this note's rendered heading.
+    .filter((h) => !h.closest(`.${NOTES_CHUNK_PENDING_CLASS}`));
+  let at = from == null ? 0 : firstNotesHeadingAtOrAfter(headings, from);
+  const within = (index) => {
+    const heading = headings[index];
+    return Boolean(heading) && (to == null || heading.offset < to);
+  };
   for (let i = 0; i < nodes.length; i += 1) {
-    const heading = headings[start + i];
-    if (!heading) break;
-    if (to != null && heading.offset >= to) break;
-    heading.el = nodes[i];
-    nodes[i].id = heading.id;
+    if (!within(at)) break;
+    const node = nodes[i];
+    let target = at;
+    if (!notesHeadingMatchesNode(headings[at], node)) {
+      // The DOM is missing headings the scan has: is one of the next few
+      // descriptors this element?
+      let ahead = -1;
+      for (let d = at + 1; d <= at + NOTES_HEADING_RESYNC_LOOKAHEAD && within(d); d += 1) {
+        if (notesHeadingMatchesNode(headings[d], node)) { ahead = d; break; }
+      }
+      // The DOM has headings the scan does not: is one of the next few elements
+      // this descriptor? Then THIS element is the extra one — skip it and leave
+      // the descriptor where it is.
+      let extra = false;
+      for (let n = i + 1; n <= i + NOTES_HEADING_RESYNC_LOOKAHEAD && n < nodes.length; n += 1) {
+        if (notesHeadingMatchesNode(headings[at], nodes[n])) { extra = true; break; }
+      }
+      if (ahead !== -1 && (!extra || ahead - at <= 1)) target = ahead;
+      else if (extra) continue;
+    }
+    headings[target].el = node;
+    node.id = headings[target].id;
+    at = target + 1;
   }
 }
 
@@ -263,21 +343,58 @@ export function ensureNotesHeadingIds() {
       });
   }
   const headings = notesHeadingsForPrepared(prepared);
-  bindNotesHeadingElements(el.notesView);
+  bindNotesHeadingsAcrossView(el.notesView);
   return headings;
+}
+
+// Bind every heading the surface currently holds — SPAN BY SPAN when the note is
+// one that is built as it is read.
+//
+// A whole-view pass over such a note was the largest single source of "the
+// contents takes me to the wrong heading". Only some spans are in the DOM (a
+// resumed reading position builds exactly one, in the middle of the book), and
+// the pass began at descriptor 0 regardless — so the headings of a span
+// nineteen chapters in were paired with the descriptors for chapter one, and
+// because buildNotesToc runs this on every rebuild it also OVERWROTE the correct
+// pairings each span made as it was built.
+//
+// Per span, each range of descriptors meets only the elements actually rendered
+// from it, which is the same call buildNotesLazySpan already makes. The
+// whole-view call is kept for an eagerly rendered note, where it is complete by
+// construction.
+export function bindNotesHeadingsAcrossView(container) {
+  const plan = notesLazyPlan(container);
+  if (!plan?.spans?.length) {
+    bindNotesHeadingElements(container);
+    return;
+  }
+  plan.spans.forEach((span, index) => {
+    const chunk = plan.chunks?.[index];
+    if (!chunk?.isConnected || !plan.built?.[index]) return;
+    bindNotesHeadingElements(container, span.start, span.end, chunk);
+  });
 }
 
 // The element for a heading, building the chunk it lives in if that is what it
 // takes. THE way to turn a contents row into something with geometry.
+//
+// The cached element is CHECKED rather than trusted. A pairing that went wrong
+// leaves a live element on the descriptor, and a live element short-circuited
+// everything below it — so the one path that could have recovered (build the
+// span this heading's offset falls in, then pair again) was never reached, and
+// the wrong heading was returned for as long as the note stayed open. The id is
+// what the pairing writes, so comparing it is asking the element whether it
+// agrees that it is this heading, and it costs one string compare.
 export function resolveNotesHeadingElement(heading) {
   if (!heading) return null;
-  if (heading.el?.isConnected) return heading.el;
+  const cached = (node) => (node?.isConnected && node.id === heading.id ? node : null);
+  if (cached(heading.el)) return heading.el;
   if (Number.isFinite(heading.offset) && el.notesView) {
     ensureNotesLazyOffsetBuilt(el.notesView, heading.offset);
-    if (heading.el?.isConnected) return heading.el;
-    bindNotesHeadingElements(el.notesView);
+    if (cached(heading.el)) return heading.el;
+    bindNotesHeadingsAcrossView(el.notesView);
   }
-  return heading.el?.isConnected ? heading.el : null;
+  return cached(heading.el);
 }
 
 // Roughly where a heading sits on the glass, WITHOUT forcing anything to be

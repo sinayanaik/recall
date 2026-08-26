@@ -103,6 +103,17 @@
 //   paged           can you reach the end of a note in paged reading mode?
 //   ribbon          does the caret band sit where the caret is, and stay still
 //                   when it should?
+//   toc-binding     ...and does the Nth row of the CONTENTS take you to the
+//                   heading it names? A row is a descriptor scanned out of the
+//                   source, a jump needs an element, and the two were married
+//                   by position — which is wrong whenever the two sides
+//                   disagree about how many headings a note has (`- ## thing`
+//                   and a raw <h2> render as headings the contents does not
+//                   carry; a note built span by span has most of its headings
+//                   not in the document at all). `viewport` proves the
+//                   descriptors are right and `ribbon` proves the band tracks
+//                   the reader; neither can see a row that names one heading
+//                   and lands on another
 //   pdf-document    does a PDF deck work — imported, rendered, selected,
 //                   highlighted, saved and read back? The only check that
 //                   drives the Document surface, and the only one that can
@@ -240,6 +251,13 @@ const checks = [
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
+    // The JOIN nothing used to ask about: a contents row is a descriptor scanned
+    // out of the SOURCE, a jump needs an ELEMENT, and the two are married by
+    // position. `viewport` proves the descriptors are right and `ribbon` proves
+    // the band tracks the reader; neither can see a row that names one heading
+    // and lands on another, which is what "the TOC takes me to the wrong
+    // heading" was.
+    ["toc-binding   ", ["node", ["tools/toc-binding-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
     ["epub-import   ", ["node", ["tools/epub-import-check.mjs"], ROOT]],
     ["offline       ", ["node", ["tools/offline-check.mjs"], ROOT]],

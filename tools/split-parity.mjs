@@ -104,7 +104,15 @@ const ACCEPTED = {
     "descriptors — { level, text, offset, id, el } — with `el` filled in as each " +
     "span is built, and every caller reads .level/.text where it read " +
     ".tagName/.textContent. The DOM path is kept for a surface that has no " +
-    "render behind it, where the DOM is complete by definition.",
+    "render behind it, where the DOM is complete by definition. ALSO: it binds " +
+    "through bindNotesHeadingsAcrossView, which pairs each range of descriptors " +
+    "with the elements rendered from its OWN span. The whole-view call it " +
+    "replaced began at descriptor 0 however little of the note was on screen, so " +
+    "a span nineteen chapters in was paired with chapter one — and because " +
+    "buildNotesToc runs this on every rebuild it also overwrote the correct " +
+    "pairing each span made as it was built. That was the largest single source " +
+    "of 'the contents takes me to the wrong heading'; the join is now covered by " +
+    "tools/toc-binding-check.mjs.",
   revealNoteMark:
     "The Highlights panel addresses a highlight by its ORDINAL in state.notes, " +
     "and the guard that the ordinal means what it says was `the view holds " +
