@@ -1308,6 +1308,16 @@ const ACCEPTED = {
     "Unioned rather than replaced because this set is the input to a deletion: " +
     "an extra path costs one image that is never swept, a missing one costs a " +
     "picture the reader still uses.",
+  supabaseImagePathFromUrl:
+    "Asking the client for the storage prefix is wrapped. getPublicUrl can " +
+    "throw — an older supabase-js, a stand-in client, a project whose storage " +
+    "is not configured — and this is reached from a delete button's click " +
+    "handler with the note-side removal already committed, so an exception " +
+    "there escapes into the handler and the reader is left looking at a picture " +
+    "that has gone from the note with nothing said. \"Not one of ours\" is the " +
+    "same answer for a client that cannot say. Caught by the uncaught-exception " +
+    "assertion in tools/image-render-check.mjs the moment the reference test " +
+    "above started reaching this code.",
   deckStillReferencesImage:
     "Compares through imageMatchKey over findSourceImages instead of " +
     "`text.includes(url)`. The url it is handed has come back through " +
@@ -1317,7 +1327,12 @@ const ACCEPTED = {
     "written in the other of its two equivalent spellings read as \"nothing " +
     "else points at this\", the storage object was deleted, and every remaining " +
     "copy in the deck became a broken picture at once. imageMatchKey is the " +
-    "identity every other comparison in that file already uses.",
+    "identity every other comparison in that file already uses. It was wrong " +
+    "the other way too, and that half is why the branch had gone unexercised: " +
+    "`includes` said \"still referenced\" whenever a DIFFERENT image's URL " +
+    "merely began with this one's, which is the ordinary shape of an app URL " +
+    "with a query string — so the stored file was never deleted at all. Both " +
+    "directions are asserted in tools/image-controls-check.mjs.",
   // ── A deletion that un-happened, and a save that never happened ─────────
   // Four entries below are one story: a write on a data-safety path that could
   // fail, or could disagree with the predicate it was supposed to share.

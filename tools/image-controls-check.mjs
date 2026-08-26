@@ -114,6 +114,22 @@ function liftDeclarations() {
 
 const { api, toasts, deleted } = liftDeclarations();
 
+// deckStillReferencesImage is stubbed above (it is what removeSourceImage asks,
+// and most cases here want a definite "nothing else points at this"). The real
+// one is built separately, over its own `state`, so the question it answers can
+// be asked directly — it is the guard in front of a HARD delete of the stored
+// object, and a wrong answer either leaks a file forever or turns every other
+// copy in the deck into a broken picture.
+const deckState = { notes: "", masterCards: [] };
+const deckRefs = (() => {
+  const src = readFileSync(path.join(ROOT, "src/images/surface-controls.js"), "utf8");
+  const decl = new Map(topLevelDecls(src).map((d) => [d.name, d])).get("deckStillReferencesImage");
+  return new Function(
+    "state", "imageMatchKey", "findSourceImages", "sourceMayHaveImages",
+    `${decl.text}\nreturn deckStillReferencesImage;`
+  )(deckState, api.imageMatchKey, api.findSourceImages, api.sourceMayHaveImages);
+})();
+
 // ── The corpus ─────────────────────────────────────────────────────────────
 //
 // One shape per way an image can sit in a note. The first six are the ones the
@@ -685,6 +701,53 @@ for (const [name, source] of Object.entries(SHAPES)) {
       `deleting a table cell's image left ${JSON.stringify(surface.getSource())}`
     );
   }
+}
+
+// ── "Is anything else still pointing at this file?" ────────────────────────
+//
+// The answer gates a hard delete of the stored object, so both directions cost
+// something real: a false "yes" leaks the file forever, and a false "no" takes
+// it out from under every other copy in the deck at once.
+//
+// It used to be `text.includes(url)`, which is wrong in both directions — and
+// the app's own URLs are exactly the shape that shows it, since a query string
+// makes one image's URL a prefix of another's.
+{
+  const base = "https://img.test/photo.png";
+  const check = (name, notes, cards, url, want) => {
+    deckState.notes = notes;
+    deckState.masterCards = cards;
+    assert(deckRefs(url) === want, `${name}: deckStillReferencesImage said ${!want}`);
+  };
+
+  check("a second copy in the notes counts",
+    `![a](${base})\n\n![b](${base})\n`, [], base, true);
+  check("a copy on a card face counts",
+    "no images here\n", [{ question: `![q](${base})`, answer: "plain" }], base, true);
+  check("nothing else pointing at it says so",
+    "the picture is gone\n", [], base, false);
+
+  // A DIFFERENT image whose URL merely begins with this one's. `includes` said
+  // "still referenced" and the file was never deleted — the leak that meant
+  // this branch had gone unexercised.
+  check("an image whose URL is a prefix of another's is not that other one",
+    `![other](${base}?a=1)\n`, [], base, false);
+
+  // ...and the same trap the other way up, which is the expensive one: the URL
+  // in the note is the ESCAPED form imgTagHtml writes, while the url handed in
+  // has come back through parseImgTagAttrs decoded. A raw `includes` missed it,
+  // called the file unreferenced, and deleted it out from under this very tag.
+  const query = "https://img.test/photo.png?a=1&b=2";
+  check("an entity-escaped <img> still counts as a reference",
+    `${api.imgTagHtml({ url: query, alt: "x" })}\n`, [], query, true);
+
+  // A reference-style image resolves through its definition, which no substring
+  // test can do at all.
+  check("a reference-style image counts",
+    `![alt][fig]\n\n[fig]: ${base}\n`, [], base, true);
+
+  deckState.notes = "";
+  deckState.masterCards = [];
 }
 
 // ── Reporting ──────────────────────────────────────────────────────────────
