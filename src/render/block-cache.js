@@ -18,7 +18,7 @@ import { pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
-import { SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
+import { LIST_ITEM_SOURCE, SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
 import { DEFERRED_WORK_MARGIN } from "./deferred-work.js?v=__BUILD__";
 
 // ── Incremental rendering ──────────────────────────────────────────────────
@@ -1764,8 +1764,13 @@ export function plainHeadingText(raw) {
     .replace(/\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)/g, "$1")
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1")
     .replace(/`+/g, "")
-    .replace(/(\*\*\*|___|\*\*|__|\*|~~)/g, "")
-    .replace(/\\([\\`*_{}[\]()#+\-.!>~])/g, "$1")
+    // Emphasis markers and backslash escapes in ONE pass, because doing them in
+    // two gets the escaped ones wrong: stripping emphasis first ate the `*` out
+    // of `## a \* b` and left the backslash behind, so the contents row read
+    // "a \ b" where the reader saw "a * b" — and the slug an anchor was written
+    // against was wrong with it. An escaped character is text; only an
+    // unescaped run is markup.
+    .replace(/\\([\\`*_{}[\]()#+\-.!>~])|(?:\*\*\*|___|\*\*|__|\*|~~)/g, (whole, escaped) => escaped ?? "")
     .replace(/&(#39|amp|lt|gt|quot|apos|nbsp);/g, (whole, name) => HEADING_ENTITIES[name] ?? whole)
     .replace(/\s+/g, " ")
     .trim();
@@ -1787,12 +1792,45 @@ export function scanPreparedHeadings(prepared) {
   // The paragraph currently open, which is what a setext underline turns into a
   // heading. Null whenever the previous line cannot start one.
   let paragraph = null;
+  // Is the START of the line inside an HTML comment? A commented-out section of
+  // a note renders NOTHING, so the `## Draft` inside one is not a heading and
+  // must not put a row in the contents — a phantom row shifts every real
+  // heading after it by one when the rows are paired with the rendered
+  // elements. Tracked line by line the way the fence state is, and deliberately
+  // not tracked at all while inside a fence, where `<!--` is just text.
+  let inComment = false;
   const isFenceLine = (line) => line.match(/^ {0,3}(`{3,}|~{3,})/);
+  // Where the line LEAVES the comment state, counting every marker on it — so
+  // the app's own one-line `<!--recall:highlight-notes-->` opens and closes
+  // within the line and changes nothing.
+  const commentStateAfter = (line, open) => {
+    let at = 0;
+    let inside = open;
+    for (;;) {
+      const next = inside ? line.indexOf("-->", at) : line.indexOf("<!--", at);
+      if (next === -1) return inside;
+      at = next + (inside ? 3 : 4);
+      inside = !inside;
+    }
+  };
+  // A paragraph that opened with a list marker is a LIST, and a run of dashes
+  // under it is that list's sibling thematic break rather than a setext
+  // underline. Built once per scan; a `g`-less pattern is safe to reuse.
+  const listItemStart = new RegExp(LIST_ITEM_SOURCE);
 
   lines.forEach((line, i) => {
     const isLast = i === lines.length - 1;
     const start = pos;
     pos += line.length + (isLast ? 0 : 1);
+
+    if (!inFence) {
+      const startedInComment = inComment;
+      inComment = commentStateAfter(line, inComment);
+      if (startedInComment) {
+        paragraph = null;
+        return;
+      }
+    }
 
     const fenceMatch = isFenceLine(line);
     if (inFence) {
@@ -1826,7 +1864,7 @@ export function scanPreparedHeadings(prepared) {
       return;
     }
 
-    const setext = paragraph && HEADING_SETEXT_RE.exec(body);
+    const setext = paragraph && !paragraph.list && HEADING_SETEXT_RE.exec(body);
     if (setext) {
       const text = plainHeadingText(paragraph.lines.join(" "));
       if (text) headings.push({ level: setext[1][0] === "=" ? 1 : 2, text, offset: paragraph.offset });
@@ -1838,7 +1876,7 @@ export function scanPreparedHeadings(prepared) {
     // holds no headings. With one open it is a lazy continuation of it.
     if (!paragraph && /^ {4,}/.test(body)) return;
     if (paragraph) paragraph.lines.push(body);
-    else paragraph = { offset: start, lines: [body] };
+    else paragraph = { offset: start, lines: [body], list: listItemStart.test(body) };
   });
   return headings;
 }

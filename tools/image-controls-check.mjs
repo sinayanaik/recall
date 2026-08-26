@@ -49,7 +49,11 @@ const marked = require("../vendor/marked-14.1.2/marked.min.js");
 
 const WANTED = [
   ["src/core/text.js", ["escapeHtml"]],
-  ["src/render/inline.js", ["IMG_ALT_SOURCE", "IMG_DEST_SOURCE", "IMG_TOKEN_SOURCE", "imageDestinationUrl"]],
+  ["src/render/inline.js", [
+    "INLINE_SOFT_BREAK_SOURCE", "IMG_ALT_SOURCE", "IMG_DEST_SOURCE", "IMG_TAG_SOURCE",
+    "IMG_TOKEN_SOURCE", "imageDestinationUrl", "TABLE_DELIMITER_RE", "pipeRowInTable",
+    "imageMarkupToTag", "renderImageRows"
+  ]],
   ["src/render/preprocess.js", [
     "FENCE_OPEN_SOURCE", "fenceOpenPattern", "scanFences",
     "QUOTE_PREFIX_SOURCE", "LIST_ITEM_SOURCE", "HTML_VERBATIM_TAGS",
@@ -64,7 +68,11 @@ const WANTED = [
     "sourceImagePattern", "isEscapedOffset", "findSourceImages",
     "sourceMayHaveImages", "markedImageUrl", "imageMatchKey", "imgTagHtml",
     "sourceImageAt", "sourceImageFor", "pipeRowLinePattern", "imageRemovalRange",
-    "replaceSourceImage", "commitSourceImageWidth", "removeSourceImage"
+    "replaceSourceImage", "commitSourceImageWidth", "removeSourceImage",
+    // The rule the ATTACH pass uses to decide which copy of a repeated image a
+    // shell is. The commit path applies the same rule now, so this file has to
+    // lift it too — the two disagreeing is what deleted the wrong picture.
+    "resolveShellCopy"
   ]]
 ];
 
@@ -106,6 +114,22 @@ function liftDeclarations() {
 
 const { api, toasts, deleted } = liftDeclarations();
 
+// deckStillReferencesImage is stubbed above (it is what removeSourceImage asks,
+// and most cases here want a definite "nothing else points at this"). The real
+// one is built separately, over its own `state`, so the question it answers can
+// be asked directly — it is the guard in front of a HARD delete of the stored
+// object, and a wrong answer either leaks a file forever or turns every other
+// copy in the deck into a broken picture.
+const deckState = { notes: "", masterCards: [] };
+const deckRefs = (() => {
+  const src = readFileSync(path.join(ROOT, "src/images/surface-controls.js"), "utf8");
+  const decl = new Map(topLevelDecls(src).map((d) => [d.name, d])).get("deckStillReferencesImage");
+  return new Function(
+    "state", "imageMatchKey", "findSourceImages", "sourceMayHaveImages",
+    `${decl.text}\nreturn deckStillReferencesImage;`
+  )(deckState, api.imageMatchKey, api.findSourceImages, api.sourceMayHaveImages);
+})();
+
 // ── The corpus ─────────────────────────────────────────────────────────────
 //
 // One shape per way an image can sit in a note. The first six are the ones the
@@ -123,6 +147,13 @@ const SHAPES = {
   heading: "# Title ![nine](https://img.test/9.png)\n",
   twoInAParagraph: "![a](https://img.test/10a.png) ![b](https://img.test/10b.png)\n",
   pipeRow: "![a](https://img.test/11a.png) | ![b](https://img.test/11b.png)\n",
+  // GFM lets a table be written with no leading pipes, and a body row of one is
+  // then spelled exactly like a side-by-side image row. renderImageRows used to
+  // turn this line into a .notes-img-row, which left marked a header and a
+  // delimiter with no body under them and took the table apart — and the delete
+  // then took a column separator with it. Both sides ask pipeRowInTable now.
+  pipelessTableRow:
+    "Before | After\n--- | ---\n![a](https://img.test/22a.png) | ![b](https://img.test/22b.png)\n",
   alreadySized: "<img src=\"https://img.test/12.png\" alt=\"twelve\" style=\"--notes-img-w:320px; width:320px\">\n",
   referenceStyle: "![thirteen][fig]\n\n[fig]: https://img.test/13.png\n",
   entityUrl: "<img src=\"https://img.test/14.png?a=1&amp;b=2\" alt=\"fourteen\">\n",
@@ -430,7 +461,21 @@ for (const [name, source] of Object.entries(SHAPES)) {
     );
     // No hole where the picture was.
     assert(!/\n{3,}/.test(next), `${name} #${nth}: delete left a blank hole:\n      ${JSON.stringify(next)}`);
-    assert(!/^[^\S\n]*\|/m.test(next.replace(/^\|.*\|$/gm, "")), `${name} #${nth}: delete left a stray row separator:\n      ${JSON.stringify(next)}`);
+    // A stray "|" left at the start of a line, which is what a delete that took
+    // an image out of a side-by-side row but not its separator looks like.
+    // Lines that belong to a TABLE are exempt: a table row keeps its pipes when
+    // a cell is emptied, whether it is written with leading pipes (`|  | x |`)
+    // or without them (` | ![b](…)`), and that is the correct outcome.
+    const withoutTableRows = next
+      .split("\n")
+      .filter((line, index, all) => {
+        if (/^\|.*\|$/.test(line)) return false;
+        return !all.slice(0, index).some((above, i) =>
+          api.TABLE_DELIMITER_RE.test(above)
+          && all.slice(i + 1, index).every((between) => between.includes("|")));
+      })
+      .join("\n");
+    assert(!/^[^\S\n]*\|/m.test(withoutTableRows), `${name} #${nth}: delete left a stray row separator:\n      ${JSON.stringify(next)}`);
   }
 }
 
@@ -517,6 +562,192 @@ for (const [name, source] of Object.entries(SHAPES)) {
   api.commitSourceImageWidth(surface, { url: "https://img.test/gone.png", nth: 0 }, 200);
   assert(surface.getSource() === before, "a commit for a vanished image rewrote the note anyway");
   assert(toasts.length === 1, `a commit for a vanished image said nothing (${toasts.length} toasts)`);
+}
+
+// ── One press, one picture ─────────────────────────────────────────────────
+//
+// Every case below is a note where deleting ONE image used to take others with
+// it, which is the report these exist for. The property is the same each time:
+// after the press, the note holds exactly the images it held before minus the
+// one that was pressed, and every other character is where it was.
+{
+  // Counted through the ORACLE, not through the scan under test: on the old
+  // build the scan reported one giant image where marked renders three, so a
+  // scan-versus-scan comparison agreed with itself and saw nothing wrong.
+  const oneLess = (name, source, targetUrl, ref = {}) => {
+    const surface = makeSurface(source);
+    const before = renderedImageUrls(source).map(key);
+    const target = key(targetUrl);
+    assert(before.includes(target), `${name}: the fixture does not render ${targetUrl} at all`);
+    api.removeSourceImage(surface, { url: target, nth: 0, rendered: true, ...ref });
+    const after = renderedImageUrls(surface.getSource()).map(key);
+    const want = before.slice();
+    want.splice(want.indexOf(target), 1);
+    assert(
+      after.length === want.length && after.every((url, i) => url === want[i]),
+      `${name}: one delete left ${JSON.stringify(after)}, want ${JSON.stringify(want)}`
+    );
+    return surface.getSource();
+  };
+
+  // An `<img` with no closing bracket used to make ONE slice that ran to the
+  // next ">" anywhere in the note — so deleting the first picture removed the
+  // two below it and the paragraph between them.
+  const unclosed = "Intro paragraph.\n\n<img src=\"https://img.test/u1.png\" alt=\"first\"\n\n"
+    + "![](https://img.test/u2.png)\n\n![](https://img.test/u3.png)\n\nSome <b>bold</b> text.\n";
+  const leftBehind = oneLess("unclosed img tag", unclosed, "https://img.test/u2.png");
+  assert(leftBehind.includes("bold"), `unclosed img tag: the delete swallowed the prose:\n      ${JSON.stringify(leftBehind)}`);
+
+  // A ">" inside an attribute value used to end the slice mid-tag, so the
+  // delete left the rest of the tag behind as visible text.
+  const gtInAttr = "<img src=\"https://img.test/g1.png\" alt=\"1 > 2\">\n\n![](https://img.test/g2.png)\n";
+  const afterGt = oneLess("gt inside an attribute", gtInAttr, "https://img.test/g1.png");
+  assert(!afterGt.includes("2\">"), `gt inside an attribute: delete left litter:\n      ${JSON.stringify(afterGt)}`);
+
+  // A markdown destination is not allowed to cross a blank line either: a stray
+  // "![](" used to swallow everything down to the next ")".
+  const strayOpen = "![a](https://img.test/s1.png\n\ntext\n\n![b](https://img.test/s2.png)\n\nmore)\n\n"
+    + "![c](https://img.test/s3.png)\n";
+  const afterStray = oneLess("stray open destination", strayOpen, "https://img.test/s2.png");
+  assert(afterStray.includes("text"), `stray open destination: the delete swallowed the prose:\n      ${JSON.stringify(afterStray)}`);
+}
+
+// ── An ordinal counted on screen may only be spent on the list it describes ──
+//
+// `nth` comes from the SHELLS IN THE VIEW; the slices come from the SOURCE. On
+// a book built span by span the two are different lists, and applying one to
+// the other deleted an earlier, off-screen copy of the same picture — the
+// press did nothing visible and a different image vanished. A ref that says how
+// many copies the view holds can be checked; one that cannot be checked is
+// refused, out loud.
+{
+  const twice = "![dup](https://img.test/d.png)\n\nmiddle\n\n![dup](https://img.test/d.png)\n";
+
+  // Both copies on screen: the ordinal is checkable and is honoured.
+  {
+    const surface = makeSurface(twice);
+    api.removeSourceImage(surface, { url: key("https://img.test/d.png"), nth: 1, copies: 2, rendered: true });
+    assert(
+      surface.getSource() === "![dup](https://img.test/d.png)\n\nmiddle\n",
+      `both copies visible: deleting the second left ${JSON.stringify(surface.getSource())}`
+    );
+  }
+
+  // Only one on screen, two in the note: the ordinal says nothing, so nothing
+  // is written and the reader is told.
+  {
+    toasts.length = 0;
+    const surface = makeSurface(twice);
+    api.removeSourceImage(surface, { url: key("https://img.test/d.png"), nth: 0, copies: 1, rendered: true });
+    assert(surface.getSource() === twice, `one copy visible of two: the note was rewritten anyway:\n      ${JSON.stringify(surface.getSource())}`);
+    assert(toasts.length === 1, `one copy visible of two: refused silently (${toasts.length} toasts)`);
+  }
+
+  // ...unless the built flags can settle it. `built` is one flag per image of
+  // the note, in order — here the first copy's span is not in the DOM, so the
+  // single shell on screen IS the second copy.
+  {
+    toasts.length = 0;
+    const surface = makeSurface(twice);
+    api.removeSourceImage(surface, {
+      url: key("https://img.test/d.png"), nth: 0, copies: 1, built: [false, true], rendered: true
+    });
+    assert(
+      surface.getSource() === "![dup](https://img.test/d.png)\n\nmiddle\n",
+      `built flags: deleting the only visible copy left ${JSON.stringify(surface.getSource())}`
+    );
+    assert(toasts.length === 0, "built flags: the delete complained even though it could be settled");
+  }
+}
+
+// ── A side-by-side row and a table row are spelled the same ────────────────
+//
+// GFM lets a table be written without leading pipes, so a body row whose cells
+// are all pictures is character for character a side-by-side image row.
+// renderImageRows used to convert it, which left marked a header and a
+// delimiter with no body under them: the table came apart on screen. What
+// separates the two is the delimiter row ABOVE, so both the renderer and the
+// delete ask pipeRowInTable.
+{
+  const table = "Before | After\n--- | ---\n![a](https://img.test/22a.png) | ![b](https://img.test/22b.png)\n";
+  assert(
+    api.renderImageRows(table) === table,
+    `a pipeless table row was rendered as an image row:\n      ${JSON.stringify(api.renderImageRows(table))}`
+  );
+
+  // ...and a real side-by-side row still becomes one, so the guard above cannot
+  // pass by refusing everything.
+  const row = "![a](https://img.test/23a.png) | ![b](https://img.test/23b.png)\n";
+  assert(
+    api.renderImageRows(row).includes("notes-img-row"),
+    `a real side-by-side row stopped being one:\n      ${JSON.stringify(api.renderImageRows(row))}`
+  );
+
+  // A row that merely FOLLOWS a table, with a blank line between, is its own
+  // row again — the walk back stops at the first line with no "|" in it.
+  const after = `${table}\n${row}`;
+  assert(
+    api.renderImageRows(after).includes("notes-img-row"),
+    `a row after a table was taken for part of it:\n      ${JSON.stringify(api.renderImageRows(after))}`
+  );
+
+  // The delete agrees with all of that: an image in the table row keeps the
+  // separator beside it, where one in a real row takes it along.
+  {
+    const surface = makeSurface(table);
+    api.removeSourceImage(surface, { url: key("https://img.test/22a.png"), nth: 0, rendered: true });
+    assert(
+      surface.getSource() === "Before | After\n--- | ---\n | ![b](https://img.test/22b.png)\n",
+      `deleting a table cell's image left ${JSON.stringify(surface.getSource())}`
+    );
+  }
+}
+
+// ── "Is anything else still pointing at this file?" ────────────────────────
+//
+// The answer gates a hard delete of the stored object, so both directions cost
+// something real: a false "yes" leaks the file forever, and a false "no" takes
+// it out from under every other copy in the deck at once.
+//
+// It used to be `text.includes(url)`, which is wrong in both directions — and
+// the app's own URLs are exactly the shape that shows it, since a query string
+// makes one image's URL a prefix of another's.
+{
+  const base = "https://img.test/photo.png";
+  const check = (name, notes, cards, url, want) => {
+    deckState.notes = notes;
+    deckState.masterCards = cards;
+    assert(deckRefs(url) === want, `${name}: deckStillReferencesImage said ${!want}`);
+  };
+
+  check("a second copy in the notes counts",
+    `![a](${base})\n\n![b](${base})\n`, [], base, true);
+  check("a copy on a card face counts",
+    "no images here\n", [{ question: `![q](${base})`, answer: "plain" }], base, true);
+  check("nothing else pointing at it says so",
+    "the picture is gone\n", [], base, false);
+
+  // A DIFFERENT image whose URL merely begins with this one's. `includes` said
+  // "still referenced" and the file was never deleted — the leak that meant
+  // this branch had gone unexercised.
+  check("an image whose URL is a prefix of another's is not that other one",
+    `![other](${base}?a=1)\n`, [], base, false);
+
+  // ...and the same trap the other way up, which is the expensive one: the URL
+  // in the note is the ESCAPED form imgTagHtml writes, while the url handed in
+  // has come back through parseImgTagAttrs decoded. A raw `includes` missed it,
+  // called the file unreferenced, and deleted it out from under this very tag.
+  const query = "https://img.test/photo.png?a=1&b=2";
+  check("an entity-escaped <img> still counts as a reference",
+    `${api.imgTagHtml({ url: query, alt: "x" })}\n`, [], query, true);
+
+  // A reference-style image resolves through its definition, which no substring
+  // test can do at all.
+  check("a reference-style image counts",
+    `![alt][fig]\n\n[fig]: ${base}\n`, [], base, true);
+
+  deckState.notes = "";
+  deckState.masterCards = [];
 }
 
 // ── Reporting ──────────────────────────────────────────────────────────────

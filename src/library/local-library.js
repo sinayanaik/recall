@@ -14,7 +14,7 @@ import { invalidateNoteLinkIndex } from "../notes/note-links.js?v=__BUILD__";
 import { repairEscapedMathMarkdown } from "../render/math.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
 import { deckPayloadHasContent, deckSnapshot, loadDeckSnapshot } from "../storage/deck-snapshot.js?v=__BUILD__";
-import { allDeckSnapshotIds, cloneSnapshot, deckSnapshotCache, deckStoreUnreadable, deleteDeckSnapshot, flushPendingDeckAutosave, forEachDeckSnapshot, indexedDbUnavailable, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { allDeckSnapshotIds, cloneSnapshot, deckSnapshotCache, deckStoreUnreadable, deleteDeckSnapshot, flushPendingDeckAutosave, forEachDeckSnapshot, indexedDbUnavailable, readDeckSnapshot, rewriteDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_PREFIX, NOTES_CONFLICT_SUFFIX } from "../storage/keys.js?v=__BUILD__";
 import { handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveStorageFailed, setLastSaveErrorWasQuota } from "../storage/quota.js?v=__BUILD__";
 import { cardSyncSignature, dropTombstonesForLiveCards, recordDeletedCardIds, stampCardSyncState } from "../sync/cards.js?v=__BUILD__";
@@ -165,11 +165,10 @@ export async function repairEscapedMathInLibrary() {
   // readonly transaction, so writing back mid-iteration isn't allowed. The
   // held set is bounded by how much damage there actually is, not by library
   // size — and every deck in it has to be rewritten anyway.
-  const damaged = [];
-  await forEachDeckSnapshot((id, snapshot) => {
-    // Never repair a notes-conflict stash in place: it isn't a deck, it has no
-    // index entry, and the sibling deck's own repair is what matters.
-    if (String(id).endsWith(NOTES_CONFLICT_SUFFIX)) return;
+  // The repair itself, applied to whichever copy of the deck it is handed.
+  // Returns the snapshot when it changed anything and null when it did not,
+  // which is exactly the contract rewriteDeckSnapshot's `mutate` wants.
+  const repairSnapshot = (snapshot) => {
     let changed = false;
 
     const notes = repairEscapedMathMarkdown(snapshot.notes || "");
@@ -191,14 +190,28 @@ export async function repairEscapedMathInLibrary() {
       changed = true;
     }
 
-    // `snapshot` here is IndexedDB's own structured clone of the record, not
-    // the shared cache object, so mutating it above is safe to keep.
-    if (changed) damaged.push({ id: String(id), snapshot });
+    return changed ? snapshot : null;
+  };
+
+  const damaged = [];
+  await forEachDeckSnapshot((id, snapshot) => {
+    // Never repair a notes-conflict stash in place: it isn't a deck, it has no
+    // index entry, and the sibling deck's own repair is what matters.
+    if (String(id).endsWith(NOTES_CONFLICT_SUFFIX)) return;
+    // Only asking WHICH decks need repairing. What is written back comes from a
+    // fresh read under the deck's own lock (rewriteDeckSnapshot): the cursor
+    // reads the object store directly, so a deck with a write in flight is
+    // handed back at its previous durable value, and writing that copy back
+    // would replace the newer save. This runs at boot, which is not a quiet
+    // moment.
+    if (repairSnapshot(cloneSnapshot(snapshot) || snapshot)) damaged.push(String(id));
   });
 
-  const repairedIds = new Set(damaged.map((d) => d.id));
-  for (const { id, snapshot } of damaged) writeDeckSnapshot(id, snapshot);
-  const repaired = damaged.length;
+  const repairedIds = new Set();
+  for (const id of damaged) {
+    if (await rewriteDeckSnapshot(id, repairSnapshot)) repairedIds.add(id);
+  }
+  const repaired = repairedIds.size;
 
   try {
     if (repaired) {

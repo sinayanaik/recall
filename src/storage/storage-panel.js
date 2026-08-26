@@ -12,6 +12,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml, formatStorageBytes } from "../core/text.js?v=__BUILD__";
 import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
+import { findSourceImages, sourceMayHaveImages } from "../images/surface-controls.js?v=__BUILD__";
 import { IMAGE_BUCKET, IMAGE_STORAGE_EXT, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
 import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
@@ -73,6 +74,44 @@ export async function listStorageObjects(prefix, onProgress, out = []) {
   return out;
 }
 
+// ── Two scanners, unioned, because a MISS here deletes a live picture ──────
+//
+// BACKUP_IMAGE_REF_RE alone was not enough, and the shapes it misses are the
+// ones src/render/inline.js already documents as ordinary in pasted, clipped
+// and imported notes:
+//
+//   ![see [1]](url)          alt is `[^\]]*`, so this matches nothing at all
+//   ![](…/Foo_(1).png)       the url is `[^)\s<>"']+`, so it yields `…/Foo_(1`
+//   ![a][label]              the reference form is not in that pattern at all
+//
+// Each of those makes a LIVE object read as referenced by nothing, which puts
+// it in the Unused tile and hands it to "Delete unused images" — a batch
+// delete, so several live pictures go at once. src/images/upload.js names this
+// exact failure: "A live picture, deletable by a tidy-up."
+//
+// findSourceImages is the control layer's own answer to "where is an image
+// reference", including all three shapes above. It is unioned with the old
+// pattern rather than replacing it: this set is the input to a deletion, so an
+// extra path costs one image that is never swept, and a missing one costs a
+// picture the reader still uses.
+//
+// skipCode is off deliberately. An `![](…)` inside a fence renders nothing, so
+// no control may act on it — but counting its URL as referenced only ever
+// PREVENTS a delete, which is the safe direction for this question.
+export function referencedImageRefsIn(text) {
+  const value = String(text || "");
+  const refs = new Set();
+  for (const match of value.matchAll(BACKUP_IMAGE_REF_RE)) {
+    refs.add(decodeImageRefEntities(match[1] || match[2] || match[3] || match[4] || ""));
+  }
+  if (sourceMayHaveImages(value)) {
+    for (const image of findSourceImages(value, { skipCode: false })) {
+      refs.add(decodeImageRefEntities(image.url));
+    }
+  }
+  return refs;
+}
+
 // Every storage path the library still points at. Read from the CLOUD (the
 // authoritative copy — a deck may exist only there) unioned with this device's
 // local snapshots (which may hold decks not pushed yet). Throws rather than
@@ -81,8 +120,7 @@ export async function listStorageObjects(prefix, onProgress, out = []) {
 export async function collectReferencedStoragePaths(onProgress) {
   const paths = new Set();
   const add = (text) => {
-    for (const match of String(text || "").matchAll(BACKUP_IMAGE_REF_RE)) {
-      const ref = decodeImageRefEntities(match[1] || match[2] || match[3] || match[4] || "");
+    for (const ref of referencedImageRefsIn(text)) {
       const path = ref && !ref.startsWith(LOCAL_IMAGE_SCHEME) ? supabaseImagePathFromUrl(ref) : null;
       if (path) paths.add(path);
     }

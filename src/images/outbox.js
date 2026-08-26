@@ -11,7 +11,11 @@ import { chooseImageCompression } from "./compress-dialog.js?v=__BUILD__";
 import { deckImageFolder, insertAtCursor, replaceInTextarea, uploadImageToSupabase } from "./upload.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
-import { forEachDeckSnapshot, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+// Only ever CALLED, never read at module scope — the cycle back through
+// block-cache is the case tools/module-symbols.mjs allows for hoisted function
+// declarations.
+import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
+import { forEachDeckSnapshot, rewriteDeckSnapshot, scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.
@@ -274,30 +278,45 @@ export async function rewriteLocalImageReferences(replacements) {
   // reading every deck by id would pull the entire library into memory just to
   // rewrite one string. Rewrites are collected and applied after the scan —
   // the cursor's transaction is readonly.
-  const rewritten = [];
+  // The cursor FINDS the decks; it does not supply what is written back. It
+  // reads the object store directly, so a deck with a write in flight comes
+  // back at its previous durable value — and writing that copy back would
+  // replace the newer save. See rewriteDeckSnapshot, which re-reads each one
+  // under its own lock and re-applies the swap to whatever is there now.
+  const candidates = [];
   await forEachDeckSnapshot((id, snapshot) => {
     const notesTouched = touched(snapshot.notes);
-    const touchedCards = (snapshot.cards || []).filter((card) => touched(card.question) || touched(card.answer));
-    if (!notesTouched && !touchedCards.length) return;
-    if (notesTouched) snapshot.notes = swap(snapshot.notes);
-    for (const card of touchedCards) {
-      card.question = swap(card.question);
-      card.answer = swap(card.answer);
-      // The card's text genuinely changed, so it owes the cloud a push.
-      card.dirty = true;
-      card.updatedAt = now;
-    }
-    // IndexedDB's own clone of the record, not the shared cache object — safe
-    // to have mutated in place above.
-    rewritten.push({ id: String(id), snapshot });
+    const touchedCards = (snapshot.cards || []).some((card) => touched(card.question) || touched(card.answer));
+    if (!notesTouched && !touchedCards) return;
+    candidates.push(String(id));
   });
 
+  if (!candidates.length) return;
+  const rewritten = [];
+  for (const id of candidates) {
+    const wrote = await rewriteDeckSnapshot(id, (snapshot) => {
+      const notesTouched = touched(snapshot.notes);
+      const touchedCards = (snapshot.cards || []).filter((card) => touched(card.question) || touched(card.answer));
+      // The placeholder is gone from the fresh copy — another pass got there
+      // first, or the deck was edited. Nothing owed.
+      if (!notesTouched && !touchedCards.length) return null;
+      if (notesTouched) snapshot.notes = swap(snapshot.notes);
+      for (const card of touchedCards) {
+        card.question = swap(card.question);
+        card.answer = swap(card.answer);
+        // The card's text genuinely changed, so it owes the cloud a push.
+        card.dirty = true;
+        card.updatedAt = now;
+      }
+      return snapshot;
+    });
+    if (wrote) rewritten.push(id);
+  }
   if (!rewritten.length) return;
-  for (const { id, snapshot } of rewritten) writeDeckSnapshot(id, snapshot);
   // One index write for the whole batch, read fresh so a concurrent change
   // isn't reverted. A notes-conflict stash has no index entry — it simply
   // doesn't match, which is correct: its content was still rewritten above.
-  const touchedIds = new Set(rewritten.map((r) => r.id));
+  const touchedIds = new Set(rewritten);
   const index = readLocalDeckIndex();
   let indexChanged = false;
   for (const entry of index) {
@@ -306,6 +325,89 @@ export async function rewriteLocalImageReferences(replacements) {
     indexChanged = true;
   }
   if (indexChanged) writeLocalDeckIndex(index);
+}
+
+// ── Settling the "uploading…" placeholder, wherever it ended up ───────────
+//
+// An upload holds its textarea across the await, and by the time it resolves
+// that textarea may not be the live editing surface any more: the reader closed
+// the raw editor, or opened another deck. Writing through it anyway is what
+// made an upload publish a stale value over the top of everything done in the
+// rendered view since — a highlight, another picture, a deletion — and then
+// autosave the loss. Across a deck swap it wrote the previous deck's whole note
+// into the new one.
+//
+// So the textarea is used only while it really is on screen, where it is still
+// the right answer: the caret, the undo stack and the highlight mirror all move
+// with the text. Otherwise the placeholder is settled in the strings
+// themselves. Split/join per token rather than a pattern, for the same reason
+// rewriteLocalImageReferences gives: a token is arbitrary text as far as this
+// is concerned.
+export function replaceUploadTokenInMemory(uploadToken, replacement) {
+  let touched = false;
+  const swap = (text) => {
+    const value = String(text || "");
+    if (!value.includes(uploadToken)) return value;
+    touched = true;
+    return value.split(uploadToken).join(replacement);
+  };
+  state.notes = swap(state.notes);
+  for (const list of [state.masterCards, state.cards]) {
+    for (const card of list || []) {
+      card.question = swap(card.question);
+      card.answer = swap(card.answer);
+    }
+  }
+  return touched;
+}
+
+// ...and if it is in neither the editor nor the open deck, the reader moved on
+// while it uploaded. The placeholder is in a stored deck, so it is settled
+// there — through rewriteDeckSnapshot, which re-reads under that deck's lock
+// rather than writing back what the cursor happened to hand over.
+export async function settleUploadToken(textarea, uploadToken, replacement) {
+  if (textarea && !textarea.hidden && textarea.isConnected) {
+    replaceInTextarea(textarea, uploadToken, replacement);
+    return;
+  }
+  if (replaceUploadTokenInMemory(uploadToken, replacement)) {
+    scheduleDeckAutosave();
+    // The rendered view is what the reader is looking at when the editor is
+    // shut, and it is still showing the placeholder. Same repaint the offline
+    // flush does for the same reason (see reconcileAllDecks).
+    renderNotesViewPinned();
+    return;
+  }
+  const candidates = [];
+  await forEachDeckSnapshot((id, snapshot) => {
+    const holds = String(snapshot.notes || "").includes(uploadToken)
+      || (snapshot.cards || []).some((card) =>
+        String(card.question || "").includes(uploadToken) || String(card.answer || "").includes(uploadToken));
+    if (holds) candidates.push(String(id));
+  });
+  const now = new Date().toISOString();
+  for (const id of candidates) {
+    await rewriteDeckSnapshot(id, (snapshot) => {
+      let changed = false;
+      const swap = (text) => {
+        const value = String(text || "");
+        if (!value.includes(uploadToken)) return value;
+        changed = true;
+        return value.split(uploadToken).join(replacement);
+      };
+      snapshot.notes = swap(snapshot.notes);
+      for (const card of snapshot.cards || []) {
+        const question = swap(card.question);
+        const answer = swap(card.answer);
+        if (question === card.question && answer === card.answer) continue;
+        card.question = question;
+        card.answer = answer;
+        card.dirty = true;
+        card.updatedAt = now;
+      }
+      return changed ? snapshot : null;
+    });
+  }
 }
 
 // Ask what to do with it, then do it. Every interactive path — paste, drop,
@@ -337,7 +439,7 @@ export async function insertPreparedImageUpload(textarea, file, atPos) {
   let queuedReason = "offline";
   try {
     const url = await uploadImageToSupabase(file, { folder });
-    replaceInTextarea(textarea, uploadToken, `![](${url})`);
+    await settleUploadToken(textarea, uploadToken, `![](${url})`);
     showToast("Image uploaded", "success");
     return;
   } catch (err) {
@@ -348,7 +450,7 @@ export async function insertPreparedImageUpload(textarea, file, atPos) {
     // writing a URL that only THIS device can display, since only this device
     // has the bytes cached under it.
     if (err.message !== "OFFLINE" && !err.notStored) {
-      replaceInTextarea(textarea, uploadToken, "");
+      await settleUploadToken(textarea, uploadToken, "");
       if (err.message === "NOT_SIGNED_IN") {
         showToast("Sign in to upload images", "error");
       } else {
@@ -372,13 +474,13 @@ export async function insertPreparedImageUpload(textarea, file, atPos) {
     await putOutboxImage({ token, blob: file, folder, savedAt: new Date().toISOString() });
   } catch (error) {
     console.warn("Could not queue the image for upload", error);
-    replaceInTextarea(textarea, uploadToken, "");
+    await settleUploadToken(textarea, uploadToken, "");
     showToast(queuedReason === "not-stored"
       ? "That image didn't reach the cloud and couldn't be kept here"
       : "Can't upload image while offline", "error");
     return;
   }
-  replaceInTextarea(textarea, uploadToken, `![](${LOCAL_IMAGE_SCHEME}${token})`);
+  await settleUploadToken(textarea, uploadToken, `![](${LOCAL_IMAGE_SCHEME}${token})`);
   showToast(queuedReason === "not-stored"
     ? "That image didn't reach the cloud — kept here and retried on the next sync"
     : "Image saved here — uploads when you're back online", "info");

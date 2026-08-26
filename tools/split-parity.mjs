@@ -104,7 +104,15 @@ const ACCEPTED = {
     "descriptors — { level, text, offset, id, el } — with `el` filled in as each " +
     "span is built, and every caller reads .level/.text where it read " +
     ".tagName/.textContent. The DOM path is kept for a surface that has no " +
-    "render behind it, where the DOM is complete by definition.",
+    "render behind it, where the DOM is complete by definition. ALSO: it binds " +
+    "through bindNotesHeadingsAcrossView, which pairs each range of descriptors " +
+    "with the elements rendered from its OWN span. The whole-view call it " +
+    "replaced began at descriptor 0 however little of the note was on screen, so " +
+    "a span nineteen chapters in was paired with chapter one — and because " +
+    "buildNotesToc runs this on every rebuild it also overwrote the correct " +
+    "pairing each span made as it was built. That was the largest single source " +
+    "of 'the contents takes me to the wrong heading'; the join is now covered by " +
+    "tools/toc-binding-check.mjs.",
   revealNoteMark:
     "The Highlights panel addresses a highlight by its ORDINAL in state.notes, " +
     "and the guard that the ordinal means what it says was `the view holds " +
@@ -876,10 +884,67 @@ const ACCEPTED = {
     "Resets scrollLeft alongside scrollTop when a DIFFERENT note opens: paged " +
     "mode runs sideways, so leaving scrollLeft alone opened the new note " +
     "wherever the previous one had been left. Also repaginates after the paint.",
+  // ── Deleting one picture deleted several ────────────────────────────────
+  // Every control identifies its image by WHERE ITS MARKDOWN SITS, which makes
+  // the pattern that finds that markdown load-bearing: an over-match is not a
+  // missing grip, it is a delete that takes the note with it. Covered by the
+  // "one press, one picture" cases in tools/image-controls-check.mjs, with
+  // marked as the oracle for what the reader can actually press.
+  renderImageRows:
+    "Leaves a GFM table body row alone. A table may be written without leading " +
+    "pipes, and a body row of one whose cells are all pictures is character for " +
+    "character a side-by-side image row — so this converted it to a " +
+    ".notes-img-row, marked was left a header and a delimiter with no body " +
+    "under them, and the table came apart on screen. What separates the two is " +
+    "the delimiter row ABOVE, so the test takes the text around the line " +
+    "(pipeRowInTable). imageRemovalRange asks the same question, because a " +
+    "delete that took a column separator out of a table row would leave it a " +
+    "column short and disagree with what the reader is looking at.",
+  imageRemovalRange:
+    "Does not take the \"|\" beside an image when the line is a GFM table row " +
+    "rather than a side-by-side image row — see renderImageRows above, which is " +
+    "where the two are told apart.",
+  smartBulletify:
+    "Leaves a line that is ALREADY a bullet alone when bulleting several lines. " +
+    "The all-list branch above only fires when every line is a list line, so a " +
+    "mixed selection — two bullets and a line of prose, which is what a " +
+    "half-finished list looks like — fell through and came back as `- - item`. " +
+    "toggleBulletPoints guards the same case the same way.",
+  addBlankCardAtCursor:
+    "Places the new card after the one being READ, found in masterCards by its " +
+    "own id, instead of splicing masterCards at `state.current + 1`. " +
+    "state.current indexes state.cards, which is the run being STUDIED, and the " +
+    "two are not the same list: Replay known rebuilds state.cards from a filter " +
+    "of masterCards, and a deletion can shorten one alone. Reading card 3 of a " +
+    "six-card replay inside a hundred-card deck inserted the card after the " +
+    "deck's third card, and the autosave made that order permanent. Same shape " +
+    "insertCardAfter already uses, gate included, plus the syncResults() the " +
+    "known/review tallies need once masterCards has changed.",
+  IMG_TOKEN_SOURCE:
+    "Both branches are BOUNDED now. `<img\\b[^>]*>` matched newlines, so an " +
+    "`<img` with no closing bracket — a truncated paste, imported HTML, a " +
+    "hand-typed tag — ran to the next `>` anywhere in the note: measured on a " +
+    "note holding one such tag, two pictures and a paragraph, ONE press of a " +
+    "delete button removed all three and half the prose, and a resize would " +
+    "have written over the same range. It now stops at the end of the tag and " +
+    "consumes a quoted attribute whole, so `alt=\"1 > 2\"` no longer ends the " +
+    "slice inside its own attribute and leaves ` 2\">` behind as visible text. " +
+    "The alt and destination runs (IMG_ALT_SOURCE / IMG_DEST_SOURCE, both new " +
+    "since the baseline) may no longer cross a BLANK line for the same reason " +
+    "— a blank line ends the paragraph, so marked will not read anything past " +
+    "one as part of the same image and neither may this. A single newline is " +
+    "still legal: a soft break inside alt text is ordinary.",
   scrollNotesHeadingIntoView:
     "Turns to the heading's page when paged. No re-aiming loop there — a page " +
     "boundary is exact, and the loop exists for heights that keep changing " +
-    "under a vertical scroll.",
+    "under a vertical scroll. The vertical loop now RE-RESOLVES its target on " +
+    "every correction instead of measuring the element it captured before the " +
+    "first await, and returns the descriptor it actually landed on so the " +
+    "caller flashes that one. A descriptor is not a durable handle — every " +
+    "render mints a fresh list with every `el` reset — and this loop runs for " +
+    "up to 1.5s, which is ample time for an autosave or a highlight to " +
+    "re-render the surface under it. The slug is what survives, so the live " +
+    "descriptor is found by id (notesHeadingById).",
   estimateNotesScrollForOffset:
     "There is no scrollHeight to take a fraction of when the note runs " +
     "sideways, so the same proportional guess becomes a page number.",
@@ -1066,9 +1131,23 @@ const ACCEPTED = {
     "CHUNK's box — the same answer all ~40 of its neighbours give, which is a " +
     "TOC jump landing up to 40 blocks early. Forcing just that one chunk to " +
     "lay out is what makes the answer the heading's own, without un-skipping " +
-    "the document the way a full sweep would.",
+    "the document the way a full sweep would. Answers `null` rather than 0 " +
+    "when there is nothing to measure: this is the residual the convergence " +
+    "loop aims at, and null is how that loop is told to stand down. 0 made the " +
+    "residual `0 - NOTES_HEADING_SCROLL_GAP`, so a jump whose target was " +
+    "replaced by a re-render mid-flight scrolled the reader UP eight pixels " +
+    "and stalled — a contents row that appears to do nothing.",
   scrollNotesEditToHeadingIndex:
-    "Sets the caret before focusing, then hands off to revealNotesCaretAt() " +
+    "Counts headings with scanPreparedHeadings — the scanner the contents rows " +
+    "themselves come from — instead of a walker of its own. The premise it " +
+    "carried, 'the Nth TOC entry is the Nth ATX heading in source order', is " +
+    "false: the rows also hold setext, blockquoted and up-to-three-space-" +
+    "indented headings, and an ATX-only walk anchored at column 0 finds none " +
+    "of them. On a note opening with a setext title, pressing the first row " +
+    "put the caret on the SECOND heading, pressing the second put it on the " +
+    "third, and every row past the last ATX heading did nothing at all. " +
+    "Covered by the raw cases in tools/toc-binding-check.mjs. It also still " +
+    "sets the caret before focusing, then hands off to revealNotesCaretAt() " +
     "instead of scrolling itself. That is the single entry point for an " +
     "explicit jump: it owns both halves from ONE measurement (where to scroll " +
     "and where to draw the reading band) and re-asserts after the reflow that " +
@@ -1211,6 +1290,100 @@ const ACCEPTED = {
     "and key are entered once on a setup screen the user never sees again.",
 
   // ── Storage panel: the check nobody had written ──────────────────────────
+  // ── A tidy-up that deleted live pictures ────────────────────────────────
+  // Both entries below answer the same question — "does anything still point
+  // at this image?" — and both used to answer it with a weaker reading of the
+  // markdown than the one the controls use. A miss here is not a cosmetic
+  // count: it is a hard delete of an object the reader is still looking at,
+  // and the sweep deletes in batches, so several go at once.
+  collectReferencedStoragePaths:
+    "Unions BACKUP_IMAGE_REF_RE with findSourceImages (referencedImageRefsIn) " +
+    "rather than trusting the pattern alone. That pattern's alt is `[^\\]]*` " +
+    "and its url is `[^)\\s<>\"']+`, so `![see [1]](url)` matched nothing at " +
+    "all and `![](…/Foo_(1).png)` yielded the truncated `…/Foo_(1` — and the " +
+    "reference form `![a][label]` is not in it at any point. Each of those made " +
+    "a LIVE object read as referenced by nothing, which put it in the Unused " +
+    "tile and handed it to \"Delete unused images\". src/images/upload.js names " +
+    "this failure in as many words: \"A live picture, deletable by a tidy-up.\" " +
+    "Unioned rather than replaced because this set is the input to a deletion: " +
+    "an extra path costs one image that is never swept, a missing one costs a " +
+    "picture the reader still uses.",
+  supabaseImagePathFromUrl:
+    "Asking the client for the storage prefix is wrapped. getPublicUrl can " +
+    "throw — an older supabase-js, a stand-in client, a project whose storage " +
+    "is not configured — and this is reached from a delete button's click " +
+    "handler with the note-side removal already committed, so an exception " +
+    "there escapes into the handler and the reader is left looking at a picture " +
+    "that has gone from the note with nothing said. \"Not one of ours\" is the " +
+    "same answer for a client that cannot say. Caught by the uncaught-exception " +
+    "assertion in tools/image-render-check.mjs the moment the reference test " +
+    "above started reaching this code.",
+  deckStillReferencesImage:
+    "Compares through imageMatchKey over findSourceImages instead of " +
+    "`text.includes(url)`. The url it is handed has come back through " +
+    "parseImgTagAttrs with its entities DECODED, while the note holds the " +
+    "escaped form imgTagHtml wrote through escapeHtml — so a URL carrying an " +
+    "`&` (every query string), a space, a non-ASCII character, or a Drive link " +
+    "written in the other of its two equivalent spellings read as \"nothing " +
+    "else points at this\", the storage object was deleted, and every remaining " +
+    "copy in the deck became a broken picture at once. imageMatchKey is the " +
+    "identity every other comparison in that file already uses. It was wrong " +
+    "the other way too, and that half is why the branch had gone unexercised: " +
+    "`includes` said \"still referenced\" whenever a DIFFERENT image's URL " +
+    "merely began with this one's, which is the ordinary shape of an app URL " +
+    "with a query string — so the stored file was never deleted at all. Both " +
+    "directions are asserted in tools/image-controls-check.mjs.",
+  // ── A deletion that un-happened, and a save that never happened ─────────
+  // Four entries below are one story: a write on a data-safety path that could
+  // fail, or could disagree with the predicate it was supposed to share.
+  writeDeckTombstones:
+    "Wrapped in try/catch and reports whether the record reached disk. It was " +
+    "the ONLY localStorage write on a deletion path not wrapped — every other " +
+    "writer in the tree is (my-decks-prefs.js, folders.js, reading-position.js, " +
+    "keys.js) — so under quota pressure, which this app anticipates and handles " +
+    "everywhere else, tombstoneDeck threw and took the deletion with it: " +
+    "removeDecksMissingFromCloud abandoned its loop partway, having already " +
+    "deleted the decks it had reached. Worse is what a caller that swallowed " +
+    "the throw would leave: a deck deleted with no record that the deletion was " +
+    "deliberate, which the next reconcile reads as present-in-cloud, " +
+    "absent-here and re-adopts. A deletion that un-happens is the failure this " +
+    "module exists to prevent.",
+  tombstoneDeck:
+    "Returns whether the tombstone was recorded — see writeDeckTombstones. A " +
+    "deck with no deckId has nothing to tombstone and answers true.",
+  clearDeckTombstone:
+    "Returns whether the write landed, for the same reason, and skips the " +
+    "read-modify-write entirely when there is no entry to clear.",
+  removeDecksMissingFromCloud:
+    "Skips a deck whose tombstone could not be written instead of deleting it " +
+    "anyway. This loop runs over several decks during a reconcile, and one that " +
+    "goes without its record comes straight back on the next one.",
+  deleteDeckEverywhere:
+    "Returns { cloudError, refused } and does NOTHING when the tombstone could " +
+    "not be written. Deleting the deck in that state would leave no record that " +
+    "the deletion was deliberate; `refused` is how the three call sites know to " +
+    "say so rather than report a delete that did not happen.",
+  deleteDeckEntry:
+    "Reports a refused delete (see deleteDeckEverywhere) instead of saying the " +
+    "deck was deleted when it is still there.",
+  deleteSelectedMyDecks:
+    "Counts refusals alongside cloud failures, for the same reason.",
+  flushPendingDeckAutosave:
+    "Asks deckHasNothingToSave() — saveDeckToLibrary's own predicate — instead " +
+    "of restating it as `!masterCards.length && !notes.trim()`. The two " +
+    "disagreed about exactly one thing: a PDF deck, whose body is empty because " +
+    "the paper IS the document and which holds no cards. Every one of them hit " +
+    "the restated no-op, so this cleared the armed timer and returned without " +
+    "saving — and the highlights of the last 400ms went with the deck being " +
+    "left. The autosave timer forty lines above says in its own comment that " +
+    "this exact divergence caused this exact bug once already.",
+  repairEscapedMathInLibrary:
+    "Uses the cursor to find WHICH decks are damaged and rewrites each one " +
+    "through rewriteDeckSnapshot, which re-reads it under that deck's own lock " +
+    "and re-applies the repair to whatever is there now. forEachDeckSnapshot " +
+    "reads the object store directly and says so: a deck with a write in flight " +
+    "comes back at its previous durable value, and writing that copy back " +
+    "replaces the newer save. This runs at BOOT, which is not a quiet moment.",
   buildStorageReport:
     "Also computes missingRefs — storage paths a deck still points at that " +
     "have no file behind them. The exact inverse of `orphans`, from the two " +

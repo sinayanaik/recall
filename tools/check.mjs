@@ -54,7 +54,14 @@
 //                   cloud row driven through the real merge, in the order the
 //                   reconcile calls it. Pure Node: the merge is string-and-object
 //                   work by design, so this needs neither a browser nor the
-//                   pre-modular tag the sync checks below rest on
+//                   pre-modular tag the sync checks below rest on. It also asks
+//                   whether the deck they live on ever gets SAVED: a paper is
+//                   the one deck shape that is empty by every other measure (no
+//                   cards, and a body that is empty because the PDF is the
+//                   document), so a save predicate spelled out twice can
+//                   disagree about it — and one did, the navigation flush
+//                   restating it and dropping the last 400ms of highlighting on
+//                   every PDF deck
 //   image-controls  does every image the renderer renders get a resize grip and
 //                   a delete button — including the ones in a table cell, a
 //                   link, or an HTML block that had none for as long as they
@@ -103,6 +110,17 @@
 //   paged           can you reach the end of a note in paged reading mode?
 //   ribbon          does the caret band sit where the caret is, and stay still
 //                   when it should?
+//   toc-binding     ...and does the Nth row of the CONTENTS take you to the
+//                   heading it names? A row is a descriptor scanned out of the
+//                   source, a jump needs an element, and the two were married
+//                   by position — which is wrong whenever the two sides
+//                   disagree about how many headings a note has (`- ## thing`
+//                   and a raw <h2> render as headings the contents does not
+//                   carry; a note built span by span has most of its headings
+//                   not in the document at all). `viewport` proves the
+//                   descriptors are right and `ribbon` proves the band tracks
+//                   the reader; neither can see a row that names one heading
+//                   and lands on another
 //   pdf-document    does a PDF deck work — imported, rendered, selected,
 //                   highlighted, saved and read back? The only check that
 //                   drives the Document surface, and the only one that can
@@ -240,6 +258,13 @@ const checks = [
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
+    // The JOIN nothing used to ask about: a contents row is a descriptor scanned
+    // out of the SOURCE, a jump needs an ELEMENT, and the two are married by
+    // position. `viewport` proves the descriptors are right and `ribbon` proves
+    // the band tracks the reader; neither can see a row that names one heading
+    // and lands on another, which is what "the TOC takes me to the wrong
+    // heading" was.
+    ["toc-binding   ", ["node", ["tools/toc-binding-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
     ["epub-import   ", ["node", ["tools/epub-import-check.mjs"], ROOT]],
     ["offline       ", ["node", ["tools/offline-check.mjs"], ROOT]],

@@ -108,11 +108,49 @@ export function protectInline(segment) {
 // fails to match rather than matching wrongly, so the worst case stays "this
 // image has no controls" and never becomes "a control that rewrites the wrong
 // text".
-export const IMG_ALT_SOURCE = "\\[(?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*\\]";
+//
+// ── ...and neither run may cross a BLANK line ─────────────────────────────
+//
+// A blank line ends the paragraph, so nothing after one can be part of the same
+// image — marked will not read it as one and neither may this. Unbounded, the
+// balanced runs above ran until they found their closing bracket wherever it
+// was, and a stray `![](` in a note swallowed everything down to the next `)`:
+//
+//     ![a](one.png          scanned as ONE image whose "URL" is
+//                           `one.png\n\ntext\n\n![b](two.png)\n\nmore`
+//     text
+//                           …so deleting it took the paragraph AND the second
+//     ![b](two.png)         picture with it, and marked had rendered neither
+//                           of them as that image in the first place.
+//     more)
+//
+// A SINGLE newline stays legal: a soft break inside alt text is ordinary.
+export const INLINE_SOFT_BREAK_SOURCE = "\\n(?![^\\S\\n]*\\n)";
 
-export const IMG_DEST_SOURCE = "\\((?:[^()\\\\]|\\\\.|\\((?:[^()\\\\]|\\\\.)*\\))*\\)";
+export const IMG_ALT_SOURCE =
+  `\\[(?:[^\\[\\]\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE}`
+  + `|\\[(?:[^\\[\\]\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE})*\\])*\\]`;
 
-export const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|<img\\b[^>]*>`;
+export const IMG_DEST_SOURCE =
+  `\\((?:[^()\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE}`
+  + `|\\((?:[^()\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE})*\\))*\\)`;
+
+// ── The tag branch stops at the tag ───────────────────────────────────────
+//
+// `<img\b[^>]*>` was the same mistake in its plainest form: `[^>]` matches a
+// newline, so an `<img` with no closing bracket — a truncated paste, imported
+// HTML, a hand-typed tag — ran to the next `>` ANYWHERE in the note. Measured
+// on a note holding one such tag, two pictures and a paragraph: one press of
+// that image's delete button removed all three and half the prose, and a
+// resize would have done the same.
+//
+// So: no newlines, and a quoted attribute value is consumed whole, which is
+// also what makes `alt="1 > 2"` end where the tag ends rather than inside its
+// own attribute (the slice used to stop at that first `>`, leaving ` 2">`
+// behind in the note as visible text).
+export const IMG_TAG_SOURCE = `<img\\b(?:"[^"\\n]*"|'[^'\\n]*'|[^>'"\\n])*>`;
+
+export const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|${IMG_TAG_SOURCE}`;
 
 // The URL out of an image destination's inner text — everything between the
 // parentheses, which may be `<bracketed>` and may carry a "title" after it.
@@ -126,13 +164,51 @@ export function imageDestinationUrl(inner) {
   return (text.split(/\s+(?=["'(])/)[0] ?? "").trim();
 }
 
+// ── ...unless the row belongs to a TABLE ──────────────────────────────────
+//
+// GFM lets a table be written without leading pipes, and a body row of one is
+// then indistinguishable from a side-by-side image row when every cell holds a
+// picture:
+//
+//     Before      After          <- header
+//     --- | ---                  <- delimiter
+//     ![a](1.png) | ![b](2.png)  <- a table row, and also a "pipe row"
+//
+// Turning that line into a .notes-img-row took the table apart: marked saw a
+// header and a delimiter with no body under them, and the reader lost the
+// table entirely. The line alone cannot tell the two apart — what decides it is
+// the DELIMITER row above — so the test takes the text around the line.
+//
+// Exported because the delete has to agree: imageRemovalRange takes the "|"
+// beside an image when the line is a side-by-side row, and taking one out of a
+// table row would leave the table a column short. One predicate, both callers.
+export const TABLE_DELIMITER_RE = /^[^\S\n]*:?-+:?([^\S\n]*\|[^\S\n]*:?-+:?)+[^\S\n]*$/;
+
+export function pipeRowInTable(text, lineStart) {
+  // Walk back over the rows above this one — a table body can be any height,
+  // and every row above is either another candidate row or the delimiter.
+  let at = lineStart;
+  while (at > 0) {
+    const previousEnd = at - 1;
+    const previousStart = text.lastIndexOf("\n", previousEnd - 1) + 1;
+    const previous = text.slice(previousStart, previousEnd);
+    if (TABLE_DELIMITER_RE.test(previous)) return true;
+    // Not a delimiter and not a row that could be sitting between this line and
+    // one: nothing above can make this a table row.
+    if (!previous.includes("|")) return false;
+    at = previousStart;
+  }
+  return false;
+}
+
 export function renderImageRows(segment) {
   const lineRe = new RegExp(
     `^[^\\S\\n]*(?:${IMG_TOKEN_SOURCE})(?:[^\\S\\n]*\\|[^\\S\\n]*(?:${IMG_TOKEN_SOURCE}))+[^\\S\\n]*$`,
     "gm"
   );
   const imgRe = new RegExp(IMG_TOKEN_SOURCE, "gi");
-  return segment.replace(lineRe, (line) => {
+  return segment.replace(lineRe, (line, offset) => {
+    if (pipeRowInTable(segment, offset)) return line;
     const imgs = (line.match(imgRe) || []).map(imageMarkupToTag).filter(Boolean);
     if (imgs.length < 2) return line;
     return `<div class="notes-img-row">${imgs.join("")}</div>`;

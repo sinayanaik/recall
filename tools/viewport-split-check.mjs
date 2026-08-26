@@ -62,6 +62,14 @@ const marked = require("../vendor/marked-14.1.2/marked.min.js");
 
 const BLOCK_CACHE = path.join(ROOT, "src/render/block-cache.js");
 
+// scanPreparedHeadings asks preprocess.js what a list item looks like, so that a
+// run of dashes under a BULLET is read as the list's thematic break rather than
+// as a setext underline. One shared answer, so the scanner and the renderer
+// cannot drift about it — which means this file has to lift it too.
+const PREPROCESS = path.join(ROOT, "src/render/preprocess.js");
+
+const PREPROCESS_WANTED = ["LIST_ITEM_SOURCE"];
+
 const WANTED = [
   "isBlockToken",
   "definitionPrelude",
@@ -90,20 +98,29 @@ const WANTED = [
   "scanPreparedHeadings",
 ];
 
-function loadLazySplitters() {
-  const src = readFileSync(BLOCK_CACHE, "utf8");
-  const decls = new Map(topLevelDecls(src).map((d) => [d.name, d]));
-  const missing = WANTED.filter((name) => !decls.has(name));
+function liftFrom(file, label, wanted) {
+  const decls = new Map(topLevelDecls(readFileSync(file, "utf8")).map((d) => [d.name, d]));
+  const missing = wanted.filter((name) => !decls.has(name));
   if (missing.length) {
-    console.log(`viewport-split-check: block-cache.js has no ${missing.join(", ")} — nothing to check.`);
+    console.log(`viewport-split-check: ${label} has no ${missing.join(", ")} — nothing to check.`);
     process.exit(1);
   }
-  const body = WANTED
+  return wanted
     .map((name) => decls.get(name))
     .sort((a, b) => a.start - b.start)
     .map((d) => (d.kind === "function" || d.kind === "class" ? d.text : `${d.kind} ${d.text}`.replace(/^(const|let|var) (const|let|var) /, "$1 ")))
     .join("\n\n");
-  const factory = new Function("marked", `${body}\nreturn { ${WANTED.join(", ")} };`);
+}
+
+function loadLazySplitters() {
+  // preprocess.js first: block-cache's scanner reads LIST_ITEM_SOURCE, so the
+  // declaration has to already be initialised when the scanner's body runs.
+  const body = [
+    liftFrom(PREPROCESS, "preprocess.js", PREPROCESS_WANTED),
+    liftFrom(BLOCK_CACHE, "block-cache.js", WANTED)
+  ].join("\n\n");
+  const names = [...PREPROCESS_WANTED, ...WANTED];
+  const factory = new Function("marked", `${body}\nreturn { ${names.join(", ")} };`);
   return factory(marked);
 }
 
@@ -264,10 +281,41 @@ function lexedHeadings(tokens, out = [], nested = false) {
   return out;
 }
 
+// The corpus in note-shapes.mjs is built out of well-formed prose, so it never
+// once asked the scanner about the lines that made the CONTENTS point at the
+// wrong heading. Each of these produced a row the rendered note has no heading
+// for, and a phantom row does not merely add itself: the rows are paired with
+// the rendered elements in document order, so one of them shifts every real
+// heading after it by one and the reader is taken to the previous section.
+const HEADING_EDGE_SHAPES = {
+  listThenRule: "# A\n\n- foo\n- bar\n---\n\n## B\n",
+  orderedListThenRule: "# A\n\n1. foo\n---\n\n## B\n",
+  quotedListThenRule: "# A\n\n> - foo\n> ---\n\n## B\n",
+  // Written in pieces so this file does not itself contain a comment that its
+  // own reader has to skip past.
+  commentedOutSection: `# A\n\n${"<!--"}\n## Draft\n${"-->"}\n\n## B\n`,
+  inlineComment: `# A\n\n${"<!--"} ## Draft ${"-->"}\n\n## B\n`,
+  // The app's own highlight-notes markers open and close within one line, so
+  // they must leave the comment state exactly as they found it.
+  highlightNotesMarkers: `# A\n\n${"<!--"}recall:highlight-notes${"-->"}\n\n## B\n`,
+  fenceHoldingAComment: `# A\n\n\`\`\`\n${"<!--"}\n\`\`\`\n\n## B\n`,
+  // Not a phantom — a real setext heading, here so the fix above cannot pass by
+  // simply refusing every dash underline.
+  paragraphThenRule: "# A\n\nfoo\n---\n\n## B\n",
+  setextH1: "Overview\n========\n\n## B\n",
+  setextH2: "Overview\n--------\n\n## B\n",
+  // An escaped marker is TEXT. Stripping emphasis before undoing the escape read
+  // this as "a \\ b", so the row said one thing and the page said another.
+  escapedEmphasis: "# A\n\n## a \\* b\n"
+};
+
 let headingCases = 0;
 let headingsSeen = 0;
 let headingsInLists = 0;
-for (const [shapeName, build] of Object.entries(SHAPES)) {
+const headingShapes = Object.entries(SHAPES)
+  .map(([name, build]) => [name, build])
+  .concat(Object.entries(HEADING_EDGE_SHAPES).map(([name, text]) => [name, () => text]));
+for (const [shapeName, build] of headingShapes) {
   const prepared = build();
   const want = lexedHeadings(marked.lexer(prepared)).filter((h) => h.text);
   headingsInLists += want.filter((h) => h.nested).length;

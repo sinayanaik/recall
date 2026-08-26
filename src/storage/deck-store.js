@@ -397,6 +397,34 @@ export function withDeckLock(id, fn) {
   return result;
 }
 
+// Re-read a deck, let `mutate` change the fresh copy, and write that back —
+// all under that deck's own lock.
+//
+// This exists because forEachDeckSnapshot reads the object store DIRECTLY and
+// says so in its own header: a deck with a write still in flight may be handed
+// back at its PREVIOUS, still-durable value. That is the accepted cost for the
+// informational and search uses the cursor was built for, and it is not
+// acceptable for a read-modify-WRITE — writing that stale copy back replaces
+// the newer save, in the cache and on disk both, and the edits in between are
+// gone. Two library-wide passes did exactly that (the offline-image rewrite and
+// the escaped-math repair), and their window is real: both run at moments when
+// an autosave is plausibly mid-flight.
+//
+// So the cursor stays the cheap way to FIND the decks that need rewriting, and
+// this is the way to rewrite one. `mutate` returns the snapshot to store, or
+// anything falsy to say the fresh copy no longer needs the change. Resolves
+// true when something was written.
+export function rewriteDeckSnapshot(id, mutate) {
+  return withDeckLock(id, async () => {
+    const fresh = await readDeckSnapshot(id);
+    if (!fresh) return false;
+    const next = mutate(fresh);
+    if (!next) return false;
+    writeDeckSnapshot(id, next);
+    return true;
+  });
+}
+
 export function cloneSnapshot(snapshot) {
   try {
     return structuredClone(snapshot);
@@ -674,7 +702,18 @@ export async function flushPendingDeckAutosave() {
   persistWorkingDeck();
   // Same no-op case the timer itself handles — an empty deck has nothing to
   // save and this is not a storage failure.
-  if (!state.masterCards.length && !state.notes.trim()) return;
+  //
+  // Through deckHasNothingToSave(), which is saveDeckToLibrary's own predicate,
+  // rather than a second spelling of it. This line USED to be that second
+  // spelling, and the two disagreed about exactly one thing: a PDF deck. Its
+  // body is empty because the paper is the document and it holds no cards, so
+  // `!masterCards.length && !notes.trim()` was true of every one of them — this
+  // cleared the armed timer and then returned without saving, and the
+  // highlights of the last 400ms went with the deck being left. The timer forty
+  // lines above says in its own comment that this exact divergence caused this
+  // exact bug once already. (It also stops `state.notes` being null from
+  // throwing here, which the restated form would.)
+  if (deckHasNothingToSave()) return;
   try {
     const savedMeta = await saveDeckToLibrary({ silent: true });
     setSyncIndicator(savedMeta ? "saved" : "error");

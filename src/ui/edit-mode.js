@@ -3,10 +3,11 @@
 // An edit in flight must be committed before anything navigates away, or the
 // text is silently lost — which is why several unrelated paths call in here.
 
-import { createBlankCard, pushCardUndoSnapshot, snapshotCardsState } from "../cards/all-cards-edit.js?v=__BUILD__";
+import { activeDeckMatchesMasterOrder, createBlankCard, pushCardUndoSnapshot, snapshotCardsState } from "../cards/all-cards-edit.js?v=__BUILD__";
 import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { navigateCard } from "../cards/deck-actions.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
+import { syncResults } from "../cards/study.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
@@ -226,9 +227,29 @@ export function addBlankCardAtCursor() {
   const wasEmpty = state.masterCards.length === 0;
   pushCardUndoSnapshot(snapshotCardsState());
   const newCard = createBlankCard();
-  const insertAt = wasEmpty ? 0 : state.current + 1;
+  // ── Where the new card goes in the DECK, not in the study list ───────────
+  //
+  // `state.current` indexes state.cards, which is the run being studied, and
+  // the two arrays are not the same list: Replay known rebuilds state.cards
+  // from a FILTER of masterCards (see replayDeck), and a deletion can shorten
+  // one alone. Splicing masterCards at `state.current + 1` therefore put the
+  // card wherever that index happened to land in the deck — reading card 3 of a
+  // six-card replay inside a hundred-card deck inserted it after the deck's
+  // third card — and the autosave made that order permanent, leaving the two
+  // arrays disagreeing for the rest of the session.
+  //
+  // The card is placed after the one being READ, found in masterCards by its
+  // own id. Same shape insertCardAfter already uses, including its gate: the
+  // study list only follows along when it is still the whole deck in order.
+  const currentCard = state.cards[state.current] || null;
+  const after = currentCard ? state.masterCards.findIndex((card) => card.id === currentCard.id) : -1;
+  const insertAt = wasEmpty || after < 0 ? state.masterCards.length : after + 1;
+  const followsMaster = activeDeckMatchesMasterOrder();
   state.masterCards.splice(insertAt, 0, newCard);
-  state.cards.splice(insertAt, 0, newCard);
+  if (followsMaster) state.cards = state.masterCards.slice();
+  else state.cards.splice(Math.min(state.current + 1, state.cards.length), 0, newCard);
+  // masterCards changed, so the known/review tallies derived from it are stale.
+  syncResults();
   if (wasEmpty) {
     state.current = 0;
     showCard();

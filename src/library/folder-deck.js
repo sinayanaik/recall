@@ -98,8 +98,8 @@ export function isFolderDeckActive() {
 
 // Cut a merged document back into its sections.
 //
-// Fence-aware, following scrollNotesEditToHeadingIndex(): inside ``` or ~~~ a
-// line that looks like a marker is code, not a marker. Returns the sections in
+// Fence-aware, the way scanPreparedHeadings is: inside ``` or ~~~ a line that
+// looks like a marker is code, not a marker. Returns the sections in
 // document order plus anything before the first marker, which a save must keep
 // (it is where a stray edit above the first heading would land).
 export function splitFolderDeckNotes(markdown) {

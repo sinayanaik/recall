@@ -314,9 +314,20 @@
   // Balanced runs, not "everything up to the first ] or )": a URL carrying a
   // paren (`Foo_(bar).png`) or alt text carrying a bracket (`![see [1]](…)`)
   // is ordinary in clipped prose, and the old pattern truncated both.
-  const IMG_ALT_SOURCE = "\\[(?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*\\]";
-  const IMG_DEST_SOURCE = "\\((?:[^()\\\\]|\\\\.|\\((?:[^()\\\\]|\\\\.)*\\))*\\)";
-  const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|<img\\b[^>]*>`;
+  //
+  // Bounded, too: neither run may cross a blank line, and the tag branch stops
+  // at the end of the tag rather than at the next ">" anywhere in the document.
+  // Unbounded, a truncated `<img` in clipped markup swallowed every picture and
+  // paragraph after it — see src/render/inline.js, which this is the port of.
+  const INLINE_SOFT_BREAK_SOURCE = "\\n(?![^\\S\\n]*\\n)";
+  const IMG_ALT_SOURCE =
+    `\\[(?:[^\\[\\]\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE}`
+    + `|\\[(?:[^\\[\\]\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE})*\\])*\\]`;
+  const IMG_DEST_SOURCE =
+    `\\((?:[^()\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE}`
+    + `|\\((?:[^()\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE})*\\))*\\)`;
+  const IMG_TAG_SOURCE = `<img\\b(?:"[^"\\n]*"|'[^'\\n]*'|[^>'"\\n])*>`;
+  const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|${IMG_TAG_SOURCE}`;
   function imageDestinationUrl(inner) {
     const text = String(inner || "").trim();
     const bracketed = text.match(/^<([^>]*)>/);
@@ -336,13 +347,31 @@
     if (/^<img\b[^>]*>$/i.test(raw)) return raw;
     return "";
   }
+  // A GFM table body row written without leading pipes is spelled exactly like a
+  // side-by-side image row when every cell is a picture — what tells them apart
+  // is the delimiter row above. Converting one took the table apart. Port of
+  // src/render/inline.js.
+  const TABLE_DELIMITER_RE = /^[^\S\n]*:?-+:?([^\S\n]*\|[^\S\n]*:?-+:?)+[^\S\n]*$/;
+  function pipeRowInTable(text, lineStart) {
+    let at = lineStart;
+    while (at > 0) {
+      const previousEnd = at - 1;
+      const previousStart = text.lastIndexOf("\n", previousEnd - 1) + 1;
+      const previous = text.slice(previousStart, previousEnd);
+      if (TABLE_DELIMITER_RE.test(previous)) return true;
+      if (!previous.includes("|")) return false;
+      at = previousStart;
+    }
+    return false;
+  }
   function renderImageRows(segment) {
     const lineRe = new RegExp(
       `^[^\\S\\n]*(?:${IMG_TOKEN_SOURCE})(?:[^\\S\\n]*\\|[^\\S\\n]*(?:${IMG_TOKEN_SOURCE}))+[^\\S\\n]*$`,
       "gm"
     );
     const imgRe = new RegExp(IMG_TOKEN_SOURCE, "gi");
-    return segment.replace(lineRe, (line) => {
+    return segment.replace(lineRe, (line, offset) => {
+      if (pipeRowInTable(segment, offset)) return line;
       const imgs = (line.match(imgRe) || []).map(imageMarkupToTag).filter(Boolean);
       if (imgs.length < 2) return line;
       return `<div class="notes-img-row">${imgs.join("")}</div>`;

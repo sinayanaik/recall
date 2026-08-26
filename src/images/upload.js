@@ -173,8 +173,19 @@ export function decodeStoragePath(path) {
 // comes back is the object's real name, not the spelling its URL uses.
 export function supabaseImagePathFromUrl(url) {
   if (!supabaseClient || !url) return null;
-  const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("");
-  const prefix = data?.publicUrl || "";
+  // Asking the client can throw — an older supabase-js, a stand-in client, a
+  // project whose storage is not configured — and this is called from a delete
+  // button's click handler, with the note-side removal already committed. An
+  // exception there escapes into the handler and leaves the reader looking at a
+  // picture that has gone from the note with no idea anything failed. "This is
+  // not one of ours" is the same answer for a client that cannot say.
+  let prefix = "";
+  try {
+    prefix = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("")?.data?.publicUrl || "";
+  } catch (error) {
+    console.warn("Could not resolve the image storage prefix", error);
+    return null;
+  }
   if (!prefix || !url.startsWith(prefix)) return null;
   return decodeStoragePath(url.slice(prefix.length).replace(/^\/+/, ""));
 }
