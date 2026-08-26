@@ -314,9 +314,20 @@
   // Balanced runs, not "everything up to the first ] or )": a URL carrying a
   // paren (`Foo_(bar).png`) or alt text carrying a bracket (`![see [1]](…)`)
   // is ordinary in clipped prose, and the old pattern truncated both.
-  const IMG_ALT_SOURCE = "\\[(?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*\\]";
-  const IMG_DEST_SOURCE = "\\((?:[^()\\\\]|\\\\.|\\((?:[^()\\\\]|\\\\.)*\\))*\\)";
-  const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|<img\\b[^>]*>`;
+  //
+  // Bounded, too: neither run may cross a blank line, and the tag branch stops
+  // at the end of the tag rather than at the next ">" anywhere in the document.
+  // Unbounded, a truncated `<img` in clipped markup swallowed every picture and
+  // paragraph after it — see src/render/inline.js, which this is the port of.
+  const INLINE_SOFT_BREAK_SOURCE = "\\n(?![^\\S\\n]*\\n)";
+  const IMG_ALT_SOURCE =
+    `\\[(?:[^\\[\\]\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE}`
+    + `|\\[(?:[^\\[\\]\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE})*\\])*\\]`;
+  const IMG_DEST_SOURCE =
+    `\\((?:[^()\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE}`
+    + `|\\((?:[^()\\\\\\n]|\\\\.|${INLINE_SOFT_BREAK_SOURCE})*\\))*\\)`;
+  const IMG_TAG_SOURCE = `<img\\b(?:"[^"\\n]*"|'[^'\\n]*'|[^>'"\\n])*>`;
+  const IMG_TOKEN_SOURCE = `!${IMG_ALT_SOURCE}${IMG_DEST_SOURCE}|${IMG_TAG_SOURCE}`;
   function imageDestinationUrl(inner) {
     const text = String(inner || "").trim();
     const bracketed = text.match(/^<([^>]*)>/);

@@ -13,6 +13,10 @@ import { deleteSupabaseImage } from "./upload.js?v=__BUILD__";
 import { CANONICAL_SRC_ATTR } from "../cloud/storage-urls.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME } from "./outbox.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
+// block-cache imports this module back; both edges are function declarations
+// called at runtime, which is the case the TDZ rule in tools/module-symbols.mjs
+// allows. Nothing here reads it at module scope.
+import { notesLazyBuiltImages } from "../render/block-cache.js?v=__BUILD__";
 import { IMG_ALT_SOURCE, IMG_DEST_SOURCE, IMG_TOKEN_SOURCE, imageDestinationUrl } from "../render/inline.js?v=__BUILD__";
 import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, normalizeImageUrl, parseDiagramWidth, scanCodeRegions, scanFences } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
@@ -357,10 +361,35 @@ export function imgTagHtml({ url, alt = "", widthPx = null }) {
 // imageMatchKey, not normalizeImageUrl: `ref.url` is the key the shell was
 // paired on, so resolving a commit any other way would let attach and commit
 // disagree about which image the reader is dragging.
+// ── ...and `nth` only means something if both lists are the same list ──────
+//
+// `ref.nth` is counted over the SHELLS ON SCREEN and applied to the SLICES IN
+// THE SOURCE. Those are two different lists whenever a note is built span by
+// span, which is every book: earlier copies of the same URL sitting in unbuilt
+// spans are not counted on the DOM side, so `nth` came out too small and this
+// returned an EARLIER, OFF-SCREEN copy. The picture the reader pressed stayed;
+// a different one vanished; pressing again took another. That is the whole of
+// "I deleted one image and several others went with it", and it lands on
+// exactly the notes that have images in them — every upload writes `![](url)`
+// with empty alt, and an imported book reuses its figures.
+//
+// The attach pass already refuses that ordinal without a guard (resolveShellCopy
+// below). This is the same guard, applied where it matters: `ref.copies` is how
+// many shells the view holds for this URL, and `ref.built` is which of the
+// note's images are in the DOM at all. When neither can settle it the answer is
+// null, and replaceSourceImage says so out loud rather than guessing.
+//
+// A ref carrying no `copies` is one built by hand — tools/image-controls-check
+// asks a different question with those, namely "given the right nth, is the
+// right slice rewritten" — and keeps the old, unguarded reading.
 export function sourceImageAt(images, ref) {
   const matches = images.filter((image) => imageMatchKey(image.url) === ref.url);
   if (!matches.length) return null;
-  return matches[ref.nth] || (matches.length === 1 ? matches[0] : null);
+  if (matches.length === 1) return matches[0];
+  if (!Number.isInteger(ref.copies)) return matches[ref.nth] ?? null;
+  const copies = matches.map((image) => ({ image, index: images.indexOf(image) }));
+  const resolved = resolveShellCopy(copies, ref.nth, { built: ref.built || null, domCount: ref.copies });
+  return resolved ? resolved.image : null;
 }
 
 // ── ...and what to do when that lookup comes back empty ────────────────────
@@ -396,7 +425,11 @@ export function sourceImageAt(images, ref) {
 export function sourceImageFor(source, ref) {
   if (!ref?.url) return null;
   const images = findSourceImages(source);
-  const found = sourceImageAt(images, ref);
+  // Which of the note's images are in the DOM at all, derived exactly as the
+  // attach pass derives it — and only when the ref did not already bring one.
+  const built = ref.built
+    || (ref.view ? alignBuiltImages(images, notesLazyBuiltImages(ref.view)) : null);
+  const found = sourceImageAt(images, built === ref.built ? ref : { ...ref, built });
   if (found) return found;
 
   if (!ref.rendered) return null;
@@ -410,7 +443,9 @@ export function sourceImageFor(source, ref) {
     const loose = findSourceImages(source, { skipCode: false })
       .filter((image) => imageMatchKey(image.url) === ref.url);
     if (loose.length === 1) return loose[0];
-    if (loose.length > 1 && loose[ref.nth]) return loose[ref.nth];
+    // Same guard as sourceImageAt: an ordinal counted on screen may only be
+    // applied to a list the screen can be shown to describe.
+    if (loose.length > 1 && ref.copies === loose.length && loose[ref.nth]) return loose[ref.nth];
   }
 
   if (Number.isInteger(ref.index) && ref.total === images.length && images[ref.index]) {
@@ -941,7 +976,11 @@ export function enhanceSurfaceImageControls(surface, { scope = null, builtImages
 //   nth    which copy of that URL this shell is, among the shells on screen
 //   index  where it sits among ALL the image shells in the view, and
 //   total  how many there are — the pair sourceImageFor's positional step
-//          needs, and which are only meaningful together.
+//          needs, and which are only meaningful together
+//   copies how many shells in the view show this same URL, which is what makes
+//          `nth` checkable rather than merely asserted
+//   view   the surface itself, so a commit can ask which of the note's images
+//          are built at all (notesLazyBuiltImages) the way the attach pass does
 //
 // A whole-view walk, which is affordable precisely because it happens once per
 // drag or delete rather than on the tail of every render.
@@ -949,11 +988,20 @@ export function imageRefForShell(view, shell, key) {
   let nth = 0;
   let index = -1;
   let total = 0;
+  // How many shells the VIEW holds for this URL, this one included. An ordinal
+  // is only worth anything against a list it can be checked against, and this is
+  // that check: sourceImageAt trusts `nth` when this agrees with how many slices
+  // the source holds, and refuses when it does not. Without it, a book with an
+  // unbuilt span in front of the reader answered "copy 0" for a picture that is
+  // really copy 3, and deleting it took copy 0 instead.
+  let copies = 0;
   view.querySelectorAll(".diagram-shell").forEach((node) => {
     const img = node.querySelector("img");
     if (!img) return;
+    const matches = imageMatchKey(sourceUrlForImage(img)) === key;
+    if (matches) copies += 1;
     if (node === shell) index = total;
-    else if (index === -1 && imageMatchKey(sourceUrlForImage(img)) === key) nth += 1;
+    else if (index === -1 && matches) nth += 1;
     total += 1;
   });
   // The shell is not in the view any more: a render landed between the finger
@@ -963,12 +1011,15 @@ export function imageRefForShell(view, shell, key) {
   // still does, and it was true of the note this drag started in.
   if (index === -1) {
     const stored = Number.parseInt(shell?.dataset?.imageNth ?? "", 10);
-    return { url: key, nth: Number.isInteger(stored) ? stored : 0, index: null, total, rendered: true };
+    return {
+      url: key, nth: Number.isInteger(stored) ? stored : 0,
+      index: null, total, copies, view, rendered: true
+    };
   }
   // `rendered` says where this ref came from, and it is what licenses
   // sourceImageFor's recovery steps: there is an element on screen for this
   // picture, so the renderer has already ruled that it is not code.
-  return { url: key, nth, index, total, rendered: true };
+  return { url: key, nth, index, total, copies, view, rendered: true };
 }
 
 // ── Editable diagrams: the same corner-drag resize images get ──────────────

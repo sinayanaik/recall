@@ -49,7 +49,10 @@ const marked = require("../vendor/marked-14.1.2/marked.min.js");
 
 const WANTED = [
   ["src/core/text.js", ["escapeHtml"]],
-  ["src/render/inline.js", ["IMG_ALT_SOURCE", "IMG_DEST_SOURCE", "IMG_TOKEN_SOURCE", "imageDestinationUrl"]],
+  ["src/render/inline.js", [
+    "INLINE_SOFT_BREAK_SOURCE", "IMG_ALT_SOURCE", "IMG_DEST_SOURCE", "IMG_TAG_SOURCE",
+    "IMG_TOKEN_SOURCE", "imageDestinationUrl"
+  ]],
   ["src/render/preprocess.js", [
     "FENCE_OPEN_SOURCE", "fenceOpenPattern", "scanFences",
     "QUOTE_PREFIX_SOURCE", "LIST_ITEM_SOURCE", "HTML_VERBATIM_TAGS",
@@ -64,7 +67,11 @@ const WANTED = [
     "sourceImagePattern", "isEscapedOffset", "findSourceImages",
     "sourceMayHaveImages", "markedImageUrl", "imageMatchKey", "imgTagHtml",
     "sourceImageAt", "sourceImageFor", "pipeRowLinePattern", "imageRemovalRange",
-    "replaceSourceImage", "commitSourceImageWidth", "removeSourceImage"
+    "replaceSourceImage", "commitSourceImageWidth", "removeSourceImage",
+    // The rule the ATTACH pass uses to decide which copy of a repeated image a
+    // shell is. The commit path applies the same rule now, so this file has to
+    // lift it too — the two disagreeing is what deleted the wrong picture.
+    "resolveShellCopy"
   ]]
 ];
 
@@ -517,6 +524,102 @@ for (const [name, source] of Object.entries(SHAPES)) {
   api.commitSourceImageWidth(surface, { url: "https://img.test/gone.png", nth: 0 }, 200);
   assert(surface.getSource() === before, "a commit for a vanished image rewrote the note anyway");
   assert(toasts.length === 1, `a commit for a vanished image said nothing (${toasts.length} toasts)`);
+}
+
+// ── One press, one picture ─────────────────────────────────────────────────
+//
+// Every case below is a note where deleting ONE image used to take others with
+// it, which is the report these exist for. The property is the same each time:
+// after the press, the note holds exactly the images it held before minus the
+// one that was pressed, and every other character is where it was.
+{
+  // Counted through the ORACLE, not through the scan under test: on the old
+  // build the scan reported one giant image where marked renders three, so a
+  // scan-versus-scan comparison agreed with itself and saw nothing wrong.
+  const oneLess = (name, source, targetUrl, ref = {}) => {
+    const surface = makeSurface(source);
+    const before = renderedImageUrls(source).map(key);
+    const target = key(targetUrl);
+    assert(before.includes(target), `${name}: the fixture does not render ${targetUrl} at all`);
+    api.removeSourceImage(surface, { url: target, nth: 0, rendered: true, ...ref });
+    const after = renderedImageUrls(surface.getSource()).map(key);
+    const want = before.slice();
+    want.splice(want.indexOf(target), 1);
+    assert(
+      after.length === want.length && after.every((url, i) => url === want[i]),
+      `${name}: one delete left ${JSON.stringify(after)}, want ${JSON.stringify(want)}`
+    );
+    return surface.getSource();
+  };
+
+  // An `<img` with no closing bracket used to make ONE slice that ran to the
+  // next ">" anywhere in the note — so deleting the first picture removed the
+  // two below it and the paragraph between them.
+  const unclosed = "Intro paragraph.\n\n<img src=\"https://img.test/u1.png\" alt=\"first\"\n\n"
+    + "![](https://img.test/u2.png)\n\n![](https://img.test/u3.png)\n\nSome <b>bold</b> text.\n";
+  const leftBehind = oneLess("unclosed img tag", unclosed, "https://img.test/u2.png");
+  assert(leftBehind.includes("bold"), `unclosed img tag: the delete swallowed the prose:\n      ${JSON.stringify(leftBehind)}`);
+
+  // A ">" inside an attribute value used to end the slice mid-tag, so the
+  // delete left the rest of the tag behind as visible text.
+  const gtInAttr = "<img src=\"https://img.test/g1.png\" alt=\"1 > 2\">\n\n![](https://img.test/g2.png)\n";
+  const afterGt = oneLess("gt inside an attribute", gtInAttr, "https://img.test/g1.png");
+  assert(!afterGt.includes("2\">"), `gt inside an attribute: delete left litter:\n      ${JSON.stringify(afterGt)}`);
+
+  // A markdown destination is not allowed to cross a blank line either: a stray
+  // "![](" used to swallow everything down to the next ")".
+  const strayOpen = "![a](https://img.test/s1.png\n\ntext\n\n![b](https://img.test/s2.png)\n\nmore)\n\n"
+    + "![c](https://img.test/s3.png)\n";
+  const afterStray = oneLess("stray open destination", strayOpen, "https://img.test/s2.png");
+  assert(afterStray.includes("text"), `stray open destination: the delete swallowed the prose:\n      ${JSON.stringify(afterStray)}`);
+}
+
+// ── An ordinal counted on screen may only be spent on the list it describes ──
+//
+// `nth` comes from the SHELLS IN THE VIEW; the slices come from the SOURCE. On
+// a book built span by span the two are different lists, and applying one to
+// the other deleted an earlier, off-screen copy of the same picture — the
+// press did nothing visible and a different image vanished. A ref that says how
+// many copies the view holds can be checked; one that cannot be checked is
+// refused, out loud.
+{
+  const twice = "![dup](https://img.test/d.png)\n\nmiddle\n\n![dup](https://img.test/d.png)\n";
+
+  // Both copies on screen: the ordinal is checkable and is honoured.
+  {
+    const surface = makeSurface(twice);
+    api.removeSourceImage(surface, { url: key("https://img.test/d.png"), nth: 1, copies: 2, rendered: true });
+    assert(
+      surface.getSource() === "![dup](https://img.test/d.png)\n\nmiddle\n",
+      `both copies visible: deleting the second left ${JSON.stringify(surface.getSource())}`
+    );
+  }
+
+  // Only one on screen, two in the note: the ordinal says nothing, so nothing
+  // is written and the reader is told.
+  {
+    toasts.length = 0;
+    const surface = makeSurface(twice);
+    api.removeSourceImage(surface, { url: key("https://img.test/d.png"), nth: 0, copies: 1, rendered: true });
+    assert(surface.getSource() === twice, `one copy visible of two: the note was rewritten anyway:\n      ${JSON.stringify(surface.getSource())}`);
+    assert(toasts.length === 1, `one copy visible of two: refused silently (${toasts.length} toasts)`);
+  }
+
+  // ...unless the built flags can settle it. `built` is one flag per image of
+  // the note, in order — here the first copy's span is not in the DOM, so the
+  // single shell on screen IS the second copy.
+  {
+    toasts.length = 0;
+    const surface = makeSurface(twice);
+    api.removeSourceImage(surface, {
+      url: key("https://img.test/d.png"), nth: 0, copies: 1, built: [false, true], rendered: true
+    });
+    assert(
+      surface.getSource() === "![dup](https://img.test/d.png)\n\nmiddle\n",
+      `built flags: deleting the only visible copy left ${JSON.stringify(surface.getSource())}`
+    );
+    assert(toasts.length === 0, "built flags: the delete complained even though it could be settled");
+  }
 }
 
 // ── Reporting ──────────────────────────────────────────────────────────────

@@ -884,6 +884,26 @@ const ACCEPTED = {
     "Resets scrollLeft alongside scrollTop when a DIFFERENT note opens: paged " +
     "mode runs sideways, so leaving scrollLeft alone opened the new note " +
     "wherever the previous one had been left. Also repaginates after the paint.",
+  // ── Deleting one picture deleted several ────────────────────────────────
+  // Every control identifies its image by WHERE ITS MARKDOWN SITS, which makes
+  // the pattern that finds that markdown load-bearing: an over-match is not a
+  // missing grip, it is a delete that takes the note with it. Covered by the
+  // "one press, one picture" cases in tools/image-controls-check.mjs, with
+  // marked as the oracle for what the reader can actually press.
+  IMG_TOKEN_SOURCE:
+    "Both branches are BOUNDED now. `<img\\b[^>]*>` matched newlines, so an " +
+    "`<img` with no closing bracket — a truncated paste, imported HTML, a " +
+    "hand-typed tag — ran to the next `>` anywhere in the note: measured on a " +
+    "note holding one such tag, two pictures and a paragraph, ONE press of a " +
+    "delete button removed all three and half the prose, and a resize would " +
+    "have written over the same range. It now stops at the end of the tag and " +
+    "consumes a quoted attribute whole, so `alt=\"1 > 2\"` no longer ends the " +
+    "slice inside its own attribute and leaves ` 2\">` behind as visible text. " +
+    "The alt and destination runs (IMG_ALT_SOURCE / IMG_DEST_SOURCE, both new " +
+    "since the baseline) may no longer cross a BLANK line for the same reason " +
+    "— a blank line ends the paragraph, so marked will not read anything past " +
+    "one as part of the same image and neither may this. A single newline is " +
+    "still legal: a soft break inside alt text is ordinary.",
   scrollNotesHeadingIntoView:
     "Turns to the heading's page when paged. No re-aiming loop there — a page " +
     "boundary is exact, and the loop exists for heights that keep changing " +
