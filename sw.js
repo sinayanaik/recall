@@ -454,6 +454,7 @@ const APP_SHELL = [
   `./src/sync/document-sync.js?v=${STAMP}`,
   `./src/sync/indicator.js?v=${STAMP}`,
   `./src/sync/notes-conflict.js?v=${STAMP}`,
+  `./src/sync/notes-conflict-merge.js?v=${STAMP}`,
   `./src/sync/push.js?v=${STAMP}`,
   `./src/sync/reconcile.js?v=${STAMP}`,
   `./src/sync/report.js?v=${STAMP}`,

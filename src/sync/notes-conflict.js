@@ -9,6 +9,7 @@ import { loadDeckFromLibrary, readLocalDeckIndex, writeLocalDeckIndex } from "..
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { deleteDeckSnapshot, readDeckSnapshot, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { NOTES_CONFLICT_SUFFIX } from "../storage/keys.js?v=__BUILD__";
+import { mergeRestoredNotes, promoteStashedNotes } from "./notes-conflict-merge.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline } from "./indicator.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -36,8 +37,14 @@ export async function restoreStashedNotes(localId) {
   }
 
   const when = stash.savedAt ? new Date(stash.savedAt).toLocaleString() : "an earlier sync";
-  const marker = `\n\n---\n\n## Your notes from before ${when}\n\n${stash.notes}\n`;
-  snapshot.notes = String(snapshot.notes || "") + marker;
+  // Through mergeRestoredNotes rather than a bare concatenation. A stash holds
+  // the WHOLE notes string — the fenced highlight-note block included, because
+  // the pull mines its tail to recover stranded annotations — and appending that
+  // verbatim made the stash's OLDER block the live one (highlightNotesBlockSpan
+  // takes the last opening marker), demoted the merged block into the body where
+  // it rendered as prose, and then pushed the deck to every device in that
+  // state. On the button that says "Nothing is lost".
+  snapshot.notes = mergeRestoredNotes(snapshot.notes, stash.notes, when);
   const now = new Date().toISOString();
   writeDeckSnapshot(localId, snapshot);
   const index = readLocalDeckIndex();
@@ -107,7 +114,12 @@ export async function resolveNotesConflict(localId, choice) {
       showToast("Nothing left to restore", "info");
       return false;
     }
-    snapshot.notes = String(stash.notes || "");
+    // The stash's PROSE, joined to the block the deck currently holds. Assigning
+    // the stash whole replaced the merged highlight notes with whatever copy
+    // happened to be in the stash when it was written, discarding every note
+    // that has merged in since — the reader asked to keep their own writing, not
+    // to roll back their annotations.
+    snapshot.notes = promoteStashedNotes(snapshot.notes, stash.notes);
     writeDeckSnapshot(localId, snapshot);
     const index = readLocalDeckIndex();
     const entry = index.find((m) => m.id === localId);
