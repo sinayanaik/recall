@@ -360,6 +360,7 @@ const APP_SHELL = [
   `./src/format/notes-fence.js?v=${STAMP}`,
   `./src/format/highlight.js?v=${STAMP}`,
   `./src/format/locate-selection.js?v=${STAMP}`,
+  `./src/format/merged-notes.js?v=${STAMP}`,
   `./src/format/render-toolbar.js?v=${STAMP}`,
   `./src/format/selection-tools.js?v=${STAMP}`,
   `./src/images/broken.js?v=${STAMP}`,

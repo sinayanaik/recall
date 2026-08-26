@@ -28,18 +28,10 @@
 //
 // ── How a section is found again ──────────────────────────────────────────
 //
-// Each deck's notes are introduced by an HTML-comment marker carrying its local
-// id, then a `# Title` heading:
-//
-//     <!-- recall-section:local-1a2b3c -->
-//     # Ancient Rome
-//
-//     …that deck's own notes…
-//
-// The comment survives markdown → DOMPurify as a comment node, so it is
-// invisible in the reading view and visible (and therefore editable) only in
-// the raw editor. The heading is a real heading, which is what puts each deck
-// at the top of the table of contents, and renaming it renames the deck.
+// The document format — a `<!-- recall-section:local-1a2b3c -->` marker and a
+// `# Title` heading per deck — and the parser that undoes it live in
+// src/format/merged-notes.js, because a bulk Load of several decks builds the
+// very same document and tools/ has to be able to drive the format from Node.
 //
 // If the markers do not come back exactly as they went out, saveFolderDeck
 // REFUSES to write anything at all. A deleted marker would otherwise fold one
@@ -52,6 +44,13 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
+import {
+  buildMergedNotes,
+  mergedSectionBody,
+  mergedSplitProblem,
+  ownerForNewCard,
+  splitMergedNotes
+} from "../format/merged-notes.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
 import { cachedDeckSnapshotSync, finishSaveDeckToLibrary } from "./local-library.js?v=__BUILD__";
@@ -61,14 +60,6 @@ import { closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { flushWorkingDeck } from "../ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
-
-// One capture group: the member deck's local id. Anchored to a whole line, so a
-// marker mentioned mid-sentence in prose is not one.
-export const FOLDER_SECTION_RE = /^<!--\s*recall-section:([^\s>]+)\s*-->$/;
-
-export function folderSectionMarker(localId) {
-  return `<!-- recall-section:${localId} -->`;
-}
 
 // finishSaveDeckToLibrary only assigns state.localDeckId when the token it was
 // given still matches activeDeckLoadToken. -1 can never match (the counter only
@@ -94,59 +85,6 @@ export function isFolderDeckActive() {
     return false;
   }
   return true;
-}
-
-// Cut a merged document back into its sections.
-//
-// Fence-aware, the way scanPreparedHeadings is: inside ``` or ~~~ a line that
-// looks like a marker is code, not a marker. Returns the sections in
-// document order plus anything before the first marker, which a save must keep
-// (it is where a stray edit above the first heading would land).
-export function splitFolderDeckNotes(markdown) {
-  const lines = String(markdown || "").split("\n");
-  const sections = [];
-  const preamble = [];
-  let current = null;
-  let inFence = false;
-  let fenceChar = "";
-
-  for (const line of lines) {
-    const fence = line.match(/^\s*(```+|~~~+)/);
-    if (fence) {
-      if (!inFence) { inFence = true; fenceChar = fence[1][0]; }
-      else if (line.trim().startsWith(fenceChar)) { inFence = false; }
-    } else if (!inFence) {
-      const marker = line.trim().match(FOLDER_SECTION_RE);
-      if (marker) {
-        current = { localId: marker[1], title: null, lines: [] };
-        sections.push(current);
-        continue;
-      }
-    }
-    if (!current) { preamble.push(line); continue; }
-    // The first non-blank line of a section is its `# Title`. Consumed rather
-    // than kept, because it is generated on the way in and would otherwise be
-    // saved into the member deck's own notes and then duplicated next time.
-    if (current.title === null && line.trim()) {
-      const heading = line.match(/^#\s+(.*)$/);
-      current.title = heading ? heading[1].trim() : "";
-      if (heading) continue;
-    }
-    current.lines.push(line);
-  }
-  return { preamble, sections };
-}
-
-export function folderSectionBody(section) {
-  // Trim the blank lines the join added, not the note's own leading structure.
-  return section.lines.join("\n").replace(/^\n+/, "").replace(/\s+$/, "");
-}
-
-// Build the merged document. Members are already in the order they will appear.
-export function buildFolderDeckNotes(members) {
-  return members
-    .map((member) => `${folderSectionMarker(member.localId)}\n# ${member.title}\n\n${member.notes}`.replace(/\s+$/, ""))
-    .join("\n\n") + "\n";
 }
 
 // ── Opening ────────────────────────────────────────────────────────────────
@@ -238,7 +176,7 @@ export async function openFolderAsDeck(path) {
   // Interleaving them is how a throw halfway through leaves `state` describing
   // a deck that does not exist — the open deck replaced, the notes not yet
   // written, and all three tabs blank with no way back but a reload.
-  const mergedNotes = buildFolderDeckNotes(writable);
+  const mergedNotes = buildMergedNotes(writable);
   if (!mergedNotes.trim()) {
     setStatus(`The decks in "${folderPath}" have no notes to read.`, "error");
     showToast(`Nothing to read in "${folderPath}"`, "error");
@@ -281,21 +219,6 @@ export async function openFolderAsDeck(path) {
 
 // ── Writing back ───────────────────────────────────────────────────────────
 
-// The reason a save was refused, or "" when the document is intact. Split out
-// so the refusal can be tested without driving a save.
-export function folderDeckSplitProblem(markdown, members) {
-  const { sections } = splitFolderDeckNotes(markdown);
-  const expected = members.map((member) => member.localId);
-  const seen = sections.map((section) => section.localId);
-  if (seen.length !== expected.length) {
-    return `expected ${expected.length} section marker${expected.length === 1 ? "" : "s"}, found ${seen.length}`;
-  }
-  const missing = expected.filter((id) => !seen.includes(id));
-  if (missing.length) return `${missing.length} section marker${missing.length === 1 ? "" : "s"} no longer match a deck`;
-  if (new Set(seen).size !== seen.length) return "a section marker appears more than once";
-  return "";
-}
-
 let folderDeckRefusalShown = false;
 
 // Everything the two save paths agree on: whether it is safe to write at all,
@@ -305,7 +228,7 @@ export function planFolderDeckWrite({ announce = true } = {}) {
   const folder = state.folderDeck;
   if (!folder) return null;
 
-  const problem = folderDeckSplitProblem(state.notes, folder.members);
+  const problem = mergedSplitProblem(state.notes, folder.members);
   if (problem) {
     // Latched: the autosave fires every 400ms of typing, and a note whose
     // markers are broken would otherwise raise the same toast on every
@@ -319,8 +242,8 @@ export function planFolderDeckWrite({ announce = true } = {}) {
   }
   if (announce) folderDeckRefusalShown = false;
 
-  const { sections } = splitFolderDeckNotes(state.notes);
-  const bodyById = new Map(sections.map((section) => [section.localId, folderSectionBody(section)]));
+  const { sections } = splitMergedNotes(state.notes);
+  const bodyById = new Map(sections.map((section) => [section.localId, mergedSectionBody(section)]));
   const titleById = new Map(sections.map((section) => [section.localId, section.title]));
 
   // Cards, back to the deck each came from. state.masterCards is the live list,
@@ -420,16 +343,6 @@ export async function saveFolderDeck({ silent = true } = {}) {
   }
   // A truthy return is what the autosave reads as "saved" for the sync pill.
   return written ? { id: null, title: folder.path, folder: true } : null;
-}
-
-// Which section does a newly created card's source text live in? Cards made
-// from a selection carry a noteAnchor into the merged markdown; the section
-// holding that text is the deck that should own the card.
-export function ownerForNewCard(card, sections) {
-  const needle = String(card.noteAnchor?.text || card.question || "").trim().slice(0, 60);
-  if (!needle) return null;
-  const match = sections.find((section) => section.lines.join("\n").includes(needle));
-  return match ? match.localId : null;
 }
 
 // A member deck's snapshot: its previous one with the notes, title and cards

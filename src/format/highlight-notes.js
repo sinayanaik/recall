@@ -75,6 +75,7 @@ import {
 } from "./notes-fence.js?v=__BUILD__";
 import {
   HIGHLIGHT_NOTES_HEADING,
+  fenceLegacySection,
   highlightNoteBlockPreamble,
   legacyHighlightNotesStart,
   parseFencedHighlightNoteEntries,
@@ -263,23 +264,6 @@ export function setHighlightNoteInSource(source, id, text, label) {
     entries.push({ id, label: label || "", text: String(text).trim() });
   }
   return writeHighlightNoteEntries(upgraded, span, entries, highlightNoteBlockPreamble(upgraded, span, entries));
-}
-
-// A `## Highlight Notes` section rewritten as a fence, in place. Returns the
-// same string identity when there is nothing to convert, which is every note
-// written since — so this is free to call on any write path.
-export function fenceLegacySection(source) {
-  if (!source || highlightNotesBlockSpan(source)) return source;
-  const sectionStart = legacyHighlightNotesStart(source);
-  if (sectionStart < 0) return source;
-  const entries = parseLegacyHighlightNoteEntries(source, sectionStart);
-  // A heading with no `### [hn-…]` under it is a heading the READER wrote, not
-  // this app's section. Leave it exactly where it is.
-  if (!entries.length) return source;
-  const headEnd = source.indexOf("\n", sectionStart);
-  const preamble = headEnd === -1 ? "" : source.slice(headEnd + 1, entries[0].start).trim();
-  const head = source.slice(0, sectionStart).replace(/\s+$/, "").replace(/\n*(?:^|\n)-{3,}[ \t]*$/, "");
-  return writeHighlightNoteEntries(head, null, entries, preamble);
 }
 
 // Entries whose highlight is gone (the mark was removed, or its text deleted
