@@ -75,6 +75,7 @@ import {
 } from "./notes-fence.js?v=__BUILD__";
 import {
   HIGHLIGHT_NOTES_HEADING,
+  fenceLegacySection,
   highlightNoteBlockPreamble,
   legacyHighlightNotesStart,
   parseFencedHighlightNoteEntries,
@@ -265,23 +266,6 @@ export function setHighlightNoteInSource(source, id, text, label) {
   return writeHighlightNoteEntries(upgraded, span, entries, highlightNoteBlockPreamble(upgraded, span, entries));
 }
 
-// A `## Highlight Notes` section rewritten as a fence, in place. Returns the
-// same string identity when there is nothing to convert, which is every note
-// written since — so this is free to call on any write path.
-export function fenceLegacySection(source) {
-  if (!source || highlightNotesBlockSpan(source)) return source;
-  const sectionStart = legacyHighlightNotesStart(source);
-  if (sectionStart < 0) return source;
-  const entries = parseLegacyHighlightNoteEntries(source, sectionStart);
-  // A heading with no `### [hn-…]` under it is a heading the READER wrote, not
-  // this app's section. Leave it exactly where it is.
-  if (!entries.length) return source;
-  const headEnd = source.indexOf("\n", sectionStart);
-  const preamble = headEnd === -1 ? "" : source.slice(headEnd + 1, entries[0].start).trim();
-  const head = source.slice(0, sectionStart).replace(/\s+$/, "").replace(/\n*(?:^|\n)-{3,}[ \t]*$/, "");
-  return writeHighlightNoteEntries(head, null, entries, preamble);
-}
-
 // Entries whose highlight is gone (the mark was removed, or its text deleted
 // in the raw editor) would otherwise pile up at the end of the note forever.
 //
@@ -313,6 +297,23 @@ export function pruneOrphanHighlightNotes(source) {
   if (Array.isArray(pdfHighlights)) {
     pdfHighlights.forEach((record) => {
       if (isHighlightNoteId(record?.id)) live.add(record.id);
+    });
+  }
+  // ── The third source, and the one with no meta to read ────────────────────
+  //
+  // Several decks open as ONE document (a folder read as one deck, a bulk Load
+  // of a selection) have no meta bag of their own: state.meta is {} by design,
+  // because the merged view is not a deck and must not carry one deck's PDF,
+  // reading position or quick-note categories. The members' papers are still
+  // in the document though, and their notes are in the block this prunes — so
+  // read from the body alone, every one of them is an orphan, and removing a
+  // single highlight anywhere in the merged note would sweep every paper's
+  // annotations out of every deck at once. The ids are collected at open (see
+  // src/library/folder-deck.js) under whatever id the merge is using for them.
+  const protectedIds = state.folderDeck?.protectedNoteIds;
+  if (Array.isArray(protectedIds)) {
+    protectedIds.forEach((id) => {
+      if (isHighlightNoteId(id)) live.add(id);
     });
   }
   const entries = parseFencedHighlightNoteEntries(upgraded, span);

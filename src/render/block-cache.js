@@ -93,7 +93,7 @@ export function clearNotesParseHistory() {
 // because that module already imports FROM this one (block-cache.js ->
 // scroll-anchor.js would be circular).
 export function currentNotesParseKey() {
-  return JSON.stringify([state.deckId || null, state.localDeckId || null, state.folderDeck?.path || null]);
+  return JSON.stringify([state.deckId || null, state.localDeckId || null, state.folderDeck?.key || null]);
 }
 
 export const renderSequence = new WeakMap();

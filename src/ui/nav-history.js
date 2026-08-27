@@ -7,7 +7,7 @@ import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { openFolderAsDeck } from "../library/folder-deck.js?v=__BUILD__";
+import { openFolderAsDeck, openSelectionAsOneDeck } from "../library/folder-deck.js?v=__BUILD__";
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { captureCurrentReadingAnchor, currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -77,14 +77,19 @@ export function currentNavLocation(hint = {}) {
       }
     };
   }
-  // A whole folder read as one document. It has neither id — the "deck" branch
-  // below would therefore never record it, and Back out of a deck opened FROM
-  // the folder view would walk straight past the folder to wherever you were
-  // before it.
+  // Several decks read as one document — a whole folder, or a selection loaded
+  // together. It has neither id, so the "deck" branch below would never record
+  // it, and Back out of a deck opened FROM that view would walk straight past it
+  // to wherever you were before. `sels` is what a selection is re-opened from;
+  // `path` is what a folder is. Both are re-merged from the decks as they are
+  // then, never restored from a cached document — see goToNavLocation.
   if (state.folderDeck) {
     return {
       kind: "folder",
+      key: state.folderDeck.key,
       path: state.folderDeck.path,
+      title: state.folderDeck.title,
+      sels: state.folderDeck.members.map((member) => ({ localId: member.localId, deckId: member.deckId })),
       viewMode: state.viewMode,
       current: Number.isFinite(state.current) ? state.current : 0,
       anchor: hint.captureAnchor ? freshReadingAnchor() : null
@@ -126,7 +131,7 @@ export function freshReadingAnchor() {
 export function sameNavLocation(a, b) {
   if (!a || !b || a.kind !== b.kind) return false;
   if (a.kind === "quick-notes") return true;
-  if (a.kind === "folder") return a.path === b.path;
+  if (a.kind === "folder") return a.key === b.key;
   return (a.localId || a.deckId) === (b.localId || b.deckId);
 }
 
@@ -176,8 +181,11 @@ export async function goToNavLocation(location) {
     // Re-merged from the decks as they are NOW, not from a cached document: a
     // deck may have been edited, renamed, added or deleted since, and restoring
     // a stale merge would then write that stale text back over the real decks.
-    if (await openFolderAsDeck(location.path)) restoreDeckPosition(location);
-    else setStatus("Couldn't go back — that folder is no longer available.", "error");
+    const reopened = location.path
+      ? await openFolderAsDeck(location.path)
+      : await openSelectionAsOneDeck(location.sels || []);
+    if (reopened) restoreDeckPosition(location);
+    else setStatus("Couldn't go back — those decks are no longer available.", "error");
     return;
   }
   if (el.quickNotesBoard && !el.quickNotesBoard.hidden) closeQuickNotesBoard();

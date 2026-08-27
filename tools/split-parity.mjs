@@ -1019,14 +1019,28 @@ const ACCEPTED = {
     "at 0 there. Reached by making a highlight or a cloze, so getting it wrong " +
     "moved the reader every time they marked something up.",
 
-  // ── Reading a whole folder as one deck (src/library/folder-deck.js) ──────
-  // A folder open as one document is not a deck and has no record of its own,
-  // so the field below is what stops the ordinary save path inventing one.
+  // ── Several decks read as one document (src/library/folder-deck.js) ──────
+  // A merged document — a whole folder, or a selection ticked in My Decks and
+  // loaded together — is not a deck and has no record of its own, so the field
+  // below is what stops the ordinary save path inventing one.
   state:
-    "One field added: folderDeck, non-null only while a whole folder is open " +
+    "One field added: folderDeck, non-null only while several decks are open " +
     "as one document. It is what routes a save back into the decks the " +
     "document was built from instead of minting a new library entry for the " +
     "merged blob and syncing it to every device.",
+  loadSelectedMyDecks:
+    "Ticking several decks and pressing Load now opens them as ONE document " +
+    "(openSelectionAsOneDeck), the same way a folder is opened, instead of " +
+    "assembling a throwaway deck here. Two things were wrong with that. It " +
+    "set `state.notes = \"\"`, so every selected deck's notes were discarded " +
+    "and the Notes tab of a \"Combined: …\" deck was empty however much " +
+    "writing stood behind it. And it detached from the library — while " +
+    "resolveSaveTarget reads a null localDeckId as \"mint one\" — so the " +
+    "first autosave, which marking one card known is enough to schedule, " +
+    "wrote the whole selection out as a brand-new deck and the next sync " +
+    "pushed it to every device. Merging the notes in without changing that " +
+    "would have made the duplicate a copy of every deck's writing too. " +
+    "Covered by tools/merged-notes-check.mjs.",
   saveDeckToLibrary:
     "Hands over to saveFolderDeck when a folder is the thing open. " +
     "resolveSaveTarget falls through to generateLocalDeckId, so a null " +

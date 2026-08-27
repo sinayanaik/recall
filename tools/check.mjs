@@ -62,6 +62,18 @@
 //                   disagree about it — and one did, the navigation flush
 //                   restating it and dropping the last 400ms of highlighting on
 //                   every PDF deck
+//   merged-notes    when N decks are read as ONE document — a folder opened as
+//                   one deck, or several ticked in My Decks and loaded together
+//                   — does every deck get back exactly what it put in? The
+//                   document is cut apart and written back on every autosave, so
+//                   anything the split cannot place is deleted from a real deck
+//                   400ms later. The half that is invisible until it bites: a
+//                   deck's notes may END with the fenced highlight-notes block,
+//                   the block is DEFINED to be last, so joining five annotated
+//                   decks leaves four of them unfindable — their notes printed
+//                   as prose in the middle of the reading view. Ten note shapes,
+//                   every ordered pair of them, plus placement, id collisions
+//                   between decks, and convergence
 //   image-controls  does every image the renderer renders get a resize grip and
 //                   a delete button — including the ones in a table cell, a
 //                   link, or an HTML block that had none for as long as they
@@ -227,6 +239,13 @@ const checks = [
   // so this can drive it with no browser and no baseline tag — the sync checks
   // below need both, and a check that can only skip verifies nothing.
   ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
+  // The same shape once more, for the document several decks make when they are
+  // read as one: does every deck get back exactly what it put in? The write-back
+  // fires on every autosave over every deck in the selection, so anything the
+  // split cannot place is deleted from a real deck a few hundred milliseconds
+  // later. Pure Node for the same reason as the two above — the format is a
+  // leaf (src/format/merged-notes.js) precisely so this can drive it.
+  ["merged-notes  ", ["node", ["tools/merged-notes-check.mjs"], ROOT]],
   // ...and the other half of the sync: the per-card merge, the tombstones
   // that make a deletion stick, and the timestamps that choose the
   // direction. Those had no runnable check at all — sync-parity and
