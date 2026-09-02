@@ -125,9 +125,14 @@
          Only matters on a cold load — after that the service worker has them
          all, which is why they must also be in sw.js's APP_SHELL. -->
     <!-- modulepreload:start -->
+    <link rel="modulepreload" href="src/backup/archive-format.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/backup.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/broken-images.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/documents.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/history.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/library-state.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/restore.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/zip-lite.js?v=__BUILD__">
     <link rel="modulepreload" href="src/boot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cards/all-cards-edit.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cards/all-cards.js?v=__BUILD__">
@@ -1604,6 +1609,7 @@
                   <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore decks &amp; notes from a backup archive (.zip or .json)"><span>Restore backup</span></button>
                   <input id="restoreFileInput" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden>
                   <button class="md-menu-item" id="myDecksCheckImagesBtn" type="button" data-md-icon="search" title="Check every deck for image references that no longer resolve"><span>Check for broken images</span></button>
+                  <div class="md-menu-group" id="myDecksBackupStatus">Never backed up</div>
                   <div class="md-menu-group">Export all decks</div>
                   <div id="myDecksExportAllMenu">
                     <button class="md-menu-item" type="button" data-export-all="pdf"><span>Cornell PDF</span></button>
@@ -1612,7 +1618,7 @@
                     <button class="md-menu-item" type="button" data-export-all="markdown"><span>Markdown</span></button>
                     <button class="md-menu-item" type="button" data-export-all="json"><span>JSON</span></button>
                     <button class="md-menu-item" type="button" data-export-all="sql"><span>SQL</span></button>
-                    <button class="md-menu-item" type="button" data-export-all="backup"><span>Backup (.zip — all decks + notes)</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="backup" title="Everything: decks, notes, images and the PDFs themselves, in one archive that stands on its own"><span>Backup (.zip — everything)</span></button>
                   </div>
                 </div>
               </div>

@@ -96,7 +96,7 @@ async function checkRefReachable(ref) {
 export async function scanForBrokenImageRefs(onProgress, isCancelled = () => false) {
   const payloads = await collectBackupPayloads();
   const decksByRef = new Map();
-  payloads.forEach((payload) => {
+  payloads.forEach(({ payload }) => {
     const snapshot = deckPayloadSnapshot(payload);
     const title = payload.deck.title || "Untitled deck";
     collectBackupImageRefs(snapshot).forEach((ref) => {

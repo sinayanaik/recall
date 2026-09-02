@@ -1208,6 +1208,67 @@ const ACCEPTED = {
     "a stall before any deck work has an address instead of all four sharing " +
     "one \"Checking the cloud…\".",
 
+  // ── The archive did not contain the library ──────────────────────────────
+  //
+  // Every one of these is a place where a backup was carrying less than the
+  // person taking it believed. They are grouped because they are one report:
+  // nothing in tools/check.mjs had ever driven a backup through to a restore, so
+  // each feature the app grew after this format was written reached it late,
+  // partially, or not at all. tools/backup-check.mjs is the half that keeps it
+  // fixed — including a coverage floor that goes red when a new deck-meta key or
+  // a new IndexedDB store appears that nobody has classified.
+  collectBackupPayloads:
+    "Returns { selection, payload } instead of the payload alone. The local " +
+    "deck id was thrown away here, and it is the key to the two largest things " +
+    "a deck owns: the document store is keyed by it, and so is the reading " +
+    "position. By the time anything downstream wanted them there was nothing " +
+    "left to look them up by, which is a large part of why neither was ever in " +
+    "an archive.",
+  mergeBackupMeta:
+    "Delegates to the sync's own per-key merge instead of restating a weaker " +
+    "one. It was `{ ...backup, ...local }` with two hand-rolled rules bolted " +
+    "on, so local won every other key unconditionally and a PARTIAL loss was " +
+    "unrepairable: fifty of a paper's sixty highlights deleted, a bookmark " +
+    "cleared, a pinned-from anchor dropped — restore the backup that still has " +
+    "them and nothing happens. Only a TOTAL loss of a key could ever be " +
+    "repaired, and the preview did not mention the difference because " +
+    "planRestore asked about quick-note categories and nothing else. " +
+    "mergeDeckMeta already settles this exact bag key by key, in both " +
+    "directions, and document-sync-check.mjs already proves it; a restore is " +
+    "the same question with the archive standing where the cloud stands. The " +
+    "highlights and their tombstones are merged beside it, because the sync " +
+    "settles those alongside the notes body they are written in.",
+  mergeDeckSnapshots:
+    "Routes a paper's notes through mergeDocumentAnnotations instead of taking " +
+    "the body whole. The words written ON a highlight live in a fenced block at " +
+    "the end of the deck's notes, so last-write-wins on that string restored " +
+    "fifty highlight RECORDS whose notes were still gone — a loss invisible in " +
+    "any count the preview showed.",
+  planRestore:
+    "Reports what the meta merge will actually put back, key by key and " +
+    "highlight by highlight, instead of asking quickNoteCategoriesDiffer alone. " +
+    "A restore that would bring back fifty highlights and a bookmark previewed " +
+    "as \"unchanged\" and then, correctly, changed nothing.",
+  readBackupArchive:
+    "Reads manifest.json — which had been WRITTEN since the format existed and " +
+    "read by nothing, so `folders` (the empty ones, whose only record it is) " +
+    "was decorative, the version was informational by its own admission, and a " +
+    "zip that lost half its entries in transit restored the half that was left " +
+    "and reported success. Verifies the zip against it, keeps each deck's " +
+    "archive path (the documents index binds a PDF to its deck by that path, " +
+    "because a library's oldest decks have no id), and reads the papers and the " +
+    "library state alongside. The unstructured-zip fallback now excludes the " +
+    "archive's own index files through one predicate rather than by naming them " +
+    "one at a time — documents/index.json and library.json would both have " +
+    "walked into it as decks with no cards.",
+  exportLibraryBackupZip:
+    "Falls back to the app's own stored-zip writer when JSZip does not load, " +
+    "instead of refusing. JSZip is a CDN script, so a fresh install, a blocked " +
+    "jsdelivr or a plane took the one feature whose entire purpose is surviving " +
+    "a bad day — an app that works offline that cannot give you a copy of your " +
+    "own library offline is not backed up, it is hoping. src/export/zip.js has " +
+    "been writing valid archives with no library since the .docx export.",
+
   // ── Backup: telling a dead link apart from an unreadable one ─────────────
   readBackupAssetBlob:
     "Retries the network fetch, but only for images we host. A CORS refusal " +
@@ -1216,6 +1277,11 @@ const ACCEPTED = {
     "that can never succeed. Also logs the real reason (HTTP status vs " +
     "timeout vs CORS) instead of collapsing every failure into a silent null.",
   packBackupAssets:
+    "Reports `indexBytes` so the caller knows whether an index file was " +
+    "actually written: the no-images shortcut returns before writing one, and " +
+    "the manifest's inventory recorded it regardless — so an archive from a " +
+    "library with no images failed its OWN verification, for a file nobody had " +
+    "ever written. " +
     "Splits `missing` into missingHosted (our uploads whose storage object is " +
     "gone — a real hole) and missingExternal (a third-party link the browser " +
     "is not allowed to read; the note keeps the link). Both are recorded in " +
@@ -1227,6 +1293,17 @@ const ACCEPTED = {
     "was built, compressed and DOWNLOADED, and then the run reported itself " +
     "failed with \"Cannot read properties of undefined (reading 'length')\".",
   runLibraryBackup:
+    "Packs the PAPERS. A PDF deck is the file plus a set of highlights that are " +
+    "coordinates into that exact file, and the file lived only in an IndexedDB " +
+    "store on one device and a PRIVATE bucket in one Supabase project — so a " +
+    "\"full backup\" of a paper-heavy library restored decks and annotations " +
+    "pointing at something only the original owner could serve. That is " +
+    "precisely the failure this module's own header says images were inlined to " +
+    "avoid. Also writes library.json (folders that hold no decks, which folds " +
+    "are open, where you were in each note — a restore used to put every deck " +
+    "back and leave the app looking like a fresh install of it), a v3 manifest " +
+    "with a per-file inventory to verify a restore against, and a record of the " +
+    "backup itself, so the app can finally answer \"when did I last do this\". " +
     "Reports those two counts as two different things. One combined figure " +
     "read as 'N of your images are lost' when most of them were pasted web " +
     "links behaving normally, and only the hosted half is an error condition. " +
@@ -1240,7 +1317,21 @@ const ACCEPTED = {
     "because on a fresh install — the commonest place a restore is run — the " +
     "safety step opened a progress panel, counted to zero and finished on a " +
     "red 'This device has no decks saved yet' that had to be dismissed by " +
-    "hand, in front of the restore it was protecting.",
+    "hand, in front of the restore it was protecting. " +
+    "Now also: writes its decks from a for-of that AWAITS each one. " +
+    "writeDeckSnapshot persists in the background by design, so the old " +
+    "synchronous forEach returned before any of it had been attempted and the " +
+    "summary printed \"Restore complete — 40 decks added\" over writes that had " +
+    "not happened; a device out of space said the same sentence as one that " +
+    "succeeded, with the failures going to console.warn. Of every place in this " +
+    "app that could report a success it did not have, this is the one where " +
+    "being wrong costs the user the data they came to recover. It restores the " +
+    "papers afterwards (the document store is keyed by the local id this loop " +
+    "has only just settled on, which is why a restore used to sever a paper " +
+    "from bytes on its own disk), the empty folders, and the reading positions. " +
+    "That safety backup carries no papers: a restore can only ADD or re-key a " +
+    "document, never remove one, so holding a second copy of every PDF in " +
+    "memory in front of it is how the safety net becomes the crash.",
 
   // ── The sync's silent pre-flight ─────────────────────────────────────────
   // Everything reconcileAllDecks awaits BEFORE it reads the deck list. None of
@@ -1406,7 +1497,30 @@ const ACCEPTED = {
   renderStoragePanel:
     "Shows missingRefs as a Missing tile beside Unused, with a note saying " +
     "that deleting unused images will not help — these are the opposite " +
-    "problem, and that was the first thing people tried.",
+    "problem, and that was the first thing people tried. " +
+    "Carries a Backups card too: every other card on this panel says how much " +
+    "of your work lives in ONE place, and this is the only line that says " +
+    "whether it lives in two. Nothing recorded a backup before, so the app " +
+    "could neither tell you when the last one was nor notice there had never " +
+    "been one.",
+  writeDeckSnapshot:
+    "Records a write IndexedDB refused, in failedDeckWrites. pendingDeckWrites " +
+    "alone cannot tell \"still in flight\" from \"rejected\" — the catch leaves " +
+    "the entry in place either way, deliberately, so the unload journal still " +
+    "carries it — which is right for the journal and wrong for anyone WAITING " +
+    "on the write. A restore is that caller (see deckWriteSettled and " +
+    "applyRestore); without this it would sit out the whole settle timeout to " +
+    "learn something the store already knew.",
+  toggleMyDecksMoreMenu:
+    "Paints the last-backup line when the menu opens. Nothing recorded a " +
+    "backup before this, so the app could not tell you whether your library " +
+    "had ever been copied out of it — a question only the user's Downloads " +
+    "folder could answer, at the moment it mattered least. Written on open " +
+    "rather than kept in sync: it is one line nobody sees until then, read off " +
+    "the deck index this menu is already sitting on top of.",
+  scanForBrokenImageRefs:
+    "Destructures the { selection, payload } collectBackupPayloads now returns " +
+    "— see its entry. No behaviour change here at all.",
 
   // ── Selecting text with a finger ────────────────────────────────────────
   // Reported as "I have to almost fight long press for the text selection to

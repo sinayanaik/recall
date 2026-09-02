@@ -5,6 +5,7 @@
 // reading the whole library first, not inferred.
 
 import { BACKUP_IMAGE_REF_RE, decodeImageRefEntities } from "../backup/backup.js?v=__BUILD__";
+import { backupNudgeDue, describeLastBackup, readLastBackup } from "../backup/history.js?v=__BUILD__";
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
@@ -564,6 +565,14 @@ export function renderStoragePanel(busyText = "") {
   const store = report.storage;
   const device = report.device;
 
+  // When the library was last copied out of here. It belongs on this panel more
+  // than anywhere else: every other card on it says how much of your work lives
+  // in one place, and this is the only line that says whether it lives in two.
+  const lastBackup = readLastBackup();
+  const index = readLocalDeckIndex();
+  const changedAt = index.reduce((newest, meta) => Math.max(newest, Date.parse(meta.updatedAt || "") || 0), 0);
+  const backupDue = backupNudgeDue({ record: lastBackup, changedAt, deckCount: index.length });
+
   const cloudSection = cloud
     ? `<div class="storage-stats">
          ${storageStatTile(cloud.decks, "Decks")}
@@ -651,6 +660,13 @@ export function renderStoragePanel(busyText = "") {
       </div>
       ${device.quota ? `<p class="storage-note">Browser storage used by this site: ${escapeHtml(formatStorageBytes(device.quotaUsed))} of about ${escapeHtml(formatStorageBytes(device.quota))} available${storagePersisted === false ? " (not persisted — the browser may reclaim some of this under disk pressure)" : storagePersisted ? " (persisted)" : ""}.</p>` : ""}
       ${device.queuedImages ? `<p class="storage-note is-warning">${device.queuedImages} image${device.queuedImages === 1 ? "" : "s"} still waiting to upload. Sync before clearing this device, or those images are lost.</p>` : ""}
+    </div>
+
+    <div class="storage-card">
+      <h2>Backups</h2>
+      <p class="storage-sub">A backup <code>.zip</code> is the only copy that does not depend on this device or on your cloud project still being there.</p>
+      <p class="storage-note">${escapeHtml(describeLastBackup())}${lastBackup?.bytes ? ` · ${escapeHtml(formatStorageBytes(lastBackup.bytes))}` : ""}.</p>
+      ${backupDue ? `<p class="storage-note is-warning">Your library has changed since then. My Decks → ⋯ → Export All → Backup (.zip) writes a new one — decks, notes, images and the PDFs themselves.</p>` : ""}
     </div>
 
     <div class="storage-card is-danger">
