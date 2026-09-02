@@ -1,0 +1,77 @@
+/* The tablet band that let go of the window, and the blank half-screen under it
+ *
+ * A separate file rather than an edit to the rules it corrects: styles/09-all-cards.css
+ * is one of the thirteen FROZEN slices tools/split-css.mjs compares byte-for-byte
+ * against pre-modular:styles.css, so anything written since the split lives in its own
+ * numbered file (same reason as styles/48-reading-chrome.css, which says so at length).
+ *
+ * ── What was wrong ────────────────────────────────────────────────────────
+ *
+ * Everywhere else the height chain is one unbroken run from the window down:
+ *
+ *   .app-shell    height: var(--app-height)        styles/02-shell.css:4
+ *   .study-layout height: 100%
+ *   .quiz-panel   height: 100%                     styles/05-study.css:4
+ *
+ * so whatever is on screen — a card, a note, a paper — ends where the window
+ * ends. Between 721px and 1080px, styles/09-all-cards.css:1985 breaks that run:
+ *
+ *   .app-shell    { height: auto; min-height: 100vh; overflow: visible }
+ *   .study-layout { height: auto; overflow: visible }
+ *   .quiz-panel   { height: min(760px, calc(100vh - 86px)); min-height: 520px }
+ *
+ * The panel is given a size of its own inside a shell that is still stretched to
+ * the whole window, so it stops short and the rest of the window is BACKGROUND.
+ * .quiz-panel is overflow:hidden, so the leftover cannot be filled by scrolling
+ * into it either: on a 768x1024 tablet held upright that is ~180px of dead band
+ * under the page, on every one of the three views (Cards, Notes, Document).
+ *
+ * That band was written for one thing — a flashcard, which has a shape of its
+ * own worth keeping on a big portrait screen — and it applies to everything.
+ *
+ * ── What this does ────────────────────────────────────────────────────────
+ *
+ * Puts the run back, for the width band that lost it. Nothing outside
+ * 721–1080px is touched: below it the phone rules already fit the window, above
+ * it the base rules never stopped.
+ *
+ * styles/46-highlight-cycle.css:380-416 is the precedent — the same band, the
+ * same "I'm being shown blank page", found first on a phone held sideways and
+ * fixed there for the split pane alone, with a note that it was deliberately
+ * not carried above 1080px. This carries it to the rest of the band instead of
+ * the rest of the width; that rule keeps its comment, which is the record of
+ * how this was found, and is simply superseded by the wider one here.
+ */
+@media (min-width: 721px) and (max-width: 1080px) {
+  .app-shell {
+    /* --app-mobile-height, not --app-height: the two carry the same app-height
+       setting (src/ui/style-settings.js:582-585) and differ only in unit, and dvh
+       is the right one on a tablet for the reason styles/46-highlight-cycle.css:410
+       gives — vh is the LARGEST viewport height, the one with the browser bar
+       already gone, so sizing against it overflows by the height of the bar for as
+       long as the bar is showing. */
+    height: var(--app-mobile-height);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .study-layout {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* The card-shaped box (760px tall, and never under 520px) goes, and the panel
+     fills its row again. The three extra selectors are not decoration: they match
+     the specificity of the rules they have to beat on the reading surfaces —
+     styles/11-chrome.css:1347 and styles/46-highlight-cycle.css:410 — so a note
+     and a split pane fit the window on the same terms a card does. */
+  .quiz-panel,
+  .quiz-panel.notes-mode,
+  .quiz-panel.notes-mode:has(.view-mode-toggle:not([hidden])),
+  .quiz-panel.notes-mode.is-split,
+  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+    height: 100%;
+    min-height: 0;
+  }
+}
