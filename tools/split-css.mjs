@@ -394,6 +394,14 @@ const POST_SPLIT = {
     "resized before today. Keyed off the property rather than the class so it " +
     "fixes the widths already written into people's notes as well as the ones " +
     "written from now on.",
+  "51-tablet-fit.css":
+    "The window, back in the height chain between 721px and 1080px. That band " +
+    "(styles/09-all-cards.css:1985) gives .quiz-panel a size of its own inside " +
+    "an .app-shell still stretched to the whole window, so on a tablet the page " +
+    "stopped short and the rest of the screen was bare background — ~180px of it " +
+    "held upright, on cards, notes and papers alike. Same failure " +
+    "styles/46-highlight-cycle.css:380 found on a phone on its side and fixed " +
+    "for the split pane alone; this is that fix for the rest of the band.",
 };
 
 // styles.css itself is gone once the split has been applied, so the baseline
