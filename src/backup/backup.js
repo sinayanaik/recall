@@ -8,6 +8,7 @@
 import { mapWithConcurrency, withRetry } from "../cloud/net.js?v=__BUILD__";
 import { fetchableStorageUrl } from "../cloud/storage-urls.js?v=__BUILD__";
 import { deckPayloadSnapshot } from "../cloud/web-decks.js?v=__BUILD__";
+import { BUILD_STAMP, IS_DEV_BUILD } from "../core/build.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { allMyDeckSelections } from "../export/decks.js?v=__BUILD__";
 import { normalizeCardStatus, slugifyFileName } from "../export/markdown.js?v=__BUILD__";
@@ -15,16 +16,18 @@ import { LOCAL_IMAGE_SCHEME, getOutboxImage } from "../images/outbox.js?v=__BUIL
 import { OFFLINE_IMAGE_CACHE } from "../images/upload.js?v=__BUILD__";
 import { FOLDER_SEP, folderSegments, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { myDeckPayload } from "../library/my-decks-selection.js?v=__BUILD__";
-import { noteAnchorsFromMeta } from "../quick-notes/anchors.js?v=__BUILD__";
-import { quickNoteCategoriesFromMeta } from "../quick-notes/categories.js?v=__BUILD__";
+import { mergePdfHighlights } from "../sync/diff.js?v=__BUILD__";
+import { highlightTombstoneMs, mergeDeckMeta, mergeHighlightTombstones } from "../sync/document-sync.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
-
-export const BACKUP_SCHEMA = "recall-backup";
-
-// 2: images are packed into assets/ as real files (see packBackupAssets).
-// Purely informational — nothing reads it to decide how to restore, so v1 and v2
-// archives are both readable by both builds.
-export const BACKUP_VERSION = 2;
+import {
+  BACKUP_ASSET_DIR, BACKUP_ASSET_INDEX, BACKUP_ASSET_SCHEMA, BACKUP_DECK_DIR,
+  BACKUP_LIBRARY_FILE, BACKUP_MANIFEST_FILE, BACKUP_SCHEMA, BACKUP_VERSION,
+  buildBackupManifest
+} from "./archive-format.js?v=__BUILD__";
+import { packBackupDocuments } from "./documents.js?v=__BUILD__";
+import { recordBackup } from "./history.js?v=__BUILD__";
+import { collectBackupLibraryState } from "./library-state.js?v=__BUILD__";
+import { LiteZip } from "./zip-lite.js?v=__BUILD__";
 
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -56,30 +59,73 @@ export function normalizeBackupMeta(raw) {
   return bag && typeof bag === "object" && !Array.isArray(bag) ? bag : {};
 }
 
-// Restore is ADDITIVE, so a deck's meta bag merges rather than replaces: a
-// quick-note category the backup still knows about but this device has lost is
-// added back, every local one is kept, and local wins on a conflicting id (same
-// newest-wins-but-never-delete rule the cards follow). Sibling keys — the pinned
-// -from source anchors above all — are unioned the same way.
+// Restore is ADDITIVE, and this bag is where that used to stop being true.
+//
+// It was `{ ...backup, ...local }` with two hand-rolled rules bolted on, which
+// means local won every other key unconditionally — so a PARTIAL loss was
+// unrepairable. Fifty of a paper's sixty highlights deleted, a bookmark cleared,
+// a pinned-from anchor dropped: restore the backup that still has them and
+// nothing happens, because the local bag is present and therefore wins. Only a
+// TOTAL loss of a key could ever be repaired, and the preview did not even
+// mention the difference — planRestore asked about quick-note categories and
+// nothing else.
+//
+// The sync already settles this exact bag, key by key, in both directions, and
+// has done since document-sync.js was written — its own comment lists what
+// "whoever wrote last wins" costs for pdf, bookmark, quickNoteCategories,
+// noteAnchors, linkIds and readingPosition. A restore is the same question with
+// the archive standing where the cloud stands. So it asks that, rather than
+// keeping a second, weaker set of rules beside it that would drift: two merges
+// of one bag is how this diverged in the first place.
+//
+// `prefer: "local"` keeps today's behaviour for any key nobody has a rule for —
+// a restore must never overwrite work this device has and the archive does not.
+// The highlights and their tombstones are the two mergeDeckMeta leaves to its
+// callers, because the sync merges them alongside the notes body they are
+// written in; here there is no body to settle, so they are merged directly.
 export function mergeBackupMeta(localMeta, backupMeta) {
   const local = normalizeBackupMeta(localMeta);
   const backup = normalizeBackupMeta(backupMeta);
-  const merged = { ...backup, ...local };
+  const merged = mergeDeckMeta(backup, local, { prefer: "local" });
 
-  const localCats = quickNoteCategoriesFromMeta(local);
-  const backupCats = quickNoteCategoriesFromMeta(backup);
-  if (localCats.length || backupCats.length) {
-    const byId = new Map(localCats.map((cat) => [cat.id, cat]));
-    for (const cat of backupCats) if (!byId.has(cat.id)) byId.set(cat.id, cat);
-    merged.quickNoteCategories = Array.from(byId.values());
-  }
-
-  const localAnchors = noteAnchorsFromMeta(local);
-  const backupAnchors = noteAnchorsFromMeta(backup);
-  if (Object.keys(localAnchors).length || Object.keys(backupAnchors).length) {
-    merged.noteAnchors = { ...backupAnchors, ...localAnchors };
+  const localRecords = Array.isArray(local.pdfHighlights) ? local.pdfHighlights : null;
+  const backupRecords = Array.isArray(backup.pdfHighlights) ? backup.pdfHighlights : null;
+  if (localRecords || backupRecords) {
+    // Tombstones from BOTH sides, so a highlight the reader deleted after the
+    // backup was taken stays deleted. A plain union of the live records would
+    // resurrect precisely the ones someone took the trouble to remove.
+    merged.pdfHighlights = mergePdfHighlights(backupRecords, localRecords, {
+      tombstones: highlightTombstoneMs(backup, local)
+    });
+    const tombstones = mergeHighlightTombstones(backup, local);
+    if (tombstones && Object.keys(tombstones).length) merged.deletedHighlightIds = tombstones;
   }
   return merged;
+}
+
+// Which meta keys a restore would actually put back — for the preview, so it can
+// name them instead of the single "note categories restored" it used to manage.
+// Compared as JSON because these are arrays and nested bags rebuilt by a merge,
+// where identical content in a different order is the ordinary case.
+export function restoredMetaKeys(localMeta, mergedMeta) {
+  const local = normalizeBackupMeta(localMeta);
+  const merged = normalizeBackupMeta(mergedMeta);
+  const changed = [];
+  for (const key of Object.keys(merged)) {
+    if (JSON.stringify(merged[key]) !== JSON.stringify(local[key])) changed.push(key);
+  }
+  return changed;
+}
+
+// How many highlights a restore would bring back on one deck. Counted rather
+// than described, because "34 highlights restored" is the sentence someone
+// needs in front of a button they are about to press.
+export function restoredHighlightCount(localMeta, mergedMeta) {
+  const local = normalizeBackupMeta(localMeta);
+  const merged = normalizeBackupMeta(mergedMeta);
+  if (!Array.isArray(merged.pdfHighlights)) return 0;
+  const had = new Set((Array.isArray(local.pdfHighlights) ? local.pdfHighlights : []).map((record) => String(record?.id)));
+  return merged.pdfHighlights.filter((record) => !had.has(String(record?.id))).length;
 }
 
 // Coerce any deck shape we might read from an archive — a per-deck backup file,
@@ -118,13 +164,21 @@ export function normalizeBackupDeck(raw, fallbackCategory = "") {
   };
 }
 
+// Every deck in the library, each paired with the SELECTION it came from.
+//
+// The selection was thrown away before, and the deck payload does not carry a
+// local id — but the local id is the key to two of the largest things a deck
+// owns. The document store is keyed by it (src/documents/pdf-store.js), and so
+// is the reading position (currentDeckKey). Discarding it here is a large part
+// of why neither was ever in an archive: by the time anything downstream wanted
+// them, there was nothing left to look them up by.
 export async function collectBackupPayloads(progress = null) {
   const selections = await allMyDeckSelections();
   const payloads = [];
   for (const sel of selections) {
     if (progress?.cancelled()) break;
     try {
-      payloads.push(await myDeckPayload(sel));
+      payloads.push({ selection: sel, payload: await myDeckPayload(sel) });
     } catch (error) {
       console.warn("Skipping unavailable deck in backup", sel, error);
     }
@@ -160,6 +214,7 @@ export function showBackupProgress(title = "Backing up your library") {
       <div class="epub-preview-stat"><strong data-backup-stat="decks">0</strong><span>Decks</span></div>
       <div class="epub-preview-stat"><strong data-backup-stat="cards">0</strong><span>Cards</span></div>
       <div class="epub-preview-stat"><strong data-backup-stat="images">0</strong><span>Images</span></div>
+      <div class="epub-preview-stat"><strong data-backup-stat="papers">0</strong><span>Papers</span></div>
       <div class="epub-preview-stat"><strong data-backup-stat="size">—</strong><span>Size</span></div>
     </div>
     <p class="backup-progress-note"></p>
@@ -249,11 +304,11 @@ export function formatBackupSize(bytes) {
 // planBackupAssetAdoption). Deck JSON keeps the ORIGINAL urls untouched, which
 // is what keeps a new backup readable by an older build and makes restoring
 // your own backup into your own project a no-op.
-export const BACKUP_ASSET_DIR = "assets";
-
-export const BACKUP_ASSET_INDEX = `${BACKUP_ASSET_DIR}/index.json`;
-
-export const BACKUP_ASSET_SCHEMA = "recall-backup-assets";
+//
+// The paths and the schema names live in ./archive-format.js, with the rest of
+// what the archive IS, so the writer here and the reader in restore.js cannot
+// disagree about them — which they did, on the manifest, for the whole of the
+// format's life.
 
 // Per-image ceiling when the bytes have to come off the network. Generous
 // enough for a slow phone on a big screenshot, short enough that a dead host
@@ -413,8 +468,6 @@ export const BACKUP_ASSET_EXT_BY_TYPE = {
 // reads the folder path back out of the zip when a deck file carries no
 // category of its own (backupCategoryFromArchivePath), so a hand-made zip of
 // deck files in folders lands in exactly those folders here.
-export const BACKUP_DECK_DIR = "decks";
-
 // One path segment, safe in a zip and still readable — slugifyFileName keeps
 // spaces and capitals (unlike storageFolderSlug) and only strips what a
 // filesystem would choke on, so `Science/Chapter 1` survives the round trip
@@ -488,7 +541,11 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
   // archive was built, compressed and downloaded, and then the run threw
   // "Cannot read properties of undefined (reading 'length')" while writing the
   // summary. A backup that had entirely succeeded reported itself as failed.
-  if (!refs.length) return { assets: [], missing: [], missingHosted: [], missingExternal: [] };
+  // `indexBytes: 0` says "no index file was written", which the caller needs in
+  // order not to record one in the manifest's inventory. It did exactly that,
+  // and an archive from a library with no images then failed its own
+  // verification for a file nobody had ever written.
+  if (!refs.length) return { assets: [], missing: [], missingHosted: [], missingExternal: [], indexBytes: 0 };
 
   let done = 0;
   onProgress?.(0, refs.length);
@@ -527,7 +584,7 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
     });
   });
 
-  zip.file(BACKUP_ASSET_INDEX, `${JSON.stringify({
+  const indexJson = `${JSON.stringify({
     schema: BACKUP_ASSET_SCHEMA,
     version: 1,
     note: "Maps each image reference used in decks/**.json to its packed file. "
@@ -543,35 +600,50 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
     // wherever the original host is reachable.
     missingHosted: missing.filter(isSupabaseStorageRef),
     missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref))
-  }, null, 2)}\n`);
+  }, null, 2)}\n`;
+  zip.file(BACKUP_ASSET_INDEX, indexJson);
   return {
     assets,
     missing,
     missingHosted: missing.filter(isSupabaseStorageRef),
-    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref))
+    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref)),
+    indexBytes: indexJson.length
   };
+}
+
+// The zip implementation to build or read an archive with.
+//
+// JSZip when it is there, and src/backup/zip-lite.js when it is not. The old
+// code returned an error instead of that fallback — "Backup needs the zip
+// library, which failed to load." — which meant an install that had never been
+// online, a blocked CDN, or a bad day at jsdelivr took the ONE feature whose
+// entire purpose is surviving a bad day. An app that works offline that cannot
+// give you a copy of your own library offline is not backed up; it is hoping.
+//
+// Both sides go through this, so a backup written by one is read by the other,
+// and neither caller has to know which it got.
+export async function backupZipFactory() {
+  if (await ensureJsZip()) return window.JSZip;
+  return LiteZip;
 }
 
 export async function exportLibraryBackupZip({
   fileBaseName,
   includeImages = true,
+  includeDocuments = true,
   // The panel is the whole point of the click; `showPanel:false` exists for the
   // callers that already own the screen (nothing does today except tests).
   showPanel = true,
   panelTitle = "Backing up your library",
   // The safety backup taken before a restore is a step INSIDE another job, so
   // its panel gets out of the way on success instead of waiting to be dismissed.
-  autoClosePanel = false
+  autoClosePanel = false,
+  // "safety" is recorded but does not move the backup reminder — see recordBackup.
+  kind = "manual"
 } = {}) {
-  // jszip loads on demand now (see ensureJsZip); it is export-only, so it has
-  // no business blocking the app's boot.
-  if (!(await ensureJsZip())) {
-    setStatus("Backup needs the zip library, which failed to load.", "error");
-    return false;
-  }
   const progress = showPanel ? showBackupProgress(panelTitle) : null;
   try {
-    return await runLibraryBackup({ fileBaseName, includeImages, progress, autoClosePanel });
+    return await runLibraryBackup({ fileBaseName, includeImages, includeDocuments, progress, autoClosePanel, kind });
   } catch (error) {
     console.error("Backup failed", error);
     setStatus(`Backup failed: ${error && error.message ? error.message : "unknown error"}`, "error");
@@ -581,7 +653,7 @@ export async function exportLibraryBackupZip({
   }
 }
 
-export async function runLibraryBackup({ fileBaseName, includeImages, progress, autoClosePanel = false }) {
+export async function runLibraryBackup({ fileBaseName, includeImages, includeDocuments = true, progress, autoClosePanel = false, kind = "manual" }) {
   progress?.update("Reading your decks…");
   const payloads = await collectBackupPayloads(progress);
   if (progress?.cancelled()) {
@@ -604,14 +676,23 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
     return false;
   }
 
-  const zip = new JSZip();
+  const Zip = await backupZipFactory();
+  const zip = new Zip();
   const now = new Date();
   const manifestDecks = [];
   const usedPaths = new Set();
   const entries = [];
   const folders = new Set();
+  // Every file written, in write order, with its size — the inventory
+  // verifyBackupArchive checks a zip against on the way back in. Recorded as the
+  // archive is built rather than derived from it afterwards, so it describes
+  // what this run MEANT to write: an entry that never made it into the zip is
+  // exactly the thing worth catching, and a listing taken from the zip itself
+  // could never see it.
+  const contents = [];
+  const record = (file, bytes) => contents.push({ file, bytes });
 
-  payloads.forEach((payload) => {
+  payloads.forEach(({ selection, payload }) => {
     const snapshot = deckPayloadSnapshot(payload);
     const idPart = String(payload.deck.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 16)
       || Math.random().toString(36).slice(2, 8);
@@ -625,11 +706,32 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
     let n = 2;
     while (usedPaths.has(path)) path = `${dir}/${base}-${n++}.json`;
     usedPaths.add(path);
-    zip.file(path, `${JSON.stringify(snapshot, null, 2)}\n`);
-    entries.push({ snapshot, assetFolder: backupAssetFolderPath(payload.deck.title, idPart) });
+    const deckJson = `${JSON.stringify(snapshot, null, 2)}\n`;
+    zip.file(path, deckJson);
+    record(path, deckJson.length);
+    const pathSegment = backupPathSegment(payload.deck.title, "Deck");
+    entries.push({
+      snapshot,
+      assetFolder: backupAssetFolderPath(payload.deck.title, idPart),
+      // Carried for the documents pass, which needs all four: the local id to
+      // read the bytes by, the archive path to bind the file back to this deck
+      // on restore, and the title and id part to name its folder the same way
+      // the asset folder and the Storage folder are named.
+      deckFile: path,
+      localId: selection?.localId || null,
+      deckId: payload.deck.id || null,
+      title: payload.deck.title || "Untitled deck",
+      pathSegment,
+      idPart
+    });
     manifestDecks.push({
       file: path,
       deckId: payload.deck.id || null,
+      // The local id on the device that WROTE the archive. Restoring your own
+      // backup onto your own machine, this is what lets the document bytes
+      // already on disk be re-keyed onto the restored deck instead of unpacked
+      // again — see planBackupDocumentRestore.
+      localId: selection?.localId || null,
       title: payload.deck.title || "Untitled deck",
       category: payload.deck.category || "",
       cardCount: payload.cards.length,
@@ -638,12 +740,12 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
     });
   });
 
-  const cardTotal = payloads.reduce((n, payload) => n + payload.cards.length, 0);
+  const cardTotal = payloads.reduce((n, { payload }) => n + payload.cards.length, 0);
   progress?.setStat("decks", payloads.length);
   progress?.setStat("cards", cardTotal);
 
   const deckLabel = `${payloads.length} deck${payloads.length === 1 ? "" : "s"}`;
-  let packed = { assets: [], missing: [], missingHosted: [], missingExternal: [] };
+  let packed = { assets: [], missing: [], missingHosted: [], missingExternal: [], indexBytes: 0 };
   if (includeImages) {
     progress?.update("Looking for images…");
     packed = await packBackupAssets(zip, entries, (done, total) => {
@@ -659,25 +761,59 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
       return false;
     }
     progress?.setStat("images", packed.assets.length);
+    packed.assets.forEach((asset) => record(asset.file, asset.bytes));
+    if (packed.indexBytes) record(BACKUP_ASSET_INDEX, packed.indexBytes);
   }
 
-  const manifest = {
-    schema: BACKUP_SCHEMA,
-    version: BACKUP_VERSION,
-    app: "recall",
+  // The papers themselves. This is the half a backup never had: the deck JSON
+  // has always carried meta.pdf and every highlight measured against that file,
+  // and the file lived only in an IndexedDB store on one device and a PRIVATE
+  // bucket in one Supabase project. See src/backup/documents.js.
+  let documents = { documents: [], missing: [], bytes: 0 };
+  if (includeDocuments) {
+    progress?.update("Looking for papers…");
+    documents = await packBackupDocuments(zip, entries, (done, total) => {
+      setStatus(`Packing papers ${done}/${total}…`);
+      progress?.update(`Packing papers ${done}/${total}…`, done / Math.max(total, 1));
+      progress?.setStat("papers", done);
+    }, () => Boolean(progress?.cancelled()));
+    if (progress?.cancelled()) {
+      progress.close();
+      setStatus("Backup cancelled.");
+      return false;
+    }
+    progress?.setStat("papers", documents.documents.length);
+    documents.documents.forEach((doc) => record(doc.file, doc.bytes));
+  }
+
+  // Folders that hold no decks, which folds are open, and where you were in each
+  // note. None of it is deck data, all of it is the difference between "my
+  // library is back" and "my app is back" — see src/backup/library-state.js.
+  const libraryState = collectBackupLibraryState();
+  const libraryJson = `${JSON.stringify(libraryState, null, 2)}\n`;
+  zip.file(BACKUP_LIBRARY_FILE, libraryJson);
+  record(BACKUP_LIBRARY_FILE, libraryJson.length);
+
+  const manifest = buildBackupManifest({
     exportedAt: now.toISOString(),
-    deckCount: payloads.length,
-    // Image bytes live in assets/ (see assets/index.json). Counted here so a
-    // restore knows whether an archive predates image packing or genuinely had
-    // no images at all.
-    assetCount: packed.assets.length,
+    // Which build wrote this. Blank in an unstamped checkout, which is honest
+    // rather than a placeholder pretending to be a commit.
+    build: IS_DEV_BUILD ? "" : BUILD_STAMP,
+    decks: manifestDecks,
+    assets: packed.assets,
     assetsMissing: packed.missing.length,
-    // The folder tree these decks came from, so the archive documents the
-    // library's shape even where a folder holds no decks of its own.
-    folders: Array.from(folders).sort(),
-    decks: manifestDecks
-  };
-  zip.file("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+    documents: documents.documents,
+    documentsMissing: documents.missing.length,
+    // The folder tree these decks came from, PLUS the ones holding no decks at
+    // all — a folder is a deck's category prefix, so an empty one exists nowhere
+    // else and this is its only record.
+    folders: [...folders, ...libraryState.folders.known],
+    contents
+  });
+  zip.file(BACKUP_MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`);
+  const paperNote = documents.documents.length
+    ? `${documents.documents.length}${documents.missing.length ? ` (${documents.missing.length} could not be read)` : ""}`
+    : (documents.missing.length ? `0 (${documents.missing.length} could not be read)` : "0");
   zip.file("README.txt", [
     "Recall library backup",
     "",
@@ -685,36 +821,45 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
     `Decks:   ${payloads.length}`,
     `Folders: ${folders.size}`,
     `Images:  ${packed.assets.length}${packed.missing.length ? ` (${packed.missing.length} unreachable, not packed)` : ""}`,
+    `Papers:  ${paperNote}`,
     "",
     "Layout:",
-    "  manifest.json          index of every deck, folder and image",
+    "  manifest.json          index of every deck, folder, image and paper",
     "  decks/<folder>/*.json  one file per deck, inside its own folder path",
     "  assets/<deck>--<id>/   that deck's images, as real files",
     "  assets/index.json      maps each image reference to its packed file",
+    "  documents/<deck>--<id>/ that deck's PDF, exactly as it was imported",
+    "  documents/index.json   which PDF belongs to which deck, and its hash",
+    "  library.json           empty folders, open folds, and your place in each note",
     "",
     "The zip mirrors the library: the folders under decks/ are the folders in",
-    "My Decks, and each deck's images sit in a folder named the same way its",
-    "cloud Storage folder is. Restoring puts all of it back — decks into those",
-    "folders, images into this device's own storage. A hand-made zip works too:",
-    "deck files dropped into folders are restored into folders of those names.",
+    "My Decks, and each deck's images and paper sit in folders named the same",
+    "way its cloud Storage folders are. Restoring puts all of it back — decks",
+    "into those folders, images into this device's own storage, papers into its",
+    "document store. A hand-made zip works too: deck files dropped into folders",
+    "are restored into folders of those names.",
     "",
-    "The images are real files in here, not links — this archive stands on its",
-    "own. Restoring it on another device (or another person's) copies those",
-    "files onto that device and, if it has its own cloud project, re-uploads",
-    "them there on the next sync. Nothing depends on the original owner's",
-    "storage staying reachable.",
+    "The images and the PDFs are real files in here, not links — this archive",
+    "stands on its own. Restoring it on another device (or another person's)",
+    "copies those files onto that device and, if it has its own cloud project,",
+    "re-uploads the images there on the next sync. Nothing depends on the",
+    "original owner's storage staying reachable.",
+    "",
+    "A paper's highlights are coordinates into its exact bytes, so a restore",
+    "refuses a PDF whose hash does not match the deck's own record rather than",
+    "putting every highlight on the wrong words.",
     "",
     "Restore from the app: My Decks -> More -> Restore backup. Restore is not",
     "the same as Import: Import brings ONE source in as notes or cards and lets",
     "you choose where it lands, while Restore merges a whole library archive.",
-    "Restore compares every deck, card and note against your current",
-    "decks and shows a preview before changing anything. It never deletes your",
-    "local-only decks or cards; it only adds what's missing and applies edits",
-    "from this backup.",
+    "Restore checks this archive against manifest.json first, then compares",
+    "every deck, card and note against your current decks and shows a preview",
+    "before changing anything. It never deletes your local-only decks or cards;",
+    "it only adds what's missing and applies edits from this backup.",
     ""
   ].join("\n"));
 
-  setStatus(`Compressing backup (${deckLabel}${packed.assets.length ? `, ${packed.assets.length} images` : ""})…`);
+  setStatus(`Compressing backup (${deckLabel}${packed.assets.length ? `, ${packed.assets.length} images` : ""}${documents.documents.length ? `, ${documents.documents.length} papers` : ""})…`);
   progress?.update("Compressing the archive…", 0);
   const blob = await zip.generateAsync({
     type: "blob",
@@ -728,8 +873,22 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
   const name = `${fileBaseName || `recall-backup-${backupTimestamp(now)}`}.zip`;
   progress?.setStat("size", formatBackupSize(blob.size));
   downloadBlob(blob, name);
+  // Recorded once the file has actually been handed over, so the "last backup"
+  // line and the reminder that reads it can never describe an archive that was
+  // never written.
+  recordBackup({
+    decks: payloads.length,
+    cards: cardTotal,
+    documents: documents.documents.length,
+    bytes: blob.size,
+    name,
+    kind
+  });
   const imageNote = packed.assets.length
     ? ` with ${packed.assets.length} image${packed.assets.length === 1 ? "" : "s"}`
+    : "";
+  const paperNoteShort = documents.documents.length
+    ? ` and ${documents.documents.length} paper${documents.documents.length === 1 ? "" : "s"}`
     : "";
   // Reported as two different things, because they mean two different things
   // and only one is a problem with YOUR library. An external link the browser
@@ -747,11 +906,24 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
   const externalNote = external
     ? ` ${external} web link${plural(external, "", "s")} couldn't be downloaded (the site blocks it) — the link${plural(external, " is", "s are")} still in your notes.`
     : "";
-  setStatus(`Backed up ${deckLabel}${imageNote} to ${name}.${hostedNote}${externalNote}`, hosted ? "error" : "info");
-  if (autoClosePanel && !packed.missing.length) {
+  // A paper that could not be read is its own kind of gap, and a louder one than
+  // a missing figure: the deck restores with every highlight it ever had, and
+  // the document those highlights are positions IN is not in the archive. Named
+  // deck by deck, because "1 paper missing" out of forty is a question about
+  // WHICH, and the answer decides whether this archive is good enough.
+  const missingPapers = documents.missing;
+  const paperWarning = missingPapers.length
+    ? `${missingPapers.length} paper${plural(missingPapers.length, "", "s")} could not be read and ${plural(missingPapers.length, "is", "are")} not in this archive: `
+      + `${missingPapers.slice(0, 5).map((entry) => entry.deckTitle).join(", ")}`
+      + `${missingPapers.length > 5 ? `, and ${missingPapers.length - 5} more` : ""}. `
+      + "Their highlights and notes are here; the files themselves are not, so those decks will ask you to re-attach the PDF."
+    : "";
+  setStatus(`Backed up ${deckLabel}${imageNote}${paperNoteShort} to ${name}.${hostedNote}${externalNote}`, hosted || missingPapers.length ? "error" : "info");
+  if (autoClosePanel && !packed.missing.length && !missingPapers.length) {
     progress?.close();
   } else {
     const warnings = [];
+    if (paperWarning) warnings.push(paperWarning);
     if (hosted) {
       warnings.push(
         `${hosted} image${plural(hosted, "", "s")} you uploaded ${plural(hosted, "is", "are")} no longer in your storage, so ${plural(hosted, "it", "they")} could not be packed. `
@@ -766,6 +938,6 @@ export async function runLibraryBackup({ fileBaseName, includeImages, progress, 
     }
     progress?.finish(`Saved ${name}`, { warning: warnings.join("\n\n") });
   }
-  if (!hosted) showToast("Backup saved", "success");
+  if (!hosted && !missingPapers.length) showToast("Backup saved", "success");
   return true;
 }

@@ -301,9 +301,14 @@ const APP_SHELL = [
   // launch, which is precisely the case this precache exists for. CI compares
   // this list against the files on disk.
   `./src/main.js?v=${STAMP}`,
+  `./src/backup/archive-format.js?v=${STAMP}`,
   `./src/backup/backup.js?v=${STAMP}`,
   `./src/backup/broken-images.js?v=${STAMP}`,
+  `./src/backup/documents.js?v=${STAMP}`,
+  `./src/backup/history.js?v=${STAMP}`,
+  `./src/backup/library-state.js?v=${STAMP}`,
   `./src/backup/restore.js?v=${STAMP}`,
+  `./src/backup/zip-lite.js?v=${STAMP}`,
   `./src/boot.js?v=${STAMP}`,
   `./src/cards/all-cards-edit.js?v=${STAMP}`,
   `./src/cards/all-cards.js?v=${STAMP}`,

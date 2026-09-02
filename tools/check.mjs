@@ -254,6 +254,16 @@ const checks = [
   // drives the real modules in plain Node, like document-sync above, so it
   // cannot skip.
   ["sync-reconcile", ["node", ["tools/sync-reconcile-check.mjs"], ROOT]],
+  // ...and the question nothing in this list had ever asked: is the thing you
+  // pressed Backup for actually IN the file? Every feature the app grew after
+  // the archive was written — papers, highlights, the notes written on them,
+  // folders, reading positions — reached it late, partially or not at all,
+  // because no check compared the two. Half of this one is a backup driven
+  // through to a restore over the app's own stored-zip fallback (so it needs no
+  // JSZip, no browser and no baseline tag, and cannot skip); the other half is a
+  // COVERAGE floor that goes red when a new deck-meta key or a new IndexedDB
+  // store appears that nobody has said belongs in a backup, or does not.
+  ["backup        ", ["node", ["tools/backup-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],

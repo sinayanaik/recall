@@ -107,6 +107,16 @@ export const DECK_WRITE_JOURNAL_KEY = "flashcards_deck_write_journal_v1";
 
 export const pendingDeckWrites = new Map();
 
+// Writes IndexedDB refused, by deck id, holding the version that failed.
+//
+// pendingDeckWrites alone cannot tell "still in flight" from "rejected": the
+// catch below leaves the entry in place either way — deliberately, so the
+// unload journal still carries it and a later boot can replay it. That is right
+// for the journal and wrong for anyone WAITING on the write, who would sit out
+// the whole timeout to learn something the store already knew. See
+// deckWriteSettled.
+export const failedDeckWrites = new Map();
+
 // Whether a journal is currently sitting on disk. Tracked so the journal can be
 // cleared the moment it's provably unnecessary — a stale journal is worse than
 // no journal, because replaying it would resurrect a deck deleted after the
@@ -508,6 +518,11 @@ export async function readDeckSnapshot(id) {
 // for why that's an acceptable trade for keeping ~48 call sites synchronous.
 // Clones before storing too, so a caller that keeps mutating its own
 // `snapshot` variable after calling this can't reach back into the cache.
+// How long deckWriteSettled waits for one deck's transaction before calling it
+// unconfirmed. Generous: a deck body can be a megabyte and a phone under memory
+// pressure is slow, not broken.
+export const DECK_WRITE_SETTLE_TIMEOUT_MS = 15000;
+
 export function writeDeckSnapshot(id, snapshot) {
   if (!id) return;
   const key = String(id);
@@ -523,6 +538,9 @@ export function writeDeckSnapshot(id, snapshot) {
   if (!stored) return;
   deckSnapshotCache.set(key, stored);
   pendingDeckWrites.set(key, stored);
+  // A new attempt clears the previous failure: this write is the one being
+  // waited on now.
+  failedDeckWrites.delete(key);
   // After pendingDeckWrites, so this key is pinned against its own eviction.
   touchDeckSnapshotCache(key);
   deckStoreRequest("readwrite", (store) => store.put({ id: key, snapshot: stored })).then(() => {
@@ -537,7 +555,51 @@ export function writeDeckSnapshot(id, snapshot) {
     announceDeckStoreChange("write", key);
   }).catch((error) => {
     console.warn("Could not persist deck snapshot to IndexedDB", key, error);
+    // Recorded before the quota handler, so a caller waiting on this write is
+    // told immediately rather than after the settle timeout.
+    if (pendingDeckWrites.get(key) === stored) failedDeckWrites.set(key, error);
     handleDeckStorageQuotaError(error);
+  });
+}
+
+// Await one write's commit — for restore, and for restore alone.
+//
+// writeDeckSnapshot is fire-and-forget on purpose (see its comment: ~48 call
+// sites stay synchronous, and an autosave that fails is retried by the next
+// one). Restore is the caller that cannot live with that: it writes a whole
+// library in one pass and then TELLS THE USER what it wrote. It used to do that
+// from a synchronous forEach, so "Restore complete — 40 decks added" was printed
+// over writes that had not been attempted yet, and a device that ran out of
+// space part-way through said exactly the same sentence as one that succeeded —
+// the one moment in this app where a false success costs the data the user came
+// here to get back.
+//
+// A separate function rather than a changed signature, so nothing else acquires
+// the habit: the store's asynchrony is a deliberate property everywhere else.
+export function deckWriteSettled(id) {
+  const key = String(id || "");
+  if (!key || indexedDbUnavailable) return Promise.resolve();
+  const stored = pendingDeckWrites.get(key);
+  // Already committed (or never queued) — pendingDeckWrites is cleared inside
+  // the transaction's own then().
+  if (!stored) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const poll = () => {
+      if (pendingDeckWrites.get(key) !== stored) return resolve();
+      const failure = failedDeckWrites.get(key);
+      if (failure) return reject(failure);
+      // A write that has neither committed nor errored inside this window is a
+      // store that is not answering. Resolving would repeat the original lie;
+      // rejecting reports the deck as unsaved, which is the safe direction —
+      // worst case someone re-runs a restore that was in fact fine, and a
+      // re-run is a no-op by construction.
+      if (Date.now() - started > DECK_WRITE_SETTLE_TIMEOUT_MS) {
+        return reject(new Error("The deck store did not confirm the write"));
+      }
+      setTimeout(poll, 20);
+    };
+    poll();
   });
 }
 
