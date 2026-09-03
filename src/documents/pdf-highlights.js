@@ -24,8 +24,9 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
-import { pdfMarkLayer, pdfPageTextItems } from "./pdf-view.js?v=__BUILD__";
+import { pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
+import { decodeInkStrokes, inkStrokeHitsPoint } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
@@ -197,6 +198,11 @@ export function documentHighlightLabel(record) {
   const text = String(record?.text || "").trim();
   if (text) return text;
   const page = Number(record?.page || record?.quads?.[0]?.page || 0);
+  // Ink has no words by definition — it is handwriting, and this app does not
+  // read handwriting. Named by where it is, exactly as a region round a
+  // photograph is, because a blank row in a list of marks is indistinguishable
+  // from a bug.
+  if (record?.kind === "ink") return page ? `Ink · page ${page}` : "Ink";
   return page ? `Region · page ${page}` : "Region";
 }
 
@@ -676,6 +682,12 @@ export function paintDocumentHighlights(pageNumber) {
   layer.innerHTML = "";
   const frag = document.createDocumentFragment();
   documentHighlights().forEach((record) => {
+    // Ink paints itself, on its own canvas layer (src/documents/pdf-ink.js).
+    // Its quad is a BOUNDING BOX and nothing else — it exists so that the
+    // Highlights pane can crop a thumbnail, the note badge has a corner to sit
+    // on and the export knows where the mark is. Drawn as a mark div it would
+    // be a tinted rectangle over the reader's own handwriting.
+    if (record.kind === "ink") return;
     (record.quads || []).forEach((quad) => {
       if (quad.page !== pageNumber) return;
       const box = quadToPageBox(quad);
@@ -748,6 +760,19 @@ export function documentHighlightAtPoint(clientX, clientY) {
   const y = clientY - box.top;
   const pageNumber = Number(page.dataset.pageNumber);
   for (const record of documentHighlights()) {
+    // An ink mark is tested against the STROKES, not against the box round
+    // them. A margin note and an arrow across a column share one large mostly
+    // empty bounding box, and testing that box would make every tap inside it
+    // open the ink's menu — including the taps meant for the text underneath,
+    // which is most of them. What the reader means by "that one" is the ink
+    // they pointed at.
+    if (record.kind === "ink") {
+      if (Number(record.page) !== pageNumber) continue;
+      const point = inkPagePoint(pageNumber, x, y);
+      if (point && decodeInkStrokes(record.ink?.s).some((stroke) =>
+        inkStrokeHitsPoint(stroke, point.x, point.y, INK_TAP_SLACK))) return record;
+      continue;
+    }
     for (const quad of record.quads || []) {
       if (quad.page !== pageNumber) continue;
       const quadBox = quadToPageBox(quad);
@@ -757,6 +782,72 @@ export function documentHighlightAtPoint(clientX, clientY) {
     }
   }
   return null;
+}
+
+// How near a stroke a tap has to land to count as being on it, in PDF points.
+// Wider than the nib because a finger is wider than a nib, and because the
+// alternative — missing — is a reader tapping their own handwriting repeatedly
+// and nothing happening.
+export const INK_TAP_SLACK = 6;
+
+// A point in the page element's own pixel space, back into PDF user space,
+// where the strokes live. The inverse of what quadToPageBox does for a quad;
+// written here rather than in pdf-selection.js because that module's job is
+// SELECTIONS and this is the only caller that needs a bare point.
+function inkPagePoint(pageNumber, x, y) {
+  const viewport = pdfPageViewport(pageNumber);
+  if (!viewport) return null;
+  const [px, py] = viewport.convertToPdfPoint(x, y);
+  return { x: px, y: py };
+}
+
+// ── Ink marks ──────────────────────────────────────────────────────────────
+//
+// An ink mark is a highlight whose geometry is a set of strokes rather than a
+// run of glyphs — the same argument src/documents/pdf-region.js makes for
+// `kind: "area"`, made once more. It rides in meta.pdfHighlights with
+// everything else, so the sync merge, the tombstone bag, the notes fence, the
+// Highlights pane, the note badges, the make-card path, the export and the
+// backup all carry it with no change: a new field on a record rides along
+// untouched, and `ink` is that field.
+
+export function documentInkMarks(pageNumber = null) {
+  return documentHighlights().filter((record) => record.kind === "ink"
+    && (pageNumber === null || Number(record.page) === Number(pageNumber)));
+}
+
+// Replaces every ink mark on ONE page. The whole page rather than one mark
+// because that is the unit the engine commits in — a stroke can be erased out
+// of the middle of one mark, a lasso can move strokes between two, and asking
+// the caller to work out the difference is asking it to get it wrong.
+//
+// Ink ids are highlight ids, so a mark that has gone gets a tombstone and loses
+// its note exactly as removeDocumentHighlight would have given it — without
+// which a page cleared of ink on one device would fill back up from the cloud
+// on the next sync.
+export function setDocumentInkForPage(pageNumber, records) {
+  const page = Number(pageNumber);
+  const before = documentInkMarks(page);
+  const nextIds = new Set(records.map((record) => record.id));
+  const gone = before.filter((record) => !nextIds.has(record.id));
+  const rest = documentHighlights().filter((record) =>
+    !(record.kind === "ink" && Number(record.page) === page));
+  const next = rest.concat(records);
+
+  state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
+  state.meta.pdfHighlights = next;
+  if (gone.length) {
+    let tombstones = state.meta.deletedHighlightIds;
+    gone.forEach((record) => { tombstones = recordDeletedHighlightId(state.meta, record.id); });
+    state.meta.deletedHighlightIds = tombstones;
+    // Same ordering rule removeDocumentHighlight spells out at length: the
+    // records have to be in place before the prune runs, because the prune asks
+    // meta.pdfHighlights what is still live, and the one commit below is the
+    // only thing that tells the panel anything.
+    const pruned = pruneOrphanHighlightNotes(state.notes || "");
+    if (pruned !== state.notes) state.notes = pruned;
+  }
+  commitDocumentHighlights(next);
 }
 
 // Every highlight any of these client rects touches, in reading order.

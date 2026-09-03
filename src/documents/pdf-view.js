@@ -27,7 +27,9 @@
 // torn back down to its placeholder. Opening a 300-page thesis is therefore one
 // screenful of work, not three hundred.
 
-import { PDF_BADGE_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_BADGE_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
+import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
+import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -1311,6 +1313,13 @@ function stalePageForRelayout(pageNumber, width, height) {
   entry.markLayer?.remove();
   entry.textLayer?.remove();
   entry.el.querySelector(`.${PDF_BADGE_LAYER_CLASS}`)?.remove();
+  // ...and the ink, for the third time the same reason. Its canvas holds a
+  // picture of the page's strokes drawn through the viewport transform of the
+  // scale that has just been left behind; stretched with the page it is ink in
+  // the wrong place, which on a paper someone has annotated reads as their
+  // handwriting having moved. It comes back with the page, repainted from the
+  // strokes themselves at the new scale — see src/documents/pdf-ink.js.
+  entry.el.querySelector(`.${PDF_INK_LAYER_CLASS}`)?.remove();
   entry.markLayer = null;
   entry.textLayer = null;
   canvas.classList.add("is-stale");
@@ -1866,7 +1875,13 @@ export async function renderRegionThumbnail(record) {
   const id = record?.id;
   const quad = (record?.quads || [])[0];
   if (!id || !quad || !openPdf?.doc) return null;
-  if (regionThumbnails.has(id)) return regionThumbnails.get(id);
+  // Keyed by the record's own edit stamp as well as its id. A region never
+  // changes once drawn, which is why the id alone was enough — but an ink mark
+  // grows: every stroke added to the one you are still writing is the same
+  // record with more in it, and a memo keyed on the id alone would show the
+  // first stroke of a margin note for the rest of the session.
+  const key = `${id}:${record.at || 0}`;
+  if (regionThumbnails.has(key)) return regionThumbnails.get(key);
   const token = pdfOpenToken;
   try {
     const page = await openPdf.doc.getPage(quad.page);
@@ -1891,15 +1906,31 @@ export async function renderRegionThumbnail(record) {
     const full = document.createElement("canvas");
     full.width = Math.ceil(viewport.width);
     full.height = Math.ceil(viewport.height);
-    await page.render({ canvasContext: full.getContext("2d", { alpha: false }), viewport }).promise;
+    const fullCtx = full.getContext("2d", { alpha: false });
+    await page.render({ canvasContext: fullCtx, viewport }).promise;
     if (token !== pdfOpenToken) return null;
+
+    // An ink mark's thumbnail has to have the ink IN it. The crop is a picture
+    // of the page underneath, and the page underneath a margin note is blank
+    // paper — so without this the Highlights pane lists handwriting as an empty
+    // white rectangle, which is indistinguishable from a bug.
+    //
+    // Painted through the same viewport transform the strokes are stored
+    // against, before the crop, so it lands wherever the reader put it.
+    if (record.kind === "ink") {
+      const t = viewport.transform;
+      fullCtx.save();
+      fullCtx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
+      paintInkStrokes(fullCtx, decodeInkStrokes(record.ink?.s), { root: null });
+      fullCtx.restore();
+    }
 
     const crop = document.createElement("canvas");
     crop.width = width;
     crop.height = height;
     crop.getContext("2d").drawImage(full, Math.round(left), Math.round(top), width, height, 0, 0, width, height);
     const url = crop.toDataURL("image/jpeg", 0.72);
-    regionThumbnails.set(id, url);
+    regionThumbnails.set(key, url);
     return url;
   } catch (error) {
     console.warn("Could not render a region thumbnail", error);

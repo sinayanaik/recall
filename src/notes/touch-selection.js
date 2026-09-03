@@ -105,7 +105,7 @@
 //      never took it over.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { setTouchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
+import { inkPenIsDown, setTouchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
@@ -2046,6 +2046,21 @@ function onRootTouchStart(event) {
   // rather than by importing isRegionSelectArmed — this module is reached from
   // the notes subtree and pulling the whole document subtree in behind it is
   // the reordering src/notes/selection.js's own document branch warns about.
+  // A stylus is not a finger, and on both Android and iPadOS it arrives here
+  // as one: a pen in contact fires compatibility touch events alongside its
+  // pointer events, so without this a stroke the reader is drawing also starts
+  // a press timer, and 240ms into a sentence a word is selected underneath it.
+  //
+  // Asked of src/core/gesture.js rather than of the DOM, unlike the region
+  // check below it: this module already imports that one, the pen's own
+  // pointerdown handler is the only thing that can know a pen is a pen, and a
+  // flag set there is exact where a guess at touch radius would not be.
+  if (inkPenIsDown()) {
+    cancelPress();
+    dismissPending = false;
+    return;
+  }
+
   if (isDocumentSelectionRoot(root) && el.documentStage?.classList.contains("is-region-select")) {
     cancelPress();
     dismissPending = false;

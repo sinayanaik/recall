@@ -1,0 +1,400 @@
+/* Handwriting: the pens, the layer it is drawn on, the rail, and the sheet.
+
+   A separate file rather than rules added to 01-tokens.css and 37-document-
+   chrome.css, which is where half of this would naturally go: both are among
+   the thirteen FROZEN slices tools/split-css.mjs compares byte-for-byte against
+   pre-modular:styles.css, so anything written since the split lives in its own
+   numbered file. Same reason styles/51-tablet-fit.css and styles/48-reading-
+   chrome.css exist, and they both say so at length.
+
+   That is why the pen palette is defined here and not beside the ten themes it
+   belongs with. It is the one thing in this file that is a token rather than a
+   rule, and it is here under protest.
+
+   ── The pens ───────────────────────────────────────────────────────────────
+
+   Ink is opaque and sits ON TOP, which is the whole reason it does not use the
+   four highlight colours: those are `color-mix(… , transparent)` tints designed
+   to sit UNDER text and read correctly on any surface, and a 30%-alpha yellow
+   makes weak, unreadable handwriting as a 2pt line.
+
+   So each pen is a real colour, stated twice: once for a dark page and once for
+   a light one. Seven of this app's ten themes are dark, so the dark set is the
+   base and the three light themes override it — which also means a theme added
+   later gets a working pen without touching this file, and gets the right one
+   if it is dark.
+
+   `--ink-pen-ink` is deliberately not called black. On a dark theme it resolves
+   to a near-white, and a token named for a colour it is not is how the next
+   person fixes the wrong thing. */
+:root {
+  --ink-pen-ink: #e8eaed;
+  --ink-pen-red: #f87171;
+  --ink-pen-blue: #7aa7ff;
+  --ink-pen-green: #4ade80;
+  --ink-pen-amber: #fbbf24;
+}
+
+:root[data-theme="light-ink"],
+:root[data-theme="light-paper"],
+:root[data-theme="light-snow"] {
+  --ink-pen-ink: #16181d;
+  --ink-pen-red: #dc2626;
+  --ink-pen-blue: #2563eb;
+  --ink-pen-green: #15803d;
+  --ink-pen-amber: #d97706;
+}
+
+/* ── The layer on a PDF page ───────────────────────────────────────────────
+
+   z-index is NOT optional here, and the reason is written out in full at
+   styles/37-document-chrome.css:592-612 for the badge layer, which learned it
+   the hard way. Dark-page mode puts `filter: invert(1)` on .pdf-canvas, and a
+   filtered element paints as a z-index:0 stacking context IN TREE ORDER with
+   its positioned siblings — so an unindexed layer appended after an opaque
+   canvas is simply covered. 2 puts ink above the marks and below the badges,
+   which is where it belongs: over the highlights it was drawn on top of, under
+   the numbers you press.
+
+   pointer-events: none, always. The text layer above it has to keep receiving
+   every pointer event or selection stops working over your own handwriting; the
+   pen is routed by src/documents/pdf-ink.js from a capture-phase listener on
+   the scroller, not by this layer being hit. */
+.pdf-ink-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.pdf-ink-layer .pdf-ink-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  /* Ink keeps its own colours on an inverted page. A reader's red pen going
+     cyan when they turn the paper dark is not a dark mode, it is a bug — and
+     the highlights beside it already make exactly this promise. */
+  filter: none;
+}
+
+/* ── The rail ──────────────────────────────────────────────────────────────
+
+   Over the page, opposite the pager, and quiet until reached for: the same
+   treatment .document-pager gets, because they are the same kind of thing and
+   two floating panels with different manners read as two different apps. */
+.document-ink-rail {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 28px);
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+  opacity: 0.55;
+  transition: opacity 0.18s linear;
+}
+
+.document-ink-rail:hover,
+.document-ink-rail:focus-within,
+.document-ink-rail:has(.ink-rail-swatch[aria-pressed="true"]:focus-visible) {
+  opacity: 1;
+}
+
+/* A stylus in contact anywhere on the stage. The rail is 14px from the corner
+   and a hand writing near it would otherwise sit under a panel at full opacity;
+   this gets it out of the way for as long as the pen is down. */
+.document-stage.is-inking .document-ink-rail {
+  opacity: 0.2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .document-ink-rail {
+    transition: none;
+  }
+}
+
+#documentStage.has-no-document .document-ink-rail {
+  display: none;
+}
+
+.ink-rail-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.ink-rail-group + .ink-rail-group {
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+
+.ink-rail-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.ink-rail-btn[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.ink-rail-btn[disabled] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ink-rail-btn.is-danger[aria-pressed="false"]:hover {
+  color: var(--ink-pen-red);
+}
+
+/* A swatch is the colour, not a button wearing a label. --ink-swatch is set
+   per button from the pen's own custom property (src/ui/ink-rail.js), so the
+   chip is the colour the ink will actually be on the theme that is on. */
+.ink-rail-swatch {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--ink-swatch, var(--text));
+  cursor: pointer;
+  /* A 24px chip is under the 44px a fingertip wants. The chip stays small
+     because five of them plus the rest has to fit a phone; the TARGET is grown
+     instead, which costs no pixels on screen. */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 22%, transparent);
+  position: relative;
+}
+
+.ink-rail-swatch::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+
+.ink-rail-swatch[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* ...and a nib is drawn AS a nib, at the size the pen will be. "1.2 / 2 / 3.4 /
+   6" is a list of numbers nobody can picture. --ink-nib is set per button. */
+.ink-rail-nib {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+}
+
+.ink-rail-nib::before {
+  content: "";
+  width: var(--ink-nib, 8px);
+  height: var(--ink-nib, 8px);
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.ink-rail-nib::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+
+.ink-rail-nib[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ── The ✎ on a drawing in a note ──────────────────────────────────────────
+
+   Beside the 🗑 the same shell already carries, and sized with it — see
+   styles/40-image-controls.css for the tiny-image case both of them shrink
+   for. */
+.notes-img-edit-btn {
+  position: absolute;
+  top: 6px;
+  right: 34px;
+  width: 22px;
+  height: 22px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: var(--text);
+  font-size: 0.76rem;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 3;
+}
+
+.diagram-shell:hover > .notes-img-edit-btn,
+.diagram-shell:focus-within > .notes-img-edit-btn {
+  display: inline-flex;
+}
+
+/* A touch device has no hover to reveal anything with — the same rule the
+   delete button and the grip already follow. */
+@media (hover: none), (pointer: coarse) {
+  .diagram-shell > .notes-img-edit-btn {
+    display: inline-flex;
+  }
+}
+
+.diagram-shell.is-tiny-image .notes-img-edit-btn {
+  width: 20px;
+  height: 20px;
+  right: 30px;
+  font-size: 0.68rem;
+}
+
+/* ── The sheet ─────────────────────────────────────────────────────────────
+
+   A full-surface overlay rather than a box in the middle of one: drawing wants
+   the screen, and on a phone a dialog with a 200px drawing area inside it is
+   not a thing anyone can write in. */
+/* 600 is chosen against the app's own stack rather than picked. The toolbar is
+   500 (styles/03-toolbar.css) and the quiz panel 499, the panels and modals run
+   200-400, so anything below 500 would put a full-surface drawing sheet
+   UNDERNEATH the top bar — which is how a modal comes to have a row of buttons
+   floating over the middle of it.
+
+   Above that, and deliberately below two things: the sign-in overlay at 9999,
+   because a session that lapses mid-drawing has to be able to interrupt, and
+   the toasts at 99999, because "saved here — uploads when you're back online"
+   is the one message a drawing made offline depends on being able to show. */
+.ink-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.ink-sheet[hidden] {
+  display: none;
+}
+
+.ink-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.ink-sheet-title {
+  flex: 1;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ink-sheet-done {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.ink-sheet-rail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2, var(--panel));
+}
+
+.ink-sheet-stage {
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+  display: flex;
+}
+
+/* The paper. A faint grid rather than ruled lines or nothing: lines suit
+   writing and suit a diagram badly, blank suits a diagram and gives handwriting
+   nothing to sit straight on, and a grid is the one that does not get in the
+   way of either. It is drawn in the text colour at very low alpha so it works
+   on all ten themes without a second definition. */
+.ink-sheet-host {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--card, var(--panel));
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  overflow: hidden;
+  /* The sheet's whole purpose is drawing, so nothing here scrolls, pinches or
+     selects — and unlike the paper, this one CAN say so up front, because there
+     is nothing underneath that a gesture would otherwise have been for. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: crosshair;
+}
+
+.ink-sheet-host .ink-sheet-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+@media (max-width: 720px) {
+  .ink-sheet-rail {
+    padding: 6px 8px;
+    gap: 4px;
+  }
+
+  .ink-sheet-stage {
+    padding: 6px;
+  }
+
+  /* Five pens, four nibs, three tools and three steps is more than a phone's
+     width. Wrapping is right — a horizontal scroller would hide controls
+     behind a gesture, which is the fault the selection bar was rebuilt to
+     stop. */
+  .document-ink-rail {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    max-width: none;
+    justify-content: center;
+  }
+}

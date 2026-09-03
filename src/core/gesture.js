@@ -76,3 +76,36 @@ export function touchGestureHoldsSurface() {
 export function onTouchGestureRelease(listener) {
   if (typeof listener === "function") releaseListeners.add(listener);
 }
+
+// ── Is a pen on the glass? ─────────────────────────────────────────────────
+//
+// A second flag rather than a second meaning for the one above, because the two
+// answer different questions and one caller reads each: touchGestureHoldsSurface
+// means "a finger is part-way through making a selection", and this means "a
+// stylus is in contact and everything else should keep out of its way".
+//
+// It lives here for the same reason that one does, and for one more that is
+// specific to it. A stylus on Android and an Apple Pencil on iPadOS both fire
+// COMPATIBILITY TOUCH EVENTS alongside their pointer events, so the touch
+// selection controller sees a pen as a finger and starts its press timer under
+// a stroke the reader is drawing. The controller cannot tell the two apart from
+// a TouchEvent: Safari has Touch.touchType, Android has nothing standard, and
+// radius and force are not reliable enough to bet a reading surface on.
+//
+// What IS reliable is that the pen's own pointerdown handler knows perfectly
+// well that it is a pen. So it says so here, and the controller asks. That is a
+// fact one side has and the other needs, which is what this module is for.
+//
+// Deliberately set for EVERY pen contact and not only for strokes — including
+// the press that turns out to be a tap. A tap is over in under 150ms and
+// nothing is lost by the controller ignoring it; a press timer allowed to run
+// under a pen that has not yet decided is a selection appearing mid-stroke.
+let penIsDown = false;
+
+export function setInkPenDown(active) {
+  penIsDown = Boolean(active);
+}
+
+export function inkPenIsDown() {
+  return penIsDown;
+}

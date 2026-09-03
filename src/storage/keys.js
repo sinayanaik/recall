@@ -122,3 +122,7 @@ export function clearMissingDeckWatch(deckId) {
     writeMissingDeckWatch(map);
   }
 }
+
+// The pen, the nib and the tool the ink rail was last left on. Per device —
+// see src/storage/ink-prefs.js for why this is not in the deck's meta bag.
+export const inkPreferencesKey = "recall:ink-prefs-v1";

@@ -84,9 +84,12 @@ export const BACKED_UP_META_KEYS = {
     + "packed under documents/ (see BACKUP_DOCUMENT_DIR), which is what makes a "
     + "restored paper readable when the project it came from is gone.",
   pdfHighlights:
-    "Every highlight on the paper, as quads in PDF user space. Merged on "
-    + "restore by mergeDocumentAnnotations rather than taken wholesale, so a "
-    + "backup can repair a PARTIAL loss instead of only a total one.",
+    "Every highlight on the paper, as quads in PDF user space — and every mark "
+    + "made with a pen, which is a record in this same array with kind:\"ink\" "
+    + "and its strokes encoded on it, so handwriting is carried by this entry "
+    + "rather than by one of its own. Merged on restore by "
+    + "mergeDocumentAnnotations rather than taken wholesale, so a backup can "
+    + "repair a PARTIAL loss instead of only a total one.",
   deletedHighlightIds:
     "Highlight tombstones. Carried and unioned on restore precisely so a "
     + "restore cannot resurrect a highlight the reader deleted on purpose — a "

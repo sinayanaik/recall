@@ -42,3 +42,15 @@ export const defaultDeckCategory = "Uncategorized";
 // layers. A constant in this file, which imports nothing, is how the two say
 // the same word without closing a cycle through the document surface.
 export const PDF_BADGE_LAYER_CLASS = "pdf-badge-layer";
+
+// The layer a PDF page's ink is drawn into.
+//
+// Here for exactly the reason PDF_BADGE_LAYER_CLASS is, one line above: two
+// modules have to name it and they cannot import each other. src/documents/
+// pdf-ink.js reaches pdf-view.js for the page element and the viewport, and
+// pdf-view.js has to DROP this layer on a relayout — ink is painted through the
+// live viewport transform, so at a new scale the canvas holds a picture of the
+// page at the old one, stretched. Missing for the few frames a re-render takes
+// is right; wrong is not, and that is the rule the mark, text and badge layers
+// beside it already follow.
+export const PDF_INK_LAYER_CLASS = "pdf-ink-layer";

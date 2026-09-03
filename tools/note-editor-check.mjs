@@ -573,6 +573,99 @@ check("...and formatting there is written into that highlight's note",
 check("...with cloze still withheld, because a note is not a card face",
   !pillRendered.cloze, String(pillRendered.cloze));
 
+  // ── The drawing sheet ────────────────────────────────────────────────────
+  //
+  // Handwriting in a note is a picture: you draw in a sheet, and what you drew
+  // lands in the markdown where the caret was as an ordinary `![](…)`. Driven
+  // here rather than in tools/pdf-preview-check.mjs (which owns the pen ON a
+  // paper) because this is a NOTE editor, and because the two are separate
+  // engines that could drift.
+  //
+  // The stroke is a real stylus through Chrome's own input pipeline, for the
+  // same reason every other press in this file is real: the sheet reads
+  // pointerType off a trusted event.
+  const sheet = await page.evaluate(`async () => {
+    // The app is not signed in in this harness, so its own overlay covers the
+    // screen. A reader drawing in a note has a session.
+    document.querySelectorAll(".login-overlay").forEach((n) => n.remove());
+    const mod = await import("/src/notes/ink-sheet.js?v=__BUILD__");
+    const ta = document.querySelector("#notesEdit");
+    if (!ta) return { error: "no notes textarea" };
+    ta.hidden = false;
+    ta.value = "before-after";
+    ta.selectionStart = ta.selectionEnd = 6;
+    mod.insertInkDrawing(ta, 6);
+    await new Promise((r) => setTimeout(r, 200));
+    const el = document.querySelector(".ink-sheet");
+    const host = document.querySelector(".ink-sheet-host");
+    if (!el || el.hidden || !host) return { error: "the sheet did not open" };
+    const box = host.getBoundingClientRect();
+    const at = document.elementFromPoint(box.left + (box.width / 2), box.top + (box.height / 2));
+    return {
+      open: mod.isInkSheetOpen(),
+      pens: el.querySelectorAll("[data-ink-pen]").length,
+      nibs: el.querySelectorAll("[data-ink-width]").length,
+      tools: el.querySelectorAll("[data-ink-tool]").length,
+      // The sheet must be ON TOP. The app's toolbar is z-index 500 and its
+      // panels run to 400; a sheet below them is a drawing surface with a row
+      // of the app's buttons floating in the middle of it, and — as this check
+      // found the first time it ran — one that never receives a stroke at all.
+      onTop: Boolean(at && at.closest(".ink-sheet")),
+      x: Math.round(box.left + (box.width / 2)),
+      y: Math.round(box.top + (box.height / 2))
+    };
+  }`);
+
+  if (sheet.error) {
+    check("the ✎ opens a drawing sheet", false, sheet.error);
+  } else {
+    check("the ✎ opens a drawing sheet", sheet.open, `open=${sheet.open}`);
+    check("...with the pens, the nibs and the three tools on it",
+      sheet.pens === 5 && sheet.nibs === 4 && sheet.tools === 3,
+      `${sheet.pens} pen(s), ${sheet.nibs} nib(s), ${sheet.tools} tool(s)`);
+    check("...above everything else on the screen", sheet.onTop, `topmost=${sheet.onTop}`);
+
+    const stroke = [];
+    for (let i = 0; i <= 20; i += 1) {
+      stroke.push([sheet.x - 100 + (i * 10), sheet.y + Math.round(Math.sin(i / 3) * 30), 0.5 + (0.3 * Math.sin(i / 5))]);
+    }
+    await page.penStroke(stroke);
+
+    const drawn = await page.evaluate(`() => {
+      const canvas = document.querySelector(".ink-sheet-host canvas");
+      if (!canvas) return { painted: 0 };
+      const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let painted = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 8) painted += 1;
+      return { painted };
+    }`);
+    check("...and a stylus draws on it", drawn.painted > 100, `${drawn.painted} inked pixel(s)`);
+
+    const done = await page.evaluate(`async () => {
+      const ta = document.querySelector("#notesEdit");
+      const before = ta.value;
+      document.querySelector(".ink-sheet-done").click();
+      // Read SYNCHRONOUSLY. insertPreparedImageUpload puts its placeholder in
+      // before its first await, and with no session behind this harness the
+      // upload then fails and withdraws it within a few milliseconds — so
+      // anything later sees the note exactly as it started and proves nothing.
+      const straightAway = ta.value;
+      await new Promise((r) => setTimeout(r, 400));
+      return {
+        inserted: straightAway !== before,
+        placedAtCaret: straightAway.startsWith("before") && straightAway.endsWith("-after"),
+        isAnImage: straightAway.includes("![") && straightAway.includes("]("),
+        closed: document.querySelector(".ink-sheet").hidden,
+        withdrawn: ta.value === before
+      };
+    }`);
+    check("Done puts the drawing into the note", done.inserted && done.isAnImage, `inserted=${done.inserted}, image=${done.isAnImage}`);
+    check("...exactly where the caret was", done.placedAtCaret, `placed=${done.placedAtCaret}`);
+    check("...and closes the sheet", done.closed, `closed=${done.closed}`);
+    check("...while an upload that cannot happen takes its placeholder back out",
+      done.withdrawn, `withdrawn=${done.withdrawn}`);
+  }
+
 } finally {
   await client.close?.();
   launched.proc?.kill();

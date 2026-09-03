@@ -245,13 +245,18 @@ export function scanHighlightGroups(source, noteSource = source) {
 export function addRegionPreview(body, record) {
   const label = document.createElement("span");
   label.className = "highlight-region-label";
-  // Always "Region · page N", never the record's text: whatever words the box
-  // happened to cover are already the entry's own quote directly below this, and
-  // saying them twice makes it read as two highlights.
+  // Always "Region · page N" (or "Ink · page N"), never the record's text:
+  // whatever words the box happened to cover are already the entry's own quote
+  // directly below this, and saying them twice makes it read as two highlights.
+  // Ink never has words at all, so for ink the label is the only naming there
+  // is until the thumbnail arrives.
   // The same glyph the region-select button in the control row wears, and from
   // the same Unicode block as the Cards tab's ▢ — a dotted-square character
   // would have read better and is not reliably drawn.
-  label.textContent = `▣ Region · page ${record.page}`;
+  const isInk = record.kind === "ink";
+  label.textContent = isInk
+    ? `✎ Ink · page ${record.page}`
+    : `▣ Region · page ${record.page}`;
   body.appendChild(label);
   if (!currentPdfDocument()) return;
   renderRegionThumbnail(record).then((url) => {
@@ -259,7 +264,7 @@ export function addRegionPreview(body, record) {
     const img = document.createElement("img");
     img.className = "highlight-region-thumb";
     img.src = url;
-    img.alt = `Region highlighted on page ${record.page}`;
+    img.alt = isInk ? `Ink written on page ${record.page}` : `Region highlighted on page ${record.page}`;
     label.replaceWith(img);
   }).catch(() => { /* the label stays, which is a correct answer on its own */ });
 }
@@ -397,7 +402,10 @@ export function collectHighlightEntries() {
         // 0 for a highlight with nothing written about it, which is the same
         // "no number" the page shows.
         n: numbers.get(record.id) || 0,
-        region: record.kind === "area" ? record : null,
+        // Ink takes the same preview a region does. Both are marks with no
+        // words in them, and for both the only useful thing a list can show is
+        // a picture of what is actually there.
+        region: (record.kind === "area" || record.kind === "ink") ? record : null,
         // Rendered as plain text: it came out of a PDF, so there is no markdown
         // in it to interpret, and a paper containing "*" or "_" must not turn
         // half a sentence italic here.
