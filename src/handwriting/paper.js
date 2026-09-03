@@ -43,7 +43,23 @@ export function handwritingPageElement(scroller, id) {
 // paper's own background (the grid, the rule) is painted under the canvases
 // rather than by them — a canvas would have to redraw it on every repaint and at
 // device resolution.
-function buildPageElement(page) {
+function pageControlButton(action, label, glyph, danger = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `hw-page-btn${danger ? " is-danger" : ""}`;
+  button.dataset.hwPageAction = action;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = glyph;
+  return button;
+}
+
+// `controls` is false for the drawing sheet and true for the notebook, and the
+// difference is not cosmetic: a sheet's pages are transient — they exist to be
+// drawn on and then become pictures in a note — so there is nothing to reorder
+// and "tear out page 2" means nothing when the whole stack is discarded on
+// Cancel. A notebook's pages are the document.
+function buildPageElement(page, controls) {
   const el = document.createElement("div");
   el.className = "hw-page";
   el.dataset.hwPage = page.id;
@@ -54,6 +70,16 @@ function buildPageElement(page) {
   number.className = "hw-page-number";
   number.setAttribute("aria-hidden", "true");
   el.append(ink, number);
+  if (controls) {
+    const bar = document.createElement("div");
+    bar.className = "hw-page-controls";
+    bar.append(
+      pageControlButton("up", "Move this page up", "&#8593;"),
+      pageControlButton("down", "Move this page down", "&#8595;"),
+      pageControlButton("delete", "Tear out this page", "&#128465;", true)
+    );
+    el.appendChild(bar);
+  }
   return el;
 }
 
@@ -62,7 +88,8 @@ export function createHandwritingPaper({
   getPages,
   onCommit = () => {},
   onSelectionChange = () => {},
-  onToolChange = () => {}
+  onToolChange = () => {},
+  pageControls = false
 }) {
   let zoom = 1;
   let scale = 1;
@@ -139,7 +166,7 @@ export function createHandwritingPaper({
     pages.forEach((page, index) => {
       let el = handwritingPageElement(scroller, page.id);
       if (!el) {
-        el = buildPageElement(page);
+        el = buildPageElement(page, pageControls);
         scroller.insertBefore(el, previous ? previous.nextSibling : scroller.firstChild);
       } else if (previous ? el.previousElementSibling !== previous : el !== scroller.firstChild) {
         scroller.insertBefore(el, previous ? previous.nextSibling : scroller.firstChild);

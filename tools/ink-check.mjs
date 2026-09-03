@@ -235,6 +235,28 @@ try {
     return true;
   });
 
+  must("...and a notebook of ordinary handwriting stays inside the meta bag", () => {
+    // The other end of the same question, and the one the Handwritten Notes
+    // section raises: a paper's ink is bounded by the paper, but a notebook can
+    // be added to forever, and every page of it rides in the SAME JSONB column,
+    // re-sent whole on every push.
+    //
+    // Thirty pages of ordinary writing rather than one saturated page: about a
+    // hundred and twenty strokes a page is a page of prose, not a page covered
+    // edge to edge. If this ever fails, the answer is not a bigger ceiling — it
+    // is that pages have to stop living in `meta`.
+    const rand = seeded(29);
+    const pages = [];
+    for (let page = 0; page < 30; page += 1) {
+      const strokes = [];
+      for (let i = 0; i < 120; i += 1) strokes.push(handwritingStroke(rand, { samples: 10 + Math.floor(rand() * 30) }));
+      pages.push({ id: `hp-${page}`, order: page, w: 794, h: 1123, paper: "grid", ink: encodeInkStrokes(strokes), at: 1 });
+    }
+    const bytes = JSON.stringify({ meta: { pages } }).length;
+    if (bytes > 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB for a 30-page notebook — too much to re-send on every sync`;
+    return true;
+  });
+
   must("a version this build does not know decodes to nothing", () => {
     const real = encodeInkStroke({ w: 2, c: "ink", p: [1, 2, 0.5, 3, 4, 0.5] });
     const future = real.replace(/^\d+:/, `${INK_FORMAT_VERSION + 1}:`);

@@ -194,7 +194,9 @@
     <link rel="modulepreload" href="src/format/ink-colors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-strokes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-svg.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/handwriting/board.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/pages.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/handwriting/text-boxes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/paper.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
@@ -524,6 +526,12 @@
                drawing in a different section. -->
           <button class="tool-button" id="allCardsBtn" type="button">&#128450; Browse All Cards</button>
           <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all decks, sorted by subject">&#128209; Quick Notes</button>
+          <!-- Handwriting is a surface any deck can have, not a kind of deck you
+               have to decide on up front: a notebook beside your cards and your
+               note is the ordinary case. Pressing this on a deck with no pages
+               yet starts it with one, because there is no state of this surface
+               that is not a page. -->
+          <button class="tool-button" id="handwritingBtn" type="button" title="Write by hand on blank pages, with markdown text boxes you can drag">&#9998; Handwritten Notes</button>
           <!-- No "Study Notes" entry here. It ran setViewMode("notes") — byte for
                byte what the always-visible Cards / Notes toggle on
                the quiz panel already does — so the drawer held a second 📝 that
@@ -1476,6 +1484,61 @@
           </div>
         </div>
         <div class="all-cards-list" id="allCardsList"></div>
+      </div>
+    </section>
+
+    <!-- ── Handwritten notes ────────────────────────────────────────────────
+         A notebook is a DECK — its pages live in that deck's meta.pages, which
+         is why there is no new store, no new table and no new sync path behind
+         this panel. See src/handwriting/board.js.
+
+         Built like the Quick Notes board above it: a `hidden` <section>, one
+         `-body` the module fills, every interactive element carrying an id or a
+         data- attribute, and no inline handlers. The pen's rail is filled in by
+         src/handwriting/rail.js rather than written here, for the reason that
+         file gives: the pens and the nibs come from the palette leaf, and a
+         second copy of that list in markup is a second place for it to be
+         wrong. -->
+    <section class="hw-board" id="handwritingBoard" hidden aria-label="Handwritten notes">
+      <div class="hw-shell">
+        <div class="hw-head">
+          <div class="hw-head-titles">
+            <h1 id="hwTitle">Handwritten notes</h1>
+            <p id="hwSummary">No pages yet</p>
+          </div>
+          <div class="hw-head-actions">
+            <button class="tool-button" type="button" data-hw-action="add-box" title="Add a markdown text box to the page you are looking at">&#43; Text box</button>
+            <button class="tool-button" type="button" data-hw-action="add-page" title="Add a page at the end of the notebook">&#43; Page</button>
+            <button class="icon-button" type="button" data-hw-action="close" aria-label="Close handwritten notes">&#215;</button>
+          </div>
+        </div>
+        <div class="hw-rail" id="hwRail" role="toolbar" aria-label="Pen">
+          <!-- The colours and the nibs are appended here at first open. -->
+          <div class="ink-rail-group" role="group" aria-label="Tool">
+            <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen" aria-label="Pen">&#9998;</button>
+            <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it" aria-label="Eraser">&#9003;</button>
+            <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, resize or delete them" aria-label="Lasso">&#9711;</button>
+          </div>
+          <div class="ink-rail-group" role="group" aria-label="Undo">
+            <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo" aria-label="Undo">&#8630;</button>
+            <button class="tool-button ink-rail-btn" type="button" data-ink-action="redo" title="Redo" aria-label="Redo">&#8631;</button>
+            <button class="tool-button ink-rail-btn is-danger" type="button" data-ink-action="delete" title="Delete the selected strokes" aria-label="Delete the selected strokes">&#128465;</button>
+          </div>
+          <!-- Three papers rather than one: ruled suits writing and suits a
+               diagram badly, blank is the other way round, and a grid is the one
+               that gets in neither's way. It applies to the whole notebook —
+               per-page paper is a setting nobody has asked for. -->
+          <div class="ink-rail-group" role="group" aria-label="Paper">
+            <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="grid" aria-pressed="true" title="Grid paper" aria-label="Grid paper">&#9638;</button>
+            <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="ruled" aria-pressed="false" title="Ruled paper" aria-label="Ruled paper">&#9776;</button>
+            <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="blank" aria-pressed="false" title="Blank paper" aria-label="Blank paper">&#9633;</button>
+          </div>
+          <div class="ink-rail-group" role="group" aria-label="Zoom">
+            <button class="tool-button ink-rail-btn" type="button" data-hw-action="zoom-out" title="Smaller" aria-label="Smaller">&#8722;</button>
+            <button class="tool-button ink-rail-btn" type="button" data-hw-action="zoom-in" title="Larger" aria-label="Larger">&#43;</button>
+          </div>
+        </div>
+        <div class="hw-scroll" id="hwScroll"></div>
       </div>
     </section>
 

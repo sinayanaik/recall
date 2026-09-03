@@ -116,6 +116,7 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { openHandwritingBoard } from "./handwriting/board.js?v=__BUILD__";
 import { initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
@@ -1931,6 +1932,11 @@ el.allCardsBtn.addEventListener("click", openAllCardsPanel);
 // The toolbar button always opens a fresh board — pass no args, since a click
 // event object would otherwise arrive as the options argument.
 el.quickNotesBoardBtn?.addEventListener("click", () => openQuickNotesBoard());
+// Handwriting is a surface any deck can have, so this opens the notebook for
+// whatever deck is open — and starts it with a page if it has none, because
+// there is no state of this surface that is not a page. No args, for the same
+// reason the line above passes none: a click event would arrive as options.
+el.handwritingBtn?.addEventListener("click", () => openHandwritingBoard());
 el.appBackBtn?.addEventListener("click", goNavBack);
 el.qnCloseBtn?.addEventListener("click", closeQuickNotesBoard);
 el.qnManageBtn?.addEventListener("click", openQnCatModal);

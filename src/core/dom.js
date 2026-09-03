@@ -275,6 +275,15 @@ export const el = {
   inkRailPens: document.querySelector("#inkRailPens"),
   inkRailWidths: document.querySelector("#inkRailWidths"),
   inkRailSelection: document.querySelector("#inkRailSelection"),
+  // The Handwritten Notes panel. A notebook is a deck whose meta carries the
+  // pages — see src/handwriting/board.js — so there is nothing here but the
+  // chrome around a scroller.
+  hwBoard: document.querySelector("#handwritingBoard"),
+  hwScroll: document.querySelector("#hwScroll"),
+  hwRail: document.querySelector("#hwRail"),
+  hwTitle: document.querySelector("#hwTitle"),
+  hwSummary: document.querySelector("#hwSummary"),
+  handwritingBtn: document.querySelector("#handwritingBtn"),
   documentMoreBtn: document.querySelector("#documentMoreBtn"),
   documentMoreMenu: document.querySelector("#documentMoreMenu"),
   documentReattachInput: document.querySelector("#documentReattachInput"),

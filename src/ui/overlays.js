@@ -106,6 +106,7 @@ export function anyModalOpen() {
     // invisible to unlockPageScroll's owner test, and the card shortcuts
     // (Space/Enter/arrows/K/R) still acted on the card behind a drawing.
     Boolean(document.querySelector("#inkSheet:not([hidden])")) ||
+    (el.hwBoard && !el.hwBoard.hidden) ||
     // The Cloze Review panel takes a scroll lock like the rest, so it has to be
     // listed here too — unlockPageScroll consults this to decide whether the
     // lock still has an owner.

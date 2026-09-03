@@ -59,6 +59,15 @@ CREATE TABLE IF NOT EXISTS decks (
   --                        a union across devices, never one device's list
   --   quickNoteCategories  the quick_notes board's managed subject set
   --   noteAnchors          { cardId: anchor }, where each pinned note came from
+  --   pages                a handwritten notebook's paper — one record per
+  --                        page, with its size, which of the three papers it
+  --                        is, and the strokes on it in the same encoded form
+  --                        the ink on a PDF page rides in. A deck carrying this
+  --                        key IS the notebook: no cards, no note, no file
+  --   textBoxes            the draggable markdown boxes on those pages, each
+  --                        with the page it belongs to, its box and its own `at`
+  --   deletedPageIds       { id: iso } tombstones for the two above, so a page
+  --   deletedTextBoxIds    or a box torn out stays torn out across devices
   meta JSONB NOT NULL DEFAULT '{}'::jsonb,
   current_card_index INT DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

@@ -130,6 +130,18 @@ export function deckNotesMarker() {
   return span;
 }
 
+// A notebook wears its page count where a deck of cards wears its card count.
+// Written as a marker beside the number rather than instead of it, because a
+// deck can be both — handwriting is a surface any deck can have, not a kind of
+// deck you commit to.
+export function deckPagesMarker(pages) {
+  const span = document.createElement("span");
+  span.className = "deck-has-pages";
+  span.textContent = `\u270e ${pages}`;
+  span.title = `Handwritten notes — ${pages} page${pages === 1 ? "" : "s"}`;
+  return span;
+}
+
 export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategories) {
   const tr = document.createElement("tr");
   // Tagged here rather than in decorateDeckRow, which only the Tree renderer
@@ -159,6 +171,7 @@ export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCa
     tdCount.append(deckNotesMarker());
     tdCount.title = "This deck has study notes";
   }
+  if (deck.pageCount > 0) tdCount.append(deckPagesMarker(deck.pageCount));
 
   const tdSaved = document.createElement("td");
   tdSaved.dataset.label = "Saved";
@@ -196,6 +209,7 @@ export function buildCloudDeckRow(deck, categories = webDeckCategories) {
   tdCount.dataset.label = "Cards";
   tdCount.append(deckCardCountSpan(count));
   if (hasNotes) tdCount.append(deckNotesMarker());
+  if (deck.pageCount > 0) tdCount.append(deckPagesMarker(deck.pageCount));
 
   const tdSaved = document.createElement("td");
   tdSaved.dataset.label = "Saved";
