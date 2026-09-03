@@ -1,0 +1,118 @@
+/* Pages you can write on — the stack, the paper, and the notebook around it.
+
+   A separate file from styles/52-ink.css for the reason every file above 13 is
+   separate: the thirteen slices are compared byte for byte against the
+   stylesheet they were cut from, so anything written since the split lives on
+   its own. 52-ink.css is the PEN — the palette, the layer over a PDF page, the
+   rail. This is the PAPER, which both the drawing sheet and the notebook now
+   share, plus the notebook's own chrome.
+
+   ── One scale, set in one place ──────────────────────────────────────────
+
+   A page is 794 x 1123 model units (A4 at 96dpi) whatever it is shown at, and
+   src/handwriting/paper.js writes the scale it chose onto the element as
+   --hw-scale. Everything that has to look right at every zoom — the rule pitch,
+   the grid pitch, the margin line — is stated in model units and multiplied by
+   it here, so a grid stays the same grid rather than becoming a different one at
+   each step. */
+
+.hw-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 14px;
+  background: var(--bg);
+}
+
+/* The page itself.
+
+   `touch-action: none` and no selection, for the reason the single host said it
+   before: this surface exists to be drawn on and there is nothing underneath
+   that a gesture would otherwise have been for. The SCROLLER above still
+   scrolls, because the gesture that reaches it is one that missed a page. */
+.hw-page {
+  position: relative;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--card, var(--panel));
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.18);
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: crosshair;
+}
+
+/* The three papers. Drawn from the text colour at very low alpha so all three
+   work on all ten themes with no second definition — the same discipline the
+   grid had when it was the only one.
+
+   Ruled has a margin line as well, because a ruled page without one is a lined
+   page and not a notebook, and because it is the one thing that tells you which
+   way up the page is when it is scrolled to mid-height. */
+.hw-page[data-hw-paper="grid"] {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px);
+  background-size: calc(24px * var(--hw-scale, 1)) calc(24px * var(--hw-scale, 1));
+}
+
+.hw-page[data-hw-paper="ruled"] {
+  background-image:
+    linear-gradient(to bottom, color-mix(in srgb, var(--text) 9%, transparent) 1px, transparent 1px),
+    linear-gradient(to right, transparent calc(64px * var(--hw-scale, 1)), color-mix(in srgb, var(--accent) 28%, transparent) calc(64px * var(--hw-scale, 1)), color-mix(in srgb, var(--accent) 28%, transparent) calc(65px * var(--hw-scale, 1)), transparent calc(65px * var(--hw-scale, 1)));
+  background-size: 100% calc(28px * var(--hw-scale, 1)), 100% 100%;
+}
+
+.hw-page[data-hw-paper="blank"] {
+  background-image: none;
+}
+
+.hw-page-ink {
+  position: absolute;
+  inset: 0;
+}
+
+/* Every canvas the engine makes for a page — the dry one and, while a stroke is
+   in flight, the shared wet pair. Stacking is DOM order, exactly as it is on a
+   PDF page, and none of them takes a pointer: the page element is what receives
+   the press and src/notes/ink-sheet.js routes it. */
+.hw-page-ink .hw-page-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Quiet, and outside the drawing area's own bounds as far as the eye is
+   concerned: a page number a reader can mistake for something they wrote is
+   worse than no page number. */
+.hw-page-number {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  font-size: 0.72rem;
+  color: color-mix(in srgb, var(--text) 38%, transparent);
+  pointer-events: none;
+}
+
+/* The drawing sheet's stack takes the sheet's own background rather than the
+   app's, because it is a full-surface modal and the two are not always the
+   same colour. */
+.ink-sheet-scroll {
+  background: var(--bg);
+}
+
+@media (max-width: 720px) {
+  .hw-scroll {
+    gap: 12px;
+    padding: 8px;
+  }
+}

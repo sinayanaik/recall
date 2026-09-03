@@ -204,13 +204,30 @@ export function createInkEngine({
     // The wet pair stays mounted between strokes now (see mountOverlay), so the
     // host that is going away is the one that has to take them off — otherwise
     // two canvases are left parented to an element nothing else is holding.
-    if (inkOverlay && inkOverlay.parentNode === entry.el) unmountOverlay();
-    entry.canvas.remove();
+    if (inkOverlay && entry.el && inkOverlay.parentNode === entry.el) unmountOverlay();
+    // Optional chaining because this has to be idempotent: the entry deliberately
+    // stays in `hosts` after a detach (that is what keeps the strokes), so a
+    // second detach of the same key finds it with nothing left to remove. On the
+    // PDF surface that never happened; a stack of pages, where closing tears the
+    // hosts down and re-rendering an empty stack tears them down again, hits it
+    // on the first try.
+    entry.canvas?.remove();
     entry.canvas = null;
     entry.ctx = null;
     entry.el = null;
     if (live?.key === key) cancel();
     if (selection?.key === key) setSelection(null);
+  }
+
+  // Detach, and then genuinely forget.
+  //
+  // detachHost keeps the strokes on purpose, because a PDF page swept out of the
+  // render window is coming back. A page DELETED from a notebook is not, and a
+  // sheet closed and re-opened mints new page ids — so without this the map grows
+  // for the life of the tab, holding the ink of pages that no longer exist.
+  function forgetHost(key) {
+    detachHost(key);
+    hosts.delete(key);
   }
 
   function setStrokes(key, strokes) {
@@ -913,6 +930,7 @@ export function createInkEngine({
   return {
     attachHost,
     detachHost,
+    forgetHost,
     setStrokes,
     getStrokes,
     repaint,
