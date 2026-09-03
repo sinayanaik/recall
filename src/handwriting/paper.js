@@ -93,9 +93,16 @@ export function createHandwritingPaper({
 }) {
   let zoom = 1;
   let scale = 1;
-  // Measured when the layout changes rather than per sample, which is the rule
-  // every pointer path in this app keeps: a getBoundingClientRect inside a
-  // pointermove is a forced layout at digitiser rate.
+  // A page's box in client coordinates, written by pageAt at the START of a
+  // gesture and read by toModel once per sample after it. Nothing else may write
+  // to it, and that is the whole invariant: a rect is only correct at the moment
+  // it is measured, because this thing SCROLLS. Seeding it at layout time — which
+  // is what it used to do — meant every entry was wrong the moment the reader
+  // moved, so a stroke made after any scroll landed at the offset the page used
+  // to be at. Measured per sample instead it would be a forced layout at
+  // digitiser rate, which is the thrash src/notes/touch-selection.js had to take
+  // out of its own drag. Once per gesture is the answer, and it is the same one
+  // src/documents/pdf-ink.js reached.
   const rects = new Map();
 
   function measure() {
@@ -117,15 +124,9 @@ export function createHandwritingPaper({
       // zoom step.
       el.style.setProperty("--hw-scale", String(scale));
     });
-    cacheRects();
-  }
-
-  function cacheRects() {
+    // Dropped rather than re-measured: every one of them is about to be wrong
+    // anyway, and pageAt writes the only one that matters when a gesture starts.
     rects.clear();
-    getPages().forEach((page) => {
-      const el = handwritingPageElement(scroller, page.id);
-      if (el) rects.set(page.id, el.getBoundingClientRect());
-    });
   }
 
   const inkEngine = createInkEngine({
@@ -189,7 +190,6 @@ export function createHandwritingPaper({
       // the stack.
       if (!had?.strokes?.length) inkEngine.setStrokes(page.id, handwritingPageStrokes(page));
     });
-    cacheRects();
   }
 
   function relayout() {
@@ -212,16 +212,34 @@ export function createHandwritingPaper({
     render,
     relayout,
     seed,
-    cacheRects,
     pageElement: (id) => handwritingPageElement(scroller, id),
     // Which page a point is over — the notebook needs it to know where a text
     // box was dropped, and both surfaces need it to know which page a stroke
     // began on.
+    //
+    // ── Why this re-measures, and why that is not the thing it looks like ──
+    //
+    // The rects are cached because toModel reads one per SAMPLE, and a
+    // getBoundingClientRect at digitiser rate is a forced layout at digitiser
+    // rate — the thrash src/notes/touch-selection.js had to take out of its own
+    // drag. But a stack of pages SCROLLS, and every rect in that cache is
+    // wrong the moment it does. Cached at layout time and never refreshed, a
+    // stroke made after any scroll landed at the offset the page used to be at,
+    // and a stroke aimed at a page below the fold was attributed to whichever
+    // page happened to still be under those stale coordinates.
+    //
+    // So the measurement happens exactly where the PDF surface puts its own —
+    // once, at pointerdown, for the one page the press landed on — and the hit
+    // test is elementFromPoint rather than a walk over every rect, so the cost
+    // does not grow with the notebook. Every sample after it reads what this
+    // wrote.
     pageAt: (clientX, clientY) => {
-      for (const [id, rect] of rects) {
-        if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) return id;
-      }
-      return null;
+      const el = document.elementFromPoint(clientX, clientY)?.closest(".hw-page");
+      if (!el || !scroller?.contains(el)) return null;
+      const id = el.dataset.hwPage;
+      if (!id) return null;
+      rects.set(id, el.getBoundingClientRect());
+      return id;
     },
     toModel: (id, clientX, clientY) => {
       const rect = rects.get(id);

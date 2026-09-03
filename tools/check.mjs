@@ -311,6 +311,17 @@ const checks = [
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
+    // The two halves of handwriting a browser is the only instrument for.
+    // tools/ink-check.mjs can ask whether a stroke survives being stored; it
+    // cannot ask whether the line follows the nib. So: a stroke held still
+    // mid-word and then continued (the straightener used to fire on the pause
+    // and discard everything after it), the finished stroke reaching the dry
+    // canvas BEFORE the desynchronized wet layer gives it up, and the 185th
+    // stroke on a page costing what the 3rd did — three separate things used to
+    // be O(everything on the page) per stroke. Then the notebook: pages added,
+    // torn out and read back from IndexedDB, and a text box dragged, resized and
+    // still where it was put.
+    ["handwriting   ", ["node", ["tools/handwriting-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
     // The JOIN nothing used to ask about: a contents row is a descriptor scanned
