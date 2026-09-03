@@ -19,6 +19,7 @@ import { LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_PREFIX, NOTES_CONFLICT_SUFFIX } from 
 import { handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveStorageFailed, setLastSaveErrorWasQuota } from "../storage/quota.js?v=__BUILD__";
 import { cardSyncSignature, dropTombstonesForLiveCards, recordDeletedCardIds, stampCardSyncState } from "../sync/cards.js?v=__BUILD__";
 import { normalizeSyncText } from "../sync/diff.js?v=__BUILD__";
+import { repairSnapshotText } from "../sync/text-repair.js?v=__BUILD__";
 // Closes a cycle (stats → quick-notes/categories → back here), which is the
 // case module-symbols allows for hoisted function declarations: nextSyncStamp
 // is one, and the tolerance constant beside it is only read when it is called,
@@ -436,6 +437,17 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   // deliberately carried rather than recomputed.
   const previousEntry = readLocalDeckIndex().find((entry) => entry.id === localId);
   if (!snapshot.deckId) snapshot.deckId = previousSnapshot?.deckId || previousEntry?.deckId || null;
+
+  // Take out what the cloud cannot store, BEFORE contentChanged is computed
+  // below — and here rather than only in the sync, because this is the one
+  // chokepoint every save funnels through. The deck that hit this is a PDF the
+  // reader has OPEN, so `state` still holds the NUL in memory: a repair made
+  // only on the push path would be undone by the next 400ms autosave, and the
+  // deck would flip corrupt → clean → corrupt forever. Running before
+  // deckContentMatches means the first save after this lands bumps updatedAt
+  // once and pushes once; every save after that compares repaired against
+  // repaired and is the no-op it should be. See repairSnapshotText.
+  repairSnapshotText(snapshot);
 
   // Only advance updatedAt when the content actually changed (or on an explicit
   // caller-supplied timestamp, e.g. aligning to the cloud after a push). A pure

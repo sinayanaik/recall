@@ -42,8 +42,9 @@
 //     per session and once per device.
 
 import { state } from "../core/state.js?v=__BUILD__";
+import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
-import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
+import { cleanPdfItemText, textItemGap } from "./pdf-selection.js?v=__BUILD__";
 
 // Bumped when the rules below change enough that an old cached list would be
 // worse than a fresh scan. A cache from a different version is ignored and
@@ -165,7 +166,11 @@ export function cachePdfContents(entries, pageCount) {
     pdfToc: {
       v: PDF_TOC_VERSION,
       pages: pageCount,
-      entries: entries.map((entry) => ({ t: entry.title, p: entry.page, d: entry.depth }))
+      // Stripped as it is written, not only where the titles are built: this is
+      // the point at which contents entries become part of the deck's synced
+      // meta, and a title from the file's own outline dictionary comes through
+      // pdf.js's string decoder, which is where the NULs come from.
+      entries: entries.map((entry) => ({ t: stripInvalidUnicode(entry.title), p: entry.page, d: entry.depth }))
     }
   };
   scheduleDeckAutosave();
@@ -219,7 +224,7 @@ export function pdfTocLinesFrom(items, pageNumber) {
     if (item.hasEOL) current = null;
   });
   return lines
-    .map((line) => ({ ...line, text: line.text.replace(/\s+/g, " ").trim() }))
+    .map((line) => ({ ...line, text: cleanPdfItemText(line.text) }))
     .filter((line) => line.text);
 }
 

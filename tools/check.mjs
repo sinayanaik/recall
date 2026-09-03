@@ -239,6 +239,14 @@ const checks = [
   // so this can drive it with no browser and no baseline tag — the sync checks
   // below need both, and a check that can only skip verifies nothing.
   ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
+  // Pure Node again, and for the same reason: the sanitizer and the repair are
+  // string-and-object work with no imports worth speaking of. It asks the one
+  // question a whole book's sync once turned on — can a character that came out
+  // of a PDF still make a deck's upload fail? — against the JSON body Postgres
+  // actually sees, and it asks the harder half too: is the local copy repaired,
+  // or merely cleaned on the way out, which is what would re-push every card of
+  // that book on every sync forever.
+  ["text-sanitize ", ["node", ["tools/text-sanitize-check.mjs"], ROOT]],
   // The same shape once more, for the document several decks make when they are
   // read as one: does every deck get back exactly what it put in? The write-back
   // fires on every autosave over every deck in the selection, so anything the

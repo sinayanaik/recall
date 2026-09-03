@@ -29,6 +29,7 @@
 // implementation, two callers, and the class cannot be forgotten again.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { refreshDrawerOnOpen } from "../panels/drawer-highlights.js?v=__BUILD__";
 import {
   TOC_TWISTY_CLASS,
@@ -147,7 +148,11 @@ export async function outlineDestinationPage(doc, dest) {
 export function flattenOutline(items, depth = 0, out = []) {
   (items || []).forEach((item) => {
     out.push({
-      title: String(item.title || "").replace(/\s+/g, " ").trim(),
+      // The file's own outline strings come out of the same pdf.js decoder as
+      // the Info-dict Title, so they carry the same U+0000 when the PDF wrote
+      // them as UTF-16BE without a BOM — and these titles are cached into the
+      // deck's synced meta by cachePdfContents. See stripInvalidUnicode.
+      title: stripInvalidUnicode(item.title).replace(/\s+/g, " ").trim(),
       dest: item.dest,
       depth: Math.min(depth, OUTLINE_MAX_DEPTH),
       page: 0
