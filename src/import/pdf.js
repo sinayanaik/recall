@@ -19,6 +19,7 @@ import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, annotationQuads, nearestHighlightColor } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { textForQuads } from "../documents/pdf-selection.js?v=__BUILD__";
 import { MAX_DOCUMENT_BYTES, putDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
@@ -51,7 +52,12 @@ export const GENERIC_PDF_TITLE_RE = /^(untitled|unknown|no\s*title|n\/a|null|und
 export const MAX_PDF_TITLE_LENGTH = 120;
 
 export function normalizePdfTitle(raw) {
-  const text = String(raw || "")
+  // Stripped FIRST. A PDF that wrote its Title as UTF-16BE without a BOM comes
+  // back from pdf.js with a U+0000 between every letter, and neither [_\s]+ nor
+  // .trim() matches one — so the title read as perfectly ordinary here, failed
+  // no rule below, and then failed the whole deck's sync (see
+  // stripInvalidUnicode). That is the bug this whole strip exists for.
+  const text = stripInvalidUnicode(raw)
     .replace(/^Microsoft Word\s*-\s*/i, "")
     .replace(/\.(dvi|tex|doc|docx|pdf|ps|indd)$/i, "")
     .replace(/[_\s]+/g, " ")
@@ -72,7 +78,7 @@ export function pdfTitleFor(metadata, fileName) {
   // which is both less informative and identical for every such file.
   const fromMetadata = normalizePdfTitle(metadata?.info?.Title);
   if (fromMetadata) return fromMetadata;
-  const fromName = String(fileName || "").replace(/\.pdf$/i, "").replace(/[_\s]+/g, " ").trim();
+  const fromName = stripInvalidUnicode(fileName).replace(/\.pdf$/i, "").replace(/[_\s]+/g, " ").trim();
   return fromName.slice(0, MAX_PDF_TITLE_LENGTH).trim() || "Imported PDF";
 }
 
@@ -142,7 +148,10 @@ export async function readExistingHighlights(doc, progress) {
         qv: QUAD_GEOMETRY_VERSION,
         at: Date.now()
       });
-      const comment = String(annotation.contentsObj?.str || annotation.contents || "").trim();
+      // The annotation's own comment is a document string too — same decoder,
+      // same NUL risk as the title above — and it becomes a highlight note in
+      // the deck's synced notes body.
+      const comment = stripInvalidUnicode(annotation.contentsObj?.str || annotation.contents || "").trim();
       if (comment) notes.push({ id, text: comment, label: text ? `“${text.slice(0, 60)}”` : "" });
     });
   }

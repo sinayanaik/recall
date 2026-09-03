@@ -25,6 +25,7 @@
 // pixel ratio, of window width and of page rotation; every conversion goes
 // through the live viewport, which knows about all four.
 
+import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 
 export const TEXT_ITEM_ATTR = "data-item-index";
@@ -280,6 +281,15 @@ export function textItemGap(previous, next) {
   return /\s$/.test(previous.str || "") || /^\s/.test(next?.str || "") ? "" : " ";
 }
 
+// The one cleanup every reader of a pdf.js text item goes through: collapse the
+// whitespace, and drop what a database column cannot store. A glyph whose cmap
+// maps to 0 puts a U+0000 straight into item.str, and one of those anywhere in
+// a deck fails that deck's entire sync (see stripInvalidUnicode) — invisibly,
+// because it renders as nothing at all.
+export function cleanPdfItemText(value) {
+  return stripInvalidUnicode(String(value ?? "")).replace(/\s+/g, " ").trim();
+}
+
 // The words a stored { item, ch } anchor pair covers, read back off the page's
 // own text items.
 //
@@ -301,7 +311,7 @@ export function textForAnchorRange(items, anchor, focus) {
   const to = forwards ? focus : anchor;
   if (!items[from.item] || !items[to.item]) return "";
   if (from.item === to.item) {
-    return String(items[from.item].str || "").slice(from.ch, to.ch).replace(/\s+/g, " ").trim();
+    return cleanPdfItemText(String(items[from.item].str || "").slice(from.ch, to.ch));
   }
   let out = String(items[from.item].str || "").slice(from.ch);
   // `previous` is the last item that CONTRIBUTED, not items[i - 1]: an item with
@@ -315,7 +325,7 @@ export function textForAnchorRange(items, anchor, focus) {
     out += i === to.item ? String(item.str).slice(0, to.ch) : String(item.str);
     previous = item;
   }
-  return out.replace(/\s+/g, " ").trim();
+  return cleanPdfItemText(out);
 }
 
 // The text a set of quads covers, plus the { item, ch } the first of them
@@ -333,7 +343,7 @@ export function textForQuads(items, quads) {
     parts.push(item.str);
   });
   return {
-    text: parts.join(" ").replace(/\s+/g, " ").trim(),
+    text: cleanPdfItemText(parts.join(" ")),
     item: anchorItem === null ? 0 : anchorItem
   };
 }

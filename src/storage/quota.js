@@ -64,6 +64,16 @@ export function isQuotaExceededError(error) {
 // message, since isTransientCloudError already handles retryable ones.
 export function describeSyncError(error) {
   if (isQuotaExceededError(error)) return "This device's storage is full";
+  // 22P05 is Postgres refusing text it cannot store — in practice a U+0000 out
+  // of a PDF's own title or glyph mapping (see src/core/text.js). The repair on
+  // the save and push paths should make this extinct; while it can still be
+  // reached, "unsupported Unicode escape sequence" printed next to a book's
+  // title tells the reader nothing they can act on, and by the time the report
+  // renders the repair has already run — so trying again really is the answer.
+  // Keyed on the CODE, not the message, exactly as isMissingColumnError is.
+  if (String(error?.code || "") === "22P05") {
+    return "This deck had characters the cloud can't store — they've been cleaned up, try syncing again";
+  }
   return error?.message || String(error);
 }
 

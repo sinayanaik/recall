@@ -8,6 +8,7 @@
 import { isMissingColumnError, isMissingNotesColumnError } from "../cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
+import { sanitizeUnicodeDeep, stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { syncTextChanged } from "./diff.js?v=__BUILD__";
 import { emptySyncStats } from "./stats.js?v=__BUILD__";
@@ -48,11 +49,23 @@ export async function upsertCardRows(rows) {
 // them (reconcileAllDecks fetches every deck's in one batched request), else
 // null to fetch them here.
 export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, say = () => {} }) {
+  // ── Nothing Postgres refuses leaves this device ──────────────────────────
+  //
+  // The last chokepoint, not the fix: this is the only writer of the decks and
+  // cards tables, so a strip here means no future caller can fail a whole deck
+  // on one U+0000 the way a PDF's title once did (see src/sync/text-repair.js
+  // and core/text.js for what the characters are and where they come from).
+  //
+  // It is NOT sufficient on its own, and must not become the only defence —
+  // sanitizing only what goes on the wire leaves the local copy different from
+  // the cloud's, and syncTextChanged then reports every card as edited on every
+  // sync forever. repairSnapshotText, on the save and the push paths, is what
+  // keeps the two sides identical; this is what makes the failure impossible.
   const deckData = {
     id: deckId,
-    title,
-    category,
-    notes: notes || "",
+    title: stripInvalidUnicode(title),
+    category: category === null || category === undefined ? category : stripInvalidUnicode(category),
+    notes: stripInvalidUnicode(notes || ""),
     // Symmetric with the pull side (pullCloudDeckToLibrary), which already
     // reads cloud.meta generically for any deck — this was the missing half:
     // meta only ever reached Supabase via the quick_notes-scoped writers, so
@@ -60,7 +73,7 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
     // device. Whole-column last-write-wins, same as notes; this does add one
     // more writer against that column alongside the quick-notes-scoped ones,
     // accepted as the same class of risk as two devices pushing concurrently.
-    meta: meta && typeof meta === "object" ? meta : {},
+    meta: sanitizeUnicodeDeep(meta && typeof meta === "object" ? meta : {}),
     current_card_index: Number.isFinite(currentIndex) ? currentIndex : 0,
     updated_at: now,
     last_accessed_at: now
@@ -153,15 +166,20 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
   const cardsData = cards
     .map((card, index) => {
       const status = normalizeCardStatus(card.status);
-      const category = card.category ? String(card.category) : null;
+      const category = card.category ? stripInvalidUnicode(String(card.category)) : null;
+      // Sanitized ONCE, then used for both the comparison below and the payload:
+      // diffing the raw text against a cloud row written from the clean text
+      // would report an edit on every sync for a card that never changed.
+      const question = stripInvalidUnicode(card.question);
+      const answer = stripInvalidUnicode(card.answer);
       const webCard = webCardsById.get(String(card.id));
       if (!webCard) {
         // isNewDeck/overwrite wiped the web side, so there's nothing to diff
         // against and every row legitimately counts as an addition.
         pushStats.cardsAdded += 1;
-        return { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, category, updated_at: now };
+        return { id: card.id, deck_id: deckId, question, answer, position: index, status, category, updated_at: now };
       }
-      const edited = syncTextChanged(card.question, webCard.question) || syncTextChanged(card.answer, webCard.answer);
+      const edited = syncTextChanged(question, webCard.question) || syncTextChanged(answer, webCard.answer);
       const moved = Number(webCard.position) !== index;
       const restacked = normalizeCardStatus(webCard.status) !== status;
       const recategorised = (webCard.category || null) !== category;
@@ -176,7 +194,7 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
       // whole batch for any deck with a mix — and made clearing a category
       // impossible to push. Databases without the column are handled by the
       // retry in upsertCardRows.
-      return { id: card.id, deck_id: deckId, question: card.question, answer: card.answer, position: index, status, category, updated_at: now };
+      return { id: card.id, deck_id: deckId, question, answer, position: index, status, category, updated_at: now };
     })
     .filter(Boolean);
 

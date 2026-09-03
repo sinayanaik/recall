@@ -26,6 +26,7 @@ import { deckWriteSettled, readDeckSnapshot, writeDeckSnapshot } from "../storag
 import { dropTombstonesForLiveCards } from "../sync/cards.js?v=__BUILD__";
 import { normalizeSyncText, syncTextChanged } from "../sync/diff.js?v=__BUILD__";
 import { mergeDocumentAnnotations } from "../sync/document-sync.js?v=__BUILD__";
+import { repairSnapshotText } from "../sync/text-repair.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // A parsed JSON node is either a multi-deck bundle ({decks:[...]}) or a single
@@ -903,6 +904,12 @@ export async function applyRestore(report, { autoBackup = true } = {}) {
       // A restore is an explicit "this should exist again" for cards too, not
       // just decks — retire the tombstone of anything the backup brought back.
       if (!isNew) dropTombstonesForLiveCards(snapshot);
+      // An archive taken before the sanitizer existed still carries whatever the
+      // PDF put in it, and a restore is the one path that puts a snapshot on
+      // disk without going through a save. Repair it on the way in, so a
+      // restored library does not need a sync failure to discover the problem
+      // again. See repairSnapshotText.
+      repairSnapshotText(snapshot);
       writeDeckSnapshot(localId, snapshot);
       await deckWriteSettled(localId);
       upsertRestoredMeta(localId, snapshot, entry.backupDeck);

@@ -41,6 +41,7 @@ import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, u
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
 import { clockSkewedAhead, describeSyncStats, emptySyncStats, isNoOpStats, nextSyncStamp, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
+import { repairSnapshotText } from "./text-repair.js?v=__BUILD__";
 import { commitEditIfActive } from "../ui/edit-mode.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setStyleStatus } from "../ui/style-settings.js?v=__BUILD__";
@@ -401,6 +402,24 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   const snapshot = await readDeckSnapshot(localMeta.id);
   if (!snapshot) throw new Error("Local deck snapshot missing");
 
+  // Before anything reads this deck's text, take out what Postgres refuses (a
+  // NUL from a PDF's own title or glyph mapping — see repairSnapshotText). Here
+  // as well as in finishSaveDeckToLibrary, because a deck can be imported,
+  // synced and never opened again, and because a snapshot restored from an old
+  // archive lands on disk without passing through a save at all.
+  //
+  // At the TOP so the repaired text is what the merges below, `pushedCards` and
+  // `pushedSignatureById` all see: that is what leaves this device and the cloud
+  // holding the same string, and therefore what stops every card in the book
+  // reading as edited on every subsequent sync.
+  //
+  // Persisted through the conditional writes that already exist rather than a
+  // write of its own — a clean deck (which is every other deck) must not cost an
+  // extra snapshot write per sync.
+  const titleBeforeRepair = snapshot.deckTitle;
+  let snapshotNeedsWrite = repairSnapshotText(snapshot) > 0;
+  const titleWasRepaired = snapshot.deckTitle !== titleBeforeRepair;
+
   let deckId = snapshot.deckId || localMeta.deckId || null;
   let isNewDeck = !cloudExists;
   if (!deckId) {
@@ -450,8 +469,9 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     // Only when something actually moved, though — most syncs change nothing
     // here, and rewriting every deck's snapshot on every sync is pure quota
     // churn on the device where quota is already the binding constraint.
-    if (cardsRemovedHere || cardsAdoptedHere || tombstonesRetired) {
+    if (cardsRemovedHere || cardsAdoptedHere || tombstonesRetired || snapshotNeedsWrite) {
       writeDeckSnapshot(localMeta.id, snapshot);
+      snapshotNeedsWrite = false;
     }
   }
 
@@ -537,7 +557,17 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     snapshot.meta = documentPush.meta;
     documentTombstonesBeingPruned = documentPush.tombstonesBeingPruned;
     // Same quota rule as the cards above: only when something actually moved.
-    if (documentPush.changed) writeDeckSnapshot(localMeta.id, snapshot);
+    if (documentPush.changed || snapshotNeedsWrite) {
+      writeDeckSnapshot(localMeta.id, snapshot);
+      snapshotNeedsWrite = false;
+    }
+  }
+  // A repair with no merge to ride along on — a document deck the cloud does not
+  // have yet, or a plain deck. Still inside the await-free critical section, and
+  // still exactly one write in every path.
+  if (snapshotNeedsWrite) {
+    writeDeckSnapshot(localMeta.id, snapshot);
+    snapshotNeedsWrite = false;
   }
   // Out of the critical section, and before the network write rather than after
   // it: a push that fails partway must still leave the copy it was going to
@@ -621,6 +651,12 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   const entry = index.find((m) => m.id === localMeta.id);
   if (entry) {
     entry.deckId = deckId;
+    // The index carries its own copy of the title, written by whichever save
+    // last touched this deck. A deck repaired here may never have been opened
+    // since, so heal that copy too — but ONLY when the repair actually changed
+    // the title: writing it unconditionally would revert a rename made while
+    // this push was in flight, exactly like the updatedAt guard below.
+    if (titleWasRepaired) entry.title = title;
     // Only claim "this deck now matches the cloud" if nothing changed while the
     // push was in flight. `localMeta.updatedAt` is the value the sync decided to
     // push from, so an entry that still carries it saw no edit in between.

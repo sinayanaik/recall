@@ -466,6 +466,7 @@ const APP_SHELL = [
   `./src/sync/reconcile.js?v=${STAMP}`,
   `./src/sync/report.js?v=${STAMP}`,
   `./src/sync/stats.js?v=${STAMP}`,
+  `./src/sync/text-repair.js?v=${STAMP}`,
   `./src/ui/back-gesture.js?v=${STAMP}`,
   `./src/ui/boot-screens.js?v=${STAMP}`,
   `./src/ui/chrome.js?v=${STAMP}`,

@@ -22,6 +22,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
 import { pdfMarkLayer, pdfPageTextItems } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
@@ -446,7 +447,11 @@ export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
     page: capture.page,
     anchor: capture.anchor,
     focus: capture.focus,
-    text: capture.text || "",
+    // The chokepoint for every highlight however its text was captured — the
+    // text layer, an imported annotation, a raw selection — and highlight text
+    // is also what becomes a card's question later. See stripInvalidUnicode:
+    // one U+0000 out of a glyph mapping fails the whole deck's sync.
+    text: stripInvalidUnicode(capture.text || ""),
     quads: capture.quads,
     // "text" (a run of glyphs dragged across the text layer) or "area" (a box
     // dragged around a figure — see pdf-region.js). Stored rather than derived,

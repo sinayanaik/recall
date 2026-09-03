@@ -468,7 +468,7 @@ export async function repairMissingStorageObjects(paths, onProgress) {
 // DELETE outright.
 export async function deleteAllCloudDecks() {
   const { error } = await withTimeout(
-    supabaseClient.from("decks").delete().neq("id", " "),
+    supabaseClient.from("decks").delete().neq("id", "\u0000"),
     CLOUD_TIMEOUT_MS,
     "delete decks"
   );
@@ -477,7 +477,7 @@ export async function deleteAllCloudDecks() {
 
 export async function deleteAllCloudTombstones() {
   const { error } = await withTimeout(
-    supabaseClient.from("deleted_decks").delete().neq("deck_id", " "),
+    supabaseClient.from("deleted_decks").delete().neq("deck_id", "\u0000"),
     CLOUD_TIMEOUT_MS,
     "delete tombstones"
   );
