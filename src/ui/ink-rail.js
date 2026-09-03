@@ -18,9 +18,10 @@
 // follow: a control is a button with an attribute, not a binding.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, deleteInkSelection, inkPen, inkSelectionCount, inkTool, inkWidth, isInkArmed, joinInkSelection, redoInk, setInkArmed, setInkPen, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, clearInkPage, deleteInkSelection, inkPageHasStrokes, inkPageInView, inkPen, inkSelectionCount, inkTool, inkWidth, isInkArmed, joinInkSelection, redoInk, setInkArmed, setInkPen, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
 import { INK_PEN_COLORS, INK_WIDTHS, inkPenVar } from "../format/ink-colors.js?v=__BUILD__";
 import { inkPreferences, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
+import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
 // The swatch is drawn from the pen's own custom property rather than from a hex
 // value, so the chip in the rail is the colour the ink will actually be on the
@@ -81,6 +82,9 @@ export function refreshInkRail() {
   rail.querySelectorAll("[data-ink-tool]").forEach((node) => pressed(node, node.dataset.inkTool === tool));
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !canUndoInk());
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !canRedoInk());
+  // Refused rather than hidden, for the reason join is below: a control that
+  // comes and goes moves the ones beside it under the reader's thumb.
+  rail.querySelector('[data-ink-action="clear"]')?.toggleAttribute("disabled", !inkPageHasStrokes(inkPageInView()));
 
   const count = inkSelectionCount();
   if (el.inkRailSelection) el.inkRailSelection.hidden = count < 1;
@@ -88,6 +92,19 @@ export function refreshInkRail() {
   // the row does not change width under the reader's thumb between one
   // selection and the next.
   rail.querySelector('[data-ink-action="join"]')?.toggleAttribute("disabled", count < 2);
+}
+
+// The one control here that a stroke cannot put right, so it is the one that
+// asks — and it names the page, because the rail floats over a scroller and
+// "the page" is whichever one the reader has scrolled to.
+function askToClearPage() {
+  const page = inkPageInView();
+  if (!inkPageHasStrokes(page)) return;
+  showConfirmModal(
+    `Remove every mark from page ${page}? Undo can put them back.`,
+    () => { clearInkPage(page); refreshInkRail(); },
+    { confirmLabel: "Clear the page", danger: true }
+  );
 }
 
 export function toggleInkRail(force = null) {
@@ -124,6 +141,7 @@ export function initInkRail() {
     else if (nextTool) setInkTool(nextTool);
     else if (action === "undo") undoInk();
     else if (action === "redo") redoInk();
+    else if (action === "clear") askToClearPage();
     else if (action === "join") joinInkSelection();
     else if (action === "split") splitInkSelection();
     else if (action === "delete") deleteInkSelection();

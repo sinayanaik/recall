@@ -70,6 +70,10 @@ function buildSheet() {
   if (sheet) return sheet;
   const root = document.createElement("div");
   root.className = "ink-sheet";
+  // An id as well as a class, because src/ui/overlays.js has to be able to ask
+  // whether this is open and cannot import this module to do it — ink-sheet.js
+  // imports the scroll lock FROM overlays.js, so the arrow only points one way.
+  root.id = "inkSheet";
   root.hidden = true;
   root.setAttribute("role", "dialog");
   root.setAttribute("aria-modal", "true");
@@ -253,6 +257,22 @@ function ensureSheetEngine() {
 export function isInkSheetOpen() {
   return Boolean(sheetSession);
 }
+
+// For the hardware Back key and for Escape, both of which mean "take this away"
+// and neither of which means "keep what I drew". Same route as Cancel.
+export function dismissInkSheet() {
+  if (!sheetSession) return false;
+  closeInkSheet(false);
+  return true;
+}
+
+// Ctrl+Z while the sheet is open. Without these the global handler saw a blurred
+// textarea, decided the press was for the note behind the sheet, and stepped
+// that note's history back instead — an undo that changed something the reader
+// could not even see.
+export function undoInkSheet() { return Boolean(sheetSession) && sheetEngine.undo(); }
+
+export function redoInkSheet() { return Boolean(sheetSession) && sheetEngine.redo(); }
 
 function openInkSheet({ title, strokes, onDone }) {
   const built = buildSheet();

@@ -60,6 +60,7 @@ import { goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
+import { isInkSheetOpen, redoInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
@@ -114,7 +115,7 @@ import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, re
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
-import { initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, resetDocumentInk, setInkChangedHandler } from "./documents/pdf-ink.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
@@ -2338,6 +2339,31 @@ document.addEventListener("keydown", (event) => {
   //
   // Scoped to the notes surface: a card face or any other input keeps the
   // browser's own undo, which for plain typing is finer-grained than this.
+  // ── Undo, where the pen is ────────────────────────────────────────────────
+  //
+  // Handwriting had no keyboard undo at all: the rail's ↶ was the only way to
+  // take back a stroke, and on the two surfaces where a keyboard exists the
+  // press went somewhere else entirely. In the Document view it fell through to
+  // undoCardAction(); with the drawing sheet open over the Cards view the
+  // textarea behind it is blurred, so `inNotesSurface` below read true and
+  // Ctrl+Z stepped back the NOTE — a change to something the reader could not
+  // see, made by a key they pressed to undo something they could.
+  //
+  // The sheet comes first because it is over everything. Both branches fall
+  // through when there is nothing to undo, so the shortcut still reaches the
+  // card and note stacks on a surface where no ink has been made.
+  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z") && isInkSheetOpen()) {
+    event.preventDefault();
+    event.shiftKey ? redoInkSheet() : undoInkSheet();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
+      && state.viewMode === "document" && !event.target.matches("input, textarea")
+      && (event.shiftKey ? canRedoInk() : canUndoInk())) {
+    event.preventDefault();
+    event.shiftKey ? redoInk() : undoInk();
+    return;
+  }
   const inNotesSurface = state.viewMode === "notes"
     && (event.target === el.notesEdit || !event.target.matches("input, textarea"));
   if ((event.ctrlKey || event.metaKey) && inNotesSurface && (event.key === "z" || event.key === "Z")) {

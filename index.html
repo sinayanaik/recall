@@ -957,6 +957,12 @@
               <div class="ink-rail-group" role="group" aria-label="Undo">
                 <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo" aria-label="Undo">&#8630;</button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-action="redo" title="Redo" aria-label="Redo">&#8631;</button>
+                <!-- Clear takes every mark off the page you are looking at. It
+                     asks first, because it is the only control on this rail
+                     that a stroke cannot put right — and it still goes on the
+                     undo stack, so the answer to a mistaken yes is the arrow
+                     to its left. Disabled on a page with no ink on it. -->
+                <button class="tool-button ink-rail-btn is-danger" type="button" data-ink-action="clear" title="Clear the page — remove every mark from the page you are looking at" aria-label="Clear the page">&#9127;</button>
               </div>
               <!-- Only while something is lassoed. Join and Split are the
                    repair for the grouping rule guessing where one mark ended:
