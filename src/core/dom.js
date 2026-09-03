@@ -270,6 +270,11 @@ export const el = {
   // the only way to highlight a figure at all.
   documentDarkBtn: document.querySelector("#documentDarkBtn"),
   documentRegionBtn: document.querySelector("#documentRegionBtn"),
+  documentInkBtn: document.querySelector("#documentInkBtn"),
+  documentInkRail: document.querySelector("#documentInkRail"),
+  inkRailPens: document.querySelector("#inkRailPens"),
+  inkRailWidths: document.querySelector("#inkRailWidths"),
+  inkRailSelection: document.querySelector("#inkRailSelection"),
   documentMoreBtn: document.querySelector("#documentMoreBtn"),
   documentMoreMenu: document.querySelector("#documentMoreMenu"),
   documentReattachInput: document.querySelector("#documentReattachInput"),

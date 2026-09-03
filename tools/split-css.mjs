@@ -394,6 +394,20 @@ const POST_SPLIT = {
     "resized before today. Keyed off the property rather than the class so it " +
     "fixes the widths already written into people's notes as well as the ones " +
     "written from now on.",
+  "52-ink.css":
+    "Handwriting. The pen palette, the canvas layer a PDF page's ink is drawn " +
+    "into, the tool rail over the paper, the ✎ on a drawing in a note, and the " +
+    "drawing sheet itself. The palette is the part that does not belong here: " +
+    "ink is opaque and sits on top, so it cannot use the four highlight tints " +
+    "(which are color-mix alphas designed to sit UNDER text), and its five pens " +
+    "are real colours stated once for dark themes and once for light. They " +
+    "would naturally live beside the other tokens in styles/01-tokens.css, and " +
+    "that is a frozen slice — so they are here, with the rules that use them. " +
+    "The layer's z-index is the other thing worth knowing: dark-page mode puts " +
+    "filter:invert(1) on .pdf-canvas, which makes it a z-index:0 stacking " +
+    "context in tree order, so an unindexed sibling appended after it is simply " +
+    "covered. The badge layer learned that first; this is the same trap.",
+
   "51-tablet-fit.css":
     "The window, back in the height chain between 721px and 1080px. That band " +
     "(styles/09-all-cards.css:1985) gives .quiz-panel a size of its own inside " +

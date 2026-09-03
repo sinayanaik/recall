@@ -7,6 +7,7 @@ import { toggleMarkColorInText } from "../format/highlight.js?v=__BUILD__";
 import { setRenderDefault } from "../format/render-toolbar.js?v=__BUILD__";
 import { applyFormatToTextarea } from "../format/selection-tools.js?v=__BUILD__";
 import { openImagePicker } from "../images/paste.js?v=__BUILD__";
+import { insertInkDrawing } from "../notes/ink-sheet.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
@@ -144,6 +145,15 @@ export function handleToolbarClick(event) {
   // insert markdown at the caret this toolbar's textarea had before the picker opened.
   if (button.dataset.action === "insert-image") {
     openImagePicker(textarea, start);
+    return;
+  }
+
+  // Draw: the same shape as the picker above, and for the same reason it takes
+  // `start` — opening the sheet blurs the textarea, and a blurred textarea
+  // reports a selection of zero, so the caret has to be carried in rather than
+  // read back afterwards.
+  if (button.dataset.action === "insert-ink") {
+    insertInkDrawing(textarea, start);
     return;
   }
 

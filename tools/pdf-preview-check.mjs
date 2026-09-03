@@ -125,6 +125,13 @@ const API_SRC = `async () => {
     "/src/import/pdf.js?v=__BUILD__",
     "/src/format/highlight-notes.js?v=__BUILD__",
     "/src/format/notes-fence.js?v=__BUILD__",
+    // The legacy-section upgrader, which this file calls as api.fenceLegacySection
+    // and had never imported — so every check from "a legacy ## Highlight Notes
+    // section is fenced on read" onward died on a TypeError, taking the last
+    // third of this file with it. It lives in highlight-notes-merge.js, and is
+    // listed AFTER highlight-notes.js deliberately: the flatten below keeps the
+    // first module to export a name, and the two share several.
+    "/src/format/highlight-notes-merge.js?v=__BUILD__",
     "/src/documents/pdf-export.js?v=__BUILD__",
     "/src/export/run.js?v=__BUILD__",
     "/src/export/pdf.js?v=__BUILD__",
@@ -4120,6 +4127,179 @@ try {
     rotated.trayStayedOpen, `trayOpen=${rotated.trayStayedOpen}`);
   check("...and the same row takes a landscape phone back INTO focus mode",
     rotated.backIn, `chrome-collapsed=${rotated.backIn}`);
+
+  // ── The pen ──────────────────────────────────────────────────────────────
+  //
+  // Driven with a REAL stylus through Chrome's input pipeline (page.penStroke
+  // in tools/cdp.mjs), not a dispatchEvent from inside the page: the ink
+  // surface decides what to do with a press by reading pointerType off a
+  // trusted event, so a synthesised one would be exercising a path no stylus
+  // ever takes.
+  //
+  // What cannot be driven here is the compatibility TOUCH events a real S-Pen
+  // or Apple Pencil fires alongside its pointer events — CDP has no way to say
+  // "a touch that is also a pen". So the half of src/documents/pdf-ink.js that
+  // keeps the touch-selection controller and the scroller out of a stroke's way
+  // is checked by hand on real hardware, exactly as the native long press in
+  // tools/mobile-selection-check.mjs is.
+
+  // Put the reader back on a page that is actually rendered, and hand back a
+  // point in the middle of it to write on.
+  const inkSpot = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(300);
+    await api.whenDocumentPageReady(1);
+    await settle(200);
+    const el = document.querySelector('.pdf-page[data-page-number="1"]');
+    if (!el) return { error: "page 1 never rendered" };
+    const box = el.getBoundingClientRect();
+    if (box.width < 80 || box.height < 80) return { error: "page 1 has no size" };
+    return { x: Math.round(box.left + (box.width * 0.5)), y: Math.round(box.top + (box.height * 0.45)) };
+  }`);
+
+  if (inkSpot.error) {
+    check("the pen has a page to write on", false, inkSpot.error);
+  } else {
+    const before = await page.evaluate(`() => (window.__recall.api.state.meta?.pdfHighlights || []).length`);
+
+    // ── A tap is not a stroke ─────────────────────────────────────────────
+    await page.penTap(inkSpot.x, inkSpot.y);
+    const afterTap = await page.evaluate(`async () => {
+      await window.__recall.settle(250);
+      const marks = (window.__recall.api.state.meta?.pdfHighlights || []);
+      return { total: marks.length, ink: marks.filter((m) => m.kind === "ink").length };
+    }`);
+    check("a pen TAP leaves no ink", afterTap.ink === 0, `${afterTap.ink} ink mark(s) after a tap`);
+
+    // ── A stroke is ───────────────────────────────────────────────────────
+    const stroke = [];
+    for (let i = 0; i <= 24; i += 1) {
+      stroke.push([inkSpot.x + (i * 4), inkSpot.y + Math.round(Math.sin(i / 3) * 12), 0.4 + (0.4 * Math.sin(i / 7))]);
+    }
+    await page.penStroke(stroke);
+    const afterStroke = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      await settle(500);
+      const marks = (api.state.meta?.pdfHighlights || []).filter((m) => m.kind === "ink");
+      const layer = document.querySelector('.pdf-page[data-page-number="1"] .pdf-ink-layer canvas');
+      let painted = 0;
+      if (layer) {
+        const ctx = layer.getContext("2d");
+        const data = ctx.getImageData(0, 0, layer.width, layer.height).data;
+        for (let i = 3; i < data.length; i += 4) if (data[i] > 8) painted += 1;
+      }
+      return {
+        count: marks.length,
+        strokes: marks[0]?.ink?.s?.length || 0,
+        version: marks[0]?.ink?.v,
+        quads: marks[0]?.quads?.length || 0,
+        page: marks[0]?.page,
+        text: marks[0]?.text,
+        hasLayer: Boolean(layer),
+        painted,
+        quad: marks[0]?.quads?.[0]?.rect || null
+      };
+    }`);
+    check("a pen STROKE makes one ink mark", afterStroke.count === 1, `${afterStroke.count} mark(s), ${afterStroke.strokes} stroke(s)`);
+    check("...stamped with the format version it was written under", afterStroke.version === 1, `v=${afterStroke.version}`);
+    check("...on the page it was drawn on, with a bounding quad", afterStroke.page === 1 && afterStroke.quads === 1,
+      `page ${afterStroke.page}, ${afterStroke.quads} quad(s)`);
+    check("...and no text, because handwriting has none", afterStroke.text === "", `text = ${JSON.stringify(afterStroke.text)}`);
+    check("...painted onto its own canvas layer", afterStroke.hasLayer && afterStroke.painted > 50,
+      `layer=${afterStroke.hasLayer}, ${afterStroke.painted} inked pixel(s)`);
+    check("a pen stroke does not become a text highlight", afterStroke.count + afterTap.ink === 1,
+      `${afterTap.total} record(s) before, ${afterStroke.count} ink after`);
+
+    // ── Zoom: the strokes are coordinates INTO the page, so they must not
+    //    move in PDF space — and the layer must be rebuilt at the new scale
+    //    rather than left stretched, which is the fault the mark, text and
+    //    badge layers all learned separately.
+    const zoomed = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const was = document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect().width;
+      api.zoomDocument(1.25);
+      api.zoomDocument(1.25);
+      await settle(600);
+      await api.whenDocumentPageReady(1);
+      await settle(400);
+      const now = document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect().width;
+      const mark = (api.state.meta?.pdfHighlights || []).find((m) => m.kind === "ink");
+      const canvas = document.querySelector('.pdf-page[data-page-number="1"] .pdf-ink-layer canvas');
+      return {
+        grew: now > was + 4,
+        quad: mark?.quads?.[0]?.rect || null,
+        canvasWidth: canvas ? canvas.getBoundingClientRect().width : 0,
+        pageWidth: now
+      };
+    }`);
+    check("zooming actually changed the page's size", zoomed.grew, `${zoomed.pageWidth}px wide`);
+    check("...and the ink's own coordinates did not move", Boolean(zoomed.quad) && Boolean(afterStroke.quad)
+      && zoomed.quad.every((v, i) => Math.abs(v - afterStroke.quad[i]) < 0.01),
+      `${JSON.stringify(afterStroke.quad?.map((v) => Math.round(v)))} → ${JSON.stringify(zoomed.quad?.map((v) => Math.round(v)))}`);
+    check("...while its canvas was rebuilt to the page's new size",
+      Math.abs(zoomed.canvasWidth - zoomed.pageWidth) < 2,
+      `canvas ${Math.round(zoomed.canvasWidth)}px vs page ${Math.round(zoomed.pageWidth)}px`);
+
+    // ── The round trip. A mark that only exists in the session that made it
+    //    is the exact failure this whole file was written to catch.
+    const reloaded = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      await api.flushPendingDeckAutosave?.();
+      await settle(400);
+      const id = api.state.localDeckId;
+      await api.loadDeckFromLibrary(id);
+      await settle(600);
+      const marks = (api.state.meta?.pdfHighlights || []).filter((m) => m.kind === "ink");
+      return { count: marks.length, strokes: marks[0]?.ink?.s?.length || 0, quad: marks[0]?.quads?.[0]?.rect || null };
+    }`);
+    check("ink survives closing and reopening the deck", reloaded.count === 1 && reloaded.strokes > 0,
+      `${reloaded.count} mark(s), ${reloaded.strokes} stroke(s)`);
+    check("...with its coordinates intact", Boolean(reloaded.quad)
+      && reloaded.quad.every((v, i) => Math.abs(v - afterStroke.quad[i]) < 0.01),
+      reloaded.quad ? JSON.stringify(reloaded.quad.map((v) => Math.round(v))) : "no quad");
+
+    // ── The drawing FILE. inkStrokesFromSvg needs a DOMParser, so this half
+    //    cannot be checked in tools/ink-check.mjs — and a drawing whose strokes
+    //    cannot be read back is one that renders and can never be edited again.
+    const svg = await page.evaluate(`async () => {
+      const mod = await import("/src/format/ink-svg.js");
+      const strokes = [
+        { w: 2.2, c: "ink", p: [10, 10, 0.4, 20, 18, 0.7, 34, 14, 0.9, 44, 26, 0.5] },
+        { w: 3.4, c: "red", p: [50, 50, 0.6] }
+      ];
+      const text = mod.inkStrokesToSvg(strokes, { title: 'A "quoted" <drawing> & more' });
+      const back = mod.inkStrokesFromSvg(text);
+      const url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
+      const img = new Image();
+      const size = await new Promise((resolve) => {
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => resolve(null);
+        img.src = url;
+      });
+      let painted = 0;
+      if (size) {
+        const c = document.createElement("canvas");
+        c.width = size.w; c.height = size.h;
+        c.getContext("2d").drawImage(img, 0, 0);
+        const data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+        for (let i = 3; i < data.length; i += 4) if (data[i] > 8) painted += 1;
+      }
+      return {
+        back: back.length, pens: back.map((s) => s.c).join(","), widths: back.map((s) => s.w).join(","),
+        rendered: Boolean(size), painted,
+        notOurs: mod.inkStrokesFromSvg("<svg xmlns='http://www.w3.org/2000/svg'></svg>").length,
+        junk: mod.inkStrokesFromSvg("not xml <<<").length
+      };
+    }`);
+    check("a drawing's strokes survive the trip through its own SVG",
+      svg.back === 2 && svg.pens === "ink,red" && svg.widths === "2.2,3.4",
+      `${svg.back} stroke(s) · ${svg.pens} · ${svg.widths}`);
+    check("...and the file really renders as an image", svg.rendered && svg.painted > 10,
+      `rendered=${svg.rendered}, ${svg.painted} inked pixel(s)`);
+    check("...while an SVG that is not ours reads as no strokes rather than throwing",
+      svg.notOurs === 0 && svg.junk === 0, `plain=${svg.notOurs}, junk=${svg.junk}`);
+  }
 
   if (SHOT) {
     if (SHOT_PAGES) await emulatePhone(page, { width: 390, height: 780 });

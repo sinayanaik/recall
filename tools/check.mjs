@@ -247,6 +247,16 @@ const checks = [
   // or merely cleaned on the way out, which is what would re-push every card of
   // that book on every sync forever.
   ["text-sanitize ", ["node", ["tools/text-sanitize-check.mjs"], ROOT]],
+  // Handwriting, and mostly the two questions a browser is the wrong instrument
+  // for. A stroke is quantised, delta-encoded, packed into base64url and
+  // simplified before it is stored, so: does it come back, and can what it emits
+  // stop a deck syncing the way one U+0000 out of pdf.js once stopped a whole
+  // book? Then the straightener, which is all thresholds — and where the
+  // interesting assertions are the REFUSALS, because a shape that snaps when it
+  // was not meant to takes somebody's handwriting away. Pure Node: the format is
+  // a leaf and so is the shape fitter, deliberately, so this needs neither a
+  // browser nor the pre-modular tag.
+  ["ink           ", ["node", ["tools/ink-check.mjs"], ROOT]],
   // The same shape once more, for the document several decks make when they are
   // read as one: does every deck get back exactly what it put in? The write-back
   // fires on every autosave over every deck in the selection, so anything the

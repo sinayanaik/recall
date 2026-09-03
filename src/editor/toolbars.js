@@ -11,12 +11,14 @@ import { CLOZE_MAKE_ICON, RENDER_HIGHLIGHT_GLYPH, refreshRenderSwatches } from "
 // group: this toolbar REPLACES that one while raw-editing, so anything only
 // present there would silently disappear the moment you tapped ✎.
 export function createToolbarHtml(options = {}) {
-  // The three controls a SELECTION cannot express, which is why they have no
+  // The four controls a SELECTION cannot express, which is why they have no
   // home on the floating pill: inserting an image needs a caret, not a
-  // selection, and bullet / clear-formatting act on whole lines.
+  // selection, drawing needs one for exactly the same reason, and bullet /
+  // clear-formatting act on whole lines.
   const lineTools = `
     <button type="button" data-action="bullet" title="Toggle Bullet List">-</button>
     <button type="button" data-action="insert-image" title="Insert image (upload to Supabase Storage)">🖼️</button>
+    <button type="button" data-action="insert-ink" title="Draw — write or sketch with a stylus, and drop it into the note here">✎</button>
     <button type="button" data-action="clear-all" title="Clear Formatting">Tx</button>`;
   // Everything else this toolbar used to carry — B I U S </>, font, colour,
   // highlight, and the capture group — now lives on the floating selection pill,

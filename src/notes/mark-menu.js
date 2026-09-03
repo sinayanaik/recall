@@ -269,7 +269,12 @@ function ensureMarkMenu() {
     const entry = markActions.resolveHighlightEntry?.(surface, index);
     if (!entry) return;
     if (action === "copy") markActions.copy?.(entry.text);
-    else if (action === "card") markActions.makeCard?.(entry.text, entry.anchor);
+    // The entry rides along with the card verb, and only that one. A card is
+    // the single verb whose answer is not always the WORDS: an ink mark has
+    // none, and what it should hold is the drawing. Copy, share and search are
+    // still handed the passage and nothing else, because there is nothing about
+    // which mark this was for any of them to do anything with.
+    else if (action === "card") markActions.makeCard?.(entry.text, entry.anchor, entry);
     else if (action === "pin") markActions.pin?.(entry.text, entry.anchor, button);
     else if (action === "highlights") markActions.showInHighlights?.(surface, entry.locator);
     // The two that take the words out of the app entirely. Each is handed the

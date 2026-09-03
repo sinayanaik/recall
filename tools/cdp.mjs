@@ -214,6 +214,68 @@ export async function openPage(client) {
       await call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     },
 
+    // ── A stylus ──────────────────────────────────────────────────────────
+    //
+    // Input.dispatchMouseEvent carries `pointerType`, `force`, `tiltX` and
+    // `tiltY`, so a real pen — one the page sees as `pointerType: "pen"` with a
+    // pressure on it — can be driven through the browser's own input pipeline
+    // rather than synthesised inside the page. That distinction is the whole
+    // reason this file exists (see tap above), and it matters more here than
+    // anywhere: the ink surface decides what to do with a press by reading
+    // pointerType off a trusted event, so a dispatchEvent from inside the page
+    // would be testing a code path no stylus ever takes.
+    //
+    // What this canNOT reproduce is the compatibility TOUCH events a real
+    // S-Pen or Apple Pencil fires alongside its pointer events — CDP has no way
+    // to say "a touch that is also a pen". So the half of src/documents/pdf-ink.js
+    // that keeps the touch-selection controller and the scroller out of a
+    // stroke's way is checked by hand on real hardware, and is marked as such
+    // wherever it is asserted here.
+    async penDown(x, y, { pressure = 0.5, tiltX = 0, tiltY = 0, buttons = 1 } = {}) {
+      await call("Input.dispatchMouseEvent", {
+        type: "mousePressed", x, y, button: "left", buttons, clickCount: 1,
+        pointerType: "pen", force: pressure, tiltX, tiltY
+      });
+    },
+
+    async penMove(x, y, { pressure = 0.5, tiltX = 0, tiltY = 0, buttons = 1 } = {}) {
+      await call("Input.dispatchMouseEvent", {
+        type: "mouseMoved", x, y, button: "left", buttons,
+        pointerType: "pen", force: pressure, tiltX, tiltY
+      });
+    },
+
+    async penUp(x, y, { pressure = 0, buttons = 0 } = {}) {
+      await call("Input.dispatchMouseEvent", {
+        type: "mouseReleased", x, y, button: "left", buttons, clickCount: 1,
+        pointerType: "pen", force: pressure
+      });
+    },
+
+    // One whole stroke. `points` are [x, y] or [x, y, pressure]; the pauses are
+    // real awaits rather than a burst, because the ink surface times a press to
+    // tell a tap from a stroke and a burst would arrive inside that window.
+    async penStroke(points, { stepMs = 12, pressure = 0.6 } = {}) {
+      if (!points.length) return;
+      const at = (p) => ({ x: p[0], y: p[1], pressure: p.length > 2 ? p[2] : pressure });
+      const first = at(points[0]);
+      await this.penDown(first.x, first.y, { pressure: first.pressure });
+      for (let i = 1; i < points.length; i += 1) {
+        const p = at(points[i]);
+        await new Promise((r) => setTimeout(r, stepMs));
+        await this.penMove(p.x, p.y, { pressure: p.pressure });
+      }
+      const last = at(points[points.length - 1]);
+      await this.penUp(last.x, last.y);
+    },
+
+    // A pen TAP: down and straight back up, under the tap window and inside the
+    // slop. What this must do is press whatever is underneath and leave no ink.
+    async penTap(x, y) {
+      await this.penDown(x, y, { pressure: 0.4 });
+      await this.penUp(x, y);
+    },
+
     // Resolves on the load event rather than on Page.navigate's own answer,
     // which returns as soon as the navigation is COMMITTED — before a single
     // module has run.

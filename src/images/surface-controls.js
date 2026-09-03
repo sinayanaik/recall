@@ -11,7 +11,7 @@ import { renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { isBrokenImage } from "./broken.js?v=__BUILD__";
 import { deleteSupabaseImage } from "./upload.js?v=__BUILD__";
 import { CANONICAL_SRC_ATTR } from "../cloud/storage-urls.js?v=__BUILD__";
-import { LOCAL_IMAGE_SCHEME } from "./outbox.js?v=__BUILD__";
+import { LOCAL_IMAGE_SCHEME, storeImageOrQueue } from "./outbox.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 // block-cache imports this module back; both edges are function declarations
 // called at runtime, which is the case the TDZ rule in tools/module-symbols.mjs
@@ -21,6 +21,11 @@ import { IMG_ALT_SOURCE, IMG_DEST_SOURCE, IMG_TOKEN_SOURCE, imageDestinationUrl,
 import { DIAGRAM_WIDTH_MAX, DIAGRAM_WIDTH_MIN, fenceInfoWithWidth, normalizeImageUrl, parseDiagramWidth, scanCodeRegions, scanFences } from "../render/preprocess.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { reopenInkDrawing } from "../notes/ink-sheet.js?v=__BUILD__";
+
+// block-cache imports this module back; both edges are function declarations
+// called at runtime, which is the case the TDZ rule in tools/module-symbols.mjs
+// allows. Nothing here reads it at module scope.
 
 // ── Which surfaces carry editable images ───────────────────────────────────
 // The resize/delete grips started out as a notes-only feature, reading and
@@ -732,8 +737,8 @@ export function markTinyImageShell(shell, node) {
 // button does nothing". The elements now survive; only their binding changes.
 export const imageControlBindings = new WeakMap();
 
-export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl, bounds = null) {
-  imageControlBindings.set(shell, { node: img, onCommit, onDelete, refEl, bounds });
+export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, refEl, bounds = null, onEdit = null) {
+  imageControlBindings.set(shell, { node: img, onCommit, onDelete, refEl, bounds, onEdit });
   // Surface-agnostic marker for the stylesheets, so a control does not have to
   // be styled once per view id (see styles/47-broken-image.css).
   shell.classList.add("is-editable-image");
@@ -755,10 +760,37 @@ export function attachNotesImageResizeHandle(shell, img, onCommit, onDelete, ref
   }
 
   // A target that only resizes (a diagram, whose source is a fenced code block
-  // the reader edits as text) drops the button if it ever had one.
+  // the reader edits as text) drops the button if it ever had one. The ✎ goes
+  // with it: a diagram is not a drawing and has no strokes to re-open.
   if (!onDelete) {
     shell.querySelector(".notes-img-delete-btn")?.remove();
+    shell.querySelector(".notes-img-edit-btn")?.remove();
     return;
+  }
+
+  // ✎, on a drawing only. A picture cannot be edited in place and this does not
+  // pretend otherwise — it re-opens the ink sheet on the strokes stored inside
+  // the SVG (src/format/ink-svg.js) and replaces the file with what comes back.
+  // Offered on any SVG rather than on a marked-up subset: ink drawings are the
+  // only SVGs this app produces, and a pasted one that is not ours says so
+  // clearly when pressed rather than being silently missing a control.
+  if (onEdit) {
+    if (!shell.querySelector(".notes-img-edit-btn")) {
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "notes-img-edit-btn";
+      editBtn.title = "Edit this drawing";
+      editBtn.setAttribute("aria-label", "Edit this drawing");
+      editBtn.textContent = "✎";
+      editBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        imageControlBindings.get(shell)?.onEdit?.();
+      });
+      shell.appendChild(editBtn);
+    }
+  } else {
+    shell.querySelector(".notes-img-edit-btn")?.remove();
   }
 
   if (!shell.querySelector(".notes-img-delete-btn")) {
@@ -992,8 +1024,47 @@ export function enhanceSurfaceImageControls(surface, { scope = null, builtImages
     attachNotesImageResizeHandle(shell, img,
       (px) => commitSourceImageWidth(surface, refAt(), px),
       () => removeSourceImage(surface, refAt()),
-      view
+      view,
+      null,
+      isDrawingImage(img) ? () => editSourceDrawing(surface, refAt(), img) : null
     );
+  });
+}
+
+// Is this picture a drawing? Asked of the SOURCE url rather than of `src`,
+// which by render time may be a signed URL with the extension buried in a query
+// string, or a blob: URL with no extension at all.
+export function isDrawingImage(img) {
+  return /\.svg(\?|#|$)/i.test(String(sourceUrlForImage(img) || ""));
+}
+
+// Re-open a drawing, and put what comes back in its place.
+//
+// The width the reader chose is carried across deliberately: editing a drawing
+// is not resizing it, and a drawing that jumped back to its natural size every
+// time a stroke was added would be unusable. The markdown form is carried
+// across too — a drawing that had no width stays a plain `![](…)` rather than
+// being rewritten as a raw tag for no reason.
+export function editSourceDrawing(surface, ref, img) {
+  reopenInkDrawing({
+    load: async () => {
+      const response = await fetch(img.currentSrc || img.src);
+      if (!response.ok) throw new Error(`drawing fetch failed: ${response.status}`);
+      return response.text();
+    },
+    replace: async (file) => {
+      const result = await storeImageOrQueue(file);
+      if (result.error || !result.url) {
+        showToast(result.error === "not-signed-in"
+          ? "Sign in to save this drawing"
+          : "Couldn't save the drawing — the original is untouched", "error");
+        return;
+      }
+      replaceSourceImage(surface, ref, (image) => (image.widthPx
+        ? imgTagHtml({ url: result.url, alt: image.alt, widthPx: image.widthPx })
+        : `![${image.alt || ""}](${result.url})`));
+      if (result.queued) showToast("Drawing saved here — uploads when you're back online", "info");
+    }
   });
 }
 

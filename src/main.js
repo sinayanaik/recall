@@ -114,10 +114,16 @@ import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, re
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, resetDocumentInk, setInkChangedHandler } from "./documents/pdf-ink.js?v=__BUILD__";
+import { initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
+
+// The two index builders the contents drawer's Highlights half already uses.
+// Imported HERE, not by the mark menu, which is reached from the document
+// surface this module's own subtree imports — see setMarkMenuActions.
 
        // grid | folder | tree
  // tiles | list
@@ -1124,7 +1130,20 @@ onDomReady(() => {
       ? documentHighlightEntries().find((entry) => entry.locator.highlightId === key)
       : noteHighlightEntries().find((entry) => entry.locator.markIndex === key)),
     copy: (text) => copyTextToClipboard(text),
-    makeCard: (text, anchor) => createCardFromNotesSelection(text, anchor),
+    makeCard: (text, anchor, entry) => {
+      const id = entry?.locator?.highlightId;
+      // Ink has no words. The card gets a picture of what was drawn instead,
+      // which needs an upload — so this is the one verb here that is async, and
+      // it falls back to the label if the drawing cannot be kept rather than
+      // making no card at all.
+      if (id && isInkMarkId(id)) {
+        inkMarkImageMarkdown(id)
+          .then((markdown) => createCardFromNotesSelection(markdown || text, anchor))
+          .catch(() => createCardFromNotesSelection(text, anchor));
+        return;
+      }
+      createCardFromNotesSelection(text, anchor);
+    },
     // deckLocalId is added HERE and not in the index: a Quick Note is stored in
     // a different deck from the one it came from, so its anchor is the only
     // thing that can say which deck to open first (see captureSourceAnchor,
@@ -1179,6 +1198,11 @@ onDomReady(() => {
   setDocumentPagePaintedHook((pageNumber) => {
     repairDocumentHighlightText(pageNumber);
     repairDocumentHighlightQuads(pageNumber);
+    // Before the badges, so the badge layer stays the page's LAST child — the
+    // thing paintPageNoteBadges re-appends on every repaint precisely to keep.
+    // Ink carries its own z-index and would sit correctly either way, but the
+    // ordering the layer below relies on is worth not disturbing.
+    paintDocumentInk(pageNumber);
     paintPageNoteBadges(pageNumber);
     // ...and the tint that says which of these marks the pane is currently on.
     // The mark layer was rebuilt from scratch a moment ago — paintDocument
@@ -1186,7 +1210,26 @@ onDomReady(() => {
     // it, and only the pane knows which ones should have it back.
     repaintHighlightLink();
   });
-  setDocumentOpenedHook(refreshPdfPageNotes);
+  setDocumentOpenedHook(() => {
+    // The engine holds decoded strokes for every page it has painted, keyed by
+    // page number — and page 7 of the last paper is not page 7 of this one.
+    // Safe here: openDocumentViewBody has just emptied the view and rebuilt the
+    // placeholders, and no page has painted a layer yet.
+    resetDocumentInk();
+    refreshPdfPageNotes();
+  });
+  initDocumentInk();
+  initInkRail();
+  // The rail's own state — which tool is on, whether undo has anything to undo,
+  // whether a lasso selection exists — answers to ink changing, and pdf-ink.js
+  // must not import the rail: the rail imports IT. Registered here, the same
+  // way the highlights handler above is, for the same reason.
+  //
+  // Only the rail. Writing ink goes through commitDocumentHighlights, which
+  // already fires notifyHighlightsChanged for everything else that cares — the
+  // pane, the badges and the printed page notes — so doing it again here would
+  // rebuild all three twice for every stroke.
+  setInkChangedHandler(refreshInkRail);
 });
 // So an edit made on a mark in the note refreshes the highlights pane, without
 // highlight-edit.js having to import the panel that owns it.

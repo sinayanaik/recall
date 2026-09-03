@@ -18,6 +18,10 @@ import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { forEachDeckSnapshot, rewriteDeckSnapshot, scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
+// Only ever CALLED, never read at module scope — the cycle back through
+// block-cache is the case tools/module-symbols.mjs allows for hoisted function
+// declarations.
+
 // Insert an "uploading…" placeholder, upload the image, then swap in `![](url)`.
 // Dropped in wherever the caret is — no surrounding blank-line padding needed:
 // every rendered <img> gets wrapped in a block-level .diagram-shell (see
@@ -426,62 +430,76 @@ export async function insertImageUpload(textarea, file, atPos) {
 // is already the exact blob that will be stored. Callers with SEVERAL images
 // (a bulk pick, a multi-file drop) ask once and then call this per file, which
 // is what keeps one dialog per batch rather than one per picture.
+// Store one image and say where it ended up — WITHOUT touching a textarea.
+//
+// This is the half of insertPreparedImageUpload that is about the file rather
+// than about the caret: upload it, and if that cannot be done right now, park
+// the bytes in the outbox and hand back the `recall-img:` reference that
+// renders from them until it can. Every branch below used to exist only inside
+// the textarea path, which meant the second caller — re-saving an edited
+// drawing (src/notes/ink-sheet.js), where there is no caret and no placeholder
+// token, only a picture already in the note to be replaced — would have had to
+// reimplement "what does offline mean here". It is four cases and one of them
+// (`notStored`: the upload reported success and left nothing in the bucket) is
+// the one that produced a real report, so a second copy of it was never going
+// to stay in step.
+//
+// Returns { url } on success, { url, queued: true } when the bytes are parked,
+// or { error } when the image is not kept at all. The caller decides what to
+// say; this decides what happened.
+export async function storeImageOrQueue(file) {
+  if (!file || !file.type || !file.type.startsWith("image/")) return { error: "not-an-image" };
+  // Resolved before the await so the image is filed under the deck the user
+  // was actually in, even if they switch decks while it uploads.
+  const folder = deckImageFolder();
+  try {
+    return { url: await uploadImageToSupabase(file, { folder }) };
+  } catch (err) {
+    if (err.message !== "OFFLINE" && !err.notStored) {
+      return { error: err.message === "NOT_SIGNED_IN" ? "not-signed-in" : "failed", cause: err };
+    }
+    if (err.notStored) console.warn("An upload came back clean but left nothing in the bucket", err);
+    const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+    try {
+      // `folder` rides along so a queued image still lands beside the rest of
+      // its deck's images when it finally uploads, however many decks the user
+      // has opened in between. Entries queued before this existed have no
+      // folder and fall back to unfiled/.
+      await putOutboxImage({ token, blob: file, folder, savedAt: new Date().toISOString() });
+    } catch (error) {
+      console.warn("Could not queue the image for upload", error);
+      return { error: "not-kept", reason: err.notStored ? "not-stored" : "offline" };
+    }
+    return { url: `${LOCAL_IMAGE_SCHEME}${token}`, queued: true, reason: err.notStored ? "not-stored" : "offline" };
+  }
+}
+
 export async function insertPreparedImageUpload(textarea, file, atPos) {
   if (!textarea || !file || !file.type || !file.type.startsWith("image/")) return;
   const uploadToken = `![uploading…](#upl-${Date.now()}-${Math.random().toString(36).slice(2, 7)})`;
   insertAtCursor(textarea, uploadToken, atPos);
   showToast("Uploading image…", "info");
-  // Resolved before the await so the image is filed under the deck the user
-  // actually pasted into, even if they switch decks while it uploads.
-  const folder = deckImageFolder();
-  // Which of the two "keep it here and try again" cases we ended up in, so the
-  // toast and the failure toast below say something true.
-  let queuedReason = "offline";
-  try {
-    const url = await uploadImageToSupabase(file, { folder });
-    await settleUploadToken(textarea, uploadToken, `![](${url})`);
-    showToast("Image uploaded", "success");
-    return;
-  } catch (err) {
-    // `notStored` means the upload reported success and the object is not in
-    // the bucket (see assertImageStored). Treated exactly like being offline —
-    // keep the bytes, keep the picture on screen, try again on the next sync —
-    // because the alternative the app used to take is what caused the report:
-    // writing a URL that only THIS device can display, since only this device
-    // has the bytes cached under it.
-    if (err.message !== "OFFLINE" && !err.notStored) {
-      await settleUploadToken(textarea, uploadToken, "");
-      if (err.message === "NOT_SIGNED_IN") {
-        showToast("Sign in to upload images", "error");
-      } else {
-        console.error("Image upload failed", err);
-        showToast("Image upload failed", "error");
-      }
-      return;
+  const result = await storeImageOrQueue(file);
+
+  if (result.error) {
+    await settleUploadToken(textarea, uploadToken, "");
+    if (result.error === "not-signed-in") showToast("Sign in to upload images", "error");
+    else if (result.error === "not-kept") {
+      showToast(result.reason === "not-stored"
+        ? "That image didn't reach the cloud and couldn't be kept here"
+        : "Can't upload image while offline", "error");
+    } else {
+      console.error("Image upload failed", result.cause);
+      showToast("Image upload failed", "error");
     }
-    if (err.notStored) console.warn("An upload came back clean but left nothing in the bucket", err);
-    queuedReason = err.notStored ? "not-stored" : "offline";
+    return;
   }
 
-  // Offline: park the blob and leave a placeholder that renders from it, rather
-  // than discarding the image the user just chose.
-  const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-  try {
-    // `folder` rides along so a queued image still lands beside the rest of its
-    // deck's images when it finally uploads, however many decks the user has
-    // opened in between. Entries queued before this existed have no folder and
-    // fall back to unfiled/.
-    await putOutboxImage({ token, blob: file, folder, savedAt: new Date().toISOString() });
-  } catch (error) {
-    console.warn("Could not queue the image for upload", error);
-    await settleUploadToken(textarea, uploadToken, "");
-    showToast(queuedReason === "not-stored"
-      ? "That image didn't reach the cloud and couldn't be kept here"
-      : "Can't upload image while offline", "error");
-    return;
-  }
-  await settleUploadToken(textarea, uploadToken, `![](${LOCAL_IMAGE_SCHEME}${token})`);
-  showToast(queuedReason === "not-stored"
+  await settleUploadToken(textarea, uploadToken, `![](${result.url})`);
+  if (!result.queued) { showToast("Image uploaded", "success"); return; }
+  // Kept here rather than uploaded. Said out loud, because the difference
+  // matters on the OTHER device: this picture does not exist there yet.
+  showToast(result.reason === "not-stored"
     ? "That image didn't reach the cloud — kept here and retried on the next sync"
     : "Image saved here — uploads when you're back online", "info");
 }

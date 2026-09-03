@@ -108,6 +108,7 @@
     <link rel="stylesheet" href="styles/49-highlights-only.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/50-image-width.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/51-tablet-fit.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/52-ink.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -160,14 +161,13 @@
     <link rel="modulepreload" href="src/core/text.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-export.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-highlights.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-ink.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/documents/pdf-toc.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/toc-tree.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/note-editor-kit.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-region.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-store.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-toc.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/editor/highlight-mirror.js?v=__BUILD__">
     <link rel="modulepreload" href="src/editor/markdown-keys.js?v=__BUILD__">
@@ -189,15 +189,18 @@
     <link rel="modulepreload" href="src/format/highlight-edit.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-notes-merge.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight-notes.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/format/notes-fence.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/highlight.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/ink-colors.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/ink-strokes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/ink-svg.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/merged-notes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/format/notes-fence.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/render-toolbar.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/selection-tools.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/broken.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/images/compress.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/compress-dialog.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/images/compress.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/outbox.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/paste.js?v=__BUILD__">
     <link rel="modulepreload" href="src/images/surface-controls.js?v=__BUILD__">
@@ -231,28 +234,31 @@
     <link rel="modulepreload" href="src/notes/caret-line.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/highlight-note-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-badges.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/highlight-note-editor.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/ink-sheet.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/link-picker.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/mark-menu.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/note-editor-kit.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/note-links.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/notes-edit-split.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-head-overflow.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-history.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/notes/notes-edit-split.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/notes-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/paged-view.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/raw-offset.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/reading-position.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/scroll-anchor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/toc-tree.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/toc.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/touch-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/cloze-panel.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/panels/highlight-index.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/drawer-highlights.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/panels/highlights-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlight-cycle.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/panels/highlight-index.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/panels/highlights-editor.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/app-info.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/online.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/release-info.js?v=__BUILD__">
@@ -268,6 +274,9 @@
     <link rel="modulepreload" href="src/render/diagram-zoom.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/diagrams.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/enhance.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/ink-engine.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/ink-paint.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/ink-shapes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/inline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/math-dom.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/math.js?v=__BUILD__">
@@ -276,6 +285,7 @@
     <link rel="modulepreload" href="src/render/tables.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/deck-snapshot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/deck-store.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/storage/ink-prefs.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/keys.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/quota.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/storage-panel.js?v=__BUILD__">
@@ -284,8 +294,8 @@
     <link rel="modulepreload" href="src/sync/diff.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/document-sync.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/indicator.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/sync/notes-conflict.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/notes-conflict-merge.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/sync/notes-conflict.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/push.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/reconcile.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/report.js?v=__BUILD__">
@@ -298,6 +308,7 @@
     <link rel="modulepreload" href="src/ui/edit-mode.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/feedback.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/help.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/ink-rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/nav-history.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/overlays.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/pickers.js?v=__BUILD__">
@@ -906,6 +917,12 @@
                    equation has no text layer to drag across, so without this
                    half the content of a paper cannot be highlighted at all. -->
               <button class="tool-button document-toggle" id="documentRegionBtn" type="button" aria-pressed="false" title="Select a region — drag a box around a figure, a table or an equation to highlight it" aria-label="Select a region">&#9635;</button>
+              <!-- Ink. The button does NOT arm the pen: a stylus always draws,
+                   with no mode to switch on and none to forget. What it opens
+                   is the rail — the colour, the nib, the eraser and the lasso —
+                   and it is also the only way a mouse can draw, because a mouse
+                   has no other way of saying which it meant. -->
+              <button class="tool-button document-toggle" id="documentInkBtn" type="button" aria-pressed="false" title="Pen — write on the page with a stylus. The pen always draws and a finger always scrolls; this opens the colours, the nib and the eraser (and lets a mouse draw)." aria-label="Pen">&#9998;</button>
               <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Document options" title="Document options">&#8943;</button>
               <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
                 <!-- "Save a copy" is not here any more. It downloads the
@@ -924,6 +941,32 @@
               </div>
             </div>
             <div class="document-scroll" id="documentView"></div>
+            <!-- The pen's rail. Over the page like the pager, on the opposite
+                 side, and out of the way until the ✎ above is pressed.
+                 data-ink-* rather than a listener per control: one delegated
+                 handler, the same pattern the edit toolbars and the floating
+                 render pill both use. -->
+            <div class="document-ink-rail" id="documentInkRail" hidden role="toolbar" aria-label="Pen">
+              <div class="ink-rail-group" id="inkRailPens" role="group" aria-label="Pen colour"></div>
+              <div class="ink-rail-group" id="inkRailWidths" role="group" aria-label="Nib"></div>
+              <div class="ink-rail-group" role="group" aria-label="Tool">
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen" aria-label="Pen">&#9998;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it. The eraser end or the side button of a stylus does this without leaving the pen." aria-label="Eraser">&#9003;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, resize, join, split or delete them" aria-label="Lasso">&#9711;</button>
+              </div>
+              <div class="ink-rail-group" role="group" aria-label="Undo">
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo" aria-label="Undo">&#8630;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="redo" title="Redo" aria-label="Redo">&#8631;</button>
+              </div>
+              <!-- Only while something is lassoed. Join and Split are the
+                   repair for the grouping rule guessing where one mark ended:
+                   see src/documents/pdf-ink.js. -->
+              <div class="ink-rail-group ink-rail-selection" id="inkRailSelection" role="group" aria-label="Selection" hidden>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="join" title="Join — make these strokes one mark, with one note and one card" aria-label="Join">&#8862;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="split" title="Split — take these strokes out into a mark of their own" aria-label="Split">&#8863;</button>
+                <button class="tool-button ink-rail-btn is-danger" type="button" data-ink-action="delete" title="Delete these strokes" aria-label="Delete">&#128465;</button>
+              </div>
+            </div>
             <!-- Over the page, not above it. Quiet until reached for, so a
                  reader gets the whole height of the stage for the paper. -->
             <div class="document-pager" id="documentPager">
@@ -1772,6 +1815,24 @@
               <li><strong>Finish a paper, then let go of it</strong> — <strong>⋯ → Save a copy</strong> downloads the original file, and <strong>⋯ → Remove from cloud</strong> frees the storage it was using. Your highlights, notes and cards all stay, and so does the copy on this device; another device asks you to re-attach the file, and checks it really is the same one before painting a single highlight on it</li>
               <li><strong>Read it on two devices at once</strong> — a highlight and the note written on it merge the way your cards do: each carries its own timestamp, both sides are merged rather than one replacing the other, and a highlight you delete stays deleted everywhere. Mark up page 3 on a laptop and page 40 on a phone and you end with both, on both, with no "your notes were replaced" to answer. If two devices genuinely write different text on the <em>same</em> note and nothing can say which came last, both texts are kept — one under the other — rather than either being dropped</li>
               <li><strong>A scanned PDF with no text layer</strong> reads perfectly well, and there is no text in it to select — so no text highlights and no make-card-from-text, and there is no OCR. <strong>▣</strong> still works on every page of it, which is the one way to mark up a scan</li>
+            </ul>
+          </section>
+
+          <section class="help-section">
+            <h3 class="help-section-title">Handwriting ✎ — a pen on the page, and in the note</h3>
+            <p>If you have a <strong>Samsung S-Pen</strong> or an <strong>Apple Pencil</strong>, it writes. There is no mode to switch on and none to forget: <strong>the pen draws and a finger scrolls</strong>, on the paper and everywhere else, and that is the whole rule. A hand resting on the glass is a finger, so it scrolls rather than smearing — palm rejection you never have to turn on.</p>
+            <ul class="help-list">
+              <li><strong>Write straight onto a paper</strong> — open a PDF and draw. Strokes are stored as coordinates <em>into the page</em>, the same way a highlight is, so they stay on the words you drew them beside through every zoom, refit, rotation, reload and second device. Pressure varies the line, so a downstroke looks like a downstroke</li>
+              <li><strong>A tap still taps</strong> — press a numbered note badge, a highlight or a button with the pen and it does what it always did. Only a stroke is ink</li>
+              <li><strong>Open the ✎ in the document header</strong> for the rest of it: five pen colours, four nibs, an eraser and a lasso, with undo and redo. The colours are defined per theme, so a drawing made in daylight is still legible in a dark one, and your red pen stays red on an inverted page</li>
+              <li><strong>Erase without changing tool</strong> — the eraser end of a stylus, or its side button, erases for as long as you hold it. Crossing a stroke removes that stroke, not a hole in it</li>
+              <li><strong>Hold still and a shape snaps</strong> — pause at the end of a stroke and a rough circle becomes a circle, a rough box a box, a line a line, and a line with a hook on the end an arrow. It refuses far more often than it accepts, and it will not touch anything the size of handwriting: turning your writing into a shape would be much worse than not offering</li>
+              <li><strong>Lasso to fix, move or remove</strong> — circle some strokes to drag them, resize them from the corner, or delete them</li>
+              <li><strong>Your writing is a mark like any other</strong> — a burst of strokes is listed in the <strong>Highlights</strong> pane with a picture of what you drew, takes a written note, wears a numbered badge on the page, and makes a flashcard whose answer is the drawing itself. Strokes made together become one mark and a pause of a second and a half starts the next; when that guesses wrong, lasso them and press <strong>⊞ Join</strong> or <strong>⊟ Split</strong></li>
+              <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This paper, annotated</strong> prints the pages with your handwriting on them</li>
+              <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. What you draw lands in the note where the caret was, as a block that reflows with the text like a picture, with the same corner grip to resize it and the same 🗑 to remove it. Press its own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
+              <li><strong>No connection needed</strong> — a drawing made offline is kept on the device and uploads itself when you are back, exactly as a pasted picture does</li>
+              <li><strong>On a laptop</strong> the pen rail is also how a mouse draws: a mouse has no way of saying whether a drag means ink or a selection, so it only inks while the rail is open</li>
             </ul>
           </section>
 
