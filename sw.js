@@ -293,6 +293,7 @@ const APP_SHELL = [
   `./styles/50-image-width.css?v=${STAMP}`,
   `./styles/51-tablet-fit.css?v=${STAMP}`,
   `./styles/52-ink.css?v=${STAMP}`,
+  `./styles/53-handwriting.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -369,6 +370,11 @@ const APP_SHELL = [
   `./src/format/ink-colors.js?v=${STAMP}`,
   `./src/format/ink-strokes.js?v=${STAMP}`,
   `./src/format/ink-svg.js?v=${STAMP}`,
+  `./src/handwriting/board.js?v=${STAMP}`,
+  `./src/handwriting/pages.js?v=${STAMP}`,
+  `./src/handwriting/text-boxes.js?v=${STAMP}`,
+  `./src/handwriting/paper.js?v=${STAMP}`,
+  `./src/handwriting/rail.js?v=${STAMP}`,
   `./src/format/locate-selection.js?v=${STAMP}`,
   `./src/format/merged-notes.js?v=${STAMP}`,
   `./src/format/notes-fence.js?v=${STAMP}`,

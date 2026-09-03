@@ -35,41 +35,33 @@
 // a drawing is the other way round — that starts from the picture on screen, so
 // it lives on the image's own grip row (src/images/surface-controls.js).
 
-import { INK_PEN_COLORS, INK_WIDTHS, inkPenVar } from "../format/ink-colors.js?v=__BUILD__";
-import { inkStrokesBounds } from "../format/ink-strokes.js?v=__BUILD__";
+import { HW_ZOOM_STEP, createHandwritingPaper } from "../handwriting/paper.js?v=__BUILD__";
+import { addHandwritingPage, fitHandwritingStrokesToPage, makeHandwritingPage, removeHandwritingPage } from "../handwriting/pages.js?v=__BUILD__";
+import { buildInkNibs, buildInkPenSwatches, buildInkToolGroup, inkRailButton, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
 import { inkStrokesFromSvg, inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
 import { insertPreparedImageUpload } from "../images/outbox.js?v=__BUILD__";
-import { createInkEngine } from "../render/ink-engine.js?v=__BUILD__";
 import { inkPreferences, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
-// The sheet's own host key. It has exactly one drawing surface, unlike the
-// paper, which has one per page.
-const INK_SHEET_HOST = "sheet";
-
 let sheet = null;
-let sheetEngine = null;
+let sheetPaper = null;
 let sheetSession = null;
+// The sheet's pages, which are the page model's pages and nothing else — they
+// are simply never written to a deck. A drawing is still a picture in a note
+// when it is finished; what changed is that it is no longer one SCREENFUL.
+let sheetPages = [];
 
 // ── The overlay ────────────────────────────────────────────────────────────
-
-function inkRailButton(attribute, value, label, glyph, extraClass = "") {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = `tool-button ink-rail-btn${extraClass ? ` ${extraClass}` : ""}`;
-  button.dataset[attribute] = String(value);
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.setAttribute("aria-pressed", "false");
-  if (glyph) button.innerHTML = glyph;
-  return button;
-}
 
 function buildSheet() {
   if (sheet) return sheet;
   const root = document.createElement("div");
   root.className = "ink-sheet";
+  // An id as well as a class, because src/ui/overlays.js has to be able to ask
+  // whether this is open and cannot import this module to do it — ink-sheet.js
+  // imports the scroll lock FROM overlays.js, so the arrow only points one way.
+  root.id = "inkSheet";
   root.hidden = true;
   root.setAttribute("role", "dialog");
   root.setAttribute("aria-modal", "true");
@@ -97,30 +89,15 @@ function buildSheet() {
 
   const pens = document.createElement("div");
   pens.className = "ink-rail-group";
-  INK_PEN_COLORS.forEach((color) => {
-    const button = inkRailButton("inkPen", color.value, color.name, "", "ink-rail-swatch");
-    button.classList.remove("tool-button", "ink-rail-btn");
-    button.style.setProperty("--ink-swatch", `var(${inkPenVar(color.value)}, ${color.swatch})`);
-    pens.appendChild(button);
-  });
+  pens.setAttribute("role", "group");
+  pens.setAttribute("aria-label", "Pen colour");
+  buildInkPenSwatches(pens);
 
   const widths = document.createElement("div");
   widths.className = "ink-rail-group";
-  const widest = INK_WIDTHS[INK_WIDTHS.length - 1];
-  INK_WIDTHS.forEach((size) => {
-    const button = inkRailButton("inkWidth", size, `${size}pt nib`, "", "ink-rail-nib");
-    button.classList.remove("tool-button", "ink-rail-btn");
-    button.style.setProperty("--ink-nib", `${Math.round((size / widest) * 16) + 4}px`);
-    widths.appendChild(button);
-  });
-
-  const tools = document.createElement("div");
-  tools.className = "ink-rail-group";
-  tools.append(
-    inkRailButton("inkTool", "pen", "Pen", "&#9998;"),
-    inkRailButton("inkTool", "eraser", "Eraser", "&#9003;"),
-    inkRailButton("inkTool", "lasso", "Lasso", "&#9711;")
-  );
+  widths.setAttribute("role", "group");
+  widths.setAttribute("aria-label", "Nib");
+  buildInkNibs(widths);
 
   const steps = document.createElement("div");
   steps.className = "ink-rail-group";
@@ -130,44 +107,68 @@ function buildSheet() {
     inkRailButton("inkAction", "delete", "Delete the selected strokes", "&#128465;", "is-danger")
   );
 
-  rail.append(pens, widths, tools, steps);
+  // The paper's own controls, which is what a sheet with more than one page
+  // needs and a sheet with exactly one never did.
+  const paperGroup = document.createElement("div");
+  paperGroup.className = "ink-rail-group";
+  paperGroup.setAttribute("role", "group");
+  paperGroup.setAttribute("aria-label", "Paper");
+  paperGroup.append(
+    inkRailButton("inkAction", "zoom-out", "Smaller", "&#8722;"),
+    inkRailButton("inkAction", "zoom-in", "Larger", "&#43;"),
+    inkRailButton("inkAction", "add-page", "Add a page below", "&#43;&#9647;")
+  );
+
+  rail.append(pens, widths, buildInkToolGroup(), steps, paperGroup);
 
   const stage = document.createElement("div");
   stage.className = "ink-sheet-stage";
-  const host = document.createElement("div");
-  host.className = "ink-sheet-host";
-  stage.appendChild(host);
+  const scroller = document.createElement("div");
+  scroller.className = "hw-scroll ink-sheet-scroll";
+  stage.appendChild(scroller);
 
   root.append(head, rail, stage);
   document.body.appendChild(root);
-  sheet = { root, host, stage, rail, title, cancel, done };
+  sheet = { root, scroller, stage, rail, title, cancel, done };
 
   cancel.addEventListener("click", () => closeInkSheet(false));
   done.addEventListener("click", () => closeInkSheet(true));
 
-  // Same delegated shape as the document rail, and pointerdown for the same
-  // reason: a press on a control must not travel on to the sheet underneath it
-  // and start a stroke.
+  // Delegated, and pointerdown rather than click, for the reason readInkRailPress
+  // spells out: a press on a control must not travel on to the paper underneath
+  // it and start a stroke.
   rail.addEventListener("pointerdown", (event) => {
-    const button = event.target.closest("[data-ink-pen], [data-ink-width], [data-ink-tool], [data-ink-action]");
-    if (!button || button.disabled) return;
-    event.preventDefault();
-    event.stopPropagation();
+    const button = readInkRailPress(event);
+    if (!button || !sheetPaper) return;
     const data = button.dataset;
-    if (data.inkPen) sheetEngine.setPen(data.inkPen);
-    else if (data.inkWidth) sheetEngine.setWidth(Number(data.inkWidth));
-    else if (data.inkTool) sheetEngine.setTool(data.inkTool);
-    else if (data.inkAction === "undo") sheetEngine.undo();
-    else if (data.inkAction === "redo") sheetEngine.redo();
-    else if (data.inkAction === "delete") sheetEngine.deleteSelection();
+    const pen = sheetPaper.engine;
+    if (data.inkPen) pen.setPen(data.inkPen);
+    else if (data.inkWidth) pen.setWidth(Number(data.inkWidth));
+    else if (data.inkTool) pen.setTool(data.inkTool);
+    else if (data.inkAction === "undo") pen.undo();
+    else if (data.inkAction === "redo") pen.redo();
+    else if (data.inkAction === "delete") pen.deleteSelection();
+    else if (data.inkAction === "zoom-in") sheetPaper.setZoom(sheetPaper.zoom() * HW_ZOOM_STEP);
+    else if (data.inkAction === "zoom-out") sheetPaper.setZoom(sheetPaper.zoom() / HW_ZOOM_STEP);
+    else if (data.inkAction === "add-page") addSheetPage();
     if (data.inkPen || data.inkWidth || data.inkTool) {
-      writeInkPreferences({ pen: sheetEngine.getPen(), width: sheetEngine.getWidth(), tool: sheetEngine.getTool() });
+      writeInkPreferences({ pen: pen.getPen(), width: pen.getWidth(), tool: pen.getTool() });
     }
     refreshSheetRail();
   });
 
-  bindSheetPointer(host);
-  window.addEventListener("resize", () => { if (sheetSession) sheetEngine?.repaint(INK_SHEET_HOST); });
+  bindSheetPointer(scroller);
+
+  // rAF-batched. The old handler repainted straight off `resize`, which fires in
+  // a burst while a window is being dragged and repaints every stroke on the
+  // page each time — and it repainted without re-measuring, so the ink was
+  // redrawn at the scale it had before the resize.
+  let relayoutFrame = 0;
+  window.addEventListener("resize", () => {
+    if (!sheetSession || relayoutFrame) return;
+    relayoutFrame = requestAnimationFrame(() => { relayoutFrame = 0; sheetPaper?.relayout(); });
+  });
+
   document.addEventListener("keydown", (event) => {
     if (!sheetSession) return;
     if (event.key === "Escape") { event.preventDefault(); closeInkSheet(false); }
@@ -175,77 +176,87 @@ function buildSheet() {
   return sheet;
 }
 
+function addSheetPage() {
+  const { pages, page } = addHandwritingPage(sheetPages, {});
+  sheetPages = pages;
+  sheetPaper.render();
+  // Scrolled to, because a page added off the bottom of a scroller that nothing
+  // moved is a press that appears to have done nothing.
+  sheetPaper.pageElement(page.id)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  refreshSheetRail();
+}
+
 function refreshSheetRail() {
-  if (!sheet || !sheetEngine) return;
-  const pen = sheetEngine.getPen();
-  const width = sheetEngine.getWidth();
-  const tool = sheetEngine.getTool();
-  sheet.rail.querySelectorAll("[data-ink-pen]").forEach((n) => n.setAttribute("aria-pressed", n.dataset.inkPen === pen ? "true" : "false"));
-  sheet.rail.querySelectorAll("[data-ink-width]").forEach((n) => n.setAttribute("aria-pressed", Number(n.dataset.inkWidth) === width ? "true" : "false"));
-  sheet.rail.querySelectorAll("[data-ink-tool]").forEach((n) => n.setAttribute("aria-pressed", n.dataset.inkTool === tool ? "true" : "false"));
-  sheet.rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !sheetEngine.canUndo());
-  sheet.rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !sheetEngine.canRedo());
-  sheet.rail.querySelector('[data-ink-action="delete"]')?.toggleAttribute("disabled", !sheetEngine.hasSelection());
+  if (!sheet || !sheetPaper) return;
+  const pen = sheetPaper.engine;
+  paintInkRailPressed(sheet.rail, { pen: pen.getPen(), width: pen.getWidth(), tool: pen.getTool() });
+  sheet.rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !pen.canUndo());
+  sheet.rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !pen.canRedo());
+  sheet.rail.querySelector('[data-ink-action="delete"]')?.toggleAttribute("disabled", !pen.hasSelection());
 }
 
 // ── Input ──────────────────────────────────────────────────────────────────
 //
 // Simpler than the paper's, and deliberately: a sheet is a surface whose only
-// purpose is drawing, so there is no text to select, nothing to scroll and
-// nothing underneath for a tap to pass through to. Every pointer draws —
-// stylus, finger and mouse alike — which is also what makes the sheet the
-// answer for someone whose tablet has no pen at all.
+// purpose is drawing, so there is no text to select and nothing underneath for a
+// tap to pass through to. Every pointer draws — stylus, finger and mouse alike —
+// which is also what makes the sheet the answer for someone whose tablet has no
+// pen at all.
+//
+// The one thing more than a single host needed: which page the press landed on.
+// It is asked once, at pointerdown, against rects measured at layout time, and
+// the rest of the stroke belongs to that page whatever it crosses afterwards —
+// a stroke that ran over a page boundary and changed hands halfway would be two
+// half strokes, which is not what anybody drew.
 
-function bindSheetPointer(host) {
+function bindSheetPointer(scroller) {
   let active = null;
-  host.addEventListener("pointerdown", (event) => {
+  let activePage = null;
+  scroller.addEventListener("pointerdown", (event) => {
     if (!sheetSession || active) return;
     if (event.button !== undefined && event.button > 0 && event.button !== 5) return;
+    const page = sheetPaper.pageAt(event.clientX, event.clientY);
+    if (!page) return;
     // Not a tap threshold: on a sheet a tap IS a dot, and waiting 150ms to find
     // out would cost the first samples of every stroke.
     event.preventDefault();
     active = event.pointerId;
-    try { host.setPointerCapture(event.pointerId); } catch (_) { /* synthetic */ }
-    if (!sheetEngine.begin(INK_SHEET_HOST, [event], event)) active = null;
+    activePage = page;
+    try { scroller.setPointerCapture(event.pointerId); } catch (_) { /* synthetic */ }
+    if (!sheetPaper.engine.begin(page, [event], event)) { active = null; activePage = null; }
   });
-  host.addEventListener("pointermove", (event) => {
+  scroller.addEventListener("pointermove", (event) => {
     if (active === null || event.pointerId !== active) return;
     event.preventDefault();
-    sheetEngine.move(event);
+    sheetPaper.engine.move(event);
   });
   const finish = (event, cancelled) => {
     if (active === null || event.pointerId !== active) return;
     active = null;
-    try { host.releasePointerCapture(event.pointerId); } catch (_) { /* already gone */ }
-    if (cancelled) sheetEngine.cancel();
-    else { sheetEngine.move(event); sheetEngine.end(); }
+    activePage = null;
+    try { scroller.releasePointerCapture(event.pointerId); } catch (_) { /* already gone */ }
+    if (cancelled) sheetPaper.engine.cancel();
+    else { sheetPaper.engine.move(event); sheetPaper.engine.end(); }
     refreshSheetRail();
   };
-  host.addEventListener("pointerup", (event) => finish(event, false));
-  host.addEventListener("pointercancel", (event) => finish(event, true));
+  scroller.addEventListener("pointerup", (event) => finish(event, false));
+  scroller.addEventListener("pointercancel", (event) => finish(event, true));
+  // Scrolling the stack is a scroll; the pages are what is drawn on. Without
+  // this a page's own scroll would fight the stroke on a touch device.
+  scroller.addEventListener("touchmove", (event) => {
+    if (active !== null) event.preventDefault();
+  }, { passive: false });
 }
 
-function ensureSheetEngine() {
-  if (sheetEngine) return sheetEngine;
-  sheetEngine = createInkEngine({
-    // The sheet's model space IS its CSS pixel space. Nothing here is a
-    // coordinate into somebody else's document, so there is no transform to
-    // carry and the SVG's viewBox comes out in the units it was drawn in.
-    getMatrix: () => [1, 0, 0, 1, 0, 0],
-    getHostSize: () => {
-      const box = sheet?.host?.getBoundingClientRect();
-      return box ? { width: box.width, height: box.height } : null;
-    },
-    toModel: (_key, clientX, clientY) => {
-      const box = sheet?.host?.getBoundingClientRect();
-      if (!box) return null;
-      return { x: clientX - box.left, y: clientY - box.top };
-    },
+function ensureSheetPaper() {
+  if (sheetPaper) return sheetPaper;
+  sheetPaper = createHandwritingPaper({
+    scroller: sheet.scroller,
+    getPages: () => sheetPages,
     onCommit: () => refreshSheetRail(),
-    onSelectionChange: () => refreshSheetRail(),
-    className: "ink-sheet-canvas"
+    onSelectionChange: () => refreshSheetRail()
   });
-  return sheetEngine;
+  return sheetPaper;
 }
 
 // ── Opening and closing ────────────────────────────────────────────────────
@@ -254,58 +265,75 @@ export function isInkSheetOpen() {
   return Boolean(sheetSession);
 }
 
+// For the hardware Back key and for Escape, both of which mean "take this away"
+// and neither of which means "keep what I drew". Same route as Cancel.
+export function dismissInkSheet() {
+  if (!sheetSession) return false;
+  closeInkSheet(false);
+  return true;
+}
+
+// Ctrl+Z while the sheet is open. Without these the global handler saw a blurred
+// textarea, decided the press was for the note behind the sheet, and stepped
+// that note's history back instead — an undo that changed something the reader
+// could not even see.
+export function undoInkSheet() { return Boolean(sheetSession) && sheetPaper.engine.undo(); }
+
+export function redoInkSheet() { return Boolean(sheetSession) && sheetPaper.engine.redo(); }
+
 function openInkSheet({ title, strokes, onDone }) {
   const built = buildSheet();
-  ensureSheetEngine();
   sheetSession = { onDone };
   built.title.textContent = title;
   built.root.hidden = false;
   lockPageScroll();
+  // One page to begin with. A drawing that arrives from somewhere else is fitted
+  // onto it rather than centred and clipped — see fitHandwritingStrokesToPage.
+  const first = makeHandwritingPage({});
+  sheetPages = [first];
+  const surface = ensureSheetPaper();
   const saved = inkPreferences();
-  sheetEngine.setPen(saved.pen);
-  sheetEngine.setWidth(saved.width);
-  sheetEngine.setTool("pen");
-  sheetEngine.attachHost(INK_SHEET_HOST, built.host);
-  // Placed after the host is attached and the overlay is visible, so the size
-  // the canvas is measured against is the one it will actually have.
-  sheetEngine.setStrokes(INK_SHEET_HOST, centreStrokes(strokes, built.host));
+  surface.engine.setPen(saved.pen);
+  surface.engine.setWidth(saved.width);
+  surface.engine.setTool(saved.tool);
+  // Rendered before the strokes are placed, so the page has the size it will
+  // actually have when the fit is worked out against it.
+  surface.render();
+  const placed = fitHandwritingStrokesToPage(strokes, first);
+  if (placed.length) surface.engine.setStrokes(first.id, placed);
+  built.scroller.scrollTop = 0;
   refreshSheetRail();
 }
 
-// An existing drawing is re-opened CENTRED rather than at the coordinates it
-// was drawn at. Those coordinates were the sheet's pixel space on whatever
-// device made it — a phone in portrait, most likely — and reopening a drawing
-// on a laptop with it jammed into the top-left corner reads as damage.
-function centreStrokes(strokes, host) {
-  const list = Array.isArray(strokes) ? strokes : [];
-  if (!list.length) return [];
-  const box = inkStrokesBounds(list);
-  const size = host.getBoundingClientRect();
-  if (!box || !size.width) return list;
-  const dx = ((size.width - (box.maxX - box.minX)) / 2) - box.minX;
-  const dy = ((size.height - (box.maxY - box.minY)) / 2) - box.minY;
-  return list.map((stroke) => ({
-    ...stroke,
-    p: stroke.p.map((value, index) => (index % 3 === 0 ? value + dx : (index % 3 === 1 ? value + dy : value)))
-  }));
+// Every page that has something on it, in order — and the pages that do not are
+// simply not there. Adding a page and then not using it is not a decision to
+// insert a blank picture into a note.
+function sheetDrawings() {
+  return sheetPages
+    .map((page) => ({ page, strokes: sheetPaper.engine.getStrokes(page.id) }))
+    .filter((entry) => entry.strokes.length);
 }
 
 function closeInkSheet(commit) {
   if (!sheetSession) return;
   const session = sheetSession;
-  const strokes = commit ? sheetEngine.getStrokes(INK_SHEET_HOST) : null;
+  const drawings = commit ? sheetDrawings() : [];
   sheetSession = null;
-  sheetEngine.clearSelection();
-  sheetEngine.detachHost(INK_SHEET_HOST);
+  sheetPaper.engine.clearSelection();
+  // Emptying the stack and re-rendering is what takes the pages down — render()
+  // forgets any host whose page is gone, which is one statement of that rule
+  // rather than two that can disagree.
+  sheetPages = [];
+  sheetPaper.render();
   sheet.root.hidden = true;
   unlockPageScroll();
   if (!commit) return;
-  if (!strokes?.length) {
+  if (!drawings.length) {
     // Nothing drawn. Not an error and not worth a toast — Done on an empty
     // sheet means the same thing as Cancel.
     return;
   }
-  session.onDone(strokes);
+  session.onDone(drawings.map((entry) => entry.strokes));
 }
 
 // ── The two ways in ────────────────────────────────────────────────────────
@@ -320,10 +348,20 @@ export function insertInkDrawing(textarea, caret = null) {
   openInkSheet({
     title: "Draw",
     strokes: [],
-    onDone: async (strokes) => {
-      const file = inkSvgFile(strokes, { name: `ink-${Date.now().toString(36)}` });
-      if (!file) return;
-      await insertPreparedImageUpload(textarea, file, atPos);
+    onDone: async (pages) => {
+      // One picture per page, in order, each inserted after the last. Sequential
+      // rather than fanned out: insertPreparedImageUpload puts a placeholder in
+      // at a position and settles it later, and two of those racing for the same
+      // caret would interleave. `at` walks forward by what actually landed, so
+      // the pages come out in the order they were drawn.
+      let at = atPos;
+      for (const strokes of pages) {
+        const file = inkSvgFile(strokes, { name: `ink-${Date.now().toString(36)}` });
+        if (!file) continue;
+        const before = textarea.value.length;
+        await insertPreparedImageUpload(textarea, file, at);
+        at += Math.max(0, textarea.value.length - before);
+      }
     }
   });
 }
@@ -349,8 +387,12 @@ export async function reopenInkDrawing({ load, replace }) {
   openInkSheet({
     title: "Edit drawing",
     strokes,
-    onDone: async (next) => {
-      const file = inkSvgFile(next, { name: `ink-${Date.now().toString(36)}` });
+    onDone: async (pages) => {
+      // Re-opening replaces ONE picture, so it commits one. A reader who added
+      // pages while editing gets them as the drawing they now have: the pages
+      // are laid out one under the next in the same file, which is what the
+      // sheet showed them.
+      const file = inkSvgFile(pages.flat(), { name: `ink-${Date.now().toString(36)}` });
       if (!file) return;
       await replace(file);
     }

@@ -113,6 +113,7 @@ try {
     simplifyInkStroke, transformInkStroke
   } = strokesMod;
   const { fitInkShape, INK_SHAPE_MIN_SIZE } = shapesMod;
+  const { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, inkStrokeWidths } = paintMod;
 
   // ── 1. Does a stroke come back? ─────────────────────────────────────────
 
@@ -233,6 +234,87 @@ try {
     if (bytes > 80 * 1024) return `${(bytes / 1024).toFixed(0)}KB for a saturated page — the encoding has regressed`;
     if (inkPointCount(strokes) < 20000) return "the fixture is not actually a saturated page any more";
     return true;
+  });
+
+  must("...and a notebook of ordinary handwriting stays inside the meta bag", () => {
+    // The other end of the same question, and the one the Handwritten Notes
+    // section raises: a paper's ink is bounded by the paper, but a notebook can
+    // be added to forever, and every page of it rides in the SAME JSONB column,
+    // re-sent whole on every push.
+    //
+    // Thirty pages of ordinary writing rather than one saturated page: about a
+    // hundred and twenty strokes a page is a page of prose, not a page covered
+    // edge to edge. If this ever fails, the answer is not a bigger ceiling — it
+    // is that pages have to stop living in `meta`.
+    const rand = seeded(29);
+    const pages = [];
+    for (let page = 0; page < 30; page += 1) {
+      const strokes = [];
+      for (let i = 0; i < 120; i += 1) strokes.push(handwritingStroke(rand, { samples: 10 + Math.floor(rand() * 30) }));
+      pages.push({ id: `hp-${page}`, order: page, w: 794, h: 1123, paper: "grid", ink: encodeInkStrokes(strokes), at: 1 });
+    }
+    const bytes = JSON.stringify({ meta: { pages } }).length;
+    if (bytes > 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB for a 30-page notebook — too much to re-send on every sync`;
+    return true;
+  });
+
+  // ── 1b. Is a stroke painted in pieces the same stroke? ──────────────────
+  //
+  // The live stroke is painted onto an append-only layer in frame-sized runs,
+  // and the finished stroke is repainted whole. If a sample's width differs
+  // between the two, the wider of the two wins — ink is opaque — and what you
+  // see is a bead travelling along the line as you write it, which then settles
+  // when you lift. That was the report.
+  //
+  // The engine's fix rests entirely on one claim, and this is that claim stated
+  // as a property: a sample's width depends only on INK_WIDTH_LOOKBACK samples
+  // behind it and INK_WIDTH_LOOKAHEAD ahead, so a run that carries that much
+  // context computes exactly what the whole stroke will. Pure arithmetic over
+  // src/render/ink-paint.js — no browser, no canvas, no engine.
+  must("a run painted with the seam overlap computes the same widths as the whole stroke", () => {
+    const rand = seeded(31);
+    for (let n = 0; n < 25; n += 1) {
+      const stroke = handwritingStroke(rand, { samples: 30 + (n * 2) });
+      const whole = inkStrokeWidths(stroke);
+      const total = Math.floor(stroke.p.length / 3);
+      // Every frame boundary a real stroke could have.
+      for (let drawnTo = 1; drawnTo < total - INK_WIDTH_LOOKAHEAD; drawnTo += 1) {
+        const settled = total - INK_WIDTH_LOOKAHEAD;
+        const from = Math.max(0, drawnTo - INK_WIDTH_LOOKBACK);
+        const run = { ...stroke, p: stroke.p.slice(from * 3, settled * 3) };
+        const partial = inkStrokeWidths(run);
+        for (let i = drawnTo; i < settled; i += 1) {
+          const mine = partial[i - from];
+          if (Math.abs(mine - whole[i]) > 1e-9) {
+            return `sample ${i} is ${mine} in a run from ${from} and ${whole[i]} in the whole stroke`;
+          }
+        }
+      }
+    }
+    return true;
+  });
+
+  must("...and an unsettled tail is exactly the part that cannot know its own width", () => {
+    // The other half: the samples the wet layer is NOT allowed to keep. If this
+    // is zero the engine would be painting the newest sample onto a layer it can
+    // never repaint, which is the bug above; if it is larger than the lookback
+    // the seam would not cover it.
+    if (INK_WIDTH_LOOKAHEAD < 1) return "a sample with no successor cannot have a tangent, so the lookahead cannot be 0";
+    if (INK_WIDTH_LOOKBACK < INK_WIDTH_LOOKAHEAD) return "the seam cannot carry less context than the tail needs";
+    // Flat pressure, which is what the spec tells a mouse to report — so this
+    // takes the SPEED path, and the speed path smooths each width against its
+    // neighbour on either side. That is the case where a sample genuinely
+    // cannot know its own width until a successor exists, and it is why the
+    // lookahead is not a spare frame of latency somebody can set to zero.
+    //
+    // (On the pressure path the window looks only backwards, so a stylus
+    // sample's WIDTH is final immediately. Its tangent is not — inkStrokeOutline
+    // takes the direction between i-1 and i+1 — so the tail is held back for
+    // both devices, for two different reasons.)
+    const flat = { w: 2, c: "ink", p: [0, 0, 0.5, 10, 0, 0.5, 60, 0, 0.5, 70, 0, 0.5] };
+    const whole = inkStrokeWidths(flat);
+    const short = inkStrokeWidths({ ...flat, p: flat.p.slice(0, 9) });
+    return short[2] !== whole[2] || "a mouse sample's width did not change when a successor arrived — this property has stopped being true";
   });
 
   must("a version this build does not know decodes to nothing", () => {

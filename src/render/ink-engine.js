@@ -20,14 +20,23 @@
 // each frame is what makes a drawing app stutter once the page has a hundred
 // strokes on it, so committed ink is painted once and left alone. The live
 // stroke is APPEND-ONLY — each frame draws the outline of just the samples that
-// arrived since the last one, plus two of overlap so the caps hide the seam.
-// Ink is opaque and the outline fills nonzero, so overlapping sub-outlines join
-// invisibly; that is what buys an O(new points) frame instead of O(stroke).
+// arrived since the last one, plus INK_SEAM_OVERLAP of overlap so the caps hide
+// the seam. Ink is opaque and the outline fills nonzero, so overlapping
+// sub-outlines join invisibly; that is what buys an O(new points) frame instead
+// of O(stroke).
 //
 // The tip needs its own canvas precisely BECAUSE the inkOverlay is append-only:
 // predicted ink has to be wiped every frame when the prediction turns out
 // wrong, and wiping a rectangle of the inkOverlay would take the real ink under it
-// with it.
+// with it. It carries one thing more than prediction — the SETTLING TAIL. A
+// sample the digitiser has only just reported has no successor, so it does not
+// yet know its own width or its own tangent; painting it onto a layer that can
+// never be repainted is how a line comes to bead at every frame boundary. So the
+// wet layer takes only settled samples and the tip carries the last one or two,
+// where being redrawn every frame is free.
+//
+// Neither the wet layer nor the tip is unmounted between strokes. They are
+// cleared. See mountOverlay.
 //
 // ── What the pen feel actually comes from ──────────────────────────────────
 //
@@ -51,7 +60,7 @@
 
 import { INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
-import { paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
+import { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
 import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
 
 // A canvas is painted at devicePixelRatio so ink is sharp, capped for the same
@@ -61,14 +70,31 @@ import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
 export const INK_MAX_CANVAS_SCALE = 2;
 export const INK_MAX_CANVAS_PIXELS = 4_000_000;
 
-// How many samples of the previous frame's ink each frame redraws over. Two is
-// enough to bury the round cap the previous frame ended with; one leaves a
-// faint bead at 120Hz on a light stroke.
-const INK_SEAM_OVERLAP = 2;
+// How many samples of the previous frame's ink each frame redraws over. This is
+// not a number to taste: it is exactly how far back a sample's own width reaches
+// (INK_WIDTH_LOOKBACK, src/render/ink-paint.js), because a run that starts any
+// later computes different widths for its first samples than the finished stroke
+// will — and paints them at full opacity, so the wider of the two wins and the
+// line beads at every frame seam.
+const INK_SEAM_OVERLAP = INK_WIDTH_LOOKBACK;
+
+// ...and the other half of the same rule: a sample with no successor yet cannot
+// know its own width or its own tangent. The wet layer is append-only, so
+// anything painted there is painted for good — it therefore paints only SETTLED
+// samples, and the unsettled tail goes on the tip layer, which is wiped and
+// redrawn every frame anyway. The tail is at most INK_WIDTH_LOOKAHEAD samples,
+// i.e. one frame, behind the nib and the prediction covers it.
 
 // How near the nib a stroke has to pass to be erased, on top of its own half
 // width. A stroke-eraser that demands a direct hit is one people scrub at.
 const INK_ERASE_SLACK = 3;
+
+// The shortest interval between two re-arms of the straightener's hold timer.
+// A stylus reports up to 240 pointermoves a second and each one used to cost a
+// clearTimeout and a setTimeout; this makes it ten a second instead. The hold
+// it measures is therefore 600-700ms of stillness rather than exactly 600, which
+// is not a distinction a hand can make.
+const INK_HOLD_REARM_MS = 100;
 
 // Undo depth. Snapshots are an array of references — a page of a thousand
 // strokes is eight kilobytes a snapshot — so forty is cheap and is more steps
@@ -175,12 +201,33 @@ export function createInkEngine({
     // the render window is torn back down to a placeholder and rebuilt later;
     // forgetting its ink here would mean re-reading and re-decoding every
     // stroke on it each time it came back past the viewport.
-    entry.canvas.remove();
+    // The wet pair stays mounted between strokes now (see mountOverlay), so the
+    // host that is going away is the one that has to take them off — otherwise
+    // two canvases are left parented to an element nothing else is holding.
+    if (inkOverlay && entry.el && inkOverlay.parentNode === entry.el) unmountOverlay();
+    // Optional chaining because this has to be idempotent: the entry deliberately
+    // stays in `hosts` after a detach (that is what keeps the strokes), so a
+    // second detach of the same key finds it with nothing left to remove. On the
+    // PDF surface that never happened; a stack of pages, where closing tears the
+    // hosts down and re-rendering an empty stack tears them down again, hits it
+    // on the first try.
+    entry.canvas?.remove();
     entry.canvas = null;
     entry.ctx = null;
     entry.el = null;
     if (live?.key === key) cancel();
     if (selection?.key === key) setSelection(null);
+  }
+
+  // Detach, and then genuinely forget.
+  //
+  // detachHost keeps the strokes on purpose, because a PDF page swept out of the
+  // render window is coming back. A page DELETED from a notebook is not, and a
+  // sheet closed and re-opened mints new page ids — so without this the map grows
+  // for the life of the tab, holding the ink of pages that no longer exist.
+  function forgetHost(key) {
+    detachHost(key);
+    hosts.delete(key);
   }
 
   function setStrokes(key, strokes) {
@@ -233,6 +280,14 @@ export function createInkEngine({
     // Appending an already-appended child moves it, which is real DOM work on
     // a path that runs every frame of a drag. Only touch it when it is not
     // already where it belongs.
+    //
+    // Which, since end() and cancel() stopped unmounting the pair, is only when
+    // the pen has moved to a different host. They used to be detached at every
+    // pointerup and re-attached at the next pointerdown: two removeChilds and
+    // two appendChilds per stroke, tearing down and re-allocating a
+    // `desynchronized` low-latency surface each time — which is both a hitch on
+    // the first frame of every stroke and the thing that makes the low-latency
+    // promotion unstable in the first place.
     if (inkOverlay.parentNode !== entry.el) {
       entry.el.appendChild(inkOverlay);
       entry.el.appendChild(tip);
@@ -259,6 +314,59 @@ export function createInkEngine({
     if (tipRect) tipCtx.clearRect(tipRect[0], tipRect[1], tipRect[2], tipRect[3]);
     else tipCtx.clearRect(0, 0, tip.width, tip.height);
     tipRect = null;
+  }
+
+  // The device-pixel box a run of model points was painted into, so clearTip can
+  // wipe a rectangle rather than the whole canvas every frame. `tipRect` used to
+  // be set to the full canvas unconditionally, which made the dirty-rect clear a
+  // whole-page clear at device resolution on every animation frame of every
+  // stroke — the one place in this file where the cost did not depend on how
+  // much had actually been drawn.
+  function tipBounds(key, points, nib) {
+    const count = Math.floor(points.length / 3);
+    if (!count) return null;
+    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+    for (let i = 0; i < count; i += 1) {
+      const x = points[i * 3];
+      const y = points[(i * 3) + 1];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    // The outline reaches half a nib either side of the centreline, and the
+    // round cap another half beyond each end. One whole nib of slack covers
+    // both, whatever the pressure did.
+    const pad = Math.max(1, Number(nib) || 1);
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+    const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, tipScale);
+    const xs = []; const ys = [];
+    [[minX, minY], [maxX, minY], [minX, maxY], [maxX, maxY]].forEach(([x, y]) => {
+      xs.push((m[0] * x) + (m[2] * y) + m[4]);
+      ys.push((m[1] * x) + (m[3] * y) + m[5]);
+    });
+    const left = Math.max(0, Math.floor(Math.min(...xs)) - 1);
+    const top = Math.max(0, Math.floor(Math.min(...ys)) - 1);
+    const right = Math.min(tip.width, Math.ceil(Math.max(...xs)) + 1);
+    const bottom = Math.min(tip.height, Math.ceil(Math.max(...ys)) + 1);
+    if (right <= left || bottom <= top) return null;
+    return [left, top, right - left, bottom - top];
+  }
+
+  // The wet layer gives up the live stroke only AFTER the dry layer has taken
+  // it. The wet pair is `desynchronized` — it may present ahead of the
+  // compositor, which is the whole point of it — so clearing it first lets the
+  // erase reach the glass a frame before the committed stroke does. What that
+  // looks like is the stroke you have just written blinking out and back at
+  // every single pen lift.
+  //
+  // repaint() draws the selection chrome onto the very layer that is wiped a
+  // line later, so the chrome is put back rather than lost.
+  function handOverToDry(key) {
+    repaint(key);
+    clearOverlay();
+    clearTip();
+    if (selection?.key === key) drawSelectionChrome();
   }
 
   function unmountOverlay() {
@@ -419,7 +527,8 @@ export function createInkEngine({
 
     if (active === "eraser") {
       live = { key, mode: "erase", before: entry.strokes.slice() };
-      samples.forEach((sample) => eraseAt(sample));
+      queued.push(...samples);
+      inkScheduleFrame();
       return true;
     }
 
@@ -431,7 +540,11 @@ export function createInkEngine({
       pen,
       width,
       holdTimer: 0,
+      holdArmedAt: 0,
       snapped: null,
+      snapDeclined: false,
+      predicted: null,
+      lastEvent: null,
       before: entry.strokes.slice()
     };
     samples.forEach((sample) => pushPoint(sample));
@@ -457,12 +570,23 @@ export function createInkEngine({
     live.polygon.push(point.x, point.y);
   }
 
-  function eraseAt(sample) {
-    const point = toModelPoint(live.key, sample);
-    if (!point) return;
+  // One filter and one repaint per FRAME, not per sample. A scrub across a page
+  // arrives coalesced at digitiser rate, and repainting every stroke on the page
+  // once per sample is the same mistake the live stroke exists not to make.
+  function eraseFrame() {
+    const pending = queued;
+    queued = [];
+    if (!pending.length) return;
     const entry = hosts.get(live.key);
     if (!entry) return;
-    const kept = entry.strokes.filter((stroke) => !inkStrokeHitsPoint(stroke, point.x, point.y, INK_ERASE_SLACK));
+    const points = [];
+    pending.forEach((sample) => {
+      const point = toModelPoint(live.key, sample);
+      if (point) points.push(point);
+    });
+    if (!points.length) return;
+    const kept = entry.strokes.filter((stroke) =>
+      !points.some((point) => inkStrokeHitsPoint(stroke, point.x, point.y, INK_ERASE_SLACK)));
     if (kept.length === entry.strokes.length) return;
     entry.strokes = kept;
     repaint(live.key);
@@ -485,7 +609,7 @@ export function createInkEngine({
       inkScheduleFrame();
       return;
     }
-    if (live.mode === "erase") { samples.forEach(eraseAt); return; }
+    if (live.mode === "erase") { queued.push(...samples); inkScheduleFrame(); return; }
     if (live.mode === "lasso") { samples.forEach(pushLasso); inkScheduleFrame(); return; }
     if (live.mode === "move" || live.mode === "scale") {
       const point = toModelPoint(live.key, samples[samples.length - 1]);
@@ -494,13 +618,23 @@ export function createInkEngine({
   }
 
   function armHold(event) {
+    // Held rather than read here: getPredictedEvents() is a call per move on the
+    // hottest path in the file, and the frame is the only place its answer is
+    // ever used. The event object outlives the dispatch, so keeping it costs a
+    // reference.
+    live.lastEvent = event;
+    // A stroke that has already declined a shape is not asked again — see
+    // revokeShape.
+    if (live.snapDeclined) return;
+    const now = Date.now();
+    if (live.holdTimer && (now - live.holdArmedAt) < INK_HOLD_REARM_MS) return;
     if (live.holdTimer) clearTimeout(live.holdTimer);
+    live.holdArmedAt = now;
     live.holdTimer = setTimeout(() => offerShape(), INK_SHAPE_HOLD_MS);
-    live.predicted = typeof event?.getPredictedEvents === "function" ? event.getPredictedEvents() : null;
   }
 
   function offerShape() {
-    if (!live || live.mode !== "draw" || live.snapped) return;
+    if (!live || live.mode !== "draw" || live.snapped || live.snapDeclined) return;
     const fit = fitInkShape(live.points);
     if (!fit) return;
     live.snapped = fit;
@@ -510,6 +644,31 @@ export function createInkEngine({
     clearTip();
     overlayTransform(live.key, overlayCtx, overlayScale);
     fit.runs.forEach((run) => paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root }));
+  }
+
+  // ...and the other half of offering, which was missing.
+  //
+  // The straightener fires on a HOLD, and a hold is very often just someone
+  // thinking in the middle of a word. Once it had fired there was no way back:
+  // drawFrame threw away every sample that arrived afterwards and end() committed
+  // the fitted shape rather than the points. So a slow, deliberate writer who
+  // rested the nib for half a second watched the line stop following it and stay
+  // stopped until they lifted — and the handwriting they had written after the
+  // pause was gone. That is the flicker-and-stall this whole file was reported
+  // for.
+  //
+  // Continuing the stroke revokes the offer, and the offer is not made again for
+  // this stroke: the reader has now demonstrated, with the pen, that it is not a
+  // shape. `drawnTo` goes back to nothing because the wet layer has just been
+  // wiped and has to be rebuilt from the real points.
+  function revokeShape() {
+    live.snapped = null;
+    live.snapDeclined = true;
+    live.drawnTo = 0;
+    if (live.holdTimer) { clearTimeout(live.holdTimer); live.holdTimer = 0; }
+    clearOverlay();
+    clearTip();
+    if (selection?.key === live.key) drawSelectionChrome();
   }
 
   function coalesced(event) {
@@ -536,44 +695,65 @@ export function createInkEngine({
     frame = 0;
     if (!live) return;
     if (live.mode === "draw") { drawFrame(); return; }
+    if (live.mode === "erase") { eraseFrame(); return; }
     if (live.mode === "lasso") { drawLassoFrame(); return; }
     if (live.mode === "move" || live.mode === "scale") { drawTransformFrame(); return; }
   }
 
   function drawFrame() {
-    if (live.snapped) { queued.length = 0; return; }
     const pending = queued;
     queued = [];
+    // Ink that arrives after the straightener fired says the straightener was
+    // wrong. Before the samples are taken, so they are taken into a stroke that
+    // is drawing again rather than into one that is discarding them.
+    if (live.snapped && pending.length) revokeShape();
     pending.forEach((sample) => pushPoint(sample));
+    // A snap still standing means the pen has not moved since it fired: there is
+    // nothing to draw and the fitted shape is already on the wet layer.
+    if (live.snapped) return;
+
     clearTip();
 
     const total = Math.floor(live.points.length / 3);
-    if (total > live.drawnTo) {
+    // Only the samples whose width is FINAL go onto the append-only wet layer.
+    // A sample with no successor yet has neither its own tangent nor its own
+    // smoothed width (see INK_WIDTH_LOOKAHEAD, src/render/ink-paint.js), so
+    // painting it here would put one width on the glass and a different one
+    // there when the finished stroke is repainted — which is the bead you can
+    // watch travel along a line as you write it.
+    const settled = Math.max(0, total - INK_WIDTH_LOOKAHEAD);
+    if (settled > live.drawnTo) {
       const from = Math.max(0, live.drawnTo - INK_SEAM_OVERLAP);
-      const run = live.points.slice(from * 3, total * 3);
+      const run = live.points.slice(from * 3, settled * 3);
       overlayTransform(live.key, overlayCtx, overlayScale);
       paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root });
-      live.drawnTo = total;
+      live.drawnTo = settled;
     }
 
-    // Predicted ink, on its own canvas so wiping it next frame cannot take real
-    // ink with it. Two samples of overlap again, so the join is not visible for
-    // the one frame it exists.
-    const predicted = live.predicted;
-    if (predicted && predicted.length && total >= 2) {
-      const tail = live.points.slice(Math.max(0, total - 2) * 3);
-      const run = tail.slice();
-      predicted.forEach((sample) => {
-        const point = toModelPoint(live.key, sample);
-        if (point) run.push(point.x, point.y, Math.max(0, Math.min(1, Number.isFinite(sample.pressure) ? sample.pressure : 0.5)));
-      });
-      if (run.length > tail.length) {
-        overlayTransform(live.key, tipCtx, tipScale);
-        paintInkStroke(tipCtx, { w: live.width, c: live.pen, p: run }, { root });
-        tipRect = [0, 0, tip.width, tip.height];
-      }
-      live.predicted = null;
-    }
+    // The unsettled tail and the browser's guess at what comes next, both on the
+    // tip — the canvas that is wiped and redrawn every frame precisely so that
+    // provisional ink can be taken back without taking real ink with it. The tail
+    // carries the seam overlap too, so it joins the wet layer invisibly.
+    const tailFrom = Math.max(0, live.drawnTo - INK_SEAM_OVERLAP);
+    const tail = live.points.slice(tailFrom * 3);
+    const run = tail.slice();
+    const event = live.lastEvent;
+    live.lastEvent = null;
+    const predicted = typeof event?.getPredictedEvents === "function" ? event.getPredictedEvents() : null;
+    (predicted || []).forEach((sample) => {
+      const point = toModelPoint(live.key, sample);
+      if (point) run.push(point.x, point.y, Math.max(0, Math.min(1, Number.isFinite(sample.pressure) ? sample.pressure : 0.5)));
+    });
+    if (run.length < 3) return;
+    overlayTransform(live.key, tipCtx, tipScale);
+    paintInkStroke(tipCtx, { w: live.width, c: live.pen, p: run }, { root });
+    tipRect = tipBounds(live.key, run, live.width);
+    // A guess has to be able to expire. Frames are only scheduled by input, so a
+    // pen that stopped moving used to leave its last prediction on the glass —
+    // a phantom stub of ink sitting ahead of the nib until the hand moved again.
+    // One more frame repaints the tail without it, and schedules nothing after
+    // itself because by then there is no prediction left to clear.
+    if (run.length > tail.length) inkScheduleFrame();
   }
 
   function drawLassoFrame() {
@@ -632,16 +812,25 @@ export function createInkEngine({
       // Done while `live` is still set, because pushPoint reads it — the end of
       // a stroke is exactly where a dropped sample shows, as a line that stops
       // short of where the reader lifted.
+      //
+      // A snap that was still standing is revoked by these samples on exactly
+      // the same terms drawFrame revokes one: ink after a hold is not a shape.
+      if (gesture.snapped && queued.length) { gesture.snapped = null; gesture.snapDeclined = true; }
       queued.forEach((sample) => pushPoint(sample));
       queued = [];
     }
+    // Erase paints straight into the stroke array, so its last frame's worth of
+    // samples has to be spent too — a scrub that ended between two frames used
+    // to leave the strokes it had just crossed standing.
+    if (gesture.mode === "erase" && queued.length) { live = gesture; eraseFrame(); }
     live = null;
-    clearOverlay();
-    clearTip();
-    unmountOverlay();
-    if (!entry) return;
+    if (!entry) { clearOverlay(); clearTip(); return; }
 
     if (gesture.mode === "lasso") {
+      // The marquee is not ink and there is nothing behind it being committed,
+      // so it goes now rather than through the handover below.
+      clearOverlay();
+      clearTip();
       if (gesture.polygon.length < 6) return;
       const indices = [];
       entry.strokes.forEach((stroke, index) => {
@@ -657,10 +846,10 @@ export function createInkEngine({
       const added = runs
         .filter((run) => run.length >= 3)
         .map((run) => ({ w: gesture.width, c: gesture.pen, p: run }));
-      if (!added.length) return;
+      if (!added.length) { clearOverlay(); clearTip(); return; }
       entry.strokes = entry.strokes.concat(added);
       remember(gesture.key, gesture.before);
-      repaint(gesture.key);
+      handOverToDry(gesture.key);
       onCommit(gesture.key, entry.strokes.slice(), { reason: "draw", added });
       return;
     }
@@ -669,10 +858,10 @@ export function createInkEngine({
     // so the only question left is whether anything actually changed. A scrub
     // that hit nothing, or a drag of two pixels that ended where it started,
     // must not cost an undo step or a write.
-    if (sameStrokes(gesture.before, entry.strokes)) return;
+    if (sameStrokes(gesture.before, entry.strokes)) { clearOverlay(); clearTip(); return; }
     remember(gesture.key, gesture.before);
     if (selection?.key === gesture.key) selection.box = selectionBox(gesture.key, selection.indices);
-    repaint(gesture.key);
+    handOverToDry(gesture.key);
     onCommit(gesture.key, entry.strokes.slice(), { reason: gesture.mode });
   }
 
@@ -685,7 +874,6 @@ export function createInkEngine({
     queued = [];
     clearOverlay();
     clearTip();
-    unmountOverlay();
     // Put back whatever the gesture started from. An erase cancelled mid-scrub
     // and a drag the compositor took away have both already changed the array,
     // and neither is a state the reader asked for — so this is a restore, not
@@ -699,6 +887,24 @@ export function createInkEngine({
   }
 
   // ── Selection actions ────────────────────────────────────────────────────
+
+  // Everything on one host, in one step, on the undo stack.
+  //
+  // The lasso can already delete a selection and undo can already take back a
+  // stroke, but neither is what you want after covering a page in working you
+  // have finished with: that was a lasso drawn round the whole page, or forty
+  // presses of undo. It goes through snapshot/repaint/onCommit like every other
+  // mutation here, so the answer to a mistaken press is one press of undo.
+  function clearHost(key) {
+    const entry = hosts.get(key);
+    if (!entry || !entry.strokes.length) return false;
+    snapshot(key);
+    entry.strokes = [];
+    if (selection?.key === key) setSelection(null);
+    repaint(key);
+    onCommit(key, [], { reason: "clear" });
+    return true;
+  }
 
   function deleteSelection() {
     if (!selection) return false;
@@ -724,6 +930,7 @@ export function createInkEngine({
   return {
     attachHost,
     detachHost,
+    forgetHost,
     setStrokes,
     getStrokes,
     repaint,
@@ -732,6 +939,7 @@ export function createInkEngine({
     move,
     end,
     cancel,
+    clearHost,
     deleteSelection,
     selectedStrokes,
     clearSelection: () => setSelection(null),
@@ -751,6 +959,7 @@ export function createInkEngine({
     setWidth: (next) => { width = normalizeInkWidth(next); onToolChange({ tool, pen, width }); },
     destroy: () => {
       cancel();
+      unmountOverlay();
       hosts.forEach((_, key) => detachHost(key));
       hosts.clear();
       history.length = 0;

@@ -343,38 +343,16 @@
   display: flex;
 }
 
-/* The paper. A faint grid rather than ruled lines or nothing: lines suit
-   writing and suit a diagram badly, blank suits a diagram and gives handwriting
-   nothing to sit straight on, and a grid is the one that does not get in the
-   way of either. It is drawn in the text colour at very low alpha so it works
-   on all ten themes without a second definition. */
-.ink-sheet-host {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background-color: var(--card, var(--panel));
-  background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px);
-  background-size: 24px 24px;
-  overflow: hidden;
-  /* The sheet's whole purpose is drawing, so nothing here scrolls, pinches or
-     selects — and unlike the paper, this one CAN say so up front, because there
-     is nothing underneath that a gesture would otherwise have been for. */
-  touch-action: none;
-  -webkit-user-select: none;
-  user-select: none;
-  cursor: crosshair;
-}
+/* The paper the sheet draws on is no longer a rule in this file. It is a STACK
+   of pages now, shared with the notebook, and it lives with the rest of that in
+   styles/53-handwriting.css — .hw-scroll, .hw-page and the three papers.
 
-.ink-sheet-host .ink-sheet-canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
+   What was here was one host with `overflow: hidden` and a 24px grid, sized by
+   flex to whatever was left of the viewport. That is where three faults came
+   from: a drawing made on a phone re-opened as a small drawing in the middle of
+   a laptop's sheet, a window resized mid-drawing left the ink where the pixels
+   used to be, and a drawing larger than the current host was quietly cut off,
+   because with one fixed box there was nothing else to do with it. */
 
 @media (max-width: 720px) {
   .ink-sheet-rail {

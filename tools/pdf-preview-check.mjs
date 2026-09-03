@@ -76,6 +76,25 @@ const SHOT_TOC_SECTION = args.includes("--shot-toc-contents") ? "contents" : "hi
 const PDFJS_VERSION = "3.11.174";
 const CACHE_DIR = "/tmp/recall-pdfjs";
 
+// Every id the markup authors inside .document-head, straight out of
+// index.html. src/notes/notes-head-overflow.js moves these into #viewModeRow at
+// boot and the box they start in is display:none, so an id the lift's list
+// forgets is a control that is in the document and cannot be reached — which is
+// what happened to the pen. Reading the markup keeps this an independent
+// statement rather than a restatement of the list under test.
+function documentHeadControlIds() {
+  const html = readFileSync(path.join(ROOT, "index.html"), "utf8");
+  const open = html.indexOf('<div class="document-head"');
+  if (open < 0) return [];
+  // The control row is a flat run of buttons and one menu; it ends at the
+  // scroller that follows it, which is the next sibling in the stage.
+  const end = html.indexOf('<div class="document-scroll"', open);
+  const block = html.slice(open, end < 0 ? html.length : end);
+  return [...block.matchAll(/\sid="([A-Za-z0-9_-]+)"/g)]
+    .map((m) => m[1])
+    .filter((id) => id !== "documentHead");
+}
+
 function pdfjsSources() {
   const build = path.join(CACHE_DIR, "package/legacy/build");
   const main = path.join(build, "pdf.min.js");
@@ -377,6 +396,87 @@ try {
       rendered.outline.length === fixture.pages && rendered.outline.every((e, i) => e.page === i + 1),
       rendered.outline.map((e) => `${e.title}→${e.page}`).join(" "));
   }
+
+  // ── 2a. Can you reach the controls this surface has? ────────────────────
+  //
+  // The question this asks is deliberately not "is the pen button there". It is
+  // "did EVERY control authored in .document-head reach the row it is moved
+  // into, and does it have a box on screen" — because the fault this was written
+  // for was the list and not the button.
+  //
+  // .document-head is `display: none` (styles/37-document-chrome.css), because
+  // liftNotesControlsIntoRow empties it at boot into #viewModeRow. The list it
+  // moves is a hand-written array of selectors in src/notes/notes-head-
+  // overflow.js, and #documentInkBtn was simply not in it. So the ✎ existed, had
+  // a handler, had a tooltip, and could not be seen or pressed by anyone — and
+  // since it is the only thing that opens the pen's rail, that meant no colour,
+  // no nib, no eraser, no lasso and no undo on this surface at all, and no way
+  // for a mouse to draw. A stylus still drew, which is exactly why it took a
+  // report to notice.
+  //
+  // Nothing but a check that walks the whole set can catch the next one.
+  // Read out of index.html rather than out of the app, and that is the whole
+  // point: asking the lift's own selector list which controls exist would make
+  // this check pass by construction. The markup is the independent statement of
+  // what this row is supposed to carry.
+  const authoredIds = documentHeadControlIds();
+  check("the markup still authors its controls in .document-head",
+    authoredIds.length >= 5, `${authoredIds.length} id(s): ${authoredIds.join(" ")}`);
+
+  const controls = await page.evaluate(`async (authored) => {
+    const { settle } = window.__recall;
+    await settle(50);
+    const seen = authored.map((id) => {
+      const node = document.getElementById(id);
+      const box = node?.getBoundingClientRect();
+      return {
+        id,
+        inRow: Boolean(node?.closest("#viewModeRow")),
+        // A popover is legitimately hidden until it is opened, and the re-attach
+        // <input type="file" hidden> is never meant to be seen at all. A BUTTON
+        // in this row is meant to be pressed, so a button with no box is the
+        // fault being looked for.
+        needsBox: node?.tagName === "BUTTON",
+        visible: Boolean(box && box.width > 0 && box.height > 0)
+      };
+    });
+    // ...and then actually use the one that was missing.
+    const before = !document.getElementById("documentInkRail").hidden;
+    document.getElementById("documentInkBtn").click();
+    await settle(50);
+    const rail = document.getElementById("documentInkRail");
+    const railBox = rail.getBoundingClientRect();
+    return {
+      seen,
+      railWasShut: !before,
+      railOpen: !rail.hidden && railBox.width > 0 && railBox.height > 0,
+      pens: rail.querySelectorAll("[data-ink-pen]").length,
+      nibs: rail.querySelectorAll("[data-ink-width]").length,
+      eraser: Boolean(rail.querySelector('[data-ink-tool="eraser"]')),
+      lasso: Boolean(rail.querySelector('[data-ink-tool="lasso"]')),
+      undo: Boolean(rail.querySelector('[data-ink-action="undo"]')),
+      clear: Boolean(rail.querySelector('[data-ink-action="clear"]'))
+    };
+  }`, authoredIds);
+
+  const stranded = controls.seen.filter((c) => !c.inRow);
+  check("every control authored in .document-head reaches #viewModeRow",
+    stranded.length === 0,
+    stranded.length ? `stranded in a display:none box: ${stranded.map((c) => "#" + c.id).join(", ")}`
+      : controls.seen.map((c) => "#" + c.id).join(" "));
+
+  const invisible = controls.seen.filter((c) => c.needsBox && !c.visible);
+  check("...and has a box on screen once it is there",
+    invisible.length === 0,
+    invisible.length ? `zero-sized: ${invisible.map((c) => "#" + c.id).join(", ")}` : `${controls.seen.length} control(s)`);
+
+  check("the pen button opens the rail", controls.railWasShut && controls.railOpen,
+    controls.railOpen ? "shut, then open" : "the rail did not appear");
+  check("...with the colours, the nibs, the eraser and the lasso on it",
+    controls.pens >= 5 && controls.nibs >= 4 && controls.eraser && controls.lasso,
+    `${controls.pens} pen(s) · ${controls.nibs} nib(s) · eraser ${controls.eraser} · lasso ${controls.lasso}`);
+  check("...and undo and clear", controls.undo && controls.clear,
+    `undo ${controls.undo} · clear ${controls.clear}`);
 
   // ── 2b. A relayout landing on a render that is still in flight ───────────
   //

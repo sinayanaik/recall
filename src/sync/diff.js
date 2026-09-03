@@ -129,7 +129,20 @@ export function calculateSyncDiff(localCards, webCards, statusById = {}, { fuzzy
 // deletion is newer than its own `at` is dropped rather than resurrected: the
 // only thing that used to make a deleted highlight stay deleted was the
 // whole-column last-write-wins that a merge, by existing, removes.
-export function mergePdfHighlights(cloudList, localList, { tombstones = null } = {}) {
+export function mergePdfHighlights(cloudList, localList, options = {}) {
+  return mergeRecordsById(cloudList, localList, options);
+}
+
+// The same merge, under the name it actually deserves.
+//
+// Nothing in the function below is about a highlight. It is "two lists of
+// records that carry an id, an `at`, and optionally a `noteAt`, plus a bag of
+// tombstones" — which is also exactly what a notebook's pages are, and its text
+// boxes. mergePdfHighlights stays as the name the document sync calls it by,
+// because that is what it means THERE and renaming a load-bearing call site buys
+// nothing; but a second copy of this reasoning for the handwriting keys would
+// have been a second place for the two-stamp rule to be got wrong.
+export function mergeRecordsById(cloudList, localList, { tombstones = null } = {}) {
   const cloud = Array.isArray(cloudList) ? cloudList : null;
   const local = Array.isArray(localList) ? localList : null;
   if (!cloud && !local) return null;

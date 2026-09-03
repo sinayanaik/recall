@@ -56,6 +56,20 @@ const ROW_TRAIL_SELECTORS = [
   ".notes-head > #notesHeadMoreMenu",
   ".document-head > #documentDarkBtn",
   ".document-head > #documentRegionBtn",
+  // The pen. Missing from this list until now, and .document-head is
+  // `display: none` precisely because this function empties it — so the ✎ was
+  // in the document and had a handler and a tooltip and could not be seen or
+  // pressed by anybody. Since it is the only thing that opens the rail, the
+  // consequence was that a stylus drew (which needs no control, by design) and
+  // the colours, the nib, the eraser, the lasso and undo did not exist on this
+  // surface at all. A mouse could not draw either, because arming the rail is
+  // the only way a mouse can say it meant to.
+  //
+  // tools/pdf-preview-check.mjs now asserts that EVERY control authored in
+  // .document-head reaches the row and has a box on screen, rather than
+  // asserting this one button, because the fault was the list and not the
+  // button.
+  ".document-head > #documentInkBtn",
   ".document-head > #documentMoreBtn",
   ".document-head > #documentMoreMenu",
 ];

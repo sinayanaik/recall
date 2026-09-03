@@ -1,0 +1,370 @@
+/* Pages you can write on — the stack, the paper, and the notebook around it.
+
+   A separate file from styles/52-ink.css for the reason every file above 13 is
+   separate: the thirteen slices are compared byte for byte against the
+   stylesheet they were cut from, so anything written since the split lives on
+   its own. 52-ink.css is the PEN — the palette, the layer over a PDF page, the
+   rail. This is the PAPER, which both the drawing sheet and the notebook now
+   share, plus the notebook's own chrome.
+
+   ── One scale, set in one place ──────────────────────────────────────────
+
+   A page is 794 x 1123 model units (A4 at 96dpi) whatever it is shown at, and
+   src/handwriting/paper.js writes the scale it chose onto the element as
+   --hw-scale. Everything that has to look right at every zoom — the rule pitch,
+   the grid pitch, the margin line — is stated in model units and multiplied by
+   it here, so a grid stays the same grid rather than becoming a different one at
+   each step. */
+
+.hw-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 14px;
+  background: var(--bg);
+}
+
+/* The page itself.
+
+   `touch-action: none` and no selection, for the reason the single host said it
+   before: this surface exists to be drawn on and there is nothing underneath
+   that a gesture would otherwise have been for. The SCROLLER above still
+   scrolls, because the gesture that reaches it is one that missed a page. */
+.hw-page {
+  position: relative;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--card, var(--panel));
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.18);
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: crosshair;
+}
+
+/* The three papers. Drawn from the text colour at very low alpha so all three
+   work on all ten themes with no second definition — the same discipline the
+   grid had when it was the only one.
+
+   Ruled has a margin line as well, because a ruled page without one is a lined
+   page and not a notebook, and because it is the one thing that tells you which
+   way up the page is when it is scrolled to mid-height. */
+.hw-page[data-hw-paper="grid"] {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px);
+  background-size: calc(24px * var(--hw-scale, 1)) calc(24px * var(--hw-scale, 1));
+}
+
+.hw-page[data-hw-paper="ruled"] {
+  background-image:
+    linear-gradient(to bottom, color-mix(in srgb, var(--text) 9%, transparent) 1px, transparent 1px),
+    linear-gradient(to right, transparent calc(64px * var(--hw-scale, 1)), color-mix(in srgb, var(--accent) 28%, transparent) calc(64px * var(--hw-scale, 1)), color-mix(in srgb, var(--accent) 28%, transparent) calc(65px * var(--hw-scale, 1)), transparent calc(65px * var(--hw-scale, 1)));
+  background-size: 100% calc(28px * var(--hw-scale, 1)), 100% 100%;
+}
+
+.hw-page[data-hw-paper="blank"] {
+  background-image: none;
+}
+
+.hw-page-ink {
+  position: absolute;
+  inset: 0;
+}
+
+/* Every canvas the engine makes for a page — the dry one and, while a stroke is
+   in flight, the shared wet pair. Stacking is DOM order, exactly as it is on a
+   PDF page, and none of them takes a pointer: the page element is what receives
+   the press and src/notes/ink-sheet.js routes it. */
+.hw-page-ink .hw-page-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Quiet, and outside the drawing area's own bounds as far as the eye is
+   concerned: a page number a reader can mistake for something they wrote is
+   worse than no page number. */
+.hw-page-number {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  font-size: 0.72rem;
+  color: color-mix(in srgb, var(--text) 38%, transparent);
+  pointer-events: none;
+}
+
+/* The drawing sheet's stack takes the sheet's own background rather than the
+   app's, because it is a full-surface modal and the two are not always the
+   same colour. */
+.ink-sheet-scroll {
+  background: var(--bg);
+}
+
+@media (max-width: 720px) {
+  .hw-scroll {
+    gap: 12px;
+    padding: 8px;
+  }
+}
+
+/* ── The Handwritten Notes panel ───────────────────────────────────────────
+
+   A full-surface panel like the Quick Notes board, at the same z-index as the
+   drawing sheet and for the same reason spelled out in styles/52-ink.css: the
+   app's toolbar is 500 and its panels are 200-400, so anything below that puts
+   a full-surface drawing surface UNDERNEATH a row of somebody else's buttons.
+   Below the sign-in overlay (9999) and the toasts (99999), because a session
+   that lapses mid-page has to be able to interrupt and "saved here — uploads
+   when you're back online" has to be able to be read. */
+.hw-board {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  display: flex;
+  background: var(--bg);
+}
+
+.hw-board[hidden] {
+  display: none;
+}
+
+.hw-shell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hw-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.hw-head-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.hw-head-titles h1 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hw-head-titles p {
+  margin: 2px 0 0;
+  font-size: 0.78rem;
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+}
+
+.hw-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* The rail is a row here rather than a floating cluster, because unlike the
+   PDF's there is no page underneath it to get out of the way of — the whole
+   surface belongs to this. Wrapping rather than scrolling, the same call
+   styles/52-ink.css makes for the same set of controls on a phone: a
+   horizontal scroller hides controls behind a gesture. */
+.hw-rail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2, var(--panel));
+}
+
+/* ── The controls on a page ────────────────────────────────────────────────
+   Reorder and tear-out live ON the page, because "which page" is a question a
+   toolbar cannot answer for a scroller. Quiet until the page is reached for —
+   a row of buttons on every page of a notebook is a notebook you cannot read. */
+.hw-page-controls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s linear;
+}
+
+.hw-page:hover .hw-page-controls,
+.hw-page:focus-within .hw-page-controls {
+  opacity: 1;
+}
+
+/* No hover on a touch screen, so there they are simply always there — an
+   invisible control is worse than a slightly busy page. */
+@media (hover: none) {
+  .hw-page-controls {
+    opacity: 0.65;
+  }
+}
+
+.hw-page-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.hw-page-btn.is-danger:hover {
+  border-color: var(--danger, #e5534b);
+  color: var(--danger, #e5534b);
+}
+
+/* ── Text boxes ────────────────────────────────────────────────────────────
+
+   Sized in MODEL units multiplied by --hw-scale, exactly as the paper's rules
+   are, so a box that fits its page at one zoom still fits it at the next. The
+   font scales with it for the same reason — a box whose text stayed 14px while
+   the page halved would overflow a box it had fitted a moment earlier. */
+.hw-box {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card, var(--panel)) 94%, transparent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.14);
+  overflow: hidden;
+  /* The page under this is a drawing surface and takes `touch-action: none`;
+     a box has to take its own gestures back. */
+  touch-action: auto;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: default;
+}
+
+.hw-box-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  padding: 2px 4px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  cursor: grab;
+  touch-action: none;
+}
+
+.hw-box-bar:active {
+  cursor: grabbing;
+}
+
+.hw-box-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.hw-box-btn:hover {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.hw-box-btn.is-danger:hover {
+  color: var(--danger, #e5534b);
+}
+
+.hw-box-body,
+.hw-box-edit {
+  flex: 1;
+  min-height: 0;
+  padding: calc(8px * var(--hw-scale, 1));
+  font-size: calc(0.9rem * var(--hw-scale, 1));
+  line-height: 1.45;
+  overflow: auto;
+}
+
+.hw-box-body > :first-child { margin-top: 0; }
+.hw-box-body > :last-child { margin-bottom: 0; }
+
+.hw-box-empty {
+  color: color-mix(in srgb, var(--text) 45%, transparent);
+  font-style: italic;
+}
+
+.hw-box-edit {
+  width: 100%;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+}
+
+/* Same drawing and the same 22px-ish target as the ink lasso's corner grip and
+   the image resize grip, because they are the same gesture. */
+.hw-box-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 45%, color-mix(in srgb, var(--accent) 60%, transparent) 45%);
+}
+
+@media (max-width: 720px) {
+  .hw-head {
+    padding: 8px 10px;
+  }
+
+  .hw-rail {
+    padding: 6px 8px;
+    gap: 4px;
+  }
+}
+
+/* ── The marker on a My Decks row ──────────────────────────────────────────
+   Beside the card count, not instead of it: a deck can have cards, a note and a
+   notebook at once. `.deck-has-notes` is styled in the frozen
+   styles/11-chrome.css and this cannot join it there, so it states its own
+   spacing rather than inheriting one. */
+.deck-has-pages {
+  margin-left: 6px;
+  font-size: 0.82em;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+}

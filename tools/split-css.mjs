@@ -394,6 +394,19 @@ const POST_SPLIT = {
     "resized before today. Keyed off the property rather than the class so it " +
     "fixes the widths already written into people's notes as well as the ones " +
     "written from now on.",
+  "53-handwriting.css":
+    "Pages you can write on: the scrolling stack, the three papers (grid, ruled, " +
+    "blank) and the notebook's own chrome. Separate from 52-ink.css because that " +
+    "file is the PEN and this is the PAPER, and because the paper is now shared — " +
+    "the drawing sheet inside a note and the Handwritten Notes section are the " +
+    "same stack of A4 pages with different things done to them afterwards. A page " +
+    "is 794x1123 model units whatever it is shown at, and the scale chosen for it " +
+    "is written onto the element as --hw-scale, so the rule pitch and the grid " +
+    "pitch are stated in model units and multiplied here rather than becoming a " +
+    "different grid at every zoom step. What this REPLACED is the reason it " +
+    "exists: the sheet used to be one flex-sized host with overflow:hidden, which " +
+    "is why a drawing made on a phone re-opened tiny on a laptop and a drawing " +
+    "larger than the box was silently cut off.",
   "52-ink.css":
     "Handwriting. The pen palette, the canvas layer a PDF page's ink is drawn " +
     "into, the tool rail over the paper, the ✎ on a drawing in a note, and the " +

@@ -42,7 +42,7 @@ import {
 } from "../format/notes-fence.js?v=__BUILD__";
 import { mergeHighlightNoteTails } from "../format/highlight-notes-merge.js?v=__BUILD__";
 import { CARD_TOMBSTONE_MAX_AGE_MS } from "./cards.js?v=__BUILD__";
-import { mergePdfHighlights } from "./diff.js?v=__BUILD__";
+import { mergePdfHighlights, mergeRecordsById } from "./diff.js?v=__BUILD__";
 import { tsMs } from "./stats.js?v=__BUILD__";
 
 // ── Deleted-highlight tombstones ────────────────────────────────────────────
@@ -202,6 +202,82 @@ export function mergeDocumentAnnotations({
   };
 }
 
+// ── Handwriting: the pages of a notebook, and the boxes on them ────────────
+//
+// meta.pages and meta.textBoxes are id'd records with their own `at`, exactly
+// like the highlights on a paper — so they merge through the same function and
+// keep the same invariant, which is why mergeRecordsById exists under that name
+// in src/sync/diff.js rather than being copied here.
+//
+// The tombstone bags are the half that a union of live records alone cannot do:
+// a page deleted on one device is, to the other device, simply a page it still
+// has, and every sync would put it back. Same shape as deletedHighlightIds
+// ({ id: iso }), same cap, same "a record that is PRESENT is not deleted".
+export const HANDWRITING_META_KEYS = [
+  { records: "pages", tombstones: "deletedPageIds" },
+  { records: "textBoxes", tombstones: "deletedTextBoxIds" }
+];
+
+// Read / prune / record / drop, for any { id: iso } bag on the meta. The
+// highlight functions above are these with the key filled in; keeping one
+// implementation is what stops the pages' bag growing a subtly different cap or
+// a subtly different age rule six months from now.
+export function readMetaTombstones(meta, key) {
+  const raw = meta?.[key];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [id, iso] of Object.entries(raw)) {
+    if (id) out[String(id)] = typeof iso === "string" ? iso : new Date(0).toISOString();
+  }
+  return out;
+}
+
+export function recordDeletedMetaId(meta, key, id, stampIso = new Date().toISOString()) {
+  const map = readMetaTombstones(meta, key);
+  if (id) map[String(id)] = stampIso;
+  return pruneHighlightTombstones(map);
+}
+
+export function dropMetaTombstonesForLiveIds(meta, key, records) {
+  const map = readMetaTombstones(meta, key);
+  if (!Object.keys(map).length) return null;
+  for (const record of records || []) delete map[String(record?.id)];
+  return Object.keys(map).length ? map : null;
+}
+
+function metaTombstoneMs(key, ...metas) {
+  const out = {};
+  for (const meta of metas) {
+    for (const [id, iso] of Object.entries(readMetaTombstones(meta, key))) {
+      const ms = tsMs(iso);
+      if (ms > (out[id] || 0)) out[id] = ms;
+    }
+  }
+  return out;
+}
+
+function mergeMetaTombstones(key, ...metas) {
+  const merged = {};
+  for (const meta of metas) {
+    for (const [id, iso] of Object.entries(readMetaTombstones(meta, key))) {
+      if (tsMs(iso) > tsMs(merged[id] || 0)) merged[id] = iso;
+    }
+  }
+  const pruned = pruneHighlightTombstones(merged);
+  return Object.keys(pruned).length ? pruned : null;
+}
+
+// Two devices that both added a page have both given a page the same `order`,
+// so `order` alone is not a total order and the two would disagree about which
+// came first. The id breaks the tie the same way on every device, and the run is
+// renumbered afterwards so the stack a reader sees is 0..n-1 with no gaps.
+function orderMergedPages(pages) {
+  return pages
+    .slice()
+    .sort((a, b) => (Number(a?.order) || 0) - (Number(b?.order) || 0) || String(a?.id).localeCompare(String(b?.id)))
+    .map((page, index) => (Number(page?.order) === index ? page : { ...page, order: index }));
+}
+
 // ── The rest of the meta bag ────────────────────────────────────────────────
 //
 // decks.meta is ONE JSONB column shared by six unrelated features, and
@@ -337,6 +413,22 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   if ((cloud.noteAnchors && typeof cloud.noteAnchors === "object")
       || (local.noteAnchors && typeof local.noteAnchors === "object")) {
     next.noteAnchors = { ...(loser.noteAnchors || {}), ...(winner.noteAnchors || {}) };
+  }
+
+  // meta.pages / meta.textBoxes — a notebook's paper and the markdown boxes on
+  // it, with a tombstone bag each. Merged by id on `at`, exactly as the paper's
+  // highlights are, because a page written on here and a page written on there
+  // are an ADD each and not a conflict — and because the whole-column push means
+  // last-write-wins would throw one of them away every time.
+  for (const { records, tombstones } of HANDWRITING_META_KEYS) {
+    const merged = mergeRecordsById(cloud[records], local[records], {
+      tombstones: metaTombstoneMs(tombstones, cloud, local)
+    });
+    if (merged) next[records] = records === "pages" ? orderMergedPages(merged) : merged;
+    else delete next[records];
+    const bag = mergeMetaTombstones(tombstones, cloud, local);
+    if (bag) next[tombstones] = bag;
+    else delete next[tombstones];
   }
 
   return next;

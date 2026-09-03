@@ -87,9 +87,10 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
-import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
+import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
 import { storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { createInkEngine } from "../render/ink-engine.js?v=__BUILD__";
@@ -105,6 +106,20 @@ export const INK_TAP_SLOP = 4;
 // stroke rather than when the pen lands — a tap must not make the rail flinch.
 export const INK_ACTIVE_CLASS = "is-inking";
 
+// How long after the last stroke everything else is told about it.
+//
+// The WRITE is never deferred — a record that is not written down is a record
+// that is lost, so commitInkPage still schedules the autosave on every pen lift.
+// What waits is the TELLING. notifyHighlightsChanged rebuilds the Highlights
+// pane and re-prints the notes under every rendered page, and the function that
+// does the second of those, annotatedDocumentHighlights, carries its own
+// measurement in its own comment: 3.9ms for four pages with 25 annotated
+// highlights, 312ms with 300. Paying that between one word and the next is most
+// of the pause this surface was reported for. A quarter of a second is under
+// the gap between two strokes of the same letter and far under the gap between
+// two words.
+const INK_NOTIFY_IDLE_MS = 250;
+
 // The filing colour an ink mark takes in the Highlights pane. Ink is drawn in
 // pen colours and a mark can hold several of them, but the row beside the paper
 // wears one of the four highlight tokens like every other row — so the pen is
@@ -119,7 +134,40 @@ let activeRect = null;
 let openMark = null;
 let openMarkTimer = 0;
 let swallowClickUntil = 0;
+let inkNotifyTimer = 0;
 let onInkChanged = () => {};
+
+// Per page, the ink records the engine was last seeded from — held BY
+// REFERENCE. buildInkRecords returns an unchanged mark as the very same object
+// it read, so an identity compare over this array answers "has anything on this
+// page changed" without decoding a single stroke.
+const seededInk = new Map();
+
+// Per mark id, the strokes it was last encoded from and what came out. Same
+// argument, other direction: the engine holds every stroke as a stable object,
+// so a group whose members are the same objects in the same order cannot have
+// a different encoding than last time.
+const inkEncodeCache = new Map();
+
+function sameRefs(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) { if (a[i] !== b[i]) return false; }
+  return true;
+}
+
+function scheduleInkNotify() {
+  if (inkNotifyTimer) return;
+  inkNotifyTimer = setTimeout(() => { inkNotifyTimer = 0; notifyHighlightsChanged(); }, INK_NOTIFY_IDLE_MS);
+}
+
+// A mark closing, or the surface being torn down: the hand has stopped, so
+// whatever was waiting on it pays now rather than racing the timer.
+function flushInkNotify() {
+  if (!inkNotifyTimer) return;
+  clearTimeout(inkNotifyTimer);
+  inkNotifyTimer = 0;
+  notifyHighlightsChanged();
+}
 
 export function setInkChangedHandler(fn) {
   onInkChanged = typeof fn === "function" ? fn : () => {};
@@ -178,14 +226,32 @@ function ensureInkLayer(pageNumber) {
   const pageEl = pdfPageElement(pageNumber);
   if (!pageEl) return false;
   let layer = pageEl.querySelector(`.${PDF_INK_LAYER_CLASS}`);
+  let fresh = false;
   if (!layer) {
     layer = document.createElement("div");
     layer.className = PDF_INK_LAYER_CLASS;
     pageEl.appendChild(layer);
+    fresh = true;
   }
   const active = ensureEngine();
   active.attachHost(pageNumber, layer);
-  active.setStrokes(pageNumber, strokesForPage(pageNumber));
+  // ── Why the seed is guarded ────────────────────────────────────────────
+  //
+  // This function is called from two places: as a page paints, which is the
+  // right moment for it, and from inside pointermove, at the instant a press
+  // becomes a stroke — which is the worst moment in the app for anything
+  // expensive. Unguarded, the second call decoded every stroke on the page (a
+  // base64url + varint pass over every point) and repainted all of them, at the
+  // start of EVERY stroke, so writing got slower the more you had written.
+  //
+  // The identity compare below answers the only question that matters — has
+  // anything on this page changed since the engine was seeded — in O(marks)
+  // with no decoding at all. A page being drawn on continuously answers "no"
+  // every time, which is exactly the case that was costing the most.
+  const records = documentInkMarks(pageNumber);
+  if (!fresh && sameRefs(seededInk.get(pageNumber), records)) return true;
+  active.setStrokes(pageNumber, strokesForPage(records));
+  seededInk.set(pageNumber, records);
   return true;
 }
 
@@ -207,9 +273,9 @@ export function paintDocumentInk(pageNumber) {
 // move strokes and an eraser can take one out of the middle of a mark, and
 // afterwards the groups are read back off the strokes themselves rather than
 // reconstructed from indices that have since moved.
-function strokesForPage(pageNumber) {
+function strokesForPage(records) {
   const out = [];
-  documentInkMarks(pageNumber).forEach((record) => {
+  records.forEach((record) => {
     decodeInkStrokes(record.ink?.s).forEach((stroke) => out.push({ ...stroke, m: record.id }));
   });
   return out;
@@ -220,6 +286,9 @@ function strokesForPage(pageNumber) {
 function closeOpenMark() {
   openMark = null;
   if (openMarkTimer) { clearTimeout(openMarkTimer); openMarkTimer = 0; }
+  // The hand has stopped. Whatever was waiting on the pen can have the main
+  // thread now.
+  flushInkNotify();
 }
 
 function markIdForNewStrokes(pageNumber, added) {
@@ -257,7 +326,14 @@ function commitInkPage(pageNumber, strokes, meta) {
     if (!orphanId) orphanId = freshDocumentHighlightId();
     stroke.m = orphanId;
   });
-  setDocumentInkForPage(pageNumber, buildInkRecords(pageNumber, strokes));
+  setDocumentInkForPage(pageNumber, buildInkRecords(pageNumber, strokes), { notify: false });
+  // The engine already holds exactly this ink, as the raw samples the nib
+  // actually reported. Recording the records it was just written into keeps the
+  // next ensureInkLayer a no-op — which is both the cost saving above and the
+  // end of a visible settle, where the stroke you had just drawn was replaced by
+  // its own simplified round trip the moment you started the next one.
+  seededInk.set(pageNumber, documentInkMarks(pageNumber));
+  scheduleInkNotify();
   onInkChanged();
 }
 
@@ -270,9 +346,13 @@ function buildInkRecords(pageNumber, strokes) {
     groups.get(stroke.m).push(stroke);
   });
 
+  // Encodings for marks this page no longer has. Dropped here rather than left
+  // to accumulate for the life of the tab.
+  existing.forEach((_, id) => { if (!groups.has(id)) inkEncodeCache.delete(id); });
+
   return order.map((id) => {
     const group = groups.get(id);
-    const encoded = encodeInkStrokes(group);
+    const encoded = encodeInkGroup(id, group);
     if (!encoded.length) return null;
     const previous = existing.get(id);
     // Unchanged marks are returned BY REFERENCE. Every commit rebuilds every
@@ -300,6 +380,20 @@ function buildInkRecords(pageNumber, strokes) {
     if (previous?.noteAt) record.noteAt = previous.noteAt;
     return record;
   }).filter(Boolean);
+}
+
+// The encode is a Ramer-Douglas-Peucker simplification plus a varint packing
+// over every point in the group, and this function used to run for every mark on
+// the page at every pen lift — the shortcut below it, which returns an unchanged
+// mark by reference, was applied AFTER the work had already been paid for. On a
+// page with a hundred marks on it that is a hundred simplifications to find out
+// that ninety-nine of them had not moved.
+function encodeInkGroup(id, group) {
+  const cached = inkEncodeCache.get(id);
+  if (cached && sameRefs(cached.strokes, group)) return cached.encoded;
+  const encoded = encodeInkStrokes(group);
+  inkEncodeCache.set(id, { strokes: group.slice(), encoded });
+  return encoded;
 }
 
 function sameEncoding(a, b) {
@@ -359,7 +453,14 @@ function onInkPointerMove(event) {
 
   if (press.live) { ensureEngine().move(event); return; }
 
-  press.samples.push(event);
+  // Coalesced, not raw. A stylus reports up to 240 samples a second and
+  // pointermove fires at frame rate, so a raw push kept one sample in four —
+  // for the first 150ms of every stroke, which is its opening curve. The engine
+  // has always coalesced its own moves; this is the window before it is handed
+  // the pointer at all.
+  const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : null;
+  if (coalesced && coalesced.length) press.samples.push(...coalesced);
+  else press.samples.push(event);
   const moved = Math.hypot(event.clientX - press.startX, event.clientY - press.startY);
   if (moved < INK_TAP_SLOP && (Date.now() - press.startAt) < INK_TAP_MS) return;
 
@@ -472,6 +573,23 @@ export function canRedoInk() { return Boolean(engine?.canRedo()); }
 export function inkSelectionCount() { return engine ? engine.selectionIndices().length : 0; }
 export function deleteInkSelection() { closeOpenMark(); return ensureEngine().deleteSelection(); }
 
+// The page the reader is looking at — the same answer the pager and the contents
+// drawer's scroll-spy already read, rather than a second opinion about where in
+// the paper we are. Returns the page it cleared so the rail can name it in the
+// question it asks first.
+export function inkPageInView() { return currentDocumentPage(); }
+
+export function inkPageHasStrokes(page) {
+  if (!engine) return false;
+  return engine.getStrokes(page).length > 0;
+}
+
+export function clearInkPage(page) {
+  closeOpenMark();
+  if (!ensureInkLayer(page)) return false;
+  return ensureEngine().clearHost(page);
+}
+
 // Join and Split are the repair for the grouping rule guessing wrong, and both
 // work by retagging strokes and letting the rebuild do the rest.
 //
@@ -546,6 +664,10 @@ export function isInkMarkId(id) {
 // and a page 7 from the last paper is not a page 7 of this one.
 export function resetDocumentInk() {
   closeOpenMark();
+  // Both caches are keyed to the document that is going away — a page number in
+  // one, a mark id in the other — and neither means anything about the next one.
+  seededInk.clear();
+  inkEncodeCache.clear();
   if (!engine) return;
   engine.destroy();
   engine = null;

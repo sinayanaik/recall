@@ -13,6 +13,8 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { closeMainMenu, isMainMenuOpen } from "../editor/toolbars.js?v=__BUILD__";
 import { closeAllDeckTileMenus } from "../library/folder-tree.js?v=__BUILD__";
 import { closeMyDecksMoreMenu } from "../library/my-decks-menu.js?v=__BUILD__";
+import { closeHandwritingBoard, isHandwritingBoardOpen } from "../handwriting/board.js?v=__BUILD__";
+import { dismissInkSheet, isInkSheetOpen } from "../notes/ink-sheet.js?v=__BUILD__";
 import { closeHighlightNoteEditor, isHighlightNoteEditorOpen } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { closeNotesHeadMore, isNotesHeadMoreOpen } from "../notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
@@ -85,6 +87,18 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => isMainMenuOpen(), close: () => closeMainMenu() },
 
   // Dialogs.
+  //
+  // The drawing sheet leads them because it is over them: .ink-sheet is z-index
+  // 600, above the app toolbar's 500 and every dialog below. It had no entry at
+  // all, so on Android a Back press aimed at a full-screen drawing fell through
+  // to goNavBack() and loaded a different deck underneath it — with the sheet
+  // still on top, still holding a scroll lock, and the drawing gone.
+  { isOpen: () => isInkSheetOpen(), close: () => dismissInkSheet() },
+  // The notebook, beside the drawing sheet and for the same reasons: it is a
+  // full-surface panel above the toolbar, and a Back press aimed at it must
+  // close it rather than fall through to goNavBack() and load another deck
+  // underneath a page somebody is writing on.
+  { isOpen: () => isHandwritingBoardOpen(), close: () => closeHandwritingBoard() },
   { isOpen: () => Boolean(el.confirmModal && !el.confirmModal.hidden), close: () => el.confirmModalCancelBtn?.click() },
   { isOpen: () => Boolean(el.promptModal && !el.promptModal.hidden), close: () => el.promptModalCancelBtn?.click() },
   { isOpen: () => Boolean(el.frameCardModal && !el.frameCardModal.hidden), close: () => el.frameCardCancelBtn?.click() },

@@ -95,6 +95,18 @@ export function anyModalOpen() {
     (el.allCardsPanel && !el.allCardsPanel.hidden) ||
     (el.quickNotesBoard && !el.quickNotesBoard.hidden) ||
     (el.qnCatModal && !el.qnCatModal.hidden) ||
+    // The drawing sheet. Read off the DOM rather than through isInkSheetOpen()
+    // for the same reason helpModal and appInfoModal are below — except that
+    // here it is not a declaration-order problem but an import one:
+    // src/notes/ink-sheet.js takes its scroll lock from THIS module, so the
+    // arrow between them only points one way. It is built lazily and appended
+    // to the body, hence the id rather than an `el` binding.
+    //
+    // Without this entry a full-surface modal that had taken a scroll lock was
+    // invisible to unlockPageScroll's owner test, and the card shortcuts
+    // (Space/Enter/arrows/K/R) still acted on the card behind a drawing.
+    Boolean(document.querySelector("#inkSheet:not([hidden])")) ||
+    (el.hwBoard && !el.hwBoard.hidden) ||
     // The Cloze Review panel takes a scroll lock like the rest, so it has to be
     // listed here too — unlockPageScroll consults this to decide whether the
     // lock still has an owner.

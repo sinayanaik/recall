@@ -597,7 +597,11 @@ check("...with cloze still withheld, because a note is not a card face",
     mod.insertInkDrawing(ta, 6);
     await new Promise((r) => setTimeout(r, 200));
     const el = document.querySelector(".ink-sheet");
-    const host = document.querySelector(".ink-sheet-host");
+    // A PAGE, not the old single .ink-sheet-host: the sheet is a scrolling stack
+    // of A4 pages now, so that a drawing is not one screenful and is not clipped
+    // by the box it happened to be laid out in. The questions below are the ones
+    // it always asked; only what they are asked OF has changed.
+    const host = document.querySelector(".ink-sheet .hw-page");
     if (!el || el.hidden || !host) return { error: "the sheet did not open" };
     const box = host.getBoundingClientRect();
     const at = document.elementFromPoint(box.left + (box.width / 2), box.top + (box.height / 2));
@@ -611,6 +615,7 @@ check("...with cloze still withheld, because a note is not a card face",
       // of the app's buttons floating in the middle of it, and — as this check
       // found the first time it ran — one that never receives a stroke at all.
       onTop: Boolean(at && at.closest(".ink-sheet")),
+      pages: el.querySelectorAll(".hw-page").length,
       x: Math.round(box.left + (box.width / 2)),
       y: Math.round(box.top + (box.height / 2))
     };
@@ -624,6 +629,7 @@ check("...with cloze still withheld, because a note is not a card face",
       sheet.pens === 5 && sheet.nibs === 4 && sheet.tools === 3,
       `${sheet.pens} pen(s), ${sheet.nibs} nib(s), ${sheet.tools} tool(s)`);
     check("...above everything else on the screen", sheet.onTop, `topmost=${sheet.onTop}`);
+    check("...opening on a page rather than a screenful", sheet.pages === 1, `${sheet.pages} page(s)`);
 
     const stroke = [];
     for (let i = 0; i <= 20; i += 1) {
@@ -632,7 +638,7 @@ check("...with cloze still withheld, because a note is not a card face",
     await page.penStroke(stroke);
 
     const drawn = await page.evaluate(`() => {
-      const canvas = document.querySelector(".ink-sheet-host canvas");
+      const canvas = document.querySelector(".ink-sheet .hw-page canvas");
       if (!canvas) return { painted: 0 };
       const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
       let painted = 0;

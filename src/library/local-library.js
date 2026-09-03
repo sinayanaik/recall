@@ -360,6 +360,19 @@ export function listLocalDecks() {
 // meant a card recategorisation never bumped the deck's updatedAt and so was
 // never pushed — it only reached the cloud because setQuickNoteCardCategory
 // bumped the index entry by hand.
+// id + stamp per record, in order, for both handwriting keys. Every edit to a
+// page or a box bumps its own `at`, and adding, deleting or reordering changes
+// the run — so this moves exactly when the notebook does and never because a
+// record was re-serialised into a different key order.
+function handwritingSignature(meta) {
+  const part = (list) => (Array.isArray(list) ? list : [])
+    .map((record) => `${record?.id || ""}:${record?.at || 0}`)
+    .join(",");
+  const pages = part(meta?.pages);
+  const boxes = part(meta?.textBoxes);
+  return pages || boxes ? `${pages}|${boxes}` : "";
+}
+
 export function deckContentMatches(a, b) {
   if (!a || !b) return false;
   if (normalizeSyncText(a.deckTitle) !== normalizeSyncText(b.deckTitle)) return false;
@@ -372,6 +385,14 @@ export function deckContentMatches(a, b) {
   // is compared by offset elsewhere to avoid a fresh timestamp alone reading
   // as a change.
   if ((a.meta?.bookmark?.at || null) !== (b.meta?.bookmark?.at || null)) return false;
+  // The handwriting stack. Same argument as `category` above, which was missing
+  // here and so was never pushed: nothing else in this comparison can see a
+  // stroke, so without these two lines an afternoon in a notebook leaves
+  // updatedAt untouched and the deck never syncs. Signature rather than deep
+  // equality, for the reason the bookmark is compared on its `at` alone — the
+  // ink itself is tens of kilobytes of base64 per page and this runs on every
+  // save.
+  if (handwritingSignature(a.meta) !== handwritingSignature(b.meta)) return false;
   const aCards = a.cards || [];
   const bCards = b.cards || [];
   if (aCards.length !== bCards.length) return false;
@@ -498,6 +519,12 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     category: snapshot.deckCategory || defaultDeckCategory,
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(String(snapshot.notes || "").trim()),
+    // Mirrored out of meta for the same reason linkIds is: My Decks draws a
+    // row per deck and must not read a snapshot per row to do it. A notebook
+    // has no cards and an empty note, so without this its row says "0 cards"
+    // and nothing else — indistinguishable from a deck someone made and
+    // abandoned.
+    pageCount: Array.isArray(snapshot.meta?.pages) ? snapshot.meta.pages.length : 0,
     updatedAt: resolvedUpdatedAt,
     createdAt: previousEntry?.createdAt || new Date().toISOString(),
     lastSyncedAt: lastSyncedAt !== undefined ? lastSyncedAt : (previousEntry?.lastSyncedAt || null),
