@@ -33,12 +33,14 @@
 //
 // But an SVG loaded as an image DOES evaluate a <style> of its own, media
 // queries included. So each path carries a class, and the file carries both
-// palettes with `prefers-color-scheme` between them — the drawing follows the
-// reader's theme, in a file that is still just a file.
+// The colours are the ones the reader was actually looking at, resolved from
+// the live theme when the drawing was made, on a page of the paper it was drawn
+// on — a file that stands on its own rather than one that asks the operating
+// system a question about an app it knows nothing about.
 
 import { INK_PEN_HEX, INK_PEN_TOKENS, normalizeInkPen } from "./ink-colors.js?v=__BUILD__";
 import { decodeInkStroke, encodeInkStrokes, inkStrokesBounds } from "./ink-strokes.js?v=__BUILD__";
-import { inkStrokeOutline } from "../render/ink-paint.js?v=__BUILD__";
+import { inkStrokeOutline, resolveInkColor } from "../render/ink-paint.js?v=__BUILD__";
 
 // The element the strokes are stashed in, and the attribute that says which
 // encoding they are in. Read back by inkStrokesFromSvg; ignored by every
@@ -50,16 +52,25 @@ export const INK_SVG_METADATA_TAG = "recall-ink";
 // the extra breath that stops a cap sitting exactly on the edge.
 export const INK_SVG_PADDING = 4;
 
-// The dark half of the palette. Not derived from INK_PEN_HEX by some lightening
-// rule — a rule that works for red does not work for near-black, which has to
-// inverT rather than lighten. Five pens is a small enough set to simply state.
-const INK_PEN_HEX_DARK = {
-  ink: "#e8eaed",
-  red: "#f87171",
-  blue: "#7aa7ff",
-  green: "#4ade80",
-  amber: "#fbbf24"
-};
+// The colour the paper was, if it can be read. A drawing carries its own page
+// (see inkStrokesToSvg) and this is where that page's colour comes from — the
+// same custom property the surface it was drawn on uses, so the picture matches
+// what the reader was looking at when they drew it.
+const INK_SVG_PAPER_FALLBACK = "#f7f7f5";
+const INK_SVG_EDGE_FALLBACK = "#d9d9d4";
+
+function readCssColor(name, fallback) {
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return fallback;
+  try {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    // color-mix() and other computed forms are fine in CSS and meaningless in a
+    // standalone file, so anything that is not a plain colour is refused rather
+    // than written into an SVG that has to stand on its own.
+    return /^(#|rgb|hsl)/i.test(value) ? value : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
 
 function inkSvgNumber(value) {
   // Three decimals is a tenth of a quantisation step — below anything the
@@ -147,14 +158,40 @@ export function inkStrokesToSvg(strokes, { title = "Handwriting" } = {}) {
   }).filter(Boolean).join("");
   if (!paths) return "";
 
-  const light = INK_PEN_TOKENS.map((token) => `.p-${token}{fill:${INK_PEN_HEX[token]}}`).join("");
-  const dark = INK_PEN_TOKENS.map((token) => `.p-${token}{fill:${INK_PEN_HEX_DARK[token]}}`).join("");
+  // ── Why this is not two palettes and a media query any more ─────────────
+  //
+  // It was, and the report was "the SVG drawings are always looking black".
+  // `prefers-color-scheme` inside a file loaded through <img> resolves against
+  // the OPERATING SYSTEM, and this app's theme is not the operating system's:
+  // seven of its ten themes are dark, and the machine under them is usually set
+  // to light. So a note on a dark page, drawn in a pen that had correctly
+  // resolved to near-white on the canvas, was written into a file whose base
+  // rule was near-black — and rendered near-black on that dark page.
+  //
+  // There is no lever to fix that from the outside. `color-scheme` on the <img>
+  // does not propagate a preference into the sub-document (measured, in Chrome:
+  // setting it either way gives the same answer). So the file stops asking a
+  // question it cannot get a true answer to, and simply records what the reader
+  // was looking at: the pen colours resolved from the live theme at the moment
+  // of drawing, and the paper they were drawn on behind them.
+  //
+  // Carrying the paper is what makes it hold up afterwards. Baked colours alone
+  // would leave a white-ink drawing invisible the day somebody switched to a
+  // light theme; with its own page under it, a drawing looks exactly as it did
+  // when it was made, anywhere it is ever opened — a note, an export, a print,
+  // or a file on a desk. It is a picture of a page, so it looks like one.
+  const rules = INK_PEN_TOKENS
+    .map((token) => `.p-${token}{fill:${resolveInkColor(token) || INK_PEN_HEX[token]}}`)
+    .join("");
+  const paper = readCssColor("--card", readCssColor("--panel", INK_SVG_PAPER_FALLBACK));
+  const edge = readCssColor("--line", INK_SVG_EDGE_FALLBACK);
   const encoded = encodeInkStrokes(list);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${inkSvgNumber(minX)} ${inkSvgNumber(minY)} ${inkSvgNumber(width)} ${inkSvgNumber(height)}" width="${Math.round(width)}" height="${Math.round(height)}" role="img" aria-label="${escapeSvgText(title)}">`
     + `<title>${escapeSvgText(title)}</title>`
-    + `<style>${light}@media (prefers-color-scheme:dark){${dark}}</style>`
+    + `<style>${rules}</style>`
     + `<metadata><${INK_SVG_METADATA_TAG}>${escapeSvgText(JSON.stringify(encoded))}</${INK_SVG_METADATA_TAG}></metadata>`
+    + `<rect x="${inkSvgNumber(minX)}" y="${inkSvgNumber(minY)}" width="${inkSvgNumber(width)}" height="${inkSvgNumber(height)}" rx="${inkSvgNumber(Math.min(8, width / 12, height / 12))}" fill="${paper}" stroke="${edge}" stroke-width="1"/>`
     + `${paths}</svg>`;
 }
 

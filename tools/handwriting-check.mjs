@@ -68,6 +68,7 @@ const API_SRC = `async () => {
     "/src/handwriting/paper.js?v=__BUILD__",
     "/src/notes/ink-sheet.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
+    "/src/format/ink-svg.js?v=__BUILD__",
     "/src/render/ink-paint.js?v=__BUILD__",
     "/src/sync/document-sync.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
@@ -123,6 +124,11 @@ const SETUP_SRC = `async (apiSrc) => {
   await settle(600);
   api.createNewDeck({ title: "Handwriting fixture", notesMode: true });
   await settle(400);
+  // A dark app theme, which is what seven of the ten are — the case the colour
+  // assertions below are about. The OS is emulated to LIGHT by the runner, so
+  // the two deliberately disagree.
+  document.documentElement.setAttribute("data-theme", "dark-amoled");
+  await settle(100);
   return true;
 }`;
 
@@ -157,6 +163,10 @@ function check(label, ok, detail = "") {
 }
 
 try {
+  // The operating system set to LIGHT, deliberately, while the app runs a dark
+  // theme. That disagreement is the ordinary case and it is what the drawing
+  // colours used to be decided by.
+  await page.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
   await page.goto(`${server.base}/index.html`);
   await page.evaluate(SETUP_SRC, API_SRC);
 
@@ -225,6 +235,34 @@ try {
     const after = inked();
     return { before, atLift, after };
   }`, PEN_SRC);
+
+  // ── 2b. Is the committed stroke actually ON SCREEN? ─────────────────────
+  //
+  // The check above reads the dry canvas's own bitmap, which proves the stroke
+  // was PAINTED. It cannot prove it is visible, and those came apart: the wet
+  // pair is `desynchronized`, which asks to be taken out of the normal
+  // compositing path, and on Chrome/Android that can mean a hardware overlay
+  // plane that does not blend with what is beneath it. Left mounted after the
+  // stroke it covered the dry canvas, so the ink was painted, present, and
+  // invisible — "I can see the strokes while drawing but they disappear once
+  // drawn".
+  //
+  // A bitmap read cannot see that and a screenshot comparison would be brittle,
+  // so this asks the one question that actually distinguishes the two: after the
+  // pen lifts, is anything of that pair still in the document?
+  const mounted = await page.evaluate(`() => {
+    const page = document.querySelector("#hwScroll .hw-page");
+    return {
+      wet: page.querySelectorAll(".is-ink-wet").length,
+      tip: page.querySelectorAll(".is-ink-tip").length,
+      dry: page.querySelectorAll(".is-ink-dry").length
+    };
+  }`);
+  check("the low-latency pair comes off the page once the stroke is committed",
+    mounted.wet === 0 && mounted.tip === 0,
+    `${mounted.wet} wet, ${mounted.tip} tip, ${mounted.dry} dry canvas(es) left mounted`);
+  check("...leaving the dry canvas to be the thing on top", mounted.dry === 1,
+    `${mounted.dry} dry canvas(es)`);
 
   check("the dry canvas has the finished stroke at the instant the pen lifts",
     handover.atLift > handover.before,
@@ -414,16 +452,35 @@ try {
     await settle(150);
     shell.querySelector(".ink-sheet-done").click();
     await settle(1400);
+    // The file itself, before it goes anywhere: what colour are the strokes,
+    // does it carry its own page, and does it still ask the OS anything?
+    const svg = api.inkStrokesToSvg([{ w: 2, c: "ink", p: [0, 0, 0.5, 40, 20, 0.6, 90, 10, 0.5] }]);
     return {
       twoPages,
       closed: shell.hidden,
       images: ta.value.split("![](").length - 1,
       uploads: window.__stored.size,
+      penColour: (svg.match(/\.p-ink\{fill:([^}]+)\}/) || [])[1] || "",
+      hasPaper: svg.includes("<rect "),
+      usesOsScheme: svg.includes("prefers-color-scheme"),
       errs: window.__errs.slice(0, 4)
     };
   }`, PEN_SRC);
 
   check("the drawing sheet takes a second page", sheet.twoPages === 2, `${sheet.twoPages} page(s)`);
+  // The colour a drawing comes out as, asked with the operating system set to
+  // LIGHT and the app on a dark theme — which is the ordinary case (seven of the
+  // ten themes are dark, and a machine is usually left on light) and the one
+  // that produced "the SVG drawings are always looking black". The file used to
+  // carry two palettes with `prefers-color-scheme` between them, and that
+  // question is answered by the OS, which knows nothing about the app's theme.
+  check("a drawing is written in the colours the reader was actually looking at",
+    sheet.penColour && sheet.penColour.toLowerCase() !== "#16181d",
+    `strokes filled ${sheet.penColour} on a dark theme, OS set to light`);
+  check("...and carries the paper it was drawn on, so it stays legible anywhere",
+    sheet.hasPaper, `background rect present=${sheet.hasPaper}`);
+  check("...and asks the operating system nothing", !sheet.usesOsScheme,
+    sheet.usesOsScheme ? "the file still contains a prefers-color-scheme rule" : "no media query in the file");
   check("...and Done puts one picture per drawn page into the note",
     sheet.images === 2, `${sheet.images} image(s) in the note, ${sheet.uploads} file(s) uploaded`);
   check("...and closes", sheet.closed);

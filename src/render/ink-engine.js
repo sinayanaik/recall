@@ -35,8 +35,12 @@
 // wet layer takes only settled samples and the tip carries the last one or two,
 // where being redrawn every frame is free.
 //
-// Neither the wet layer nor the tip is unmounted between strokes. They are
-// cleared. See mountOverlay.
+// The wet layer and the tip are mounted for the duration of a stroke and taken
+// off again at the end of it. `desynchronized` asks to be taken out of the
+// normal compositing path, and on Chrome/Android that can mean a hardware
+// overlay plane, which does not blend with what is under it — so a cleared but
+// still-mounted wet canvas HID the committed ink on the dry one beneath. See
+// handOverToDry.
 //
 // ── What the pen feel actually comes from ──────────────────────────────────
 //
@@ -366,6 +370,27 @@ export function createInkEngine({
     repaint(key);
     clearOverlay();
     clearTip();
+    // ── ...and then the pair comes OFF the page ─────────────────────────────
+    //
+    // Reported from a Samsung tablet: "I can see the strokes while drawing but
+    // they disappear once drawn, and only appear again after uploading." The
+    // stroke was never lost — it was on the dry canvas the whole time, behind
+    // two canvases that had stopped leaving.
+    //
+    // The wet pair is created `desynchronized`, which is what buys the latency
+    // that makes the pen feel like a pen. What that flag actually asks for is to
+    // be taken OUT of the normal compositing path — on Chrome/Android a
+    // low-latency canvas can be promoted to a hardware overlay plane, and a
+    // plane does not blend with what is underneath it. Cleared to transparent on
+    // a desktop that composites it normally, it is invisible and harmless, which
+    // is exactly why leaving it mounted looked free here and was not.
+    //
+    // So it is mounted for the duration of a stroke and no longer. The DOM churn
+    // that costs — two removes and two appends per stroke — is the price of the
+    // committed ink being on top of nothing at all, and the blink that used to
+    // come with it was never the unmount: it was doing this BEFORE the repaint
+    // above rather than after it.
+    unmountOverlay();
     if (selection?.key === key) drawSelectionChrome();
   }
 
@@ -824,13 +849,14 @@ export function createInkEngine({
     // to leave the strokes it had just crossed standing.
     if (gesture.mode === "erase" && queued.length) { live = gesture; eraseFrame(); }
     live = null;
-    if (!entry) { clearOverlay(); clearTip(); return; }
+    if (!entry) { clearOverlay(); clearTip(); unmountOverlay(); return; }
 
     if (gesture.mode === "lasso") {
       // The marquee is not ink and there is nothing behind it being committed,
       // so it goes now rather than through the handover below.
       clearOverlay();
       clearTip();
+      unmountOverlay();
       if (gesture.polygon.length < 6) return;
       const indices = [];
       entry.strokes.forEach((stroke, index) => {
@@ -846,7 +872,7 @@ export function createInkEngine({
       const added = runs
         .filter((run) => run.length >= 3)
         .map((run) => ({ w: gesture.width, c: gesture.pen, p: run }));
-      if (!added.length) { clearOverlay(); clearTip(); return; }
+      if (!added.length) { clearOverlay(); clearTip(); unmountOverlay(); return; }
       entry.strokes = entry.strokes.concat(added);
       remember(gesture.key, gesture.before);
       handOverToDry(gesture.key);
@@ -858,7 +884,7 @@ export function createInkEngine({
     // so the only question left is whether anything actually changed. A scrub
     // that hit nothing, or a drag of two pixels that ended where it started,
     // must not cost an undo step or a write.
-    if (sameStrokes(gesture.before, entry.strokes)) { clearOverlay(); clearTip(); return; }
+    if (sameStrokes(gesture.before, entry.strokes)) { clearOverlay(); clearTip(); unmountOverlay(); return; }
     remember(gesture.key, gesture.before);
     if (selection?.key === gesture.key) selection.box = selectionBox(gesture.key, selection.indices);
     handOverToDry(gesture.key);
@@ -874,6 +900,7 @@ export function createInkEngine({
     queued = [];
     clearOverlay();
     clearTip();
+    unmountOverlay();
     // Put back whatever the gesture started from. An erase cancelled mid-scrub
     // and a drag the compositor took away have both already changed the array,
     // and neither is a state the reader asked for — so this is a restore, not
