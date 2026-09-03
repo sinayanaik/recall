@@ -825,7 +825,10 @@ export function documentInkMarks(pageNumber = null) {
 // its note exactly as removeDocumentHighlight would have given it — without
 // which a page cleared of ink on one device would fill back up from the cloud
 // on the next sync.
-export function setDocumentInkForPage(pageNumber, records) {
+// `notify` is passed straight through to commitDocumentHighlights, and the pen
+// is the caller that declines it: see INK_NOTIFY_IDLE_MS in pdf-ink.js. The
+// autosave inside commitDocumentHighlights is NOT optional and is not affected.
+export function setDocumentInkForPage(pageNumber, records, { notify = true } = {}) {
   const page = Number(pageNumber);
   const before = documentInkMarks(page);
   const nextIds = new Set(records.map((record) => record.id));
@@ -847,7 +850,7 @@ export function setDocumentInkForPage(pageNumber, records) {
     const pruned = pruneOrphanHighlightNotes(state.notes || "");
     if (pruned !== state.notes) state.notes = pruned;
   }
-  commitDocumentHighlights(next);
+  commitDocumentHighlights(next, { notify });
 }
 
 // Every highlight any of these client rects touches, in reading order.

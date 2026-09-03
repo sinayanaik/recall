@@ -45,6 +45,21 @@ export const INK_PRESSURE_SPAN = 0.65;
 // within a letter.
 export const INK_PRESSURE_WINDOW = 3;
 
+// How far either side of a sample its own width depends on. The engine paints a
+// live stroke in frame-sized runs rather than whole, and a run is only allowed
+// to draw the samples whose width it can compute CORRECTLY — otherwise the same
+// sample is one width this frame and another when the finished stroke is
+// repainted, which is the beading you see along a line as you write it.
+//
+// Backwards it is INK_PRESSURE_WINDOW - 1 for the pressure average, and 1 for
+// inkSmoothWidths' neighbour on the speed path: two covers both. Forwards it is
+// one, for inkSmoothWidths' other neighbour and for the tangent inkStrokeOutline
+// takes between i-1 and i+1. A sample with no successor yet has neither, so the
+// engine holds it back and paints it on the tip layer, which is wiped and
+// redrawn every frame anyway.
+export const INK_WIDTH_LOOKBACK = INK_PRESSURE_WINDOW - 1;
+export const INK_WIDTH_LOOKAHEAD = 1;
+
 // A pointer that reports exactly this for every sample is reporting nothing —
 // it is the value the spec tells a mouse to send. Ink from such a device gets
 // its width from speed instead, so a trackpad sketch still tapers.
