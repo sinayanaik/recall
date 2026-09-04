@@ -101,10 +101,16 @@ export function onDocumentSurface() {
 // Everything else opens on Notes, exactly as it always has.
 export function documentTabForOpenDeck(meta = state.meta) {
   if (meta?.pdf && !meta.pdf.notebook) return "document";
-  // Every shape of notebook, including the two that have not been moved onto the
-  // current one yet — a deck saved by an older build opens on its pages, not on
-  // an empty Notes tab that says nothing about them.
-  if (deckHasHandwrittenPages(meta)) return "handwriting";
+  // Pages that are already on real paper, in either slot — the deck's own
+  // document, or the one it has not been moved out of yet. Moving it is a rename
+  // of two keys and costs nothing.
+  //
+  // NOT deckHasHandwrittenPages, which also counts the model before there was a
+  // document at all. Opening one of those on this tab would convert it — a
+  // regenerated file, a rewritten meta, an upload — on LOAD, for a reader who
+  // has done nothing but open the deck. That conversion is safe and it is still
+  // there; it happens when they press Write, which is where it was before.
+  if (meta?.notebook || meta?.pdf?.notebook) return "handwriting";
   return "notes";
 }
 
