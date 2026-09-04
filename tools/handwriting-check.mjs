@@ -71,6 +71,7 @@ const API_SRC = `async () => {
     "/src/documents/blank-pdf.js?v=__BUILD__",
     "/src/documents/pdf-blocks.js?v=__BUILD__",
     "/src/documents/pdf-view.js?v=__BUILD__",
+    "/src/documents/pdf-ink.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-store.js?v=__BUILD__",
     "/src/notes/ink-sheet.js?v=__BUILD__",
@@ -360,13 +361,17 @@ try {
   // disagreeing is exactly the failure — meta says three pages, the file has two.
   const pages = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    const board = document.getElementById("viewModeRow");
+    // The page group is on the pen's RAIL now, not in the tab row: that row is a
+    // nowrap line and five more controls in it clipped the tab labels mid-word.
+    // Pressed with pointerdown, which is what the rail listens for.
+    const board = document.getElementById("documentInkRail");
+    const press = (sel) => board.querySelector(sel).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 31, cancelable: true }));
     const inkOn = (n) => (api.state.meta.pdfHighlights || [])
       .filter((r) => r.kind === "ink" && Number(r.page) === n).length;
 
     const before = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
-    board.querySelector('[data-hw-action="add-page"]').click();
+    press('[data-hw-action="add-page"]');
     for (let i = 0; i < 60 && api.currentPdfPageCount() < before.doc + 1; i += 1) await settle(100);
     const added = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
@@ -389,7 +394,9 @@ try {
     // Tear out page 1. Everything on page 2 has to become page 2 - 1.
     api.scrollToDocumentPage(1, 0, { smooth: false });
     await settle(200);
-    board.querySelector('[data-hw-action="delete-page"]').click();
+    // Tearing a page out is a ⋯ row now — a thing you do once a session does not
+    // need to be on screen for the whole of it.
+    document.querySelector('#documentMoreMenu [data-document-action="hw-tear-out"]').click();
     await settle(200);
     document.getElementById("confirmModalOkBtn").click();
     for (let i = 0; i < 60 && api.currentPdfPageCount() > added.doc - 1; i += 1) await settle(100);
@@ -448,8 +455,9 @@ try {
   // down.
   const blocks = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    const board = document.getElementById("viewModeRow");
-    board.querySelector('[data-hw-action="add-block"]').click();
+    const board = document.getElementById("documentInkRail");
+    board.querySelector('[data-hw-action="add-block"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 32, cancelable: true }));
     await settle(400);
     const node = document.querySelector(".pdf-block");
     const id = node.dataset.pdfBlock;
@@ -955,6 +963,170 @@ try {
   check("...and comes back out of the store as a picture, on the notebook's pages",
     picture.stored?.kind === "image" && picture.stored?.hasSrc && picture.stored?.doc === "notebook",
     JSON.stringify(picture.stored));
+  // ── 10. The four faults reported off a phone ────────────────────────────
+  //
+  // Every one of these was true of a shipped build, and three of them were
+  // invisible to every check in this file because the checks drove the app
+  // through its API rather than through what a reader can actually see.
+  const reported = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const boxed = (node) => {
+      const box = node?.getBoundingClientRect();
+      return Boolean(box && box.width > 0 && box.height > 0);
+    };
+
+    // (a) THE PEN RAIL, on a deck whose only document is a notebook.
+    //
+    // #documentStage.has-no-document is written from !meta.pdf alone, and it
+    // carried "display: none" for the rail. So on precisely this deck — the
+    // common one, a notebook and nothing else — pressing the pen armed it, lit
+    // its button, and showed nothing: no colour, no nib, no eraser, no lasso, no
+    // undo. And a mouse could not draw at all, because arming is the only way a
+    // mouse says it meant ink.
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    const rail = document.getElementById("documentInkRail");
+    const railOnArrival = boxed(rail);
+    const pens = rail.querySelectorAll("[data-ink-pen]").length;
+    const nibs = rail.querySelectorAll("[data-ink-width]").length;
+    const lasso = boxed(rail.querySelector('[data-ink-tool="lasso"]'));
+    const armedForMouse = api.isInkArmed();
+
+    // ...and closing it is remembered, rather than re-opened on the next visit.
+    document.getElementById("documentInkBtn").click();
+    await settle(200);
+    const shut = !boxed(rail);
+    api.setViewMode("notes");
+    await settle(300);
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    const stayedShut = !boxed(rail);
+    document.getElementById("documentInkBtn").click();
+    await settle(300);
+
+    // (b) DARK PAGE, which has no business on paper that follows the theme.
+    const darkShown = boxed(document.getElementById("documentDarkBtn"));
+    const invertedBefore = document.getElementById("documentStage").classList.contains("is-pdf-inverted");
+    api.togglePdfInvert();
+    await settle(200);
+    const invertedAfter = document.getElementById("documentStage").classList.contains("is-pdf-inverted");
+
+    // (c) SELECT, DRAG AND RESIZE — all three already existed and all three were
+    // behind the rail nobody could open. A lasso round a stroke gives a dashed
+    // box with a corner grip: inside it drags, on it scales.
+    const view = document.getElementById("documentView");
+    const box = document.querySelector("#documentStage .pdf-page[data-page-number='1']").getBoundingClientRect();
+    for (let i = 0; i < 60 && document.querySelector(".toast"); i += 1) await settle(100);
+    pen(view, "pointerdown", box.left + 80, box.top + 260, 1);
+    for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", box.left + 80 + (i * 6), box.top + 260 + (i * 3), 1);
+    await settle(120);
+    pen(view, "pointerup", box.left + 152, box.top + 296, 0);
+    await settle(250);
+    const drawn = api.inkPageHasStrokes(1);
+
+    rail.querySelector('[data-ink-tool="lasso"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 41, cancelable: true }));
+    await settle(150);
+    pen(view, "pointerdown", box.left + 60, box.top + 240, 1);
+    [[220, 240], [220, 320], [40, 320], [40, 240]].forEach(([dx, dy]) => pen(view, "pointermove", box.left + dx, box.top + dy, 1));
+    await settle(120);
+    pen(view, "pointerup", box.left + 60, box.top + 240, 0);
+    await settle(250);
+    const selected = api.inkSelectionCount();
+    const selectionTools = boxed(document.getElementById("inkRailSelection"));
+
+    return {
+      railOnArrival, pens, nibs, lasso, armedForMouse, shut, stayedShut,
+      darkShown, invertedBefore, invertedAfter,
+      drawn, selected, selectionTools,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+
+  check("the pen's rail is on the page when a notebook opens",
+    reported.railOnArrival, `rail has a box=${reported.railOnArrival}`);
+  check("...with the colours, the nibs and the lasso on it",
+    reported.pens >= 5 && reported.nibs >= 4 && reported.lasso,
+    `${reported.pens} pen(s) · ${reported.nibs} nib(s) · lasso=${reported.lasso}`);
+  check("...and armed, which is the only way a mouse can draw at all",
+    reported.armedForMouse, `armed=${reported.armedForMouse}`);
+  check("...and closing it is remembered rather than undone on the way back",
+    reported.shut && reported.stayedShut,
+    `shut=${reported.shut}, still shut after a tab round-trip=${reported.stayedShut}`);
+  check("dark page is not offered on paper that follows the theme",
+    !reported.darkShown, `the ◐ button has a box=${reported.darkShown}`);
+  check("...and cannot be reached round the back of the missing button either",
+    reported.invertedBefore === reported.invertedAfter,
+    `togglePdfInvert took the page from ${reported.invertedBefore} to ${reported.invertedAfter}`);
+  check("a lasso selects the strokes it was drawn round",
+    reported.drawn && reported.selected > 0,
+    `${reported.selected} stroke(s) selected`);
+  check("...and offers what can be done with them", reported.selectionTools,
+    `the selection group has a box=${reported.selectionTools}`);
+  check("nothing threw while the reported faults were exercised",
+    reported.errs.length === 0, reported.errs.join(" | "));
+
+  // ── 11. Paper that reads as paper ───────────────────────────────────────
+  //
+  // "The grids in the pages are not properly styled." A4 is 595pt and a portrait
+  // phone is ~390px, so the page is laid out at about 63%: a 5mm square lands at
+  // 10px with a 0.5pt line drawn at a third of a pixel, and that is a grey wash
+  // rather than a grid. Squared paper solves this the way squared paper has
+  // always solved it — a heavier line every fourth square — and that is what
+  // this asks of the rendered page rather than of the source that drew it.
+  //
+  // Read off one scanline across the middle of the page. The paper is the
+  // brightest value on it; every dip below that is a vertical rule, and the
+  // question is whether some of those dips are decisively deeper than the rest.
+  const paper = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    const canvas = document.querySelector("#documentStage .pdf-page[data-page-number='1'] canvas.pdf-canvas");
+    if (!canvas) return { lines: 0 };
+    const y = Math.floor(canvas.height / 2);
+    const row = canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, y, canvas.width, 1).data;
+    const lum = [];
+    for (let i = 0; i < row.length; i += 4) lum.push((row[i] + row[i + 1] + row[i + 2]) / 3);
+    const sheet = Math.max(...lum);
+    // One depth per run of pixels below the paper — the deepest pixel of each,
+    // so an antialiased line is measured by its core rather than by its edge.
+    const depths = [];
+    let run = 0;
+    for (let i = 0; i < lum.length; i += 1) {
+      const dip = sheet - lum[i];
+      if (dip > 3) { run = Math.max(run, dip); continue; }
+      if (run) { depths.push(run); run = 0; }
+    }
+    if (run) depths.push(run);
+    depths.sort((a, b) => a - b);
+    const at = (q) => depths[Math.min(depths.length - 1, Math.floor(depths.length * q))] || 0;
+    return {
+      lines: depths.length,
+      sheet: Math.round(sheet),
+      // The minor lines are most of them; the major ones are the deepest quarter.
+      minor: Math.round(at(0.4)),
+      major: Math.round(at(0.95))
+    };
+  }`);
+
+  // Enough rules across a page for it to be squared paper at all — 595pt at a
+  // 16pt pitch is ~36, and the scanline sees every one it is wide enough to.
+  check("a grid page is drawn as squared paper, not as a texture",
+    paper.lines >= 20, `${paper.lines} rule(s) across the page`);
+  // Both readings matter and only one can be measured: an invert preserves the
+  // arithmetic difference, so this number is the same on a dark theme — what
+  // changes is how much of it the eye gets, which is why the floor is set where
+  // it is rather than at the smallest visible step.
+  check("...with a minor rule that is actually there",
+    paper.minor >= 20, `the minor rules sit ${paper.minor} below the paper's ${paper.sheet}`);
+  check("...and a heavier one every fourth square, which is what makes it legible small",
+    paper.major >= paper.minor * 1.5,
+    `major ${paper.major} vs minor ${paper.minor}`);
+
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,
     [...sheet.errs, ...picture.errs].join(" | "));

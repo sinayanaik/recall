@@ -74,6 +74,7 @@ import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
+import { toggleInkRail } from "./ink-rail.js?v=__BUILD__";
 import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
@@ -198,10 +199,18 @@ export function refreshReadingRailRows() {
   const hasDocument = Boolean(state.viewMode === "handwriting"
     ? (state.meta?.notebook || state.meta?.pdf?.notebook)
     : state.meta?.pdf);
+  // Two of the document's rows mean nothing on a notebook, and the rail must not
+  // be the back door to a control the view itself has taken away: dark page is
+  // decided by the theme on generated paper (see togglePdfInvert, which refuses
+  // there), and there are no figures on blank paper to draw a region round.
+  const onNotebook = state.viewMode === "handwriting";
+  const NOT_ON_NOTEBOOK = new Set(["dark-page", "region"]);
   tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
     const scope = node.dataset.railScope;
     const inScope = scope === "document" ? documentSurfaceUp : scope === state.viewMode;
-    node.hidden = !inScope || (scope === "document" && !hasDocument);
+    node.hidden = !inScope
+      || (scope === "document" && !hasDocument)
+      || (onNotebook && NOT_ON_NOTEBOOK.has(node.dataset.railAction));
   });
   // Contents belongs to both reading surfaces, so it carries no scope — but on
   // the Document view with nothing attached it would open the PDF outline drawer
@@ -270,6 +279,9 @@ export function refreshReadingRailModes() {
     node.setAttribute("aria-pressed", source?.getAttribute("aria-pressed") === "true" ? "true" : "false");
   };
   mirrorMode("dark-page", el.documentDarkBtn);
+  // refreshInkRail already writes aria-pressed on that button on every change,
+  // so this row needs nothing of its own to stay in step.
+  mirrorMode("ink", el.documentInkBtn);
   mirrorMode("region", el.documentRegionBtn);
   mirrorMode("immersive", el.immersiveModeBtn);
   mirrorMode("focus", el.focusModeBtn);
@@ -382,6 +394,7 @@ export function initReadingRail() {
     else if (action === "immersive") toggleImmersiveMode();
     else if (action === "fit-width") fitDocumentToWidth();
     else if (action === "dark-page") togglePdfInvert();
+    else if (action === "ink") toggleInkRail();
     else if (action === "region") toggleRegionSelect();
     // The pill's own click, not a copy of what it does. Everything else in this
     // tray calls an exported function; the edit toggle's behaviour lives in an

@@ -14,6 +14,46 @@
 import { INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { inkPreferencesKey } from "./keys.js?v=__BUILD__";
 
+// ── ...and whether the rail is up, per surface ─────────────────────────────
+//
+// Two different defaults, because they are two different questions. On somebody
+// else's paper the pen is an occasional visitor and the rail is a panel over
+// what you are reading, so it stays shut until asked for. On a notebook the pen
+// IS the surface: a page of blank paper with the colours, the nib, the eraser
+// and the lasso hidden behind a button is a drawing app that looks like it has
+// no drawing tools — which is exactly how it was reported. It is also the only
+// way a mouse can draw at all (inkTakesPointer), so a desktop arriving at a
+// notebook with the rail shut cannot make a mark.
+//
+// Remembered either way: a reader who shuts it has said something, and it would
+// be worse to keep re-opening it than never to have opened it.
+const RAIL_OPEN_DEFAULT = { doc: false, notebook: true };
+
+export function inkRailOpen(slot) {
+  const key = slot === "notebook" ? "notebook" : "doc";
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const stored = parsed?.railOpen?.[key];
+    return typeof stored === "boolean" ? stored : RAIL_OPEN_DEFAULT[key];
+  } catch (_) {
+    return RAIL_OPEN_DEFAULT[key];
+  }
+}
+
+export function writeInkRailOpen(slot, open) {
+  const key = slot === "notebook" ? "notebook" : "doc";
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = (raw ? JSON.parse(raw) : null) || {};
+    const railOpen = (parsed.railOpen && typeof parsed.railOpen === "object") ? parsed.railOpen : {};
+    railOpen[key] = Boolean(open);
+    localStorage.setItem(inkPreferencesKey, JSON.stringify({ ...parsed, railOpen }));
+  } catch (error) {
+    console.warn("Could not remember the rail", error);
+  }
+}
+
 export function inkPreferences() {
   try {
     const raw = localStorage.getItem(inkPreferencesKey);
@@ -33,7 +73,12 @@ export function inkPreferences() {
 
 export function writeInkPreferences({ pen, width, tool } = {}) {
   try {
+    // Merged rather than assigned: railOpen lives in the same bag and a bare
+    // write here would forget which surfaces the reader had shut the rail on.
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = (raw ? JSON.parse(raw) : null) || {};
     localStorage.setItem(inkPreferencesKey, JSON.stringify({
+      ...parsed,
       pen: normalizeInkPen(pen),
       width: normalizeInkWidth(width),
       tool: normalizeInkTool(tool)

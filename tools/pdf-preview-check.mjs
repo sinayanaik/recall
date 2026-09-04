@@ -70,35 +70,24 @@ const SHOT_TOC_SECTION = args.includes("--shot-toc-contents") ? "contents" : "hi
 // forgets is a control that is in the document and cannot be reached — which is
 // what happened to the pen. Reading the markup keeps this an independent
 // statement rather than a restatement of the list under test.
-// The ids authored inside one of the stage's control heads.
+// The ids authored inside .document-head.
 //
-// There are two of them now — .document-head and .handwriting-head — because the
-// stage carries two documents (src/documents/doc-slot.js) and each has controls
-// the other view has no use for. Both are emptied into #viewModeRow at boot by
-// the same liftNotesControlsIntoRow, so both are asked the same two questions
-// below, each on the view it belongs to.
-function headControlIds(headClass, headId) {
+// There was briefly a second head for the notebook's controls, lifted into the
+// same row. It is gone, and the reason is a case further down: the row is a
+// nowrap line with a budget, and five more controls in it clipped the tab labels
+// mid-word. The notebook's controls live over the page now — in the pen's rail
+// and in the ⋯ menu — so there is one head again.
+function documentHeadControlIds() {
   const html = readFileSync(path.join(ROOT, "index.html"), "utf8");
-  const open = html.indexOf(`<div class="${headClass}"`);
+  const open = html.indexOf('<div class="document-head"');
   if (open < 0) return [];
-  // A head is a flat run of buttons and one menu; it ends at whichever of its
-  // siblings comes next — the other head, or the scroller.
-  const ends = ['<div class="handwriting-head"', '<div class="document-scroll"']
-    .map((marker) => html.indexOf(marker, open + 1))
-    .filter((at) => at > 0);
-  const end = ends.length ? Math.min(...ends) : html.length;
-  const block = html.slice(open, end);
+  // The control row is a flat run of buttons and one menu; it ends at the
+  // scroller that follows it, which is the next sibling in the stage.
+  const end = html.indexOf('<div class="document-scroll"', open);
+  const block = html.slice(open, end < 0 ? html.length : end);
   return [...block.matchAll(/\sid="([A-Za-z0-9_-]+)"/g)]
     .map((m) => m[1])
-    .filter((id) => id !== headId);
-}
-
-function documentHeadControlIds() {
-  return headControlIds("document-head", "documentHead");
-}
-
-function handwritingHeadControlIds() {
-  return headControlIds("handwriting-head", "handwritingHead");
+    .filter((id) => id !== "documentHead");
 }
 
 function serveOn(dir) {
@@ -457,66 +446,69 @@ try {
     invisible.length === 0,
     invisible.length ? `zero-sized: ${invisible.map((c) => "#" + c.id).join(", ")}` : `${controls.seen.length} control(s)`);
 
-  // ── ...and the same two questions of the OTHER head ────────────────────
+  // ── ...and the same question of the Write tab's own controls ───────────
   //
-  // The Write tab's controls are authored in .handwriting-head and lifted by the
-  // same function into the same row, so they can be stranded in a display:none
-  // box in exactly the way the pen button once was — with the same symptom: a
-  // control that exists, has a handler and a tooltip, and cannot be seen or
+  // They are not in this row any more — they are a group in the pen's rail and
+  // rows of ⋯ — but the fault they can have is the same one the pen button had:
+  // a control that exists, has a handler and a tooltip, and cannot be seen or
   // pressed. Asked ON that view, because that is the only place they are meant
-  // to have a box; on this one they are correctly display:none.
-  const writeIds = handwritingHeadControlIds();
-  check("the markup still authors the notebook's controls in .handwriting-head",
-    writeIds.length >= 4, `${writeIds.length} id(s): ${writeIds.join(" ")}`);
-
-  const writeControls = await page.evaluate(`async (authored) => {
+  // to have a box.
+  const writeControls = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     api.setViewMode("handwriting");
     await settle(300);
     // A deck with no notebook opens the tab to the offer of one; the controls
-    // have nothing to act on until it exists, and stand down until then.
+    // have nothing to act on until it exists.
     document.querySelector("#documentView .pdf-missing-pick")?.click();
     for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
-    await settle(300);
-    const seen = authored.map((id) => {
-      const node = document.getElementById(id);
+    await settle(400);
+    const boxed = (node) => {
       const box = node?.getBoundingClientRect();
-      return {
-        id,
-        inRow: Boolean(node?.closest("#viewModeRow")),
-        needsBox: node?.tagName === "BUTTON" || node?.tagName === "LABEL" || node?.tagName === "DIV",
-        visible: Boolean(box && box.width > 0 && box.height > 0)
-      };
-    });
-    const result = {
-      seen,
-      // The document's own ⋯ has nothing to offer here — every row in it is
-      // about a file somebody gave us — and select-a-region has no figures to
-      // draw a box round. Both stand down; contents, dark page and the pen do not.
-      moreShown: (document.getElementById("documentMoreBtn")?.getBoundingClientRect().width || 0) > 0,
-      regionShown: (document.getElementById("documentRegionBtn")?.getBoundingClientRect().width || 0) > 0,
-      inkShown: (document.getElementById("documentInkBtn")?.getBoundingClientRect().width || 0) > 0,
-      tocShown: (document.getElementById("documentTocBtn")?.getBoundingClientRect().width || 0) > 0
+      return Boolean(box && box.width > 0 && box.height > 0);
     };
+    const pageGroup = [...document.querySelectorAll("#documentInkRail [data-hw-action], #documentInkRail #handwritingImageBtn")];
+    document.getElementById("documentMoreBtn")?.click();
+    await settle(200);
+    const menuRows = [...document.querySelectorAll('#documentMoreMenu [data-slot="notebook"]')];
+    const docRows = [...document.querySelectorAll('#documentMoreMenu [data-slot="doc"]')];
+    const result = {
+      // The rail is open on arriving, and its page group has real boxes.
+      railOpen: boxed(document.getElementById("documentInkRail")),
+      pageGroup: pageGroup.length,
+      pageGroupBoxed: pageGroup.filter(boxed).length,
+      // The notebook's rows are the ones on offer; the document's are not.
+      menuRows: menuRows.length,
+      menuRowsBoxed: menuRows.filter(boxed).length,
+      docRowsBoxed: docRows.filter(boxed).length,
+      // Dark page and select-a-region mean nothing on generated paper; the pen,
+      // the contents drawer and ⋯ do.
+      darkShown: boxed(document.getElementById("documentDarkBtn")),
+      regionShown: boxed(document.getElementById("documentRegionBtn")),
+      moreShown: boxed(document.getElementById("documentMoreBtn")),
+      inkShown: boxed(document.getElementById("documentInkBtn")),
+      tocShown: boxed(document.getElementById("documentTocBtn"))
+    };
+    document.getElementById("documentMoreBtn")?.click();
+    await settle(150);
     api.setViewMode("document");
     await settle(400);
     return result;
-  }`, writeIds);
+  }`);
 
-  const writeStranded = writeControls.seen.filter((c) => !c.inRow);
-  check("every control authored in .handwriting-head reaches #viewModeRow",
-    writeStranded.length === 0,
-    writeStranded.length ? `stranded in a display:none box: ${writeStranded.map((c) => "#" + c.id).join(", ")}`
-      : writeControls.seen.map((c) => "#" + c.id).join(" "));
-
-  const writeInvisible = writeControls.seen.filter((c) => c.needsBox && !c.visible);
-  check("...and has a box on screen on the Write tab",
-    writeInvisible.length === 0,
-    writeInvisible.length ? `zero-sized: ${writeInvisible.map((c) => "#" + c.id).join(", ")}` : `${writeControls.seen.length} control(s)`);
-
-  check("...while the document's own controls stand down where they mean nothing",
-    !writeControls.moreShown && !writeControls.regionShown && writeControls.inkShown && writeControls.tocShown,
-    `⋯=${writeControls.moreShown} region=${writeControls.regionShown} pen=${writeControls.inkShown} contents=${writeControls.tocShown}`);
+  check("the pen's rail is up on arriving at the Write tab",
+    writeControls.railOpen, `rail has a box=${writeControls.railOpen}`);
+  check("...with the page group on it, and every button of it pressable",
+    writeControls.pageGroup === 3 && writeControls.pageGroupBoxed === 3,
+    `${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} with a box`);
+  // Five: a heading of its own plus three papers and the tear-out.
+  check("the ⋯ menu offers the notebook's rows and not the document's",
+    writeControls.menuRows === 5 && writeControls.menuRowsBoxed === 5 && writeControls.docRowsBoxed === 0,
+    `${writeControls.menuRowsBoxed}/${writeControls.menuRows} notebook row(s), ${writeControls.docRowsBoxed} document row(s)`);
+  check("...while the controls that mean nothing on generated paper stand down",
+    !writeControls.darkShown && !writeControls.regionShown
+      && writeControls.inkShown && writeControls.tocShown && writeControls.moreShown,
+    `dark=${writeControls.darkShown} region=${writeControls.regionShown} `
+    + `pen=${writeControls.inkShown} contents=${writeControls.tocShown} more=${writeControls.moreShown}`);
 
   check("the pen button opens the rail", controls.railWasShut && controls.railOpen,
     controls.railOpen ? "shut, then open" : "the rail did not appear");
@@ -1074,6 +1066,19 @@ try {
         tabTops: Array.from(document.querySelectorAll("#viewModeToggle [data-view-mode]"))
           .filter((b) => !b.hidden)
           .map((b) => Math.round(b.getBoundingClientRect().top)),
+        // Whose LABEL does not fit the box it is in. .vm-label is a flex item
+        // inheriting white-space: nowrap, so without a min-width of its own it
+        // refuses to shrink, overflows, and the button's overflow: hidden cuts
+        // the word in half — "DOCUMENT" arrived on a phone as "OCU". An ellipsis
+        // is a squeeze; a word cut mid-letter is a bug, and this is the
+        // difference between them.
+        clipped: Array.from(document.querySelectorAll("#viewModeToggle [data-view-mode]"))
+          .filter((b) => !b.hidden)
+          .filter((b) => {
+            const label = b.querySelector(".vm-label");
+            return label && label.scrollWidth > label.clientWidth + 1;
+          })
+          .map((b) => b.dataset.viewMode),
         notesTocHidden: hidden("#viewModeRow > #notesTocBtn"),
         editPillHidden: hidden("#viewModeRow > .edit-toggle-pill"),
         notesMoreHidden: hidden("#viewModeRow > .notes-head-more-btn"),
@@ -1094,8 +1099,16 @@ try {
     // is here to keep true.
     check(`the four tabs sit on one line (${label})`, oneLine && row.tabTops.length === 4,
       `${row.tabTops.length} tab(s) at y = ${[...new Set(row.tabTops)].join(", ")}`);
-    check(`...and the row is one tab tall (${label})`,
-      row.tabHeight > 0 && row.rowHeight < row.tabHeight * 1.8,
+    check(`...and no tab label is cut off (${label})`, row.clipped.length === 0,
+      row.clipped.length ? `clipped: ${row.clipped.join(", ")}` : `${row.tabTops.length} tab(s), all whole`);
+    // One line on a desktop; TWO on a phone, deliberately — the tabs take a
+    // line of their own there rather than share one with six controls, because
+    // sharing is what cut "DOCUMENT" in half (styles/53-handwriting.css). Two is
+    // the ceiling either way: a third line means something is wrapping that was
+    // not meant to, and --view-toggle-h grows with it.
+    const lines = label === "phone" ? 2.9 : 1.8;
+    check(`...and the row is ${label === "phone" ? "at most two tabs" : "one tab"} tall (${label})`,
+      row.tabHeight > 0 && row.rowHeight < row.tabHeight * lines,
       `row ${row.rowHeight}px vs tab ${row.tabHeight}px`);
     check(`the inert notes controls stand down (${label})`,
       row.notesTocHidden && row.editPillHidden && row.notesMoreHidden,

@@ -153,58 +153,90 @@
    — lifted into #viewModeRow at boot exactly as the document's own controls are,
    and stood down on the views where it means nothing. */
 
-/* #handwritingHead is only where the controls START. liftNotesControlsIntoRow
-   empties it at boot; this keeps an empty box from holding a row's worth of
-   padding open, and keeps the controls invisible in the frame before the lift.
-   The identical rule .document-head carries, for the identical reason. */
-.handwriting-head {
-  display: none;
+/* ── The tab labels, which were being clipped mid-word ────────────────────
+
+   `.view-mode-toggle button` is `display: inline-flex` (styles/11-chrome.css),
+   so the `text-overflow: ellipsis` written for it in
+   styles/16-mobile-reading.css has never done anything: that property needs a
+   block container. And `.vm-label` had no rule at all, which makes it a flex
+   item at `min-width: auto` inheriting `white-space: nowrap` — its min-content
+   is the whole word, so it refuses to shrink, overflows its button, and the
+   button's `overflow: hidden` cuts it off mid-word. "DOCU…" would have been a
+   squeeze. "OCU" was a bug, and this is the missing half of that rule. */
+.view-mode-toggle .vm-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* Hidden by default, because they live in the row for the whole session and are
-   shown by the view rather than moved by it — the same shape as the document's
-   controls in styles/37-document-chrome.css. */
-.view-mode-row > .handwriting-btn,
-.view-mode-row > .handwriting-paper {
-  display: none;
+/* ── Four tabs, and the width they need ────────────────────────────────────
+
+   styles/37-document-chrome.css took this row from 440px to 560px when a PDF
+   deck turned out to be the first deck with four tabs. It has four tabs and one
+   more control now — ⋯ carries the notebook's own rows, so it no longer stands
+   down there — and 560px leaves about 88px a tab, which is a few pixels under
+   what "DOCUMENT" plus its emoji needs. The label was cut, on a desktop, with
+   room on either side of the row.
+
+   Same fix as last time and for the same reason: the row is centred in a panel
+   that is far wider than it, so the width it asks for is the width it needs. */
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row {
+  width: min(640px, 100%);
 }
 
-/* [data-doc-slot] is written by setViewMode in the same pass that shows the
-   stage, so there is never a frame in which the row and the surface disagree
-   about which of the deck's two documents is on screen. */
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > .handwriting-btn {
-  display: inline-flex;
-  flex: 0 0 auto;
-}
+/* ── Four tabs on a phone ──────────────────────────────────────────────────
 
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > .handwriting-paper {
-  display: inline-flex;
-  flex: 0 0 auto;
-}
+   The row is a NOWRAP flex line at `width: min(560px, 100%)`. On the document
+   surface it also carries ☰, ⇓, ◐, ▣, ✎ and ⋯ — six rigid 26px squares and six
+   gaps, which leaves about 184px for four equal tracks. "DOCUMENT" needs more
+   than the 46px that is.
 
-/* ...unless there is no notebook yet. The Write tab is on every open deck, so
-   the stage can be up with nothing in it but the offer of a notebook, and a
-   paper picker over that offer is four inert controls — the exact fault
-   .has-no-document answers on the Document tab, one view along. */
-.quiz-panel.notes-mode:has(#documentStage.has-no-notebook[data-doc-slot="notebook"]) .view-mode-row > .handwriting-btn,
-.quiz-panel.notes-mode:has(#documentStage.has-no-notebook[data-doc-slot="notebook"]) .view-mode-row > .handwriting-paper,
-#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-pager {
-  display: none;
+   So the tabs take a line of their own. Wrapping rather than shrinking is the
+   call styles/37-document-chrome.css already makes for this row's contents —
+   the emoji goes before the words do, because the word is the control — and
+   this is that argument one step further along, now that the surface has a
+   fourth tab. Not scoped to the notebook: the Document tab has exactly the same
+   four tabs and one control MORE. */
+@media (max-width: 720px) {
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #viewModeToggle {
+    flex: 1 0 100%;
+  }
+
+  /* ☰ is authored BEFORE the toggle (ROW_LEAD_SELECTORS), so without this it
+     sits alone on the first line with the tabs pushed under it — three lines of
+     chrome to save one. `order` puts it back with the controls it belongs to. */
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #documentTocBtn,
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #notesTocBtn {
+    order: 1;
+  }
 }
 
 /* ── ...and the document's own controls, on a notebook ─────────────────────
 
-   Three of the four still mean something here: the contents drawer lists the
-   marks on the pages, dark page is the paper, and ✎ is the pen and its rail.
+   Three of the five still mean something here: the contents drawer lists the
+   marks on the pages, ✎ is the pen and its rail, and ⋯ now carries rows of the
+   notebook's own (the paper, and tearing a page out).
 
-   Two do not. Select a region drags a box round a figure in somebody's paper,
-   and there are no figures on paper you have not drawn on yet — the pen's own
-   lasso is what selects handwriting. The ⋯ menu is worse than useless: every row
-   in it is about a file somebody gave us — re-attach it, remove it from the
-   cloud, print notes under its pages — and "Re-attach the PDF" pointed at
-   generated paper would replace a notebook with somebody else's document. */
+   Two do not, and one of those was asked for. **Select a region** drags a box
+   round a figure in somebody's paper, and there are no figures on paper you have
+   not drawn on yet — the pen's own lasso is what selects handwriting.
+
+   **Dark page** is the asked-for one. On a document it is a judgement only the
+   reader can make: a paper full of photographs looks wrong inverted. A notebook
+   has nothing on it but what you put there, and the pen resolves per theme —
+   near-white on a dark theme, near-black on a light one — so the page has
+   exactly one correct state and the reader is not the one who knows it. It
+   follows the theme (invertForDocumentSlot in src/documents/pdf-view.js) and the
+   control that would disagree with the theme is gone. togglePdfInvert refuses on
+   this slot as well: a hidden button is not the same as an unreachable mode, and
+   the reading rail has a row for it too. */
 .quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > #documentRegionBtn,
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > .document-more-btn {
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > #documentDarkBtn {
   display: none;
 }
 
@@ -212,7 +244,8 @@
    meta.pdf and says nothing about a notebook — so on the Write tab of a deck
    with no PDF they would all be hidden over a perfectly good page of
    handwriting. Restated here against the fact that actually applies. */
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > .document-toggle {
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > .document-toggle,
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > .document-more-btn {
   display: inline-flex;
   flex: 0 0 auto;
 }
@@ -225,7 +258,8 @@
   min-height: 26px;
 }
 
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentRegionBtn {
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentRegionBtn,
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentDarkBtn {
   display: none;
 }
 
@@ -233,37 +267,73 @@
   display: flex;
 }
 
-/* ── The row on a phone ────────────────────────────────────────────────────
+/* ...and the other way round, which `.has-no-document` cannot answer either: a
+   deck that HAS a paper but no notebook yet shows the offer of one on this tab,
+   and a page number and a zoom over an offer is a control for pages that do not
+   exist. */
+#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-pager {
+  display: none;
+}
 
-   The Write tab asks more of this row than any other view does: four tabs, the
-   contents toggle, dark page, the pen, three paper buttons, four actions and the
-   ⇓. `.view-mode-row` is a nowrap flex line capped at 560px, so at 390px that is
-   not a tight fit, it is a squeeze that takes the tabs' labels with it.
+/* ...and the pen's rail, which the same class was hiding on every deck whose
+   only document is a notebook — see the rule it answers in styles/52-ink.css.
+   Over the OFFER of a notebook there is still nothing to draw on, so the rail
+   stands down there, asked of `.has-no-notebook` rather than of meta.pdf. */
+#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-ink-rail {
+  display: none;
+}
 
-   So it wraps here, and only here. Wrapping rather than scrolling is the call
-   styles/52-ink.css already makes for the same set of controls on a phone, for
-   the same reason: a horizontal scroller hides controls behind a gesture nobody
-   is told about. The row's own height is measured with scrollHeight
-   (readChromeHeights), so a second line is a second line the chrome knows about
-   rather than one clipped by the clamp. */
+/* ── The rail and the pager, on a phone ────────────────────────────────────
+   At <=720px the rail stops being a corner cluster and becomes a full-width
+   wrapping band across the foot of the stage (styles/52-ink.css). The pager
+   stays in the bottom-right corner on the same z-index and, being later in the
+   document, paints straight over it — which was already true and is worse now
+   the rail carries a page group as well. So the pager steps up out of the band
+   whenever the rail is open. Two floating panels, one above the other, rather
+   than one on top of the other. */
 @media (max-width: 720px) {
-  .quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row {
-    flex-wrap: wrap;
-    row-gap: 4px;
-  }
-
-  /* The tabs keep a line of their own rather than sharing one: they are how you
-     leave this view, and a tab squeezed to three letters beside a paper picker
-     is the fault this rule is avoiding, not a smaller version of it. */
-  .quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > #viewModeToggle {
-    flex: 1 0 100%;
+  #documentStage:has(.document-ink-rail:not([hidden])) .document-pager {
+    /* --ink-rail-h is the rail's measured height, written by src/ui/ink-rail.js
+       from a ResizeObserver: how far up to step depends on how many rows it has
+       wrapped to, and a stylesheet cannot count those. The fallback is one row,
+       for the frame before the first measurement lands. */
+    bottom: calc(var(--ink-rail-h, 42px) + 16px);
   }
 }
 
-/* A <label> cannot be disabled, so the + 📷 picker says so with a class instead
-   — matched to what a disabled .tool-button already looks like. */
-.view-mode-row > .handwriting-btn.is-disabled {
+/* ── One menu, two documents ───────────────────────────────────────────────
+   Each row of ⋯ says which of the deck's documents it is about, and the stage
+   says which one is on screen. A row with no `data-slot` is true of both — the
+   printed page notes are the only one. */
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="doc"]) #documentMoreMenu [data-slot="notebook"],
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]) #documentMoreMenu [data-slot="doc"] {
+  display: none;
+}
+
+/* The paper rows are one choice in three, so they carry the switch the
+   page-notes row already uses rather than a tick of their own. */
+#documentMoreMenu .md-menu-item[data-document-action^="hw-paper-"][disabled] {
   opacity: 0.45;
+  pointer-events: none;
+}
+
+/* ── The notebook's group on the pen's rail ────────────────────────────────
+   + Text, + Image and + Page. Only on a notebook: there is nowhere to add a
+   page to somebody else's document, and a text block over their figure goes on
+   through the same button on the Document tab, which is why the group is the
+   only part of the rail that comes and goes. */
+.ink-rail-page {
+  display: none;
+}
+
+#documentStage[data-doc-slot="notebook"] .ink-rail-page {
+  display: flex;
+}
+
+/* A <label> cannot be disabled, so the + 📷 picker says so with a class instead
+   — matched to what a disabled .ink-rail-btn already looks like. */
+.ink-rail-btn.is-disabled {
+  opacity: 0.35;
   pointer-events: none;
 }
 

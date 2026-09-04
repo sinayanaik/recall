@@ -31,15 +31,62 @@
 export const BLANK_PAGE_WIDTH = 595;
 export const BLANK_PAGE_HEIGHT = 842;
 
+// What the paper looks like, as a number.
+//
+// The sheet is DRAWN, so it can be redrawn — that is the property the whole
+// module rests on, and it is what makes changing the grid a thing that can reach
+// notebooks that already exist rather than only new ones. A notebook records the
+// version it was drawn at; a notebook drawn at an older one is redrawn on the
+// next press of Write, through the same writeNotebookPdf that changing the paper
+// already calls. The page box does not change between versions and must not, so
+// nothing written on it moves.
+//
+//   1  the first sheet: a flat 5mm grid, a blue-grey rule
+//   2  a 5mm grid with a heavier line every 2cm, and greys that are still a grid
+//      after `filter: invert(1)` — the first one inverted to near-black on black
+export const BLANK_PAPER_VERSION = 2;
+
 export const BLANK_PAPERS = ["grid", "ruled", "blank"];
 export const BLANK_PAPER_DEFAULT = "grid";
 
 // In points. A ruled pitch of 24pt is a line a 10-12pt hand writes on without
-// crowding; the grid is 16pt, small enough to sketch on and large enough not to
-// read as a texture.
+// crowding; the grid is 16pt, which is 5mm — real squared paper.
+//
+// ── ...and why 5mm alone was not enough ────────────────────────────────────
+//
+// 16pt is right on paper and wrong on a phone, and both statements are about the
+// same number. A4 is 595pt wide and a portrait phone is about 390px, so the page
+// is laid out at ~63%: the 5mm square lands at 10px with a 0.5pt line drawn at a
+// third of a pixel. That is not a grid, it is a grey wash — and it was reported
+// as one.
+//
+// Real squared paper has the same problem at arm's length and solves it the same
+// way: a heavier line every fourth square. The minor grid stays 5mm and gets
+// LIGHTER, so it stops competing with what is written on it; the major line
+// every 2cm is what the eye actually reads the page by, and it survives being
+// drawn at 63% because it is drawn to.
 const RULE_PITCH = 24;
 const GRID_PITCH = 16;
+const GRID_MAJOR_EVERY = 4;
 const MARGIN_X = 56;
+
+// ── The greys, which have to work upside down ──────────────────────────────
+//
+// A notebook's paper follows the theme, and on a dark theme that is done with
+// `filter: invert(1)` over the rendered canvas (styles/36-document.css). An
+// invert preserves the ARITHMETIC difference between the line and the page —
+// 0.86 on 1.0 becomes 0.14 on 0.0, and 0.14 either way — so it is not the
+// contrast that changes. What changes is how much of it the eye gets: the same
+// step is much harder to see near black than near white, which is why the old
+// 0.86 grid read as squared paper on a light theme and as nothing at all on a
+// dark one.
+//
+// So the values below are not the old ones adjusted for the invert; they are
+// chosen for the darker of the two readings and then checked on the lighter.
+const GRID_MINOR_GREY = 0.80;
+const GRID_MAJOR_GREY = 0.62;
+const RULE_GREY = 0.72;
+const MARGIN_GREY = [0.86, 0.55, 0.55];
 
 export function normalizeBlankPaper(kind) {
   return BLANK_PAPERS.includes(kind) ? kind : BLANK_PAPER_DEFAULT;
@@ -61,18 +108,32 @@ function paperStream(kind) {
   // than a guess.
   out.push("1 1 1 rg", `0 0 ${width} ${height} re`, "f");
   if (kind === "grid") {
-    out.push("0.86 0.86 0.86 RG", "0.5 w");
-    for (let x = GRID_PITCH; x < width; x += GRID_PITCH) out.push(`${x} 0 m ${x} ${height} l S`);
-    for (let y = GRID_PITCH; y < height; y += GRID_PITCH) out.push(`0 ${y} m ${width} ${y} l S`);
+    // Two passes rather than one line at a time, because a colour and a width
+    // are graphics STATE in a content stream: setting them per line would be
+    // two operators per line for a page that has ninety of them. All the minor
+    // lines, then all the major ones over the top.
+    const minor = [];
+    const major = [];
+    for (let x = GRID_PITCH, n = 1; x < width; x += GRID_PITCH, n += 1) {
+      (n % GRID_MAJOR_EVERY ? minor : major).push(`${x} 0 m ${x} ${height} l S`);
+    }
+    for (let y = GRID_PITCH, n = 1; y < height; y += GRID_PITCH, n += 1) {
+      (n % GRID_MAJOR_EVERY ? minor : major).push(`0 ${y} m ${width} ${y} l S`);
+    }
+    out.push(`${GRID_MINOR_GREY} ${GRID_MINOR_GREY} ${GRID_MINOR_GREY} RG`, "0.4 w", ...minor);
+    out.push(`${GRID_MAJOR_GREY} ${GRID_MAJOR_GREY} ${GRID_MAJOR_GREY} RG`, "0.8 w", ...major);
   } else if (kind === "ruled") {
-    out.push("0.84 0.86 0.9 RG", "0.6 w");
+    // Neutral grey, not the blue-grey this used to be: a tint that reads as
+    // paper the right way up reads as a colour cast upside down, and half this
+    // app's readers are on a theme that turns the page over.
+    out.push(`${RULE_GREY} ${RULE_GREY} ${RULE_GREY} RG`, "0.6 w");
     for (let y = RULE_PITCH; y < height - RULE_PITCH; y += RULE_PITCH) {
       out.push(`${MARGIN_X} ${y} m ${width - 32} ${y} l S`);
     }
     // The margin line, because a ruled page without one is a lined page rather
     // than a notebook — and because it is what tells you which way up the page
     // is when it is scrolled to halfway.
-    out.push("0.92 0.62 0.62 RG", "0.7 w", `${MARGIN_X} 0 m ${MARGIN_X} ${height} l S`);
+    out.push(`${MARGIN_GREY.join(" ")} RG`, "0.7 w", `${MARGIN_X} 0 m ${MARGIN_X} ${height} l S`);
   }
   return out.join("\n");
 }

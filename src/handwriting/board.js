@@ -26,11 +26,23 @@
 //     stage really had arrived in a box of a different width. Nothing moves now,
 //     so nothing has to be re-laid-out.
 //
-// What is left is the chrome: the paper, + Text, + Image, + Page and the tear-out.
-// Those are lifted into #viewModeRow at boot beside the document's own controls
-// (liftNotesControlsIntoRow), so a notebook and a paper have the same one row in
-// the same shape, and CSS stands each set down on the views where it means
-// nothing.
+// ── ...and why its controls are not in the tab row either ──────────────────
+//
+// They were, briefly, lifted into #viewModeRow beside the document's own. That
+// row is a nowrap flex line capped at 560px: a fourth tab plus ☰, ⇓, ◐, ✎, ⋯, a
+// three-button paper picker and four actions came to about 360px of a 390px
+// phone, and the tab labels were clipped mid-word to "CAR NOT DOCU WRI". The row
+// has a budget and adding to it does not create more of it.
+//
+// So they went where the Document surface already puts what acts on the page:
+//
+//   • + Text, + Image and + Page are a group in the pen's rail, which floats
+//     over the page, wraps on a phone and dims while the nib is down;
+//   • the paper and the tear-out are rows of ⋯, because a thing you do once a
+//     session does not need to be on screen for the whole of it.
+//
+// Neither needed lifting — both are already inside #documentStage. What is left
+// in this file is what a press MEANS.
 
 import { addNotebookPage, deleteNotebookPage, ensureNotebookDocument, hasNotebook, notebookPageCount, notebookPaper, setNotebookPaper } from "../documents/notebook.js?v=__BUILD__";
 import { BLANK_PAPERS } from "../documents/blank-pdf.js?v=__BUILD__";
@@ -54,29 +66,44 @@ export function isHandwritingView() {
 // showing the offer of a notebook has no pages to add to, tear out or re-rule,
 // so those stand down rather than sitting there inert.
 export function paintHandwritingControls() {
-  // The class this row's CSS is shown from lives with the TAB, and the tab is
-  // repainted by updateMeta — which nothing on the way to making a notebook
+  // The class the notebook's CSS is shown from lives with the TAB, and the tab
+  // is repainted by updateMeta — which nothing on the way to making a notebook
   // calls. Without this the controls stay stood down over the notebook that was
   // just made, until some unrelated deck change happened to repaint the header.
   refreshHandwritingTab();
   const ready = hasNotebook();
   const paper = notebookPaper();
-  el.handwritingPaperGroup?.querySelectorAll("[data-hw-paper-kind]").forEach((node) => {
-    node.setAttribute("aria-pressed", node.dataset.hwPaperKind === paper ? "true" : "false");
+
+  // The rail's page group.
+  el.documentInkRail?.querySelectorAll("[data-hw-action]").forEach((node) => {
     node.toggleAttribute("disabled", !ready);
-  });
-  [el.handwritingTextBtn, el.handwritingPageBtn, el.handwritingTearBtn].forEach((node) => {
-    node?.toggleAttribute("disabled", !ready);
   });
   // A <label> carries no `disabled`, so the picker inside it is what is turned
   // off — and the class is what CSS greys, matching the buttons beside it.
   el.handwritingImageBtn?.classList.toggle("is-disabled", !ready);
   if (el.handwritingImageInput) el.handwritingImageInput.disabled = !ready;
-  el.handwritingTearBtn?.setAttribute(
+
+  // The ⋯ menu's notebook rows. The paper rows are a choice, so they carry the
+  // same switch the page-notes row does and one of them is always on — a picker
+  // that shows nothing selected is a picker that does not say what the paper is.
+  el.documentMoreMenu?.querySelectorAll('[data-document-action^="hw-paper-"]').forEach((node) => {
+    const kind = node.dataset.documentAction.slice("hw-paper-".length);
+    // aria-pressed is what draws the switch — styles/37-document-chrome.css:344
+    // already lights it for any .md-menu-item in this menu, so these rows say
+    // which paper is on with the same control the page-notes row uses.
+    node.setAttribute("aria-pressed", ready && kind === paper ? "true" : "false");
+    node.toggleAttribute("disabled", !ready);
+  });
+  const tearOut = el.documentMoreMenu?.querySelector('[data-document-action="hw-tear-out"]');
+  // Refused rather than hidden on a one-page notebook, for the reason the rail
+  // refuses join rather than hiding it: a row that comes and goes moves the ones
+  // beside it under the reader's thumb.
+  tearOut?.toggleAttribute("disabled", !ready || notebookPageCount() < 2);
+  tearOut?.setAttribute(
     "title",
     ready && notebookPageCount() > 1
       ? `Tear out page ${currentDocumentPage() || 1} — everything written on it goes with it`
-      : "Tear out the page you are looking at"
+      : "A notebook keeps at least one page"
   );
 }
 
@@ -126,22 +153,35 @@ export function startHandwritingNotebook() {
   return enterHandwritingView({ create: true });
 }
 
+// What the ⋯ menu's notebook rows do. Called from the one delegated
+// [data-document-action] handler in src/main.js, which is where every other row
+// of that menu is already dispatched — a second listener on the same menu is a
+// second place for the close-the-menu rules to be got wrong.
+export function runHandwritingMenuAction(action) {
+  if (action === "hw-tear-out") { tearOutPage(); return true; }
+  if (action.startsWith("hw-paper-")) {
+    const kind = action.slice("hw-paper-".length);
+    if (!BLANK_PAPERS.includes(kind)) return false;
+    setNotebookPaper(kind).then(() => paintHandwritingControls());
+    return true;
+  }
+  return false;
+}
+
 function wire() {
   if (wired) return;
   wired = true;
-  // Delegated on the row the controls were lifted INTO, not on the head they
-  // were authored in — that head is empty by the time anybody presses anything.
-  const row = document.getElementById("viewModeRow");
-  row?.addEventListener("click", (event) => {
-    const kind = event.target.closest("[data-hw-paper-kind]")?.dataset.hwPaperKind;
-    if (kind && BLANK_PAPERS.includes(kind)) {
-      setNotebookPaper(kind).then(() => paintHandwritingControls());
-      return;
-    }
-    const action = event.target.closest("[data-hw-action]")?.dataset.hwAction;
-    if (!action) return;
+  // Delegated on the pen's rail, which is where the page group lives now.
+  // pointerdown rather than click, and preventDefault with it, for the reason
+  // src/ui/ink-rail.js gives for the controls beside these: a press on the rail
+  // must not travel on to the page underneath and start a stroke, and on a
+  // stylus the two are a few pixels apart.
+  el.documentInkRail?.addEventListener("pointerdown", (event) => {
+    const button = event.target.closest("[data-hw-action]");
+    if (!button || button.hasAttribute("disabled")) return;
+    event.preventDefault();
+    const action = button.dataset.hwAction;
     if (action === "add-page") addPage();
-    else if (action === "delete-page") tearOutPage();
     else if (action === "add-block") addBlock();
   });
 }

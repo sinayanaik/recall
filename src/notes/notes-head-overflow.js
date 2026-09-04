@@ -72,20 +72,17 @@ const ROW_TRAIL_SELECTORS = [
   ".document-head > #documentInkBtn",
   ".document-head > #documentMoreBtn",
   ".document-head > #documentMoreMenu",
-  // ── The notebook's controls ─────────────────────────────────────────────
+  // ── The notebook's controls are NOT in this list ────────────────────────
   //
-  // The Write tab is the same #documentStage showing the deck's other document,
-  // so its controls belong in the same one row as the document's — lifted the
-  // same way, hidden by CSS on the views where they mean nothing, and never
-  // cloned, because every one of them is wired by id.
+  // They were, and it is what crushed the tabs. This row is a nowrap flex line
+  // capped at 560px; a fourth tab plus ☰, ⇓, ◐, ✎, ⋯, a three-button paper
+  // picker and four actions came to about 360px of a 390px phone, and the labels
+  // were clipped to "CAR NOT DOCU WRI". The row has a budget and it was spent.
   //
-  // They were the header of a full-page overlay until now, which is what made
-  // handwriting a place you went rather than a view you were in.
-  ".handwriting-head > #handwritingPaperGroup",
-  ".handwriting-head > #handwritingTextBtn",
-  ".handwriting-head > #handwritingImageBtn",
-  ".handwriting-head > #handwritingPageBtn",
-  ".handwriting-head > #handwritingTearBtn",
+  // So the notebook's controls went where the Document surface already puts what
+  // acts on the page: the three you reach for constantly are a group in the pen's
+  // rail, and the paper and the tear-out are rows of ⋯. Neither needs lifting —
+  // both are already inside #documentStage, where they belong.
 ];
 
 // In the order they appear in the menu. This USED to be the order they sat in
