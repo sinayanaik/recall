@@ -89,7 +89,7 @@
 }
 
 /* Every canvas the engine makes for a page — the dry one and, while a stroke is
-   in flight, the shared wet pair. Stacking is DOM order, exactly as it is on a
+   in flight, the shared live layer. Stacking is DOM order, exactly as it is on a
    PDF page, and none of them takes a pointer: the page element receives the
    press and src/notes/ink-sheet.js routes it. */
 .hw-page-ink .hw-page-canvas {

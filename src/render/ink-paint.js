@@ -54,9 +54,12 @@ export const INK_PRESSURE_WINDOW = 3;
 // Backwards it is INK_PRESSURE_WINDOW - 1 for the pressure average, and 1 for
 // inkSmoothWidths' neighbour on the speed path: two covers both. Forwards it is
 // one, for inkSmoothWidths' other neighbour and for the tangent inkStrokeOutline
-// takes between i-1 and i+1. A sample with no successor yet has neither, so the
-// engine holds it back and paints it on the tip layer, which is wiped and
-// redrawn every frame anyway.
+// takes between i-1 and i+1. A sample with no successor yet has neither, which
+// costs nothing on the live layer — that is repainted whole every frame, so a
+// provisional width is replaced the moment the next sample lands. It is why the
+// engine keeps unsettled samples OFF the dry canvas at its mid-stroke hand-off:
+// the dry canvas is the one surface a stroke in flight cannot be repainted from,
+// so a provisional width painted there is a bead that never comes out.
 export const INK_WIDTH_LOOKBACK = INK_PRESSURE_WINDOW - 1;
 export const INK_WIDTH_LOOKAHEAD = 1;
 

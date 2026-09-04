@@ -301,11 +301,220 @@ try {
       dry: page.querySelectorAll(".is-ink-dry").length
     };
   }`);
-  check("the low-latency pair comes off the page once the stroke is committed",
+  check("the low-latency layer comes off the page once the stroke is committed",
     mounted.wet === 0 && mounted.tip === 0,
-    `${mounted.wet} wet, ${mounted.tip} tip, ${mounted.dry} dry canvas(es) left mounted`);
+    `${mounted.wet} live, ${mounted.tip} tip, ${mounted.dry} dry canvas(es) left mounted`);
   check("...leaving the dry canvas to be the thing on top", mounted.dry === 1,
     `${mounted.dry} dry canvas(es)`);
+  // ── 2c. Is the whole stroke visible WHILE it is being drawn? ────────────
+  //
+  // "When I am writing, the tip of the stroke is visible, and when I release,
+  // the rest of it then shows."
+  //
+  // Every check above reads the dry canvas, which only ever holds committed ink
+  // — so all of them passed while the surface a reader actually looks at
+  // mid-stroke showed a stub under the nib and nothing behind it. Two causes,
+  // both of them live at once: a second desynchronized layer over the first, and
+  // an append-only layer that assumed a low-latency swap chain preserves what
+  // was drawn on it last frame.
+  //
+  // So this asks the question none of them could: with the pen still DOWN, is
+  // there ink on the live layer near where the stroke STARTED? Not near the nib
+  // — the nib is the half that never broke.
+  const midStroke = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+
+    // A long, slow stroke across the page, with a settle between runs so several
+    // frames really do go by — the fault only shows once a frame boundary has
+    // been crossed, because everything up to the first one is "the tip".
+    const x0 = box.left + 40;
+    const y0 = box.top + 420;
+    pen(view, "pointerdown", x0, y0, 1);
+    for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", x0 + (i * 10), y0 + (i * 2), 1);
+    await settle(120);
+    for (let i = 11; i <= 30; i += 1) pen(view, "pointermove", x0 + (i * 10), y0 + (i * 2), 1);
+    await settle(120);
+    for (let i = 31; i <= 50; i += 1) pen(view, "pointermove", x0 + (i * 10), y0 + (i * 2), 1);
+    await settle(200);
+
+    // Still down. Count what is stacked over the page at this instant, and read
+    // the live layer's own bitmap.
+    const live = pageEl.querySelector(".pdf-ink-layer .is-ink-wet");
+    const lowLatency = pageEl.querySelectorAll(".pdf-ink-layer .is-ink-wet, .pdf-ink-layer .is-ink-tip").length;
+    const layers = pageEl.querySelectorAll(".pdf-ink-layer canvas").length;
+    let head = 0;
+    let tail = 0;
+    let total = 0;
+    if (live) {
+      const ctx = live.getContext("2d");
+      const px = ctx.getImageData(0, 0, live.width, live.height).data;
+      const w = live.width;
+      // The stroke runs left to right across the page. "head" is the third of
+      // the canvas the stroke STARTED in, "tail" the third the nib is in now.
+      for (let i = 3, p = 0; i < px.length; i += 4, p += 1) {
+        if (px[i] <= 8) continue;
+        total += 1;
+        const x = p % w;
+        if (x < w / 3) head += 1;
+        else if (x > (w * 2) / 3) tail += 1;
+      }
+    }
+    pen(view, "pointerup", x0 + 500, y0 + 100, 0);
+    await settle(200);
+    return { hasLive: Boolean(live), lowLatency, layers, head, tail, total, errs: window.__errs.slice(0, 4) };
+  }`, PEN_SRC);
+
+  check("the live layer is on the page while the pen is down",
+    midStroke.hasLive && midStroke.total > 0,
+    `live canvas present=${midStroke.hasLive}, ${midStroke.total} inked pixel(s)`);
+  // ...and there is exactly ONE of it. This is the assertion that actually
+  // catches the reported fault, and it is structural rather than a bitmap read
+  // for a reason: the fault is a COMPOSITING one — desynchronized asks to be
+  // taken out of the normal path, and on Chrome/Android that can mean promotion
+  // to a hardware overlay plane, which does not blend with what is beneath it.
+  // Headless Chrome does not promote and does preserve, so it renders the old
+  // two-layer engine perfectly; the pixels below pass either way. What does not
+  // pass either way is the count. Two low-latency layers stacked is the bug, on
+  // any machine that promotes them, so the count is the thing to hold.
+  check("...and it is the ONLY low-latency layer over the page",
+    midStroke.lowLatency === 1 && midStroke.layers === 2,
+    `${midStroke.lowLatency} low-latency canvas(es) and ${midStroke.layers} in total mid-stroke — `
+      + `a plane over a plane hides the one beneath, which is "only the tip of the stroke is visible"`);
+  check("...carrying the START of the stroke, not only the nib",
+    midStroke.head > 0,
+    `${midStroke.head} inked pixel(s) where the stroke began, ${midStroke.tail} under the nib `
+      + `— zero at the head is exactly "only the tip is visible while writing"`);
+  check("...and the line is continuous rather than a stub",
+    midStroke.head > 0 && midStroke.tail > 0 && midStroke.total > midStroke.head + midStroke.tail,
+    `head ${midStroke.head}, middle ${midStroke.total - midStroke.head - midStroke.tail}, nib ${midStroke.tail}`);
+  check("...with nothing thrown mid-stroke", midStroke.errs.length === 0, midStroke.errs.join(" | "));
+
+  // ── 2d. A stroke longer than the live layer's bound ─────────────────────
+  //
+  // Repainting the stroke whole every frame is what makes the live layer immune
+  // to being hidden and to not being preserved, and it costs a fill over the
+  // whole stroke. Past INK_LIVE_MAX_POINTS samples the engine hands everything
+  // but the tail to the dry canvas and carries on with the rest, so the frame
+  // cost stops growing.
+  //
+  // That hand-off is the one piece of new machinery here, and it has two ways to
+  // be wrong that a reader would see: the stroke could commit in pieces, or the
+  // line could break at the seam. A thousand samples in one gesture crosses the
+  // bound comfortably.
+  const longStroke = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+    // Counted in SAMPLES, not in marks. pdf-ink.js joins strokes drawn in quick
+    // succession into one mark (inkStrokesJoinMark), which is what it is for, so
+    // "did a new mark appear" is a question about the grouping rule rather than
+    // about the hand-off. How many samples reached the record is the question
+    // this case is actually asking.
+    const inkSamples = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .reduce((n, r) => n + api.decodeInkStrokes(r.ink?.s || [])
+        .reduce((m, stroke) => m + Math.floor((stroke.p || []).length / 3), 0), 0);
+    const inkRuns = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .reduce((n, r) => n + api.decodeInkStrokes(r.ink?.s || []).length, 0);
+    // The runs already on this page, keyed by their own points, so the one this
+    // gesture adds can be picked out afterwards. Measuring the bounds of ALL the
+    // ink on the page would let an earlier stroke satisfy the assertion below.
+    const decodedRuns = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+    const keysBefore = new Set(decodedRuns().map((run) => JSON.stringify(run.p)));
+    const before = inkSamples();
+    const runsBefore = inkRuns();
+
+    // A long flat zig-zag inside the page, so a thousand samples stay on paper.
+    const inkedOn = (canvas) => {
+      if (!canvas) return 0;
+      const px = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let n = 0;
+      for (let i = 3; i < px.length; i += 4) if (px[i] > 8) n += 1;
+      return n;
+    };
+    const liveInk = () => inkedOn(pageEl.querySelector(".pdf-ink-layer .is-ink-wet"));
+
+    const x0 = box.left + 30;
+    const y0 = box.top + 120;
+    const w = Math.max(60, box.width - 60);
+    const stepTo = async (n, from) => {
+      for (let i = from; i <= n; i += 1) {
+        const t = i / 1000;
+        pen(view, "pointermove", x0 + (w * t), y0 + (Math.sin(i / 6) * 24) + (t * 60), 1);
+        // A settle every so often, so real frames run and the hand-off is
+        // actually reached rather than everything arriving in one queue.
+        if (i % 100 === 0) await settle(40);
+      }
+      await settle(120);
+    };
+    pen(view, "pointerdown", x0, y0, 1);
+    // Read once BELOW the bound and once well above it. The live layer is
+    // repainted whole every frame, so without the hand-off its ink grows with
+    // the stroke without limit — which is the cost the bound exists to stop. A
+    // fifth of the samples should not be carrying a fifth of the pixels once the
+    // hand-off has run; past it the layer carries only the tail.
+    await stepTo(200, 1);
+    const liveEarly = liveInk();
+    await stepTo(1000, 201);
+    const liveLate = liveInk();
+    const dryMid = inkedOn(pageEl.querySelector(".pdf-ink-layer .is-ink-dry"));
+
+    pen(view, "pointerup", x0 + w, y0 + 60, 0);
+    await settle(300);
+
+    // Where the committed run actually reaches, in the page's own points, against
+    // where the pen actually went. This is the question the sample COUNT cannot
+    // answer: the stored format simplifies a stroke on the way in, so a thousand
+    // samples legitimately come back as a few hundred — but a hand-off that lost
+    // the front of the line shows as a stroke that starts halfway across.
+    const fresh = decodedRuns().filter((run) => !keysBefore.has(JSON.stringify(run.p)));
+    const bounds = api.inkStrokesBounds(fresh);
+    const viewport = api.pdfPageViewport(1);
+    const atX = (clientX) => (viewport ? viewport.convertToPdfPoint(clientX - box.left, 0)[0] : 0);
+    return {
+      dryMid,
+      liveEarly,
+      liveLate,
+      samples: inkSamples() - before,
+      runs: inkRuns() - runsBefore,
+      drawnFrom: atX(x0),
+      drawnTo: atX(x0 + w),
+      inkFrom: bounds ? bounds.minX : 0,
+      inkTo: bounds ? bounds.maxX : 0,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+
+  check("a stroke past the live layer's bound commits as ONE run, not several",
+    longStroke.runs === 1,
+    `the gesture added ${longStroke.runs} stroke(s) — the hand-off must not split what the reader drew`);
+  // Not a sample count: the stored format simplifies on the way in, so a
+  // thousand reported samples legitimately come back as a few hundred. What must
+  // survive is the LINE — a hand-off that dropped the part it handed to the dry
+  // canvas would commit a stroke that starts where the hand-off happened.
+  check("...spanning the whole line the pen drew, head included",
+    longStroke.inkFrom <= longStroke.drawnFrom + 12
+      && longStroke.inkTo >= longStroke.drawnTo - 12,
+    `the committed line runs ${longStroke.inkFrom.toFixed(0)}→${longStroke.inkTo.toFixed(0)} points `
+      + `where the pen ran ${longStroke.drawnFrom.toFixed(0)}→${longStroke.drawnTo.toFixed(0)} `
+      + `(${longStroke.samples} sample(s) after the format's own simplification)`);
+  check("...and the live layer stops growing once the bound is passed",
+    longStroke.liveLate > 0 && longStroke.liveLate < longStroke.liveEarly * 3,
+    `the live layer held ${longStroke.liveEarly} inked pixel(s) at 200 samples and ${longStroke.liveLate} at 1000 `
+      + `— growing in step with the stroke means the hand-off never ran, and the per-frame fill grows without limit`);
+  check("...with the handed-over head painted on the dry canvas beneath it",
+    longStroke.dryMid > 0,
+    `${longStroke.dryMid} inked pixel(s) on the dry canvas mid-stroke`);
+  check("...and nothing thrown by the hand-off", longStroke.errs.length === 0, longStroke.errs.join(" | "));
 
   check("the dry canvas has the finished stroke at the instant the pen lifts",
     handover.atLift > handover.before,

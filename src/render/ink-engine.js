@@ -8,39 +8,46 @@
 // space and survives a zoom; the drawing sheet gives it one host whose matrix is
 // a plain scale. Neither had to teach this file anything.
 //
-// ── Three canvases, and why ────────────────────────────────────────────────
+// ── Two canvases, and why it used to be three ──────────────────────────────
 //
-//   dry      one per host. Every committed stroke. Repainted only when the
-//            strokes change or the matrix does.
-//   inkOverlay  one, moved onto whichever host is being drawn on. The stroke under
-//            the nib, the lasso, and the selection chrome.
-//   tip      one, over the inkOverlay. Predicted ink and nothing else.
+//   dry     one per host. Every committed stroke. Repainted only when the
+//           strokes change or the matrix does.
+//   live    one, moved onto whichever host is being drawn on. The stroke under
+//           the nib, the browser's guess at what comes next, the lasso, and the
+//           selection chrome. Wiped and repainted whole, every frame.
 //
-// The split is the whole performance story. Redrawing every stroke on the page
-// each frame is what makes a drawing app stutter once the page has a hundred
-// strokes on it, so committed ink is painted once and left alone. The live
-// stroke is APPEND-ONLY — each frame draws the outline of just the samples that
-// arrived since the last one, plus INK_SEAM_OVERLAP of overlap so the caps hide
-// the seam. Ink is opaque and the outline fills nonzero, so overlapping
-// sub-outlines join invisibly; that is what buys an O(new points) frame instead
-// of O(stroke).
+// There were three, and the third is what this file was reported for: "when I
+// am writing, the tip of the stroke is visible, and when I release, the rest of
+// it then shows."
 //
-// The tip needs its own canvas precisely BECAUSE the inkOverlay is append-only:
-// predicted ink has to be wiped every frame when the prediction turns out
-// wrong, and wiping a rectangle of the inkOverlay would take the real ink under it
-// with it. It carries one thing more than prediction — the SETTLING TAIL. A
-// sample the digitiser has only just reported has no successor, so it does not
-// yet know its own width or its own tangent; painting it onto a layer that can
-// never be repainted is how a line comes to bead at every frame boundary. So the
-// wet layer takes only settled samples and the tip carries the last one or two,
-// where being redrawn every frame is free.
+// The old shape was an append-only WET layer carrying settled samples, and a TIP
+// layer over it carrying the unsettled tail and the prediction, wiped each
+// frame. Both `desynchronized`. That asks to be taken out of the normal
+// compositing path, and on Chrome/Android it can mean promotion to a hardware
+// overlay plane — which is exactly what ce9f73a already found out the hard way,
+// in its own words: "a plane does not blend with what is beneath it". Two of
+// them stacked is that finding again one layer up. The tip is on top, so the tip
+// is what you see; the wet layer under it is painted, present and hidden, and
+// the whole stroke appears the instant the pair comes off at the pen lift.
 //
-// The wet layer and the tip are mounted for the duration of a stroke and taken
-// off again at the end of it. `desynchronized` asks to be taken out of the
-// normal compositing path, and on Chrome/Android that can mean a hardware
-// overlay plane, which does not blend with what is under it — so a cleared but
-// still-mounted wet canvas HID the committed ink on the dry one beneath. See
-// handOverToDry.
+// The append-only wet layer had a second way to produce the identical symptom,
+// and it needed no compositing story at all: append-only ASSUMES the layer keeps
+// what was drawn on it last frame, and a low-latency swap chain is not obliged
+// to. Where it does not, every earlier frame's ink is gone and only the newest
+// samples survive — which looks like a tip, because it is one.
+//
+// So there is one live layer and it is repainted WHOLE from live.points every
+// frame. Neither mechanism can produce the fault any more: nothing is stacked
+// over anything, and nothing is assumed to persist between frames.
+//
+// What that costs is a fill per frame over the whole stroke instead of over the
+// few samples that just arrived, and the answer to that is INK_LIVE_MAX_POINTS
+// below rather than a second layer.
+//
+// The live layer is mounted for the duration of a stroke and taken off again at
+// the end of it — a cleared but still-mounted low-latency canvas HID the
+// committed ink on the dry one beneath, which is the fault ce9f73a fixed and
+// which this must not undo. See handOverToDry.
 //
 // ── What the pen feel actually comes from ──────────────────────────────────
 //
@@ -49,12 +56,13 @@
 //     given rather than in one of their own. Without this a fast stroke is
 //     visibly polygonal — it is a fidelity fix at least as much as a latency
 //     one, and both Chrome/Android and Safari/iPadOS have it.
-//   • getPredictedEvents(), on the tip canvas. Chrome only; absent elsewhere
+//   • getPredictedEvents(), on the live canvas. Chrome only; absent elsewhere
 //     and simply not used there, which costs nothing but the prediction.
-//   • desynchronized on the inkOverlay and tip contexts. Presents without waiting
-//     for the compositor on Chrome/Android. Deliberately NOT on the dry canvas:
-//     a desynchronized context may tear, which is fine for a stroke in flight
-//     and not for a page of finished work.
+//   • desynchronized on the live context, and on that one alone. Presents
+//     without waiting for the compositor on Chrome/Android. Deliberately NOT on
+//     the dry canvas: a desynchronized context may tear, which is fine for a
+//     stroke in flight and not for a page of finished work. And deliberately not
+//     on a SECOND live layer either, which is the whole of the fault above.
 //   • Not one layout read in the pointer path. The host rect is measured at
 //     pointerdown and on relayout, never per move. This is the discipline
 //     src/notes/touch-selection.js arrived at the hard way — its extendTo() ran
@@ -64,7 +72,7 @@
 
 import { INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
-import { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
+import { INK_WIDTH_LOOKBACK, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
 import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
 
 // A canvas is painted at devicePixelRatio so ink is sharp, capped for the same
@@ -74,20 +82,43 @@ import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
 export const INK_MAX_CANVAS_SCALE = 2;
 export const INK_MAX_CANVAS_PIXELS = 4_000_000;
 
-// How many samples of the previous frame's ink each frame redraws over. This is
-// not a number to taste: it is exactly how far back a sample's own width reaches
+// How far two runs of the same stroke overlap where they meet. Not a number to
+// taste: it is exactly how far back a sample's own width reaches
 // (INK_WIDTH_LOOKBACK, src/render/ink-paint.js), because a run that starts any
 // later computes different widths for its first samples than the finished stroke
 // will — and paints them at full opacity, so the wider of the two wins and the
-// line beads at every frame seam.
+// line beads at the join. Ink is opaque and the outline fills nonzero, so two
+// runs that overlap by this much join invisibly.
+//
+// Only one thing needs it now: the hand-off at INK_LIVE_MAX_POINTS below. It
+// used to be needed every frame, because the live layer was append-only.
 const INK_SEAM_OVERLAP = INK_WIDTH_LOOKBACK;
 
-// ...and the other half of the same rule: a sample with no successor yet cannot
-// know its own width or its own tangent. The wet layer is append-only, so
-// anything painted there is painted for good — it therefore paints only SETTLED
-// samples, and the unsettled tail goes on the tip layer, which is wiped and
-// redrawn every frame anyway. The tail is at most INK_WIDTH_LOOKAHEAD samples,
-// i.e. one frame, behind the nib and the prediction covers it.
+// ── The bound on repainting the live stroke whole ─────────────────────────
+//
+// A frame repaints every sample of the stroke in flight, which is what makes the
+// live layer immune to being hidden and to not being preserved. The cost is a
+// fill over the whole stroke rather than over the samples that just arrived, and
+// for the strokes people actually make — a letter, a word, an arrow, a few
+// hundred samples — that is nothing.
+//
+// It is not nothing for a stylus reporting 240 samples a second into a spiral
+// somebody draws for ten seconds without lifting. So past this many live
+// samples, everything but the tail is handed to the DRY canvas and the live
+// layer carries only what is left: the frame cost stops growing, and the part
+// handed over is on a normal context whose contents are guaranteed to persist.
+//
+// The hand-off is a PAINT, not a commit — the stroke is still in flight and is
+// committed once, at the pen lift, exactly as before. `live.settled` records
+// what was handed over so a repaint of the dry canvas mid-stroke can put it
+// back; without that a theme change under the nib would erase the front of the
+// stroke somebody is still drawing.
+const INK_LIVE_MAX_POINTS = 900;
+
+// How much of the stroke stays live when that happens. Comfortably more than one
+// frame of samples at any rate a digitiser reports, so the hand-off can never
+// race the nib.
+const INK_LIVE_TAIL = 180;
 
 // How near the nib a stroke has to pass to be erased, on top of its own half
 // width. A stroke-eraser that demands a direct hit is one people scrub at.
@@ -156,10 +187,6 @@ export function createInkEngine({
   let inkOverlay = null;
   let overlayCtx = null;
   let overlayScale = 1;
-  let tip = null;
-  let tipCtx = null;
-  let tipScale = 1;
-  let tipRect = null;
 
   let live = null;
   let queued = [];
@@ -205,11 +232,11 @@ export function createInkEngine({
     // the render window is torn back down to a placeholder and rebuilt later;
     // forgetting its ink here would mean re-reading and re-decoding every
     // stroke on it each time it came back past the viewport.
-    // handOverToDry takes the wet pair off at every pen lift, so in the ordinary
-    // case there is nothing here to unmount. This is for the case where there
-    // was no pen lift: a host torn down mid-stroke (a page scrolled out of the
-    // render window, a sheet closed under the nib) would otherwise leave two
-    // canvases parented to an element nothing else is holding.
+    // handOverToDry takes the live layer off at every pen lift, so in the
+    // ordinary case there is nothing here to unmount. This is for the case where
+    // there was no pen lift: a host torn down mid-stroke (a page scrolled out of
+    // the render window, a sheet closed under the nib) would otherwise leave a
+    // canvas parented to an element nothing else is holding.
     if (inkOverlay && entry.el && inkOverlay.parentNode === entry.el) unmountOverlay();
     // Optional chaining because this has to be idempotent: the entry deliberately
     // stays in `hosts` after a detach (that is what keeps the strokes), so a
@@ -259,6 +286,14 @@ export function createInkEngine({
     const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, entry.scale);
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
     paintInkStrokes(ctx, entry.strokes, { root });
+    // A stroke still in flight that has handed part of itself to this canvas —
+    // see the bound in drawFrame — is not in entry.strokes yet, because it is
+    // not committed until the pen lifts. Without this, anything that repaints
+    // the dry canvas mid-stroke (a theme change, a relayout, a selection) would
+    // erase the front of the line the reader is still drawing.
+    if (live?.key === key && live.settled?.length) {
+      live.settled.forEach((run) => paintInkStroke(ctx, { w: live.width, c: live.pen, p: run }, { root }));
+    }
     if (selection?.key === key) drawSelectionChrome();
   }
 
@@ -271,34 +306,24 @@ export function createInkEngine({
   function mountOverlay(key) {
     const entry = hosts.get(key);
     if (!entry?.el) return false;
+    // `is-ink-wet` is kept as the class name: it is what the two stylesheets
+    // that position these canvases select on, and the layer is still the wet
+    // one — there is simply no longer a second one over it.
     if (!inkOverlay) {
-      const a = ensureCanvas("is-ink-wet", true);
-      inkOverlay = a.canvas;
-      overlayCtx = a.ctx;
-      const b = ensureCanvas("is-ink-tip", true);
-      tip = b.canvas;
-      tipCtx = b.ctx;
+      const made = ensureCanvas("is-ink-wet", true);
+      inkOverlay = made.canvas;
+      overlayCtx = made.ctx;
     }
     const size = getHostSize ? getHostSize(key) : null;
     if (!size || !size.width || !size.height) return false;
     overlayScale = inkSizeCanvas(inkOverlay, size.width, size.height);
-    tipScale = inkSizeCanvas(tip, size.width, size.height);
     // Appending an already-appended child moves it, which is real DOM work on
     // a path that runs every frame of a drag. Only touch it when it is not
-    // already where it belongs.
-    //
-    // Which, since end() and cancel() stopped unmounting the pair, is only when
-    // the pen has moved to a different host. They used to be detached at every
-    // pointerup and re-attached at the next pointerdown: two removeChilds and
-    // two appendChilds per stroke, tearing down and re-allocating a
-    // `desynchronized` low-latency surface each time — which is both a hitch on
-    // the first frame of every stroke and the thing that makes the low-latency
-    // promotion unstable in the first place.
+    // already where it belongs — which, since the layer is unmounted at every
+    // pen lift, means at the start of every stroke.
     if (inkOverlay.parentNode !== entry.el) {
       entry.el.appendChild(inkOverlay);
-      entry.el.appendChild(tip);
       clearOverlay();
-      clearTip();
     }
     return true;
   }
@@ -314,53 +339,8 @@ export function createInkEngine({
     overlayCtx.clearRect(0, 0, inkOverlay.width, inkOverlay.height);
   }
 
-  function clearTip() {
-    if (!tipCtx || !tip) return;
-    tipCtx.setTransform(1, 0, 0, 1, 0, 0);
-    if (tipRect) tipCtx.clearRect(tipRect[0], tipRect[1], tipRect[2], tipRect[3]);
-    else tipCtx.clearRect(0, 0, tip.width, tip.height);
-    tipRect = null;
-  }
-
-  // The device-pixel box a run of model points was painted into, so clearTip can
-  // wipe a rectangle rather than the whole canvas every frame. `tipRect` used to
-  // be set to the full canvas unconditionally, which made the dirty-rect clear a
-  // whole-page clear at device resolution on every animation frame of every
-  // stroke — the one place in this file where the cost did not depend on how
-  // much had actually been drawn.
-  function tipBounds(key, points, nib) {
-    const count = Math.floor(points.length / 3);
-    if (!count) return null;
-    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
-    for (let i = 0; i < count; i += 1) {
-      const x = points[i * 3];
-      const y = points[(i * 3) + 1];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-    // The outline reaches half a nib either side of the centreline, and the
-    // round cap another half beyond each end. One whole nib of slack covers
-    // both, whatever the pressure did.
-    const pad = Math.max(1, Number(nib) || 1);
-    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
-    const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, tipScale);
-    const xs = []; const ys = [];
-    [[minX, minY], [maxX, minY], [minX, maxY], [maxX, maxY]].forEach(([x, y]) => {
-      xs.push((m[0] * x) + (m[2] * y) + m[4]);
-      ys.push((m[1] * x) + (m[3] * y) + m[5]);
-    });
-    const left = Math.max(0, Math.floor(Math.min(...xs)) - 1);
-    const top = Math.max(0, Math.floor(Math.min(...ys)) - 1);
-    const right = Math.min(tip.width, Math.ceil(Math.max(...xs)) + 1);
-    const bottom = Math.min(tip.height, Math.ceil(Math.max(...ys)) + 1);
-    if (right <= left || bottom <= top) return null;
-    return [left, top, right - left, bottom - top];
-  }
-
   // The wet layer gives up the live stroke only AFTER the dry layer has taken
-  // it. The wet pair is `desynchronized` — it may present ahead of the
+  // it. The live layer is `desynchronized` — it may present ahead of the
   // compositor, which is the whole point of it — so clearing it first lets the
   // erase reach the glass a frame before the committed stroke does. What that
   // looks like is the stroke you have just written blinking out and back at
@@ -371,15 +351,14 @@ export function createInkEngine({
   function handOverToDry(key) {
     repaint(key);
     clearOverlay();
-    clearTip();
-    // ── ...and then the pair comes OFF the page ─────────────────────────────
+    // ── ...and then the layer comes OFF the page ────────────────────────────
     //
     // Reported from a Samsung tablet: "I can see the strokes while drawing but
     // they disappear once drawn, and only appear again after uploading." The
-    // stroke was never lost — it was on the dry canvas the whole time, behind
-    // two canvases that had stopped leaving.
+    // stroke was never lost — it was on the dry canvas the whole time, behind a
+    // canvas that had stopped leaving.
     //
-    // The wet pair is created `desynchronized`, which is what buys the latency
+    // The live layer is created `desynchronized`, which is what buys the latency
     // that makes the pen feel like a pen. What that flag actually asks for is to
     // be taken OUT of the normal compositing path — on Chrome/Android a
     // low-latency canvas can be promoted to a hardware overlay plane, and a
@@ -388,19 +367,16 @@ export function createInkEngine({
     // is exactly why leaving it mounted looked free here and was not.
     //
     // So it is mounted for the duration of a stroke and no longer. The DOM churn
-    // that costs — two removes and two appends per stroke — is the price of the
-    // committed ink being on top of nothing at all, and the blink that used to
-    // come with it was never the unmount: it was doing this BEFORE the repaint
-    // above rather than after it.
+    // that costs is the price of the committed ink being on top of nothing at
+    // all, and the blink that used to come with it was never the unmount: it was
+    // doing this BEFORE the repaint above rather than after it.
     unmountOverlay();
     if (selection?.key === key) drawSelectionChrome();
   }
 
   function unmountOverlay() {
     clearOverlay();
-    clearTip();
     inkOverlay?.remove();
-    tip?.remove();
   }
 
   // ── History ──────────────────────────────────────────────────────────────
@@ -563,7 +539,12 @@ export function createInkEngine({
       key,
       mode: "draw",
       points: [],
-      drawnTo: 0,
+      // The first sample still drawn on the live layer, and the runs already
+      // handed to the dry canvas. Both stay at their initial values for every
+      // stroke shorter than INK_LIVE_MAX_POINTS, which is very nearly all of
+      // them — see the bound in drawFrame.
+      from: 0,
+      settled: [],
       pen,
       width,
       holdTimer: 0,
@@ -665,12 +646,26 @@ export function createInkEngine({
     const fit = fitInkShape(live.points);
     if (!fit) return;
     live.snapped = fit;
-    // The whole live stroke is replaced, so the append-only inkOverlay has to be
-    // wiped and redrawn once — the one place in a stroke's life that happens.
+    // The fitted shape replaces the WHOLE stroke, including any part of it
+    // already handed to the dry canvas — so that hand-off is taken back first,
+    // or the straightened line would be drawn over the crooked one it replaced.
+    // A stroke long enough to have reached INK_LIVE_MAX_POINTS and then held
+    // still for INK_SHAPE_HOLD_MS is rare and entirely possible.
+    reclaimSettled();
     clearOverlay();
-    clearTip();
     overlayTransform(live.key, overlayCtx, overlayScale);
     fit.runs.forEach((run) => paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root }));
+  }
+
+  // Take back everything this stroke handed to the dry canvas, so the live layer
+  // is once again the whole of it. Repainting the dry canvas from entry.strokes
+  // is what removes the handed-over runs: the stroke is not committed yet, so it
+  // is not in there.
+  function reclaimSettled() {
+    if (!live?.settled?.length) return;
+    live.settled = [];
+    live.from = 0;
+    repaint(live.key);
   }
 
   // ...and the other half of offering, which was missing.
@@ -686,15 +681,13 @@ export function createInkEngine({
   //
   // Continuing the stroke revokes the offer, and the offer is not made again for
   // this stroke: the reader has now demonstrated, with the pen, that it is not a
-  // shape. `drawnTo` goes back to nothing because the wet layer has just been
-  // wiped and has to be rebuilt from the real points.
+  // shape. Nothing has to be rebuilt by hand — the next frame repaints the live
+  // layer from live.points, which is the real stroke and always was.
   function revokeShape() {
     live.snapped = null;
     live.snapDeclined = true;
-    live.drawnTo = 0;
     if (live.holdTimer) { clearTimeout(live.holdTimer); live.holdTimer = 0; }
     clearOverlay();
-    clearTip();
     if (selection?.key === live.key) drawSelectionChrome();
   }
 
@@ -736,34 +729,50 @@ export function createInkEngine({
     if (live.snapped && pending.length) revokeShape();
     pending.forEach((sample) => pushPoint(sample));
     // A snap still standing means the pen has not moved since it fired: there is
-    // nothing to draw and the fitted shape is already on the wet layer.
+    // nothing to draw and the fitted shape is already on the live layer.
     if (live.snapped) return;
 
-    clearTip();
-
     const total = Math.floor(live.points.length / 3);
-    // Only the samples whose width is FINAL go onto the append-only wet layer.
-    // A sample with no successor yet has neither its own tangent nor its own
-    // smoothed width (see INK_WIDTH_LOOKAHEAD, src/render/ink-paint.js), so
-    // painting it here would put one width on the glass and a different one
-    // there when the finished stroke is repainted — which is the bead you can
-    // watch travel along a line as you write it.
-    const settled = Math.max(0, total - INK_WIDTH_LOOKAHEAD);
-    if (settled > live.drawnTo) {
-      const from = Math.max(0, live.drawnTo - INK_SEAM_OVERLAP);
-      const run = live.points.slice(from * 3, settled * 3);
-      overlayTransform(live.key, overlayCtx, overlayScale);
-      paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root });
-      live.drawnTo = settled;
+
+    // ── The bound ───────────────────────────────────────────────────────────
+    //
+    // Past INK_LIVE_MAX_POINTS live samples, hand everything but the tail to the
+    // dry canvas so the per-frame fill stops growing with the stroke. A PAINT,
+    // not a commit: the stroke is still in flight and is committed once, at the
+    // pen lift. The two runs overlap by INK_SEAM_OVERLAP so the join is
+    // invisible — ink is opaque and the outline fills nonzero.
+    //
+    // Only settled samples are handed over, which INK_LIVE_TAIL guarantees by
+    // being far larger than the one sample of lookahead a width needs
+    // (INK_WIDTH_LOOKAHEAD, ink-paint.js). A sample with no successor cannot
+    // know its own width or its own tangent, and the dry canvas is the one
+    // surface a stroke in flight cannot be repainted from — so a provisional
+    // width painted there is a bead that never comes out.
+    if (total - live.from > INK_LIVE_MAX_POINTS) {
+      const handOver = total - INK_LIVE_TAIL;
+      const entry = hosts.get(live.key);
+      if (entry?.ctx && handOver > live.from) {
+        const run = live.points.slice(live.from * 3, handOver * 3);
+        const m = inkDeviceTransform(getMatrix ? getMatrix(live.key) : null, entry.scale);
+        entry.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+        paintInkStroke(entry.ctx, { w: live.width, c: live.pen, p: run }, { root });
+        // Remembered so repaint() can put it back. Without this a theme change,
+        // a selection or a relayout under the nib would repaint the dry canvas
+        // from entry.strokes — which does not hold this stroke yet — and erase
+        // the front of the line somebody is still drawing.
+        live.settled.push(run);
+        live.from = Math.max(0, handOver - INK_SEAM_OVERLAP);
+      }
     }
 
-    // The unsettled tail and the browser's guess at what comes next, both on the
-    // tip — the canvas that is wiped and redrawn every frame precisely so that
-    // provisional ink can be taken back without taking real ink with it. The tail
-    // carries the seam overlap too, so it joins the wet layer invisibly.
-    const tailFrom = Math.max(0, live.drawnTo - INK_SEAM_OVERLAP);
-    const tail = live.points.slice(tailFrom * 3);
-    const run = tail.slice();
+    // ── ...and the frame itself ─────────────────────────────────────────────
+    //
+    // Wiped and repainted whole, from live.from to the nib, plus the browser's
+    // guess at what comes next. That is the whole of the fix this file was
+    // rewritten for: nothing is stacked over this layer, and nothing about it is
+    // assumed to survive from the previous frame.
+    clearOverlay();
+    const run = live.points.slice(live.from * 3);
     const event = live.lastEvent;
     live.lastEvent = null;
     const predicted = typeof event?.getPredictedEvents === "function" ? event.getPredictedEvents() : null;
@@ -772,15 +781,14 @@ export function createInkEngine({
       if (point) run.push(point.x, point.y, Math.max(0, Math.min(1, Number.isFinite(sample.pressure) ? sample.pressure : 0.5)));
     });
     if (run.length < 3) return;
-    overlayTransform(live.key, tipCtx, tipScale);
-    paintInkStroke(tipCtx, { w: live.width, c: live.pen, p: run }, { root });
-    tipRect = tipBounds(live.key, run, live.width);
+    overlayTransform(live.key, overlayCtx, overlayScale);
+    paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root });
     // A guess has to be able to expire. Frames are only scheduled by input, so a
     // pen that stopped moving used to leave its last prediction on the glass —
     // a phantom stub of ink sitting ahead of the nib until the hand moved again.
-    // One more frame repaints the tail without it, and schedules nothing after
-    // itself because by then there is no prediction left to clear.
-    if (run.length > tail.length) inkScheduleFrame();
+    // One more frame repaints without it, and schedules nothing after itself
+    // because by then there is no prediction left to clear.
+    if (predicted?.length) inkScheduleFrame();
   }
 
   function drawLassoFrame() {
@@ -851,13 +859,12 @@ export function createInkEngine({
     // to leave the strokes it had just crossed standing.
     if (gesture.mode === "erase" && queued.length) { live = gesture; eraseFrame(); }
     live = null;
-    if (!entry) { clearOverlay(); clearTip(); unmountOverlay(); return; }
+    if (!entry) { clearOverlay(); unmountOverlay(); return; }
 
     if (gesture.mode === "lasso") {
       // The marquee is not ink and there is nothing behind it being committed,
       // so it goes now rather than through the handover below.
       clearOverlay();
-      clearTip();
       unmountOverlay();
       if (gesture.polygon.length < 6) return;
       const indices = [];
@@ -874,7 +881,7 @@ export function createInkEngine({
       const added = runs
         .filter((run) => run.length >= 3)
         .map((run) => ({ w: gesture.width, c: gesture.pen, p: run }));
-      if (!added.length) { clearOverlay(); clearTip(); unmountOverlay(); return; }
+      if (!added.length) { clearOverlay(); unmountOverlay(); return; }
       entry.strokes = entry.strokes.concat(added);
       remember(gesture.key, gesture.before);
       handOverToDry(gesture.key);
@@ -886,7 +893,7 @@ export function createInkEngine({
     // so the only question left is whether anything actually changed. A scrub
     // that hit nothing, or a drag of two pixels that ended where it started,
     // must not cost an undo step or a write.
-    if (sameStrokes(gesture.before, entry.strokes)) { clearOverlay(); clearTip(); unmountOverlay(); return; }
+    if (sameStrokes(gesture.before, entry.strokes)) { clearOverlay(); unmountOverlay(); return; }
     remember(gesture.key, gesture.before);
     if (selection?.key === gesture.key) selection.box = selectionBox(gesture.key, selection.indices);
     handOverToDry(gesture.key);
@@ -901,7 +908,6 @@ export function createInkEngine({
     live = null;
     queued = [];
     clearOverlay();
-    clearTip();
     unmountOverlay();
     // Put back whatever the gesture started from. An erase cancelled mid-scrub
     // and a drag the compositor took away have both already changed the array,
