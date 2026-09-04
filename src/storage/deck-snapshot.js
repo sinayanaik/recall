@@ -43,10 +43,18 @@ export function deckPayloadHasContent({ cards, notes, meta } = {}) {
   if (Array.isArray(cards) ? cards.length : cards) return true;
   if (String(notes || "").trim()) return true;
   // A notebook is a deck whose paper is a PDF this app generated
-  // (src/documents/notebook.js), so it is already covered by the line below —
-  // which is most of the argument for having built it that way. It has no cards
-  // and an empty note, and `meta.pdf` is the one thing that says it is not an
-  // empty deck.
+  // (src/documents/notebook.js), so it is already covered by the `pdf` test
+  // below — which is most of the argument for having built it that way.
+  //
+  // `pages` is the notebook that came BEFORE that, and this line is not
+  // optional. Such a deck has no cards, an empty note and no document, so
+  // without it this predicate calls it empty — and it is consulted on both
+  // sides of the round trip, which means the deck would not merely stop
+  // autosaving, it would refuse to LOAD, reporting itself corrupted. The reader
+  // would be told an afternoon of handwriting was damaged when it is sitting
+  // intact in the file. It stays until a deck cannot be carrying that key any
+  // more, which is not a date anyone can name.
+  if (Array.isArray(meta?.pages) && meta.pages.length) return true;
   return Boolean(meta?.pdf);
 }
 

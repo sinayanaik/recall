@@ -601,6 +601,18 @@ try {
       hasContent({ cards: [], notes: "   ", meta: {} }) === false
       || "deckPayloadHasContent called an empty deck full");
 
+    // The predicate gates the LOAD as well as the save, so a notebook written by
+    // the build before Handwritten Notes moved onto real paper has to pass it or
+    // it reports itself corrupted with every stroke intact in the file. It has no
+    // cards, no note and no document — `meta.pages` is the only thing in it.
+    must("an older notebook, whose pages are all it has, still counts as content", () =>
+      hasContent({ cards: [], notes: "", meta: { pages: [{ id: "hp-1", ink: [] }] } }) === true
+      || "deckPayloadHasContent called a legacy notebook empty — it would refuse to load");
+
+    must("...but an empty page list does not make an empty deck full", () =>
+      hasContent({ cards: [], notes: "", meta: { pages: [] } }) === false
+      || "deckPayloadHasContent counted a zero-page notebook as content");
+
     const storeSrc = readFileSync(path.join(ROOT, "src/storage/deck-store.js"), "utf8");
     // Comments stripped: the entry in tools/split-parity.mjs and the comment in
     // the function itself both NAME the predicate that was there, and a check

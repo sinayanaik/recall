@@ -31,8 +31,9 @@
 // it is a renumbering: see remapDocumentHighlightPages.
 
 import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
-import { remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
-import { putDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
+import { hasLegacyNotebook, migratedNotebookMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
+import { freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
+import { putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
 import { openDocumentView } from "./pdf-view.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { storageFolderSlug, storageGroupId } from "../images/upload.js?v=__BUILD__";
@@ -113,18 +114,118 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
 
 // The deck's first page. Called when the Handwritten Notes surface opens on a
 // deck that has no document of its own — which is every deck, until it does.
+//
+// Answers one of three things, and the caller needs all three: `false` (there is
+// no paper and this deck is not getting any), "kept" (the paper that was already
+// there is the paper to use), or "wrote" (these bytes are NEW). The last one
+// matters because openDocumentView with `force: false` is a no-op for a document
+// it believes is already open, and it decides that by deck — not by the bytes.
+// Regenerate a notebook's paper under a view that is already showing that same
+// deck and the reader is left looking at the previous file: the page that was
+// just re-made, or the pages that were just converted, are not on the screen and
+// nothing says why. So "wrote" is the caller's instruction to force the reopen.
 export async function ensureNotebookDocument({ paper = null } = {}) {
   if (state.meta?.pdf) {
     // A deck that already has a PAPER is not a notebook and must never be
     // written over. The surface offers itself on any deck; this is the line
     // that keeps that offer from being destructive.
     if (!isNotebookDeck()) {
-      showToast("This deck already has a PDF — its handwriting goes on that", "info");
+      if (hasLegacyNotebook(state.meta)) {
+        // The one case the migration refuses. Those strokes are coordinates into
+        // a page this app generated, and this deck's pages belong to somebody
+        // else's document — there is nowhere honest to put them. Left completely
+        // alone rather than half-converted, and said out loud so it is a decision
+        // and not a silence.
+        showToast("This deck has its own PDF, so its older handwritten pages were left untouched", "info");
+      } else {
+        showToast("This deck already has a PDF — its handwriting goes on that", "info");
+      }
       return false;
     }
+    // A notebook whose bytes have gone — a device that pulled the deck but never
+    // the file, a store cleared to reclaim space. The paper is GENERATED, so it
+    // can simply be made again from the record of what it was; that is a property
+    // no real document has and it would be a waste not to use it.
+    if (!(await notebookBytesPresent())) {
+      showToast("Re-making this notebook's paper on this device…", "info");
+      return (await writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), reopen: false })) && "wrote";
+    }
+    return "kept";
+  }
+  if (hasLegacyNotebook(state.meta)) return (await migrateLegacyNotebook()) && "wrote";
+  return (await writeNotebookPdf({ pages: 1, paper: normalizeBlankPaper(paper), reopen: false })) && "wrote";
+}
+
+async function notebookBytesPresent() {
+  if (!state.localDeckId) return false;
+  try {
+    const entry = await readDocument(state.localDeckId);
+    return Boolean(entry?.blob);
+  } catch (_) {
+    // An unreadable store is not the same as an absent file, and re-generating
+    // over one would be writing on a guess. Treated as present so nothing is
+    // overwritten; the ordinary "could not open" path reports it.
     return true;
   }
-  return writeNotebookPdf({ pages: 1, paper: normalizeBlankPaper(paper), reopen: false });
+}
+
+// ── Older notebooks ────────────────────────────────────────────────────────
+//
+// The conversion itself is pure and lives in ./notebook-migrate.js so a Node
+// check can drive it. What is here is the writing, and the order of it is the
+// whole of the safety:
+//
+//   • the plan is computed first and touches nothing;
+//   • the bytes are made and hashed, still touching nothing;
+//   • ONE write then swaps the legacy keys for the records they became, so
+//     there is no moment at which the strokes live nowhere;
+//   • the save is the commit point. Everything after it — storing the bytes,
+//     uploading them — can fail without losing anything, because a generated
+//     paper can always be made again (see notebookBytesPresent above).
+//
+// A failure before the save leaves the deck exactly as it was, legacy keys
+// included, and the next open tries again.
+export async function migrateLegacyNotebook() {
+  const plan = planLegacyNotebookMigration(state.meta, { mintId: freshDocumentHighlightId });
+  const file = blankPdfFile({ pages: plan.pages, paper: plan.paper, name: state.deckTitle || "handwritten-notes" });
+  const hash = await sha256(file);
+
+  state.meta = migratedNotebookMeta(state.meta, plan, {
+    name: file.name,
+    size: file.size,
+    pages: plan.pages,
+    paper: plan.paper,
+    notebook: true,
+    sha256: hash,
+    path: null,
+    importedAt: new Date().toISOString()
+  });
+
+  if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
+    showToast("Could not save this deck on your device — your pages were left as they were", "error");
+    return false;
+  }
+
+  await putDocument({ deckLocalId: state.localDeckId, blob: file, sha256: hash, name: file.name, at: Date.now() });
+  try {
+    const folder = `${storageFolderSlug(state.deckTitle || "notes", "notes")}--${storageGroupId()}`;
+    const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook") });
+    state.meta = { ...state.meta, pdf: { ...state.meta.pdf, path } };
+    await saveDeckToLibrary({ silent: true });
+  } catch (error) {
+    console.warn("Could not upload the migrated notebook", error);
+  }
+
+  const marks = plan.ink.length;
+  const blocks = plan.blocks.length;
+  const lost = plan.orphans
+    ? ` ${plan.orphans} text box${plan.orphans === 1 ? "" : "es"} had no page to sit on and were left out.`
+    : "";
+  showToast(
+    `Your handwritten pages are on real paper now — ${plan.pages} page${plan.pages === 1 ? "" : "s"}`
+    + `${marks ? `, ${marks} with writing on` : ""}${blocks ? `, ${blocks} text block${blocks === 1 ? "" : "s"}` : ""}.${lost}`
+  );
+  return true;
 }
 
 export async function addNotebookPage() {

@@ -66,6 +66,7 @@ const API_SRC = `async () => {
   const paths = [
     "/src/handwriting/board.js?v=__BUILD__",
     "/src/documents/notebook.js?v=__BUILD__",
+    "/src/documents/notebook-migrate.js?v=__BUILD__",
     "/src/documents/blank-pdf.js?v=__BUILD__",
     "/src/documents/pdf-blocks.js?v=__BUILD__",
     "/src/documents/pdf-view.js?v=__BUILD__",
@@ -518,6 +519,138 @@ try {
     blocks.mergedIds.includes("bk-other"), `merged: ${blocks.mergedIds.join(", ")}`);
   check("...and this device's newer copy wins over the other's older one",
     blocks.mergedMine === blocks.moved.x, `x = ${blocks.mergedMine}, this device had ${blocks.moved.x}`);
+  // ── 5b. An older notebook, carried across ───────────────────────────────
+  //
+  // The conversion itself is arithmetic and is checked in tools/ink-check.mjs,
+  // where it can be driven with no browser. What only a browser can answer is
+  // whether the whole exchange is SAFE: whether a deck saved by the old build
+  // still loads at all, whether opening it converts what is in it once and only
+  // once, and whether what comes back out of the store afterwards is the same
+  // handwriting.
+  //
+  // The first of those is the one that would have hurt most. A legacy notebook
+  // has no cards, an empty note and no document, so a save predicate that does
+  // not know about `meta.pages` calls it empty — and that predicate gates the
+  // LOAD as well, which means the deck would have reported itself corrupted
+  // with an afternoon of handwriting sitting intact in the file.
+  const migrated = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    document.querySelector('#handwritingBoard [data-hw-action="close"]')?.click();
+    await settle(200);
+
+    // A deck exactly as the previous build wrote one: pages in meta, a typed box
+    // on the second, no cards, no note, no document.
+    //
+    // The confirm is not optional. createNewDeck asks before replacing an open
+    // deck, and a check that skips the answer does not get a new deck — it gets
+    // the previous one, still open, and then writes this fixture's meta over it.
+    // Which is what happened, and it read as a pass until the page count didn't
+    // match.
+    api.createNewDeck({ title: "An older notebook", notesMode: true });
+    await settle(120);
+    document.getElementById("confirmModalOkBtn")?.click();
+    await settle(400);
+    if (api.state.deckTitle !== "An older notebook") throw new Error("the fixture deck was not created: still on " + api.state.deckTitle);
+    const ink = api.encodeInkStrokes([{ w: 2, c: "ink", p: [40, 40, 0.6, 300, 500, 0.5, 600, 900, 0.55] }]);
+    api.state.notes = "";
+    api.state.meta = {
+      pages: [
+        { id: "hp-one", order: 0, w: 794, h: 1123, paper: "ruled", ink, at: 1 },
+        { id: "hp-two", order: 1, w: 794, h: 1123, paper: "ruled", ink: [], at: 1 }
+      ],
+      textBoxes: [{ id: "hb-one", page: "hp-two", x: 100, y: 200, w: 300, h: 120, z: 0, md: "**carried across**", at: 1 }],
+      deletedPageIds: { "hp-gone": "2027-01-01T00:00:00.000Z" }
+    };
+    const saved = await api.saveDeckToLibrary({ silent: true });
+    const entry = api.readLocalDeckIndex()[0];
+
+    // Does a deck in the OLD shape still come back out of the store at all?
+    // Through the door a person actually uses — My Decks — because that path
+    // swallows a load failure and reports it in the status bar rather than
+    // throwing, so a check that only watched for an exception would have called
+    // the corrupted case a pass.
+    const opened = await api.loadDeckFromLibrary(entry.id);
+    await settle(300);
+    const loadedPages = opened ? (api.state.meta?.pages || []).length : -1;
+    const loadError = opened ? "" : (document.getElementById("statusText")?.textContent || "the open was refused");
+
+    document.getElementById("handwritingBtn").click();
+    for (let i = 0; i < 80 && !document.querySelector("#hwStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+
+    const marks = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
+    const first = { ...api.state.meta };
+    const pdfPages = api.currentPdfPageCount();
+
+    // Once and only once: closing and re-opening must not convert again.
+    document.querySelector('#handwritingBoard [data-hw-action="close"]').click();
+    await settle(300);
+    document.getElementById("handwritingBtn").click();
+    for (let i = 0; i < 80 && !document.querySelector("#hwStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(600);
+    const marksAgain = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
+    const pdfPagesAgain = api.currentPdfPageCount();
+
+    await api.flushPendingDeckAutosave();
+    await settle(400);
+    const entry2 = api.readLocalDeckIndex()[0];
+    const snapshot2 = await api.readDeckSnapshot(entry2.id);
+    const storedInk = (snapshot2.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
+    const strokes = storedInk.flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+    const ys = strokes.flatMap((st) => st.p.filter((_, i) => i % 3 === 1));
+
+    // ...and a device that has NOT migrated pushing its legacy keys back.
+    const stale = { pages: first.pages || [{ id: "hp-one", order: 0, ink: [], at: 1 }], pdf: first.pdf };
+    const merged = api.mergeDeckMeta(stale, api.state.meta, { prefer: "local" });
+
+    return {
+      saved: Boolean(saved),
+      loadError,
+      loadedPages,
+      notebook: Boolean(api.state.meta.pdf?.notebook),
+      pdfPages,
+      pdfPagesAgain,
+      metaPages: api.state.meta.pdf?.pages,
+      paper: api.state.meta.pdf?.paper,
+      marks: marks.length,
+      marksAgain: marksAgain.length,
+      blocks: (api.state.meta.pdfBlocks || []).length,
+      blockMd: (api.state.meta.pdfBlocks || [])[0]?.md,
+      blockPage: (api.state.meta.pdfBlocks || [])[0]?.page,
+      legacyLeft: ["pages", "textBoxes", "deletedPageIds", "deletedTextBoxIds"].filter((k) => k in api.state.meta),
+      storedMarks: storedInk.length,
+      storedPages: storedInk.map((r) => Number(r.page)),
+      maxY: ys.length ? Math.max(...ys) : 0,
+      mergedLegacy: ["pages", "textBoxes", "deletedPageIds", "deletedTextBoxIds"].filter((k) => k in merged),
+      errs: window.__errs.slice(0, 4)
+    };
+  }`);
+
+  check("a deck saved by the previous build still loads",
+    migrated.saved && !migrated.loadError && migrated.loadedPages === 2,
+    migrated.loadError ? `it reported: ${migrated.loadError}` : `${migrated.loadedPages} legacy page(s) read back`);
+  check("opening it puts its pages onto real paper",
+    migrated.notebook && migrated.pdfPages === 2 && migrated.metaPages === 2,
+    `notebook=${migrated.notebook}, pdf.js ${migrated.pdfPages} page(s), meta ${migrated.metaPages}`);
+  check("...keeping the paper it was written on", migrated.paper === "ruled", `paper = ${migrated.paper}`);
+  check("...with the handwriting on it", migrated.marks === 1, `${migrated.marks} ink mark(s)`);
+  check("...the right way up", migrated.maxY > 800,
+    `the topmost point is at y=${migrated.maxY.toFixed(0)} of 842 — a flip would put it near 0`);
+  check("...and the typed box on the page it was on",
+    migrated.blocks === 1 && migrated.blockMd === "**carried across**" && migrated.blockPage === 2,
+    `${migrated.blocks} block(s), page ${migrated.blockPage}`);
+  check("the old keys are gone in the same step that added the new ones",
+    migrated.legacyLeft.length === 0, `left behind: ${migrated.legacyLeft.join(", ") || "nothing"}`);
+  check("...so opening it a second time converts nothing again",
+    migrated.marksAgain === migrated.marks && migrated.pdfPagesAgain === migrated.pdfPages,
+    `${migrated.marks} → ${migrated.marksAgain} ink mark(s), ${migrated.pdfPages} → ${migrated.pdfPagesAgain} page(s)`);
+  check("what was converted is what comes back out of the store",
+    migrated.storedMarks === 1 && migrated.storedPages.every((n) => n === 1),
+    `${migrated.storedMarks} mark(s) on page(s) ${migrated.storedPages.join(", ")}`);
+  check("...and a device that has not migrated cannot push the old keys back",
+    migrated.mergedLegacy.length === 0, `merge kept: ${migrated.mergedLegacy.join(", ") || "nothing"}`);
+  check("nothing threw while converting", migrated.errs.length === 0, migrated.errs.join(" | "));
+
   // ── 6. The drawing sheet's last mile ────────────────────────────────────
   const sheet = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;

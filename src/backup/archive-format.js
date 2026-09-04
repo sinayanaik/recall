@@ -121,7 +121,31 @@ export const BACKED_UP_META_KEYS = {
   deletedBlockIds:
     "Block tombstones, carried for the reason deletedHighlightIds is: a restore "
     + "that unioned the live blocks alone would put back every block the reader "
-    + "had deleted."
+    + "had deleted.",
+
+  // ── The four keys of an older notebook ───────────────────────────────────
+  //
+  // A notebook used to be pages in `meta` rather than pages of a document. It is
+  // not any more, and these are still carried — deliberately, and this is the
+  // reason: an archive taken on the old build has to restore into something the
+  // migration can still convert (src/documents/notebook-migrate.js). Dropping
+  // them here would mean a backup made yesterday restores a deck with no
+  // handwriting in it at all, which is the exact failure a backup exists to
+  // prevent. They cost nothing on a deck that never had them and disappear from
+  // one the moment it is opened.
+  pages:
+    "LEGACY. An older notebook's paper — one record per page, with the strokes "
+    + "on it. Converted to pages of a generated PDF the first time that deck's "
+    + "Handwritten Notes surface is opened, and carried until then so an archive "
+    + "taken before that conversion still restores something to convert.",
+  textBoxes:
+    "LEGACY. The typed boxes on those pages. Converted alongside them, into "
+    + "pdfBlocks, and carried for the same reason.",
+  deletedPageIds:
+    "LEGACY. Tombstones for the two above. Carried so a restore of an older "
+    + "archive cannot resurrect a page the reader tore out before migrating.",
+  deletedTextBoxIds:
+    "LEGACY. The same, for boxes."
 };
 
 export const NOT_BACKED_UP_META_KEYS = {

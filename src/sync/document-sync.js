@@ -40,6 +40,7 @@ import {
   joinHighlightNotesTail,
   splitHighlightNotesTail
 } from "../format/notes-fence.js?v=__BUILD__";
+import { LEGACY_NOTEBOOK_KEYS } from "../documents/notebook-migrate.js?v=__BUILD__";
 import { mergeHighlightNoteTails } from "../format/highlight-notes-merge.js?v=__BUILD__";
 import { CARD_TOMBSTONE_MAX_AGE_MS } from "./cards.js?v=__BUILD__";
 import { mergePdfHighlights, mergeRecordsById } from "./diff.js?v=__BUILD__";
@@ -422,6 +423,22 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
     const bag = mergeMetaTombstones(tombstones, cloud, local);
     if (bag) next[tombstones] = bag;
     else delete next[tombstones];
+  }
+
+  // ── An older notebook, once it is not one any more ──────────────────────
+  //
+  // The legacy keys merge by the default rule, which is a spread — so a side
+  // that still HAS them puts them back onto a side that has migrated, because
+  // an absent key overrides nothing. Two devices, one migrated and one not, and
+  // they would travel back and forth indefinitely.
+  //
+  // A deck whose paper is a generated PDF has its pages IN that document, so
+  // these describe something that no longer exists and cannot be true at the
+  // same time. Dropped on the merged result rather than on either input: the
+  // question is what the deck is now, and that is not answerable until both
+  // sides have been read.
+  if (next.pdf?.notebook) {
+    for (const key of LEGACY_NOTEBOOK_KEYS) delete next[key];
   }
 
   return next;

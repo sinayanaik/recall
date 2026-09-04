@@ -172,14 +172,18 @@ export async function openHandwritingBoard() {
   // The paper first. A deck with no document of its own gets one page of
   // generated blank paper; a deck that already has somebody else's PDF keeps it
   // and is simply written on, which is the same feature seen from the other end.
-  if (!(await ensureNotebookDocument())) {
+  const paperState = await ensureNotebookDocument();
+  if (!paperState) {
     if (!state.meta?.pdf) return false;
   }
   boardOpen = true;
   el.hwBoard.hidden = false;
   if (!takeStage()) { boardOpen = false; el.hwBoard.hidden = true; return false; }
   lockPageScroll();
-  await openDocumentView({ force: false });
+  // Forced only when ensureNotebookDocument says the bytes are new — see the
+  // comment on it. An unforced open is right in every other case and is what
+  // keeps switching to this panel and back from re-rendering the whole document.
+  await openDocumentView({ force: paperState === "wrote" });
   // Laid out against the panel's width rather than the width the stage had
   // wherever it came from — which is a different box, and often a much narrower
   // one.
