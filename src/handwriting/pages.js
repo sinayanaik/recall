@@ -46,11 +46,6 @@ export const HW_PAPER_DEFAULT = "grid";
 export const HW_RULE_PITCH = 28;
 export const HW_GRID_PITCH = 24;
 
-// How much of the page a new text box takes, and the smallest it can be dragged
-// to. A box smaller than this cannot show a line of text and cannot be grabbed.
-export const HW_BOX_MIN_WIDTH = 120;
-export const HW_BOX_MIN_HEIGHT = 44;
-
 export function normalizeHandwritingPaper(kind) {
   return HW_PAPERS.includes(kind) ? kind : HW_PAPER_DEFAULT;
 }
@@ -95,23 +90,6 @@ export function readHandwritingPages(meta) {
     }))
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
     .map((page, index) => ({ ...page, order: index }));
-}
-
-export function readHandwritingBoxes(meta) {
-  const list = Array.isArray(meta?.textBoxes) ? meta.textBoxes : [];
-  return list
-    .filter((box) => box && typeof box === "object" && box.id && box.page)
-    .map((box) => ({
-      id: String(box.id),
-      page: String(box.page),
-      x: Number(box.x) || 0,
-      y: Number(box.y) || 0,
-      w: Math.max(HW_BOX_MIN_WIDTH, Number(box.w) || HW_BOX_MIN_WIDTH),
-      h: Math.max(HW_BOX_MIN_HEIGHT, Number(box.h) || HW_BOX_MIN_HEIGHT),
-      z: Number(box.z) || 0,
-      md: typeof box.md === "string" ? box.md : "",
-      at: Number(box.at) || 0
-    }));
 }
 
 // ── Editing the stack ──────────────────────────────────────────────────────

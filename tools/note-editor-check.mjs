@@ -616,8 +616,15 @@ check("...with cloze still withheld, because a note is not a card face",
       // found the first time it ran — one that never receives a stroke at all.
       onTop: Boolean(at && at.closest(".ink-sheet")),
       pages: el.querySelectorAll(".hw-page").length,
-      x: Math.round(box.left + (box.width / 2)),
-      y: Math.round(box.top + (box.height / 2))
+      // A point on the page that is actually ON SCREEN. A page is A4-shaped and
+      // taller than the window it is shown in, so its own centre is usually
+      // below the fold — and the surface resolves a press with
+      // document.elementFromPoint (src/handwriting/paper.js), which cannot see
+      // what is not displayed. Neither can a finger, which is the point: a
+      // press dispatched at a coordinate nobody could reach was testing the
+      // rect-walk this deliberately replaced.
+      x: Math.round(Math.max(box.left, 0) + (Math.min(box.right, window.innerWidth) - Math.max(box.left, 0)) / 2),
+      y: Math.round(Math.max(box.top, 0) + (Math.min(box.bottom, window.innerHeight) - Math.max(box.top, 0)) / 2)
     };
   }`);
 

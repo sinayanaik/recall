@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
+import { PDFJS_VERSION, pdfjsSources } from "./pdfjs-source.mjs";
 import { FONT_SIZE, buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -63,19 +64,6 @@ const SHOT_TOC_SECTION = args.includes("--shot-toc-contents") ? "contents" : "hi
 
 // ── pdf.js, locally ─────────────────────────────────────────────────────────
 //
-// The app loads pdf.js from jsdelivr (LIB_URLS.pdfjs) and the service worker
-// precaches it, which is right for a browser and useless to a check running on
-// a machine that may have no route to a CDN at all. So the same version is
-// fetched once from npm and cached under /tmp, exactly as
-// epub-preview-check.mjs caches jszip — and then INJECTED, which also means
-// this check exercises ensurePdfJs's "the library is already on window" path
-// rather than depending on a network fetch mid-run.
-//
-// The version here must match LIB_URLS.pdfjs. A check that passes against a
-// different pdf.js than the app ships is a check that proves nothing.
-const PDFJS_VERSION = "3.11.174";
-const CACHE_DIR = "/tmp/recall-pdfjs";
-
 // Every id the markup authors inside .document-head, straight out of
 // index.html. src/notes/notes-head-overflow.js moves these into #viewModeRow at
 // boot and the box they start in is display:none, so an id the lift's list
@@ -93,25 +81,6 @@ function documentHeadControlIds() {
   return [...block.matchAll(/\sid="([A-Za-z0-9_-]+)"/g)]
     .map((m) => m[1])
     .filter((id) => id !== "documentHead");
-}
-
-function pdfjsSources() {
-  const build = path.join(CACHE_DIR, "package/legacy/build");
-  const main = path.join(build, "pdf.min.js");
-  const worker = path.join(build, "pdf.worker.min.js");
-  if (!existsSync(main) || !existsSync(worker)) {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    const tarball = `pdfjs-dist-${PDFJS_VERSION}.tgz`;
-    if (!existsSync(path.join(CACHE_DIR, tarball))) {
-      execFileSync("npm", ["pack", `pdfjs-dist@${PDFJS_VERSION}`], { cwd: CACHE_DIR, stdio: "ignore" });
-    }
-    execFileSync("tar", [
-      "xzf", tarball,
-      "package/legacy/build/pdf.min.js",
-      "package/legacy/build/pdf.worker.min.js"
-    ], { cwd: CACHE_DIR, stdio: "ignore" });
-  }
-  return { main: readFileSync(main, "utf8"), worker: readFileSync(worker, "utf8") };
 }
 
 function serveOn(dir) {

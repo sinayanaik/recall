@@ -116,7 +116,8 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { openHandwritingBoard } from "./handwriting/board.js?v=__BUILD__";
+import { openHandwritingBoard, refreshHandwritingBoard } from "./handwriting/board.js?v=__BUILD__";
+import { handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
@@ -1205,6 +1206,9 @@ onDomReady(() => {
     // Ink carries its own z-index and would sit correctly either way, but the
     // ordering the layer below relies on is worth not disturbing.
     paintDocumentInk(pageNumber);
+    // Blocks after the ink and before the badges: a typed block sits over the
+    // handwriting it annotates, and under the numbered badges you press.
+    paintDocumentBlocks(pageNumber);
     paintPageNoteBadges(pageNumber);
     // ...and the tint that says which of these marks the pane is currently on.
     // The mark layer was rebuilt from scratch a moment ago — paintDocument
@@ -1222,6 +1226,19 @@ onDomReady(() => {
   });
   initDocumentInk();
   initInkRail();
+  // A press on a markdown block belongs to the block. Capture, on the same
+  // element pdf-ink.js listens on — stopPropagation does not silence a sibling
+  // listener on the same node, which is why pdf-ink.js ALSO stands down for
+  // anything inside a block by class. Two guards, because the cost of getting
+  // this wrong is a pen that moves a block and draws a line across the page in
+  // the same gesture.
+  el.documentView?.addEventListener("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
+  // A block moved, typed into or deleted: repaint the pages it is on, and let
+  // the Handwritten Notes panel re-count what it says in its header.
+  setBlocksChangedHandler(() => {
+    repaintDocumentBlocks();
+    refreshHandwritingBoard();
+  });
   // The rail's own state — which tool is on, whether undo has anything to undo,
   // whether a lasso selection exists — answers to ink changing, and pdf-ink.js
   // must not import the rail: the rail imports IT. Registered here, the same

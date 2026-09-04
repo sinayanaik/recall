@@ -279,8 +279,7 @@ export const el = {
   // pages — see src/handwriting/board.js — so there is nothing here but the
   // chrome around a scroller.
   hwBoard: document.querySelector("#handwritingBoard"),
-  hwScroll: document.querySelector("#hwScroll"),
-  hwRail: document.querySelector("#hwRail"),
+  hwStage: document.querySelector("#hwStage"),
   hwTitle: document.querySelector("#hwTitle"),
   hwSummary: document.querySelector("#hwSummary"),
   handwritingBtn: document.querySelector("#handwritingBtn"),

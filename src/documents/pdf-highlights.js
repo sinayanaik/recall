@@ -206,6 +206,54 @@ export function documentHighlightLabel(record) {
   return page ? `Region · page ${page}` : "Region";
 }
 
+// ── Moving every record between pages at once ─────────────────────────────
+//
+// One caller: tearing a page out of a notebook (src/documents/notebook.js). The
+// file is regenerated with one page fewer, so every record after the gap is now
+// describing the wrong page — and a highlight that names page 7 of a six-page
+// document is a highlight that can never be painted or jumped to again.
+//
+// `move` is handed each record and returns the page it should be on now, or
+// null for a record whose page has gone. Both are needed together: the ones on
+// the torn-out page have to be buried in the same write that renumbers the rest,
+// or a sync landing between two writes would see one half of the change.
+export function remapDocumentHighlightPages(move) {
+  const before = documentHighlights();
+  if (!before.length) return 0;
+  const next = [];
+  const gone = [];
+  before.forEach((record) => {
+    const to = move(record);
+    if (to === null || to === undefined) { gone.push(record); return; }
+    if (Number(record.page) === Number(to)) { next.push(record); return; }
+    next.push({
+      ...record,
+      page: to,
+      // The quads carry their own page — they are what a paint and a "Go to"
+      // actually resolve against, so renumbering the record and not them would
+      // leave the mark pointing at the page it used to be on.
+      quads: Array.isArray(record.quads)
+        ? record.quads.map((quad) => (quad && typeof quad === "object" ? { ...quad, page: to } : quad))
+        : record.quads,
+      at: Date.now()
+    });
+  });
+  state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
+  state.meta.pdfHighlights = next;
+  if (gone.length) {
+    let tombstones = state.meta.deletedHighlightIds;
+    gone.forEach((record) => { tombstones = recordDeletedHighlightId(state.meta, record.id); });
+    state.meta.deletedHighlightIds = tombstones;
+    // Same ordering rule setDocumentInkForPage keeps: the records are in place
+    // before the prune runs, because the prune asks meta.pdfHighlights what is
+    // still live.
+    const pruned = pruneOrphanHighlightNotes(state.notes || "");
+    if (pruned !== state.notes) state.notes = pruned;
+  }
+  commitDocumentHighlights(next);
+  return gone.length;
+}
+
 // A short label for the note section's heading, so a hand-edited note file
 // still says which highlight each entry belongs to.
 export function documentExcerptLabel(text) {

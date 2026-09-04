@@ -41,6 +41,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage } from "./cdp.mjs";
+import { pdfjsSources } from "./pdfjs-source.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WATCHDOG_MS = 180000;
@@ -64,8 +65,12 @@ function serveOn(dir) {
 const API_SRC = `async () => {
   const paths = [
     "/src/handwriting/board.js?v=__BUILD__",
-    "/src/handwriting/pages.js?v=__BUILD__",
-    "/src/handwriting/paper.js?v=__BUILD__",
+    "/src/documents/notebook.js?v=__BUILD__",
+    "/src/documents/blank-pdf.js?v=__BUILD__",
+    "/src/documents/pdf-blocks.js?v=__BUILD__",
+    "/src/documents/pdf-view.js?v=__BUILD__",
+    "/src/documents/pdf-highlights.js?v=__BUILD__",
+    "/src/documents/pdf-store.js?v=__BUILD__",
     "/src/notes/ink-sheet.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/format/ink-svg.js?v=__BUILD__",
@@ -92,7 +97,14 @@ const API_SRC = `async () => {
 // A storage bucket that actually stores, so the drawing sheet's Done reaches
 // the end of the ordinary image path rather than its offline branch. Modelled
 // on tools/image-sync-check.mjs, which is where this shape comes from.
-const SETUP_SRC = `async (apiSrc) => {
+const SETUP_SRC = `async (apiSrc, pdfjsSrc, workerSrc) => {
+  // Injected rather than fetched: see tools/pdfjs-source.mjs. It also means this
+  // exercises ensurePdfJs's "already on window" path instead of a network call.
+  const tag = document.createElement("script");
+  tag.textContent = pdfjsSrc;
+  document.head.appendChild(tag);
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    URL.createObjectURL(new Blob([workerSrc], { type: "text/javascript" }));
   const api = await (0, eval)(apiSrc)();
   const settle = (ms) => new Promise((r) => setTimeout(r, ms));
   const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -168,41 +180,57 @@ try {
   // colours used to be decided by.
   await page.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
   await page.goto(`${server.base}/index.html`);
-  await page.evaluate(SETUP_SRC, API_SRC);
+  const pdfjs = pdfjsSources();
+  await page.evaluate(SETUP_SRC, API_SRC, pdfjs.main, pdfjs.worker);
 
   // ── 1. The pen that stopped when the hand paused ────────────────────────
   const paused = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
     document.getElementById("handwritingBtn").click();
-    await settle(400);
-    const pageEl = document.querySelector("#hwScroll .hw-page");
+    // Generating the paper, attaching it, and letting pdf.js lay it out. Longer
+    // than a DOM settle because a real document is being opened.
+    for (let i = 0; i < 60 && !document.querySelector("#hwStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    const pageEl = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
     const box = pageEl.getBoundingClientRect();
 
     // A straight, slow run — then a REST longer than the straightener's hold
     // (INK_SHAPE_HOLD_MS is 600ms) — then more of the same line. A straight run
     // is chosen deliberately: it is the shape most likely to be snapped, so it
     // is the case where losing the rest of the stroke was most likely.
-    pen(pageEl, "pointerdown", box.left + 40, box.top + 60, 1);
-    for (let i = 1; i <= 10; i += 1) pen(pageEl, "pointermove", box.left + 40 + (i * 10), box.top + 60, 1);
+    pen(document.getElementById("documentView"), "pointerdown", box.left + 40, box.top + 60, 1);
+    for (let i = 1; i <= 10; i += 1) pen(document.getElementById("documentView"), "pointermove", box.left + 40 + (i * 10), box.top + 60, 1);
     await settle(750);
     const halfway = box.left + 140;
-    for (let i = 1; i <= 10; i += 1) pen(pageEl, "pointermove", halfway + (i * 10), box.top + 60, 1);
+    for (let i = 1; i <= 10; i += 1) pen(document.getElementById("documentView"), "pointermove", halfway + (i * 10), box.top + 60, 1);
     await settle(80);
-    pen(pageEl, "pointerup", halfway + 100, box.top + 60, 0);
+    pen(document.getElementById("documentView"), "pointerup", halfway + 100, box.top + 60, 0);
     await settle(200);
 
-    const strokes = api.decodeInkStrokes(api.state.meta.pages[0].ink || []);
+    // The strokes, out of the ink records the paper carries — the same place
+    // they live on anybody else's PDF, because this IS the Document surface.
+    const marks = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
+    const strokes = marks.flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
     const bounds = api.inkStrokesBounds(strokes);
-    const scale = box.width / 794;
-    // Where the pen finished, in the page's own units.
-    const wanted = ((halfway + 100) - box.left) / scale;
-    return { strokes: strokes.length, maxX: bounds ? bounds.maxX : 0, wanted, errs: window.__errs.slice(0, 4) };
+    const viewport = api.pdfPageViewport(1);
+    // Where the pen finished, in the page's own points.
+    const wanted = viewport ? viewport.convertToPdfPoint((halfway + 100) - box.left, 0)[0] : 0;
+    return {
+      strokes: strokes.length,
+      notebook: Boolean(api.state.meta.pdf?.notebook),
+      rendered: Boolean(pageEl.querySelector("canvas.pdf-canvas")),
+      maxX: bounds ? bounds.maxX : 0,
+      wanted,
+      errs: window.__errs.slice(0, 4)
+    };
   }`, PEN_SRC);
 
+  check("the notebook's paper is a real PDF, laid out by pdf.js",
+    paused.notebook && paused.rendered,
+    `notebook=${paused.notebook}, page 1 rendered=${paused.rendered}`);
   check("a stroke held still for 750ms keeps following the nib afterwards",
     paused.strokes > 0 && paused.maxX >= paused.wanted - 12,
-    `reached ${paused.maxX.toFixed(0)} of ${paused.wanted.toFixed(0)} page units`);
+    `reached ${paused.maxX.toFixed(0)} of ${paused.wanted.toFixed(0)} points across the page`);
   check("...and the pause did not throw the stroke away", paused.strokes > 0,
     `${paused.strokes} stroke(s) committed`);
   check("...with nothing thrown on the way", paused.errs.length === 0, paused.errs.join(" | "));
@@ -211,9 +239,9 @@ try {
   const handover = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
-    const pageEl = document.querySelector("#hwScroll .hw-page");
+    const pageEl = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
     const box = pageEl.getBoundingClientRect();
-    const dry = pageEl.querySelector(".hw-page-ink .hw-page-canvas");
+    const dry = pageEl.querySelector(".pdf-ink-layer .is-ink-dry");
     const inked = () => {
       const ctx = dry.getContext("2d");
       const px = ctx.getImageData(0, 0, dry.width, dry.height).data;
@@ -222,14 +250,14 @@ try {
       return n;
     };
     const before = inked();
-    pen(pageEl, "pointerdown", box.left + 60, box.top + 300, 1);
-    for (let i = 1; i <= 14; i += 1) pen(pageEl, "pointermove", box.left + 60 + (i * 9), box.top + 300 + (i * 4), 1);
+    pen(document.getElementById("documentView"), "pointerdown", box.left + 60, box.top + 300, 1);
+    for (let i = 1; i <= 14; i += 1) pen(document.getElementById("documentView"), "pointermove", box.left + 60 + (i * 9), box.top + 300 + (i * 4), 1);
     await settle(120);
     // Read SYNCHRONOUSLY after the lift, before any frame can run. If the dry
     // canvas already carries the new stroke at this instant, then the repaint
     // happened before the wet layer was cleared — which is the whole of the
     // ordering fix, and the only moment at which it can be observed.
-    pen(pageEl, "pointerup", box.left + 186, box.top + 356, 0);
+    pen(document.getElementById("documentView"), "pointerup", box.left + 186, box.top + 356, 0);
     const atLift = inked();
     await settle(150);
     const after = inked();
@@ -251,7 +279,7 @@ try {
   // so this asks the one question that actually distinguishes the two: after the
   // pen lifts, is anything of that pair still in the document?
   const mounted = await page.evaluate(`() => {
-    const page = document.querySelector("#hwScroll .hw-page");
+    const page = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
     return {
       wet: page.querySelectorAll(".is-ink-wet").length,
       tip: page.querySelectorAll(".is-ink-tip").length,
@@ -274,7 +302,7 @@ try {
   const cost = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
-    const pageEl = document.querySelector("#hwScroll .hw-page");
+    const pageEl = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
     const box = pageEl.getBoundingClientRect();
     // One short stroke, timed from pointerdown to the return of pointerup —
     // which is where every one of the three O(page) faults was paid.
@@ -282,9 +310,9 @@ try {
       const y = box.top + 40 + ((n % 90) * 8);
       const x = box.left + 30 + ((n % 7) * 40);
       const t0 = performance.now();
-      pen(pageEl, "pointerdown", x, y, 1);
-      for (let i = 1; i <= 6; i += 1) pen(pageEl, "pointermove", x + (i * 4), y + i, 1);
-      pen(pageEl, "pointerup", x + 24, y + 6, 0);
+      pen(document.getElementById("documentView"), "pointerdown", x, y, 1);
+      for (let i = 1; i <= 6; i += 1) pen(document.getElementById("documentView"), "pointermove", x + (i * 4), y + i, 1);
+      pen(document.getElementById("documentView"), "pointerup", x + 24, y + 6, 0);
       return performance.now() - t0;
     };
     const early = [];
@@ -294,8 +322,9 @@ try {
     const late = [];
     for (let n = 180; n < 190; n += 1) { late.push(stroke(n)); await settle(4); }
     const median = (list) => list.slice().sort((a, b) => a - b)[Math.floor(list.length / 2)];
+    const marks = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
     return {
-      strokes: api.decodeInkStrokes(api.state.meta.pages[0].ink || []).length,
+      strokes: marks.flatMap((r) => api.decodeInkStrokes(r.ink?.s || [])).length,
       early: median(early),
       late: median(late)
     };
@@ -309,122 +338,186 @@ try {
     ratio < 6,
     `${cost.early.toFixed(2)}ms → ${cost.late.toFixed(2)}ms (${ratio.toFixed(1)}x) over ${cost.strokes} stroke(s)`);
 
-  // ── 4. Pages, torn out, and read back ───────────────────────────────────
+  // ── 4. Pages, added and torn out of a real document ─────────────────────
+  //
+  // Adding a page regenerates the PDF; tearing one out regenerates it AND
+  // renumbers every record after the gap, because a highlight naming page 7 of a
+  // six-page document can never be painted or jumped to again. Both are asked
+  // here against the live pdf.js document as well as against meta, since the two
+  // disagreeing is exactly the failure — meta says three pages, the file has two.
   const pages = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     const board = document.getElementById("handwritingBoard");
-    board.querySelector('[data-hw-action="add-page"]').click();
-    await settle(300);
-    const ids = api.state.meta.pages.map((p) => p.id);
-    const survivor = ids[1];
-    const doomed = ids[0];
-    const inkOnDoomed = (api.state.meta.pages[0].ink || []).length;
+    const inkOn = (n) => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink" && Number(r.page) === n).length;
 
-    // Tear out the first page. The confirm is a real modal — pressed rather
-    // than bypassed, because the dialog is part of the path.
-    const pageEl = document.querySelector('.hw-page[data-hw-page="' + doomed + '"]');
-    pageEl.querySelector('[data-hw-page-action="delete"]').click();
+    const before = { meta: api.state.meta.pdf.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
+
+    board.querySelector('[data-hw-action="add-page"]').click();
+    for (let i = 0; i < 60 && api.currentPdfPageCount() < before.doc + 1; i += 1) await settle(100);
+    const added = { meta: api.state.meta.pdf.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
+
+    // Something on the NEW page, so the renumbering below has a record that has
+    // to move and one that has to stay.
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await api.whenDocumentPageReady(2);
+    await settle(200);
+    const two = document.querySelector("#hwStage .pdf-page[data-page-number='2']");
+    const box = two.getBoundingClientRect();
+    const view = document.getElementById("documentView");
+    const pen = (t, x, y, b) => view.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerId: 3, pointerType: "pen", isPrimary: true, clientX: x, clientY: y, buttons: b, pressure: 0.6 }));
+    pen("pointerdown", box.left + 50, box.top + 60, 1);
+    for (let i = 1; i <= 12; i += 1) pen("pointermove", box.left + 50 + (i * 8), box.top + 60 + (i * 4), 1);
+    await settle(150);
+    pen("pointerup", box.left + 146, box.top + 108, 0);
+    await settle(400);
+    const drawnOnTwo = inkOn(2);
+
+    // Tear out page 1. Everything on page 2 has to become page 2 - 1.
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(200);
+    board.querySelector('[data-hw-action="delete-page"]').click();
     await settle(200);
     document.getElementById("confirmModalOkBtn").click();
+    for (let i = 0; i < 60 && api.currentPdfPageCount() > added.doc - 1; i += 1) await settle(100);
     await settle(300);
 
-    const left = api.state.meta.pages.map((p) => p.id);
-    const buried = Object.keys(api.state.meta.deletedPageIds || {});
-
-    // ...and back through the store, which is the only thing that proves it was
-    // written rather than merely shown.
     await api.flushPendingDeckAutosave();
     await settle(300);
     const entry = api.readLocalDeckIndex()[0];
     const snapshot = await api.readDeckSnapshot(entry.id);
-    const saved = api.readHandwritingPages(snapshot.meta);
+    const savedInk = (snapshot.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
     return {
-      inkOnDoomed,
-      left,
-      survivor,
-      doomed,
-      buried,
-      savedIds: saved.map((p) => p.id),
-      savedOrder: saved.map((p) => p.order),
-      savedInk: saved.map((p) => (p.ink || []).length),
+      before, added, drawnOnTwo,
+      afterMeta: api.state.meta.pdf.pages,
+      afterDoc: api.currentPdfPageCount(),
+      inkPage1: inkOn(1),
+      inkPage2: inkOn(2),
+      buried: Object.keys(api.state.meta.deletedHighlightIds || {}).length,
+      savedInkPages: savedInk.map((r) => Number(r.page)),
+      savedQuadPages: savedInk.flatMap((r) => (r.quads || []).map((q) => Number(q.page))),
       pageCount: entry.pageCount
     };
   }`);
 
-  check("tearing out a page leaves the others", pages.left.length === 1 && pages.left[0] === pages.survivor,
-    `${pages.left.length} page(s) left`);
-  check("...and gives the one that went a tombstone", pages.buried.includes(pages.doomed),
-    `buried: ${pages.buried.join(", ") || "none"}`);
+  check("adding a page rewrites the document, not just the record of it",
+    pages.added.meta === pages.before.meta + 1 && pages.added.doc === pages.before.doc + 1,
+    `meta ${pages.before.meta}→${pages.added.meta}, pdf.js ${pages.before.doc}→${pages.added.doc}`);
+  check("...and the ink already on the paper stays where it was",
+    pages.added.inkPage1 === pages.before.inkPage1 && pages.before.inkPage1 > 0,
+    `${pages.added.inkPage1} mark(s) still on page 1`);
+  check("the pen writes on a page that did not exist a moment ago",
+    pages.drawnOnTwo > 0, `${pages.drawnOnTwo} mark(s) on page 2`);
+  check("tearing out a page shortens the document",
+    pages.afterMeta === pages.added.meta - 1 && pages.afterDoc === pages.added.doc - 1,
+    `meta ${pages.added.meta}→${pages.afterMeta}, pdf.js ${pages.added.doc}→${pages.afterDoc}`);
+  check("...and what was on the torn-out page is buried", pages.buried > 0,
+    `${pages.buried} tombstone(s)`);
+  check("...while what was AFTER it is renumbered onto the page it is now on",
+    pages.inkPage1 === pages.drawnOnTwo && pages.inkPage2 === 0,
+    `${pages.inkPage1} mark(s) on page 1, ${pages.inkPage2} on page 2`);
+  check("...quads included, which are what a paint and a Go-to resolve against",
+    pages.savedQuadPages.length > 0 && pages.savedQuadPages.every((n) => n === 1),
+    `quad pages: ${pages.savedQuadPages.join(", ") || "none"}`);
   check("the notebook survives a round trip through IndexedDB",
-    pages.savedIds.length === 1 && pages.savedIds[0] === pages.survivor,
-    `stored: ${pages.savedIds.join(", ") || "nothing"}`);
-  check("...renumbered from zero", pages.savedOrder.join(",") === "0", `order: ${pages.savedOrder.join(",")}`);
-  check("...and the library row knows it is a notebook", pages.pageCount === 1, `pageCount = ${pages.pageCount}`);
+    pages.savedInkPages.length > 0 && pages.savedInkPages.every((n) => n === 1),
+    `stored ink on page(s): ${pages.savedInkPages.join(", ") || "none"}`);
+  check("...and the library row knows it is a notebook", pages.pageCount === pages.afterMeta,
+    `pageCount = ${pages.pageCount}`);
 
-  // ── 5. A text box, moved, and a second device ───────────────────────────
-  const boxes = await page.evaluate(`async () => {
+  // ── 5. A markdown block, moved, and a second device ─────────────────────
+  //
+  // A block is a rectangle in PDF POINTS, for the reason a highlight is: a
+  // position in the document survives a zoom and a second device, and a position
+  // on the glass survives neither. So the assertions are about points, and the
+  // drag is measured in pixels — which is the conversion that can be wrong, and
+  // wrong in a direction, because PDF y runs up the page and the screen's runs
+  // down.
+  const blocks = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     const board = document.getElementById("handwritingBoard");
-    board.querySelector('[data-hw-action="add-box"]').click();
-    await settle(250);
-    const el = document.querySelector(".hw-box");
-    const id = el.dataset.hwBox;
-    const first = { ...api.state.meta.textBoxes[0] };
+    board.querySelector('[data-hw-action="add-block"]').click();
+    await settle(400);
+    const node = document.querySelector(".pdf-block");
+    const id = node.dataset.pdfBlock;
+    const first = { ...api.state.meta.pdfBlocks[0] };
+
+    const area = node.querySelector(".pdf-block-edit");
+    const editorOpen = Boolean(area && !area.hidden);
+    if (area) area.value = "**Bernoulli** along a streamline";
+    document.getElementById("documentView").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 8, pointerType: "mouse", isPrimary: true, clientX: 4, clientY: 4, buttons: 1 }));
+    await settle(300);
+    const typed = { ...api.state.meta.pdfBlocks[0] };
+    const rendered = document.querySelector(".pdf-block-body")?.innerHTML.includes("<strong>");
 
     const drag = (target, from, to) => {
       target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, pointerType: "mouse", isPrimary: true, clientX: from.x, clientY: from.y, buttons: 1 }));
       document.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientX: to.x, clientY: to.y, buttons: 1 }));
       document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientX: to.x, clientY: to.y, buttons: 0 }));
     };
-    const barBox = el.querySelector(".hw-box-bar").getBoundingClientRect();
-    drag(el.querySelector(".hw-box-bar"), { x: barBox.left + 4, y: barBox.top + 4 }, { x: barBox.left + 84, y: barBox.top + 64 });
-    await settle(250);
-    const moved = { ...api.state.meta.textBoxes[0] };
+    const barBox = node.querySelector(".pdf-block-bar").getBoundingClientRect();
+    // Right and DOWN the screen, which is right and DOWN the page — so x goes up
+    // and y goes down in points. A sign error here reads as a block that runs
+    // away from the finger.
+    drag(node.querySelector(".pdf-block-bar"), { x: barBox.left + 4, y: barBox.top + 4 }, { x: barBox.left + 64, y: barBox.top + 48 });
+    await settle(300);
+    const moved = { ...api.state.meta.pdfBlocks[0] };
 
-    const gripBox = el.querySelector(".hw-box-grip").getBoundingClientRect();
-    drag(el.querySelector(".hw-box-grip"), { x: gripBox.left + 2, y: gripBox.top + 2 }, { x: gripBox.left + 62, y: gripBox.top + 42 });
-    await settle(250);
-    const sized = { ...api.state.meta.textBoxes[0] };
+    const gripBox = node.querySelector(".pdf-block-grip").getBoundingClientRect();
+    drag(node.querySelector(".pdf-block-grip"), { x: gripBox.left + 2, y: gripBox.top + 2 }, { x: gripBox.left + 54, y: gripBox.top + 40 });
+    await settle(300);
+    const sized = { ...api.state.meta.pdfBlocks[0] };
 
     await api.flushPendingDeckAutosave();
     await settle(300);
     const entry = api.readLocalDeckIndex()[0];
     const snapshot = await api.readDeckSnapshot(entry.id);
-    const stored = api.readHandwritingBoxes(snapshot.meta)[0];
+    const stored = (snapshot.meta.pdfBlocks || [])[0];
 
-    // Two devices, one notebook: this one's box moved, the other one added a
-    // page while it was happening. Neither may take the other's work.
+    // Two devices, one notebook: this one moved and typed into a block while the
+    // other added one of its own. Neither may take the other's work.
     const other = {
-      pages: [...api.state.meta.pages, { id: "hp-elsewhere", order: 1, w: 794, h: 1123, paper: "grid", ink: [], at: Date.now() }],
-      textBoxes: [{ ...first, x: 999, y: 999, at: first.at - 5000 }]
+      pdf: api.state.meta.pdf,
+      pdfBlocks: [{ ...first, x: 999, y: 999, md: "stale", at: first.at - 5000 },
+                  { id: "bk-other", page: 1, x: 30, y: 30, w: 120, h: 40, z: 0, md: "from elsewhere", at: Date.now() }]
     };
     const merged = api.mergeDeckMeta(other, api.state.meta, { prefer: "local" });
     return {
-      id,
+      editorOpen, rendered, md: typed.md,
       first: { x: first.x, y: first.y, w: first.w, h: first.h },
       moved: { x: moved.x, y: moved.y },
-      sized: { w: sized.w, h: sized.h },
-      stored: stored ? { x: stored.x, y: stored.y, w: stored.w, h: stored.h } : null,
-      mergedPages: merged.pages.map((p) => p.id),
-      mergedBoxX: merged.textBoxes[0].x
+      sized: { x: sized.x, y: sized.y, w: sized.w, h: sized.h },
+      stored: stored ? { x: stored.x, y: stored.y, w: stored.w, h: stored.h, md: stored.md } : null,
+      mergedIds: (merged.pdfBlocks || []).map((b) => b.id).sort(),
+      mergedMine: (merged.pdfBlocks || []).find((b) => b.id === id)?.x
     };
   }`);
 
-  check("a text box can be dragged", boxes.moved.x > boxes.first.x && boxes.moved.y > boxes.first.y,
-    `(${boxes.first.x}, ${boxes.first.y}) → (${boxes.moved.x}, ${boxes.moved.y})`);
-  check("...and resized", boxes.sized.w > boxes.first.w && boxes.sized.h > boxes.first.h,
-    `${boxes.first.w}x${boxes.first.h} → ${boxes.sized.w}x${boxes.sized.h}`);
+  check("a markdown block can be added to a page and typed into",
+    blocks.editorOpen && blocks.md === "**Bernoulli** along a streamline" && blocks.rendered,
+    `editor=${blocks.editorOpen}, rendered as markdown=${blocks.rendered}`);
+  check("...dragged, in the page's own points and in the right direction",
+    blocks.moved.x > blocks.first.x && blocks.moved.y < blocks.first.y,
+    `(${blocks.first.x}, ${blocks.first.y}) → (${blocks.moved.x}, ${blocks.moved.y}) — x up, y down the page`);
+  check("...and resized", blocks.sized.w > blocks.first.w && blocks.sized.h > blocks.first.h,
+    `${blocks.first.w}x${blocks.first.h} → ${blocks.sized.w}x${blocks.sized.h} points`);
+  // Compared against the state AFTER the resize, and the y is the reason this is
+  // worth spelling out: growing a block downward on the screen grows it downward
+  // on the page, and because PDF y runs UP, that moves the origin down by exactly
+  // the height gained. A resize that left y alone would be a block whose top edge
+  // crept upward every time it was made taller.
   check("...and is where it was put after a round trip through the store",
-    Boolean(boxes.stored) && boxes.stored.x === boxes.moved.x && boxes.stored.y === boxes.moved.y
-      && boxes.stored.w === boxes.sized.w && boxes.stored.h === boxes.sized.h,
-    boxes.stored ? `(${boxes.stored.x}, ${boxes.stored.y}) ${boxes.stored.w}x${boxes.stored.h}` : "nothing stored");
-  check("a page added on the other device survives this one's push",
-    boxes.mergedPages.includes("hp-elsewhere"),
-    `merged: ${boxes.mergedPages.join(", ")}`);
-  check("...and this device's newer box wins over the other's older copy",
-    boxes.mergedBoxX === boxes.moved.x,
-    `x = ${boxes.mergedBoxX}, this device had ${boxes.moved.x}`);
-
+    Boolean(blocks.stored) && blocks.stored.x === blocks.sized.x && blocks.stored.y === blocks.sized.y
+      && blocks.stored.w === blocks.sized.w && blocks.stored.h === blocks.sized.h
+      && blocks.stored.md === blocks.md,
+    blocks.stored ? `(${blocks.stored.x}, ${blocks.stored.y}) ${blocks.stored.w}x${blocks.stored.h}` : "nothing stored");
+  check("...with the top edge of the block held still as it grew taller",
+    blocks.sized.y === blocks.moved.y - (blocks.sized.h - blocks.first.h),
+    `y ${blocks.moved.y} → ${blocks.sized.y} as the height went ${blocks.first.h} → ${blocks.sized.h}`);
+  check("a block added on the other device survives this one's push",
+    blocks.mergedIds.includes("bk-other"), `merged: ${blocks.mergedIds.join(", ")}`);
+  check("...and this device's newer copy wins over the other's older one",
+    blocks.mergedMine === blocks.moved.x, `x = ${blocks.mergedMine}, this device had ${blocks.moved.x}`);
   // ── 6. The drawing sheet's last mile ────────────────────────────────────
   const sheet = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;

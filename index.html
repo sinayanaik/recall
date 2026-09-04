@@ -194,9 +194,11 @@
     <link rel="modulepreload" href="src/format/ink-colors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-strokes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-svg.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/blank-pdf.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/notebook.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-blocks.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/board.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/pages.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/handwriting/text-boxes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/paper.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
@@ -1488,17 +1490,16 @@
     </section>
 
     <!-- ── Handwritten notes ────────────────────────────────────────────────
-         A notebook is a DECK — its pages live in that deck's meta.pages, which
-         is why there is no new store, no new table and no new sync path behind
-         this panel. See src/handwriting/board.js.
+         This panel HOLDS the Document surface. #documentStage is moved in here
+         while it is open and moved back when it closes — moved, never cloned,
+         the same rule liftNotesControlsIntoRow follows and for the same reason:
+         every listener on that stage is bound to the real node.
 
-         Built like the Quick Notes board above it: a `hidden` <section>, one
-         `-body` the module fills, every interactive element carrying an id or a
-         data- attribute, and no inline handlers. The pen's rail is filled in by
-         src/handwriting/rail.js rather than written here, for the reason that
-         file gives: the pens and the nibs come from the palette leaf, and a
-         second copy of that list in markup is a second place for it to be
-         wrong. -->
+         So what you write on is a real PDF, laid out by pdf.js, with the pen
+         storing strokes in the document's own user space. A deck with no
+         document of its own gets a generated blank one
+         (src/documents/blank-pdf.js); a deck that already has a paper is simply
+         written on. -->
     <section class="hw-board" id="handwritingBoard" hidden aria-label="Handwritten notes">
       <div class="hw-shell">
         <div class="hw-head">
@@ -1507,38 +1508,20 @@
             <p id="hwSummary">No pages yet</p>
           </div>
           <div class="hw-head-actions">
-            <button class="tool-button" type="button" data-hw-action="add-box" title="Add a markdown text box to the page you are looking at">&#43; Text box</button>
-            <button class="tool-button" type="button" data-hw-action="add-page" title="Add a page at the end of the notebook">&#43; Page</button>
+            <div class="ink-rail-group" role="group" aria-label="Paper">
+              <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="grid" aria-pressed="true" title="Grid paper" aria-label="Grid paper">&#9638;</button>
+              <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="ruled" aria-pressed="false" title="Ruled paper" aria-label="Ruled paper">&#9776;</button>
+              <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="blank" aria-pressed="false" title="Blank paper" aria-label="Blank paper">&#9633;</button>
+            </div>
+            <button class="tool-button" type="button" data-hw-action="add-block" title="Add a markdown text block to the page you are looking at">&#43; Text</button>
+            <button class="tool-button" type="button" data-hw-action="add-page" title="Add a page at the end">&#43; Page</button>
+            <button class="tool-button is-danger" type="button" data-hw-action="delete-page" title="Tear out the page you are looking at">&#128465;</button>
             <button class="icon-button" type="button" data-hw-action="close" aria-label="Close handwritten notes">&#215;</button>
           </div>
         </div>
-        <div class="hw-rail" id="hwRail" role="toolbar" aria-label="Pen">
-          <!-- The colours and the nibs are appended here at first open. -->
-          <div class="ink-rail-group" role="group" aria-label="Tool">
-            <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen" aria-label="Pen">&#9998;</button>
-            <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it" aria-label="Eraser">&#9003;</button>
-            <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, resize or delete them" aria-label="Lasso">&#9711;</button>
-          </div>
-          <div class="ink-rail-group" role="group" aria-label="Undo">
-            <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo" aria-label="Undo">&#8630;</button>
-            <button class="tool-button ink-rail-btn" type="button" data-ink-action="redo" title="Redo" aria-label="Redo">&#8631;</button>
-            <button class="tool-button ink-rail-btn is-danger" type="button" data-ink-action="delete" title="Delete the selected strokes" aria-label="Delete the selected strokes">&#128465;</button>
-          </div>
-          <!-- Three papers rather than one: ruled suits writing and suits a
-               diagram badly, blank is the other way round, and a grid is the one
-               that gets in neither's way. It applies to the whole notebook —
-               per-page paper is a setting nobody has asked for. -->
-          <div class="ink-rail-group" role="group" aria-label="Paper">
-            <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="grid" aria-pressed="true" title="Grid paper" aria-label="Grid paper">&#9638;</button>
-            <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="ruled" aria-pressed="false" title="Ruled paper" aria-label="Ruled paper">&#9776;</button>
-            <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="blank" aria-pressed="false" title="Blank paper" aria-label="Blank paper">&#9633;</button>
-          </div>
-          <div class="ink-rail-group" role="group" aria-label="Zoom">
-            <button class="tool-button ink-rail-btn" type="button" data-hw-action="zoom-out" title="Smaller" aria-label="Smaller">&#8722;</button>
-            <button class="tool-button ink-rail-btn" type="button" data-hw-action="zoom-in" title="Larger" aria-label="Larger">&#43;</button>
-          </div>
-        </div>
-        <div class="hw-scroll" id="hwScroll"></div>
+        <!-- #documentStage lands here. Empty in the markup on purpose: what goes
+             in it is the real surface, taken at open and given back at close. -->
+        <div class="hw-stage" id="hwStage"></div>
       </div>
     </section>
 
@@ -1905,7 +1888,8 @@
               <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This paper, annotated</strong> prints the pages with your handwriting on them</li>
               <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. It is a real page rather than one screenful: it scrolls, <strong>+▢</strong> adds another page below, and Done drops one picture per page you drew on into the note where the caret was — each a block that reflows with the text, with the same corner grip to resize it and the same 🗑 to remove it. Press a drawing's own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
               <li><strong>No connection needed</strong> — a drawing made offline is kept on the device and uploads itself when you are back, exactly as a pasted picture does</li>
-              <li><strong>A whole notebook</strong> — <strong>☰ → ✎ Handwritten Notes</strong> opens blank pages for the deck you have open, and any deck can have them: a notebook beside your cards and your note is the ordinary case, not a different kind of deck. Add and tear out pages, reorder them, and choose grid, ruled or blank paper. <strong>+ Text box</strong> drops a markdown box on the page you are looking at, which you can drag by its bar, resize from its corner and type into — for the statement of a problem above a derivation in your own hand. It is all part of the deck, so it syncs, backs up and travels between devices like everything else</li>
+              <li><strong>A whole notebook</strong> — <strong>☰ → ✎ Handwritten Notes</strong> opens a full page for the deck you have open, and any deck can have one: a notebook beside your cards and your note is the ordinary case, not a different kind of deck. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper — the same pen, the same strokes stored as coordinates into the page, the same zoom, the same dark page, the same export. <strong>+ Page</strong> adds one, <strong>&#128465;</strong> tears out the one you are looking at (everything after it moves up with it), and grid, ruled or blank changes the paper under what you have already written</li>
+              <li><strong>Type on the page too</strong> — <strong>+ Text</strong> drops a markdown block where you are looking, which you drag by its bar, resize from its corner and write in: the statement of a problem above a derivation in your own hand. Blocks work on <em>any</em> paper, not only a notebook's — a typed note over a figure in somebody's preprint is the same thing. They are positioned in the page's own points like a highlight, so they stay put through a zoom, a reload and a second device</li>
               <li><strong>On a laptop</strong> the pen rail is also how a mouse draws: a mouse has no way of saying whether a drag means ink or a selection, so it only inks while the rail is open</li>
             </ul>
           </section>

@@ -1,23 +1,33 @@
-/* Pages you can write on — the stack, the paper, and the notebook around it.
+/* The paper a drawing sheet writes on, the Handwritten Notes panel, and the
+   markdown blocks on a page.
 
    A separate file from styles/52-ink.css for the reason every file above 13 is
    separate: the thirteen slices are compared byte for byte against the
    stylesheet they were cut from, so anything written since the split lives on
-   its own. 52-ink.css is the PEN — the palette, the layer over a PDF page, the
-   rail. This is the PAPER, which both the drawing sheet and the notebook now
-   share, plus the notebook's own chrome.
+   its own. 52-ink.css is the PEN. This is the paper and the places it is found.
 
-   ── One scale, set in one place ──────────────────────────────────────────
+   ── Two kinds of page, and only one of them is here ──────────────────────
 
-   A page is 794 x 1123 model units (A4 at 96dpi) whatever it is shown at, and
-   src/handwriting/paper.js writes the scale it chose onto the element as
-   --hw-scale. Everything that has to look right at every zoom — the rule pitch,
-   the grid pitch, the margin line — is stated in model units and multiplied by
-   it here, so a grid stays the same grid rather than becoming a different one at
-   each step. */
+   The Handwritten Notes panel writes on a REAL PDF — it holds the Document
+   surface rather than imitating it (src/handwriting/board.js), so its pages are
+   pdf.js's pages and none of their rules are in this file.
+
+   What is here is the drawing SHEET's paper: the stack you get from the ✎ on an
+   editing toolbar, which is not a document and never becomes one. Its pages are
+   794x1123 model units whatever they are shown at, and the scale chosen for one
+   is written onto the element as --hw-scale, so the rule pitch and the grid
+   pitch are stated in model units and multiplied here rather than becoming a
+   different grid at every zoom step. */
 
 .hw-scroll {
+  /* `flex: 1` is load-bearing and not decoration. The scroller sits in a flex
+     row (.ink-sheet-stage), so without it the box is sized by its CONTENT — and
+     its content is pages whose size is computed FROM the scroller's width. That
+     circle settles at the 80px floor in src/handwriting/paper.js and stays
+     there: an A4 sheet rendered at a tenth of its size, with the pen drawing
+     correctly onto a stamp. A check caught exactly that. */
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -31,10 +41,10 @@
 
 /* The page itself.
 
-   `touch-action: none` and no selection, for the reason the single host said it
-   before: this surface exists to be drawn on and there is nothing underneath
-   that a gesture would otherwise have been for. The SCROLLER above still
-   scrolls, because the gesture that reaches it is one that missed a page. */
+   `touch-action: none` and no selection: this surface exists to be drawn on and
+   there is nothing underneath that a gesture would otherwise have been for. The
+   SCROLLER above still scrolls, because a gesture that reaches it is one that
+   missed a page. */
 .hw-page {
   position: relative;
   flex: 0 0 auto;
@@ -49,13 +59,11 @@
   cursor: crosshair;
 }
 
-/* The three papers. Drawn from the text colour at very low alpha so all three
-   work on all ten themes with no second definition — the same discipline the
-   grid had when it was the only one.
-
-   Ruled has a margin line as well, because a ruled page without one is a lined
-   page and not a notebook, and because it is the one thing that tells you which
-   way up the page is when it is scrolled to mid-height. */
+/* The three papers, drawn from the text colour at very low alpha so all three
+   work on all ten themes with no second definition. Ruled has a margin line as
+   well, because a ruled page without one is a lined page rather than a
+   notebook — and because it is what tells you which way up the page is when it
+   is scrolled to halfway. */
 .hw-page[data-hw-paper="grid"] {
   background-image:
     linear-gradient(to right, color-mix(in srgb, var(--text) 7%, transparent) 1px, transparent 1px),
@@ -81,8 +89,8 @@
 
 /* Every canvas the engine makes for a page — the dry one and, while a stroke is
    in flight, the shared wet pair. Stacking is DOM order, exactly as it is on a
-   PDF page, and none of them takes a pointer: the page element is what receives
-   the press and src/notes/ink-sheet.js routes it. */
+   PDF page, and none of them takes a pointer: the page element receives the
+   press and src/notes/ink-sheet.js routes it. */
 .hw-page-ink .hw-page-canvas {
   position: absolute;
   inset: 0;
@@ -91,9 +99,8 @@
   pointer-events: none;
 }
 
-/* Quiet, and outside the drawing area's own bounds as far as the eye is
-   concerned: a page number a reader can mistake for something they wrote is
-   worse than no page number. */
+/* Quiet, and far enough out of the way that a page number cannot be mistaken
+   for something the reader wrote. */
 .hw-page-number {
   position: absolute;
   right: 8px;
@@ -103,9 +110,8 @@
   pointer-events: none;
 }
 
-/* The drawing sheet's stack takes the sheet's own background rather than the
-   app's, because it is a full-surface modal and the two are not always the
-   same colour. */
+/* The sheet is a full-surface modal, so its stack takes the sheet's own ground
+   rather than the app's — the two are not always the same colour. */
 .ink-sheet-scroll {
   background: var(--bg);
 }
@@ -187,102 +193,79 @@
    surface belongs to this. Wrapping rather than scrolling, the same call
    styles/52-ink.css makes for the same set of controls on a phone: a
    horizontal scroller hides controls behind a gesture. */
-.hw-rail {
+/* ── The stage this panel borrows ──────────────────────────────────────────
+   #documentStage is MOVED in here while the panel is open (src/handwriting/
+   board.js). It brings its own layout with it — it is `position: relative` with
+   a scroller and a floating pager — so all this has to do is give it the room,
+   and `min-height: 0` so the scroller inside it can actually scroll rather than
+   growing the flex parent. */
+.hw-stage {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel-2, var(--panel));
+  position: relative;
 }
 
-/* ── The controls on a page ────────────────────────────────────────────────
-   Reorder and tear-out live ON the page, because "which page" is a question a
-   toolbar cannot answer for a scroller. Quiet until the page is reached for —
-   a row of buttons on every page of a notebook is a notebook you cannot read. */
-.hw-page-controls {
+.hw-stage > .document-stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The tabs and the appbar are not in this panel, so the stage's own reading
+   chrome should not be hiding from them either. */
+body.is-handwriting .document-stage {
+  height: 100%;
+}
+
+/* ── Markdown blocks on a page ─────────────────────────────────────────────
+
+   The layer takes no pointer events and each block takes its own, so text
+   selection and the pen still reach the paper everywhere a block is not. Above
+   the ink at 2 and below the note badges at 3 would put a block under a number
+   it overlaps; 4 puts it over the handwriting it annotates and under nothing,
+   because the badges re-append themselves as the page's last child anyway. */
+.pdf-block-layer {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  display: flex;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity 0.15s linear;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
 }
 
-.hw-page:hover .hw-page-controls,
-.hw-page:focus-within .hw-page-controls {
-  opacity: 1;
-}
-
-/* No hover on a touch screen, so there they are simply always there — an
-   invisible control is worse than a slightly busy page. */
-@media (hover: none) {
-  .hw-page-controls {
-    opacity: 0.65;
-  }
-}
-
-.hw-page-btn {
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.8rem;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.hw-page-btn.is-danger:hover {
-  border-color: var(--danger, #e5534b);
-  color: var(--danger, #e5534b);
-}
-
-/* ── Text boxes ────────────────────────────────────────────────────────────
-
-   Sized in MODEL units multiplied by --hw-scale, exactly as the paper's rules
-   are, so a box that fits its page at one zoom still fits it at the next. The
-   font scales with it for the same reason — a box whose text stayed 14px while
-   the page halved would overflow a box it had fitted a moment earlier. */
-.hw-box {
+.pdf-block {
   position: absolute;
   display: flex;
   flex-direction: column;
+  pointer-events: auto;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--card, var(--panel)) 94%, transparent);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.14);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--card, var(--panel)) 95%, transparent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.16);
   overflow: hidden;
-  /* The page under this is a drawing surface and takes `touch-action: none`;
-     a box has to take its own gestures back. */
-  touch-action: auto;
   -webkit-user-select: text;
   user-select: text;
-  cursor: default;
 }
 
-.hw-box-bar {
+/* A block is a thing the reader put there, so it keeps its own colours when the
+   paper is inverted — the promise the ink already makes on a dark page. */
+.pdf-invert .pdf-block {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+.pdf-block-bar {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 3px;
-  padding: 2px 4px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: 2px 3px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   cursor: grab;
   touch-action: none;
 }
 
-.hw-box-bar:active {
-  cursor: grabbing;
-}
+.pdf-block-bar:active { cursor: grabbing; }
 
-.hw-box-btn {
+.pdf-block-btn {
   width: 20px;
   height: 20px;
   padding: 0;
@@ -297,33 +280,31 @@
   cursor: pointer;
 }
 
-.hw-box-btn:hover {
-  background: color-mix(in srgb, var(--text) 12%, transparent);
-}
+.pdf-block-btn:hover { background: color-mix(in srgb, var(--text) 12%, transparent); }
+.pdf-block-btn.is-danger:hover { color: var(--danger, #e5534b); }
 
-.hw-box-btn.is-danger:hover {
-  color: var(--danger, #e5534b);
-}
-
-.hw-box-body,
-.hw-box-edit {
+/* Sized against the viewport's own scale, so a block that fitted the page at one
+   zoom still fits it at the next — the type has to move with the paper or a
+   pinch turns a tidy block into an overflowing one. */
+.pdf-block-body,
+.pdf-block-edit {
   flex: 1;
   min-height: 0;
-  padding: calc(8px * var(--hw-scale, 1));
-  font-size: calc(0.9rem * var(--hw-scale, 1));
-  line-height: 1.45;
+  padding: calc(6px * var(--pdf-block-scale, 1));
+  font-size: calc(0.82rem * var(--pdf-block-scale, 1));
+  line-height: 1.4;
   overflow: auto;
 }
 
-.hw-box-body > :first-child { margin-top: 0; }
-.hw-box-body > :last-child { margin-bottom: 0; }
+.pdf-block-body > :first-child { margin-top: 0; }
+.pdf-block-body > :last-child { margin-bottom: 0; }
 
-.hw-box-empty {
+.pdf-block-empty {
   color: color-mix(in srgb, var(--text) 45%, transparent);
   font-style: italic;
 }
 
-.hw-box-edit {
+.pdf-block-edit {
   width: 100%;
   border: 0;
   outline: none;
@@ -333,38 +314,13 @@
   font-family: inherit;
 }
 
-/* Same drawing and the same 22px-ish target as the ink lasso's corner grip and
-   the image resize grip, because they are the same gesture. */
-.hw-box-grip {
+.pdf-block-grip {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   cursor: nwse-resize;
   touch-action: none;
   background: linear-gradient(135deg, transparent 45%, color-mix(in srgb, var(--accent) 60%, transparent) 45%);
-}
-
-@media (max-width: 720px) {
-  .hw-head {
-    padding: 8px 10px;
-  }
-
-  .hw-rail {
-    padding: 6px 8px;
-    gap: 4px;
-  }
-}
-
-/* ── The marker on a My Decks row ──────────────────────────────────────────
-   Beside the card count, not instead of it: a deck can have cards, a note and a
-   notebook at once. `.deck-has-notes` is styled in the frozen
-   styles/11-chrome.css and this cannot join it there, so it states its own
-   spacing rather than inheriting one. */
-.deck-has-pages {
-  margin-left: 6px;
-  font-size: 0.82em;
-  white-space: nowrap;
-  color: color-mix(in srgb, var(--accent) 80%, var(--text));
 }

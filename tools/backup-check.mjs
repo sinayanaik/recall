@@ -109,13 +109,8 @@ const META_FIXTURES = {
   linkIds: ["lnk-one"],
   quickNoteCategories: [{ id: "q1", name: "Ideas", color: "#ff0" }],
   noteAnchors: { x: { offset: 3 } },
-  // A page carries its ink already encoded, exactly as it does on the deck —
-  // a fixture with a plain array of points here would pass this round trip and
-  // tell us nothing about the form the archive actually has to carry.
-  pages: [{ id: "hp-p1", order: 0, w: 794, h: 1123, paper: "grid", ink: ["1|8|60,700,16|A"], at: 1_800_000_000_000 }],
-  deletedPageIds: { "hp-pz": "2027-01-01T00:00:00.000Z" },
-  textBoxes: [{ id: "hb-b1", page: "hp-p1", x: 40, y: 60, w: 240, h: 90, z: 1, md: "**why** it matters", at: 1_800_000_000_000 }],
-  deletedTextBoxIds: { "hb-bz": "2027-01-01T00:00:00.000Z" }
+  pdfBlocks: [{ id: "bk-b1", page: 2, x: 40, y: 700, w: 240, h: 90, z: 0, md: "**why** it matters", at: 1_800_000_000_000 }],
+  deletedBlockIds: { "bk-bz": "2027-01-01T00:00:00.000Z" }
 };
 
 try {
