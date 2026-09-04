@@ -1377,7 +1377,13 @@ const ACCEPTED = {
     "replacement or fifty, so doing it per image made the flush " +
     "O(images x library). Also rejects a note in one indexOf when it holds no " +
     "recall-img: scheme at all, which is almost all of them, instead of " +
-    "testing every pair against it.",
+    "testing every pair against it. And it settles a THIRD place a picture can " +
+    "be: meta.pdfBlocks, the image blocks dropped on a page of handwriting, " +
+    "which keep their reference in a record's own `src` field rather than in " +
+    "markdown. It scanned the notes and the cards and stopped, so a block added " +
+    "offline kept a token naming bytes in one device's outbox — a picture that " +
+    "showed where it was made and nowhere else, permanently, because the upload " +
+    "that would have settled it had already happened.",
 
   // ── Reads that only break at a library size the developer never had ──────
   // Both of these worked for every library anyone had tested and failed for a

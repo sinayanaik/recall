@@ -74,6 +74,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-ink.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-store.js?v=__BUILD__",
+    "/src/images/outbox.js?v=__BUILD__",
     "/src/notes/ink-sheet.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/format/ink-svg.js?v=__BUILD__",
@@ -391,6 +392,22 @@ try {
     await settle(400);
     const drawnOnTwo = inkOn(2);
 
+    // ── ...and a BLOCK on each page, which is the half that was missing ────
+    //
+    // Tearing a page out renumbered the highlights and stopped, so a text block
+    // on the torn-out page survived onto whichever page inherited its number and
+    // every block below the gap stayed one page too far down. One block on the
+    // page about to go and one on the page that has to move, so the case can
+    // tell a renumber from a bury.
+    api.addDocumentBlock(2, { x: 120, y: 200 });
+    api.commitBlockEdit();
+    api.addDocumentBlock(1, { x: 120, y: 300 });
+    api.commitBlockEdit();
+    await settle(200);
+    const blockOnPage = (n) => api.documentBlocks().filter((b) => Number(b.page) === n).length;
+    const blocksBefore = { one: blockOnPage(1), two: blockOnPage(2) };
+    const blockIdOnTwo = (api.documentBlocks().find((b) => Number(b.page) === 2) || {}).id;
+
     // Tear out page 1. Everything on page 2 has to become page 2 - 1.
     api.scrollToDocumentPage(1, 0, { smooth: false });
     await settle(200);
@@ -416,7 +433,13 @@ try {
       buried: Object.keys(api.state.meta.deletedHighlightIds || {}).length,
       savedInkPages: savedInk.map((r) => Number(r.page)),
       savedQuadPages: savedInk.flatMap((r) => (r.quads || []).map((q) => Number(q.page))),
-      pageCount: entry.pageCount
+      pageCount: entry.pageCount,
+      blocksBefore,
+      blocksAfter: { one: blockOnPage(1), two: blockOnPage(2) },
+      // The block that WAS on page 2 has to be alive and on page 1 now.
+      movedBlockPage: Number((api.documentBlocks().find((b) => b.id === blockIdOnTwo) || {}).page || 0),
+      blocksBuried: Object.keys(api.state.meta.deletedBlockIds || {}).length,
+      savedBlockPages: (snapshot.meta.pdfBlocks || []).map((b) => Number(b.page))
     };
   }`);
 
@@ -436,6 +459,17 @@ try {
   check("...while what was AFTER it is renumbered onto the page it is now on",
     pages.inkPage1 === pages.drawnOnTwo && pages.inkPage2 === 0,
     `${pages.inkPage1} mark(s) on page 1, ${pages.inkPage2} on page 2`);
+  check("...and the blocks on the page go with it, exactly as the marks do",
+    pages.blocksBefore.one === 1 && pages.blocksBefore.two === 1
+      && pages.blocksAfter.one === 1 && pages.blocksAfter.two === 0
+      && pages.movedBlockPage === 1,
+    `blocks were ${JSON.stringify(pages.blocksBefore)}, are ${JSON.stringify(pages.blocksAfter)}, `
+      + `the one from page 2 is on page ${pages.movedBlockPage}`);
+  check("...with a tombstone for the one that was ON the torn-out page",
+    pages.blocksBuried > 0, `${pages.blocksBuried} block tombstone(s)`);
+  check("...and the saved snapshot says the same, not the page numbers it had",
+    pages.savedBlockPages.length === 1 && pages.savedBlockPages[0] === 1,
+    `saved block pages: ${JSON.stringify(pages.savedBlockPages)}`);
   check("...quads included, which are what a paint and a Go-to resolve against",
     pages.savedQuadPages.length > 0 && pages.savedQuadPages.every((n) => n === 1),
     `quad pages: ${pages.savedQuadPages.join(", ") || "none"}`);
@@ -456,20 +490,27 @@ try {
   const blocks = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     const board = document.getElementById("documentInkRail");
+    // Which ids existed BEFORE the press, so the one this case is about can be
+    // named rather than assumed to be the only one. It used to reach for the
+    // first .pdf-block in the DOM and the first record in the array — true only
+    // while nothing else had ever put a block on this deck, and the tear-out
+    // case above now deliberately leaves a survivor behind.
+    const had = new Set((api.state.meta.pdfBlocks || []).map((b) => b.id));
     board.querySelector('[data-hw-action="add-block"]')
       .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 32, cancelable: true }));
     await settle(400);
-    const node = document.querySelector(".pdf-block");
-    const id = node.dataset.pdfBlock;
-    const first = { ...api.state.meta.pdfBlocks[0] };
+    const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
+    const id = (api.state.meta.pdfBlocks || []).map((b) => b.id).find((b) => !had.has(b));
+    const node = document.querySelector('[data-pdf-block="' + id + '"]');
+    const first = record(id);
 
     const area = node.querySelector(".pdf-block-edit");
     const editorOpen = Boolean(area && !area.hidden);
     if (area) area.value = "**Bernoulli** along a streamline";
     document.getElementById("documentView").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 8, pointerType: "mouse", isPrimary: true, clientX: 4, clientY: 4, buttons: 1 }));
     await settle(300);
-    const typed = { ...api.state.meta.pdfBlocks[0] };
-    const rendered = document.querySelector(".pdf-block-body")?.innerHTML.includes("<strong>");
+    const typed = record(id);
+    const rendered = node.querySelector(".pdf-block-body")?.innerHTML.includes("<strong>");
 
     const drag = (target, from, to) => {
       target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, pointerType: "mouse", isPrimary: true, clientX: from.x, clientY: from.y, buttons: 1 }));
@@ -482,18 +523,18 @@ try {
     // away from the finger.
     drag(node.querySelector(".pdf-block-bar"), { x: barBox.left + 4, y: barBox.top + 4 }, { x: barBox.left + 64, y: barBox.top + 48 });
     await settle(300);
-    const moved = { ...api.state.meta.pdfBlocks[0] };
+    const moved = record(id);
 
     const gripBox = node.querySelector(".pdf-block-grip").getBoundingClientRect();
     drag(node.querySelector(".pdf-block-grip"), { x: gripBox.left + 2, y: gripBox.top + 2 }, { x: gripBox.left + 54, y: gripBox.top + 40 });
     await settle(300);
-    const sized = { ...api.state.meta.pdfBlocks[0] };
+    const sized = record(id);
 
     await api.flushPendingDeckAutosave();
     await settle(300);
     const entry = api.readLocalDeckIndex()[0];
     const snapshot = await api.readDeckSnapshot(entry.id);
-    const stored = (snapshot.meta.pdfBlocks || [])[0];
+    const stored = (snapshot.meta.pdfBlocks || []).find((b) => b.id === id);
 
     // Two devices, one notebook: this one moved and typed into a block while the
     // other added one of its own. Neither may take the other's work.
@@ -1007,6 +1048,76 @@ try {
   check("...and comes back out of the store as a picture, on the notebook's pages",
     picture.stored?.kind === "image" && picture.stored?.hasSrc && picture.stored?.doc === "notebook",
     JSON.stringify(picture.stored));
+  // ── ...and the same picture, added with no connection ───────────────────
+  //
+  // The report: an image on a page of handwriting showed on the tablet it was
+  // added on and nowhere else. Not a rendering fault — a reference one.
+  //
+  // storeImageOrQueue parks the bytes in this device's outbox and hands back a
+  // recall-img token when it cannot upload, which is right. The pass that later
+  // uploads them then rewrites every reference to the real URL —
+  // rewriteLocalImageReferences — and that pass looked in the notes and in the
+  // cards and stopped. A block keeps its picture in a RECORD, in its own `src`
+  // field, so the token was never settled: on every other device that is an
+  // image whose bytes live in one browser's IndexedDB, permanently, because the
+  // upload that would have fixed it had already happened.
+  //
+  // The queueing half is driven through the real offline branch
+  // (navigator.onLine, which is what uploadImageToSupabase asks). The settling
+  // half is driven by handing rewriteLocalImageReferences the token->url map,
+  // which is exactly and only what flushPendingImageUploads does once an upload
+  // succeeds — deliberately, so this case is about the rewrite that was wrong
+  // rather than about this harness's stubbed bucket.
+  const offlinePicture = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const onLine = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine")
+      || Object.getOwnPropertyDescriptor(navigator, "onLine");
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => false });
+
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEklEQVR4nGP8//8/AzJgYkAFAB8FAv3EhrhCAAAAAElFTkSuQmCC"), (c) => c.charCodeAt(0));
+    const file = new File([png], "whiteboard.png", { type: "image/png" });
+    const added = await api.addDocumentImageBlock(api.currentDocumentPage() || 1, file, { x: 140, y: 420 });
+    await settle(300);
+    if (onLine) Object.defineProperty(navigator, "onLine", onLine);
+    const srcWhileOffline = api.documentBlocks().find((b) => b.id === (added || {}).id)?.src || "";
+    const token = srcWhileOffline.startsWith("recall-img:") ? srcWhileOffline.slice("recall-img:".length) : "";
+
+    const url = "https://fixture.supabase.co/storage/v1/object/public/images/u1/decks/x/whiteboard.png";
+    if (token) await api.rewriteLocalImageReferences(new Map([[token, url]]));
+    await settle(300);
+    const settled = api.documentBlocks().find((b) => b.id === (added || {}).id)?.src || "";
+
+    await api.flushPendingDeckAutosave();
+    await settle(400);
+    const entry = api.readLocalDeckIndex().find((row) => row.title === "A paper and a notebook");
+    const snapshot = await api.readDeckSnapshot(entry.id);
+    const stored = (snapshot.meta.pdfBlocks || []).find((b) => b.id === (added || {}).id);
+    // Scoped to the token that was actually settled, not to "any token at all":
+    // earlier cases in this file queue images that this harness's stubbed bucket
+    // can never confirm, so the saved bag legitimately still holds theirs.
+    const tokensLeft = Boolean(token)
+      && JSON.stringify(snapshot.meta.pdfBlocks || []).includes("recall-img:" + token);
+
+    return {
+      added: Boolean(added),
+      queued: Boolean(token),
+      settled,
+      storedSrc: (stored || {}).src || "",
+      tokensLeft,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`);
+
+  check("an image added with no connection is parked under a local token",
+    offlinePicture.added && offlinePicture.queued,
+    `added=${offlinePicture.added}, parked under a token=${offlinePicture.queued}`);
+  check("...and the upload that follows rewrites the BLOCK, not only the notes",
+    offlinePicture.settled.startsWith("http"),
+    `the block still points at "${offlinePicture.settled}" — on any other device that is a picture with no bytes`);
+  check("...in the saved snapshot too, which is what the other device is handed",
+    offlinePicture.storedSrc.startsWith("http") && !offlinePicture.tokensLeft,
+    `stored src "${offlinePicture.storedSrc}", this image's token still in the saved bag=${offlinePicture.tokensLeft}`);
+
   // ── 10. The four faults reported off a phone ────────────────────────────
   //
   // Every one of these was true of a shipped build, and three of them were

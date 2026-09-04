@@ -283,9 +283,16 @@ export function remapDocumentHighlightPages(move) {
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
   state.meta.pdfHighlights = wholeHighlightArray(next);
   if (gone.length) {
-    let tombstones = state.meta.deletedHighlightIds;
-    gone.forEach((record) => { tombstones = recordDeletedHighlightId(state.meta, record.id); });
-    state.meta.deletedHighlightIds = tombstones;
+    // Written back into the meta on EVERY step, not once at the end.
+    // recordDeletedHighlightId reads the bag off `meta` and returns a fresh one,
+    // so a loop that keeps its answer in a local and assigns after the last
+    // iteration hands every step the SAME starting bag — and only the final id
+    // survives. Tearing out a page with four marks on it buried one of them and
+    // let the other three come back from the other device on the next merge,
+    // which is the whole failure this tombstone bag exists to stop.
+    gone.forEach((record) => {
+      state.meta.deletedHighlightIds = recordDeletedHighlightId(state.meta, record.id);
+    });
     // Same ordering rule setDocumentInkForPage keeps: the records are in place
     // before the prune runs, because the prune asks meta.pdfHighlights what is
     // still live.
@@ -930,9 +937,16 @@ export function setDocumentInkForPage(pageNumber, records, { notify = true } = {
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
   state.meta.pdfHighlights = wholeHighlightArray(next);
   if (gone.length) {
-    let tombstones = state.meta.deletedHighlightIds;
-    gone.forEach((record) => { tombstones = recordDeletedHighlightId(state.meta, record.id); });
-    state.meta.deletedHighlightIds = tombstones;
+    // Written back into the meta on EVERY step, not once at the end.
+    // recordDeletedHighlightId reads the bag off `meta` and returns a fresh one,
+    // so a loop that keeps its answer in a local and assigns after the last
+    // iteration hands every step the SAME starting bag — and only the final id
+    // survives. Tearing out a page with four marks on it buried one of them and
+    // let the other three come back from the other device on the next merge,
+    // which is the whole failure this tombstone bag exists to stop.
+    gone.forEach((record) => {
+      state.meta.deletedHighlightIds = recordDeletedHighlightId(state.meta, record.id);
+    });
     // Same ordering rule removeDocumentHighlight spells out at length: the
     // records have to be in place before the prune runs, because the prune asks
     // meta.pdfHighlights what is still live, and the one commit below is the

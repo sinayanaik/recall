@@ -115,13 +115,55 @@ export function allDocumentBlocks() {
 // paper's untouched. Without the second half, adding a text block to a notebook
 // would delete every block typed over the preprint beside it — see the same
 // argument spelled out on wholeHighlightArray in ./pdf-highlights.js.
+// `removed` is one id or a list of them. A list, because tearing a page out of a
+// notebook buries every block that was on it in a single write — and a bury that
+// arrived in a second write could be carried by a sync on its own, which is the
+// half-a-change this whole path exists to avoid.
 function writeBlocks(next, { removed = null } = {}) {
   const slot = activeDocSlot();
   const whole = recordsOutsideSlot(state.meta?.pdfBlocks, slot).concat(stampDocSlotAll(next, slot));
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: whole };
-  if (removed) state.meta.deletedBlockIds = recordDeletedMetaId(state.meta, "deletedBlockIds", removed);
+  // Written back into the meta on every step. recordDeletedMetaId reads the bag
+  // off `meta` and returns a fresh one, so a loop that assigns only after its
+  // last iteration hands every step the same starting bag and keeps one id —
+  // see the identical rule spelled out in remapDocumentHighlightPages.
+  (Array.isArray(removed) ? removed : [removed]).filter(Boolean).forEach((id) => {
+    state.meta.deletedBlockIds = recordDeletedMetaId(state.meta, "deletedBlockIds", id);
+  });
   scheduleDeckAutosave();
   onBlocksChanged();
+}
+
+// ── Renumbering, when a page is removed from under them ────────────────────
+//
+// The exact twin of remapDocumentHighlightPages in ./pdf-highlights.js, and it
+// exists because tearing a page out of a notebook called that one and stopped.
+// A block is a rectangle on a numbered page in the same way a highlight is, so
+// every fault that function was written to prevent applied here unanswered: a
+// text block on the torn-out page SURVIVED, floating on whatever page inherited
+// its number, and every block after the gap went on describing a page that had
+// just moved down by one.
+//
+// `move` returns the new page number, or null to bury the record. The `at` bump
+// on a moved block is what makes the change win its own merge — a renumber that
+// kept its old stamp would lose to the other device's copy of the same block,
+// still on the page it used to be on.
+//
+// One write, like the highlights one: the moves and the burials land together or
+// a sync between them carries half a tear-out.
+export function remapDocumentBlockPages(move) {
+  const before = documentBlocks();
+  if (!before.length) return 0;
+  const next = [];
+  const gone = [];
+  before.forEach((block) => {
+    const to = move(block);
+    if (to === null || to === undefined) { gone.push(block); return; }
+    if (Number(block.page) === Number(to)) { next.push(block); return; }
+    next.push({ ...block, page: Number(to), at: Date.now() });
+  });
+  writeBlocks(next, { removed: gone.map((block) => block.id) });
+  return gone.length;
 }
 
 function freshBlockId(taken) {

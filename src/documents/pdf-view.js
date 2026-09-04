@@ -416,12 +416,24 @@ export async function reattachDocument(file, pdfMeta) {
   return true;
 }
 
-// Which document is on the surface right now — the deck, and which of its two
-// papers. Both halves matter: the deck alone would call a notebook and the paper
-// beside it the same document, and the slot alone would call two decks' notebooks
-// the same one.
+// Which document is on the surface right now — the deck, which of its two
+// papers, and which BYTES of that paper. All three matter: the deck alone would
+// call a notebook and the paper beside it the same document, the slot alone
+// would call two decks' notebooks the same one, and without the third a
+// notebook whose file was rewritten underneath an open surface is judged
+// "already open" and the reader keeps looking at the previous one.
+//
+// That third part is only ever load-bearing for a notebook, because a notebook
+// is the one document in this app whose bytes change: adding a page, tearing one
+// out and changing the rule each mint a new file under the same key
+// (writeNotebookPdf). An imported paper's hash never moves, so for every other
+// document this reads exactly as it did.
+//
+// Empty when the record carries no hash, which keeps the key stable for rows
+// written before the store recorded one.
 function documentOpenKey(slot) {
-  return `${currentDeckKey()}|${normalizeDocSlot(slot)}`;
+  const normalized = normalizeDocSlot(slot);
+  return `${currentDeckKey()}|${normalized}|${docSlotMeta(normalized)?.sha256 || ""}`;
 }
 
 // Which of the deck's documents the surface is currently showing, or null when
