@@ -85,6 +85,7 @@ const API_SRC = `async () => {
     "/src/storage/deck-snapshot.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
+    "/src/ui/ink-rail.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__",
@@ -1490,6 +1491,93 @@ try {
   check("...and a heavier one every fourth square, which is what makes it legible small",
     paper.major >= paper.minor * 1.5,
     `major ${paper.major} vs minor ${paper.minor}`);
+
+  // ── The rail and the pager, at every width ──────────────────────────────
+  //
+  // Reported off a tablet: "the edit options and the page indicators are
+  // clashing". Both used to be absolutely positioned at the foot of the stage on
+  // the same z-index, and the rail WRAPS — so the wider it grows, the further it
+  // reaches into the pager's corner.
+  //
+  // There was a fix and it was `@media (max-width: 720px)`, which is to say it
+  // covered a phone and nothing else. A tablet is the width where the rail has
+  // room to wrap into a long band AND the pager is still in the corner, which is
+  // exactly why that is the device it was reported from.
+  //
+  // So this asks the question at three widths rather than at the one the old fix
+  // had thought about, and it asks it geometrically: do the two boxes intersect?
+  // A rule that moves one of them by the wrong amount still fails.
+  const railWidths = [];
+  for (const [label, width, height] of [["phone", 390, 844], ["tablet", 1024, 768], ["desktop", 1440, 900]]) {
+    await page.call("Emulation.setDeviceMetricsOverride", {
+      width, height, deviceScaleFactor: 1, mobile: width <= 720
+    });
+    railWidths.push(await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      // Open, which is the state that can collide — and the state a notebook
+      // starts in (RAIL_OPEN_DEFAULT).
+      api.toggleInkRail(true);
+      await settle(250);
+      const rail = document.getElementById("documentInkRail");
+      const pager = document.getElementById("documentPager");
+      const box = (node) => {
+        const r = node?.getBoundingClientRect();
+        return r && r.width > 0 && r.height > 0
+          ? { top: r.top, left: r.left, right: r.right, bottom: r.bottom, height: r.height }
+          : null;
+      };
+      const scroller = document.getElementById("documentView");
+      const topOf = (n) => {
+        const el = document.querySelector("#documentStage .pdf-page[data-page-number='" + n + "']");
+        return el ? el.getBoundingClientRect().top : null;
+      };
+      // At rest, and then after a JUMP. The two are different questions and only
+      // the first is answered by the scroller's padding: a jump lands the page
+      // flush with the scroller's own top edge, which is under the rail, so
+      // "go to page N and write on it" put the first line under the controls and
+      // a pen press meant for the paper hit the rail. See scrollerTopInset.
+      // Genuinely at rest: the previous width's iteration ends on a jump, and a
+      // jump leaves the scroller wherever it landed.
+      if (scroller) scroller.scrollTop = 0;
+      await settle(150);
+      const atRest = { top: topOf(1), scrollTop: scroller ? scroller.scrollTop : null };
+      const last = api.currentPdfPageCount ? api.currentPdfPageCount() : 1;
+      api.scrollToDocumentPage(last, 0, { smooth: false });
+      await settle(400);
+      const afterJump = topOf(last);
+      api.scrollToDocumentPage(1, 0, { smooth: false });
+      await settle(300);
+      return { rail: box(rail), pager: box(pager), atRest, afterJump, last };
+    }`));
+  }
+
+  ["phone", "tablet", "desktop"].forEach((label, i) => {
+    const { rail, pager } = railWidths[i];
+    const overlap = Boolean(rail && pager)
+      && rail.left < pager.right && rail.right > pager.left
+      && rail.top < pager.bottom && rail.bottom > pager.top;
+    check(`the pen's rail and the page indicator do not overlap on a ${label}`,
+      Boolean(rail) && Boolean(pager) && !overlap,
+      rail && pager
+        ? `rail ${rail.left.toFixed(0)},${rail.top.toFixed(0)}→${rail.right.toFixed(0)},${rail.bottom.toFixed(0)} `
+          + `vs pager ${pager.left.toFixed(0)},${pager.top.toFixed(0)}→${pager.right.toFixed(0)},${pager.bottom.toFixed(0)}`
+        : `rail box=${Boolean(rail)}, pager box=${Boolean(pager)}`);
+  });
+
+  ["phone", "tablet", "desktop"].forEach((label, i) => {
+    const { rail, atRest } = railWidths[i];
+    check(`...and the first line of the page is not under it on a ${label}`,
+      Boolean(rail) && atRest.top !== null && atRest.scrollTop === 0 && atRest.top >= rail.bottom,
+      `page 1 starts at ${atRest.top === null ? "?" : atRest.top.toFixed(0)}, the rail ends at ${rail ? rail.bottom.toFixed(0) : "?"}`);
+  });
+
+  ["phone", "tablet", "desktop"].forEach((label, i) => {
+    const { rail, afterJump, last } = railWidths[i];
+    check(`...nor after jumping to a page, on a ${label}`,
+      Boolean(rail) && afterJump !== null && afterJump >= rail.bottom - 1,
+      `page ${last} landed at ${afterJump === null ? "?" : afterJump.toFixed(0)} with the rail ending at `
+        + `${rail ? rail.bottom.toFixed(0) : "?"} — a press meant for that line would hit the rail`);
+  });
 
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,

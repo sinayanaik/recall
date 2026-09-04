@@ -283,23 +283,12 @@
   display: none;
 }
 
-/* ── The rail and the pager, on a phone ────────────────────────────────────
-   At <=720px the rail stops being a corner cluster and becomes a full-width
-   wrapping band across the foot of the stage (styles/52-ink.css). The pager
-   stays in the bottom-right corner on the same z-index and, being later in the
-   document, paints straight over it — which was already true and is worse now
-   the rail carries a page group as well. So the pager steps up out of the band
-   whenever the rail is open. Two floating panels, one above the other, rather
-   than one on top of the other. */
-@media (max-width: 720px) {
-  #documentStage:has(.document-ink-rail:not([hidden])) .document-pager {
-    /* --ink-rail-h is the rail's measured height, written by src/ui/ink-rail.js
-       from a ResizeObserver: how far up to step depends on how many rows it has
-       wrapped to, and a stylesheet cannot count those. The fallback is one row,
-       for the frame before the first measurement lands. */
-    bottom: calc(var(--ink-rail-h, 42px) + 16px);
-  }
-}
+/* The rail and the pager cannot collide any more, and no rule here arranges
+   that: the rail is a flex item in the stage's column now rather than a panel
+   floating over the foot of it (styles/52-ink.css carries the argument). What
+   was here was the fix that only ever covered a phone — a `max-width: 720px`
+   rule stepping the pager up by the rail's measured height — which is precisely
+   why a tablet was the device this was reported from. */
 
 /* ── One menu, two documents ───────────────────────────────────────────────
    Each row of ⋯ says which of the deck's documents it is about, and the stage
