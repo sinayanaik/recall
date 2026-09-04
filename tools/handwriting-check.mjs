@@ -1073,6 +1073,39 @@ try {
     await settle(400);
     const backOnNotebook = { pages: api.currentPdfPageCount(), marks: inkHere() };
 
+    // ── ...and what the switch between them COSTS ────────────────────────
+    //
+    // "There feels a discontinuity when I'm changing from a panel to another
+    // panel — I'm seeing (opening document) and it takes a few seconds to load
+    // that panel, which is creating a discontinuity in the reading flow."
+    //
+    // A deck has two papers and one stage, so switching tabs was always a real
+    // reopen: tear the surface down, destroy the parsed document, read the blob
+    // back out of IndexedDB, copy it, hand it to the worker again. The outgoing
+    // document is parked now, and a switch back finds it already parsed.
+    //
+    // Measured SYNCHRONOUSLY, with no settle, which is the whole assertion: a
+    // cold open cannot get past its first await in the same tick, so all it can
+    // have put on screen is the "Opening the document…" line. A parked one has
+    // no awaits at all and the pages are there before this next line runs.
+    api.setViewMode("document");
+    const switched = {
+      loading: Boolean(document.querySelector("#documentView .pdf-loading")),
+      pages: document.querySelectorAll("#documentView .pdf-page").length
+    };
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== paperPages; i += 1) await settle(100);
+    await settle(300);
+    // ...and the ink is still on it, which is what says the pages that came back
+    // are the document rather than a fresh set of empty placeholders.
+    const switchedMarks = inkHere();
+    // Left on the Write tab, which is where this section found the app and where
+    // everything after it expects to be: the slot decides which paper a block or
+    // a stroke is stamped for (src/documents/doc-slot.js), so a case that walks
+    // off leaving the other tab open silently changes what the next one writes.
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
+    await settle(300);
+
     // ── Does drawing move the stamp the sync pushes on? ───────────────────
     //
     // The end of the pipe deckContentMatches sits in the middle of. A stroke is
@@ -1100,6 +1133,7 @@ try {
       attached, offered, paperPages, notebookPages, onPaper, mine, theirs, paintedNow,
       hasPdf: Boolean(api.state.meta.pdf), hasNotebook: Boolean(api.state.meta.notebook),
       backOnPaper, backOnNotebook,
+      switched, switchedMarks,
       stampBefore, stampAfter, stampIdle,
       errs: window.__errs.slice(0, 4)
     };
@@ -1578,6 +1612,14 @@ try {
       `page ${last} landed at ${afterJump === null ? "?" : afterJump.toFixed(0)} with the rail ending at `
         + `${rail ? rail.bottom.toFixed(0) : "?"} — a press meant for that line would hit the rail`);
   });
+
+  check("switching back to the other paper does not re-open it",
+    both.switched.pages > 0 && !both.switched.loading,
+    `${both.switched.pages} page(s) on screen in the same tick, "Opening the document…" showing=`
+      + `${both.switched.loading} — a re-parse cannot have pages up before its first await returns`);
+  check("...and it comes back with what was written on it",
+    both.switchedMarks === both.backOnPaper.marks && both.switchedMarks > 0,
+    `${both.switchedMarks} mark(s), against ${both.backOnPaper.marks} before the switch`);
 
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,
