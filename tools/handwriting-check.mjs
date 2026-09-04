@@ -822,10 +822,34 @@ try {
     await settle(400);
     const backOnNotebook = { pages: api.currentPdfPageCount(), marks: inkHere() };
 
+    // ── Does drawing move the stamp the sync pushes on? ───────────────────
+    //
+    // The end of the pipe deckContentMatches sits in the middle of. A stroke is
+    // saved on the device either way; what decides whether it is ever SENT is
+    // whether the library index entry advances its updatedAt, because the push
+    // gate is updatedAt > lastSyncedAt. Read off the real index, twice, either
+    // side of one more scribble.
+    const entryNow = () => api.readLocalDeckIndex().find((e) => e.id === api.state.localDeckId);
+    await api.flushPendingDeckAutosave();
+    const stampBefore = entryNow()?.updatedAt || "";
+    // A stamp is monotonic but has millisecond resolution, so a draw in the same
+    // millisecond as the previous save would be indistinguishable from no draw
+    // at all — a false PASS. Waited out rather than argued about.
+    await settle(1100);
+    await scribble(1);
+    await api.flushPendingDeckAutosave();
+    const stampAfter = entryNow()?.updatedAt || "";
+    // ...and a save that draws nothing must NOT move it, or every deck in the
+    // library pushes on every autosave for ever.
+    await settle(1100);
+    await api.saveDeckToLibrary({ silent: true });
+    const stampIdle = entryNow()?.updatedAt || "";
+
     return {
       attached, offered, paperPages, notebookPages, onPaper, mine, theirs, paintedNow,
       hasPdf: Boolean(api.state.meta.pdf), hasNotebook: Boolean(api.state.meta.notebook),
       backOnPaper, backOnNotebook,
+      stampBefore, stampAfter, stampIdle,
       errs: window.__errs.slice(0, 4)
     };
   }`, Array.from(buildFixturePdf({ pages: 3 }).bytes), PEN_SRC);
@@ -845,6 +869,26 @@ try {
     `Document: ${both.backOnPaper.marks} mark(s) over ${both.backOnPaper.pages} page(s); `
     + `Write: ${both.backOnNotebook.marks} over ${both.backOnNotebook.pages}`);
   check("...with nothing thrown while both were open", both.errs.length === 0, both.errs.join(" | "));
+
+  // The reported sync failure, end to end: "there's a sync issue even if I'm
+  // drawing something in device A and sync the same is not being reflected in
+  // multi device."
+  //
+  // Nothing was wrong with the merge — a stroke that reaches the cloud arrives
+  // intact, and section 5 proves it. What was wrong is that it never left. A
+  // stroke changes meta.pdfHighlights and nothing else: no cards, no notes body
+  // (the pages ARE the deck), no page count, no hash. deckContentMatches
+  // (src/library/local-library.js) read none of that array, so the save was a
+  // no-op as far as updatedAt was concerned, and a deck whose updatedAt has not
+  // moved is one the push gate never fires for. Stored for ever, sent never,
+  // with no error to notice.
+  check("drawing moves the stamp the push gate reads",
+    Boolean(both.stampAfter) && both.stampAfter > both.stampBefore,
+    `updatedAt was ${both.stampBefore || "(none)"} and is ${both.stampAfter || "(none)"} — `
+    + "equal means the stroke would never be pushed to another device");
+  check("...and a save that changed nothing leaves it alone",
+    both.stampIdle === both.stampAfter,
+    `an idle save moved updatedAt from ${both.stampAfter} to ${both.stampIdle} — every deck would push on every save`);
 
   // ── 8. Ink that follows the theme ───────────────────────────────────────
   //
