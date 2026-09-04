@@ -82,7 +82,7 @@
 // this file works either way — the flag is set for the whole time the pen is in
 // contact, and the touchmove guard reads the same flag.
 
-import { PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_BLOCK_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
@@ -420,6 +420,13 @@ function onInkPointerDown(event) {
   // the DOM rather than by calling isRegionSelectArmed so this file does not
   // have to be evaluated before that one.
   if (el.documentStage?.classList.contains(REGION_CLASS)) return;
+  // A press that landed on a markdown block belongs to the block. Recognised by
+  // class rather than by importing src/documents/pdf-blocks.js, for the reason
+  // the line above does the same: this listener is in the capture phase and runs
+  // before anything else on the page, so it has to be able to stand down without
+  // a dependency on what it is standing down FOR. Without this a pen aimed at a
+  // block's drag bar moved the block and drew a stroke across the page.
+  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return;
   const pageEl = document.elementFromPoint(event.clientX, event.clientY)?.closest(".pdf-page");
   if (!pageEl) return;
   const page = Number(pageEl.dataset.pageNumber);

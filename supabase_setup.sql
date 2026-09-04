@@ -59,15 +59,17 @@ CREATE TABLE IF NOT EXISTS decks (
   --                        a union across devices, never one device's list
   --   quickNoteCategories  the quick_notes board's managed subject set
   --   noteAnchors          { cardId: anchor }, where each pinned note came from
-  --   pages                a handwritten notebook's paper — one record per
-  --                        page, with its size, which of the three papers it
-  --                        is, and the strokes on it in the same encoded form
-  --                        the ink on a PDF page rides in. A deck carrying this
-  --                        key IS the notebook: no cards, no note, no file
-  --   textBoxes            the draggable markdown boxes on those pages, each
-  --                        with the page it belongs to, its box and its own `at`
-  --   deletedPageIds       { id: iso } tombstones for the two above, so a page
-  --   deletedTextBoxIds    or a box torn out stays torn out across devices
+  --   pdfBlocks            the draggable markdown blocks on a paper's pages,
+  --                        each with its page, its rectangle in that page's
+  --                        own POINTS, and its text. Points rather than pixels
+  --                        for the reason the quads above are: a position in
+  --                        the document survives a zoom and a second device
+  --   deletedBlockIds      { id: iso } tombstones, so a block deleted on one
+  --                        device stays deleted on the others
+  --
+  -- A handwritten notebook needs no key of its own: it is a deck whose `pdf` is
+  -- blank paper this app generated (meta.pdf.notebook), so its pages ARE the
+  -- document's pages and its handwriting is pdfHighlights like any other.
   meta JSONB NOT NULL DEFAULT '{}'::jsonb,
   current_card_index INT DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

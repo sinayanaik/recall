@@ -360,17 +360,24 @@ export function listLocalDecks() {
 // meant a card recategorisation never bumped the deck's updatedAt and so was
 // never pushed — it only reached the cloud because setQuickNoteCardCategory
 // bumped the index entry by hand.
-// id + stamp per record, in order, for both handwriting keys. Every edit to a
-// page or a box bumps its own `at`, and adding, deleting or reordering changes
-// the run — so this moves exactly when the notebook does and never because a
-// record was re-serialised into a different key order.
+// What a notebook can change that nothing else in this comparison can see.
+//
+// Two things, and they fail differently. A markdown block is an id and a stamp,
+// like a card; adding a page rewrites the PDF itself, and the only trace of that
+// in the snapshot is meta.pdf's own page count and hash. Neither is looked at
+// anywhere else here — so without this an afternoon of handwriting leaves
+// updatedAt untouched and the deck never pushes, which is the same fault
+// `category` had before it was added to this function.
+//
+// A signature rather than deep equality, for the reason the bookmark is compared
+// on its `at` alone: this runs on every save, and the ink itself is tens of
+// kilobytes of base64 sitting in the same bag.
 function handwritingSignature(meta) {
-  const part = (list) => (Array.isArray(list) ? list : [])
+  const blocks = (Array.isArray(meta?.pdfBlocks) ? meta.pdfBlocks : [])
     .map((record) => `${record?.id || ""}:${record?.at || 0}`)
     .join(",");
-  const pages = part(meta?.pages);
-  const boxes = part(meta?.textBoxes);
-  return pages || boxes ? `${pages}|${boxes}` : "";
+  const paper = meta?.pdf ? `${meta.pdf.pages || 0}:${meta.pdf.sha256 || ""}` : "";
+  return blocks || paper ? `${paper}|${blocks}` : "";
 }
 
 export function deckContentMatches(a, b) {
@@ -523,8 +530,9 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     // row per deck and must not read a snapshot per row to do it. A notebook
     // has no cards and an empty note, so without this its row says "0 cards"
     // and nothing else — indistinguishable from a deck someone made and
-    // abandoned.
-    pageCount: Array.isArray(snapshot.meta?.pages) ? snapshot.meta.pages.length : 0,
+    // abandoned. Only for paper this app GENERATED: the page count of somebody
+    // else's PDF is a fact about their document, not a thing this deck is.
+    pageCount: snapshot.meta?.pdf?.notebook ? (Number(snapshot.meta.pdf.pages) || 0) : 0,
     updatedAt: resolvedUpdatedAt,
     createdAt: previousEntry?.createdAt || new Date().toISOString(),
     lastSyncedAt: lastSyncedAt !== undefined ? lastSyncedAt : (previousEntry?.lastSyncedAt || null),

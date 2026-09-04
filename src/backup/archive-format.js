@@ -112,23 +112,40 @@ export const BACKED_UP_META_KEYS = {
     + "them a restored board reads as entirely Uncategorized.",
   noteAnchors:
     "Where each pinned note was pinned from, per card.",
+  pdfBlocks:
+    "The markdown text blocks a reader has dropped onto a paper's pages — each "
+    + "with the page it is on, its rectangle in that page's own points, and its "
+    + "text. In points rather than pixels for the reason the highlights are: a "
+    + "position in the document survives a zoom and a second device and a "
+    + "position on the glass survives neither.",
+  deletedBlockIds:
+    "Block tombstones, carried for the reason deletedHighlightIds is: a restore "
+    + "that unioned the live blocks alone would put back every block the reader "
+    + "had deleted.",
+
+  // ── The four keys of an older notebook ───────────────────────────────────
+  //
+  // A notebook used to be pages in `meta` rather than pages of a document. It is
+  // not any more, and these are still carried — deliberately, and this is the
+  // reason: an archive taken on the old build has to restore into something the
+  // migration can still convert (src/documents/notebook-migrate.js). Dropping
+  // them here would mean a backup made yesterday restores a deck with no
+  // handwriting in it at all, which is the exact failure a backup exists to
+  // prevent. They cost nothing on a deck that never had them and disappear from
+  // one the moment it is opened.
   pages:
-    "A handwritten notebook's paper: one record per page, carrying its size, "
-    + "which of the three papers it is, and the strokes on it in the same "
-    + "encoded form a PDF page's ink rides in. This is the WHOLE content of such "
-    + "a deck — there are no cards and the note is empty — so an archive that "
-    + "left this out would restore a notebook as an empty deck with a title.",
-  deletedPageIds:
-    "Page tombstones, and carried for the reason deletedHighlightIds is: a "
-    + "restore that unioned the live pages alone would put back every page the "
-    + "reader had torn out.",
+    "LEGACY. An older notebook's paper — one record per page, with the strokes "
+    + "on it. Converted to pages of a generated PDF the first time that deck's "
+    + "Handwritten Notes surface is opened, and carried until then so an archive "
+    + "taken before that conversion still restores something to convert.",
   textBoxes:
-    "The markdown text boxes dropped onto those pages — each with the page it "
-    + "belongs to, where it sits, how big it is, and its text. Separate from "
-    + "`pages` because a box is moved and edited on its own timescale and merges "
-    + "by its own `at`; carried for the same reason.",
+    "LEGACY. The typed boxes on those pages. Converted alongside them, into "
+    + "pdfBlocks, and carried for the same reason.",
+  deletedPageIds:
+    "LEGACY. Tombstones for the two above. Carried so a restore of an older "
+    + "archive cannot resurrect a page the reader tore out before migrating.",
   deletedTextBoxIds:
-    "Text box tombstones. Same shape, same rule, same reason as the pages'."
+    "LEGACY. The same, for boxes."
 };
 
 export const NOT_BACKED_UP_META_KEYS = {

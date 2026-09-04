@@ -114,6 +114,8 @@ try {
   } = strokesMod;
   const { fitInkShape, INK_SHAPE_MIN_SIZE } = shapesMod;
   const { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, inkStrokeWidths } = paintMod;
+  const migrateMod = await import(path.join(stage, "src/documents/notebook-migrate.js"));
+  const { LEGACY_SCALE, hasLegacyNotebook, migratedNotebookMeta, planLegacyNotebookMigration } = migrateMod;
 
   // ── 1. Does a stroke come back? ─────────────────────────────────────────
 
@@ -315,6 +317,115 @@ try {
     const whole = inkStrokeWidths(flat);
     const short = inkStrokeWidths({ ...flat, p: flat.p.slice(0, 9) });
     return short[2] !== whole[2] || "a mouse sample's width did not change when a successor arrived — this property has stopped being true";
+  });
+
+  // ── 1c. Does an older notebook come across intact? ──────────────────────
+  //
+  // A notebook used to be pages in `meta` at 794x1123 CSS pixels with y running
+  // DOWN; it is pages of a real PDF now, at 595x842 points with y running UP. So
+  // the conversion is a scale and a FLIP, and a flip is the kind of mistake that
+  // is invisible in code and unmissable on screen — everything mirrored top to
+  // bottom, a page at a time.
+  //
+  // Checkable here at all because the conversion is a pure function, deliberately
+  // (src/documents/notebook-migrate.js): meta in, records out, no deck and no
+  // browser between.
+  must("an older notebook's pages become pages of a document, in order", () => {
+    const meta = {
+      pages: [
+        { id: "hp-b", order: 1, paper: "ruled", ink: encodeInkStrokes([{ w: 2, c: "ink", p: [10, 10, 0.5, 100, 200, 0.6] }]) },
+        { id: "hp-a", order: 0, paper: "ruled", ink: encodeInkStrokes([{ w: 2, c: "red", p: [20, 20, 0.5, 60, 90, 0.5] }]) }
+      ]
+    };
+    const plan = planLegacyNotebookMigration(meta);
+    if (plan.pages !== 2) return `${plan.pages} page(s) rather than 2`;
+    if (plan.ink.length !== 2) return `${plan.ink.length} ink record(s) rather than 2`;
+    // `order`, not the order they happened to be stored in.
+    if (plan.ink[0].page !== 1 || plan.ink[1].page !== 2) return "the pages came out in storage order rather than reading order";
+    if (plan.paper !== "ruled") return `the paper came out as ${plan.paper}`;
+    return true;
+  });
+
+  must("...with every stroke scaled into points and flipped the right way up", () => {
+    // A stroke along the TOP of the old page must end up along the top of the
+    // new one — which, with y running the other way, is a LARGE y.
+    const nearTop = encodeInkStrokes([{ w: 4, c: "ink", p: [0, 0, 0.5, 794, 0, 0.5] }]);
+    const plan = planLegacyNotebookMigration({ pages: [{ id: "hp-a", order: 0, ink: nearTop }] });
+    const back = decodeInkStrokes(plan.ink[0].ink.s);
+    // The POINTS, not inkStrokesBounds — that pads by the stroke's own half
+    // width, which is a nib and not a coordinate. Asking it for a span is asking
+    // a different question and getting a believable wrong answer.
+    const xs = back[0].p.filter((_, i) => i % 3 === 0);
+    const ys = back[0].p.filter((_, i) => i % 3 === 1);
+    const span = Math.max(...xs) - Math.min(...xs);
+    if (Math.abs(span - (794 * LEGACY_SCALE)) > 1) {
+      return `the stroke spans ${span.toFixed(1)}pt, expected ${(794 * LEGACY_SCALE).toFixed(1)}`;
+    }
+    // ...and it is at the TOP, which with y running up is a LARGE y and not a
+    // small one. This is the assertion that catches a missing flip.
+    if (Math.min(...ys) < 800) return `the top of the page came out at y=${Math.min(...ys).toFixed(1)} — it has been flipped upside down`;
+    // The nib scales with the page, or a 6pt pen on a smaller page is a marker.
+    if (Math.abs(back[0].w - (4 * LEGACY_SCALE)) > 0.2) return `the nib came out at ${back[0].w}`;
+    return true;
+  });
+
+  must("...and a text box keeps its box, measured from the other corner", () => {
+    // The old y was the box's TOP edge measured down; a block's y is its BOTTOM
+    // edge measured up. Getting that wrong puts every block one box-height out.
+    const plan = planLegacyNotebookMigration({
+      pages: [{ id: "hp-a", order: 0, ink: [] }],
+      textBoxes: [{ id: "hb-1", page: "hp-a", x: 100, y: 200, w: 300, h: 120, md: "**kept**" }]
+    });
+    const block = plan.blocks[0];
+    if (!block) return "the box did not come across at all";
+    if (block.md !== "**kept**") return "the markdown did not come across";
+    if (block.page !== 1) return `the block landed on page ${block.page}`;
+    if (Math.abs(block.x - (100 * LEGACY_SCALE)) > 1) return `x came out at ${block.x}`;
+    if (Math.abs(block.w - (300 * LEGACY_SCALE)) > 1) return `w came out at ${block.w}`;
+    const wantedBottom = 842 - ((200 + 120) * LEGACY_SCALE);
+    if (Math.abs(block.y - wantedBottom) > 1) return `y came out at ${block.y}, expected ${wantedBottom.toFixed(1)}`;
+    return true;
+  });
+
+  must("a box whose page is gone is counted rather than quietly dropped", () => {
+    const plan = planLegacyNotebookMigration({
+      pages: [{ id: "hp-a", order: 0, ink: [] }],
+      textBoxes: [{ id: "hb-1", page: "hp-missing", x: 10, y: 10, w: 100, h: 40, md: "orphan" }]
+    });
+    return (plan.blocks.length === 0 && plan.orphans === 1)
+      || `blocks=${plan.blocks.length} orphans=${plan.orphans}`;
+  });
+
+  must("the migration swaps the old keys for the new ones in ONE step", () => {
+    // Nothing may be removed before its replacement exists, and nothing may be
+    // left behind that would make the migration run a second time.
+    const meta = {
+      pages: [{ id: "hp-a", order: 0, ink: encodeInkStrokes([{ w: 2, c: "ink", p: [5, 5, 0.5, 50, 50, 0.5] }]) }],
+      textBoxes: [{ id: "hb-1", page: "hp-a", x: 10, y: 10, w: 100, h: 40, md: "x" }],
+      deletedPageIds: { "hp-z": "2027-01-01T00:00:00.000Z" },
+      deletedTextBoxIds: { "hb-z": "2027-01-01T00:00:00.000Z" },
+      // A deck can carry highlights of its own; the migration must ADD to them.
+      pdfHighlights: [{ id: "hn-existing", page: 1, kind: "text", at: 1 }]
+    };
+    const plan = planLegacyNotebookMigration(meta);
+    const next = migratedNotebookMeta(meta, plan, { pages: plan.pages, notebook: true });
+    for (const key of ["pages", "textBoxes", "deletedPageIds", "deletedTextBoxIds"]) {
+      if (key in next) return `${key} survived the migration — it would run again on the next open`;
+    }
+    if (!hasLegacyNotebook(meta)) return "the fixture was not legacy to begin with";
+    if (hasLegacyNotebook(next)) return "the migrated meta still reads as legacy";
+    if (next.pdfHighlights.length !== 2) return `${next.pdfHighlights.length} highlight(s) — the deck's own was lost or duplicated`;
+    if (next.pdfHighlights[0].id !== "hn-existing") return "the deck's own highlight was displaced";
+    if (!next.pdfBlocks || next.pdfBlocks.length !== 1) return "the block did not arrive";
+    // ...and the original is untouched, because the caller may still need it if
+    // the save that follows fails.
+    if (!Array.isArray(meta.pages)) return "the plan mutated the meta it was given";
+    return true;
+  });
+
+  must("a notebook whose every page was blank still becomes a notebook", () => {
+    const plan = planLegacyNotebookMigration({ pages: [], textBoxes: [] });
+    return (plan.pages === 1 && plan.ink.length === 0) || `pages=${plan.pages} ink=${plan.ink.length}`;
   });
 
   must("a version this build does not know decodes to nothing", () => {

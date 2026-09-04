@@ -93,6 +93,12 @@ export function createHandwritingPaper({
 }) {
   let zoom = 1;
   let scale = 1;
+  // The scroller width the current scale was worked out from. Watched rather
+  // than trusted, because a measurement is only as good as the moment it was
+  // taken — see the observer at the bottom of this function.
+  let measuredWidth = 0;
+  let sizeObserver = null;
+  let resizeFrame = 0;
   // A page's box in client coordinates, written by pageAt at the START of a
   // gesture and read by toModel once per sample after it. Nothing else may write
   // to it, and that is the whole invariant: a rect is only correct at the moment
@@ -110,6 +116,7 @@ export function createHandwritingPaper({
     const style = getComputedStyle(scroller);
     const pad = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
     const room = Math.max(80, scroller.clientWidth - pad);
+    measuredWidth = scroller.clientWidth;
     scale = Math.min(HW_MAX_FIT, room / HW_PAGE_WIDTH) * zoom;
   }
 
@@ -178,6 +185,7 @@ export function createHandwritingPaper({
     });
     measure();
     applySize();
+    watchSize();
     pages.forEach((page) => {
       const el = handwritingPageElement(scroller, page.id);
       const host = el?.querySelector(".hw-page-ink");
@@ -205,6 +213,41 @@ export function createHandwritingPaper({
   // landing under one that is already open.
   function seed() {
     getPages().forEach((page) => inkEngine.setStrokes(page.id, handwritingPageStrokes(page)));
+  }
+
+  // ── Why the width is WATCHED and not simply measured ────────────────────
+  //
+  // measure() reads scroller.clientWidth, and there is no moment at which that
+  // is guaranteed to be the width the page will end up at. A surface unhidden
+  // in the same tick has not been laid out; one inside a container that is
+  // itself still settling reads zero; and a zero falls through the 80px floor
+  // below, which produces a page 80 pixels wide — an A4 sheet rendered at a
+  // tenth of its size, with the pen drawing correctly onto a stamp. That is not
+  // hypothetical: it is what a check caught, and a reader opening the sheet
+  // during a transition would have seen exactly the same thing.
+  //
+  // So the width is observed. Any real change re-lays-out and repaints, which
+  // also covers the two cases that were being handled by hand — a window
+  // resized, and this surface being moved into a container of a different
+  // width. Guarded on the width actually differing, because relayout() changes
+  // the size of the pages INSIDE the scroller and would otherwise call itself
+  // forever.
+  function watchSize() {
+    if (sizeObserver || typeof ResizeObserver !== "function" || !scroller) return;
+    sizeObserver = new ResizeObserver(() => {
+      if (scroller.clientWidth === measuredWidth || resizeFrame) return;
+      // Deferred to the next frame rather than run here. Re-laying out resizes
+      // the pages INSIDE the observed element, and a ResizeObserver callback
+      // that causes further resizes is what "ResizeObserver loop completed with
+      // undelivered notifications" is reported for — harmless in itself, but it
+      // reaches window.onerror, and an app that cries wolf there is one whose
+      // real errors stop being read.
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        if (scroller.clientWidth !== measuredWidth) relayout();
+      });
+    });
+    sizeObserver.observe(scroller);
   }
 
   return {
@@ -255,6 +298,12 @@ export function createHandwritingPaper({
       relayout();
       return true;
     },
-    destroy: () => { inkEngine.destroy(); rects.clear(); }
+    destroy: () => {
+      sizeObserver?.disconnect();
+      sizeObserver = null;
+      if (resizeFrame) { cancelAnimationFrame(resizeFrame); resizeFrame = 0; }
+      inkEngine.destroy();
+      rects.clear();
+    }
   };
 }

@@ -42,12 +42,18 @@ import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 export function deckPayloadHasContent({ cards, notes, meta } = {}) {
   if (Array.isArray(cards) ? cards.length : cards) return true;
   if (String(notes || "").trim()) return true;
-  // A notebook is the same case as a paper, one step further along: it has no
-  // cards, an empty note, and no PDF either — its whole content is a stack of
-  // pages in meta. Missing from here it would be indistinguishable from an empty
-  // deck, and BOTH sides of the round trip read this predicate, so an afternoon
-  // of handwriting would be dropped by the autosave and the deck would then
-  // refuse to load with "That saved deck is corrupted".
+  // A notebook is a deck whose paper is a PDF this app generated
+  // (src/documents/notebook.js), so it is already covered by the `pdf` test
+  // below — which is most of the argument for having built it that way.
+  //
+  // `pages` is the notebook that came BEFORE that, and this line is not
+  // optional. Such a deck has no cards, an empty note and no document, so
+  // without it this predicate calls it empty — and it is consulted on both
+  // sides of the round trip, which means the deck would not merely stop
+  // autosaving, it would refuse to LOAD, reporting itself corrupted. The reader
+  // would be told an afternoon of handwriting was damaged when it is sitting
+  // intact in the file. It stays until a deck cannot be carrying that key any
+  // more, which is not a date anyone can name.
   if (Array.isArray(meta?.pages) && meta.pages.length) return true;
   return Boolean(meta?.pdf);
 }

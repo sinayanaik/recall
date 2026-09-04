@@ -40,6 +40,7 @@ import {
   joinHighlightNotesTail,
   splitHighlightNotesTail
 } from "../format/notes-fence.js?v=__BUILD__";
+import { LEGACY_NOTEBOOK_KEYS } from "../documents/notebook-migrate.js?v=__BUILD__";
 import { mergeHighlightNoteTails } from "../format/highlight-notes-merge.js?v=__BUILD__";
 import { CARD_TOMBSTONE_MAX_AGE_MS } from "./cards.js?v=__BUILD__";
 import { mergePdfHighlights, mergeRecordsById } from "./diff.js?v=__BUILD__";
@@ -204,18 +205,23 @@ export function mergeDocumentAnnotations({
 
 // ── Handwriting: the pages of a notebook, and the boxes on them ────────────
 //
-// meta.pages and meta.textBoxes are id'd records with their own `at`, exactly
-// like the highlights on a paper — so they merge through the same function and
-// keep the same invariant, which is why mergeRecordsById exists under that name
-// in src/sync/diff.js rather than being copied here.
+// meta.pdfBlocks are the markdown blocks dropped onto a page — id'd records
+// with their own `at`, exactly like the highlights beside them, so they merge
+// through the same function and keep the same invariant. That is why
+// mergeRecordsById exists under that name in src/sync/diff.js rather than being
+// copied here.
 //
-// The tombstone bags are the half that a union of live records alone cannot do:
-// a page deleted on one device is, to the other device, simply a page it still
-// has, and every sync would put it back. Same shape as deletedHighlightIds
-// ({ id: iso }), same cap, same "a record that is PRESENT is not deleted".
+// The PAGES are not in this table, and that is the point of the rewrite behind
+// it: a notebook's pages are pages of a real PDF now (src/documents/notebook.js),
+// so they are carried by meta.pdf and the file itself like any other document's,
+// and there is nothing left here for them to be a second opinion about.
+//
+// The tombstone bag is the half a union of live records alone cannot do: a block
+// deleted on one device is, to the other, simply a block it still has, and every
+// sync would put it back. Same shape as deletedHighlightIds ({ id: iso }), same
+// cap, same "a record that is PRESENT is not deleted".
 export const HANDWRITING_META_KEYS = [
-  { records: "pages", tombstones: "deletedPageIds" },
-  { records: "textBoxes", tombstones: "deletedTextBoxIds" }
+  { records: "pdfBlocks", tombstones: "deletedBlockIds" }
 ];
 
 // Read / prune / record / drop, for any { id: iso } bag on the meta. The
@@ -265,17 +271,6 @@ function mergeMetaTombstones(key, ...metas) {
   }
   const pruned = pruneHighlightTombstones(merged);
   return Object.keys(pruned).length ? pruned : null;
-}
-
-// Two devices that both added a page have both given a page the same `order`,
-// so `order` alone is not a total order and the two would disagree about which
-// came first. The id breaks the tie the same way on every device, and the run is
-// renumbered afterwards so the stack a reader sees is 0..n-1 with no gaps.
-function orderMergedPages(pages) {
-  return pages
-    .slice()
-    .sort((a, b) => (Number(a?.order) || 0) - (Number(b?.order) || 0) || String(a?.id).localeCompare(String(b?.id)))
-    .map((page, index) => (Number(page?.order) === index ? page : { ...page, order: index }));
 }
 
 // ── The rest of the meta bag ────────────────────────────────────────────────
@@ -415,20 +410,35 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
     next.noteAnchors = { ...(loser.noteAnchors || {}), ...(winner.noteAnchors || {}) };
   }
 
-  // meta.pages / meta.textBoxes — a notebook's paper and the markdown boxes on
-  // it, with a tombstone bag each. Merged by id on `at`, exactly as the paper's
-  // highlights are, because a page written on here and a page written on there
-  // are an ADD each and not a conflict — and because the whole-column push means
-  // last-write-wins would throw one of them away every time.
+  // meta.pdfBlocks — the markdown blocks on a paper's pages. Merged by id on
+  // `at`, exactly as the highlights beside them are, because a block typed here
+  // and a block typed there are an ADD each and not a conflict — and because the
+  // whole-column push means last-write-wins would throw one of them away.
   for (const { records, tombstones } of HANDWRITING_META_KEYS) {
     const merged = mergeRecordsById(cloud[records], local[records], {
       tombstones: metaTombstoneMs(tombstones, cloud, local)
     });
-    if (merged) next[records] = records === "pages" ? orderMergedPages(merged) : merged;
+    if (merged) next[records] = merged;
     else delete next[records];
     const bag = mergeMetaTombstones(tombstones, cloud, local);
     if (bag) next[tombstones] = bag;
     else delete next[tombstones];
+  }
+
+  // ── An older notebook, once it is not one any more ──────────────────────
+  //
+  // The legacy keys merge by the default rule, which is a spread — so a side
+  // that still HAS them puts them back onto a side that has migrated, because
+  // an absent key overrides nothing. Two devices, one migrated and one not, and
+  // they would travel back and forth indefinitely.
+  //
+  // A deck whose paper is a generated PDF has its pages IN that document, so
+  // these describe something that no longer exists and cannot be true at the
+  // same time. Dropped on the merged result rather than on either input: the
+  // question is what the deck is now, and that is not answerable until both
+  // sides have been read.
+  if (next.pdf?.notebook) {
+    for (const key of LEGACY_NOTEBOOK_KEYS) delete next[key];
   }
 
   return next;

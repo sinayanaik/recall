@@ -54,3 +54,10 @@ export const PDF_BADGE_LAYER_CLASS = "pdf-badge-layer";
 // is right; wrong is not, and that is the rule the mark, text and badge layers
 // beside it already follow.
 export const PDF_INK_LAYER_CLASS = "pdf-ink-layer";
+
+// ...and a third, for the same reason again: the markdown blocks a reader drops
+// onto a page. Named here rather than in the module that builds them because
+// src/documents/pdf-ink.js has to be able to recognise one without importing it
+// — a pen press that lands on a block belongs to the block, not to the paper.
+export const PDF_BLOCK_LAYER_CLASS = "pdf-block-layer";
+export const PDF_BLOCK_CLASS = "pdf-block";
