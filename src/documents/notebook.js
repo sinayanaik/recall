@@ -37,7 +37,7 @@
 // already on the others. Tearing one OUT is the only case that touches them, and
 // it is a renumbering: see remapDocumentHighlightPages.
 
-import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
+import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, BLANK_PAPER_VERSION, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
 import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
 import { freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
@@ -96,6 +96,9 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
       pages,
       paper,
       notebook: true,
+      // What the sheet under the ink looks like — see BLANK_PAPER_VERSION. A
+      // notebook drawn at an older one is redrawn on the next open.
+      paperV: BLANK_PAPER_VERSION,
       sha256: hash,
       // The old path is not kept. It names bytes that no longer exist, and a
       // device that pulled this deck must not be handed the previous page count.
@@ -151,6 +154,14 @@ export async function ensureNotebookDocument({ paper = null } = {}) {
     // no real document has and it would be a waste not to use it.
     if (!(await notebookBytesPresent())) {
       showToast("Re-making this notebook's paper on this device…", "info");
+      return (await writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), reopen: false })) && "wrote";
+    }
+    // ...and the same property, used for the same reason one step further on: a
+    // sheet drawn by an older build is redrawn to the current one. Silent,
+    // because nothing about the deck changes — same page box, same page count,
+    // same ink in the same places — only the paper under it. Here rather than on
+    // deck load, so it is the reader arriving at the surface that pays for it.
+    if (Number(state.meta.notebook.paperV || 1) < BLANK_PAPER_VERSION) {
       return (await writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), reopen: false })) && "wrote";
     }
     return "kept";

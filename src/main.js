@@ -117,9 +117,9 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, repaintDocumentInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
+import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { commitBlockEdit, handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
+import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
@@ -1223,6 +1223,14 @@ onDomReady(() => {
     // Safe here: openDocumentViewBody has just emptied the view and rebuilt the
     // placeholders, and no page has painted a layer yet.
     resetDocumentInk();
+    // The rail as THIS surface last left it. Here rather than in the Write tab's
+    // own paint step because both slots need it and this hook is the one place
+    // that fires for either: a notebook starts with the rail open (the pen is
+    // the whole point of a blank page, and arming is also the only way a mouse
+    // can draw at all), a document starts with it shut, and each remembers being
+    // told otherwise. Without it, arming the pen on a notebook would follow the
+    // reader onto the next paper they opened.
+    applyInkRailPreference();
     refreshPdfPageNotes();
   });
   initDocumentInk();
@@ -3422,7 +3430,10 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   if (action === "reattach") return;
   // A mode row stays put: flipping it and watching the switch move is the
   // feedback, and a menu that closed underneath the press would take that away.
-  if (action !== "page-notes") {
+  // The paper rows are the same kind of thing — three rows of one choice, and
+  // seeing the mark move to the one you pressed is what says it worked.
+  const staysOpen = action === "page-notes" || action.startsWith("hw-paper-");
+  if (!staysOpen) {
     el.documentMoreMenu.hidden = true;
     el.documentMoreBtn?.setAttribute("aria-expanded", "false");
   }
@@ -3430,6 +3441,10 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
     togglePdfPageNotes();
     return;
   }
+  // The notebook's rows — the paper and the tear-out. Handled by the module that
+  // owns those operations rather than here, and returning true is how it says it
+  // took the press.
+  if (runHandwritingMenuAction(action)) return;
   if (action === "offload") await offloadCurrentDocument();
 });
 

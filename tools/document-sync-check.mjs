@@ -664,6 +664,110 @@ try {
       || "flushPendingDeckAutosave restates the save predicate — the two will drift again");
   }
 
+  // ── ...and does the save it gets ever COUNT as a change? ────────────────
+  //
+  // The sibling of the block above, one step further along the same pipe, and
+  // the reported failure was the same sentence with a different verb: "there's a
+  // sync issue even if I'm drawing something in device A and sync the same is
+  // not being reflected in multi device."
+  //
+  // A save that happens is not a save that syncs. finishSaveDeckToLibrary only
+  // advances the deck's updatedAt when deckContentMatches says the snapshot
+  // differs from the last one, and the push gate is `updatedAt > lastSyncedAt`
+  // — so a change that comparison cannot see is stored on the device, correctly,
+  // for ever, and never sent anywhere. No error, no warning, nothing to notice.
+  //
+  // meta.pdfHighlights was not read anywhere in that comparison. Ink is what
+  // made it visible, because ink is the one annotation with nothing else to ride
+  // on: a text highlight usually drags the reader's note into `notes`, which IS
+  // compared, so it synced for a reason that had nothing to do with it being a
+  // highlight. A stroke has no words by definition, and neither has a region, a
+  // recolour, or a mark deleted before anything was written about it.
+  //
+  // Driven through the REAL module rather than a source-text extraction: this is
+  // a question about what the app does, and every one of these cases answers the
+  // wrong way against the code as it was.
+  {
+    const lib = await load("src/library/local-library.js");
+    const { deckContentMatches } = lib;
+
+    const inkMark = (id, at, extra = {}) => ({
+      id, page: 1, kind: "ink", color: "yellow", text: "",
+      ink: { v: 1, s: "AQID" }, quads: [{ page: 1, rect: [0, 0, 10, 10] }], at, ...extra
+    });
+    // A notebook deck as it actually reaches this comparison: no cards, no body
+    // — the pages ARE the deck — so the marks are the only thing that can differ.
+    const notebook = (marks) => ({
+      deckTitle: "Lecture notes", deckCategory: null, notes: "", cards: [],
+      meta: {
+        notebook: { name: "hw.pdf", pages: 2, paper: "grid", notebook: true, paperV: 2, sha256: "abc" },
+        pdfHighlights: marks
+      }
+    });
+
+    must("a stroke drawn in a notebook counts as a change to the deck", () => {
+      const before = notebook([inkMark("hn-aaa111", T1, { doc: "notebook" })]);
+      const after = notebook([
+        inkMark("hn-aaa111", T1, { doc: "notebook" }),
+        inkMark("hn-bbb222", T2, { doc: "notebook" })
+      ]);
+      return deckContentMatches(before, after) === false
+        || "the second stroke read as no change — updatedAt would not move and the deck would never push";
+    });
+
+    must("...and so does one drawn on the deck's own paper", () => {
+      const paper = (marks) => ({
+        deckTitle: "A preprint", deckCategory: null, notes: "", cards: [],
+        meta: { pdf: { name: "p.pdf", pages: 9, sha256: "def" }, pdfHighlights: marks }
+      });
+      return deckContentMatches(paper([]), paper([inkMark("hn-ccc333", T1)])) === false
+        || "a stroke on a paper read as no change";
+    });
+
+    must("...and erasing one", () => {
+      const before = notebook([inkMark("hn-aaa111", T1), inkMark("hn-bbb222", T2)]);
+      const after = notebook([inkMark("hn-aaa111", T1)]);
+      return deckContentMatches(before, after) === false || "an erased stroke read as no change";
+    });
+
+    must("recolouring a mark counts, because the recolour bumps its `at`", () =>
+      deckContentMatches(
+        notebook([inkMark("hn-aaa111", T1)]),
+        notebook([inkMark("hn-aaa111", T2, { color: "pink" })])
+      ) === false || "a recolour read as no change");
+
+    must("writing a note on a mark counts, on `noteAt` alone", () =>
+      deckContentMatches(
+        notebook([inkMark("hn-aaa111", T1)]),
+        notebook([inkMark("hn-aaa111", T1, { noteAt: T2 })])
+      ) === false || "a note written on a mark read as no change");
+
+    // The other direction, and it matters just as much: every one of the cases
+    // above would also pass if the comparison simply always said "changed",
+    // which would push every deck in the library on every save for ever.
+    must("a deck nobody drew on still reads as unchanged", () => {
+      const marks = [inkMark("hn-aaa111", T1), inkMark("hn-bbb222", T2)];
+      return deckContentMatches(notebook(marks), notebook(marks.map((m) => ({ ...m })))) === true
+        || "an untouched notebook read as changed — it would push on every save";
+    });
+
+    must("...and neither does a page rebuilt without being touched", () => {
+      // src/documents/pdf-ink.js returns an unchanged mark BY REFERENCE, keeping
+      // its original `at`, precisely so a commit that rebuilds a page does not
+      // out-rank the same mark edited on another device. Same object, same answer.
+      const kept = inkMark("hn-aaa111", T1);
+      return deckContentMatches(notebook([kept]), notebook([kept])) === true
+        || "a rebuilt page read as changed";
+    });
+
+    must("an ordinary deck with no annotations is untouched by any of this", () => {
+      const deck = (notes) => ({ deckTitle: "Cards", deckCategory: null, notes, cards: [], meta: {} });
+      return (deckContentMatches(deck("a"), deck("a")) === true
+        && deckContentMatches(deck("a"), deck("b")) === false)
+        || "the annotation comparison changed what an ordinary deck reports";
+    });
+  }
+
   console.log("── document sync ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);

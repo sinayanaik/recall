@@ -124,7 +124,20 @@
   }
 }
 
-#documentStage.has-no-document .document-ink-rail {
+/* No paper, no pen — but "no paper" has meant two different things since the
+   stage grew a second document slot, and this rule only knew one of them.
+   `.has-no-document` is written from `!state.meta.pdf` alone
+   (refreshDocumentTab), so on the Write tab of a deck whose only document is a
+   notebook it was true — and the rail was `display: none` while ✎ happily armed
+   the pen and reported itself pressed. That is a pen with no colours, no nib, no
+   eraser, no lasso and no undo, and a mouse that cannot draw at all, on the one
+   surface built for drawing.
+
+   :not([data-doc-slot="notebook"]) rather than [data-doc-slot="doc"] on purpose:
+   the attribute is written by setViewMode, and a stage that has not been through
+   it yet must keep behaving exactly as it did. The notebook's own version of
+   this rule is in styles/53-handwriting.css, asked of the fact that applies. */
+#documentStage.has-no-document:not([data-doc-slot="notebook"]) .document-ink-rail {
   display: none;
 }
 

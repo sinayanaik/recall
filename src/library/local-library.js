@@ -360,18 +360,22 @@ export function listLocalDecks() {
 // meant a card recategorisation never bumped the deck's updatedAt and so was
 // never pushed — it only reached the cloud because setQuickNoteCardCategory
 // bumped the index entry by hand.
-// What a notebook can change that nothing else in this comparison can see.
+// The PAPER a notebook is written on, and what is dropped onto it.
 //
 // Two things, and they fail differently. A markdown block is an id and a stamp,
 // like a card; adding a page rewrites the PDF itself, and the only trace of that
-// in the snapshot is meta.pdf's own page count and hash. Neither is looked at
-// anywhere else here — so without this an afternoon of handwriting leaves
+// in the snapshot is the document's own page count and hash. Neither is looked
+// at anywhere else here — so without this an afternoon of handwriting leaves
 // updatedAt untouched and the deck never pushes, which is the same fault
 // `category` had before it was added to this function.
 //
+// What it does NOT see is the marks themselves: those are records in
+// meta.pdfHighlights and they are annotationsMatch's job, immediately below.
+// This comment used to claim otherwise, and the claim cost a feature — see the
+// header on that function.
+//
 // A signature rather than deep equality, for the reason the bookmark is compared
-// on its `at` alone: this runs on every save, and the ink itself is tens of
-// kilobytes of base64 sitting in the same bag.
+// on its `at` alone: this runs on every save, and blocks come in handfuls.
 function handwritingSignature(meta) {
   const blocks = (Array.isArray(meta?.pdfBlocks) ? meta.pdfBlocks : [])
     .map((record) => `${record?.id || ""}:${record?.at || 0}`)
@@ -381,6 +385,61 @@ function handwritingSignature(meta) {
   const stamp = (record) => (record ? `${record.pages || 0}:${record.sha256 || ""}` : "");
   const paper = `${stamp(meta?.pdf)}/${stamp(meta?.notebook)}`;
   return blocks || paper.length > 1 ? `${paper}|${blocks}` : "";
+}
+
+// The marks on a document — and the only thing in this comparison that a stroke
+// can move.
+//
+// meta.pdfHighlights was not read anywhere in deckContentMatches, so a save that
+// touched only that array left updatedAt exactly where it was — and a deck whose
+// updatedAt has not moved is a deck the push gate never fires for. Everything
+// stored on the device, nothing sent: "there's a sync issue even if I'm drawing
+// something in device A and sync the same is not being reflected in multi
+// device", reported in those words.
+//
+// Ink is what made it visible, because ink is the one annotation with nothing
+// else to ride on. A text highlight usually drags the reader's note into
+// `notes`, which IS compared above, so it reached the cloud for a reason that
+// had nothing to do with it being a highlight. A stroke has no words by
+// definition (documentHighlightLabel) — and neither has a region drawn round a
+// photograph, a recolour, or a highlight deleted before anything was ever
+// written about it. All four were silently local-only.
+//
+// ── Why this is not another line of handwritingSignature ──────────────────
+//
+// Because of the volume. Blocks come in handfuls and strokes come in thousands:
+// one mark per stroke, on every page. Folding these into that string would build
+// and throw away a key tens of kilobytes long, twice, on every save, to answer a
+// question whose answer is almost always "no" — which is the exact cost the note
+// at the top of this section exists to avoid. Field by field with an early exit
+// allocates nothing and stops at the first difference.
+//
+// `at` and `noteAt` are the two stamps mergePdfHighlights resolves independently
+// (src/sync/diff.js), so between them they date every change a record can carry:
+// drawn, moved, recoloured, re-paged, or written about. An ink mark nobody
+// touched is returned BY REFERENCE with its original `at`
+// (src/documents/pdf-ink.js), so a commit that rebuilds a page without changing
+// it does not read as a change here either.
+//
+// Positional, exactly as the card loop below is. Writing on the notebook rather
+// than on the deck's own paper reorders the array — wholeHighlightArray puts the
+// surface being written on last — so moving between the two reads as a change
+// and costs one extra push. That is the safe direction: a push too many spends
+// bandwidth, and a missed one loses an afternoon.
+//
+// The tombstone bag is deliberately not compared. Deleting a highlight takes the
+// record out of this array, which is already a change, and the push that follows
+// sends the whole meta bag with the tombstone inside it.
+function annotationsMatch(a, b) {
+  const left = Array.isArray(a?.meta?.pdfHighlights) ? a.meta.pdfHighlights : [];
+  const right = Array.isArray(b?.meta?.pdfHighlights) ? b.meta.pdfHighlights : [];
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (String(left[i]?.id) !== String(right[i]?.id)) return false;
+    if ((left[i]?.at || 0) !== (right[i]?.at || 0)) return false;
+    if ((left[i]?.noteAt || 0) !== (right[i]?.noteAt || 0)) return false;
+  }
+  return true;
 }
 
 export function deckContentMatches(a, b) {
@@ -395,13 +454,15 @@ export function deckContentMatches(a, b) {
   // is compared by offset elsewhere to avoid a fresh timestamp alone reading
   // as a change.
   if ((a.meta?.bookmark?.at || null) !== (b.meta?.bookmark?.at || null)) return false;
-  // The handwriting stack. Same argument as `category` above, which was missing
-  // here and so was never pushed: nothing else in this comparison can see a
-  // stroke, so without these two lines an afternoon in a notebook leaves
-  // updatedAt untouched and the deck never syncs. Signature rather than deep
-  // equality, for the reason the bookmark is compared on its `at` alone — the
-  // ink itself is tens of kilobytes of base64 per page and this runs on every
-  // save.
+  // The handwriting stack, in two halves. Same argument as `category` above,
+  // which was missing here and so was never pushed: nothing else in this
+  // comparison can see a mark on a page, so without these two lines an afternoon
+  // in a notebook leaves updatedAt untouched and the deck never syncs.
+  //
+  // The marks first, because it is the cheaper question — a length that differs
+  // answers it without touching a record — and because it is the half that was
+  // missing entirely.
+  if (!annotationsMatch(a, b)) return false;
   if (handwritingSignature(a.meta) !== handwritingSignature(b.meta)) return false;
   const aCards = a.cards || [];
   const bCards = b.cards || [];

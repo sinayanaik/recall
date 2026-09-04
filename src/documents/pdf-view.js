@@ -1952,6 +1952,10 @@ export function readPdfInvertPreference() {
   }
 }
 
+// `remember: false` is the notebook's own paper following the theme. A dark
+// theme would otherwise write "dark page: on" into the preference and hand it to
+// the next PDF the reader opened, which is a document they never asked to have
+// inverted.
 export function applyPdfInvert(on, { remember = true } = {}) {
   el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
   // The button says which way the mode is set without being pressed — the same
@@ -1959,19 +1963,22 @@ export function applyPdfInvert(on, { remember = true } = {}) {
   // moved out of the ⋯ menu in the first place: a mode nobody can see the state
   // of reads as a mode that is not there.
   el.documentDarkBtn?.setAttribute("aria-pressed", on ? "true" : "false");
-  // `remember: false` is the notebook, whose paper is decided by the theme. A
-  // dark theme would otherwise write "dark page: on" into the preference and
-  // hand it to the next PDF the reader opened, which is a document they never
-  // asked to have inverted.
   if (!remember) return;
   try {
     localStorage.setItem(PDF_DARK_KEY, on ? "1" : "0");
   } catch (_) { /* private mode — the preference just doesn't persist */ }
 }
 
+// Refused on a notebook, and the button is hidden there too
+// (styles/53-handwriting.css) — but hiding a control is not the same as removing
+// a mode, and this one is reachable from the reading rail's own row as well. The
+// paper on generated pages is decided by the theme (invertForDocumentSlot) and
+// there is no second opinion to be had: the pen resolves per theme, so an
+// inverted light page or an uninverted dark one is white ink on white paper.
 export function togglePdfInvert() {
+  if (openPdf?.slot === DOC_SLOT_NOTEBOOK) return el.documentStage?.classList.contains(PDF_DARK_CLASS) || false;
   const next = !el.documentStage?.classList.contains(PDF_DARK_CLASS);
-  applyPdfInvert(next, { remember: openPdf?.slot !== DOC_SLOT_NOTEBOOK });
+  applyPdfInvert(next);
   return next;
 }
 

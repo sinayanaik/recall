@@ -275,18 +275,15 @@ export const el = {
   inkRailPens: document.querySelector("#inkRailPens"),
   inkRailWidths: document.querySelector("#inkRailWidths"),
   inkRailSelection: document.querySelector("#inkRailSelection"),
-  // The Write tab's own controls. There is no panel and no stage of its own:
-  // handwriting is #documentStage showing the deck's OTHER document (see
-  // src/documents/doc-slot.js), so all that is left here is the chrome that only
-  // means something on that view — and even that is lifted into #viewModeRow at
-  // boot, beside the document's own.
-  handwritingHead: document.querySelector("#handwritingHead"),
-  handwritingPaperGroup: document.querySelector("#handwritingPaperGroup"),
-  handwritingTextBtn: document.querySelector("#handwritingTextBtn"),
+  // The Write tab has no panel, no stage and — since the row that carried them
+  // crushed its own tab labels — no chrome of its own either. Handwriting is
+  // #documentStage showing the deck's OTHER document (src/documents/doc-slot.js);
+  // what goes on the page lives in the pen's rail and what is done to the page
+  // lives in the ⋯ menu, both of which are the Document surface's own furniture.
+  // The picker is the one exception, because a <label> over a file input has to
+  // be reachable by id to be disabled.
   handwritingImageBtn: document.querySelector("#handwritingImageBtn"),
   handwritingImageInput: document.querySelector("#handwritingImageInput"),
-  handwritingPageBtn: document.querySelector("#handwritingPageBtn"),
-  handwritingTearBtn: document.querySelector("#handwritingTearBtn"),
   documentMoreBtn: document.querySelector("#documentMoreBtn"),
   documentMoreMenu: document.querySelector("#documentMoreMenu"),
   documentReattachInput: document.querySelector("#documentReattachInput"),
